@@ -1,0 +1,320 @@
+# Parity status
+
+Status of every item in the dash-qt checklist ([research 02 §22](research/02-dash-qt-features.md), QT-001…154)
+and the dashwallet-iOS checklist ([research 03 §4](research/03-ios-features.md), IOS-001…123), measured on
+`main` at the M1 integration point (2026-10-05).
+
+**Milestone** is the target milestone from DESIGN-opus §5.4/§5.5 (amended by DESIGN.md).
+**Status**:
+
+- **done** — implemented end to end (engine, view model and UI on the target OSes) and covered by a test.
+- **partial** — tested code for part of the item exists on `main` (usually a Rust library or an FFI call),
+  but the item is not usable in an app. "What exists" says which part.
+- **not started** — no code for the item on `main`, or only a contract stub that returns `NotImplemented`.
+
+## Summary
+
+| Checklist | done | partial | not started | total |
+|---|---|---|---|---|
+| dash-qt (QT) | 0 | 17 | 137 | 154 |
+| iOS (IOS) | 0 | 8 | 115 | 123 |
+
+Nothing is **done**: the M1 implementation and UI branches (`m1/mac-ui`, `m1/cross-ui`) did not exist when
+this table was made, so `main` has no wallet screens. The macOS UI target (`MacUI`) and the SwiftCrossUI app
+(`DashWalletCross`) are placeholders. The engine on `main` can create, import and list wallets, read balance
+buckets, start and stop SPV, format/parse units, parse/write `dash:` URIs, classify addresses and verify
+messages; every other M1 engine call returns a typed `NotImplemented`
+([contracts/m1-engine.md](contracts/m1-engine.md)). The vault does not exist yet.
+
+Test references are relative to the repo root. Rust tests run with `cd rust && cargo test --workspace`;
+Swift tests with `swift test` (macOS) and `scripts/linux-docker-test.sh` (Linux, headless).
+
+Update this file when a branch lands: change the status, milestone notes and test reference of each item it
+touches, and keep the summary counts in step.
+
+## dash-qt checklist (QT)
+
+| ID | Item (research checklist) | Status | Milestone | What exists | Test reference |
+|---|---|---|---|---|---|
+| QT-001 | [Shell] [U] Single-instance app; a second launch with `dash:` URIs hands them to the running instance and exits; a se… | partial | M2 | `dw-uri` implements dash-qt's URI/file acceptance rules (`PaymentServer::handleURIOrFile`); no single-instance or hand-off code | rust/crates/dw-uri/src/core.rs `handler_rejections` |
+| QT-002 | [Shell] [U] Separate settings and data per network (mainnet/testnet/devnet/regtest), chosen by flag or config (`-test`… | partial | M1 | `dw-engine` keeps one session and data dir per network (mainnet/testnet/devnet/regtest); no app flags or per-network settings | rust/crates/dw-engine/src/network.rs `dir_names_are_distinct_per_network`, `devnet_name_cannot_escape_data_root` |
+| QT-003 | [Shell] [U] Network-specific branding: icon tint per network; devnet label `[devnet: <name>]`; testnet units tDASH/mt… | partial | M1 | `dw-units` produces the testnet unit names (tDASH/mtDASH/μtDASH/tduffs); no icon tint or devnet label | rust/crates/dw-units/tests/golden.rs `format_with_unit_matches_dash_qt` |
+| QT-004 | [Shell] [U] First-run data/wallet directory chooser: default or custom path, free-space check, create the directory;… | not started | M2 |  |  |
+| QT-005 | [Shell] [U] Splash/loading screen with phase-based progress and an emergency quit key (Q) during startup. | not started | M2 |  |  |
+| QT-006 | [Shell] [U] Start minimized (`-min`) and hide the splash; `-resetguisettings`; `-lang`; `-windowtitle`; font and them… | not started | M2 |  |  |
+| QT-007 | [Shell] [U] Corrupt settings-file prompt with Reset / Abort. | not started | M2 |  |  |
+| QT-008 | [Shell] [U] Shutdown window that cannot be closed ("…is shutting down… Do not shut down the computer…"); graceful qui… | not started | M2 |  |  |
+| QT-009 | [Shell] [U] Start on system login (Windows Startup shortcut / Linux XDG autostart, launched with `-min`); hidden on m… | not started | M2 |  |  |
+| QT-010 | [Shell] [U] Fatal and runaway error dialogs, and a non-fatal "Internal error" dialog. | not started | M1 |  |  |
+| QT-011 | [Window] [U] Window title: `Dash Core - <wallet name> - <network>`; window geometry saved and restored. | not started | M2 |  |  |
+| QT-012 | [Window] [U] Tab bar: Overview, Send, Receive, Transactions, CoinJoin*, Masternodes*, Governance* (* optional), with… | not started | M2 |  |  |
+| QT-013 | [Window] [U] "No wallet loaded" panel with a "Create a new wallet" button. | not started | M2 |  |  |
+| QT-014 | [Window] [W] Wallet selector combo box (shown only with 2+ wallets); switching wallets updates title and pages. | not started | M2 |  |  |
+| QT-015 | [Window] [U] File menu items: Create, Open ▸, Close, Close All, Migrate, Backup, Restore, Open URI, Sign message, Ver… | not started | M2 |  |  |
+| QT-016 | [Window] [U] Settings menu: Encrypt Wallet, Change Passphrase, Show Recovery Phrase, Unlock Wallet, Lock Wallet, Disc… | not started | M2 |  |  |
+| QT-017 | [Window] [U] Window menu: Minimize (Ctrl+M), Sending addresses, Receiving addresses, and tools tabs Information/Conso… | not started | M2 |  |  |
+| QT-018 | [Window] [U] Help menu: Command-line options dialog, CoinJoin information dialog (only when CoinJoin is on), About Da… | not started | M2 |  |  |
+| QT-019 | [Window] [U] Drag and drop a `dash:` URI onto the window opens Send pre-filled. | not started | M2 |  |  |
+| QT-020 | [Status] [U] Status bar unit selector (DASH/mDASH/μDASH/duffs) that changes the display unit everywhere. | not started | M2 |  |  |
+| QT-021 | [Status] [W] HD status icon (green, tooltip "HD key generation is enabled"). | not started | M2 |  |  |
+| QT-022 | [Status] [W] Wallet lock icon with 4 states: unencrypted, unlocked, unlocked for mixing only (orange), locked; toolti… | not started | M2 |  |  |
+| QT-023 | [Status] [S] Proxy icon (shown when a proxy is set, tooltip `ip:port`); clicking opens Network options. | not started | M6 |  |  |
+| QT-024 | [Status] [S] Connections icon with 5 levels, plus states for 0 peers (blinking) and network disabled; menu to Show Pe… | not started | M1 |  |  |
+| QT-025 | [Status] [S] Sync spinner, then "synced" icon; progress text "Synchronizing with network… / Syncing Headers (x%)… / C… | partial | M1 | `dw-engine` starts and stops SPV and emits sync state events; no progress reporting verified against peers, no UI | rust/crates/dw-engine/tests/session_lifecycle.rs `spv_starts_and_stops_without_reachable_peers`; Tests/DashKitTests/EngineClientTests.swift `spvStartStopEmitsStateEvents` |
+| QT-026 | [Status] [F] Governance clock (moon phase) showing voting-period progress, superblock ETA and % of budget committed;… | not started | M3 |  |  |
+| QT-027 | [Status] [S] Sync overlay: blocks left, last block time, progress %, progress per hour, ETA, Hide button; appears aut… | not started | M1 |  |  |
+| QT-028 | [Tray] [U] Tray icon with tooltip; left-click shows or hides the window; option to hide the tray icon. | not started | M2 |  |  |
+| QT-029 | [Tray] [U] Tray / Dock menu: Show/Hide, Send, CoinJoin, Receive, Sign, Verify, Options, Information, Debug console, N… | not started | M2 |  |  |
+| QT-030 | [Tray] [U] Minimize to tray; minimize on close (Windows and Linux). | not started | M2 |  |  |
+| QT-031 | [Notify] [W] Desktop notification for each incoming or sent transaction: Date, Amount, Wallet (multiwallet only), Typ… | not started | M2 |  |  |
+| QT-032 | [Notify] [W] Notifications batched; summary "Received/Sent multiple transactions" when 100 or more are pending; none… | not started | M2 |  |  |
+| QT-033 | [Notify] [W] Option to suppress notifications for CoinJoin mixing transactions (`fShowCoinJoinPopups`, default on). | not started | M2 |  |  |
+| QT-034 | [Overview] [W] Balances: Available, Pending, Immature (shown only when non-zero), Total. | partial | M1 | `dw-engine` returns per-wallet balance buckets; never checked against a synced chain, no UI | rust/crates/dw-engine/tests/session_lifecycle.rs (balances read only) |
+| QT-035 | [Overview] [W] Watch-only balance column (Available/Pending/Immature/Total), shown when the wallet has watch-only scr… | not started | M2 |  |  |
+| QT-036 | [Overview] [W] Amounts truncated to the "Decimal digits" setting (default 2, range 2–8), with thin-space thousands se… | not started | M1 |  |  |
+| QT-037 | [Overview] [S] "(out of sync)" labels with explanatory tooltip until sync completes. | not started | M1 |  |  |
+| QT-038 | [Overview] [W] Recent transactions list (5, 6 or 8 rows depending on CoinJoin mode) that hides CoinJoin-internal, dus… | partial | M1 | `dw-units` implements privacy (discreet) formatting; no UI toggle | rust/crates/dw-units/tests/golden.rs `format_with_privacy_matches_dash_qt` |
+| QT-039 | [Overview] [W] Discreet mode: every digit shown as `#`, recent transactions hidden; applies to the Overview only; set… | not started | M1 |  |  |
+| QT-040 | [Overview] [U] Alert/warning banner showing node warnings (e.g. prerelease build). | not started | M2 |  |  |
+| QT-041 | [CoinJoin] [S] CoinJoin panel on Overview: Status (Enabled/Disabled, keys left in advanced mode), CoinJoin Balance, A… | not started | M3 |  |  |
+| QT-042 | [CoinJoin] [W] Mixing progress % computed exactly with dash-qt's formula (denominated weight 1, normalized weight = r… | not started | M3 |  |  |
+| QT-043 | [CoinJoin] [W] "Fully mixed" rule including the per-wallet CoinJoin salt coin-flip (rounds ≥ N, then ≥ N+3 or odd has… | not started | M3 |  |  |
+| QT-044 | [CoinJoin] [S] Start mixing: minimum balance 0.00140001 DASH, first-use hint, unlock-for-mixing-only prompt; Stop res… | not started | M3 |  |  |
+| QT-045 | [CoinJoin] [S] Full CoinJoin client protocol (dsa/dsi/dsf/dss/dsc/dssu/dsq/dstx/senddsq), masternode selection, BLS v… | not started | M3 |  |  |
+| QT-046 | [CoinJoin] [W] CoinJoin settings: enable (default on), rounds 2–16 (4), target 2–21M (1000), multi-session (off), ses… | not started | M3 |  |  |
+| QT-047 | [CoinJoin] [W] Advanced CoinJoin UI toggle, low-keys warning toggle, popups toggle. | not started | M3 |  |  |
+| QT-048 | [CoinJoin] [W] Mixing disabled when backups are disabled or failed, or the keypool is exhausted (legacy wallets); key… | not started | M3 |  |  |
+| QT-049 | [CoinJoin] [W] Per-wallet mixing state in multiwallet; CoinJoin options are global. | not started | M3 |  |  |
+| QT-050 | [CoinJoin] [W] Mixing-session status text (equivalent of `coinjoin status`) available to the user (beyond dash-qt, re… | not started | M3 |  |  |
+| QT-051 | [Send] [W] Separate "CoinJoin" send page that spends only fully mixed funds, shows the mixed balance, has no change o… | not started | M3 |  |  |
+| QT-052 | [Send] [W] Multiple recipients: Add Recipient, remove entry, Clear All. | not started | M1 |  |  |
+| QT-053 | [Send] [W] Recipient fields: Pay To (with address-book picker Alt+A and paste Alt+P), Label (auto-filled from the boo… | not started | M1 |  |  |
+| QT-054 | [Send] [W] Paste a `dash:` URI into Pay To to fill address, amount, label and message; the URI message is shown read-… | partial | M1 | `dw-uri` parses `dash:` URIs exactly like dash-qt and is exposed over FFI; no Send page | rust/crates/dw-uri/tests/golden.rs `parse_matches_dash_qt`; Tests/DashKitTests/ContractSurfaceTests.swift `paymentURIsRoundTrip` |
+| QT-055 | [Send] [W] Per-entry validation (invalid address, amount ≤ 0, dust about 546 duffs) that highlights the bad field. | not started | M1 |  |  |
+| QT-056 | [Send] [W] Amount field in the current unit; "," accepted as "."; never localized; 0–21M DASH; reformatted on blur. | partial | M1 | `dw-units` parses amounts with dash-qt's rules and is exposed over FFI; no amount field | rust/crates/dw-units/tests/golden.rs `parse_matches_dash_qt`; Tests/DashKitTests/ContractSurfaceTests.swift `unitsFormatAndParseThroughTheFFI` |
+| QT-057 | [Send] [S] Fee: Recommended (smart fee with confirmation target choices 2/4/6/12/24/48/144/504/1008 blocks shown as 5… | not started | M2 |  |  |
+| QT-058 | [Send] [W] Fee caps: maximum transaction fee 0.1 DASH and an "absurdly high fee" check. | not started | M2 |  |  |
+| QT-059 | [Send] [W] Confirmation dialog: recipients (max 10 listed), funds source (CoinJoin only / any), fee, size, fee rate,… | not started | M1 |  |  |
+| QT-060 | [Send] [W] Duplicate-recipient confirmation (Yes/Cancel), not a hard error. | not started | M1 |  |  |
+| QT-061 | [Send] [W] Full unlock requested before signing; mixing-only state restored afterwards. | not started | M1 |  |  |
+| QT-062 | [Send] [W] Exact error messages for invalid address, invalid amount, amount exceeds balance, total-with-fee exceeds b… | not started | M1 |  |  |
+| QT-063 | [Send] [W] After sending: recipient added to the address book (purpose send), form cleared, jump to Transactions with… | not started | M1 |  |  |
+| QT-064 | [Send] [S] InstantSend automatic (no toggle); InstantSend-locked inputs are spendable immediately; ChainLocked transa… | not started | M1 |  |  |
+| QT-065 | [Send] [W] "Spend unconfirmed change" option (default on). | not started | M1 |  |  |
+| QT-066 | [Send] [W] No RBF/bumpfee (Dash has none); nSequence = final−1; BIP69 input/output ordering. | not started | M1 |  |  |
+| QT-067 | [Send] [W] Send to P2SH addresses; reject Platform (DIP-18) addresses with "This is a Dash Platform address, not a Da… | not started | M1 |  |  |
+| QT-068 | [CoinCtl] [W] Coin control enable option; Send-page panel: Inputs…, automatic vs selected, Quantity/Bytes/Amount/Fee/… | not started | M2 |  |  |
+| QT-069 | [CoinCtl] [W] Coin Selection dialog: list mode (default) and tree mode, columns Amount/Label/Address/Mixing Rounds/Da… | not started | M2 |  |  |
+| QT-070 | [CoinCtl] [W] UTXO context menu: copy address/label/amount/`txid:vout`, Lock / Unlock unspent; locks persist across r… | not started | M2 |  |  |
+| QT-071 | [CoinCtl] [W] CoinJoin coins hidden by default on the regular page (Show all / Hide CoinJoin coins); the CoinJoin pag… | not started | M2 |  |  |
+| QT-072 | [CoinCtl] [W] Size and fee estimate (148 bytes/input, 34 bytes/output, +10), "≈" prefix, dust change added to fee, Co… | not started | M2 |  |  |
+| QT-073 | [CoinCtl] [W] Custom change address with validation and "Unknown change address" confirmation; "Keep custom change ad… | not started | M2 |  |  |
+| QT-074 | [CoinCtl] [W] Spent selected coins auto-unselected with a notice. | not started | M2 |  |  |
+| QT-075 | [Dust] [W] Dust attack protection option (threshold default 10000 duffs, range 1–1,000,000) that automatically locks… | not started | M2 |  |  |
+| QT-076 | [PSBT] [W] "Enable PSBT controls" option, which adds "Create Unsigned" to the send confirmation. | not started | M2 |  |  |
+| QT-077 | [PSBT] [W] Watch-only / no-private-key wallets: "Create Unsigned" PSBT copied to the clipboard and offered for saving… | not started | M2 |  |  |
+| QT-078 | [PSBT] [W] Load PSBT from file (binary or base64, under 100 MiB) or from clipboard (base64). | not started | M2 |  |  |
+| QT-079 | [PSBT] [S] PSBT Operations dialog: summary (sends, own address, fee, total, unsigned input count), status analysis te… | not started | M2 |  |  |
+| QT-080 | [PSBT] [W] External signer (HWI) support: script path option, "Sign on device" send button, external-signer wallets,… | not started | M6 |  |  |
+| QT-081 | [Receive] [W] Receive form: Label, Amount, Message (all optional), Create new receiving address, Clear; unlock and re… | not started | M1 |  |  |
+| QT-082 | [Receive] [W] Request payment dialog: QR code with the address drawn under it, URI, Address, Amount, Label, Message,… | not started | M1 |  |  |
+| QT-083 | [Receive] [W] Requested payments history stored in the wallet: columns Date/Label/Message/Requested; Show/Remove; con… | not started | M2 |  |  |
+| QT-084 | [Receive] [U] QR: ECC level L, URI limit 255 characters with error "Resulting URI too long…", right-click Save/Copy i… | not started | M1 |  |  |
+| QT-085 | [Receive] [W] URI generation `dash:<addr>?amount=<DASH 8dp>&label=&message=` in this exact order with percent-encoding. | partial | M1 | `dw-uri` writes URIs in dash-qt's order and encoding; `create_receive_request` is NotImplemented | rust/crates/dw-uri/tests/golden.rs `format_matches_dash_qt` |
+| QT-086 | [Tx] [W] All 19 transaction types with their exact display strings, including CoinJoin, Platform Transfer, Asset Lock… | not started | M2 |  |  |
+| QT-087 | [Tx] [S] Status model: Unconfirmed / Confirming (x of 6) / Confirmed / Conflicted / Abandoned / Immature / Not accept… | not started | M2 |  |  |
+| QT-088 | [Tx] [W] Table: Status, Watch-only, Date, Type, Address/Label, Amount (unit); amount in brackets when not counted tow… | not started | M2 |  |  |
+| QT-089 | [Tx] [W] Filters: watch-only, date (All/Today/This week/This month/Last month/This year/Range with an exclusive end d… | not started | M2 |  |  |
+| QT-090 | [Tx] [W] Context menu: copy address/label/amount/txid/raw transaction/full details, Show details, Abandon, Resend, Un… | not started | M2 |  |  |
+| QT-091 | [Tx] [W] Abandon transaction (unconfirmed, not in mempool, not InstantSend-locked) and Resend transaction (depth 0, n… | not started | M2 |  |  |
+| QT-092 | [Tx] [W] Transaction details view with every field in §4.6 (status strings, from/to, credit/debit/fee/net, message, c… | not started | M2 |  |  |
+| QT-093 | [Tx] [W] CSV export of the filtered view with the exact columns Confirmed, (Watch-only), Date (ISO), Type, Label, Add… | not started | M2 |  |  |
+| QT-094 | [Tx] [U] Third-party transaction URL setting (`\|`-separated, `%s` = txid), shown as "Show in <host>" menu entries. | not started | M2 |  |  |
+| QT-095 | [Addr] [W] Sending address book: New, Edit, Delete, Copy, Show QR, Export CSV (Label, Address), wildcard search. | not started | M2 |  |  |
+| QT-096 | [Addr] [W] Receiving address book: edit label only; no delete; Copy, QR, Export. | not started | M2 |  |  |
+| QT-097 | [Addr] [W] Address book selection mode (send picker, sign/verify pickers) with Choose and double-click. | not started | M2 |  |  |
+| QT-098 | [Addr] [W] Purpose handling (send/receive/unknown/other) and duplicate-address error messages matching §7. | not started | M2 |  |  |
+| QT-099 | [Sign] [W] Sign message: P2PKH address, message, base64 compact signature using magic "DarkCoin Signed Message:\n"; r… | partial | M2 | `dw-message` signs like Core (`signmessagewithprivkey`); FFI `NetworkSession.sign_message` is NotImplemented (needs the vault) | rust/crates/dw-message/tests/golden.rs `dashd_signatures_reproduce_and_verify` |
+| QT-100 | [Sign] [U] Verify message: address, message, signature; results Verified / bad base64 / digest mismatch / verificatio… | partial | M2 | `dw-message` verifies like Core with dash-qt's result strings, exposed over FFI; no dialog | rust/crates/dw-message/tests/golden.rs `dashd_verify_results`; Tests/DashKitTests/ContractSurfaceTests.swift `verifyMessageUsesDashCoreRules` |
+| QT-101 | [WalletLC] [W] Multiwallet: open any wallet in the wallet directory, close, close all; load-on-startup list maintaine… | not started | M2 |  |  |
+| QT-102 | [WalletLC] [W] Create Wallet dialog: name, Encrypt (default on), Disable Private Keys, Make Blank Wallet, Descriptor… | not started | M1 |  |  |
+| QT-103 | [WalletLC] [W] After create: mnemonic display (masked, show/hide) followed by verification of 3 random words; cancell… | not started | M1 |  |  |
+| QT-104 | [WalletLC] [W] Restore from mnemonic (12/15/18/21/24 English words) with optional passphrase, compatible with Core's… | partial | M1 | `dw-engine` restores from valid BIP39 phrases; Core quirks exist in `dw-compat::bip39core` but are not wired in; passphrase import is NotImplemented | rust/crates/dw-compat/tests/bip39_golden.rs `seeds_match_core_and_portability_flag_is_right`; rust/crates/dw-engine/tests/session_lifecycle.rs `imported_wallet_id_is_deterministic_and_network_scoped` |
+| QT-105 | [WalletLC] [S] Restore scan of m/44'/c'/0'/0, m/44'/c'/0'/1 and m/9'/c'/4'/0'/0 with a lookahead of at least 1000, ex… | not started | M1 |  |  |
+| QT-106 | [WalletLC] [W] Restore from a dash-qt backup file: SQLite descriptor and legacy BDB `wallet.dat` (detect format; decr… | not started | M2/M6 |  |  |
+| QT-107 | [WalletLC] [W] Import a dash-qt `dumpwallet` file: rebuild HD from the mnemonic/seed/xprv header; import WIF keys wit… | partial | M2 | `dw-compat::dump` parses and rewrites dumpwallet files byte-identically; no import into a wallet | rust/crates/dw-compat/tests/dump_golden.rs `dashd_dumps_parse_and_rewrite_byte_identically` |
+| QT-108 | [WalletLC] [W] Import from raw `hdseed` hex, xprv, or `listdescriptors true` output. | not started | M2 |  |  |
+| QT-109 | [WalletLC] [W] Export for dash-qt: mnemonic+passphrase (with `upgradetohd` instructions), dumpwallet-format file, imp… | partial | M2 | dumpwallet-format writer exists in `dw-compat::dump`; no export flow | rust/crates/dw-compat/tests/dump_golden.rs `dashd_dumps_parse_and_rewrite_byte_identically` |
+| QT-110 | [WalletLC] [W] Backup Wallet to a file chosen by the user (`.dat`, either format). | not started | M2 |  |  |
+| QT-111 | [WalletLC] [W] Encrypt wallet (warning text, confirmation, keeps the same seed), change passphrase, unlock, lock; pas… | not started | M1 |  |  |
+| QT-112 | [WalletLC] [W] Unlock for mixing only: a distinct wallet state that allows CoinJoin but not sending, re-prompts for f… | not started | M3 |  |  |
+| QT-113 | [WalletLC] [W] Show Recovery Phrase (behind full unlock), with "No Recovery Phrase" and non-HD cases; decide whether… | not started | M1 |  |  |
+| QT-114 | [WalletLC] [W] Watch-only / no-private-key wallets, and blank wallets; HD upgrade of a blank or non-HD wallet (`upgra`… | partial | M2 | `dw-compat` reproduces `upgradetohd` seed results; no watch-only/blank wallets | rust/crates/dw-compat/tests/bip39_golden.rs `dashd_upgradetohd_results` |
+| QT-115 | [WalletLC] [W] Migrate a legacy wallet to descriptor (when importing legacy files), preserving the mnemonic and creat… | not started | M6 |  |  |
+| QT-116 | [WalletLC] [W] Automatic wallet backups (legacy-style, rotating 10, `<name>.YYYY-MM-DD-HH-MM`) and a "Show Automatic… | not started | M2 |  |  |
+| QT-117 | [WalletLC] [S] Rescan from wallet birthday, and full rescan, with progress and cancel. | not started | M2 |  |  |
+| QT-118 | [MN] [S] Masternodes tab (opt-in setting): list browsable without a wallet; type filter All/Regular/Evo/Shared; text… | not started | M3 |  |  |
+| QT-119 | [MN] [F] List columns: status (active/banned for duration), Service, Type, PoSe Score, Registered, Last Paid, Next Pa… | not started | M3 |  |  |
+| QT-120 | [MN] [S] Owned detection (collateral, owner, voting, payout, operator payout, shared owner/refund keys). | not started | M3 |  |  |
+| QT-121 | [MN] [U] Context menu: Copy ProTx Hash, Copy Collateral Outpoint, Filter by Collateral/Payout/Owner/Voting address, p… | not started | M3 |  |  |
+| QT-122 | [MN] [F] Details dialog with every field in §10.1, including shares, early period, Platform addresses and PoSe heights. | not started | M3 |  |  |
+| QT-123 | [MN] [S] Register Masternode/EvoNode wizard: type, collateral (fund new / existing UTXO / external with message signi… | not started | M3 |  |  |
+| QT-124 | [MN] [W] Operator secret save gate: show the secret and `masternodeblsprivkey=` line, require typing the last 4 chara… | not started | M3 |  |  |
+| QT-125 | [MN] [S] Update Service (revives PoSe-banned nodes), Update Registrar (owner key), Revoke (with reason), each requiri… | not started | M3 |  |  |
+| QT-126 | [MN] [S] Shared masternode creation (2–8 shares, ≥100 DASH each, early period and penalty) with the clipboard/file JS… | not started | M3 |  |  |
+| QT-127 | [MN] [S] Shared masternode maintenance: change reward address, rotate keys (multi-party), dissolve now / together, st… | not started | M3 |  |  |
+| QT-128 | [Gov] [F] Governance tab (opt-in setting; disabled when the node has governance disabled): Active / My Proposals; tit… | not started | M3 |  |  |
+| QT-129 | [Gov] [F] Proposal columns: status, Title, Amount, Start, End, Votes (Y/N/A plus margin), My Votes (weighted), Hash;… | not started | M3 |  |  |
+| QT-130 | [Gov] [U] Proposal context menu: Copy Raw JSON, Open URL (http/https only, with external-link warning), Vote Yes/No/A… | not started | M3 |  |  |
+| QT-131 | [Gov] [S] Vote dialog: outcome, choose which masternodes (by voting key) to vote with, weight summary, current votes;… | not started | M3 |  |  |
+| QT-132 | [Gov] [S] Create Proposal wizard: name (≤40, `[-_a-z0-9]`), URL, payment date (12 superblocks), payments 1–12, addres… | not started | M3 |  |  |
+| QT-133 | [Gov] [S] Resume Proposals: list pending wallet proposals, poll confirmations, Broadcast at ≥1 confirmation (`gobject`… | not started | M3 |  |  |
+| QT-134 | [Gov] [F] Governance info panel: cycles, last/next superblock, voting cutoff, MN/EvoNode participation, passing thres… | not started | M3 |  |  |
+| QT-135 | [Options] [U] Options dialog with tabs Main, Wallet, CoinJoin, Network, Display, Appearance; OK applies, Cancel rever… | not started | M2 |  |  |
+| QT-136 | [Options] [U] Main tab: start on login, show tray icon, minimize to tray, minimize on close (plus node-only prune/dbc… | not started | M2 |  |  |
+| QT-137 | [Options] [W] Wallet tab: subtract fee by default, coin control, PSBT controls, keep change address, spend unconfirme… | not started | M2 |  |  |
+| QT-138 | [Options] [S] Network tab: SOCKS5 proxy IP and port (numeric IP only, validated), separate Tor onion proxy, read-only… | not started | M2 |  |  |
+| QT-139 | [Options] [U] Display tab: language (21 locales plus system default), Show Masternodes Tab, Show Governance Tab, Show… | not started | M2 |  |  |
+| QT-140 | [Options] [U] Appearance: themes Light (default) / Dark / Traditional with live preview; font family Montserrat / Sys… | not started | M2 |  |  |
+| QT-141 | [Options] [U] Reset Options with confirmation, backup of the old settings, reset to defaults, and quit. | not started | M2 |  |  |
+| QT-142 | [Options] [U] Import existing dash-qt preferences (QSettings + settings.json keys in §17) on first run (optional, rec… | not started | M5 |  |  |
+| QT-143 | [Tools] [S] Information tab: client version, user agent, data directory, startup time, network name, connections (in/… | not started | M2 |  |  |
+| QT-144 | [Tools] [F] Information: mempool count and usage; Network sub-tab: Credit Pool, InstantSend counters, MN/EvoNode coun… | not started | M3 |  |  |
+| QT-145 | [Tools] [F] RPC console with wallet selector, history, sensitive-command redaction, tab completion, nested-call and ``… | not started | M2/M3 |  |  |
+| QT-146 | [Tools] [S] Network traffic graph: ranges 5m–24h (default 30m), Reset, received/sent kB/s and totals. | not started | M6 |  |  |
+| QT-147 | [Tools] [S] Peers table (Peer, Age, Address, Direction, Type, Network, Ping, Sent, Received, User Agent) with detail… | not started | M2 |  |  |
+| QT-148 | [Tools] [S] Repair tab: Rescan / Rescan (full); Rebuild Index equivalent ("reset chain data / resync"). | not started | M2 |  |  |
+| QT-149 | [URI] [U] `dash:` URI parsing identical to Core (label/message/amount in DASH, IS ignored, `req-*` unknown rejects th… | partial | M1 | `dw-uri::core` matches dash-qt's parser on golden vectors and is exposed over FFI; not wired into an app | rust/crates/dw-uri/tests/golden.rs `parse_matches_dash_qt`; rust/crates/dw-ffi/src/api/uri.rs `uri_round_trip_and_classification` |
+| QT-150 | [URI] [U] Register the `dash:` URI scheme with the OS; Open URI dialog; URIs always open the regular Send page. | not started | M2 |  |  |
+| QT-151 | [I18n] [U] Translations for the same 21 locales (ar, bg, de, en, es, fi, fr, it, ja, ko, nl, pl, pt, ro, ru, sk, th,… | not started | M5 |  |  |
+| QT-152 | [Units] [U] Units DASH/mDASH/μDASH/duffs (8/5/2/0 decimals), thin-space grouping, "." decimal, 18-digit parse limit,… | partial | M1 | `dw-units` matches dash-qt formatting/parsing for all units, exposed over FFI; no unit selector or persisted display unit | rust/crates/dw-units/tests/golden.rs; rust/crates/dw-ffi/src/api/units.rs `formats_like_dash_qt` |
+| QT-153 | [Help] [U] CoinJoin information explainer and command-line/help dialog equivalent; About dialog with version and lice… | not started | M2 |  |  |
+| QT-154 | [Fmt] [W] Wallet encryption compatible with Core when writing Core-format files (master key with SHA-512 key derivati… | not started | M6 |  |  |
+
+## iOS checklist (IOS)
+
+| ID | Item (research checklist) | Status | Milestone | What exists | Test reference |
+|---|---|---|---|---|---|
+| IOS-001 | Intro / onboarding carousel (Welcome, Pay with Ease, More Control) with demo mode | not started | M5 |  |  |
+| IOS-002 | Create new wallet with 12- or 24-word phrase (mnemonic persisted and verified before the wallet goes live) | partial | M1 | `dw-engine` creates 12/24-word wallets and persists them; the vault, backup and verification flow are not implemented | rust/crates/dw-engine/tests/session_lifecycle.rs `created_wallet_survives_engine_restart`; Tests/DashKitTests/EngineClientTests.swift `createWalletDeliversEventsAndPersistsAcrossRestart` |
+| IOS-003 | Recovery-phrase backup warnings + show phrase | not started | M1 |  |  |
+| IOS-004 | Phrase verification by ordered word-chip selection + "Verified Successfully" | not started | M1 |  |  |
+| IOS-005 | Backup reminder 24 h after first funds if unbacked; Backup shortcut | not started | M2 |  |  |
+| IOS-006 | Screenshot / screen-capture warning while the phrase is visible | not started | M2 |  |  |
+| IOS-007 | Restore from 12/15/18/21/24-word phrase, all 10 BIP39 languages, per-word errors | partial | M1 | `dw-engine` restores from a valid BIP39 phrase in any wordlist; no per-word errors, no UI | rust/crates/dw-engine/tests/session_lifecycle.rs `imported_wallet_id_is_deterministic_and_network_scoped`; Tests/DashKitTests/EngineClientTests.swift `importIsDeterministic` |
+| IOS-008 | Phrase repair: find one wrong word / 1–2 missing words via checksum + Insight history + edit-distance suggestions, ca… | not started | M5 |  |  |
+| IOS-009 | Existing-wallet detection on reinstall (Keep / Delete All with typed acceptance) | not started | M2 |  |  |
+| IOS-010 | Set / confirm 4-digit PIN | not started | M1 |  |  |
+| IOS-011 | Biometric enrollment (Touch ID / Windows Hello where available) with default 0.5 DASH limit | not started | M2 |  |  |
+| IOS-012 | PIN lockout policy (3 free, exponential waits, disabled at 8) with tamper-resistant secure time | not started | M2 |  |  |
+| IOS-013 | Lock screen with PIN pad, biometric unlock, Quick Receive, Scan to Send, Forgot PIN | not started | M1 |  |  |
+| IOS-014 | Forgot PIN → reset PIN by entering a matching recovery phrase | not started | M2 |  |  |
+| IOS-015 | Auto-lock timer (Immediately / 1 m / 5 m / 1 h / 24 h) and Auto Logout toggle | not started | M2 |  |  |
+| IOS-016 | Spending confirmation toggle + biometric spending limit (0 / 0.1 / 0.5 / 1 / 5 DASH) + security-level meter + reset t… | not started | M2 |  |  |
+| IOS-017 | Shared auth gate on every sensitive action (send, view phrase, keys, voting, wipe…) | not started | M1 |  |  |
+| IOS-018 | Wallet lifecycle overlay (opening / switching network / switching / adding / removing / wiping) with Retry, Switch Ba… | not started | M1 |  |  |
+| IOS-019 | Home balance hero: Core + Shielded (+ Platform in advanced mode), fiat line, partial / unknown states | not started | M1 (Platform/shielded parts M4) |  |  |
+| IOS-020 | Hide / show balance (persisted, autohide option, first-use hint) | not started | M1 (Platform/shielded parts M4) |  |  |
+| IOS-021 | Balance breakdown card (Transparent / Platform / Shielded) with per-balance info sheets | not started | M1 (Platform/shielded parts M4) |  |  |
+| IOS-022 | Testnet / devnet badge and testnet logo | not started | M1 (Platform/shielded parts M4) |  |  |
+| IOS-023 | Sync status: failure / no-connection banners, per-phase progress dialog, connected peers, Change peers after a stall | not started | M1 |  |  |
+| IOS-024 | Exchange-rate stale / failed / volatile warnings | not started | M5 |  |  |
+| IOS-025 | Customisable 4-slot shortcut bar with state-dependent defaults and all shortcut actions | not started | M2 (integration actions M5) |  |  |
+| IOS-026 | Time-skew detection dialog | not started | M5 |  |  |
+| IOS-027 | Transaction history grouped by day with paging | not started | M2 |  |  |
+| IOS-028 | History filters (Sent, Received, Rewards, Masternode, Gift card, Shielded sent / received; All / Only) | not started | M2 |  |  |
+| IOS-029 | Tx rows with merchant / service / contact icons, route labels for internal transfers, status labels | not started | M2 |  |  |
+| IOS-030 | Grouped rows: CoinJoin mixing per day, CoinJoin withdrawals, CrowdNode | not started | M2 |  |  |
+| IOS-031 | Transaction details (addresses, fee incl. Insight lookup, date, status, contact, masternode addresses) | not started | M2 |  |  |
+| IOS-032 | Tx details actions: copy txid, open in Insight / Blockchair, raw tx view / copy hex, Maya / NEAR explorer for swaps | not started | M2 |  |  |
+| IOS-033 | Rebroadcast / complete stuck asset-lock transfers | not started | M4 |  |  |
+| IOS-034 | Remove unconfirmed tx if not on network + bulk drop-and-rescan | not started | M2 |  |  |
+| IOS-035 | Shielded and Platform activity rows + details (incl. shielded memo) | not started | M4 |  |  |
+| IOS-036 | Tax category per tx (cycle Income / Transfer In, Expense / Transfer Out) + address pre-tagging by integrations | not started | M5 |  |  |
+| IOS-037 | One-time "Reclassify your transactions" intro | not started | M5 |  |  |
+| IOS-038 | Historical fiat rate stamped per transaction | not started | M5 |  |  |
+| IOS-039 | CSV tax export (exact column set, mixing excluded, requires synced) | not started | M5 |  |  |
+| IOS-040 | ZenLedger portfolio export | not started | M5 |  |  |
+| IOS-041 | Payments sheet with Send / Receive / Transfer entry | not started | M1 |  |  |
+| IOS-042 | Send to Dash address (type / paste / clipboard suggestion / QR) with Core / Platform / Shielded address classification | partial | M1 | `dw-uri::keyio` classifies Core/Platform/shielded addresses; no Send screen | rust/crates/dw-uri/tests/golden.rs `address_cases_match_dashd`, `key_io_valid` |
+| IOS-043 | QR scanning (desktop: webcam, image file, screen region, clipboard image) | not started | M2 |  |  |
+| IOS-044 | Amount entry with DASH ↔ fiat toggle, fee-aware Max per route, show / hide balance | not started | M1 |  |  |
+| IOS-045 | Source-balance picker and all 8 send routes (Core / Platform / Shielded combinations) | not started | M1 (Core) / M4 (other routes) |  |  |
+| IOS-046 | Core send confirm with exact fee and total; broadcast only on Confirm | not started | M1 |  |  |
+| IOS-047 | Non-Core send confirm with step progress and submitted-unconfirmed state | not started | M4 |  |  |
+| IOS-048 | dash: / pay: / dashwallet: URI handling incl. BIP21 params; OS protocol-handler registration | partial | M1/M2 | `dw-uri::ext` parses `dash:`/`pay:`/`dashwallet:` strings and BIP21 params; no OS handler registration | rust/crates/dw-uri/tests/ext_cases.rs `payment_strings`, `builder` |
+| IOS-049 | BIP70 / BIP72 payment requests (verify, expiry, network, pay, ACK) | not started | M5 |  |  |
+| IOS-050 | Pay to DashPay contact (DIP-15) with unknown-outcome per-contact lock | not started | M4 |  |  |
+| IOS-051 | Send guards (initial-sync block, offline block) and full error-copy set | not started | M1 |  |  |
+| IOS-052 | Post-send success details screen | not started | M1 |  |  |
+| IOS-053 | Receive: Core / Shielded (+ Platform in ADV) address toggle, QR, copy, share | not started | M1 (Core) / M4 (Platform, shielded) |  |  |
+| IOS-054 | Core receive address rotation ("Receive another") and live incoming-payment watcher with Received card | not started | M1 (Core) / M4 (Platform, shielded) |  |  |
+| IOS-055 | Request a specific amount (QR with amount + username, share, paid detection) | not started | M1 (Core) / M4 (Platform, shielded) |  |  |
+| IOS-056 | (decide) Sweep paper wallet / import private key — removed on iOS | not started | M5 (Insight) / M6 (filters) |  |  |
+| IOS-057 | CoinJoin recovery scan + "Move mixed coins" to Dash Wallet or Shielded (chunked sweep), entries in Home, Settings and… | not started | M3 |  |  |
+| IOS-058 | (decide) CoinJoin mixing — discontinued on iOS | not started | M3 |  |  |
+| IOS-059 | Shielded balance, sync spinner, Shielded Sync Info | not started | M4 |  |  |
+| IOS-060 | Shield from Core / Platform / CoinJoin; unshield; shielded → shielded / Platform; shielded Max | not started | M4 |  |  |
+| IOS-061 | Finish stuck shielded transfer ("Pending — tap to finish") | not started | M4 |  |  |
+| IOS-062 | Internal Transfer between Core / Shielded / Platform / identity credits, privacy tip, timing sheet | not started | M4 |  |  |
+| IOS-063 | Advanced mode toggle (auto-enable on first Platform balance) + info sheet | not started | M4 |  |  |
+| IOS-064 | Platform (DIP-17) address balance and BLAST sync | not started | M4 |  |  |
+| IOS-065 | Join DashPay banner states + intro + voting info + shielded-funding readiness checklist | not started | M4 |  |  |
+| IOS-066 | Username form: rules, debounced availability, contested detection, contest precheck, direct-buy-if-listed | not started | M4 |  |  |
+| IOS-067 | Identity + username registration funded from Core, Platform addresses, Shielded pool or invitation; resumable | not started | M4 |  |  |
+| IOS-068 | Contested-name voting-period tracking, temporary username, request status screen (contenders, tallies, deadline) | not started | M4 |  |  |
+| IOS-069 | Identity profile sheet (credits, names, top-up from Core / Platform / Shielded) | not started | M4 |  |  |
+| IOS-070 | Withdraw identity credits to Core / transfer to own Platform address | not started | M4 |  |  |
+| IOS-071 | Identities screen (list, set main, keys, refresh, find, get username) | not started | M4 |  |  |
+| IOS-072 | Contacts tab (contacts, pending requests, search, hidden, my identity card, Enable DashPay keys, FAQ) | not started | M4 |  |  |
+| IOS-073 | Add contact by username search or QR; My QR | not started | M4 |  |  |
+| IOS-074 | Contact profile: accept / ignore, pay, payment activity, alias / note / hide | not started | M4 |  |  |
+| IOS-075 | DashPay notifications screen (bell, unread count, New / Earlier / Pending, inline accept) | not started | M4 |  |  |
+| IOS-076 | Edit profile: display name, about, avatar via Gravatar / URL / camera / file with crop + upload (Imgur) | not started | M4 |  |  |
+| IOS-077 | Claim invitation (paste / scan / link, inviter preview, claimed check, auto contact request); invitation links pre-wa… | partial | M4 | `dw-uri::deeplink` routes invitation links; nothing else | rust/crates/dw-uri/tests/ext_cases.rs `invitations` |
+| IOS-078 | (decide) Create / share / reclaim invitations — removed on iOS, SDK supports it | not started | M4 |  |  |
+| IOS-079 | Contested-username voting: contests list, search / sort, detail, approve / abstain / lock, bulk vote, node selection,… | not started | M4 |  |  |
+| IOS-080 | Masternodes list + detail (status, keys, collateral, claimable balance, epoch blocks) | not started | M3 |  |  |
+| IOS-081 | Evonode status request, evonode credit withdrawal, Unban (ProUpServTx) with pending state | not started | M3 |  |  |
+| IOS-082 | Track any masternode + attach keys (secure vault), tracked withdraw / unban | not started | M3 |  |  |
+| IOS-083 | Masternode keychain viewer (owner / voting / operator BLS / ed25519; WIF, pubkeys, node IDs, usage) | not started | M3 |  |  |
+| IOS-084 | Username marketplace (find / my names / browse / purchases; buy, list, reprice, delist, transfer, history, request co… | not started | M4 |  |  |
+| IOS-085 | DashConnect: dash-key login, dash-st state transitions, approve-connection sheet, connections list (test networks) | partial | M4 | `dw-uri::deeplink` routes DashConnect links; nothing else | rust/crates/dw-uri/src/deeplink.rs `dashconnect_first` |
+| IOS-086 | DashConnect token purchase approval sheet | not started | M4 |  |  |
+| IOS-087 | Buy & Sell portal (Topper, Uphold, Coinbase, Dash DEX ordering + balances, auth-gated, geo rules) | not started | M5 |  |  |
+| IOS-088 | Topper buy widget (signed JWT, sandbox on testnet) | not started | M5 |  |  |
+| IOS-089 | Uphold: OAuth link, DASH card balance, transfer to wallet with OTP, logout tutorial | not started | M5 |  |  |
+| IOS-090 | Coinbase: OAuth link, balance, buy Dash (min / fee / payment method), transfer both directions with 2FA, error mappin… | not started | M5 |  |  |
+| IOS-091 | CrowdNode: tx-based signup, deposit, signed-message withdraw with limits, online-account link, APY, balance reminder… | not started | M5 |  |  |
+| IOS-092 | Dash DEX sell flow (coin select, address incl. linked-exchange address, quote / convert, 10 s preview, memo tx, status) | not started | M5 |  |  |
+| IOS-093 | Dash DEX buy flow (coin, amount, refund address, deposit QR) | not started | M5 |  |  |
+| IOS-094 | Swap order persistence, 30 s tracking, 24 h expiry, notifications, pending-IS gate | not started | M5 |  |  |
+| IOS-095 | Explore menu (Where to Spend, ATMs, Staking, Username Marketplace, Buy & Sell, Get Test Dash) | not started | M5 |  |  |
+| IOS-096 | Explore DB sync from Firebase Storage (checksum-zipped, per network, 24 h) | not started | M5 |  |  |
+| IOS-097 | Merchants: Online / Nearby / All, map + list, FTS search, all locations | not started | M5 |  |  |
+| IOS-098 | ATMs: All / Buy / Sell / Buy & Sell, search | not started | M5 |  |  |
+| IOS-099 | Explore filters (payment method, sort, radius, territory, denomination type) | not started | M5 |  |  |
+| IOS-100 | POI details (contact, directions, pay, buy gift card with provider picker) | not started | M5 |  |  |
+| IOS-101 | DashSpend CTX: email OTP login, live discount, BIP70-paid gift card purchase | not started | M5 |  |  |
+| IOS-102 | DashSpend PiggyCards: email OTP signup / login, denominations, order + pay, RU / CU geoblock | not started | M5 |  |  |
+| IOS-103 | Gift card details (polling, number, PIN, generated / decoded barcode, how-to) + stored gift cards | not started | M5 |  |  |
+| IOS-104 | Settings: local currency (searchable), default from OS locale | not started | M2/M5 |  |  |
+| IOS-105 | Settings: notifications toggle reflecting OS permission | not started | M2/M5 |  |  |
+| IOS-106 | Settings: network switch mainnet / testnet (/ devnet in dev builds) + Devnet settings | partial | M1 | `dw-engine` runs separate per-network sessions; no settings screen or switch flow | rust/crates/dw-engine/src/network.rs `dir_names_are_distinct_per_network` |
+| IOS-107 | Settings: About (version, network, Explore sync status, support, GitHub, tech-info / log export) | not started | M2 |  |  |
+| IOS-108 | Security: view recovery phrase (multi-wallet picker), change PIN, biometrics toggle, autohide balance | not started | M2 |  |  |
+| IOS-109 | Security: reset / wipe wallet with phrase confirmation and full cleanup (incl. integrations) | not started | M2 |  |  |
+| IOS-110 | Wallets (multi-wallet): list, switch, rename, view phrase, remove, add (create / import), accounts view | not started | M2 |  |  |
+| IOS-111 | Tools: extended public key with QR / copy / share | not started | M2 |  |  |
+| IOS-112 | Tools: export logs (zip) + Support email with logs | not started | M2 |  |  |
+| IOS-113 | Sync Info: Core sync status, rescan (creation / height / full), edit birth height, drop unconfirmed | not started | M2 |  |  |
+| IOS-114 | Sync Info: Platform, DashPay and Shielded sync status screens (developer toggle) | not started | M4 |  |  |
+| IOS-115 | Storage explorer / debug tools behind a developer toggle | not started | M5 |  |  |
+| IOS-116 | Local notifications: incoming payments (catch-up), contact requests / accepts, swap results, CrowdNode events, inacti… | not started | M2 (tx) / M5 (rest) |  |  |
+| IOS-117 | Menu-bar / tray companion (balance, receive QR, request amount, scan / pay, last tx) replacing Watch / Today widget | not started | M2 |  |  |
+| IOS-118 | Localization: 43 locales via Transifex dash-mobile-wallets, English-key strings, plurals, RTL | not started | M5 |  |  |
+| IOS-119 | Visual parity: SharedAssets + DashUIKit color tokens (light / dark), SF-style type scale, DashUIKit component set, ap… | partial | M1→M5 | `DesignTokens` colours, type scale, spacing, radii and icons generated from DashUIKit/SharedAssets; no DashUIKit components or screens | Tests/DesignTokensTests (ColorTokenTests, GeneratedArtifactsTests) |
+| IOS-120 | Accessibility labels on icon-only controls (iOS ACCESSIBILITY.md rule) | not started | M5 |  |  |
+| IOS-121 | Testnet faucet shortcuts (in-app PoW faucet + web faucet fallback) | not started | M2 |  |  |
+| IOS-122 | Inactivity / announcement channel (replacement for CloudKit in-app messaging) (decide) | not started | post-1.0 |  |  |
+| IOS-123 | Secure storage of seed and PIN in the OS secret store, with a decision on PIN-derived seed encryption for desktop (de… | not started | M1 |  |  |

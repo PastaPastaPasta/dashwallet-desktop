@@ -80,7 +80,30 @@ variant, checks the committed bindings, and runs `DashKitTests`,
 `DesignTokensTests` and `RepoChecksTests` with `DWD_HEADLESS=1`. That variable
 removes the SwiftCrossUI targets from the package graph (the dependency stays
 declared, so `Package.resolved` is unchanged), so no GTK is needed.
-`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` caps cargo jobs.
+`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` caps cargo jobs;
+`DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and inside the container.
+
+## Running the app
+
+There is no runnable wallet UI yet. The M1 screens (onboarding, lock, home, send, receive, transactions)
+had not landed on `main` at the M1 integration point; see [`docs/parity.md`](docs/parity.md).
+
+- **macOS.** There is no macOS app target or Xcode project yet. `MacUI` is a placeholder SwiftUI
+  library and builds with `swift build`; nothing launches it.
+- **Linux (and macOS, for development).** `swift run dash-wallet` builds and runs the SwiftCrossUI
+  executable (`DashWalletCross`). Today it only prints `the SwiftCrossUI app is not implemented yet`
+  and exits; it proves the target graph links. Building it on Linux needs GTK 4 development packages
+  and must not set `DWD_HEADLESS=1` (headless mode removes the target). The G2 probe image has them:
+  `docker build -f ci/linux/Dockerfile.swift-gtk -t dwd-linux-swift-gtk ci/linux`. Running the
+  executable on Linux was not tried at the M1 integration point.
+- **Demo mode.** Not implemented. DESIGN-opus §4.2 plans a fixture mode that powers the demo
+  (IOS-001, milestone M5).
+- **CLI.** `dwcli` (above) is the only way to drive the engine today.
+
+## Parity
+
+[`docs/parity.md`](docs/parity.md) lists every dash-qt (QT-xxx) and iOS (IOS-xxx) checklist item with its
+status, milestone and test reference.
 
 ## Checks
 
