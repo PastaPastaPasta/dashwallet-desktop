@@ -1621,6 +1621,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-vault"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "chacha20poly1305",
+ "dashcore",
+ "dw-compat",
+ "dw-message",
+ "dw-uri",
+ "getrandom 0.2.17",
+ "hex",
+ "key-wallet",
+ "platform-wallet-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
 name = "dwcli"
 version = "0.1.0"
 dependencies = [
