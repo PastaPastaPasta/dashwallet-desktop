@@ -10,5 +10,7 @@ Artifacts/
 # Local build logs and measurement helpers
 .build-logs/
 .swiftpm/
+# XcodeGen output (Apps/macOS/project.yml)
+*.xcodeproj/
 # SwiftPM / Xcode derived data from local builds
 .derived/
