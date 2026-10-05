@@ -140,6 +140,10 @@ public protocol AuthenticationGating: AnyObject {
     func lockStateChanges() -> AsyncStream<VaultLockState>
     func requirement(for purpose: GrantPurpose) -> CredentialRequirement
     func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant
+    /// Withdraws a grant that will not be used (engine `Vault.revoke_grant`;
+    /// unknown or already redeemed ids are ignored). Send calls it when the
+    /// user cancels between authorizing and preparing (review M-7).
+    func revoke(_ grant: AuthGrant)
     func unlock(passphrase: any SecretBuffer, scope: UnlockScope) async throws(ServiceError)
     func lock() async throws(ServiceError)
 }

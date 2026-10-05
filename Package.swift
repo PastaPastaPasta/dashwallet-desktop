@@ -71,6 +71,9 @@ var targets: [Target] = [
     ),
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
+    // View-model flows against in-memory fakes of the WalletRuntime contracts.
+    // testdata/amount_format.json is read by path, not bundled.
+    .testTarget(name: "WalletFeaturesTests", dependencies: ["WalletFeatures", "WalletRuntime"]),
     // macOS-only: the sources compile to nothing elsewhere. Reference PNGs are read from
     // __Snapshots__ by path, not bundled.
     .testTarget(
