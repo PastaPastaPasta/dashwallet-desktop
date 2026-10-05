@@ -13,6 +13,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       libclang-dev clang libssl-dev pkg-config cmake make perl unzip curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+        --component rustfmt --component clippy \
     && rustc --version && cargo --version
 RUN arch=$(uname -m | sed 's/aarch64/aarch_64/') \
     && curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${arch}.zip" \
