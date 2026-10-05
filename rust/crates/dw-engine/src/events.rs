@@ -47,6 +47,12 @@ pub enum EngineEvent {
         code: NoticeCode,
         detail: String,
     },
+    /// The vault of `network` changed lock state (created, unlocked,
+    /// locked, encrypted).
+    VaultLockState {
+        network: DashNetwork,
+        state: dw_vault::LockState,
+    },
 }
 
 /// Non-fatal conditions the UI may surface.

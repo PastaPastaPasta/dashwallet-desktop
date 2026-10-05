@@ -17,6 +17,8 @@ dpp = { workspace = true }
 dashcore = { workspace = true }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
+dw-uri = { workspace = true }
+dw-vault = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -24,6 +26,9 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
+dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+dw-message = { workspace = true }
 tempfile = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests.
 tokio = { workspace = true, features = ["test-util"] }

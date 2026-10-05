@@ -1,3 +1,4 @@
+use dw_vault::{SignerError, VaultError};
 use platform_wallet::PlatformWalletError;
 use platform_wallet_storage::WalletStorageError;
 
@@ -54,6 +55,21 @@ pub enum EngineError {
     /// than the gap limit lets a restore find.
     #[error("receive gap limit reached")]
     GapLimit,
+    /// The vault refused the operation (no vault, locked, bad grant, …).
+    #[error("vault: {0}")]
+    Vault(VaultError),
+    /// The vault signer refused or failed.
+    #[error("signer: {0}")]
+    Signer(SignerError),
+    /// Not a Dash address of this network.
+    #[error("invalid address: {0}")]
+    InvalidAddress(String),
+    /// A valid address that does not refer to a key (P2SH).
+    #[error("address does not refer to a key: {0}")]
+    AddressNoKey(String),
+    /// The address is not one of the wallet's addresses.
+    #[error("address not in wallet: {0}")]
+    AddressNotMine(String),
     /// A bug: a panic inside an engine task, a poisoned lock, a runtime that
     /// could not be built.
     #[error("internal error: {0}")]
@@ -83,6 +99,11 @@ impl EngineError {
             EngineError::StaleCursor => "stale_cursor",
             EngineError::TxNotFound(_) => "tx_not_found",
             EngineError::GapLimit => "gap_limit",
+            EngineError::Vault(_) => "vault",
+            EngineError::Signer(_) => "signer",
+            EngineError::InvalidAddress(_) => "invalid_address",
+            EngineError::AddressNoKey(_) => "address_no_key",
+            EngineError::AddressNotMine(_) => "address_not_mine",
             EngineError::Internal(_) => "internal",
         }
     }
@@ -91,6 +112,18 @@ impl EngineError {
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
         EngineError::Io(e.to_string())
+    }
+}
+
+impl From<VaultError> for EngineError {
+    fn from(e: VaultError) -> Self {
+        EngineError::Vault(e)
+    }
+}
+
+impl From<SignerError> for EngineError {
+    fn from(e: SignerError) -> Self {
+        EngineError::Signer(e)
     }
 }
 

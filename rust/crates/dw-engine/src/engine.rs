@@ -14,6 +14,10 @@ pub struct EngineConfig {
     pub data_root: PathBuf,
     /// tokio worker threads; `None` = tokio's default (one per core).
     pub worker_threads: Option<usize>,
+    /// Vault options (KDF policy, OS secret store, clock) every session's
+    /// vault is opened with. `VaultConfig::default()` is the production
+    /// choice: calibrated Argon2id and the OS keyring.
+    pub vault: dw_vault::VaultConfig,
 }
 
 struct Shared {
@@ -87,9 +91,14 @@ impl Engine {
                 if let Some(existing) = sessions.get(&network) {
                     return Ok(Arc::clone(existing));
                 }
-                let session =
-                    NetworkSession::open(network.clone(), dir, Arc::clone(&shared.sink), opts)
-                        .await?;
+                let session = NetworkSession::open(
+                    network.clone(),
+                    dir,
+                    Arc::clone(&shared.sink),
+                    opts,
+                    shared.config.vault.clone(),
+                )
+                .await?;
                 sessions.insert(network.clone(), Arc::clone(&session));
                 shared.sink.emit(EngineEvent::SessionOpened { network });
                 Ok(session)

@@ -8,8 +8,7 @@ use std::sync::{Arc, RwLock};
 use dash_sdk::SdkBuilder;
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
-use key_wallet::mnemonic::{Language, Mnemonic};
-use key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use tokio::runtime::Handle;
@@ -19,7 +18,7 @@ use crate::context::{LazyTrustedContext, SharedContext};
 use crate::events::SessionEventBridge;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
-type Manager = PlatformWalletManager<SqlitePersister>;
+pub(crate) type Manager = PlatformWalletManager<SqlitePersister>;
 
 /// File name of the platform-wallet SQLite database inside a network dir.
 pub const WALLET_DB_FILE: &str = "wallet.sqlite";
@@ -72,12 +71,9 @@ pub struct WalletSummary {
     pub balances: WalletBalances,
 }
 
-/// Result of creating a fresh wallet.
-///
-/// TODO(vault): the mnemonic is handed back to the caller and stored nowhere.
-/// When dw-vault lands, `create_wallet` must write the vault record, fsync, read
-/// it back and compare before registering the wallet (DESIGN-opus §1.8 "seed
-/// safety ordering"), and the phrase must stop crossing the FFI here.
+/// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
+/// vault; the phrase is returned for headless hosts (dwcli, tests) that have
+/// no other way to show it.
 pub struct CreatedWallet {
     pub wallet_id: WalletId,
     pub mnemonic: Zeroizing<String>,
@@ -106,11 +102,14 @@ pub struct SessionOptions {
 
 /// One open network: SDK + PlatformWalletManager<SqlitePersister>.
 pub struct NetworkSession {
-    network: DashNetwork,
+    pub(crate) network: DashNetwork,
     data_dir: PathBuf,
-    rt: Handle,
-    sink: Arc<dyn EventSink>,
+    pub(crate) rt: Handle,
+    pub(crate) sink: Arc<dyn EventSink>,
     context: Arc<LazyTrustedContext>,
+    /// Holds every wallet's seed (`<network dir>/vault`). platform-wallet
+    /// registers wallets external-signable, so this is the only key material.
+    pub(crate) vault: Vault,
     spv_peers: Vec<SocketAddr>,
     /// `None` once closed. Taken out on close so the persister (and its
     /// process-wide open-path claim) is released even while hosts still hold
@@ -126,6 +125,7 @@ impl NetworkSession {
         data_dir: PathBuf,
         sink: Arc<dyn EventSink>,
         opts: SessionOptions,
+        vault_config: VaultConfig,
     ) -> Result<Arc<Self>, EngineError> {
         network.validate()?;
         let spv_peers = opts
@@ -137,6 +137,13 @@ impl NetworkSession {
             })
             .collect::<Result<Vec<_>, _>>()?;
         create_private_dir(&data_dir)?;
+
+        let vault_dir = data_dir.join(VAULT_DIR);
+        let (core_network, tag) = (network.core_network(), network.dir_name());
+        let vault = tokio::task::spawn_blocking(move || {
+            Vault::open(vault_dir, core_network, &tag, vault_config)
+        })
+        .await??;
 
         let context = Arc::new(LazyTrustedContext::new(
             network.core_network(),
@@ -189,6 +196,7 @@ impl NetworkSession {
             rt: Handle::current(),
             sink,
             context,
+            vault,
             spv_peers,
             manager: RwLock::new(Some(manager)),
         }))
@@ -214,7 +222,7 @@ impl NetworkSession {
         self.context.is_ready()
     }
 
-    fn manager(&self) -> Result<Arc<Manager>, EngineError> {
+    pub(crate) fn manager(&self) -> Result<Arc<Manager>, EngineError> {
         self.manager
             .read()
             .unwrap_or_else(|p| p.into_inner())
@@ -224,90 +232,12 @@ impl NetworkSession {
     }
 
     /// Runs `fut` on the engine runtime; a panic becomes `EngineError::Internal`.
-    async fn on_runtime<T, F>(&self, fut: F) -> Result<T, EngineError>
+    pub(crate) async fn on_runtime<T, F>(&self, fut: F) -> Result<T, EngineError>
     where
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
         self.rt.spawn(fut).await?
-    }
-
-    /// Creates a wallet from a fresh BIP39 English mnemonic (12 or 24 words).
-    ///
-    /// Counterpart: platform-wallet-ffi `platform_wallet_manager_create_wallet_from_mnemonic`
-    /// (rs-platform-wallet-ffi/src/manager.rs:599).
-    /// The birth height is left to platform-wallet: SPV tip when running, else
-    /// the latest checkpoint (a new wallet has no history to scan).
-    pub async fn create_wallet(
-        self: &Arc<Self>,
-        word_count: u8,
-    ) -> Result<CreatedWallet, EngineError> {
-        if word_count != 12 && word_count != 24 {
-            return Err(EngineError::InvalidArgument(format!(
-                "word count must be 12 or 24, got {word_count}"
-            )));
-        }
-        let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let mnemonic = Mnemonic::generate(word_count as usize, Language::English)
-                .map_err(|e| EngineError::Wallet(format!("mnemonic generation failed: {e}")))?;
-            let phrase = Zeroizing::new(mnemonic.phrase());
-            drop(mnemonic);
-            let wallet_id = this.register_phrase(&phrase, None).await?;
-            Ok(CreatedWallet {
-                wallet_id,
-                mnemonic: phrase,
-            })
-        })
-        .await
-    }
-
-    /// Restores a wallet from an existing mnemonic. `birth_height` = `Some(0)`
-    /// scans from genesis; `None` uses platform-wallet's default. Emits
-    /// `WalletCreated` like `create_wallet` (the event means "registered").
-    ///
-    /// Counterpart: `platform_wallet_manager_create_wallet_from_mnemonic_with_birth_height`
-    /// (rs-platform-wallet-ffi/src/manager.rs:630).
-    ///
-    /// TODO(vault): Core's BIP39 quirks (weak checksum, no NFKD) and passphrase
-    /// support belong to dw-vault/dw-compat; this accepts only valid BIP39 phrases.
-    pub async fn import_wallet(
-        self: &Arc<Self>,
-        phrase: Zeroizing<String>,
-        birth_height: Option<u32>,
-    ) -> Result<WalletId, EngineError> {
-        let this = Arc::clone(self);
-        self.on_runtime(async move { this.register_phrase(&phrase, birth_height).await })
-            .await
-    }
-
-    async fn register_phrase(
-        &self,
-        phrase: &str,
-        birth_height: Option<u32>,
-    ) -> Result<WalletId, EngineError> {
-        let manager = self.manager()?;
-        // Checked here so an invalid phrase is reported as such; platform-wallet
-        // folds it into its generic `WalletCreation` error.
-        if !Mnemonic::validate(phrase) {
-            return Err(EngineError::InvalidMnemonic(
-                "not a valid BIP39 phrase in any supported wordlist".into(),
-            ));
-        }
-        let wallet = manager
-            .create_wallet_from_mnemonic(
-                phrase,
-                self.network.core_network(),
-                WalletAccountCreationOptions::Default,
-                birth_height,
-            )
-            .await?;
-        let wallet_id = WalletId(wallet.wallet_id());
-        self.sink.emit(EngineEvent::WalletCreated {
-            network: self.network.clone(),
-            wallet_id,
-        });
-        Ok(wallet_id)
     }
 
     /// Registered wallets with their balance buckets. Wait-free read
