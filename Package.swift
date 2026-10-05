@@ -60,6 +60,7 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
+    .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
     .testTarget(name: "RepoChecksTests"),
 ]
 
