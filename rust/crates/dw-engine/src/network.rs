@@ -43,18 +43,26 @@ impl DashNetwork {
         }
     }
 
-    /// Rejects devnet names that are empty or could escape the data root.
-    /// Same character rule as the trusted quorum provider's devnet validator.
+    /// Rejects devnet names that are empty, could escape the data root, or
+    /// contain upper-case letters.
+    ///
+    /// Upper case is rejected rather than folded: the data directory
+    /// `devnet-<name>` lives on case-insensitive file systems on macOS and
+    /// Windows, so `Paloma` and `paloma` would share one directory, while
+    /// Dash Core derives the devnet genesis block from the exact name, so
+    /// lowercasing silently would select a different chain.
     pub fn validate(&self) -> Result<(), EngineError> {
         if let DashNetwork::Devnet { name } = self {
             let ok = !name.is_empty()
                 && name.len() <= 64
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 && !name.starts_with('-')
                 && !name.ends_with('-');
             if !ok {
                 return Err(EngineError::InvalidArgument(format!(
-                    "invalid devnet name {name:?}: use 1-64 ASCII letters, digits or inner hyphens"
+                    "invalid devnet name {name:?}: use 1-64 lower-case ASCII letters, digits or inner hyphens"
                 )));
             }
         }
@@ -88,7 +96,7 @@ mod tests {
 
     #[test]
     fn devnet_name_cannot_escape_data_root() {
-        for bad in ["", "../x", "a/b", "-a", "a-", "a b"] {
+        for bad in ["", "../x", "a/b", "-a", "a-", "a b", "Paloma", "myDevnet"] {
             assert!(
                 DashNetwork::Devnet { name: bad.into() }.validate().is_err(),
                 "{bad:?}"
