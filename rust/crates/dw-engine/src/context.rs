@@ -82,10 +82,11 @@ impl LazyTrustedContext {
         }
         {
             let mut last = self.last_attempt.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = *last {
-                if !force && t.elapsed() < RETRY_INTERVAL {
-                    return Err("trusted quorum provider unavailable; retry pending".to_string());
-                }
+            if let Some(t) = *last
+                && !force
+                && t.elapsed() < RETRY_INTERVAL
+            {
+                return Err("trusted quorum provider unavailable; retry pending".to_string());
             }
             *last = Some(Instant::now());
         }
