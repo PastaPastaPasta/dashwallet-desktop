@@ -96,6 +96,11 @@ final class TxidSignal: @unchecked Sendable {
         }
     }
 
+    /// Runs `handler` once the consumer stops iterating or `finish()` is called.
+    func onTermination(_ handler: @escaping @Sendable () -> Void) {
+        continuation.onTermination = { _ in handler() }
+    }
+
     func finish() {
         continuation.finish()
     }
