@@ -152,8 +152,8 @@ public final class WalletState: WalletStateProviding, SessionObserving {
             selectedWalletID = list.first?.id
         }
         balances = selectedWalletID.flatMap { id in list.first(where: { $0.id == id })?.balances }
-        // The list carries fresh balances for every wallet.
-        staleBalances = []
+        // `staleBalances` is kept: a `Balances` event that arrived while
+        // `wallet_infos` ran may be newer than the list.
         notifier.notify()
     }
 

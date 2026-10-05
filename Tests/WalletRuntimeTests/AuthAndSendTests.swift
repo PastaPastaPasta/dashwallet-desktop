@@ -275,6 +275,35 @@ private final class Latch: @unchecked Sendable {
         #expect(fake.with { $0.abandoned }.count == 1)
     }
 
+    @Test func inFlightBroadcastIsNeverAbandoned() async throws {
+        let h = Harness()
+        let (draft, fake) = try await draft(h)
+        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let latch = Latch()
+        fake.with { $0.broadcastHold = { await latch.wait() } }
+        let sending = Task { try await draft.broadcast(prepared) }
+        #expect(await eventuallyAsync { fake.calls.contains { $0.hasPrefix("broadcast") } })
+
+        // An edit and an explicit abandon while the engine call is pending.
+        try await draft.setFee(.recommended(targetBlocks: 2))
+        do {
+            try await draft.abandon(prepared)
+            Issue.record("abandon during a broadcast must refuse")
+        } catch {
+            #expect(error.code == .sendBroadcastOutcomeUnknown)
+        }
+        do {
+            _ = try await draft.broadcast(prepared)
+            Issue.record("a second concurrent broadcast must refuse")
+        } catch {
+            #expect(error.code == .sendBroadcastOutcomeUnknown)
+        }
+        #expect(fake.with { $0.abandoned }.isEmpty)
+        latch.open()
+        let result = try await sending.value
+        #expect(result.txid == prepared.summary.txid)
+    }
+
     @Test func editingAfterPrepareAbandonsTheUnsentTransaction() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)

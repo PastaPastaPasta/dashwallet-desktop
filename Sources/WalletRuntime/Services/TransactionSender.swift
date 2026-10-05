@@ -48,11 +48,17 @@ public final class TransactionSender: TransactionSending {
 ///   errors) marks the transaction "outcome unknown". `abandon` then refuses
 ///   with `send.broadcast_outcome_unknown` and keeps the inputs reserved;
 ///   `broadcast` may be retried (same signed transaction, same txid).
+/// - While a broadcast is in flight the transaction is neither abandoned (by
+///   `abandon` or an edit) nor broadcast again: the actor is reentrant across
+///   the engine call, and releasing inputs of a transaction that may be in
+///   the mempool would allow a double spend. Both fail with
+///   `send.broadcast_outcome_unknown` (edits simply leave it reserved).
 /// - After a successful broadcast the transaction is forgotten: `abandon` is
 ///   a no-op and `broadcast` fails with `send.prepared_tx_unknown`.
 public actor TransactionDraft: TransactionDrafting {
     private enum State {
         case ready
+        case broadcasting
         case outcomeUnknown
     }
 
@@ -112,7 +118,11 @@ public actor TransactionDraft: TransactionDrafting {
         guard let entry = prepared[transaction.id] else {
             throw ServiceError(code: .sendPreparedTxUnknown, detail: "not held by this draft")
         }
+        if case .broadcasting = entry.state {
+            throw ServiceError(code: .sendBroadcastOutcomeUnknown, detail: "a broadcast of this transaction is in flight")
+        }
         let tx = entry.handle
+        prepared[transaction.id]?.state = .broadcasting
         do {
             let outcome = try await serviceCall { () async throws(DashKitError) in try await handle.broadcast(tx) }
             prepared[transaction.id] = nil
@@ -120,8 +130,9 @@ public actor TransactionDraft: TransactionDrafting {
         } catch {
             switch error.code {
             case .sendNoPeers, .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound:
-                // Nothing left the engine; the transaction stays ready.
-                break
+                // Nothing left the engine. A transaction that was uncertain
+                // before this retry stays uncertain.
+                prepared[transaction.id]?.state = entry.state
             case .sendPreparedTxSpent:
                 prepared[transaction.id] = nil
             default:
@@ -133,27 +144,34 @@ public actor TransactionDraft: TransactionDrafting {
 
     public func abandon(_ transaction: PreparedTransaction) async throws(ServiceError) {
         guard let entry = prepared[transaction.id] else { return }
-        if case .outcomeUnknown = entry.state {
+        guard case .ready = entry.state else {
             throw ServiceError(
                 code: .sendBroadcastOutcomeUnknown, detail: "the broadcast may have reached a peer; inputs stay reserved")
         }
-        let tx = entry.handle
-        try await serviceCall { () async throws(DashKitError) in try await handle.abandon(tx) }
-        prepared[transaction.id] = nil
+        try await release(transaction.id, entry)
     }
 
     /// Abandons every prepared transaction that was never broadcast. A
     /// failure leaves it held, so a later `abandon` can retry it.
     private func abandonUnsent() async {
-        for (id, entry) in prepared {
-            guard case .ready = entry.state else { continue }
-            let tx = entry.handle
-            do {
-                try await serviceCall { () async throws(DashKitError) in try await handle.abandon(tx) }
-                prepared[id] = nil
-            } catch {
-                continue
-            }
+        for id in Array(prepared.keys) {
+            // Re-read: a broadcast may have started while an earlier release awaited.
+            guard let entry = prepared[id], case .ready = entry.state else { continue }
+            try? await release(id, entry)
+        }
+    }
+
+    /// Abandons `entry` in the engine. It leaves `prepared` first, so a
+    /// broadcast that arrives while the engine releases the inputs fails with
+    /// `send.prepared_tx_unknown`; on failure it is put back.
+    private func release(_ id: UUID, _ entry: Entry) async throws(ServiceError) {
+        prepared[id] = nil
+        let tx = entry.handle
+        do {
+            try await serviceCall { () async throws(DashKitError) in try await handle.abandon(tx) }
+        } catch {
+            prepared[id] = entry
+            throw error
         }
     }
 }

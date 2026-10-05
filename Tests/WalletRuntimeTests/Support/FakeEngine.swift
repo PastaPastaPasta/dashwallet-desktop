@@ -394,12 +394,13 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
         var recipients: [Recipient] = []
         var broadcastErrors: [DashKitError] = []
         var abandoned: [String] = []
+        /// Awaited inside `broadcast` before it answers (to hold it in flight).
+        var broadcastHold: (@Sendable () async -> Void)?
     }
 
     let walletID: WalletID
     private let lock = NSLock()
     private var state = State()
-    private var preparedCount = 0
 
     init(walletID: WalletID) {
         self.walletID = walletID
@@ -448,10 +449,11 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
     }
 
     func broadcast(_ prepared: PreparedTxHandle) async throws(DashKitError) -> BroadcastOutcome {
-        let error: DashKitError? = with { s in
+        let (error, hold): (DashKitError?, (@Sendable () async -> Void)?) = with { s in
             s.calls.append("broadcast \(prepared.summary.txid)")
-            return s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst()
+            return (s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst(), s.broadcastHold)
         }
+        await hold?()
         if let error { throw error }
         return BroadcastOutcome(txid: prepared.summary.txid, peersAnnounced: 3)
     }
