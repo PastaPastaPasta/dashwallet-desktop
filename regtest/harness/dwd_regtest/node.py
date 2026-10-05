@@ -2,7 +2,7 @@
 
 Two backends share one interface:
 
-* `DockerComposeNode` runs the `dashd` service of tests/regtest/docker-compose.yml under a
+* `DockerComposeNode` runs the `dashd` service of regtest/docker-compose.yml under a
   unique compose project name, with free loopback host ports for RPC and P2P.
 * `LocalBinaryNode` runs `dashd` from an unpacked release (DASHCORE_DIR, as produced by
   scripts/fetch-dashcore.sh) in a temporary datadir.

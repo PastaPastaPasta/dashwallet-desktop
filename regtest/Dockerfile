@@ -1,8 +1,8 @@
 # Regtest image: official Dash Core release binaries (SHA-256 pinned in scripts/fetch-dashcore.sh)
 # plus the vendored Dash Core functional test_framework and its one native dependency (dash_hash).
 #
-# Build context: tests/regtest
-#   docker compose -f tests/regtest/docker-compose.yml build
+# Build context: regtest
+#   docker compose -f regtest/docker-compose.yml build
 # Architectures: linux/amd64 (x86_64-linux-gnu tarball) and linux/arm64 (aarch64-linux-gnu tarball);
 # the triple is chosen from `uname -m` inside the build, so a native build on either host works.
 ARG BASE_IMAGE=python:3.12-slim

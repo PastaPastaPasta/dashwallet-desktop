@@ -1,7 +1,7 @@
 """pytest fixtures for the regtest harness.
 
 Backend selection (see dwd_regtest.node.node_from_env):
-  DWD_REGTEST_BACKEND=docker  (default) docker compose service from tests/regtest/docker-compose.yml
+  DWD_REGTEST_BACKEND=docker  (default) docker compose service from regtest/docker-compose.yml
   DWD_REGTEST_BACKEND=local   dashd from DASHCORE_DIR (unpacked release)
   DWD_REGTEST_BUILD=0         docker backend: skip `--build` (use an already built image)
 """

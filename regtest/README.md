@@ -1,4 +1,4 @@
-# tests/regtest — Dash Core regtest harness
+# regtest — Dash Core regtest harness
 
 Regtest infrastructure for dashwallet-desktop (DESIGN-opus.md §4.3, workstream WS-13). It has
 three parts:
@@ -34,13 +34,13 @@ All commands below run from the repo root. Docker commands need the Claude sandb
 
 ```sh
 # start a node (build the image on first use) and wait for RPC
-tests/regtest/scripts/regtest.sh up
-tests/regtest/scripts/regtest.sh mine 101                       # pays the `miner` wallet
-tests/regtest/scripts/regtest.sh fund yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX 2.5   # send + mine 1 block
-tests/regtest/scripts/regtest.sh status
-tests/regtest/scripts/regtest.sh cli getpeerinfo
-tests/regtest/scripts/regtest.sh down                           # discards the chain (tmpfs datadir)
-tests/regtest/scripts/selftest.sh                               # end-to-end check of regtest.sh
+regtest/scripts/regtest.sh up
+regtest/scripts/regtest.sh mine 101                       # pays the `miner` wallet
+regtest/scripts/regtest.sh fund yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX 2.5   # send + mine 1 block
+regtest/scripts/regtest.sh status
+regtest/scripts/regtest.sh cli getpeerinfo
+regtest/scripts/regtest.sh down                           # discards the chain (tmpfs datadir)
+regtest/scripts/selftest.sh                               # end-to-end check of regtest.sh
 ```
 
 Connection details for an SPV client (e.g. `dwcli`):
@@ -57,7 +57,7 @@ keeps BIP37 for older clients. The datadir is a tmpfs, so every `up` starts at g
 ### pytest harness
 
 ```sh
-cd tests/regtest/harness
+cd regtest/harness
 uv venv .venv --python 3.11 && uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m pytest -v                                   # Docker backend (default)
 
@@ -116,15 +116,15 @@ Runtime requirements of the framework:
 
 ```sh
 # in Docker (recommended; this is what CI should run)
-tests/regtest/scripts/run-functional.sh                      # dwd_mn_chainlock.py + dwd_coinjoin_probe.py
-docker compose -f tests/regtest/docker-compose.yml --profile functional run --rm functional \
+regtest/scripts/run-functional.sh                      # dwd_mn_chainlock.py + dwd_coinjoin_probe.py
+docker compose -f regtest/docker-compose.yml --profile functional run --rm functional \
     feature_llmq_chainlocks.py --timeout-factor=3             # any single test with any options
 
 # on a macOS host with the darwin release (ad-hoc signed by fetch-dashcore.sh)
 uv venv /path/to/func-venv && uv pip install --python /path/to/func-venv/bin/python \
     https://github.com/dashpay/dash_hash/archive/refs/tags/1.4.0.tar.gz
 DWD_PYTHON=/path/to/func-venv/bin/python DASHCORE_DIR=/path/to/dashcore \
-    tests/regtest/functional/run.sh dwd_mn_chainlock.py
+    regtest/functional/run.sh dwd_mn_chainlock.py
 ```
 
 `run.sh` puts config.ini, the framework cache and each run's node datadirs (`--tmpdir`, unique per
@@ -212,7 +212,7 @@ wallet as the counterparty.
 ## Layout
 
 ```
-tests/regtest/
+regtest/
 ├── README.md, RESULTS.md    this file; measured results
 ├── Dockerfile               image: python:3.12-slim + dash_hash + Dash Core release + functional/
 ├── docker-compose.yml       services: dashd (single node), functional (profile; runs one test script)

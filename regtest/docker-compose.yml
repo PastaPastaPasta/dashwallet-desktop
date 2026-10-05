@@ -1,7 +1,7 @@
 # Single-node Dash Core regtest network for dashwallet-desktop tests.
 #
-#   docker compose -f tests/regtest/docker-compose.yml up -d --build dashd
-#   tests/regtest/scripts/regtest.sh mine 101
+#   docker compose -f regtest/docker-compose.yml up -d --build dashd
+#   regtest/scripts/regtest.sh mine 101
 #
 # Host ports default to the regtest defaults and bind to loopback only. Override with
 # DWD_RPC_HOST_PORT / DWD_P2P_HOST_PORT (the pytest harness does this to avoid clashes).

@@ -1,5 +1,9 @@
 # Regtest harness — recorded results
 
+These runs used the harness's old location `tests/regtest/`; it now lives at `regtest/` (moved so
+the directory no longer collides with SwiftPM's `Tests/` on case-insensitive file systems).
+Paths in the commands below are as they were run.
+
 Run on 2026-10-05 on the macOS dev laptop (Apple Silicon, 14 cores, macOS 26 / Darwin 25.5,
 OrbStack Docker 29.4.0, compose v5.1.2). The machine was shared with other agents during these runs:
 load average 160–980, and OrbStack's daemon restarted once mid-run (see "Upstream
