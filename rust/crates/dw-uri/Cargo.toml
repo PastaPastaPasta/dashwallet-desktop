@@ -1,0 +1,19 @@
+[package]
+name = "dw-uri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+description = "dash: URI parsing/writing (dash-qt exact and iOS superset), deep-link and address classification"
+
+[dependencies]
+# Same git source and revision that dashpay/platform bc321362b9 pins, so the
+# workspace resolves one copy whether or not it declares the dependency.
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15", default-features = false, features = ["secp-recovery"] }
+dw-units = { path = "../dw-units" }
+zeroize = "1.8"
+
+[dev-dependencies]
+serde_json = "1"
+proptest = "1"

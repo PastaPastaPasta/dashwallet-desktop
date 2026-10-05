@@ -1,0 +1,28 @@
+# Wallet dump created by Dash Core v24.0.0-rc.2
+# * Created on 2026-10-05T07:03:43Z
+# * Best block at time of backup was 0 (000008ca1832a4baf228eb1553c03d3a2c8e02399550dd6ea8d65cec3ef23d2e),
+#   mined on 2014-12-04T17:15:37Z
+
+# mnemonic: legal winner thank year wave sausage worth useful legal winner thank yellow
+# mnemonic passphrase: 
+
+# HD seed: 878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096
+
+# extended private masterkey: tprv8ZgxMBicQKsPdmJDTZGgBJBD9GSh9T19Y5X3Yph6QxF1LkWqkBDqqw7S8zrEB3KK8MV5eEv5TsyqbMM937JryFRftXC6rDoXtVohzzQovoo
+# extended public masterkey: tpubD6NzVbkrYhZ4XEL1MCwGahqKiHxdJnC47P7pqLjPqE3QBEmcNa3S2RjJK8L9dtuhEZ2jwiQFqvYFZ3VvxYrsNTdzA1iUHJ31KD1oYotu39U
+
+# external chain counter: 5
+# internal chain counter: 4
+
+cMvkxphVFMtKsRQhREL4APJygRdzr6X4uHvGB2pH36f4t3KkbvhM 2026-10-05T07:03:43Z reserve=1 # addr=yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2 hdkeypath=m/44'/1'/0'/0/1
+cPhK5ouznHjnLpM4FE2gzRd4w2MMKDq8Ahd37rZHcWrFiXAnDBjy 2026-10-05T07:03:43Z reserve=1 # addr=yUEFnd8VxZTpWooLnTwDs8PHbmLWoX3EVi hdkeypath=m/44'/1'/0'/1/2
+cPVJCzEWF5nm6QMgdXvZ773xatLbkwerAdsxv43PZcQ2sjh8N4q6 2026-10-05T07:03:43Z label=one # addr=yXdosqAQzsofLSYBiA5mWpgmQRyfKf7EJN hdkeypath=m/44'/1'/0'/0/0
+cNUbTDNQEUu9ZnDxw4ezWzUTToAU74xPisMjsi7CsHjpZ5xXzJSX 2026-10-05T07:03:43Z change=1 # addr=yaUnjHg74KDGcKEgVawwJhA6mMgjGAoKcv hdkeypath=m/44'/1'/0'/1/0
+cNeTsCwXPbZpEVxpmawDYzUkmRQkgepGBDYWbAVv47fuc6TFrfqb 2026-10-05T07:03:43Z reserve=1 # addr=ybZsjTziPatbfi36GnxAakbxYb1XeCvRHC hdkeypath=m/44'/1'/0'/1/3
+cSHjxMq5CrBvixwSBpdDiWVewuiSVqcAWW1Hzwvd93zS2wzPbdrY 2026-10-05T07:03:43Z reserve=1 # addr=ybrRwr5FR9WUnuNdUCS6HFZwrntAsnD6Gn hdkeypath=m/44'/1'/0'/0/3
+cPJaUNN1oV2h2T69598RcRu2j5C2SDSZ9QdAWfixEogqakMpdtjz 2026-10-05T07:03:43Z reserve=1 # addr=yf55JuKg3tcyQpyPvjPbk41AzDh6jYSivQ hdkeypath=m/44'/1'/0'/0/2
+cVxrmG1PUvAKEY53FEgQBwcDDXPXv6mWooF8zczuzHw5W4uoyknN 2026-10-05T07:03:43Z reserve=1 # addr=yhDM4npDvxvnZPGVRRDWbi6UayJx7dBhxV hdkeypath=m/44'/1'/0'/0/4
+cNvLA8GyX3d8QjzgRdBA69k1Ucn414Hbx947z71TNQeAyJNq4ogD 2026-10-05T07:03:43Z reserve=1 # addr=yjGiynRMn6Q3D92zmqrRVdXhHSuc432cJN hdkeypath=m/44'/1'/0'/1/1
+
+
+# End of dump

@@ -1,0 +1,36 @@
+# Wallet dump created by Dash Core v24.0.0-rc.2
+# * Created on 2026-10-05T07:03:43Z
+# * Best block at time of backup was 0 (000008ca1832a4baf228eb1553c03d3a2c8e02399550dd6ea8d65cec3ef23d2e),
+#   mined on 2014-12-04T17:15:37Z
+
+# mnemonic: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+# mnemonic passphrase: TREZOR
+
+# HD seed: c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04
+
+# extended private masterkey: tprv8ZgxMBicQKsPeWHBt7a68nPnvgTnuDhUgDWC8wZCgA8GahrQ3f3uWpq7wE7Uc1dLBnCe1hhCZ886K6ND37memRDWqsA9HgSKDXtwh2Qxo6J
+# extended public masterkey: tpubD6NzVbkrYhZ4XyJymmEgYC3uVhyj4YtPFX6yRTbW6RvfRC7Ag3sVhKSz7MNzFWW5MJ7aVBKXCAX7En296EYdpo43M4a4LaeaHuhhgHToSJF
+
+# external chain counter: 8
+# internal chain counter: 5
+
+91cF6Snxo68ZdMpsCsAKJQBfqA7xHHWzc11Z9QzA3uRTZW8X27D 1970-01-01T00:00:01Z label= # addr=yYxtVfK5xLTmkTmeh7fpS3xLDDJPtUdrdC
+cMec2DGaTXkYJYfi7x3ZGjRXkeqmAvYAoWzMAcWj5fdLaqudWsNi 1970-01-01T00:00:01Z label=imported%20loose%20key # addr=yhozmHU7FQB5jjRzpHw2erMSpDUmQgQNo6
+cUJdkSb577ugJC1igoiE1VFzgWzA9tofRTBxLSmKRsJrEn45jmnL 2026-10-05T07:03:42Z reserve=1 # addr=yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B hdkeypath=m/44'/1'/0'/0/5
+cNYmDLNdWRheWJfHpQ6ScuuUnpKWT8EBwqiAxES9zANAyZToHGMp 2026-10-05T07:03:42Z reserve=1 # addr=yPwGGhgGeWFbyVPBkBCgVGwA5o3Hqh9Uxx hdkeypath=m/44'/1'/0'/1/2
+cNE6Ta5n5U3pcJ5E2NNtvn8RpApG2J7S6g185EryNqS7PwshEdyX 2026-10-05T07:03:42Z reserve=1 # addr=yQYY2kVZWi66s2Vi6hLLw7Vt8CtCnDLApB hdkeypath=m/44'/1'/0'/0/6
+cNA75NotXyj7Eq9G9bm1sihowHrG6jTB6Hduc2SyeHsz4xrSauw9 2026-10-05T07:03:42Z reserve=1 # addr=yTvuBbf4ou9cTWqrH8FrJfkqwsvKdmNSdy hdkeypath=m/44'/1'/0'/0/4
+cNkefyto1yvv1TEeDJRErYPoTQdDpEHrg1Czqy4JH6WPBNEFyfvo 2026-10-05T07:03:42Z label= # addr=ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5 hdkeypath=m/44'/1'/0'/0/0
+cTm7yF954u6FLdQqajZHid5sUSR38s5uodUtfhHxhXdsWfznfBS5 2026-10-05T07:03:42Z label=savings # addr=ybS9iPvuafNHn2gexVDLBr1NQq6CddqHhR hdkeypath=m/44'/1'/0'/0/1
+cPveLdLJS5iV7JSvvF7gSbEH5ufW5rz7HrdgPqVHGcaLjrm9LM74 2026-10-05T07:03:42Z change=1 # addr=ycm9zhUpAXgKrV1ekikATSsJ3UieLcBAZe hdkeypath=m/44'/1'/0'/1/0
+cP7c9nwTDGAGGr331pwqdomQ6LSPoycG5cQ9cJM879b3CwfXe6bW 2026-10-05T07:03:42Z change=1 # addr=ydMQAaVEf2vkSHFkL2Jf3sU4qxc5Cvby1z hdkeypath=m/44'/1'/0'/1/1
+cRux9BuX2hkXhQ94to1bY7wYBm2VbuG5XsSHH7fSyh2ZLYQjA98N 2026-10-05T07:03:42Z label=tab%09here # addr=ygxaYSMnkJpqQN46gnu64Yw5maeuxEJpEr hdkeypath=m/44'/1'/0'/0/3
+cNPuSixsUB2cPFS918td9Eye4hsybG6kCLdLF1773zFD5UgWaZC2 2026-10-05T07:03:42Z reserve=1 # addr=yhRSmS4rsTDxmmp4jSqd27sUacW4rvsVAu hdkeypath=m/44'/1'/0'/1/3
+cQaEqGqpBCKr6GNTCFT1gV7ttLUKgEnci9TyB9Wu54ns5EuvLjBT 2026-10-05T07:03:42Z label=spaces%20and%20%25%20and%20#%20and%20%c3%a9 # addr=yhr3TAsqjUmDdF1MroYeJFGMcDuQBuKLHf hdkeypath=m/44'/1'/0'/0/2
+cSwhdGpcEjDyZ6ARRCNG55Yjhjp6tnspr34Y6WosniyF112siYVA 2026-10-05T07:03:43Z reserve=1 # addr=yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw hdkeypath=m/44'/1'/0'/1/4
+cTYenaFNqFLXVCxTMfh7e2gJ2nwgUELeqh6pWTnZ1wkcPoZ19uhE 2026-10-05T07:03:43Z reserve=1 # addr=yWfrjpm3ieS1oThQtSo61enT8Yfy7j4SSr hdkeypath=m/44'/1'/0'/0/7
+
+5121023765b56ecb006a47d775beee38c45a9fe5dbe11d100b2e2ea3c99196dc915a2d51ae 0 script=1 # addr=8iX6CMzg52FoMkrPnBb1ms4ULR1sWrk7eh
+a9142cf10aa0ea88c8cae97681bc807b03cb90d82fc587 0 script=1 # addr=8vUkdyiYBYmqBGGhQpM9YUZWx1w9ysJjiU
+
+# End of dump
