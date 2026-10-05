@@ -165,7 +165,7 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | `parse_payment_uri(network, text)` | sync, free | dash-qt `handleURIOrFile` + `parseBitcoinURI`, address checked on `network`. `PaymentUri { address, amount, label, message }`; amount 0 → `None`. A negative amount (dash-qt accepts it, then fails to send) is `uri.invalid_amount`. | `uri.double_slash`, `uri.not_dash_uri`, `uri.unparsable`, `uri.bip70_unsupported`, `uri.invalid_address{problem}`, `uri.invalid_amount` | QT-054, QT-149, IOS-048 | **works** |
 | `build_payment_uri(address, amount, label, message)` | sync, free | dash-qt `formatBitcoinURI`, byte for byte. | `uri.invalid_amount` | QT-085 | **works** |
 | `classify_address(network, text)` | sync, free | `Core{script_hash}`, `Platform`, `Shielded`, `Invalid{problem}`. | — | QT-055, QT-067, IOS-042 | **works** |
-| `qr_matrix(text)` | sync, free | `QrMatrix { size, modules }`, row-major, `true` = dark, ECC L, no quiet zone; > 255 chars → `uri.too_long_for_qr`. Implement with the `qrcode` crate in dw-uri (no image crosses the FFI). | `uri.too_long_for_qr` | QT-084, IOS-053 | stub |
+| `qr_matrix(text)` | sync, free | `QrMatrix { size, modules }`, row-major, `true` = dark, ECC L, no quiet zone; > 255 chars → `uri.too_long_for_qr`. Implement with the `qrcode` crate in dw-uri (no image crosses the FFI). | `uri.too_long_for_qr` | QT-084, IOS-053 | **works** |
 
 The iOS superset parser (`pay:`, `dashwallet:`, `sender/user/currency/local`) and deep-link classification
 stay in dw-uri for M2 (IOS-048 OS registration).
