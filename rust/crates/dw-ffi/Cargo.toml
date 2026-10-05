@@ -1,0 +1,26 @@
+[package]
+name = "dw-ffi"
+description = "UniFFI facade over dw-engine; produces libdashwallet_core for the Swift package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dashwallet_core"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+dw-engine = { workspace = true }
+uniffi = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+# Static OpenSSL for reqwest's native-tls on Linux, so the app needs no
+# runtime libssl (DESIGN-opus §1.9; upstream U4 moves Linux to rustls).
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

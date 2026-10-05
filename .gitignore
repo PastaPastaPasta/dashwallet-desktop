@@ -5,3 +5,8 @@ target/
 .claude/
 *.xcframework/
 DerivedData/
+# Rust core artifact bundle, produced by scripts/build-core.sh
+Artifacts/
+# Local build logs and measurement helpers
+.build-logs/
+.swiftpm/

@@ -1,0 +1,4 @@
+[toolchain]
+# Matches dashpay/platform's rust-toolchain.toml at the pinned revision.
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
