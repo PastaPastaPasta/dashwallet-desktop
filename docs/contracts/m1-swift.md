@@ -44,7 +44,7 @@ adapter calls; owners of those calls are in m1-engine.md.
 | `WalletStateProviding` | `wallets`, `selectedWalletID`, `balances` (all optional until loaded), `changes()`, `select`, `rename`. | `wallet_infos`, `balances`, `rename_wallet`; events `Balances`, `WalletCreated/Removed` | QT-014, QT-034, IOS-019/021, IOS-110 |
 | `SyncStatusProviding` | `status: SyncStatus?` (damped `progress`, `isDone` gate, `isStalled` after 45 s), `changes()`, `peers()`, `rotatePeers()`, `rescan(from:)`. | `sync_snapshot`, `peers`, `rotate_peers`, `rescan`; event `Sync`, notice `SyncStalled` | QT-024/025/027, QT-117, QT-147, IOS-023 |
 | `VaultProviding` | `status`, `create(passphrase:)`, `encrypt`, `changePassphrase`, `revealMnemonic`, `generateMnemonic`, `checkMnemonic`, `makeSecret(utf8:)`. | `Vault.*`, `generate_mnemonic`, `check_mnemonic` | QT-102/103, QT-111/113, IOS-002…007, IOS-010 |
-| `AuthenticationGating` | The one auth primitive: `lockState`, `lockStateChanges()`, `requirement(for:)`, `authorize(_:credential:)`, `unlock`, `lock`. | `Vault.authorize`, `unlock`, `lock`; event `LockState` | QT-022, QT-061, IOS-012…017 |
+| `AuthenticationGating` | The one auth primitive: `lockState`, `lockStateChanges()`, `requirement(for:)`, `authorize(_:credential:)`, `revoke(_:)`, `unlock`, `lock`. | `Vault.authorize`, `revoke_grant`, `unlock`, `lock`; event `LockState` | QT-022, QT-061, IOS-012…017 |
 | `TransactionSending` / `TransactionDrafting` | `makeDraft(wallet:)`, `maxSpendable`; draft setters, `estimate`, `prepare(grant:)` (never broadcasts), `broadcast`, `abandon`. `PreparedTransaction.id` names the engine `PreparedTx` the draft holds. | `new_tx_draft`, `TxDraft.*`, `max_spendable` | QT-051…067, IOS-041…052 |
 | `HistoryProviding` | `page(wallet:query:)`, `detail`, `setLabel`, `changes(wallet:)` (txids per `HistoryChanged`). | `history_page`, `tx_detail`, `set_tx_label` | QT-086…094, IOS-027…031 |
 | `ReceiveProviding` | `currentAddress`, `nextAddress`, `addresses`, `createRequest`, `requests`, `deleteRequest`. | `receive.rs` | QT-081…085, IOS-053…055 |
@@ -67,7 +67,7 @@ protocols for tests). Outputs are plain values; flows are enums with exhaustive 
 ### OnboardingViewModel (QT-102…105, IOS-002…007, IOS-010)
 
 ```swift
-enum OnboardingStep { case welcome, choosePassphrase, showPhrase, verifyPhrase, restorePhrase, restoreOptions, working, done(WalletID), failed(ServiceError) }
+enum OnboardingStep { case welcome, choosePassphrase, unlockVault, showPhrase, verifyPhrase, restorePhrase, restoreOptions, working, done(WalletID), failed(OnboardingFailure) }
 var step: OnboardingStep
 var wordCount: Int                         // 12 or 24
 var phraseWords: [String]                  // display only, from the SecretBuffer, cleared on leaving showPhrase
@@ -80,7 +80,8 @@ func confirmWrittenDown()                  // → verifyPhrase
 func verify(word: String, at index: Int) -> Bool
 func startRestore()
 func updateRestoreText(_ text: String)     // makeSecret + checkMnemonic
-func finish() async                        // vault.create (if none) → lifecycle.importWallet → done
+func finish() async                        // vault.create (if none) → lifecycle.importWallet → done; locked vault → .unlockVault
+func unlockVault(passphrase: String) async // AuthenticationGating.unlock(.full) → finish (adding a wallet to a locked vault)
 ```
 
 ### LockViewModel (QT-111, IOS-012/013)
@@ -109,7 +110,7 @@ func rotatePeers() async                   // shown when sync.isStalled
 ### SendViewModel (QT-052…063, IOS-041…052; DESIGN-opus §1.11)
 
 ```swift
-enum SendPhase { case editing, authorizing, preparing, confirm(PreparedTxSummary), broadcasting, done(txid: String), failed(ServiceError) }
+enum SendPhase { case editing, confirmDuplicates, authorizing, preparing, confirm(PreparedTxSummary), broadcasting, done(txid: String), failed(SendFailure), broadcastUnknown(txid: String, failure: SendFailure) }
 struct RecipientEntry: Identifiable { var address: String; var amountText: String; var subtractFee: Bool; var label: String; var error: ServiceErrorCode? }
 var entries: [RecipientEntry]
 var phase: SendPhase
@@ -121,8 +122,18 @@ func paste(_ text: String)                 // URIHandling.parsePaymentURI fills 
 func useMax(for id: RecipientEntry.ID) async
 func review() async                        // validate → AuthenticationGating.authorize(.spend) → prepare → .confirm
 func confirm() async                       // broadcast ONLY here (iOS rule 4)
-func cancel() async                        // abandon the prepared tx
+func retryBroadcast() async                // the same signed tx again, only after send.no_peers
+func cancel() async                        // abandon the prepared tx, revoke an unredeemed grant; ignored once broadcast
+func dismiss() async                       // leave done / failed (abandons) / broadcastUnknown (never abandons)
 ```
+
+Send rules (review M-7, H-4):
+- Spend grant cap = Σ recipient amounts + `-maxtxfee` (0.1 DASH). The final fee is known only after signing.
+- Any edit of entries, fee or source in confirmDuplicates / authorizing / preparing / confirm / failed returns to
+  `.editing`, abandons the prepared tx and revokes an unredeemed grant; a prepare that finishes later is abandoned.
+- Broadcast errors `send.broadcast_rejected`, `send.prepared_tx_spent`, `send.no_peers`, `send.prepared_tx_unknown`,
+  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented` are definite (`.failed`); any
+  other error is `.broadcastUnknown`: the inputs stay reserved and the user is routed to the transaction.
 
 ### ReceiveViewModel (QT-081…085, IOS-053…055)
 
@@ -148,7 +159,7 @@ var detail: TransactionDetail?
 func reload() async; func loadMore() async
 func select(_ id: TxRecord.ID) async       // loads detail
 func setLabel(_ label: String?, txid: String) async
-func exportCSV() async throws(ServiceError) -> String  // dash-qt columns (QT-093), pages through history
+func exportCSV() async throws(ServiceError) -> String  // dash-qt columns (QT-093), pages through history; restarts on history.stale_cursor (3 attempts)
 ```
 
 ### AddressBookViewModel (QT-095…098)
