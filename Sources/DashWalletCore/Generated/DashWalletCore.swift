@@ -11860,8 +11860,9 @@ public func parsePaymentUri(network: DashNetwork, text: String)throws  -> Paymen
 })
 }
 /**
- * QR module matrix for `text` (QT-084 rules: ECC L, at most 255 characters).
- * The host renders the modules; no image crosses the FFI.
+ * QR module matrix for `text`, encoded as dash-qt encodes it (QT-084: byte
+ * mode, ECC L, at most 255 characters). The host renders the modules; no
+ * image crosses the FFI.
  */
 public func qrMatrix(text: String)throws  -> QrMatrix  {
     return try  FfiConverterTypeQrMatrix_lift(try rustCallWithError(FfiConverterTypeUriError_lift) {
@@ -11936,7 +11937,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_func_parse_payment_uri() != 10948) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_qr_matrix() != 8927) {
+    if (uniffi_dashwallet_core_checksum_func_qr_matrix() != 58029) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_check_mnemonic() != 52189) {
