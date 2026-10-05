@@ -406,11 +406,9 @@ fn printf_2f(v: f64) -> String {
         }
     }
     let split = digits.len() - 2;
-    let sign = if v.is_sign_negative() && digits.iter().any(|&d| d != b'0') {
-        "-"
-    } else {
-        ""
-    };
+    // printf prints the sign bit even when the value rounds to zero:
+    // -0.001 and -0.0 both give "-0.00".
+    let sign = if v.is_sign_negative() { "-" } else { "" };
     format!(
         "{sign}{}.{}",
         std::str::from_utf8(&digits[..split]).expect("ascii"),
@@ -516,6 +514,19 @@ mod tests {
     }
 
     #[test]
+    fn printf_keeps_the_sign_of_negative_values() {
+        // Review L4: printf("%.2f") keeps the minus sign when a negative value
+        // rounds to zero, and for negative zero.
+        assert_eq!(printf_2f(-0.001), "-0.00");
+        assert_eq!(printf_2f(-0.0), "-0.00");
+        assert_eq!(printf_2f(-0.005), "-0.01"); // -0.005000000000000000104…
+        assert_eq!(printf_2f(-1.005), "-1.00");
+        assert_eq!(printf_2f(-2.5), "-2.50");
+        assert_eq!(printf_2f(0.0), "0.00");
+        assert_eq!(printf_2f(0.001), "0.00");
+    }
+
+    #[test]
     fn printf_rounding_is_half_even_on_exact_value() {
         assert_eq!(printf_2f(0.125), "0.12");
         assert_eq!(printf_2f(0.375), "0.38");
@@ -529,6 +540,7 @@ mod tests {
             "340282346638528859811704183484516925440.00"
         );
         assert_eq!(printf_2f(f64::INFINITY), "inf");
+        assert_eq!(printf_2f(f64::NEG_INFINITY), "-inf");
         let huge = PaymentUriBuilder {
             address: "X".into(),
             fiat_currency_code: Some("USD".into()),

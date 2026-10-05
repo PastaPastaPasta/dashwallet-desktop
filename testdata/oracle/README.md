@@ -11,6 +11,7 @@ not written by hand. Each comes from running Core's own code. Rust tests in
 | `message_cases.json`, `dumpwallet/*`, `dashd/dashd_bip39.json` | `dashd/gen_vectors.py` | A regtest `dashd` (committed vectors: v24.0.0-rc.2) started with `-keypool=4`: `signmessagewithprivkey`, `verifymessage`, `upgradetohd`, `dumphdinfo`, `listdescriptors`, `dumpwallet`. |
 | `address_cases.json` | `dashd/gen_address_cases.py` | `validateaddress` on a mainnet dashd (`-connect=0`, never syncs) and a regtest dashd. |
 | `core/*.json` | copied | Dash Core `src/test/data/{key_io_valid,key_io_invalid,bip39_vectors}.json`. |
+| `qr_cases.json` | `gen_qr_cases.py` | libqrencode 4.1.1 through the `qrencode` CLI with `-l L -8 -m 0`, the same `QRcode_encodeString(…, QR_ECLEVEL_L, QR_MODE_8, 1)` call dash-qt makes (`brew install qrencode`). |
 | `uri_ext_cases.json` | hand-written | Cases from the iOS wallet's unit tests plus the desktop deviations; see the `notes` key. |
 
 Regenerating the dashd files needs a fresh datadir (wallet names are fixed):

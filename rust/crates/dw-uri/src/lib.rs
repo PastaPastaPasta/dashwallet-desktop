@@ -7,6 +7,7 @@
 //! - [`deeplink`]: routing of opened or scanned links.
 //! - [`keyio`]: Dash Core's Base58 address and WIF decoding, plus Platform
 //!   and shielded address classification.
+//! - [`qr`]: QR module matrices encoded the way dash-qt encodes them.
 //!
 //! Golden vectors: `testdata/uri_cases.json` (dash-qt code run against
 //! Qt 5.15) and Dash Core's `key_io_valid.json` / `key_io_invalid.json`
@@ -17,6 +18,7 @@ pub mod core;
 pub mod deeplink;
 pub mod ext;
 pub mod keyio;
+pub mod qr;
 mod qurl;
 
 pub use dashcore::Network;
