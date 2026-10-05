@@ -84,6 +84,7 @@ var targets: [Target] = [
         exclude: ["__Snapshots__"]
     ),
     .testTarget(name: "RepoChecksTests"),
+    .testTarget(name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop"]),
 ]
 
 if !headless {
@@ -94,11 +95,21 @@ if !headless {
             name: "CrossUI",
             dependencies: [
                 "DashUICross",
+                "DesignTokens",
                 "WalletFeatures",
+                // Value types the view models expose (Amount, TxRecord, DashNetwork, ...).
+                "WalletRuntime",
                 .target(name: "PlatformServicesDesktop", condition: .when(platforms: [.linux, .windows])),
             ] + crossUI
         ),
-        .executableTarget(name: "DashWalletCross", dependencies: ["CrossUI"] + crossUI),
+        // Composition root: live runtime over the engine, or --demo fakes.
+        .executableTarget(
+            name: "DashWalletCross",
+            dependencies: [
+                "CrossUI", "DashUICross", "WalletFeatures", "WalletRuntime", "PlatformServices",
+                "PlatformServicesDesktop", "DashKit", "DashWalletCore", "DesignTokens",
+            ] + crossUI
+        ),
     ]
 }
 

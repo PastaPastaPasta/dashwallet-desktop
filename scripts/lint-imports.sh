@@ -30,8 +30,12 @@ allowed_for() {
     DashUIMac)               echo "Foundation SwiftUI AppKit DashUIKit DesignTokens" ;;
     MacUI)                   echo "Foundation SwiftUI DashUIMac WalletFeatures PlatformServicesMac" ;;
     DashUICross)             echo "Foundation SwiftCrossUI DesignTokens" ;;
-    CrossUI)                 echo "Foundation SwiftCrossUI DashUICross WalletFeatures PlatformServicesDesktop" ;;
-    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DesignTokens" ;;
+    # CrossUI names the WalletRuntime value types the view models expose
+    # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
+    CrossUI)                 echo "Foundation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
+    # DashWalletCore: the --demo services call the pure Rust functions
+    # (units, URIs, QR, mnemonics) directly.
+    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DashWalletCore DesignTokens" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
     DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
     *)                       return 1 ;;
