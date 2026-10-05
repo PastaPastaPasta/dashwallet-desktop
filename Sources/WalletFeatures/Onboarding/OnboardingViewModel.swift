@@ -235,7 +235,10 @@ public final class OnboardingViewModel {
 
     public func startRestore() {
         flow = .restore
-        options = WalletImportOptions(birthHeight: 0, coreCompatible: false, lookahead: 1000)
+        // Scan from genesis by default (review H-5). No lookahead: the engine
+        // has no per-wallet gap limit yet (DESIGN-fable U12) and refuses one
+        // with not_implemented rather than ignoring it.
+        options = WalletImportOptions(birthHeight: 0, coreCompatible: false, lookahead: nil)
         step = .restorePhrase
     }
 

@@ -112,22 +112,11 @@ public actor EngineClient: EngineProtocol {
 
     // MARK: Wallets
 
-    /// M0 call that registers a wallet whose phrase is stored nowhere (review
-    /// H-1): the engine keeps no key material, so funds sent to it are only
-    /// recoverable from the returned phrase. Regtest only, for tests; every
-    /// other network fails with `wallet.no_vault`. Not part of
-    /// `EngineProtocol`; the runtime adds wallets through `importWallet`.
-    /// Removed once B lands the vault.
-    public func createWallet(on network: DashNetwork, wordCount: UInt8 = 12) async throws(DashKitError) -> CreatedWallet {
-        guard network == .regtest else {
-            throw .domain(code: "wallet.no_vault", detail: "createWallet stores no key; regtest only")
-        }
-        let session = try session(network)
-        let created = try await mapped { try await session.createWallet(wordCount: wordCount) }
-        return CreatedWallet(walletID: try .engine(created.walletId), mnemonic: SecretBytes(utf8: created.mnemonic))
-    }
-
-    /// Restores a wallet from a phrase (and optional BIP39 passphrase).
+    /// Adds a wallet from a phrase (and optional BIP39 passphrase). The engine
+    /// stores the seed in the network's vault before it registers the wallet,
+    /// so this fails with `wallet.no_vault` / `wallet.vault_locked` rather
+    /// than creating a wallet without keys. New wallets come from
+    /// `generateMnemonic` followed by this call.
     public func importWallet(
         on network: DashNetwork, mnemonic: SecretBytes, bip39Passphrase: SecretBytes, options: ImportOptions
     ) async throws(DashKitError) -> WalletID {

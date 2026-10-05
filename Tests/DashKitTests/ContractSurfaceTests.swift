@@ -47,9 +47,14 @@ import Testing
         #expect(throws: UriError.TooLongForQr) { try qrMatrix(text: String(repeating: "a", count: 256)) }
     }
 
-    @Test func unimplementedCallsFailTyped() {
-        #expect(throws: WalletError.NotImplemented(call: "generate_mnemonic")) {
-            try generateMnemonic(wordCount: 12, language: .english)
+    @Test func mnemonicsAreGeneratedAndCheckedAsBytes() throws {
+        let phrase = try generateMnemonic(wordCount: 12, language: .english)
+        let check = try checkMnemonic(phrase: phrase)
+        #expect(check.wordCount == 12)
+        #expect(check.language == .english)
+        #expect(check.checksum == .valid)
+        #expect(throws: WalletError.UnsupportedWordCount(wordCount: 13)) {
+            try generateMnemonic(wordCount: 13, language: .english)
         }
     }
 
@@ -67,9 +72,13 @@ import Testing
             options: SessionOptions(dapiAddresses: ["http://127.0.0.1:1"], quorumUrl: "http://127.0.0.1:1", spvPeers: []))
         let wallet = String(repeating: "ab", count: 32)
 
-        #expect(throws: VaultError.NotImplemented(call: "Vault.status")) { try session.vault().status() }
-        await #expect(throws: VaultError.NotImplemented(call: "Vault.unlock")) {
+        #expect(try session.vault().status().state == .noVault)
+        await #expect(throws: VaultError.NoVault) {
             try await session.vault().unlock(passphrase: Data("pw".utf8), scope: .full)
+        }
+        // Biometric quick unlock lands in M2.
+        await #expect(throws: VaultError.NotImplemented(call: "Vault.enroll_quick_unlock")) {
+            try await session.vault().enrollQuickUnlock(grantId: "none")
         }
         #expect(throws: SyncError.NotImplemented(call: "NetworkSession.sync_snapshot")) {
             try session.syncSnapshot()

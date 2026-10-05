@@ -29,7 +29,18 @@ import Testing
         #expect(EngineClient.coreVersion.hasPrefix("dashwallet_core "))
     }
 
-    @Test func createWalletDeliversEventsAndPersistsAcrossRestart() async throws {
+    static let vaultPassphrase = "dashkit test passphrase"
+
+    /// Opens regtest on `client` and creates an encrypted vault (no OS
+    /// keyring access in tests).
+    static func openWithVault(_ client: EngineClient) async throws {
+        try await client.open(.regtest, options: regtestOptions)
+        _ = try await client.createVault(on: .regtest, passphrase: SecretBytes(utf8: vaultPassphrase))
+    }
+
+    /// Review H-1/H-2: a new wallet's phrase goes into the vault before the
+    /// wallet is registered, and after a restart the vault still holds it.
+    @Test func newWalletKeepsItsKeysAcrossRestart() async throws {
         let dir = try TempDir()
         let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
         let stream = client.events.subscribe()
@@ -41,13 +52,26 @@ import Testing
 
         try await client.open(.regtest, options: Self.regtestOptions)
         #expect(await client.isOpen(.regtest))
-        let created = try await client.createWallet(on: .regtest)
-        #expect(created.mnemonic.utf8String()?.split(separator: " ").count == 12)
+        let phrase = try client.generateMnemonic(wordCount: 12, language: .english)
+        #expect(phrase.utf8String()?.split(separator: " ").count == 12)
+        // No vault yet: nothing is registered.
+        do {
+            _ = try await client.importWallet(on: .regtest, mnemonic: phrase)
+            Issue.record("import without a vault should fail")
+        } catch {
+            #expect(error.code == "wallet.no_vault")
+        }
+        #expect(try await client.wallets(on: .regtest).isEmpty)
+
+        let status = try await client.createVault(on: .regtest, passphrase: SecretBytes(utf8: Self.vaultPassphrase))
+        #expect(status.state == .unlocked)
+        let walletID = try await client.importWallet(on: .regtest, mnemonic: phrase, birthHeight: 0)
 
         let wallets = try await client.wallets(on: .regtest)
-        #expect(wallets.map(\.walletID) == [created.walletID])
+        #expect(wallets.map(\.walletID) == [walletID])
         #expect(wallets.first?.balances == .zero)
-        #expect(try await client.balances(on: .regtest, wallet: created.walletID) == .zero)
+        #expect(try await client.balances(on: .regtest, wallet: walletID) == .zero)
+        #expect(try await client.vaultStatus(on: .regtest).walletsWithSecrets == [walletID])
         #expect(FileManager.default.fileExists(
             atPath: client.directory(for: .regtest).appendingPathComponent("wallet.sqlite").path))
 
@@ -55,27 +79,38 @@ import Testing
         try await client.shutdown()
         let seen = await collector.value
         #expect(seen.first == .sessionOpened(.regtest))
-        #expect(seen.contains(.walletCreated(.regtest, created.walletID)))
+        #expect(seen.contains(.lockStateChanged(.regtest)))
+        #expect(seen.contains(.walletCreated(.regtest, walletID)))
         #expect(seen.last == .sessionClosed(.regtest))
 
-        // A new engine on the same directory sees the wallet.
+        // A new engine on the same directory sees the wallet and, after the
+        // passphrase, reveals the same phrase.
         let reopened = try EngineClient(dataRoot: dir.url, workerThreads: 2)
         try await reopened.open(.regtest, options: Self.regtestOptions)
-        #expect(try await reopened.wallets(on: .regtest).map(\.walletID) == [created.walletID])
+        #expect(try await reopened.wallets(on: .regtest).map(\.walletID) == [walletID])
+        let locked = try await reopened.vaultStatus(on: .regtest)
+        #expect(locked.state == .locked)
+        #expect(locked.walletsWithSecrets == [walletID])
+        let grant = try await reopened.authorize(
+            on: .regtest, purpose: .revealSecret,
+            credential: .passphrase(SecretBytes(utf8: Self.vaultPassphrase)))
+        let revealed = try await reopened.revealMnemonic(on: .regtest, wallet: walletID, grantID: grant.id)
+        #expect(revealed.phrase.utf8String() == phrase.utf8String())
+        #expect(revealed.bip39Passphrase.utf8String() == "")
         try await reopened.shutdown()
     }
 
     @Test func importIsDeterministic() async throws {
         let dir = try TempDir()
         let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
-        try await client.open(.regtest, options: Self.regtestOptions)
+        try await Self.openWithVault(client)
         let id = try await client.importWallet(
             on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), birthHeight: 0)
         try await client.close(.regtest)
 
         let other = try TempDir()
         let second = try EngineClient(dataRoot: other.url, workerThreads: 2)
-        try await second.open(.regtest, options: Self.regtestOptions)
+        try await Self.openWithVault(second)
         let again = try await second.importWallet(
             on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), birthHeight: 0)
         #expect(again == id)
@@ -84,27 +119,12 @@ import Testing
         try await client.shutdown()
     }
 
-    /// `createWallet` stores no key (review H-1), so only regtest may use it.
-    @Test func createWalletIsRegtestOnly() async throws {
-        let dir = try TempDir()
-        let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
-        for network: DashNetwork in [.mainnet, .testnet, .devnet(name: "x")] {
-            do {
-                _ = try await client.createWallet(on: network)
-                Issue.record("createWallet on \(network) should be refused")
-            } catch {
-                #expect(error.code == "wallet.no_vault")
-            }
-        }
-        try await client.shutdown()
-    }
-
     @Test func errorsCrossTheBoundaryTyped() async throws {
         let dir = try TempDir()
         let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
 
         await #expect(throws: DashKitError.networkNotOpen(detail: "regtest")) {
-            try await client.createWallet(on: .regtest)
+            try await client.importWallet(on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12))
         }
         // Regtest has no default DAPI endpoints.
         do {
@@ -114,12 +134,12 @@ import Testing
             #expect(error.code == "invalid_config")
         }
 
-        try await client.open(.regtest, options: Self.regtestOptions)
+        try await Self.openWithVault(client)
         do {
-            _ = try await client.createWallet(on: .regtest, wordCount: 13)
+            _ = try client.generateMnemonic(wordCount: 13, language: .english)
             Issue.record("13 words should be rejected")
         } catch {
-            #expect(error.code == "invalid_argument")
+            #expect(error.code == "wallet.unsupported_word_count")
         }
         do {
             _ = try await client.importWallet(on: .regtest, mnemonic: SecretBytes(utf8: "not a phrase"))
@@ -135,11 +155,17 @@ import Testing
         } catch {
             #expect(error.code == "wallet.already_exists")
         }
-        // A BIP39 passphrase needs the vault, which does not exist yet.
+        // A BIP39 passphrase gives a different wallet.
+        let withPassphrase = try await client.importWallet(
+            on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "x"),
+            birthHeight: 0)
+        #expect(try await client.vaultStatus(on: .regtest).walletsWithSecrets.contains(withPassphrase))
+        // Per-wallet lookahead needs upstream support (U12); typed, not ignored.
         do {
             _ = try await client.importWallet(
-                on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "x"))
-            Issue.record("passphrase import should be not implemented")
+                on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "y"),
+                options: ImportOptions(birthHeight: 0, lookahead: 1000))
+            Issue.record("lookahead should be not implemented")
         } catch {
             #expect(error.code == "not_implemented")
         }

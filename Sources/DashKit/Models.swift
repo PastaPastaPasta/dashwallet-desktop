@@ -95,14 +95,6 @@ public struct WalletSummary: Equatable, Sendable {
     public let balances: WalletBalances
 }
 
-/// A wallet from the M0 `createWallet` call. The phrase crosses the FFI as a
-/// `String` there (review M5); B removes the call in favour of
-/// `generateMnemonic` + `importWallet`, which use bytes only.
-public struct CreatedWallet: Sendable {
-    public let walletID: WalletID
-    public let mnemonic: SecretBytes
-}
-
 /// How a session reaches the network. Empty lists mean network defaults
 /// (devnet/regtest have none).
 public struct SessionOptions: Sendable, Equatable {
