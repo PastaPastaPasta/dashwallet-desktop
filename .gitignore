@@ -1,0 +1,7 @@
+scratch/
+.build/
+target/
+.DS_Store
+.claude/
+*.xcframework/
+DerivedData/
