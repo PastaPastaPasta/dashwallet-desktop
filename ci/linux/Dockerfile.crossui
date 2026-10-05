@@ -1,0 +1,36 @@
+# Linux image for the SwiftCrossUI app: Swift 6.3.3 + Rust 1.98.1 + protoc (to
+# build the core) plus GTK 4, Xvfb, D-Bus and the AT-SPI stack (to run it
+# headless and inspect its accessibility tree). Dockerfile.swift and
+# Dockerfile.swift-gtk combined.
+#   docker build -f ci/linux/Dockerfile.crossui -t dwd-linux-crossui ci/linux
+# Used by scripts/crossui-linux-demo.sh.
+FROM swift:6.3.3-noble
+ARG RUST_VERSION=1.98.1
+ARG PROTOC_VERSION=29.3
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    DEBIAN_FRONTEND=noninteractive \
+    GTK_A11Y=atspi
+# Ubuntu's `clang` package (it provides `cc` for Rust) repoints /usr/bin/clang and
+# clang++ at clang-18. SwiftPM then hands that clang the toolchain-only flag
+# -index-store-path when it builds the C targets of SwiftCrossUI's dependencies,
+# so the links go back to the Swift toolchain's clang after the install.
+RUN readlink -f /usr/bin/clang > /swift-clang && readlink -f /usr/bin/clang++ > /swift-clang++
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      libclang-dev clang libssl-dev pkg-config cmake make perl unzip curl ca-certificates \
+      libgtk-4-dev \
+      xvfb xauth x11-utils x11-apps netpbm \
+      dbus dbus-x11 \
+      at-spi2-core \
+      python3 python3-gi python3-pyatspi \
+      gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core \
+      procps file \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf "$(cat /swift-clang)" /usr/bin/clang && ln -sf "$(cat /swift-clang++)" /usr/bin/clang++ \
+    && clang --version | head -1 && cc --version | head -1
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rustc --version && cargo --version
+RUN arch=$(uname -m | sed 's/aarch64/aarch_64/') \
+    && curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${arch}.zip" \
+    && unzip -q /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip && protoc --version

@@ -1,0 +1,158 @@
+[
+ {
+  "kind": "hard",
+  "name": "app pid 15073 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: marker text 'Balances' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "1-overview: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 9, \"named\": 0, \"examples_unnamed\": [\"(no name)\", \"(no name)\", \"(no name)\"]}, \"push button\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"check box\": {\"total\": 1, \"named\": 0, \"examples_unnamed\": [\"(no name)\"]}}"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions']",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Send' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: marker text 'Pay To:' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "2-send: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 4, \"named\": 0, \"examples_unnamed\": [\"(no name)\", \"(no name)\", \"(no name)\"]}, \"push button\": {\"total\": 10, \"named\": 10, \"examples_unnamed\": []}, \"text\": {\"total\": 5, \"named\": 0, \"examples_unnamed\": [\"placeholder-text:Pay to: Dash address\", \"placeholder-text:Amount to send\", \"placeholder-text:Label for the address book\"]}, \"check box\": {\"total\": 1, \"named\": 0, \"examples_unnamed\": [\"(no name)\"]}, \"combo box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions']",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Send'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Add Recipient'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Clear All'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Use available balance'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: address entry exposes placeholder 'Pay to: Dash address'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 15137 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": false,
+  "detail": "[]"
+ },
+ {
+  "kind": "hard",
+  "name": "3-transactions: marker text 'Export\u2026' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "3-transactions: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 40, \"named\": 0, \"examples_unnamed\": [\"(no name)\", \"(no name)\", \"(no name)\"]}, \"push button\": {\"total\": 5, \"named\": 5, \"examples_unnamed\": []}, \"combo box\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}, \"text\": {\"total\": 2, \"named\": 0, \"examples_unnamed\": [\"placeholder-text:Enter address, transaction id, or label to search\", \"placeholder-text:Min amount\"]}}"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 15195 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "4-receive: marker text 'Request payment' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "4-receive: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 4, \"named\": 0, \"examples_unnamed\": [\"(no name)\", \"(no name)\", \"(no name)\"]}, \"push button\": {\"total\": 7, \"named\": 7, \"examples_unnamed\": []}, \"text\": {\"total\": 3, \"named\": 0, \"examples_unnamed\": [\"placeholder-text:Amount to request (optional)\", \"placeholder-text:Enter a label to associate with the new receiving address\", \"placeholder-text:Message for the payer (optional)\"]}}"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 15250 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "5-onboarding: marker text 'Create a new wallet' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "5-onboarding: control naming",
+  "ok": true,
+  "detail": "{\"combo box\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}, \"push button\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}}"
+ }
+]
