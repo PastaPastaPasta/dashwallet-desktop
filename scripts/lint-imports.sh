@@ -13,7 +13,7 @@ set -euo pipefail
 root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # Apple frameworks PlatformServicesMac may use (DESIGN-opus §1.6).
-apple_frameworks="AppKit Security LocalAuthentication UserNotifications ServiceManagement ScreenCaptureKit AVFoundation CoreLocation CoreGraphics CoreImage IOKit"
+apple_frameworks="AppKit Security LocalAuthentication UserNotifications ServiceManagement ScreenCaptureKit AVFoundation CoreLocation CoreGraphics CoreImage IOKit UniformTypeIdentifiers"
 
 allowed_for() {
   case "$1" in
@@ -28,12 +28,16 @@ allowed_for() {
     DesignTokens)            echo "Foundation" ;;
     # AppKit: DashUIKit's AppKit ports and desktop components (DESIGN-opus §1.6 DashUIMac row).
     DashUIMac)               echo "Foundation SwiftUI AppKit DashUIKit DesignTokens" ;;
-    MacUI)                   echo "Foundation SwiftUI DashUIMac WalletFeatures PlatformServicesMac" ;;
+    # MacUI names the WalletRuntime contract value types and DesignTokens
+    # spacing; AppKit stays behind PlatformServicesMac.
+    MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
     DashUICross)             echo "Foundation SwiftCrossUI DesignTokens" ;;
     CrossUI)                 echo "Foundation SwiftCrossUI DashUICross WalletFeatures PlatformServicesDesktop" ;;
     DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DesignTokens" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
     DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
+    # Renders MacUI screens offscreen (NSHostingView) for the screenshots.
+    MacUITests)              echo "Foundation Testing AppKit SwiftUI MacUI DashUIMac DesignTokens WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
     *)                       return 1 ;;
   esac
 }

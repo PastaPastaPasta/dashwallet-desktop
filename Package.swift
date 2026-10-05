@@ -62,11 +62,15 @@ var targets: [Target] = [
         exclude: ["VENDORED.md"],
         resources: [.process("Resources/Icons")]
     ),
+    // Every MacUI source is wrapped in `#if os(macOS)`; elsewhere the module is empty.
     .target(
         name: "MacUI",
         dependencies: [
             .target(name: "DashUIMac", condition: .when(platforms: [.macOS])),
+            "DesignTokens",
             "WalletFeatures",
+            "WalletRuntime",
+            "PlatformServices",
             .target(name: "PlatformServicesMac", condition: .when(platforms: [.macOS])),
         ]
     ),
@@ -82,6 +86,16 @@ var targets: [Target] = [
         name: "DashUIMacSnapshotTests",
         dependencies: ["DashUIMac", "DesignTokens"],
         exclude: ["__Snapshots__"]
+    ),
+    // macOS-only: renders the MacUI screens over the demo services; with
+    // DWD_WRITE_SCREENSHOTS=1 it writes them to docs/screenshots/m1.
+    .testTarget(
+        name: "MacUITests",
+        dependencies: [
+            .target(name: "MacUI", condition: .when(platforms: [.macOS])),
+            "WalletFeatures",
+            "WalletRuntime",
+        ]
     ),
     .testTarget(name: "RepoChecksTests"),
 ]
