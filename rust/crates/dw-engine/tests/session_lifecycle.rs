@@ -119,7 +119,10 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
         .unwrap();
     // Registering the same wallet twice is refused by platform-wallet.
     let dup = engine.block_on(regtest.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)));
-    assert!(matches!(dup, Err(EngineError::Wallet(_))), "{dup:?}");
+    assert!(
+        matches!(dup, Err(EngineError::WalletAlreadyExists(_))),
+        "{dup:?}"
+    );
 
     let devnet = DashNetwork::Devnet {
         name: "dwtest".into(),
@@ -218,7 +221,10 @@ fn rejects_bad_arguments() {
         Err(EngineError::InvalidArgument(_))
     ));
     let bad = engine.block_on(s.import_wallet(Zeroizing::new("not a mnemonic".into()), None));
-    assert!(matches!(bad, Err(EngineError::Wallet(_))), "{bad:?}");
+    assert!(
+        matches!(bad, Err(EngineError::InvalidMnemonic(_))),
+        "{bad:?}"
+    );
     assert!(matches!(
         s.balances(&"00".repeat(32).parse().unwrap()),
         Err(EngineError::WalletNotFound(_))

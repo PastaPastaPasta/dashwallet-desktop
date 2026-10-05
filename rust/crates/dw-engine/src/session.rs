@@ -287,6 +287,13 @@ impl NetworkSession {
         birth_height: Option<u32>,
     ) -> Result<WalletId, EngineError> {
         let manager = self.manager()?;
+        // Checked here so an invalid phrase is reported as such; platform-wallet
+        // folds it into its generic `WalletCreation` error.
+        if !Mnemonic::validate(phrase) {
+            return Err(EngineError::InvalidMnemonic(
+                "not a valid BIP39 phrase in any supported wordlist".into(),
+            ));
+        }
         let wallet = manager
             .create_wallet_from_mnemonic(
                 phrase,

@@ -19,6 +19,12 @@ pub enum EngineError {
     Storage(String),
     #[error("wallet not found: {0}")]
     WalletNotFound(String),
+    /// The phrase is not a valid BIP39 mnemonic in any supported wordlist.
+    #[error("invalid mnemonic: {0}")]
+    InvalidMnemonic(String),
+    /// A wallet with the same id is already registered on this network.
+    #[error("wallet already exists: {0}")]
+    WalletAlreadyExists(String),
     #[error("wallet error: {0}")]
     Wallet(String),
     #[error("platform sdk error: {0}")]
@@ -45,6 +51,8 @@ impl EngineError {
             EngineError::StorageInUse(_) => "storage_in_use",
             EngineError::Storage(_) => "storage",
             EngineError::WalletNotFound(_) => "wallet_not_found",
+            EngineError::InvalidMnemonic(_) => "invalid_mnemonic",
+            EngineError::WalletAlreadyExists(_) => "wallet_already_exists",
             EngineError::Wallet(_) => "wallet",
             EngineError::Sdk(_) => "sdk",
             EngineError::Spv(_) => "spv",
@@ -79,6 +87,10 @@ impl From<PlatformWalletError> for EngineError {
             PlatformWalletError::PersisterLoad(_) | PlatformWalletError::PersisterRestore(_) => {
                 EngineError::Storage(e.to_string())
             }
+            PlatformWalletError::WalletAlreadyExists(_) => {
+                EngineError::WalletAlreadyExists(e.to_string())
+            }
+            PlatformWalletError::WalletNotFound(_) => EngineError::WalletNotFound(e.to_string()),
             other => EngineError::Wallet(other.to_string()),
         }
     }
