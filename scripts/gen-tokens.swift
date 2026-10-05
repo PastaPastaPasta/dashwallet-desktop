@@ -172,24 +172,26 @@ struct SRGB: Equatable {
     }
 }
 
+/// sRGB transfer curve, mirrored for negative input so out-of-gamut values stay out of 0...1 (they are
+/// clamped and reported later by `parseColor`).
 func srgbEncode(_ linear: Double) -> Double {
-    let x = min(max(linear, 0), 1)
-    return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1 / 2.4) - 0.055
+    let x = abs(linear)
+    let encoded = x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1 / 2.4) - 0.055
+    return linear < 0 ? -encoded : encoded
 }
 
 func srgbDecode(_ encoded: Double) -> Double {
     encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4)
 }
 
-/// Parses one colour component. Hex ("0x8D") and integer ("112") forms are 8-bit values; a decimal point
-/// marks a float in 0...1. Alpha uses float semantics for bare integers ("1" means opaque).
+/// Parses one colour component string. Hex ("0x8D") and integer ("112") forms are 8-bit values; a decimal
+/// point marks a float in 0...1. For alpha the integers "0" and "1" mean transparent and opaque.
 func parseComponent(_ raw: Any, isAlpha: Bool, context: String) -> Double {
-    if let number = raw as? NSNumber {
-        let d = number.doubleValue
-        if isAlpha || d <= 1.0 { return d }
-        return d / 255
+    // Xcode writes components as strings. A bare JSON number is rejected: after parsing, 1 and 1.0 are the
+    // same value, so it cannot be classified as an 8-bit integer or a float.
+    guard let string = raw as? String else {
+        fail("\(context): component \(raw) is not a string; write it as Xcode does (\"0x8D\", \"0.553\", \"141\")")
     }
-    guard let string = raw as? String else { fail("\(context): component \(raw) is not a string or number") }
     let s = string.trimmingCharacters(in: .whitespaces)
     if s.lowercased().hasPrefix("0x") {
         guard let v = Int(s.dropFirst(2), radix: 16), (0...255).contains(v) else {
@@ -236,7 +238,8 @@ func parseColor(_ color: [String: Any], context: String) -> (SRGB, String) {
         let lb = -0.0196376 * r - 0.0786361 * g + 1.0982735 * b
         out = SRGB(r: srgbEncode(lr), g: srgbEncode(lg), b: srgbEncode(lb), a: alpha)
     case "gray-gamma-22", "extended-gray":
-        let w = srgbEncode(pow(max(comp("white"), 0), 2.2))
+        let white = comp("white")
+        let w = srgbEncode(white < 0 ? -pow(-white, 2.2) : pow(white, 2.2))
         out = SRGB(r: w, g: w, b: w, a: alpha)
     default:
         fail("\(context): unsupported color-space \(space)")
@@ -553,15 +556,54 @@ func purpleCheckRaster(_ url: URL) -> String {
     #endif
 }
 
+/// CSS colour keywords whose hue is purple-ish (HSV hue 260...320, saturation > 0.25).
+let purpleColorNames = [
+    "blueviolet", "darkmagenta", "darkorchid", "darkviolet", "fuchsia", "magenta", "mediumorchid",
+    "mediumpurple", "orchid", "plum", "purple", "rebeccapurple", "violet",
+]
+
+/// Finds purple-ish colours written in an SVG: hex (3, 4, 6 or 8 digits), rgb()/rgba(), hsl()/hsla() and
+/// colour keywords. Gradients and CSS variables are covered only through the literal colours they contain.
 func purpleCheckSVG(_ url: URL) -> String {
     guard let text = try? String(contentsOf: url, encoding: .utf8) else { fail("cannot read \(url.path)") }
-    let regex = try! NSRegularExpression(pattern: "#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\\b")
-    for m in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-        var hex = String(text[Range(m.range(at: 1), in: text)!])
-        if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
-        let v = Int(hex, radix: 16)!
+    let range = NSRange(text.startIndex..., in: text)
+    func capture(_ m: NSTextCheckingResult, _ i: Int) -> String { String(text[Range(m.range(at: i), in: text)!]) }
+
+    let hexRegex = try! NSRegularExpression(pattern: "#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\\b")
+    for m in hexRegex.matches(in: text, range: range) {
+        var hex = capture(m, 1)
+        if hex.count <= 4 { hex = hex.map { "\($0)\($0)" }.joined() }
+        let v = Int(hex.prefix(6), radix: 16)!
         let c = SRGB(r: Double((v >> 16) & 0xFF) / 255, g: Double((v >> 8) & 0xFF) / 255, b: Double(v & 0xFF) / 255, a: 1)
-        if c.isPurpleish { return "failed (fill #\(hex))" }
+        if c.isPurpleish { return "failed (colour #\(hex))" }
+    }
+
+    func channel(_ s: String) -> Double {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return t.hasSuffix("%") ? (Double(t.dropLast()) ?? 0) / 100 : (Double(t) ?? 0) / 255
+    }
+    let rgbRegex = try! NSRegularExpression(
+        pattern: "rgba?\\(\\s*([0-9.]+%?)[\\s,]+([0-9.]+%?)[\\s,]+([0-9.]+%?)", options: [.caseInsensitive])
+    for m in rgbRegex.matches(in: text, range: range) {
+        let c = SRGB(r: channel(capture(m, 1)), g: channel(capture(m, 2)), b: channel(capture(m, 3)), a: 1)
+        if c.isPurpleish { return "failed (colour \(capture(m, 0)))" }
+    }
+
+    let hslRegex = try! NSRegularExpression(
+        pattern: "hsla?\\(\\s*([0-9.]+)(?:deg)?[\\s,]+([0-9.]+)%[\\s,]+([0-9.]+)%", options: [.caseInsensitive])
+    for m in hslRegex.matches(in: text, range: range) {
+        let h = (Double(capture(m, 1)) ?? 0).truncatingRemainder(dividingBy: 360)
+        let sl = (Double(capture(m, 2)) ?? 0) / 100, l = (Double(capture(m, 3)) ?? 0) / 100
+        // HSL -> HSV saturation for the same hue.
+        let v = l + sl * min(l, 1 - l)
+        let sv = v == 0 ? 0 : 2 * (1 - l / v)
+        if sv > 0.25 && h >= 260 && h <= 320 { return "failed (colour \(capture(m, 0)))" }
+    }
+
+    let nameRegex = try! NSRegularExpression(
+        pattern: "(?:fill|stroke|stop-color|color)\\s*[=:]\\s*[\"']?\\s*([a-zA-Z]+)", options: [.caseInsensitive])
+    for m in nameRegex.matches(in: text, range: range) where purpleColorNames.contains(capture(m, 1).lowercased()) {
+        return "failed (colour \(capture(m, 1)))"
     }
     return "passed"
 }
@@ -589,7 +631,11 @@ func exportIcons(_ entries: [IconEntry]) -> [ExportedIcon] {
             let luminosity = appearances.first(where: { ($0["appearance"] as? String) == "luminosity" })?["value"] as? String
             slots.append(Slot(file: file, scale: image["scale"] as? String, dark: luminosity == "dark"))
         }
-        let vector = slots.first { ["pdf", "svg"].contains(($0.file as NSString).pathExtension.lowercased()) }
+        func isVector(_ slot: Slot) -> Bool { ["pdf", "svg"].contains((slot.file as NSString).pathExtension.lowercased()) }
+        if slots.contains(where: isVector), !slots.contains(where: { isVector($0) && !$0.dark }) {
+            fail("\(context): vector imageset has only a dark-appearance file")
+        }
+        let vector = slots.first { isVector($0) && !$0.dark }
         var copies: [(from: String, to: String)] = []
         var hasDark = false
         var format: String
@@ -619,6 +665,10 @@ func exportIcons(_ entries: [IconEntry]) -> [ExportedIcon] {
                     hasDark = true
                 }
                 scales.append(Int(s.dropLast())!)
+            }
+            let darkScales = Set(wanted.filter { s in slots.contains { $0.scale == s && $0.dark } })
+            if !darkScales.isEmpty && darkScales != Set(wanted) {
+                fail("\(context): dark variant exists at \(darkScales.sorted()) but not at every exported scale \(wanted)")
             }
         }
         var checks: [String] = []

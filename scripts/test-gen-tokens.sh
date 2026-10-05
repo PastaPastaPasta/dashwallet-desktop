@@ -33,6 +33,7 @@ ui="$fx/DashUIKit"
 media="$ui/Sources/DashUIKit/Resources/Media.xcassets"
 colorset "$media/Colors/Blue.colorset" "{ $(srgb 0x00 0x8D 0xE4 1.000), \"idiom\" : \"universal\" }"
 colorset "$media/Colors/P3.colorset" '{ "color" : { "color-space" : "display-p3", "components" : { "red" : "0.800", "green" : "0.400", "blue" : "0.200", "alpha" : "1.000" } }, "idiom" : "universal" }'
+colorset "$media/Colors/P3Red.colorset" '{ "color" : { "color-space" : "display-p3", "components" : { "red" : "1.000", "green" : "0.000", "blue" : "0.000", "alpha" : "1.000" } }, "idiom" : "universal" }'
 colorset "$media/Colors/GrayGamma.colorset" '{ "color" : { "color-space" : "gray-gamma-22", "components" : { "white" : "0.600", "alpha" : "0.500" } }, "idiom" : "universal" }'
 colorset "$media/Colors/Lum.colorset" "{ $(srgb 0x11 0x11 0x11 1.000), \"idiom\" : \"universal\" }, { $light, $(srgb 0x22 0x22 0x22 1.000), \"idiom\" : \"universal\" }, { $dark, $(srgb 0x33 0x33 0x33 1.000), \"idiom\" : \"universal\" }"
 colorset "$media/Colors/Grape.colorset" "{ $(srgb 0x80 0x00 0xFF 1.000), \"idiom\" : \"universal\" }"
@@ -93,17 +94,31 @@ done
 if [ -e "$out/Resources/Icons/stale.png" ]; then echo "FAIL stale icon kept"; failures=$((failures + 1)); else echo "ok   stale icon removed"; fi
 if grep -q "Grape\|Violet" "$colors"; then echo "FAIL purple token emitted"; failures=$((failures + 1)); else echo "ok   no purple token emitted"; fi
 
-# A purple SVG fill must abort generation.
-sed -i.bak 's/#008DE4/#9B30FF/' "$app/Vec/logo.imageset/logo.svg"
-if swift "$repo/scripts/gen-tokens.swift" "$ios" "$ui" "$out" 2> "$fx/log2.txt"; then
-    echo "FAIL purple icon accepted"; failures=$((failures + 1))
-else
-    check "purple icon rejected" "$fx/log2.txt" 'purple check failed (fill #9B30FF)'
-fi
 
-sed -i.bak 's/#9B30FF/#008DE4/' "$app/Vec/logo.imageset/logo.svg"
+# Out-of-gamut colours are clamped with a warning (P3 pure red lies outside sRGB).
+check "out-of-gamut clamp reported" "$fx/log.txt" 'dashuikit:Colors/P3Red.colorset: colour clamped into sRGB gamut'
+check "out-of-gamut clamped value" "$colors" 'Asset `P3Red`: #FF0000.'
 
-# A mostly purple PNG must abort generation (raster check needs ImageIO, so macOS only).
+# Negative cases: each edit must make the generator exit non-zero with the given message, then is undone.
+run=0
+expect_failure() {  # expect_failure <description> <expected stderr text>
+    run=$((run + 1))
+    if swift "$repo/scripts/gen-tokens.swift" "$ios" "$ui" "$out" 2> "$fx/neg$run.txt"; then
+        echo "FAIL $1: generator succeeded"; failures=$((failures + 1))
+    else
+        check "$1" "$fx/neg$run.txt" "$2"
+    fi
+}
+svg="$app/Vec/logo.imageset/logo.svg"
+cp "$svg" "$fx/logo.svg.orig"
+for colour in '#9B30FF' '#9B30FFCC' 'rgb(155, 48, 255)' 'hsl(270, 100%, 59%)' 'purple'; do
+    sed -e "s/#008DE4/$colour/" "$fx/logo.svg.orig" > "$svg"
+    expect_failure "purple SVG colour $colour rejected" "purple check failed (colour"
+done
+cp "$fx/logo.svg.orig" "$svg"
+
+# A mostly purple PNG (raster check needs ImageIO, so macOS only).
+send="$media/Icons/menu-send.imageset"
 if [ "$(uname)" = Darwin ]; then
     cat > "$fx/purple-png.swift" <<'EOF'
 import CoreGraphics
@@ -117,22 +132,45 @@ let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: CommandLine.argu
 CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
 precondition(CGImageDestinationFinalize(dest))
 EOF
-    cp "$media/Icons/menu-send.imageset/menu-send@2x.png" "$fx/send2x.png"
-    swift "$fx/purple-png.swift" "$media/Icons/menu-send.imageset/menu-send@2x.png"
-    if swift "$repo/scripts/gen-tokens.swift" "$ios" "$ui" "$out" 2> "$fx/log4.txt"; then
-        echo "FAIL purple PNG accepted"; failures=$((failures + 1))
-    else
-        check "purple PNG rejected" "$fx/log4.txt" 'visible pixels purple-ish'
-    fi
-    cp "$fx/send2x.png" "$media/Icons/menu-send.imageset/menu-send@2x.png"
+    cp "$send/menu-send@2x.png" "$fx/send2x.png"
+    swift "$fx/purple-png.swift" "$send/menu-send@2x.png"
+    expect_failure "purple PNG rejected" 'visible pixels purple-ish'
+    cp "$fx/send2x.png" "$send/menu-send@2x.png"
 fi
 
-# A colour set without any usable colour must abort generation.
+# Dark PNG at some scales only.
+cp "$send/Contents.json" "$fx/send-contents.orig"
+cat > "$send/Contents.json" <<'EOF'
+{ "images" : [
+  { "filename" : "menu-send@2x.png", "idiom" : "universal", "scale" : "2x" },
+  { "appearances" : [ { "appearance" : "luminosity", "value" : "dark" } ], "filename" : "menu-send-dark@2x.png", "idiom" : "universal", "scale" : "2x" },
+  { "filename" : "menu-send@3x.png", "idiom" : "universal", "scale" : "3x" }
+], "info" : { "author" : "xcode", "version" : 1 } }
+EOF
+expect_failure "partial dark variants rejected" 'dark variant exists at ["2x"] but not at every exported scale'
+cp "$fx/send-contents.orig" "$send/Contents.json"
+
+# Vector imageset whose only file is the dark one.
+cp "$app/Vec/logo.imageset/Contents.json" "$fx/logo-contents.orig"
+echo '{ "images" : [ { "appearances" : [ { "appearance" : "luminosity", "value" : "dark" } ], "filename" : "logo.svg", "idiom" : "universal" } ], "info" : { "author" : "xcode", "version" : 1 } }' > "$app/Vec/logo.imageset/Contents.json"
+expect_failure "dark-only vector rejected" 'vector imageset has only a dark-appearance file'
+cp "$fx/logo-contents.orig" "$app/Vec/logo.imageset/Contents.json"
+
+# Bare JSON number component.
+colorset "$media/Colors/Numeric.colorset" '{ "color" : { "color-space" : "srgb", "components" : { "red" : 1, "green" : "0.0", "blue" : "0.0", "alpha" : "1.000" } }, "idiom" : "universal" }'
+expect_failure "numeric component rejected" 'is not a string'
+rm -rf "$media/Colors/Numeric.colorset"
+
+# A colour set without any usable colour.
 colorset "$media/Colors/Empty.colorset" "{ $dark, \"idiom\" : \"universal\" }"
-if swift "$repo/scripts/gen-tokens.swift" "$ios" "$ui" "$out" 2> "$fx/log3.txt"; then
-    echo "FAIL empty colour set accepted"; failures=$((failures + 1))
+expect_failure "empty colour set rejected" 'no universal light/any colour'
+rm -rf "$media/Colors/Empty.colorset"
+
+# With every edit undone the fixture generates again.
+if swift "$repo/scripts/gen-tokens.swift" "$ios" "$ui" "$out" 2> "$fx/final.txt"; then
+    echo "ok   fixture regenerates after negative cases"
 else
-    check "empty colour set rejected" "$fx/log3.txt" 'no universal light/any colour'
+    echo "FAIL fixture no longer generates"; cat "$fx/final.txt"; failures=$((failures + 1))
 fi
 
 echo "$failures failure(s)"
