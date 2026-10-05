@@ -53,12 +53,13 @@ var targets: [Target] = [
         name: "WalletFeatures",
         dependencies: ["WalletRuntime", "AppServices", "PlatformServices", "DesignTokens"]
     ),
-    // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see VENDORED.md there).
+    // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see Sources/DashUIMac/VENDORED.md).
     // Sources/DashUIMac/Resources/Icons is a symlink to the repository's exported icon set
     // (Resources/Icons); `.process` copies its files flat into the resource bundle.
     .target(
         name: "DashUIMac",
         dependencies: ["DesignTokens"],
+        exclude: ["VENDORED.md"],
         resources: [.process("Resources/Icons")]
     ),
     .target(
