@@ -123,9 +123,9 @@ public actor LifecycleQueue: LifecycleQueueing {
             var firstError: ServiceError?
             if let current = self.host.active.network {
                 self.transitionState.send(.stopping(DashNetwork(current)))
-                do { try await self.stopSession(current) } catch { firstError = error }
+                do throws(ServiceError) { try await self.stopSession(current) } catch { firstError = error }
             }
-            do { try await self.host.shutdown() } catch { firstError = firstError ?? error }
+            do throws(ServiceError) { try await self.host.shutdown() } catch { firstError = firstError ?? error }
             if let firstError { throw firstError }
         }
     }
@@ -183,7 +183,7 @@ public actor LifecycleQueue: LifecycleQueueing {
         let task = Task<Result<T, ServiceError>, Never> {
             await previous?.value
             defer { state.send(.idle) }
-            do {
+            do throws(ServiceError) {
                 return .success(try await operation())
             } catch {
                 return .failure(error)

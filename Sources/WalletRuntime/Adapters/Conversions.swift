@@ -14,8 +14,12 @@ extension ServiceError {
     }
 }
 
-/// Runs an engine call and maps its error to `ServiceError`.
-func serviceCall<T>(_ body: () async throws(DashKitError) -> T) async throws(ServiceError) -> T {
+/// Runs an engine call and maps its error to `ServiceError`. The call stays
+/// on the caller's isolation, so `body` may capture isolated state.
+func serviceCall<T>(
+    isolation: isolated (any Actor)? = #isolation,
+    _ body: () async throws(DashKitError) -> T
+) async throws(ServiceError) -> T {
     do {
         return try await body()
     } catch {
