@@ -1181,21 +1181,16 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func balances(walletId: String) throws  -> WalletBalances
     
     /**
-     * M0: registers a wallet from a fresh English phrase and returns the
-     * phrase. The phrase is stored nowhere (review finding H1). Superseded
-     * by `generate_mnemonic` + `import_wallet`; B removes it.
-     */
-    func createWallet(wordCount: UInt8) async throws  -> CreatedWallet
-    
-    /**
-     * Registers a wallet from `mnemonic` (UTF-8 phrase bytes) and stores the
-     * phrase and `bip39_passphrase` in the vault, in the seed-safety order
-     * of DESIGN-opus §1.8. Returns the wallet id.
+     * Stores `mnemonic` (UTF-8 phrase bytes) and `bip39_passphrase` in the
+     * vault and reads them back, then registers the wallet (DESIGN-opus §1.8
+     * seed-safety order). Returns the wallet id. No wallet is registered
+     * without its seed in the vault (review H-1).
      *
-     * Current behaviour (until B lands the vault): only an empty passphrase
-     * and default options other than `birth_height` are accepted; anything
-     * else returns `NotImplemented`. The wallet is registered but the phrase
-     * is not stored.
+     * Over a registered wallet whose seed the vault lacks, the seed is
+     * stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
+     * `NoVault`, `VaultLocked` (also when unlocked for mixing only).
+     * `options.name` and `options.lookahead` are not supported yet and
+     * return `NotImplemented`.
      */
     func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOptions) async throws  -> String
     
@@ -1793,35 +1788,16 @@ open func balances(walletId: String)throws  -> WalletBalances  {
 }
     
     /**
-     * M0: registers a wallet from a fresh English phrase and returns the
-     * phrase. The phrase is stored nowhere (review finding H1). Superseded
-     * by `generate_mnemonic` + `import_wallet`; B removes it.
-     */
-open func createWallet(wordCount: UInt8)async throws  -> CreatedWallet  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_dashwallet_core_fn_method_networksession_create_wallet(
-                        self.uniffiCloneHandle(),FfiConverterUInt8.lower(wordCount)
-                )
-            },
-            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
-            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
-            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeCreatedWallet_lift,
-            errorHandler: FfiConverterTypeEngineError_lift
-        )
-}
-    
-    /**
-     * Registers a wallet from `mnemonic` (UTF-8 phrase bytes) and stores the
-     * phrase and `bip39_passphrase` in the vault, in the seed-safety order
-     * of DESIGN-opus §1.8. Returns the wallet id.
+     * Stores `mnemonic` (UTF-8 phrase bytes) and `bip39_passphrase` in the
+     * vault and reads them back, then registers the wallet (DESIGN-opus §1.8
+     * seed-safety order). Returns the wallet id. No wallet is registered
+     * without its seed in the vault (review H-1).
      *
-     * Current behaviour (until B lands the vault): only an empty passphrase
-     * and default options other than `birth_height` are accepted; anything
-     * else returns `NotImplemented`. The wallet is registered but the phrase
-     * is not stored.
+     * Over a registered wallet whose seed the vault lacks, the seed is
+     * stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
+     * `NoVault`, `VaultLocked` (also when unlocked for mixing only).
+     * `options.name` and `options.lookahead` are not supported yet and
+     * return `NotImplemented`.
      */
 open func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOptions)async throws  -> String  {
     return
@@ -2368,8 +2344,8 @@ public func FfiConverterTypeTxDraft_lower(_ value: TxDraft) -> UInt64 {
 public protocol VaultProtocol: AnyObject, Sendable {
     
     /**
-     * Checks `credential` and issues a grant for `purpose`. A passphrase
-     * credential also unlocks a locked vault (scope Full).
+     * Checks `credential` and issues a single-use grant for `purpose`. A
+     * passphrase credential also unlocks a locked vault (scope Full).
      */
     func authorize(purpose: GrantPurpose, credential: VaultCredential) async throws  -> AuthGrant
     
@@ -2388,7 +2364,8 @@ public protocol VaultProtocol: AnyObject, Sendable {
     
     /**
      * dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-     * a `ChangeCredential` grant. Errors: `AlreadyEncrypted`, `GrantInvalid`.
+     * a `ChangeCredential` grant. Leaves the vault locked. Errors:
+     * `AlreadyEncrypted`, `GrantInvalid`.
      */
     func encrypt(newPassphrase: Data, grantId: String) async throws  -> VaultStatus
     
@@ -2487,8 +2464,8 @@ open class Vault: VaultProtocol, @unchecked Sendable {
 
     
     /**
-     * Checks `credential` and issues a grant for `purpose`. A passphrase
-     * credential also unlocks a locked vault (scope Full).
+     * Checks `credential` and issues a single-use grant for `purpose`. A
+     * passphrase credential also unlocks a locked vault (scope Full).
      */
 open func authorize(purpose: GrantPurpose, credential: VaultCredential)async throws  -> AuthGrant  {
     return
@@ -2549,7 +2526,8 @@ open func create(passphrase: Data?)async throws  -> VaultStatus  {
     
     /**
      * dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-     * a `ChangeCredential` grant. Errors: `AlreadyEncrypted`, `GrantInvalid`.
+     * a `ChangeCredential` grant. Leaves the vault locked. Errors:
+     * `AlreadyEncrypted`, `GrantInvalid`.
      */
 open func encrypt(newPassphrase: Data, grantId: String)async throws  -> VaultStatus  {
     return
@@ -3093,64 +3071,6 @@ public func FfiConverterTypeBroadcastOutcome_lower(_ value: BroadcastOutcome) ->
 }
 
 
-/**
- * M0 result of `create_wallet`. Superseded by `generate_mnemonic` +
- * `import_wallet` (review finding H1); removed when B lands the vault.
- */
-public struct CreatedWallet: Equatable, Hashable {
-    public let walletId: String
-    public let mnemonic: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(walletId: String, mnemonic: String) {
-        self.walletId = walletId
-        self.mnemonic = mnemonic
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension CreatedWallet: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCreatedWallet: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreatedWallet {
-        return
-            try CreatedWallet(
-                walletId: FfiConverterString.read(from: &buf), 
-                mnemonic: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CreatedWallet, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.walletId, into: &buf)
-        FfiConverterString.write(value.mnemonic, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreatedWallet_lift(_ buf: RustBuffer) throws -> CreatedWallet {
-    return try FfiConverterTypeCreatedWallet.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreatedWallet_lower(_ value: CreatedWallet) -> RustBuffer {
-    return FfiConverterTypeCreatedWallet.lower(value)
-}
-
-
 public struct EngineConfig: Equatable, Hashable {
     /**
      * Root data directory; networks live in `<data_root>/<network>/`.
@@ -3471,7 +3391,8 @@ public func FfiConverterTypeHistoryQuery_lower(_ value: HistoryQuery) -> RustBuf
  */
 public struct ImportOptions: Equatable, Hashable {
     /**
-     * Display name; `None` = engine default ("Wallet N").
+     * Display name; `None` = engine default ("Wallet N"). Names live in
+     * dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
      */
     public let name: String?
     /**
@@ -3486,7 +3407,8 @@ public struct ImportOptions: Equatable, Hashable {
     public let coreCompat: Bool
     /**
      * Address lookahead for the restore scan; `None` = engine default.
-     * dash-qt restores use 1000 (QT-105).
+     * dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
+     * gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
      */
     public let lookahead: UInt32?
 
@@ -3494,7 +3416,8 @@ public struct ImportOptions: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Display name; `None` = engine default ("Wallet N").
+         * Display name; `None` = engine default ("Wallet N"). Names live in
+         * dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
          */name: String?, 
         /**
          * First block to scan. `Some(0)` = genesis; `None` = SPV tip or latest
@@ -3506,7 +3429,8 @@ public struct ImportOptions: Equatable, Hashable {
          */coreCompat: Bool, 
         /**
          * Address lookahead for the restore scan; `None` = engine default.
-         * dash-qt restores use 1000 (QT-105).
+         * dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
+         * gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
          */lookahead: UInt32?) {
         self.name = name
         self.birthHeight = birthHeight
@@ -6753,7 +6677,7 @@ public func FfiConverterTypeDisplayUnit_lower(_ value: DisplayUnit) -> RustBuffe
 
 /**
  * Engine-level error of the M0 calls (engine, session, SPV start/stop,
- * `create_wallet`, `list_wallets`, `balances`). M1 domain calls use their own
+ * `list_wallets`, `balances`). M1 domain calls use their own
  * error enums (`VaultError`, `WalletError`, …). Swift maps the case to
  * localized copy; `detail` is diagnostic text for logs only.
  */
@@ -10098,7 +10022,8 @@ public func FfiConverterTypeUriError_lower(_ value: UriError) -> RustBuffer {
 
 
 /**
- * The credential presented to `Vault::authorize`.
+ * The credential presented to `Vault::authorize`. Not `Clone`: the bytes are
+ * moved into `Zeroizing` buffers on entry.
  */
 
 public enum VaultCredential: Equatable, Hashable {
@@ -11873,7 +11798,8 @@ public func qrMatrix(text: String)throws  -> QrMatrix  {
 })
 }
 /**
- * Validates a typed or pasted phrase without importing it.
+ * Validates a typed or pasted phrase without importing it. Never fails
+ * today; the `Result` keeps the contract's error channel.
  */
 public func checkMnemonic(phrase: Data)throws  -> MnemonicCheck  {
     return try  FfiConverterTypeMnemonicCheck_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -11940,7 +11866,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_func_qr_matrix() != 58029) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_check_mnemonic() != 52189) {
+    if (uniffi_dashwallet_core_checksum_func_check_mnemonic() != 61110) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_generate_mnemonic() != 44903) {
@@ -12084,10 +12010,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_balances() != 838) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_create_wallet() != 64094) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet() != 44292) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet() != 11655) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_list_wallets() != 12990) {
@@ -12105,7 +12028,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 22496) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 54088) {
+    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 22576) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_change_passphrase() != 65154) {
@@ -12114,7 +12037,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_create() != 45384) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 6472) {
+    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 49372) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_enroll_quick_unlock() != 51599) {
