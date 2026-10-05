@@ -6,7 +6,7 @@ use dw_uri::core::{SendCoinsRecipient, UriRejection, format_bitcoin_uri, handle_
 use dw_uri::keyio::{self, AddressKind, Destination, DestinationError};
 
 use crate::DashNetwork;
-use crate::api::common::{domain_error_common, not_implemented};
+use crate::api::common::domain_error_common;
 
 /// Why a string is not a Dash Core address on the network (Core's
 /// `DecodeDestination` error cases).
@@ -184,12 +184,18 @@ pub fn classify_address(network: DashNetwork, text: String) -> AddressClass {
     }
 }
 
-/// QR module matrix for `text` (QT-084 rules: ECC L, at most 255 characters).
-/// The host renders the modules; no image crosses the FFI.
+/// QR module matrix for `text`, encoded as dash-qt encodes it (QT-084: byte
+/// mode, ECC L, at most 255 characters). The host renders the modules; no
+/// image crosses the FFI.
 #[uniffi::export]
 pub fn qr_matrix(text: String) -> Result<QrMatrix, UriError> {
-    let _ = text;
-    not_implemented("qr_matrix")
+    let m = dw_uri::qr::qr_matrix(&text).map_err(|e| match e {
+        dw_uri::qr::QrError::TooLong { .. } => UriError::TooLongForQr,
+    })?;
+    Ok(QrMatrix {
+        size: m.size,
+        modules: m.modules,
+    })
 }
 
 #[cfg(test)]
@@ -224,5 +230,13 @@ mod tests {
             classify_address(DashNetwork::Testnet, ADDR.into()),
             AddressClass::Invalid { .. }
         ));
+    }
+
+    #[test]
+    fn qr_matrix_maps_the_length_limit() {
+        let m = qr_matrix(format!("dash:{ADDR}")).unwrap();
+        assert_eq!(m.modules.len(), (m.size * m.size) as usize);
+        let e = qr_matrix("x".repeat(256)).unwrap_err();
+        assert_eq!(e.code(), "uri.too_long_for_qr");
     }
 }
