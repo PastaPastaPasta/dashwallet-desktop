@@ -1,0 +1,25 @@
+# Linux builder + headless UI runner for the SwiftCrossUI (GtkBackend) front end.
+#
+# Contents: Swift 6.3.3 (official noble image), GTK 4 dev headers, Xvfb, a D-Bus session
+# launcher and the AT-SPI stack (bus launcher + registry + pyatspi/dogtail) so a
+# SwiftCrossUI app can be launched under a virtual X server and its accessibility
+# tree inspected from Python.
+#
+# Build:  docker build -f ci/linux/Dockerfile.swift-gtk -t dwd-linux-swift-gtk ci/linux
+# Use:    probes/crossui-linux/scripts/run-in-container.sh (G2 probe build, test, AT-SPI smoke)
+FROM swift:6.3.3-noble
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      pkg-config \
+      libgtk-4-dev \
+      xvfb xauth x11-utils x11-apps netpbm \
+      dbus dbus-x11 \
+      at-spi2-core \
+      python3 python3-gi python3-pyatspi python3-dogtail \
+      gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core \
+      procps time file \
+    && rm -rf /var/lib/apt/lists/*
+
+# GTK 4 talks AT-SPI directly over D-Bus; make sure toolkit accessibility is not disabled.
+ENV GTK_A11Y=atspi
