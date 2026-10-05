@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 dw-engine = { workspace = true }
+dw-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 zeroize = { workspace = true }
 

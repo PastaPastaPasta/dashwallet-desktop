@@ -1,12 +1,20 @@
 //! Offline engine tests: real PlatformWalletManager + SqlitePersister in a temp
-//! dir, regtest/devnet with loopback endpoints that nothing listens on.
+//! dir, regtest/devnet with loopback endpoints that nothing listens on. Vaults
+//! use cheap Argon2id parameters and an in-process OS store.
 
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
-    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, SessionOptions,
-    WalletBalances,
+    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
+    NetworkSession, SessionOptions, WalletBalances, WalletId,
 };
+use dw_vault::{
+    Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, UnlockScope,
+    VaultConfig, VaultError,
+};
+use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use zeroize::Zeroizing;
 
 /// BIP39 test vector phrase (all-zero entropy).
@@ -36,15 +44,67 @@ fn local_opts() -> SessionOptions {
     }
 }
 
+/// Vault passphrase of the tests' encrypted vaults.
+const PASSPHRASE: &[u8] = b"correct horse battery staple";
+
 fn new_engine(root: &std::path::Path, sink: Arc<Recorder>) -> Engine {
+    new_engine_with_store(root, sink, Arc::new(MemoryOsStore::new()))
+}
+
+/// `os_store` stands in for the OS keyring; share it between engines to model
+/// an app restart on the same machine.
+fn new_engine_with_store(
+    root: &std::path::Path,
+    sink: Arc<Recorder>,
+    os_store: Arc<MemoryOsStore>,
+) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: root.to_path_buf(),
             worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store,
+                ..VaultConfig::default()
+            },
         },
         sink,
     )
     .unwrap()
+}
+
+/// Creates the session's vault: encrypted with [`PASSPHRASE`], or unencrypted.
+fn create_vault(engine: &Engine, session: &Arc<NetworkSession>, encrypted: bool) {
+    engine
+        .block_on(session.vault_op(move |v| v.create(encrypted.then_some(PASSPHRASE))))
+        .unwrap();
+}
+
+fn import(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    phrase: &str,
+) -> Result<WalletId, EngineError> {
+    engine.block_on(session.import_wallet(
+        Zeroizing::new(phrase.as_bytes().to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions {
+            birth_height: Some(0),
+            core_compat: false,
+        },
+    ))
+}
+
+/// The regtest P2PKH address at `m/44'/1'/0'/0/0` of `phrase`.
+fn first_receive_address(phrase: &str) -> String {
+    let secret = dw_vault::mnemonic::derive_secret(phrase.as_bytes(), b"", false).unwrap();
+    let secp = Secp256k1::new();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
+    let child = master
+        .derive_priv(&secp, &DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+        .unwrap();
+    let pubkey = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+    dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string()
 }
 
 #[test]
@@ -58,8 +118,10 @@ fn created_wallet_survives_engine_restart() {
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
     assert!(root.join("regtest").join("wallet.sqlite").exists());
+    create_vault(&engine, &session, true);
 
     let created = engine.block_on(session.create_wallet(12)).unwrap();
+    assert!(session.vault().has_wallet_secret(&created.wallet_id.0));
     assert_eq!(created.mnemonic.split_whitespace().count(), 12);
 
     let wallets = session.list_wallets().unwrap();
@@ -114,11 +176,10 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
     let regtest = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
-    let a = engine
-        .block_on(regtest.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)))
-        .unwrap();
-    // Registering the same wallet twice is refused by platform-wallet.
-    let dup = engine.block_on(regtest.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)));
+    create_vault(&engine, &regtest, false);
+    let a = import(&engine, &regtest, ABANDON_12).unwrap();
+    // Importing a wallet whose keys the vault already holds is refused.
+    let dup = import(&engine, &regtest, ABANDON_12);
     assert!(
         matches!(dup, Err(EngineError::WalletAlreadyExists(_))),
         "{dup:?}"
@@ -136,9 +197,8 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
             .join("wallet.sqlite")
             .exists()
     );
-    let b = engine
-        .block_on(dev.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)))
-        .unwrap();
+    create_vault(&engine, &dev, false);
+    let b = import(&engine, &dev, ABANDON_12).unwrap();
     assert_ne!(a, b, "same mnemonic must yield distinct ids per network");
 
     // Close and reopen the regtest session inside the same engine: the
@@ -173,9 +233,8 @@ fn dropping_engine_without_shutdown_releases_storage() {
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
-    let id = engine
-        .block_on(s.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)))
-        .unwrap();
+    create_vault(&engine, &s, true);
+    let id = import(&engine, &s, ABANDON_12).unwrap();
     drop(s);
     drop(engine);
 
@@ -216,11 +275,12 @@ fn rejects_bad_arguments() {
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
+    create_vault(&engine, &s, false);
     assert!(matches!(
         engine.block_on(s.create_wallet(13)),
         Err(EngineError::InvalidArgument(_))
     ));
-    let bad = engine.block_on(s.import_wallet(Zeroizing::new("not a mnemonic".into()), None));
+    let bad = import(&engine, &s, "not a mnemonic");
     assert!(
         matches!(bad, Err(EngineError::InvalidMnemonic(_))),
         "{bad:?}"
@@ -276,5 +336,123 @@ fn spv_starts_and_stops_without_reachable_peers() {
         network: DashNetwork::Regtest,
         running: false
     }));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Review H-1: no path registers a wallet whose seed is not in the vault.
+#[test]
+fn import_without_usable_vault_registers_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .unwrap();
+
+    let err = import(&engine, &s, ABANDON_12);
+    assert!(
+        matches!(err, Err(EngineError::Vault(VaultError::NoVault))),
+        "{err:?}"
+    );
+    let err = engine.block_on(s.create_wallet(12));
+    assert!(
+        matches!(err, Err(EngineError::Vault(VaultError::NoVault))),
+        "{err:?}"
+    );
+    assert!(s.list_wallets().unwrap().is_empty());
+
+    create_vault(&engine, &s, true);
+    s.lock_vault().unwrap();
+    let err = import(&engine, &s, ABANDON_12);
+    assert!(
+        matches!(err, Err(EngineError::Vault(VaultError::Locked))),
+        "{err:?}"
+    );
+    assert!(s.list_wallets().unwrap().is_empty());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Review H-2: after a restart the wallet still has its keys: unlocking the
+/// vault lets it sign, and the signature verifies against its address.
+#[test]
+fn imported_wallet_signs_after_restart_and_unlock() {
+    let dir = tempfile::tempdir().unwrap();
+    let rec = Arc::new(Recorder::default());
+    let engine = new_engine(dir.path(), Arc::clone(&rec));
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .unwrap();
+    create_vault(&engine, &s, true);
+    assert!(rec.events().contains(&EngineEvent::VaultLockState {
+        network: DashNetwork::Regtest,
+        state: LockState::Unlocked,
+    }));
+    let id = import(&engine, &s, ABANDON_12).unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(s);
+    drop(engine);
+
+    let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .unwrap();
+    let status = s.vault().status();
+    assert_eq!(status.state, LockState::Locked);
+    assert_eq!(status.wallets_with_secrets, vec![id.0]);
+    assert_eq!(
+        s.list_wallets()
+            .unwrap()
+            .into_iter()
+            .map(|w| w.wallet_id)
+            .collect::<Vec<_>>(),
+        vec![id]
+    );
+
+    // Locked: no grant without the passphrase.
+    let locked =
+        engine.block_on(s.vault_op(|v| v.authorize(GrantPurpose::SignMessage, Credential::None)));
+    assert!(
+        matches!(locked, Err(EngineError::Vault(VaultError::Locked))),
+        "{locked:?}"
+    );
+
+    engine
+        .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, UnlockScope::Full)))
+        .unwrap();
+    let grant = engine
+        .block_on(s.vault_op(|v| v.authorize(GrantPurpose::SignMessage, Credential::None)))
+        .unwrap();
+    let address = first_receive_address(ABANDON_12);
+    let message = b"dashwallet-desktop restart test".to_vec();
+    let signature = engine
+        .block_on(s.sign_message(id, address.clone(), message.clone(), grant.id.clone()))
+        .unwrap();
+    dw_message::verify_message(&address, &signature, &message, dashcore::Network::Regtest).unwrap();
+
+    // Grants are single use.
+    let reused = engine.block_on(s.sign_message(id, address, message, grant.id));
+    assert!(
+        matches!(reused, Err(EngineError::Vault(VaultError::GrantInvalid))),
+        "{reused:?}"
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Re-importing the phrase of a registered wallet whose vault records were
+/// lost attaches the keys again instead of failing.
+#[test]
+fn import_attaches_keys_to_registered_wallet_without_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .unwrap();
+    create_vault(&engine, &s, false);
+    let id = import(&engine, &s, ABANDON_12).unwrap();
+    assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+    assert!(!s.vault().has_wallet_secret(&id.0));
+
+    assert_eq!(import(&engine, &s, ABANDON_12).unwrap(), id);
+    assert!(s.vault().has_wallet_secret(&id.0));
+    assert_eq!(s.list_wallets().unwrap().len(), 1);
     engine.block_on(engine.shutdown()).unwrap();
 }
