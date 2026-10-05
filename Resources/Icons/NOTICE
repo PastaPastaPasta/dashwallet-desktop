@@ -1,0 +1,63 @@
+Icons in this directory are copied by scripts/gen-tokens.swift from two repositories owned by
+Dash Core Group (github.com/dashpay). Both are MIT-licensed.
+
+dashwallet-ios (commit 7c0064d6b21f09d7a9ba86c1fecd77c819a09492)
+  Source: DashWallet/Resources/AppAssets.xcassets
+  Licence: the repository LICENSE file, reproduced below. It is the MIT licence text under the
+  heading "breadwallet license"; the Dash source files carry "Copyright (c) Dash Core Group,
+  Licensed under the MIT License".
+
+DashUIKit (commit e8d92434bfc28fbf933b896cd40a01dd61835b5f)
+  Source: Sources/DashUIKit/Resources/Media.xcassets
+  Licence: MIT. The repository has no LICENSE file; its README states "MIT — see the per-file
+  headers", and the headers read "Copyright (c) 2026 Dash Core Group. Licensed under the MIT
+  License (https://opensource.org/licenses/MIT)".
+
+Per-icon sources are listed in Resources/Tokens/tokens.json ("icons").
+
+---- dashwallet-ios LICENSE ----
+
+breadwallet license
+-------------------
+
+Copyright (c) 2013-2025 Aaron Voisine <voisine@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+---- MIT License (DashUIKit) ----
+
+Copyright (c) 2026 Dash Core Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
