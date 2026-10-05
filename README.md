@@ -24,6 +24,8 @@ Sources/...               other targets (placeholders until their workstreams la
 Artifacts/                SE-0482 artifact bundle (gitignored, built locally)
 scripts/                  build-core.sh, disk-guard.sh, lint-imports.sh, linux-docker-test.sh
 ci/linux/                 Dockerfile (Rust builder), Dockerfile.swift (Swift + Rust builder)
+regtest/                  Dash Core regtest harness (docker compose, pytest, functional tests)
+docs/contracts/           M1 engine API (m1-engine.md) and Swift seams (m1-swift.md)
 ```
 
 ## Requirements
@@ -92,3 +94,10 @@ declared, so `Package.resolved` is unchanged), so no GTK is needed.
 M0 skeleton: engine create/import/list/balances and SPV start/stop work
 offline through Rust, UniFFI and Swift. Secrets have no vault yet: the
 mnemonic is returned to the caller on creation (`TODO(vault)`).
+
+M1 contract: the full M1 engine API is exported from `dw-ffi`
+([`docs/contracts/m1-engine.md`](docs/contracts/m1-engine.md)); units,
+`dash:` URIs, address classification and message verification work, the
+other calls return a typed `NotImplemented` until their workstream lands.
+The view-model seams are protocols in `Sources/WalletRuntime/Contracts`
+([`docs/contracts/m1-swift.md`](docs/contracts/m1-swift.md)).
