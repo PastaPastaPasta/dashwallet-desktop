@@ -14,6 +14,17 @@ mod context;
 mod engine;
 mod error;
 mod events;
+// E1 building blocks (sync snapshot, event pump, operation gate, private
+// directories) that NetworkSession does not use yet. Declared so they compile
+// and their unit tests run; the allow goes when E1 wires them in.
+#[allow(dead_code)]
+mod fsutil;
+#[allow(dead_code)]
+mod gate;
+#[allow(dead_code)]
+mod pump;
+#[allow(dead_code)]
+mod sync;
 mod network;
 mod session;
 

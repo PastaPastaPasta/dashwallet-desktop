@@ -186,7 +186,16 @@ impl From<dw_engine::EngineError> for WalletError {
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(_) => Self::NotImplemented { call: detail },
-            E::Wallet(_) | E::Sdk(_) | E::Spv(_) | E::Internal(_) => Self::Internal { detail },
+            E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
+                Self::InvalidArgument { detail }
+            }
+            E::Wallet(_)
+            | E::Sdk(_)
+            | E::Spv(_)
+            | E::SpvNotRunning
+            | E::TxNotFound(_)
+            | E::GapLimit
+            | E::Internal(_) => Self::Internal { detail },
         }
     }
 }

@@ -25,3 +25,5 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `test-util`: paused clocks for the event pump and gate tests.
+tokio = { workspace = true, features = ["test-util"] }

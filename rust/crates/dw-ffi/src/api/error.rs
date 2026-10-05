@@ -52,6 +52,11 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Spv(_) => Self::Spv { detail },
             E::Io(_) => Self::Io { detail },
             E::NotImplemented(_) => Self::NotImplemented { detail },
+            E::SpvNotRunning => Self::Spv { detail },
+            E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
+                Self::InvalidArgument { detail }
+            }
+            E::TxNotFound(_) | E::GapLimit => Self::Wallet { detail },
             E::Internal(_) => Self::Internal { detail },
         }
     }
