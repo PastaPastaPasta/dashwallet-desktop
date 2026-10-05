@@ -2,7 +2,7 @@ import DashWalletCore
 import Foundation
 
 /// Errors from the engine. `detail` is diagnostic text for logs; UI copy is
-/// chosen from the case (or `code`).
+/// chosen from `code` (docs/contracts/m1-engine.md §4).
 public enum DashKitError: Error, Sendable, Equatable {
     case invalidConfig(detail: String)
     case invalidArgument(detail: String)
@@ -16,13 +16,17 @@ public enum DashKitError: Error, Sendable, Equatable {
     case sdk(detail: String)
     case spv(detail: String)
     case io(detail: String)
+    /// The engine side of a call has not landed; `detail` names the call.
     case notImplemented(detail: String)
     case `internal`(detail: String)
-    /// An M1 domain error DashKit has no dedicated case for yet; `code` is the
-    /// engine's stable code (docs/contracts/m1-engine.md).
+    /// Any other M1 domain error; `code` is the engine's stable code.
     case domain(code: String, detail: String)
+    /// A send error about one recipient (QT-055): `index` into the recipients.
+    case recipient(code: String, index: Int)
+    /// A vault passphrase attempt failed or is throttled (IOS-012).
+    case vaultAttempt(code: String, failedAttempts: UInt32?, retryAfterSeconds: UInt64?)
 
-    /// Stable machine-readable code (matches dw-engine `EngineError::code`).
+    /// Stable machine-readable code (the engine's `code()` strings).
     public var code: String {
         switch self {
         case .invalidConfig: "invalid_config"
@@ -39,8 +43,34 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .io: "io"
         case .notImplemented: "not_implemented"
         case .internal: "internal"
-        case .domain(let code, _): code
+        case .domain(let code, _), .recipient(let code, _), .vaultAttempt(let code, _, _): code
         }
+    }
+
+    /// Diagnostic text for logs.
+    public var detail: String {
+        switch self {
+        case .invalidConfig(let d), .invalidArgument(let d), .networkNotOpen(let d), .storageInUse(let d),
+             .storage(let d), .walletNotFound(let d), .invalidMnemonic(let d), .walletAlreadyExists(let d),
+             .wallet(let d), .sdk(let d), .spv(let d), .io(let d), .notImplemented(let d), .internal(let d),
+             .domain(_, let d):
+            d
+        case .recipient(_, let index): "recipient \(index)"
+        case .vaultAttempt(_, let failed, let retry):
+            "failed_attempts=\(failed.map(String.init) ?? "?") retry_after=\(retry.map(String.init) ?? "-")"
+        }
+    }
+
+    /// The recipient a send error concerns, if any.
+    public var recipientIndex: Int? {
+        if case .recipient(_, let index) = self { return index }
+        return nil
+    }
+
+    /// Seconds until the vault accepts another passphrase attempt, if throttled.
+    public var retryAfterSeconds: UInt64? {
+        if case .vaultAttempt(_, _, let retry) = self { return retry }
+        return nil
     }
 
     init(_ e: DashWalletCore.EngineError) {
@@ -81,12 +111,198 @@ public enum DashKitError: Error, Sendable, Equatable {
         }
     }
 
+    init(_ e: DashWalletCore.VaultError) {
+        switch e {
+        case .NoVault: self = .domain(code: "vault.no_vault", detail: "")
+        case .AlreadyExists: self = .domain(code: "vault.already_exists", detail: "")
+        case .Locked: self = .domain(code: "vault.locked", detail: "")
+        case .WrongPassphrase(let failed, let retry):
+            self = .vaultAttempt(code: "vault.wrong_passphrase", failedAttempts: failed, retryAfterSeconds: retry)
+        case .Throttled(let retry):
+            self = .vaultAttempt(code: "vault.throttled", failedAttempts: nil, retryAfterSeconds: retry)
+        case .PassphraseRejected(let d): self = .domain(code: "vault.passphrase_rejected", detail: d)
+        case .NotEncrypted: self = .domain(code: "vault.not_encrypted", detail: "")
+        case .AlreadyEncrypted: self = .domain(code: "vault.already_encrypted", detail: "")
+        case .GrantInvalid: self = .domain(code: "vault.grant_invalid", detail: "")
+        case .GrantPurposeMismatch: self = .domain(code: "vault.grant_purpose_mismatch", detail: "")
+        case .MixingOnly: self = .domain(code: "vault.mixing_only", detail: "")
+        case .NoSecret: self = .domain(code: "vault.no_secret", detail: "")
+        case .QuickUnlockUnavailable: self = .domain(code: "vault.quick_unlock_unavailable", detail: "")
+        case .OsStoreUnavailable(let d): self = .domain(code: "vault.os_store_unavailable", detail: d)
+        case .Corrupt(let d): self = .domain(code: "vault.corrupt", detail: d)
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.SyncError) {
+        switch e {
+        case .SpvNotRunning: self = .domain(code: "sync.spv_not_running", detail: "")
+        case .HeightOutOfRange(let h): self = .domain(code: "sync.height_out_of_range", detail: "\(h)")
+        case .Spv(let d): self = .domain(code: "sync.spv", detail: d)
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.HistoryError) {
+        switch e {
+        case .InvalidQuery(let d): self = .domain(code: "history.invalid_query", detail: d)
+        case .StaleCursor: self = .domain(code: "history.stale_cursor", detail: "")
+        case .TxNotFound(let txid): self = .domain(code: "history.tx_not_found", detail: txid)
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.ReceiveError) {
+        switch e {
+        case .RequestNotFound(let id): self = .domain(code: "receive.request_not_found", detail: "\(id)")
+        case .GapLimit: self = .domain(code: "receive.gap_limit", detail: "")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.SendError) {
+        switch e {
+        case .NoRecipients: self = .domain(code: "send.no_recipients", detail: "")
+        case .InvalidAddress(let i): self = .recipient(code: "send.invalid_address", index: Int(i))
+        case .PlatformAddress(let i): self = .recipient(code: "send.platform_address", index: Int(i))
+        case .InvalidAmount(let i): self = .recipient(code: "send.invalid_amount", index: Int(i))
+        case .DustAmount(let i): self = .recipient(code: "send.dust_amount", index: Int(i))
+        case .DuplicateAddress(let i): self = .recipient(code: "send.duplicate_address", index: Int(i))
+        case .AmountExceedsBalance(let available):
+            self = .domain(code: "send.amount_exceeds_balance", detail: "available=\(available)")
+        case .AmountWithFeeExceedsBalance(let fee, let available):
+            self = .domain(code: "send.amount_with_fee_exceeds_balance", detail: "fee=\(fee) available=\(available)")
+        case .InsufficientMixedFunds(let available):
+            self = .domain(code: "send.insufficient_mixed_funds", detail: "available=\(available)")
+        case .OutpointUnavailable(let o):
+            self = .domain(code: "send.outpoint_unavailable", detail: "\(o.txid):\(o.vout)")
+        case .AbsurdFee(let fee): self = .domain(code: "send.absurd_fee", detail: "fee=\(fee)")
+        case .TxTooLarge: self = .domain(code: "send.tx_too_large", detail: "")
+        case .InvalidChangeAddress: self = .domain(code: "send.invalid_change_address", detail: "")
+        case .WatchOnly: self = .domain(code: "send.watch_only", detail: "")
+        case .VaultLocked: self = .domain(code: "send.vault_locked", detail: "")
+        case .GrantInvalid: self = .domain(code: "send.grant_invalid", detail: "")
+        case .GrantExceeded(let max): self = .domain(code: "send.grant_exceeded", detail: "max=\(max)")
+        case .PreparedTxSpent: self = .domain(code: "send.prepared_tx_spent", detail: "")
+        case .NoPeers: self = .domain(code: "send.no_peers", detail: "")
+        case .BroadcastRejected(let reason): self = .domain(code: "send.broadcast_rejected", detail: reason)
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.CoinsError) {
+        switch e {
+        case .OutpointNotFound(let o): self = .domain(code: "coins.outpoint_not_found", detail: "\(o.txid):\(o.vout)")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.LabelsError) {
+        switch e {
+        case .InvalidAddress: self = .domain(code: "labels.invalid_address", detail: "")
+        case .DuplicateAddress: self = .domain(code: "labels.duplicate_address", detail: "")
+        case .OwnAddress: self = .domain(code: "labels.own_address", detail: "")
+        case .EntryNotFound: self = .domain(code: "labels.entry_not_found", detail: "")
+        case .ReceiveEntryNotDeletable: self = .domain(code: "labels.receive_entry_not_deletable", detail: "")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.MessageError) {
+        switch e {
+        case .InvalidAddress: self = .domain(code: "message.invalid_address", detail: "")
+        case .AddressNoKey: self = .domain(code: "message.address_no_key", detail: "")
+        case .MalformedSignature: self = .domain(code: "message.malformed_signature", detail: "")
+        case .PubkeyNotRecovered: self = .domain(code: "message.pubkey_not_recovered", detail: "")
+        case .NotSigned: self = .domain(code: "message.not_signed", detail: "")
+        case .AddressNotMine: self = .domain(code: "message.address_not_mine", detail: "")
+        case .WatchOnly: self = .domain(code: "message.watch_only", detail: "")
+        case .VaultLocked: self = .domain(code: "message.vault_locked", detail: "")
+        case .GrantInvalid: self = .domain(code: "message.grant_invalid", detail: "")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
+        case .WalletNotFound(let d): self = .walletNotFound(detail: d)
+        case .Storage(let d): self = .storage(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        case .Internal(let d): self = .internal(detail: d)
+        }
+    }
+
+    init(_ e: DashWalletCore.UriError) {
+        switch e {
+        case .DoubleSlash: self = .domain(code: "uri.double_slash", detail: "")
+        case .NotDashUri: self = .domain(code: "uri.not_dash_uri", detail: "")
+        case .Unparsable: self = .domain(code: "uri.unparsable", detail: "")
+        case .Bip70Unsupported: self = .domain(code: "uri.bip70_unsupported", detail: "")
+        case .InvalidAddress(let problem): self = .domain(code: "uri.invalid_address", detail: "\(problem)")
+        case .InvalidAmount: self = .domain(code: "uri.invalid_amount", detail: "")
+        case .TooLongForQr: self = .domain(code: "uri.too_long_for_qr", detail: "")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        }
+    }
+
+    init(_ e: DashWalletCore.UnitsError) {
+        switch e {
+        case .Unparsable: self = .domain(code: "units.unparsable", detail: "")
+        case .InvalidArgument(let d): self = .invalidArgument(detail: d)
+        case .NotImplemented(let call): self = .notImplemented(detail: call)
+        }
+    }
+
     /// Maps any error thrown by a generated binding call.
     static func from(_ error: any Error) -> DashKitError {
-        if let e = error as? DashWalletCore.EngineError { return DashKitError(e) }
-        if let e = error as? DashWalletCore.WalletError { return DashKitError(e) }
-        if let e = error as? DashKitError { return e }
-        return .internal(detail: String(describing: error))
+        switch error {
+        case let e as DashKitError: e
+        case let e as DashWalletCore.EngineError: DashKitError(e)
+        case let e as DashWalletCore.WalletError: DashKitError(e)
+        case let e as DashWalletCore.VaultError: DashKitError(e)
+        case let e as DashWalletCore.SyncError: DashKitError(e)
+        case let e as DashWalletCore.HistoryError: DashKitError(e)
+        case let e as DashWalletCore.ReceiveError: DashKitError(e)
+        case let e as DashWalletCore.SendError: DashKitError(e)
+        case let e as DashWalletCore.CoinsError: DashKitError(e)
+        case let e as DashWalletCore.LabelsError: DashKitError(e)
+        case let e as DashWalletCore.MessageError: DashKitError(e)
+        case let e as DashWalletCore.UriError: DashKitError(e)
+        case let e as DashWalletCore.UnitsError: DashKitError(e)
+        default: .internal(detail: String(describing: error))
+        }
     }
 }
 

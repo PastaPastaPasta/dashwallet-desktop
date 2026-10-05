@@ -31,6 +31,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let vaultGrantInvalid = Self(rawValue: "vault.grant_invalid")
     public static let vaultMixingOnly = Self(rawValue: "vault.mixing_only")
     public static let vaultNoSecret = Self(rawValue: "vault.no_secret")
+    public static let vaultGrantPurposeMismatch = Self(rawValue: "vault.grant_purpose_mismatch")
+    public static let vaultNotEncrypted = Self(rawValue: "vault.not_encrypted")
 
     // Wallet.
     public static let walletInvalidMnemonic = Self(rawValue: "wallet.invalid_mnemonic")
@@ -59,6 +61,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sendAbsurdFee = Self(rawValue: "send.absurd_fee")
     public static let sendGrantExceeded = Self(rawValue: "send.grant_exceeded")
     public static let sendBroadcastRejected = Self(rawValue: "send.broadcast_rejected")
+    public static let sendPreparedTxSpent = Self(rawValue: "send.prepared_tx_spent")
+    public static let sendNoPeers = Self(rawValue: "send.no_peers")
 
     // URI / units / message / labels.
     public static let uriUnparsable = Self(rawValue: "uri.unparsable")
@@ -66,6 +70,15 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let unitsUnparsable = Self(rawValue: "units.unparsable")
     public static let messageNotSigned = Self(rawValue: "message.not_signed")
     public static let labelsDuplicateAddress = Self(rawValue: "labels.duplicate_address")
+
+    // Swift-side codes (not from the engine).
+    /// The authentication gate's watchdog fired before the vault answered.
+    public static let authTimedOut = Self(rawValue: "auth.timed_out")
+    /// The prepared transaction is not one this draft holds (already
+    /// broadcast or abandoned, or from another draft).
+    public static let sendPreparedTxUnknown = Self(rawValue: "send.prepared_tx_unknown")
+    /// The settings file could not be written.
+    public static let settingsWriteFailed = Self(rawValue: "settings.write_failed")
 }
 
 /// An error from any M1 service.

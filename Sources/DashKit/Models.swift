@@ -55,7 +55,7 @@ public struct WalletID: Hashable, Sendable, CustomStringConvertible {
 }
 
 /// Core balance buckets.
-public struct WalletBalances: Equatable, Sendable {
+public struct WalletBalances: Hashable, Sendable {
     public let confirmed: Amount
     public let unconfirmed: Amount
     public let immature: Amount
@@ -89,15 +89,15 @@ public struct WalletBalances: Equatable, Sendable {
     }
 }
 
+/// M0 wallet list row (superseded by `WalletInfo`).
 public struct WalletSummary: Equatable, Sendable {
     public let walletID: WalletID
     public let balances: WalletBalances
 }
 
-/// A freshly created wallet.
-///
-/// TODO(vault): the phrase is returned here only until the Rust vault exists;
-/// then it is revealed through the vault behind an auth grant.
+/// A wallet from the M0 `createWallet` call. The phrase crosses the FFI as a
+/// `String` there (review M5); B removes the call in favour of
+/// `generateMnemonic` + `importWallet`, which use bytes only.
 public struct CreatedWallet: Sendable {
     public let walletID: WalletID
     public let mnemonic: SecretBytes
@@ -142,7 +142,7 @@ public enum NoticeCode: Sendable, Equatable {
 /// Engine signal. Consumers re-query state when one arrives. The M1 events
 /// (`syncChanged`, `balancesChanged`, `historyChanged`, `walletRemoved`,
 /// `lockStateChanged`) carry no payload here: the data is pulled again.
-public enum EngineEvent: Sendable, Equatable {
+public enum EngineEvent: Sendable, Hashable {
     case sessionOpened(DashNetwork)
     case sessionClosed(DashNetwork)
     case walletCreated(DashNetwork, WalletID)
@@ -157,6 +157,9 @@ public enum EngineEvent: Sendable, Equatable {
     case historyChanged(DashNetwork, WalletID, txids: [String])
     case walletRemoved(DashNetwork, WalletID)
     case lockStateChanged(DashNetwork)
+    /// Not from the engine: `EventBus` dropped signals for a slow consumer.
+    /// Re-query everything (sync, balances, history, wallets).
+    case resynchronize
 
     init(_ ffi: DashWalletCore.EngineEvent) {
         switch ffi {
@@ -189,6 +192,21 @@ public enum EngineEvent: Sendable, Equatable {
             n
         case .notice(let n, _, _):
             n
+        case .resynchronize:
+            nil
+        }
+    }
+
+    /// Lifecycle events are never dropped or merged by `EventBus`; the rest
+    /// are "re-query" signals.
+    public var isLifecycle: Bool {
+        switch self {
+        case .sessionOpened, .sessionClosed, .walletCreated, .walletRemoved, .spvStateChanged, .lockStateChanged,
+             .notice:
+            true
+        case .walletChanged, .syncProgress, .peersChanged, .syncChanged, .balancesChanged, .historyChanged,
+             .resynchronize:
+            false
         }
     }
 }
