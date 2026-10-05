@@ -5,11 +5,15 @@
 
 use dw_compat::bip39core;
 use key_wallet::Network;
-use key_wallet::mnemonic::{Language, Mnemonic};
+use key_wallet::mnemonic::Mnemonic;
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::root_extended_keys::RootExtendedPrivKey;
 use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, Zeroizing};
+
+/// BIP39 wordlist languages (key-wallet's enum, re-exported for callers that
+/// do not depend on key-wallet).
+pub use key_wallet::mnemonic::Language;
 
 use crate::MnemonicError;
 use crate::types::{SeedDerivation, WalletId, WalletSecret};

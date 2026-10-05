@@ -1,5 +1,5 @@
 /// Engine-level error of the M0 calls (engine, session, SPV start/stop,
-/// `create_wallet`, `list_wallets`, `balances`). M1 domain calls use their own
+/// `list_wallets`, `balances`). M1 domain calls use their own
 /// error enums (`VaultError`, `WalletError`, …). Swift maps the case to
 /// localized copy; `detail` is diagnostic text for logs only.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -57,6 +57,8 @@ impl From<dw_engine::EngineError> for EngineError {
                 Self::InvalidArgument { detail }
             }
             E::TxNotFound(_) | E::GapLimit => Self::Wallet { detail },
+            E::InvalidAddress(_) | E::AddressNoKey(_) => Self::InvalidArgument { detail },
+            E::AddressNotMine(_) | E::Vault(_) | E::Signer(_) => Self::Wallet { detail },
             E::Internal(_) => Self::Internal { detail },
         }
     }

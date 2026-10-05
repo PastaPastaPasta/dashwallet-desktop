@@ -37,22 +37,6 @@ pub struct WalletSummary {
     pub balances: WalletBalances,
 }
 
-/// M0 result of `create_wallet`. Superseded by `generate_mnemonic` +
-/// `import_wallet` (review finding H1); removed when B lands the vault.
-#[derive(Clone, uniffi::Record)]
-pub struct CreatedWallet {
-    pub wallet_id: String,
-    pub mnemonic: String,
-}
-
-impl std::fmt::Debug for CreatedWallet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CreatedWallet")
-            .field("wallet_id", &self.wallet_id)
-            .finish_non_exhaustive()
-    }
-}
-
 /// BIP39 wordlists (IOS-007: restore in 10 languages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum MnemonicLanguage {
@@ -93,7 +77,8 @@ pub struct MnemonicCheck {
 /// Options for `import_wallet`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
 pub struct ImportOptions {
-    /// Display name; `None` = engine default ("Wallet N").
+    /// Display name; `None` = engine default ("Wallet N"). Names live in
+    /// dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
     pub name: Option<String>,
     /// First block to scan. `Some(0)` = genesis; `None` = SPV tip or latest
     /// checkpoint for a new phrase.
@@ -102,7 +87,8 @@ pub struct ImportOptions {
     /// salt cut at 256 bytes) via dw-compat (QT-104).
     pub core_compat: bool,
     /// Address lookahead for the restore scan; `None` = engine default.
-    /// dash-qt restores use 1000 (QT-105).
+    /// dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
+    /// gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
     pub lookahead: Option<u32>,
 }
 
@@ -177,6 +163,7 @@ domain_error_common!(@not_implemented WalletError);
 impl From<dw_engine::EngineError> for WalletError {
     fn from(e: dw_engine::EngineError) -> Self {
         use dw_engine::EngineError as E;
+        use dw_vault::VaultError as V;
         let detail = e.to_string();
         match e {
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
@@ -189,13 +176,80 @@ impl From<dw_engine::EngineError> for WalletError {
             E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
                 Self::InvalidArgument { detail }
             }
-            E::Wallet(_)
+            E::InvalidAddress(_) | E::AddressNoKey(_) | E::AddressNotMine(_) => {
+                Self::InvalidArgument { detail }
+            }
+            E::Vault(v) => match v {
+                V::NoVault => Self::NoVault,
+                // Storing keys needs the data key with full scope.
+                V::Locked | V::MixingOnly => Self::VaultLocked,
+                V::GrantInvalid | V::GrantPurposeMismatch => Self::GrantInvalid,
+                V::InvalidArgument(_) => Self::InvalidArgument { detail },
+                V::Storage(_) | V::Corrupt(_) | V::OsStoreUnavailable(_) => {
+                    Self::Storage { detail }
+                }
+                V::NotImplemented(call) => Self::NotImplemented {
+                    call: call.to_string(),
+                },
+                _ => Self::Internal { detail },
+            },
+            E::Signer(_)
+            | E::Wallet(_)
             | E::Sdk(_)
             | E::Spv(_)
             | E::SpvNotRunning
             | E::TxNotFound(_)
             | E::GapLimit
             | E::Internal(_) => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_vault::MnemonicError> for WalletError {
+    fn from(e: dw_vault::MnemonicError) -> Self {
+        use dw_vault::MnemonicError as M;
+        match e {
+            M::UnsupportedWordCount(word_count) => Self::UnsupportedWordCount { word_count },
+            M::Invalid(detail) => Self::InvalidMnemonic { detail },
+            M::PassphraseNotUtf8 => Self::InvalidArgument {
+                detail: e.to_string(),
+            },
+            M::Entropy(detail) => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<MnemonicLanguage> for dw_vault::mnemonic::Language {
+    fn from(l: MnemonicLanguage) -> Self {
+        match l {
+            MnemonicLanguage::English => Self::English,
+            MnemonicLanguage::ChineseSimplified => Self::ChineseSimplified,
+            MnemonicLanguage::ChineseTraditional => Self::ChineseTraditional,
+            MnemonicLanguage::Czech => Self::Czech,
+            MnemonicLanguage::French => Self::French,
+            MnemonicLanguage::Italian => Self::Italian,
+            MnemonicLanguage::Japanese => Self::Japanese,
+            MnemonicLanguage::Korean => Self::Korean,
+            MnemonicLanguage::Portuguese => Self::Portuguese,
+            MnemonicLanguage::Spanish => Self::Spanish,
+        }
+    }
+}
+
+impl From<dw_vault::mnemonic::Language> for MnemonicLanguage {
+    fn from(l: dw_vault::mnemonic::Language) -> Self {
+        use dw_vault::mnemonic::Language as L;
+        match l {
+            L::English => Self::English,
+            L::ChineseSimplified => Self::ChineseSimplified,
+            L::ChineseTraditional => Self::ChineseTraditional,
+            L::Czech => Self::Czech,
+            L::French => Self::French,
+            L::Italian => Self::Italian,
+            L::Japanese => Self::Japanese,
+            L::Korean => Self::Korean,
+            L::Portuguese => Self::Portuguese,
+            L::Spanish => Self::Spanish,
         }
     }
 }
@@ -230,64 +284,65 @@ pub fn generate_mnemonic(
     word_count: u8,
     language: MnemonicLanguage,
 ) -> Result<Vec<u8>, WalletError> {
-    let _ = (word_count, language);
-    not_implemented("generate_mnemonic")
+    let mut phrase = dw_vault::mnemonic::generate(word_count.into(), language.into())?;
+    // Moved out, not copied (see vault.rs for the RustBuffer residual risk).
+    Ok(std::mem::take(&mut *phrase))
 }
 
-/// Validates a typed or pasted phrase without importing it.
+/// Validates a typed or pasted phrase without importing it. Never fails
+/// today; the `Result` keeps the contract's error channel.
 #[uniffi::export]
 pub fn check_mnemonic(phrase: Vec<u8>) -> Result<MnemonicCheck, WalletError> {
-    drop(Zeroizing::new(phrase));
-    not_implemented("check_mnemonic")
+    let phrase = Zeroizing::new(phrase);
+    let check = dw_vault::mnemonic::check(&phrase);
+    Ok(MnemonicCheck {
+        word_count: check.word_count,
+        unknown_word_indices: check.unknown_word_indices,
+        language: check.language.map(Into::into),
+        checksum: match check.checksum {
+            dw_vault::mnemonic::Checksum::Valid => MnemonicChecksum::Valid,
+            dw_vault::mnemonic::Checksum::CoreOnly => MnemonicChecksum::CoreOnly,
+            dw_vault::mnemonic::Checksum::Invalid => MnemonicChecksum::Invalid,
+        },
+    })
 }
 
 #[uniffi::export]
 impl NetworkSession {
-    /// M0: registers a wallet from a fresh English phrase and returns the
-    /// phrase. The phrase is stored nowhere (review finding H1). Superseded
-    /// by `generate_mnemonic` + `import_wallet`; B removes it.
-    pub async fn create_wallet(&self, word_count: u8) -> Result<CreatedWallet, EngineError> {
-        let created = self.inner.create_wallet(word_count).await?;
-        Ok(CreatedWallet {
-            wallet_id: created.wallet_id.to_string(),
-            mnemonic: created.mnemonic.as_str().to_owned(),
-        })
-    }
-
-    /// Registers a wallet from `mnemonic` (UTF-8 phrase bytes) and stores the
-    /// phrase and `bip39_passphrase` in the vault, in the seed-safety order
-    /// of DESIGN-opus §1.8. Returns the wallet id.
+    /// Stores `mnemonic` (UTF-8 phrase bytes) and `bip39_passphrase` in the
+    /// vault and reads them back, then registers the wallet (DESIGN-opus §1.8
+    /// seed-safety order). Returns the wallet id. No wallet is registered
+    /// without its seed in the vault (review H-1).
     ///
-    /// Current behaviour (until B lands the vault): only an empty passphrase
-    /// and default options other than `birth_height` are accepted; anything
-    /// else returns `NotImplemented`. The wallet is registered but the phrase
-    /// is not stored.
+    /// Over a registered wallet whose seed the vault lacks, the seed is
+    /// stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
+    /// `NoVault`, `VaultLocked` (also when unlocked for mixing only).
+    /// `options.name` and `options.lookahead` are not supported yet and
+    /// return `NotImplemented`.
     pub async fn import_wallet(
         &self,
         mnemonic: Vec<u8>,
         bip39_passphrase: Vec<u8>,
         options: ImportOptions,
     ) -> Result<String, WalletError> {
-        let mut mnemonic = Zeroizing::new(mnemonic);
+        let mnemonic = Zeroizing::new(mnemonic);
         let bip39_passphrase = Zeroizing::new(bip39_passphrase);
-        if !bip39_passphrase.is_empty() {
-            return not_implemented("NetworkSession.import_wallet(bip39_passphrase)");
+        if options.name.is_some() {
+            return not_implemented("NetworkSession.import_wallet(options.name)");
         }
-        if options.core_compat || options.lookahead.is_some() || options.name.is_some() {
-            return not_implemented("NetworkSession.import_wallet(options)");
+        if options.lookahead.is_some() {
+            return not_implemented("NetworkSession.import_wallet(options.lookahead)");
         }
-        let phrase = match String::from_utf8(std::mem::take(&mut *mnemonic)) {
-            Ok(s) => Zeroizing::new(s),
-            Err(e) => {
-                drop(Zeroizing::new(e.into_bytes()));
-                return Err(WalletError::InvalidMnemonic {
-                    detail: "mnemonic is not UTF-8".into(),
-                });
-            }
-        };
         let id = self
             .inner
-            .import_wallet(phrase, options.birth_height)
+            .import_wallet(
+                mnemonic,
+                bip39_passphrase,
+                dw_engine::ImportOptions {
+                    birth_height: options.birth_height,
+                    core_compat: options.core_compat,
+                },
+            )
             .await?;
         Ok(id.to_string())
     }
@@ -336,5 +391,177 @@ impl NetworkSession {
     pub async fn rename_wallet(&self, wallet_id: String, name: String) -> Result<(), WalletError> {
         let _ = (parse_wallet_id(&wallet_id)?, name);
         not_implemented("NetworkSession.rename_wallet")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{
+        DashNetwork, Engine, EngineConfig, EngineEvent, EngineObserver, GrantPurpose, MessageError,
+        SessionOptions, UnlockScope, VaultCredential, VaultError, VaultLockState,
+    };
+
+    const ABANDON_12: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const PASSPHRASE: &[u8] = b"ffi test passphrase";
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<EngineEvent>>);
+
+    impl EngineObserver for Recorder {
+        fn on_event(&self, event: EngineEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[test]
+    fn generates_and_checks_phrases() {
+        let phrase = generate_mnemonic(24, MnemonicLanguage::English).unwrap();
+        let check = check_mnemonic(phrase).unwrap();
+        assert_eq!(check.word_count, 24);
+        assert_eq!(check.language, Some(MnemonicLanguage::English));
+        assert_eq!(check.checksum, MnemonicChecksum::Valid);
+
+        assert!(matches!(
+            generate_mnemonic(13, MnemonicLanguage::English),
+            Err(WalletError::UnsupportedWordCount { word_count: 13 })
+        ));
+        let bad = check_mnemonic(ABANDON_12.replace("about", "zzz").into_bytes()).unwrap();
+        assert_eq!(bad.unknown_word_indices, vec![11]);
+        assert_eq!(bad.checksum, MnemonicChecksum::Invalid);
+    }
+
+    /// Import goes through the vault: nothing is registered without a
+    /// usable vault (review H-1), and the stored phrase can be revealed.
+    #[test]
+    fn import_reveal_and_sign_through_the_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = Arc::new(Recorder::default());
+        let engine = Engine::new(
+            EngineConfig {
+                data_root: dir.path().to_string_lossy().into_owned(),
+                worker_threads: Some(2),
+            },
+            rec.clone(),
+        )
+        .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let session = rt
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                },
+            ))
+            .unwrap();
+        let vault = session.vault();
+        let import = |options: ImportOptions| {
+            rt.block_on(session.import_wallet(ABANDON_12.into(), Vec::new(), options))
+        };
+        let genesis = ImportOptions {
+            birth_height: Some(0),
+            ..ImportOptions::default()
+        };
+
+        assert_eq!(vault.status().unwrap().state, VaultLockState::NoVault);
+        assert!(matches!(import(genesis.clone()), Err(WalletError::NoVault)));
+        assert!(session.list_wallets().unwrap().is_empty());
+
+        let status = rt
+            .block_on(vault.create(Some(PASSPHRASE.to_vec())))
+            .unwrap();
+        assert_eq!(status.state, VaultLockState::Unlocked);
+        assert!(status.encrypted);
+        assert!(rec.0.lock().unwrap().contains(&EngineEvent::LockState {
+            network: DashNetwork::Regtest,
+            state: VaultLockState::Unlocked,
+        }));
+
+        let unsupported = import(ImportOptions {
+            lookahead: Some(1000),
+            ..genesis.clone()
+        });
+        assert!(
+            matches!(unsupported, Err(WalletError::NotImplemented { .. })),
+            "{unsupported:?}"
+        );
+
+        let id = import(genesis.clone()).unwrap();
+        assert_eq!(
+            vault.status().unwrap().wallets_with_secrets,
+            vec![id.clone()]
+        );
+        assert!(matches!(
+            import(genesis.clone()),
+            Err(WalletError::AlreadyExists { .. })
+        ));
+
+        assert_eq!(vault.lock().unwrap().state, VaultLockState::Locked);
+        assert!(matches!(
+            import(genesis),
+            Err(WalletError::AlreadyExists { .. })
+        ));
+        let wrong = rt.block_on(vault.unlock(b"nope".to_vec(), UnlockScope::Full));
+        assert!(
+            matches!(
+                wrong,
+                Err(VaultError::WrongPassphrase {
+                    failed_attempts: 1,
+                    ..
+                })
+            ),
+            "{wrong:?}"
+        );
+
+        // A passphrase credential unlocks the vault and issues the grant.
+        let grant = rt
+            .block_on(vault.authorize(
+                GrantPurpose::RevealSecret,
+                VaultCredential::Passphrase {
+                    passphrase: PASSPHRASE.to_vec(),
+                },
+            ))
+            .unwrap();
+        assert!(grant.single_use);
+        assert_eq!(vault.status().unwrap().state, VaultLockState::Unlocked);
+        assert!(matches!(
+            rt.block_on(vault.reveal_mnemonic("XYZ".into(), grant.id.clone())),
+            Err(VaultError::InvalidArgument { .. })
+        ));
+        let revealed = rt
+            .block_on(vault.reveal_mnemonic(id.clone(), grant.id.clone()))
+            .unwrap();
+        assert_eq!(revealed.phrase, ABANDON_12.as_bytes());
+        assert!(revealed.bip39_passphrase.is_empty());
+        assert!(matches!(
+            rt.block_on(vault.reveal_mnemonic(id.clone(), grant.id)),
+            Err(VaultError::GrantInvalid)
+        ));
+
+        // An address outside the wallet is refused before the grant is used.
+        let grant = rt
+            .block_on(vault.authorize(GrantPurpose::RevealSecret, VaultCredential::Unencrypted))
+            .unwrap();
+        let signed = rt.block_on(session.sign_message(
+            id,
+            "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
+            "hi".into(),
+            grant.id,
+        ));
+        assert!(
+            matches!(signed, Err(MessageError::AddressNotMine)),
+            "{signed:?}"
+        );
+        rt.block_on(engine.shutdown()).unwrap();
+        assert!(matches!(
+            vault.status(),
+            Err(VaultError::NetworkNotOpen { .. })
+        ));
     }
 }

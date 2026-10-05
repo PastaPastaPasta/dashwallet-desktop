@@ -3,7 +3,7 @@
 
 use dw_message::VerifyError;
 
-use crate::api::common::{domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 use crate::{DashNetwork, NetworkSession};
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -57,7 +57,32 @@ pub enum MessageError {
     Internal { detail: String },
 }
 
-domain_error_common!(MessageError);
+domain_error_common!(@not_implemented MessageError);
+
+impl From<dw_engine::EngineError> for MessageError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        use dw_vault::{SignerError as S, VaultError as V};
+        let detail = e.to_string();
+        match e {
+            E::InvalidAddress(_) => Self::InvalidAddress,
+            E::AddressNoKey(_) => Self::AddressNoKey,
+            E::AddressNotMine(_) => Self::AddressNotMine,
+            E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
+            E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,
+            // No seed in the vault: the wallet cannot sign.
+            E::Vault(V::NoSecret) | E::Signer(S::NoSecret) => Self::WatchOnly,
+            // A mixing-only signer refuses every non-CoinJoin path.
+            E::Signer(S::Locked | S::PathNotAllowed(_)) => Self::VaultLocked,
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            _ => Self::Internal { detail },
+        }
+    }
+}
 
 impl MessageError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -123,8 +148,11 @@ impl NetworkSession {
         message: String,
         grant_id: String,
     ) -> Result<String, MessageError> {
-        let _ = (parse_wallet_id(&wallet_id)?, address, message, grant_id);
-        not_implemented("NetworkSession.sign_message")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .sign_message(id, address, message.into_bytes(), grant_id)
+            .await?)
     }
 }
 

@@ -16,6 +16,8 @@ dw-engine = { workspace = true }
 dw-message = { workspace = true }
 dw-units = { workspace = true }
 dw-uri = { workspace = true }
+dw-vault = { workspace = true }
+hex = { workspace = true }
 uniffi = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
@@ -24,3 +26,7 @@ zeroize = { workspace = true }
 # runtime libssl (DESIGN-opus §1.9; upstream U4 moves Linux to rustls).
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

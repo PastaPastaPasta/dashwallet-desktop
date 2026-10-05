@@ -1585,8 +1585,12 @@ dependencies = [
  "dw-message",
  "dw-units",
  "dw-uri",
+ "dw-vault",
+ "hex",
  "openssl",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "uniffi",
  "zeroize",
 ]

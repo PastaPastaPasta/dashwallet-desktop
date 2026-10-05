@@ -185,6 +185,10 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 code: code.into(),
                 detail,
             },
+            E::VaultLockState { network, state } => Self::LockState {
+                network: network.into(),
+                state: state.into(),
+            },
         }
     }
 }
@@ -220,6 +224,8 @@ impl Engine {
             dw_engine::EngineConfig {
                 data_root: PathBuf::from(config.data_root),
                 worker_threads: config.worker_threads.map(|n| n as usize),
+                // Calibrated Argon2id and the OS keyring for slot O.
+                vault: dw_vault::VaultConfig::default(),
             },
             Arc::new(ObserverSink(observer)),
         )?;

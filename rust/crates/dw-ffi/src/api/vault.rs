@@ -7,12 +7,20 @@
 //! - Revealed material goes out only through `Vault::reveal_mnemonic`, as
 //!   bytes the host copies into `DashKit.SecretBytes` immediately.
 //! - Residual risk: UniFFI frees the `RustBuffer` that carries returned bytes
-//!   without zeroing it. B decides whether to add a zeroing transfer type.
+//!   without zeroing it, and lifts inbound secrets out of an unzeroed
+//!   `RustBuffer`. Only the copies Rust owns are zeroed.
+//!
+//! Every call delegates to the session's dw-vault vault in dw-engine. Calls
+//! that run Argon2id or write the vault file go through
+//! `NetworkSession::vault_op` (blocking pool, `LockState` event on change).
 
 use std::sync::Arc;
 
+use dw_vault::Credential;
+use zeroize::Zeroizing;
+
 use crate::NetworkSession;
-use crate::api::common::{domain_error_common, not_implemented};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 
 /// Lock state of a network's vault (QT-022, QT-111/112, IOS-013).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -55,8 +63,9 @@ pub struct VaultStatus {
     pub wallets_with_secrets: Vec<String>,
 }
 
-/// The credential presented to `Vault::authorize`.
-#[derive(Clone, uniffi::Enum)]
+/// The credential presented to `Vault::authorize`. Not `Clone`: the bytes are
+/// moved into `Zeroizing` buffers on entry.
+#[derive(uniffi::Enum)]
 pub enum VaultCredential {
     /// The vault passphrase, UTF-8 bytes.
     Passphrase { passphrase: Vec<u8> },
@@ -111,7 +120,7 @@ pub struct AuthGrant {
 }
 
 /// A revealed recovery phrase (QT-113, IOS-006). Both fields are secret.
-#[derive(Clone, uniffi::Record)]
+#[derive(uniffi::Record)]
 pub struct RevealedMnemonic {
     /// Space-separated phrase, UTF-8.
     pub phrase: Vec<u8>,
@@ -195,7 +204,167 @@ pub enum VaultError {
     Internal { detail: String },
 }
 
-domain_error_common!(VaultError);
+domain_error_common!(@not_implemented VaultError);
+
+impl From<dw_vault::VaultError> for VaultError {
+    fn from(e: dw_vault::VaultError) -> Self {
+        use dw_vault::VaultError as V;
+        match e {
+            V::NoVault => Self::NoVault,
+            V::AlreadyExists => Self::AlreadyExists,
+            V::Locked => Self::Locked,
+            V::WrongPassphrase {
+                failed_attempts,
+                retry_after_secs,
+            } => Self::WrongPassphrase {
+                failed_attempts,
+                retry_after_secs,
+            },
+            V::Throttled { retry_after_secs } => Self::Throttled { retry_after_secs },
+            V::PassphraseRejected(detail) => Self::PassphraseRejected { detail },
+            V::NotEncrypted => Self::NotEncrypted,
+            V::AlreadyEncrypted => Self::AlreadyEncrypted,
+            V::GrantInvalid => Self::GrantInvalid,
+            V::GrantPurposeMismatch => Self::GrantPurposeMismatch,
+            V::MixingOnly => Self::MixingOnly,
+            V::NoSecret => Self::NoSecret,
+            V::QuickUnlockUnavailable => Self::QuickUnlockUnavailable,
+            V::OsStoreUnavailable(detail) => Self::OsStoreUnavailable { detail },
+            V::Corrupt(detail) => Self::Corrupt { detail },
+            V::InvalidArgument(detail) => Self::InvalidArgument { detail },
+            V::Storage(detail) => Self::Storage { detail },
+            V::NotImplemented(call) => Self::NotImplemented {
+                call: call.to_string(),
+            },
+            V::Internal(detail) => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_engine::EngineError> for VaultError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::Vault(v) => v.into(),
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_vault::LockState> for VaultLockState {
+    fn from(s: dw_vault::LockState) -> Self {
+        use dw_vault::LockState as L;
+        match s {
+            L::NoVault => Self::NoVault,
+            L::NoKeys => Self::NoKeys,
+            L::Unencrypted => Self::Unencrypted,
+            L::Locked => Self::Locked,
+            L::UnlockedMixingOnly => Self::UnlockedMixingOnly,
+            L::Unlocked => Self::Unlocked,
+        }
+    }
+}
+
+impl From<dw_vault::VaultStatus> for VaultStatus {
+    fn from(s: dw_vault::VaultStatus) -> Self {
+        Self {
+            state: s.state.into(),
+            encrypted: s.encrypted,
+            quick_unlock_enrolled: s.quick_unlock_enrolled,
+            failed_attempts: s.failed_attempts,
+            retry_after_secs: s.retry_after_secs,
+            wallets_with_secrets: s.wallets_with_secrets.iter().map(hex::encode).collect(),
+        }
+    }
+}
+
+impl From<UnlockScope> for dw_vault::UnlockScope {
+    fn from(s: UnlockScope) -> Self {
+        match s {
+            UnlockScope::Full => Self::Full,
+            UnlockScope::MixingOnly => Self::MixingOnly,
+        }
+    }
+}
+
+impl From<GrantPurpose> for dw_vault::GrantPurpose {
+    fn from(p: GrantPurpose) -> Self {
+        match p {
+            GrantPurpose::Spend { max_duffs } => Self::Spend { max_duffs },
+            GrantPurpose::RevealSecret => Self::RevealSecret,
+            GrantPurpose::SignMessage => Self::SignMessage,
+            GrantPurpose::ChangeCredential => Self::ChangeCredential,
+            GrantPurpose::Wipe => Self::Wipe,
+            GrantPurpose::MasternodeOp => Self::MasternodeOp,
+            GrantPurpose::Governance => Self::Governance,
+            GrantPurpose::PlatformOp => Self::PlatformOp,
+        }
+    }
+}
+
+impl From<dw_vault::GrantPurpose> for GrantPurpose {
+    fn from(p: dw_vault::GrantPurpose) -> Self {
+        use dw_vault::GrantPurpose as P;
+        match p {
+            P::Spend { max_duffs } => Self::Spend { max_duffs },
+            P::RevealSecret => Self::RevealSecret,
+            P::SignMessage => Self::SignMessage,
+            P::ChangeCredential => Self::ChangeCredential,
+            P::Wipe => Self::Wipe,
+            P::MasternodeOp => Self::MasternodeOp,
+            P::Governance => Self::Governance,
+            P::PlatformOp => Self::PlatformOp,
+        }
+    }
+}
+
+impl From<dw_vault::AuthGrant> for AuthGrant {
+    fn from(g: dw_vault::AuthGrant) -> Self {
+        Self {
+            id: g.id,
+            purpose: g.purpose.into(),
+            expires_at: g.expires_at,
+            single_use: g.single_use,
+        }
+    }
+}
+
+/// The credential with its bytes moved into a zeroing buffer.
+enum OwnedCredential {
+    Passphrase(Zeroizing<Vec<u8>>),
+    QuickUnlock(Zeroizing<Vec<u8>>),
+    None,
+}
+
+impl From<VaultCredential> for OwnedCredential {
+    fn from(c: VaultCredential) -> Self {
+        match c {
+            VaultCredential::Passphrase { passphrase } => {
+                Self::Passphrase(Zeroizing::new(passphrase))
+            }
+            VaultCredential::QuickUnlock { wrap_key } => {
+                Self::QuickUnlock(Zeroizing::new(wrap_key))
+            }
+            VaultCredential::Unencrypted => Self::None,
+        }
+    }
+}
+
+impl OwnedCredential {
+    fn as_credential(&self) -> Credential<'_> {
+        match self {
+            Self::Passphrase(p) => Credential::Passphrase(p),
+            Self::QuickUnlock(k) => Credential::QuickUnlock(k),
+            Self::None => Credential::None,
+        }
+    }
+}
 
 impl VaultError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -243,36 +412,57 @@ impl NetworkSession {
     }
 }
 
+impl Vault {
+    fn check_open(&self) -> Result<(), VaultError> {
+        if self.session.is_open() {
+            Ok(())
+        } else {
+            Err(VaultError::NetworkNotOpen {
+                detail: self.session.network().to_string(),
+            })
+        }
+    }
+
+    /// Runs `f` on the engine's blocking pool via `NetworkSession::vault_op`.
+    async fn op<T, F>(&self, f: F) -> Result<T, VaultError>
+    where
+        F: FnOnce(&dw_vault::Vault) -> Result<T, dw_vault::VaultError> + Send + 'static,
+        T: Send + 'static,
+    {
+        Ok(self.session.vault_op(f).await?)
+    }
+}
+
 #[uniffi::export]
 impl Vault {
     /// Current state. In-memory read; never blocks.
     pub fn status(&self) -> Result<VaultStatus, VaultError> {
-        if !self.session.is_open() {
-            return Err(VaultError::NetworkNotOpen {
-                detail: self.session.network().to_string(),
-            });
-        }
-        not_implemented("Vault.status")
+        self.check_open()?;
+        Ok(self.session.vault().status().into())
     }
 
     /// Creates the vault. `passphrase` `Some` = encrypted (slot P, Argon2id);
     /// `None` = unencrypted (slot O in the OS secret store). Leaves the vault
     /// unlocked. Errors: `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
     pub async fn create(&self, passphrase: Option<Vec<u8>>) -> Result<VaultStatus, VaultError> {
-        drop(passphrase.map(zeroize::Zeroizing::new));
-        not_implemented("Vault.create")
+        let passphrase = passphrase.map(Zeroizing::new);
+        self.op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
+            .await
+            .map(Into::into)
     }
 
     /// dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-    /// a `ChangeCredential` grant. Errors: `AlreadyEncrypted`, `GrantInvalid`.
+    /// a `ChangeCredential` grant. Leaves the vault locked. Errors:
+    /// `AlreadyEncrypted`, `GrantInvalid`.
     pub async fn encrypt(
         &self,
         new_passphrase: Vec<u8>,
         grant_id: String,
     ) -> Result<VaultStatus, VaultError> {
-        drop(zeroize::Zeroizing::new(new_passphrase));
-        let _ = grant_id;
-        not_implemented("Vault.encrypt")
+        let new_passphrase = Zeroizing::new(new_passphrase);
+        self.op(move |v| v.encrypt(&new_passphrase, &grant_id))
+            .await
+            .map(Into::into)
     }
 
     /// Unwraps the data key. Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`.
@@ -281,14 +471,15 @@ impl Vault {
         passphrase: Vec<u8>,
         scope: UnlockScope,
     ) -> Result<VaultStatus, VaultError> {
-        drop(zeroize::Zeroizing::new(passphrase));
-        let _ = scope;
-        not_implemented("Vault.unlock")
+        let passphrase = Zeroizing::new(passphrase);
+        self.op(move |v| v.unlock(&passphrase, scope.into()))
+            .await
+            .map(Into::into)
     }
 
     /// Drops the data key from memory and revokes every grant. Idempotent.
     pub fn lock(&self) -> Result<VaultStatus, VaultError> {
-        not_implemented("Vault.lock")
+        Ok(self.session.lock_vault()?.into())
     }
 
     /// Re-wraps the data key under a new passphrase; the seed is unchanged
@@ -298,27 +489,32 @@ impl Vault {
         old_passphrase: Vec<u8>,
         new_passphrase: Vec<u8>,
     ) -> Result<VaultStatus, VaultError> {
-        drop(zeroize::Zeroizing::new(old_passphrase));
-        drop(zeroize::Zeroizing::new(new_passphrase));
-        not_implemented("Vault.change_passphrase")
+        let old_passphrase = Zeroizing::new(old_passphrase);
+        let new_passphrase = Zeroizing::new(new_passphrase);
+        self.op(move |v| v.change_passphrase(&old_passphrase, &new_passphrase))
+            .await
+            .map(Into::into)
     }
 
-    /// Checks `credential` and issues a grant for `purpose`. A passphrase
-    /// credential also unlocks a locked vault (scope Full).
+    /// Checks `credential` and issues a single-use grant for `purpose`. A
+    /// passphrase credential also unlocks a locked vault (scope Full).
     pub async fn authorize(
         &self,
         purpose: GrantPurpose,
         credential: VaultCredential,
     ) -> Result<AuthGrant, VaultError> {
-        let _ = purpose;
-        drop(credential);
-        not_implemented("Vault.authorize")
+        let credential = OwnedCredential::from(credential);
+        let purpose = purpose.into();
+        self.op(move |v| v.authorize(purpose, credential.as_credential()))
+            .await
+            .map(Into::into)
     }
 
     /// Invalidates a grant before it expires. Unknown ids are ignored.
     pub fn revoke_grant(&self, grant_id: String) -> Result<(), VaultError> {
-        let _ = grant_id;
-        not_implemented("Vault.revoke_grant")
+        self.check_open()?;
+        self.session.vault().revoke_grant(&grant_id);
+        Ok(())
     }
 
     /// The recovery phrase and BIP39 passphrase of `wallet_id`. Needs a
@@ -328,19 +524,26 @@ impl Vault {
         wallet_id: String,
         grant_id: String,
     ) -> Result<RevealedMnemonic, VaultError> {
-        let _ = (wallet_id, grant_id);
-        not_implemented("Vault.reveal_mnemonic")
+        let id = parse_wallet_id(&wallet_id)?;
+        let mut revealed = self
+            .op(move |v| v.reveal_mnemonic(&id.0, &grant_id))
+            .await?;
+        // Moved out, not copied; the empty `Zeroizing` shells drop here.
+        Ok(RevealedMnemonic {
+            phrase: std::mem::take(&mut *revealed.phrase),
+            bip39_passphrase: std::mem::take(&mut *revealed.bip39_passphrase),
+        })
     }
 
     /// Enrols the biometric slot (M2): returns the wrap key the host stores in
     /// the OS biometric store. Needs a `ChangeCredential` grant.
     pub async fn enroll_quick_unlock(&self, grant_id: String) -> Result<Vec<u8>, VaultError> {
-        let _ = grant_id;
-        not_implemented("Vault.enroll_quick_unlock")
+        let mut key = self.op(move |v| v.enroll_quick_unlock(&grant_id)).await?;
+        Ok(std::mem::take(&mut *key))
     }
 
     /// Deletes the biometric slot (M2). Idempotent.
     pub async fn remove_quick_unlock(&self) -> Result<VaultStatus, VaultError> {
-        not_implemented("Vault.remove_quick_unlock")
+        self.op(|v| v.remove_quick_unlock()).await.map(Into::into)
     }
 }
