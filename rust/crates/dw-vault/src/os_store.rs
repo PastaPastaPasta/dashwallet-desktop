@@ -106,9 +106,12 @@ impl OsSecretStore for KeyringOsStore {
 /// In-memory [`OsSecretStore`] for tests and fixture mode. Values live as long
 /// as the store object; share it through an `Arc` to model "the same OS
 /// store across an app restart".
+/// Values of [`MemoryOsStore`], keyed by (service, label).
+type MemoryEntries = HashMap<([u8; 32], String), Zeroizing<Vec<u8>>>;
+
 #[derive(Default)]
 pub struct MemoryOsStore {
-    entries: Mutex<HashMap<([u8; 32], String), Zeroizing<Vec<u8>>>>,
+    entries: Mutex<MemoryEntries>,
     unavailable: bool,
 }
 
@@ -135,12 +138,7 @@ impl MemoryOsStore {
         self.len() == 0
     }
 
-    fn entries(
-        &self,
-    ) -> Result<
-        std::sync::MutexGuard<'_, HashMap<([u8; 32], String), Zeroizing<Vec<u8>>>>,
-        VaultError,
-    > {
+    fn entries(&self) -> Result<std::sync::MutexGuard<'_, MemoryEntries>, VaultError> {
         if self.unavailable {
             return Err(VaultError::OsStoreUnavailable(
                 "no default credential store".into(),
