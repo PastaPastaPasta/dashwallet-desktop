@@ -234,7 +234,8 @@ impl NetworkSession {
 
     /// Creates a wallet from a fresh BIP39 English mnemonic (12 or 24 words).
     ///
-    /// Counterpart: platform-wallet-ffi `platform_wallet_manager_create_wallet_from_mnemonic`.
+    /// Counterpart: platform-wallet-ffi `platform_wallet_manager_create_wallet_from_mnemonic`
+    /// (rs-platform-wallet-ffi/src/manager.rs:599).
     /// The birth height is left to platform-wallet: SPV tip when running, else
     /// the latest checkpoint (a new wallet has no history to scan).
     pub async fn create_wallet(
@@ -262,7 +263,11 @@ impl NetworkSession {
     }
 
     /// Restores a wallet from an existing mnemonic. `birth_height` = `Some(0)`
-    /// scans from genesis; `None` uses platform-wallet's default.
+    /// scans from genesis; `None` uses platform-wallet's default. Emits
+    /// `WalletCreated` like `create_wallet` (the event means "registered").
+    ///
+    /// Counterpart: `platform_wallet_manager_create_wallet_from_mnemonic_with_birth_height`
+    /// (rs-platform-wallet-ffi/src/manager.rs:630).
     ///
     /// TODO(vault): Core's BIP39 quirks (weak checksum, no NFKD) and passphrase
     /// support belong to dw-vault/dw-compat; this accepts only valid BIP39 phrases.
@@ -324,7 +329,8 @@ impl NetworkSession {
 
     /// Starts dash-spv for this network (storage under `<network dir>/spv`) and
     /// spawns its run loop. Masternode sync stays on: InstantSend/ChainLock
-    /// handling depends on it (same reason as platform-wallet-ffi `spv.rs`).
+    /// handling depends on it. Counterpart: `platform_wallet_manager_spv_start`
+    /// (rs-platform-wallet-ffi/src/spv.rs:408, config built at :519-551).
     pub async fn start_spv(self: &Arc<Self>) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
