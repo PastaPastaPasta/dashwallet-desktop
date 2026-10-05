@@ -1,0 +1,54 @@
+[application] "CrossUILinuxProbe" desc="CrossUILinuxProbe" {}
+  [frame] "Dash Wallet Probe" actions=window.close,window.minimize,window.toggle-maximized,default.activate {sensitive,showing,visible} @(0,0 900x640)
+    [panel] "" {sensitive,showing,visible}
+      [panel] "" {sensitive,showing,visible}
+        [panel] "" {sensitive,showing,visible}
+          [panel] "" {sensitive,showing,visible}
+            [panel] "" {sensitive,showing,visible}
+              [panel] "" {focusable,sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                  [panel] "" {sensitive,showing,visible}
+                    [panel] "" {sensitive,showing,visible}
+                      [panel] "" {sensitive,showing,visible}
+                        [panel] "" {sensitive,showing,visible}
+                          [list] "" {focusable,sensitive,showing,visible} @(0,262 200x116)
+                            [list item] "" {focusable,selectable,selected,sensitive,showing,visible} @(0,262 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Overview" text="Overview" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,291 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Send" text="Send" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,320 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Receive" text="Receive" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,349 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Transactions" text="Transactions" {sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                  [panel] "" {sensitive,showing,visible}
+                    [panel] "" {sensitive,showing,visible}
+                      [panel] "" {sensitive,showing,visible}
+                        [panel] "" {sensitive,showing,visible}
+                          [panel] "" {sensitive,showing,visible}
+                            [panel] "" {sensitive,showing,visible}
+                              [panel] "" {sensitive,showing,visible}
+                                [panel] "" {sensitive,showing,visible}
+                                  [label] "Overview" text="Overview" {sensitive,showing,visible}
+                                [panel] "" {sensitive,showing,visible}
+                                  [panel] "" {sensitive,showing,visible}
+                                    [panel] "" {sensitive,showing,visible}
+                                      [panel] "" {sensitive,showing,visible}
+                                        [panel] "" {sensitive,showing,visible}
+                                          [label] "Balance: 8.27160426 DASH (sample data)" text="Balance: 8.27160426 DASH (sample data)" {sensitive,showing,visible}
+                                          [panel] "" {sensitive,showing,visible}
+                                            [panel] "" {sensitive,showing,visible}
+                                              [panel] "" {sensitive,showing,visible}
+                                                [panel] "" {sensitive,showing,visible}
+                                                  [panel] "" {sensitive,showing,visible}
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [label] "Hide balance" text="Hide balance" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [panel] "" {sensitive,showing,visible}
+                                                      [check box] "" actions=toggle {focusable,sensitive,showing,visible} @(511,327 50x26)
+                                          [label] "50 sample transactions" text="50 sample transactions" {sensitive,showing,visible}
