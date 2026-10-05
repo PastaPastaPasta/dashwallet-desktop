@@ -10,7 +10,7 @@ import Testing
 @Suite("DashUIMac snapshots")
 @MainActor
 struct DashUIMacSnapshotTests {
-    static let sampleIDs = DashUIMacGallery.samples.map(\.id)
+    nonisolated static let sampleIDs = DashUIMacGallery.samples.map(\.id)
 
     @Test("Gallery sample matches its reference image", arguments: sampleIDs, [ColorScheme.light, .dark])
     func sampleMatchesReference(id: String, scheme: ColorScheme) throws {

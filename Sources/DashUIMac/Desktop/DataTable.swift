@@ -117,6 +117,8 @@ public struct DataTableMenuAction: Identifiable {
 ///   selected.
 /// - Clicking a sortable header sorts by it; clicking it again reverses the direction. Rows
 ///   are sorted for display only; `rows` is not modified.
+/// - With `isScrollable` false the table takes the height of all its rows (for a table inside a
+///   view that already scrolls, or for rendering to an image).
 public struct DataTable<Row: Identifiable>: View {
     public let rows: [Row]
     public let columns: [DataTableColumn<Row>]
@@ -125,6 +127,7 @@ public struct DataTable<Row: Identifiable>: View {
     public let emptyText: String?
     public let onActivate: ((Row.ID) -> Void)?
     public let contextMenu: ((Set<Row.ID>) -> [DataTableMenuAction])?
+    public let isScrollable: Bool
 
     @State private var anchor: Row.ID?
     @FocusState private var isFocused: Bool
@@ -136,7 +139,8 @@ public struct DataTable<Row: Identifiable>: View {
         sortOrder: Binding<DataTableSortOrder?>,
         emptyText: String? = nil,
         onActivate: ((Row.ID) -> Void)? = nil,
-        contextMenu: ((Set<Row.ID>) -> [DataTableMenuAction])? = nil
+        contextMenu: ((Set<Row.ID>) -> [DataTableMenuAction])? = nil,
+        isScrollable: Bool = true
     ) {
         self.rows = rows
         self.columns = columns
@@ -145,6 +149,7 @@ public struct DataTable<Row: Identifiable>: View {
         self.emptyText = emptyText
         self.onActivate = onActivate
         self.contextMenu = contextMenu
+        self.isScrollable = isScrollable
     }
 
     /// `rows` in display order.
@@ -157,19 +162,17 @@ public struct DataTable<Row: Identifiable>: View {
 
     public var body: some View {
         let displayed = displayedRows
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section(header: header) {
-                    if displayed.isEmpty, let emptyText {
-                        Text(emptyText)
-                            .dashFont(.footnote)
-                            .foregroundStyle(Color.dash.secondaryText)
-                            .frame(maxWidth: .infinity)
-                            .padding(DashSpacing.xxl)
+        Group {
+            if isScrollable {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        Section(header: header) { rowsContent(displayed) }
                     }
-                    ForEach(Array(displayed.enumerated()), id: \.element.id) { index, row in
-                        rowView(row, index: index, displayed: displayed)
-                    }
+                }
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    rowsContent(displayed)
                 }
             }
         }
@@ -182,6 +185,20 @@ public struct DataTable<Row: Identifiable>: View {
             guard let onActivate, selection.count == 1, let id = selection.first else { return .ignored }
             onActivate(id)
             return .handled
+        }
+    }
+
+    @ViewBuilder
+    private func rowsContent(_ displayed: [Row]) -> some View {
+        if displayed.isEmpty, let emptyText {
+            Text(emptyText)
+                .dashFont(.footnote)
+                .foregroundStyle(Color.dash.secondaryText)
+                .frame(maxWidth: .infinity)
+                .padding(DashSpacing.xxl)
+        }
+        ForEach(Array(displayed.enumerated()), id: \.element.id) { index, row in
+            rowView(row, index: index, displayed: displayed)
         }
     }
 

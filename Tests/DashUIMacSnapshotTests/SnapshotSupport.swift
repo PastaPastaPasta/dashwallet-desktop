@@ -12,8 +12,8 @@ struct Bitmap: Equatable {
     let bytes: [UInt8]
 
     init?(cgImage: CGImage) {
-        width = cgImage.width
-        height = cgImage.height
+        let width = cgImage.width
+        let height = cgImage.height
         var buffer = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = buffer.withUnsafeMutableBytes { raw -> Bool in
             guard let context = CGContext(
@@ -25,6 +25,8 @@ struct Bitmap: Equatable {
             return true
         }
         guard drawn else { return nil }
+        self.width = width
+        self.height = height
         bytes = buffer
     }
 

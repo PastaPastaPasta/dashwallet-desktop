@@ -5,15 +5,15 @@ import DesignTokens
 import SwiftUI
 
 /// One gallery entry: a component rendered with fixed sample values.
-public struct DashUIMacGallerySample: Identifiable {
+public struct DashUIMacGallerySample: Identifiable, Sendable {
     public let id: String
     public let title: String
     /// Width the sample is laid out at.
     public let width: CGFloat
-    private let make: @MainActor () -> AnyView
+    private let make: @MainActor @Sendable () -> AnyView
 
     public init<Content: View>(_ id: String, title: String, width: CGFloat = 360,
-                               @ViewBuilder content: @escaping @MainActor () -> Content) {
+                               @ViewBuilder content: @escaping @MainActor @Sendable () -> Content) {
         self.id = id
         self.title = title
         self.width = width
@@ -62,8 +62,9 @@ public struct DashUIMacGallery: View {
 // MARK: - Samples
 
 extension DashUIMacGallery {
-    /// The gallery entries in display order.
-    @MainActor public static let samples: [DashUIMacGallerySample] = [
+    /// The gallery entries in display order. Nonisolated so test arguments can list them; the
+    /// views themselves are still built on the main actor.
+    public nonisolated static let samples: [DashUIMacGallerySample] = [
         DashUIMacGallerySample("dash-button", title: "DashButton") {
             VStack(alignment: .leading, spacing: DashSpacing.s) {
                 HStack {
@@ -106,6 +107,37 @@ extension DashUIMacGallery {
                 Toast(style: .copied, message: "Address copied")
                 Toast(style: .warning, message: "Some coins are not available")
                 Toast(style: .loading, message: "Syncing…")
+            }
+        },
+        DashUIMacGallerySample("bottom-sheet", title: "BottomSheet (sheet chrome)") {
+            BottomSheet.selfSizing(title: "Send", showBackButton: .constant(true)) {
+                Text("Sheet content")
+                    .dashFont(.subhead)
+                    .foregroundStyle(Color.dash.primaryText)
+                    .padding(DashSpacing.xl)
+            }
+        },
+        DashUIMacGallerySample("switches-radios", title: "DashSwitch, SwitchView, RadioButtonRow") {
+            VStack(alignment: .leading, spacing: DashSpacing.s) {
+                HStack(spacing: DashSpacing.m) {
+                    DashSwitch(isOn: .constant(true), accessibilityLabel: "On")
+                    DashSwitch(isOn: .constant(false), accessibilityLabel: "Off")
+                    SwitchView(isOn: .constant(true))
+                    SwitchView(isOn: .constant(false))
+                }
+                VStack(spacing: 0) {
+                    RadioButtonRow(title: "Standard fee", subtitle: "Confirms in about 2.5 minutes",
+                                   isSelected: true, action: {})
+                    RadioButtonRow(title: "Custom fee", isSelected: false, action: {})
+                }
+                .modifier(MenuViewModifier())
+            }
+        },
+        DashUIMacGallerySample("dash-amount", title: "DashAmount") {
+            VStack(alignment: .leading, spacing: DashSpacing.s) {
+                DashAmount(amount: 125_000_000, fontSize: 24, weight: .semibold, sign: .always)
+                DashAmount(amount: -4_200_000, sign: .always)
+                DashAmount(amount: 1)
             }
         },
         DashUIMacGallerySample("system-message", title: "SystemMessageView") {
@@ -188,8 +220,8 @@ extension DashUIMacGallery {
             ])
         },
         DashUIMacGallerySample("data-table", title: "DataTable", width: 560) {
+            // Not scrollable: ImageRenderer draws scroll views blank.
             GalleryDataTable()
-                .frame(height: 200)
         },
         DashUIMacGallerySample("illustrations", title: "Illustrations") {
             HStack(spacing: DashSpacing.m) {
@@ -285,7 +317,8 @@ private struct GalleryDataTable: View {
             sortOrder: $sortOrder,
             contextMenu: { ids in
                 [DataTableMenuAction(title: ids.count == 1 ? "Copy transaction ID" : "Copy \(ids.count) IDs") {}]
-            }
+            },
+            isScrollable: false
         )
     }
 }
