@@ -196,7 +196,7 @@ touches, and keep the summary counts in step.
 | ID | Item (research checklist) | Status | Milestone | What exists | Test reference |
 |---|---|---|---|---|---|
 | IOS-001 | Intro / onboarding carousel (Welcome, Pay with Ease, More Control) with demo mode | not started | M5 |  |  |
-| IOS-002 | Create new wallet with 12- or 24-word phrase (mnemonic persisted and verified before the wallet goes live) | partial | M1 | `dw-engine` creates 12/24-word wallets and persists them; the vault, backup and verification flow are not implemented | rust/crates/dw-engine/tests/session_lifecycle.rs `created_wallet_survives_engine_restart`; Tests/DashKitTests/EngineClientTests.swift `createWalletDeliversEventsAndPersistsAcrossRestart` |
+| IOS-002 | Create new wallet with 12- or 24-word phrase (mnemonic persisted and verified before the wallet goes live) | partial | M1 | `generate_mnemonic` + `import_wallet` store the phrase in the dw-vault vault (read back) before the wallet is registered; the onboarding verify step exists in `OnboardingViewModel` but has no UI and no view-model tests | rust/crates/dw-engine/tests/session_lifecycle.rs `imported_wallet_signs_after_restart_and_unlock`, `import_without_usable_vault_registers_nothing`; Tests/DashKitTests/EngineClientTests.swift `newWalletKeepsItsKeysAcrossRestart` |
 | IOS-003 | Recovery-phrase backup warnings + show phrase | not started | M1 |  |  |
 | IOS-004 | Phrase verification by ordered word-chip selection + "Verified Successfully" | not started | M1 |  |  |
 | IOS-005 | Backup reminder 24 h after first funds if unbacked; Backup shortcut | not started | M2 |  |  |

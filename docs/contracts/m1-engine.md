@@ -62,25 +62,24 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 
 | Call | Kind | Semantics | Errors (besides common) | Serves | Status |
 |---|---|---|---|---|---|
-| `Vault.status()` | sync | `VaultStatus { state, encrypted, quick_unlock_enrolled, failed_attempts, retry_after_secs, wallets_with_secrets }`. `state` ∈ `NoVault, NoKeys, Unencrypted, Locked, UnlockedMixingOnly, Unlocked`. | — | QT-022, IOS-013 | stub (returns `network_not_open` on a closed session) |
-| `Vault.create(passphrase: Option<bytes>)` | async | `Some` = encrypted (slot P, Argon2id), `None` = unencrypted (slot O, OS store). Leaves the vault unlocked. | `vault.already_exists`, `vault.passphrase_rejected`, `vault.os_store_unavailable` | QT-102, QT-111, IOS-010 | stub |
-| `Vault.encrypt(new_passphrase, grant_id)` | async | dash-qt "Encrypt Wallet": add slot P, delete slot O. `ChangeCredential` grant. | `vault.already_encrypted`, `vault.grant_invalid` | QT-111 | stub |
-| `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`). | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | stub |
-| `Vault.lock()` | sync | Drops the DEK, revokes all grants. Idempotent. | — | QT-111, IOS-015 | stub |
-| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; seed unchanged. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected` | QT-111 | stub |
-| `Vault.authorize(purpose, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`. Credentials: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted`. A passphrase also unlocks a locked vault. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `MasternodeOp`, `Governance`, `PlatformOp`. | `vault.wrong_passphrase`, `vault.throttled`, `vault.mixing_only`, `vault.quick_unlock_unavailable` | IOS-016/017 | stub |
-| `Vault.revoke_grant(grant_id)` | sync | Unknown ids ignored. | — | IOS-017 | stub |
-| `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch`, `vault.locked` | QT-113, IOS-006 | stub |
-| `Vault.enroll_quick_unlock(grant_id)` / `remove_quick_unlock()` | async | Biometric slot B (M2). | `vault.quick_unlock_unavailable` | IOS-011 | stub (M2) |
+| `Vault.status()` | sync | `VaultStatus { state, encrypted, quick_unlock_enrolled, failed_attempts, retry_after_secs, wallets_with_secrets }`. `state` ∈ `NoVault, NoKeys, Unencrypted, Locked, UnlockedMixingOnly, Unlocked`. | — | QT-022, IOS-013 | **works** |
+| `Vault.create(passphrase: Option<bytes>)` | async | `Some` = encrypted (slot P, Argon2id), `None` = unencrypted (slot O, OS store). Leaves the vault unlocked. | `vault.already_exists`, `vault.passphrase_rejected`, `vault.os_store_unavailable` | QT-102, QT-111, IOS-010 | **works** |
+| `Vault.encrypt(new_passphrase, grant_id)` | async | dash-qt "Encrypt Wallet": add slot P, delete slot O. `ChangeCredential` grant. | `vault.already_encrypted`, `vault.grant_invalid` | QT-111 | **works** |
+| `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`). | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | **works** |
+| `Vault.lock()` | sync | Drops the DEK, revokes all grants. Idempotent. | — | QT-111, IOS-015 | **works** |
+| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; seed unchanged. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected` | QT-111 | **works** |
+| `Vault.authorize(purpose, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`. Credentials: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted`. A passphrase also unlocks a locked vault. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `MasternodeOp`, `Governance`, `PlatformOp`. | `vault.wrong_passphrase`, `vault.throttled`, `vault.mixing_only`, `vault.quick_unlock_unavailable` | IOS-016/017 | **works** |
+| `Vault.revoke_grant(grant_id)` | sync | Unknown ids ignored. | — | IOS-017 | **works** |
+| `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch`, `vault.locked` | QT-113, IOS-006 | **works** |
+| `Vault.enroll_quick_unlock(grant_id)` / `remove_quick_unlock()` | async | Biometric slot B (M2). | `vault.quick_unlock_unavailable` | IOS-011 | stub (M2): `NotImplemented` from dw-vault |
 
 ### 2.3 Wallets (`wallet.rs`) — owners B (generate/check/import) and E1 (registry)
 
 | Call | Kind | Semantics | Errors (besides common) | Serves | Owner | Status |
 |---|---|---|---|---|---|---|
-| `generate_mnemonic(word_count, language)` | sync, free | Fresh phrase (12/15/18/21/24 words) as UTF-8 bytes. **Stores nothing.** The host shows it, runs the verify step, then calls `import_wallet`. | `wallet.unsupported_word_count` | QT-102/103, IOS-002…004 | B | stub |
-| `check_mnemonic(phrase)` | sync, free | `MnemonicCheck { word_count, unknown_word_indices, language, checksum: Valid\|CoreOnly\|Invalid }` for live restore validation. `CoreOnly` = fails BIP39, passes Dash Core's weak check. | — | QT-104, IOS-007 | B | stub |
-| `NetworkSession.import_wallet(mnemonic, bip39_passphrase, options)` | async | Stores phrase and passphrase in the vault, then registers the wallet, in DESIGN-opus §1.8 seed-safety order. `ImportOptions { name, birth_height, core_compat, lookahead }`. Returns the wallet id. Over an existing watch-only wallet with the same id: attach the keys, or `wallet.watch_only_exists`. | `wallet.invalid_mnemonic`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.name_rejected` | QT-104/105, IOS-007, IOS-123 | B | **partial**: an empty passphrase with `name`, `core_compat`, `lookahead` unset registers the wallet as M0 did (phrase **not stored**, review H1); anything else → `NotImplemented`. Invalid phrase and duplicate already map to distinct errors (M6 fixed). |
-| `NetworkSession.create_wallet(word_count)` | async | **M0, superseded.** Registers a wallet and returns the phrase as `String`. | `EngineError` | — | B removes it | M0 |
+| `generate_mnemonic(word_count, language)` | sync, free | Fresh phrase (12/15/18/21/24 words) as UTF-8 bytes. **Stores nothing.** The host shows it, runs the verify step, then calls `import_wallet`. | `wallet.unsupported_word_count` | QT-102/103, IOS-002…004 | B | **works** |
+| `check_mnemonic(phrase)` | sync, free | `MnemonicCheck { word_count, unknown_word_indices, language, checksum: Valid\|CoreOnly\|Invalid }` for live restore validation. `CoreOnly` = fails BIP39, passes Dash Core's weak check. | — | QT-104, IOS-007 | B | **works** |
+| `NetworkSession.import_wallet(mnemonic, bip39_passphrase, options)` | async | Stores phrase and passphrase in the vault, then registers the wallet, in DESIGN-opus §1.8 seed-safety order. `ImportOptions { name, birth_height, core_compat, lookahead }`. Returns the wallet id. Over an existing watch-only wallet with the same id: attach the keys, or `wallet.watch_only_exists`. | `wallet.invalid_mnemonic`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.name_rejected` | QT-104/105, IOS-007, IOS-123 | B | **partial**: phrase, BIP39 passphrase, `birth_height` and `core_compat` work; the seed is stored and read back before registration, so without a usable vault the call fails with `wallet.no_vault` / `wallet.vault_locked` and registers nothing (review H-1). Re-import over a registered wallet without a seed attaches the keys. `name` (needs dw-appdb names, E1) and `lookahead` (needs a per-wallet gap limit upstream, U12) return `NotImplemented`. No watch-only wallets exist yet, so `wallet.watch_only_exists` is never returned. |
 | `NetworkSession.list_wallets()` | sync | **M0, superseded by `wallet_infos`.** | `EngineError` | — | E1 removes it | M0 |
 | `NetworkSession.wallet_infos()` / `wallet_info(id)` | sync | `WalletInfo { wallet_id, name, watch_only, has_mnemonic, hd, birth_height, created_at, balances }`, creation order. | — | QT-014, QT-021, QT-035, QT-101, IOS-110 | E1 | stub |
 | `NetworkSession.balances(id)` | sync | `WalletBalances { confirmed, unconfirmed, immature, locked, total }`. | `EngineError` | QT-034, IOS-019/021 | E1 | M0 |
@@ -156,7 +155,7 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
 | `verify_message(network, address, message, signature)` | sync, free | `Ok(())` when valid. dash-qt result texts map 1:1 from the codes. | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed` | QT-100 | **works** |
-| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant. | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | stub |
+| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant, redeemed only after the address checks pass. Signs through dw-vault's `VaultSigner`. | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | **works** |
 
 ### 2.11 URI and QR (`uri.rs`) — owner E2
 
@@ -189,7 +188,7 @@ stay in dw-uri for M2 (IOS-048 OS registration).
 | `Sync {network, snapshot}` | snapshot changed (≤ 4 Hz, trailing edge kept) | `SPVCoordinator` | E1 |
 | `Balances {network, wallet_id, balances}` | balance buckets changed | Home / status bar | E1 |
 | `HistoryChanged {network, wallet_id, txids}` | tx added or status changed (`txids` empty = reload all) | re-query `history_page`, current receive address | E1 |
-| `LockState {network, state}` | vault lock state changed | lock screen, status bar | B |
+| `LockState {network, state}` | vault lock state changed | lock screen, status bar | B (emitted) |
 | `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled`, `BackupFailed` | banner / log | E1 |
 | `SyncProgress`, `PeersChanged`, `WalletChanged` | **M0**; E1 removes them once `Sync`, `Balances`, `HistoryChanged` are emitted and C has migrated | — | M0 |
 
@@ -260,17 +259,17 @@ everywhere, README test command, unused dev-dep, redundant script, DesignTokensT
   negative-zero values.
 
 ### B vault
-- Create `dw-vault` and implement §2.2 and `generate_mnemonic`, `check_mnemonic`, the vault side of
-  `import_wallet` and `remove_wallet`, `VaultSigner`.
-- **H1** `import_wallet` must write the vault record, fsync, read it back and compare **before**
-  registering the wallet (DESIGN-opus §1.8); roll back only the provisional record on failure. Remove
-  `create_wallet`. Import over an existing watch-only wallet attaches the keys or returns
-  `wallet.watch_only_exists`.
-- **M5** Secrets cross the FFI as bytes only (done in the contract); remove the remaining `String` paths
-  (`CreatedWallet.mnemonic`) with `create_wallet`.
-- `core_compat` seeds go through `dw_compat::bip39core::core_seed`; `lookahead` defaults to 1000 for
-  dash-qt restores (QT-105).
-- Decide whether returned secret bytes need a zeroing transfer type (UniFFI frees `RustBuffer` unzeroed).
+Status on main: dw-vault, §2.2 (except quick unlock, M2), `generate_mnemonic`, `check_mnemonic`,
+the vault side of `import_wallet`, `VaultSigner` and `sign_message` are done and tested through the
+engine and the FFI. H1 and M5 are fixed: `create_wallet` is no longer exported, and the import order
+is derive → store and read back → register, rolling back only the records this call wrote.
+Still owed:
+- The vault side of `remove_wallet` (delete the wallet's records under a `Wipe` grant).
+- Watch-only import (`wallet.watch_only_exists`) once watch-only wallets exist.
+- `lookahead` (QT-105, default 1000 for dash-qt restores) needs a per-wallet gap limit upstream (U12);
+  until then `ImportOptions.lookahead` returns `NotImplemented`.
+- Decide whether returned secret bytes need a zeroing transfer type (UniFFI frees `RustBuffer` unzeroed;
+  `VaultCredential` and `RevealedMnemonic` are no longer `Clone`, and Rust moves rather than copies them).
 
 ### C Swift runtime (see m1-swift.md)
 - **M2** `EngineClient.open` caches the session object; after an engine-side close it returns a closed
