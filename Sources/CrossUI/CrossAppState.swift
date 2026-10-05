@@ -46,13 +46,11 @@ public final class CrossAppState {
         self.notice = notice
     }
 
-    /// The address book of the active network, created on first use.
+    /// The address book of the active network, created on first use with
+    /// `purpose`; afterwards the page's own picker sets the purpose.
     func addressBook(purpose: AddressPurpose) -> AddressBookViewModel? {
         guard let network = main.network else { return nil }
-        if let cached = addressBookModel, cached.network == network {
-            if cached.model.purpose != purpose { cached.model.setPurpose(purpose) }
-            return cached.model
-        }
+        if let cached = addressBookModel, cached.network == network { return cached.model }
         let model = AddressBookViewModel(env: env, network: network, purpose: purpose)
         addressBookModel = (network, model)
         return model

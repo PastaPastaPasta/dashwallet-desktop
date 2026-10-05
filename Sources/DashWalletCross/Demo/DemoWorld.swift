@@ -65,8 +65,6 @@ final class DemoSecret: SecretBuffer, @unchecked Sendable {
         try bytes.withUnsafeBytes(body)
     }
 
-    var utf8String: String { String(decoding: bytes, as: UTF8.self) }
-
     deinit {
         bytes.withUnsafeMutableBytes { _ = $0.initializeMemory(as: UInt8.self, repeating: 0) }
     }
