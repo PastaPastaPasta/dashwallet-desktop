@@ -254,5 +254,29 @@ proptest! {
         let _ = dw_uri::ext::parse_payment_string(&s);
         let _ = dw_uri::deeplink::classify_link(&s);
         let _ = keyio::classify_address(&s, Network::Mainnet);
+        let _ = keyio::locate_bech32_errors(&s);
+        let _ = dw_uri::core::handle_uri(&s, Network::Testnet);
+    }
+
+    // The iOS writer never panics, and its output parses back.
+    #[test]
+    fn builder_is_total(text in arb_text(), amount in any::<u64>(), fiat in any::<f32>()) {
+        let b = dw_uri::ext::PaymentUriBuilder {
+            address: "Xabc".into(),
+            amount,
+            label: Some(text.clone()),
+            message: Some(text.clone()),
+            request_url: Some(text.clone()),
+            fiat_currency_code: Some(text.clone()),
+            fiat_amount: fiat,
+            dashpay_username: None,
+        };
+        let uri = b.build();
+        let back = dw_uri::ext::parse_payment_uri(&uri).expect("builder output parses");
+        prop_assert_eq!(back.address.as_deref(), Some("Xabc"));
+        prop_assert_eq!(back.amount.unwrap_or(0), amount);
+        if !text.is_empty() {
+            prop_assert_eq!(back.label.as_deref(), Some(text.as_str()));
+        }
     }
 }

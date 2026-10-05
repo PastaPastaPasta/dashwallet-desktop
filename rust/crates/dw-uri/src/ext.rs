@@ -369,23 +369,53 @@ pub fn ios_query_encode(s: &str) -> String {
     out
 }
 
-/// C `printf("%.2f", v)` for finite, non-negative `v`: the exact binary value
-/// rounded half-to-even at two decimals.
+/// C `printf("%.2f", v)`: the exact binary value rounded half-to-even at two
+/// decimals (what Apple's and glibc's printf do); `inf`/`nan` for
+/// non-finite values.
 fn printf_2f(v: f64) -> String {
-    // Every f64 obtained from an f32 has at most 149 fractional binary
-    // digits, so 160 decimals are exact.
-    let exact = format!("{v:.160}");
+    if v.is_nan() {
+        return "nan".to_owned();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "inf" } else { "-inf" }.to_owned();
+    }
+    // An f64 has at most 1074 fractional binary digits, so 1080 decimals
+    // print it exactly.
+    let exact = format!("{:.1080}", v.abs());
     let (int_part, frac_part) = exact.split_once('.').expect("fixed-point output has a dot");
-    let keep = &frac_part[..2];
-    let rest = &frac_part[2..];
+    let (keep, rest) = frac_part.split_at(2);
+    let mut digits: Vec<u8> = int_part.bytes().chain(keep.bytes()).collect();
     let first = rest.as_bytes()[0];
     let beyond_half = rest[1..].bytes().any(|c| c != b'0');
-    let mut cents: u128 = format!("{int_part}{keep}").parse().expect("digits");
-    let last_even = cents.is_multiple_of(2);
-    if first > b'5' || (first == b'5' && (beyond_half || !last_even)) {
-        cents += 1;
+    let last_odd = (digits[digits.len() - 1] - b'0') % 2 == 1;
+    if first > b'5' || (first == b'5' && (beyond_half || last_odd)) {
+        // Decimal increment with carry.
+        let mut i = digits.len();
+        loop {
+            if i == 0 {
+                digits.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if digits[i] == b'9' {
+                digits[i] = b'0';
+            } else {
+                digits[i] += 1;
+                break;
+            }
+        }
     }
-    format!("{}.{:02}", cents / 100, cents % 100)
+    let split = digits.len() - 2;
+    let sign = if v.is_sign_negative() && digits.iter().any(|&d| d != b'0') {
+        "-"
+    } else {
+        ""
+    };
+    format!(
+        "{sign}{}.{}",
+        std::str::from_utf8(&digits[..split]).expect("ascii"),
+        std::str::from_utf8(&digits[split..]).expect("ascii")
+    )
 }
 
 #[cfg(test)]
@@ -492,6 +522,20 @@ mod tests {
         assert_eq!(printf_2f(2.5), "2.50");
         assert_eq!(printf_2f(1.005), "1.00"); // 1.005 is 1.00499999… in binary
         assert_eq!(printf_2f(f64::from(0.1f32)), "0.10");
+        assert_eq!(printf_2f(9.995), "9.99"); // 9.99499… in binary
+        assert_eq!(printf_2f(99.999), "100.00");
+        assert_eq!(
+            printf_2f(f64::from(f32::MAX)),
+            "340282346638528859811704183484516925440.00"
+        );
+        assert_eq!(printf_2f(f64::INFINITY), "inf");
+        let huge = PaymentUriBuilder {
+            address: "X".into(),
+            fiat_currency_code: Some("USD".into()),
+            fiat_amount: "1e39".parse().unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(huge.build(), "dash:X?currency=USD&local=inf");
     }
 
     #[test]
