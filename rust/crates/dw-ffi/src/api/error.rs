@@ -1,5 +1,7 @@
-/// Error crossing the FFI. Swift maps the case to localized copy; `detail` is
-/// diagnostic text for logs only.
+/// Engine-level error of the M0 calls (engine, session, SPV start/stop,
+/// `create_wallet`, `list_wallets`, `balances`). M1 domain calls use their own
+/// error enums (`VaultError`, `WalletError`, …). Swift maps the case to
+/// localized copy; `detail` is diagnostic text for logs only.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum EngineError {
     #[error("invalid configuration: {detail}")]
@@ -14,6 +16,10 @@ pub enum EngineError {
     Storage { detail: String },
     #[error("wallet not found: {detail}")]
     WalletNotFound { detail: String },
+    #[error("invalid mnemonic: {detail}")]
+    InvalidMnemonic { detail: String },
+    #[error("wallet already exists: {detail}")]
+    WalletAlreadyExists { detail: String },
     #[error("wallet: {detail}")]
     Wallet { detail: String },
     #[error("sdk: {detail}")]
@@ -39,6 +45,8 @@ impl From<dw_engine::EngineError> for EngineError {
             E::StorageInUse(_) => Self::StorageInUse { detail },
             E::Storage(_) => Self::Storage { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
+            E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },
             E::Wallet(_) => Self::Wallet { detail },
             E::Sdk(_) => Self::Sdk { detail },
             E::Spv(_) => Self::Spv { detail },

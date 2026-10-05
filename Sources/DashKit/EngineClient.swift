@@ -68,15 +68,26 @@ public actor EngineClient {
     }
 
     /// Restores a wallet. `birthHeight` 0 scans from genesis; `nil` lets the
-    /// engine choose (SPV tip or latest checkpoint).
-    public func importWallet(on network: DashNetwork, mnemonic: SecretBytes, birthHeight: UInt32? = nil)
-        async throws(DashKitError) -> WalletID
-    {
+    /// engine choose (SPV tip or latest checkpoint). A non-empty
+    /// `bip39Passphrase` fails with `notImplemented` until the vault lands.
+    public func importWallet(
+        on network: DashNetwork,
+        mnemonic: SecretBytes,
+        bip39Passphrase: SecretBytes = SecretBytes([]),
+        birthHeight: UInt32? = nil
+    ) async throws(DashKitError) -> WalletID {
         let session = try session(network)
-        guard let phrase = mnemonic.utf8String() else {
-            throw .invalidArgument(detail: "mnemonic is not valid UTF-8")
+        // The binding takes `Data`; the copies are zeroed once the call returns.
+        var phrase = mnemonic.withUnsafeBytes { Data($0) }
+        var passphrase = bip39Passphrase.withUnsafeBytes { Data($0) }
+        defer {
+            phrase.resetBytes(in: 0..<phrase.count)
+            passphrase.resetBytes(in: 0..<passphrase.count)
         }
-        let id = try await mapped { try await session.importWallet(mnemonic: phrase, birthHeight: birthHeight) }
+        let options = DashWalletCore.ImportOptions(name: nil, birthHeight: birthHeight, coreCompat: false, lookahead: nil)
+        let id = try await mapped {
+            try await session.importWallet(mnemonic: phrase, bip39Passphrase: passphrase, options: options)
+        }
         return WalletID(engine: id)
     }
 

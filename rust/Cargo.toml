@@ -38,6 +38,9 @@ dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c
 
 # ---- our crates ----
 dw-engine = { path = "crates/dw-engine" }
+dw-message = { path = "crates/dw-message" }
+dw-units = { path = "crates/dw-units" }
+dw-uri = { path = "crates/dw-uri" }
 
 # ---- third party ----
 uniffi = { version = "=0.32.2" }

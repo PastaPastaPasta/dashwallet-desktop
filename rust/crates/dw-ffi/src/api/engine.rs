@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{EngineError, NetworkSession, SessionOptions};
+use crate::{
+    EngineError, NetworkSession, SessionOptions, SyncSnapshot, VaultLockState, WalletBalances,
+};
 
 /// Version string of the Rust core (crate version).
 #[uniffi::export]
@@ -52,6 +54,11 @@ pub enum NoticeCode {
     PlatformContextUnavailable,
     SpvError,
     UncleanShutdown,
+    /// SPV made no progress for 45 s while not caught up (IOS-023); the host
+    /// may offer `rotate_peers`.
+    SyncStalled,
+    /// An automatic wallet backup failed (QT-116).
+    BackupFailed,
 }
 
 impl From<dw_engine::NoticeCode> for NoticeCode {
@@ -64,7 +71,12 @@ impl From<dw_engine::NoticeCode> for NoticeCode {
     }
 }
 
-/// Engine → host signal; the host re-queries data when it arrives.
+/// Engine → host signal; the host re-queries data when it arrives
+/// (DESIGN-opus §1.5 rule 4). Each domain is debounced in Rust to at most
+/// 4 Hz, and the last change of a burst is always delivered.
+///
+/// M0 variants (`SyncProgress`, `PeersChanged`, `WalletChanged`) stay until
+/// E1 emits `Sync`, `Balances` and `HistoryChanged`; E1 then removes them.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum EngineEvent {
     SessionOpened {
@@ -98,6 +110,34 @@ pub enum EngineEvent {
         network: Option<DashNetwork>,
         code: NoticeCode,
         detail: String,
+    },
+    /// New sync state; same value `NetworkSession::sync_snapshot` returns.
+    Sync {
+        network: DashNetwork,
+        snapshot: SyncSnapshot,
+    },
+    /// The wallet's balance buckets changed.
+    Balances {
+        network: DashNetwork,
+        wallet_id: String,
+        balances: WalletBalances,
+    },
+    /// Transactions of the wallet were added or changed status; re-query
+    /// `history_page`. `txids` lists the affected ones when known (empty =
+    /// reload everything).
+    HistoryChanged {
+        network: DashNetwork,
+        wallet_id: String,
+        txids: Vec<String>,
+    },
+    WalletRemoved {
+        network: DashNetwork,
+        wallet_id: String,
+    },
+    /// The vault of `network` changed lock state.
+    LockState {
+        network: DashNetwork,
+        state: VaultLockState,
     },
 }
 

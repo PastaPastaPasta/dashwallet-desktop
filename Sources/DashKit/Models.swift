@@ -125,17 +125,23 @@ public enum NoticeCode: Sendable, Equatable {
     case platformContextUnavailable
     case spvError
     case uncleanShutdown
+    case syncStalled
+    case backupFailed
 
     init(_ ffi: DashWalletCore.NoticeCode) {
         switch ffi {
         case .platformContextUnavailable: self = .platformContextUnavailable
         case .spvError: self = .spvError
         case .uncleanShutdown: self = .uncleanShutdown
+        case .syncStalled: self = .syncStalled
+        case .backupFailed: self = .backupFailed
         }
     }
 }
 
-/// Engine signal. Consumers re-query state when one arrives.
+/// Engine signal. Consumers re-query state when one arrives. The M1 events
+/// (`syncChanged`, `balancesChanged`, `historyChanged`, `walletRemoved`,
+/// `lockStateChanged`) carry no payload here: the data is pulled again.
 public enum EngineEvent: Sendable, Equatable {
     case sessionOpened(DashNetwork)
     case sessionClosed(DashNetwork)
@@ -145,6 +151,12 @@ public enum EngineEvent: Sendable, Equatable {
     case syncProgress(DashNetwork, headerTipHeight: UInt32?, synced: Bool)
     case peersChanged(DashNetwork, connected: UInt32)
     case notice(DashNetwork?, NoticeCode, detail: String)
+    case syncChanged(DashNetwork)
+    case balancesChanged(DashNetwork, WalletID)
+    /// `txids` empty = reload everything.
+    case historyChanged(DashNetwork, WalletID, txids: [String])
+    case walletRemoved(DashNetwork, WalletID)
+    case lockStateChanged(DashNetwork)
 
     init(_ ffi: DashWalletCore.EngineEvent) {
         switch ffi {
@@ -158,6 +170,12 @@ public enum EngineEvent: Sendable, Equatable {
         case .peersChanged(let n, let connected): self = .peersChanged(DashNetwork(n), connected: connected)
         case .notice(let n, let code, let detail):
             self = .notice(n.map(DashNetwork.init), NoticeCode(code), detail: detail)
+        case .sync(let n, _): self = .syncChanged(DashNetwork(n))
+        case .balances(let n, let id, _): self = .balancesChanged(DashNetwork(n), WalletID(engine: id))
+        case .historyChanged(let n, let id, let txids):
+            self = .historyChanged(DashNetwork(n), WalletID(engine: id), txids: txids)
+        case .walletRemoved(let n, let id): self = .walletRemoved(DashNetwork(n), WalletID(engine: id))
+        case .lockState(let n, _): self = .lockStateChanged(DashNetwork(n))
         }
     }
 
@@ -165,7 +183,9 @@ public enum EngineEvent: Sendable, Equatable {
     public var network: DashNetwork? {
         switch self {
         case .sessionOpened(let n), .sessionClosed(let n), .walletCreated(let n, _), .walletChanged(let n, _),
-             .spvStateChanged(let n, _), .syncProgress(let n, _, _), .peersChanged(let n, _):
+             .spvStateChanged(let n, _), .syncProgress(let n, _, _), .peersChanged(let n, _),
+             .syncChanged(let n), .balancesChanged(let n, _), .historyChanged(let n, _, _),
+             .walletRemoved(let n, _), .lockStateChanged(let n):
             n
         case .notice(let n, _, _):
             n

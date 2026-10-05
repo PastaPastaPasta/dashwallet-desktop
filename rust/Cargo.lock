@@ -1569,6 +1569,9 @@ name = "dw-ffi"
 version = "0.1.0"
 dependencies = [
  "dw-engine",
+ "dw-message",
+ "dw-units",
+ "dw-uri",
  "openssl",
  "thiserror 2.0.18",
  "uniffi",

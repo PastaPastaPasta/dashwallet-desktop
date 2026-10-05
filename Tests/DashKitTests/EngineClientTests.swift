@@ -110,7 +110,23 @@ import Testing
             _ = try await client.importWallet(on: .regtest, mnemonic: SecretBytes(utf8: "not a phrase"))
             Issue.record("invalid phrase should be rejected")
         } catch {
-            #expect(error.code == "wallet")
+            #expect(error.code == "wallet.invalid_mnemonic")
+        }
+        // A second import of the same phrase is a distinct error (review M6).
+        _ = try await client.importWallet(on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), birthHeight: 0)
+        do {
+            _ = try await client.importWallet(on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), birthHeight: 0)
+            Issue.record("duplicate import should be rejected")
+        } catch {
+            #expect(error.code == "wallet.already_exists")
+        }
+        // A BIP39 passphrase needs the vault, which does not exist yet.
+        do {
+            _ = try await client.importWallet(
+                on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "x"))
+            Issue.record("passphrase import should be not implemented")
+        } catch {
+            #expect(error.code == "not_implemented")
         }
         do {
             _ = try await client.balances(on: .regtest, wallet: WalletID(hex: String(repeating: "0", count: 64))!)
