@@ -13,6 +13,9 @@ description = "dash: URI parsing/writing (dash-qt exact and iOS superset), deep-
 dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15", default-features = false, features = ["secp-recovery"] }
 dw-units = { path = "../dw-units" }
 zeroize = "1.8"
+# Module matrices only: the image/svg renderers stay off.
+qrcode = { version = "0.14", default-features = false }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
