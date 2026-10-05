@@ -15,7 +15,7 @@ final class Locked<Value>: @unchecked Sendable {
         self.value = value
     }
 
-    func withLock<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+    func withLock<R, E: Error>(_ body: (inout Value) throws(E) -> R) throws(E) -> R {
         lock.lock()
         defer { lock.unlock() }
         return try body(&value)

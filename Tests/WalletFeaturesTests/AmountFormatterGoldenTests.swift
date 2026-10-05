@@ -7,7 +7,8 @@ import Testing
 import WalletFeatures
 import WalletRuntime
 
-struct AmountVectors {
+/// The parsed JSON is only read after loading.
+struct AmountVectors: @unchecked Sendable {
     let doc: [String: Any]
 
     static let shared: AmountVectors = {

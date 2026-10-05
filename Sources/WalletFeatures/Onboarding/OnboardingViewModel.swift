@@ -12,6 +12,9 @@ public enum OnboardingStep: Sendable, Equatable {
     case verifyPhrase
     /// Encryption passphrase for a new vault (QT-111, IOS-010).
     case choosePassphrase
+    /// The vault exists but is locked: its passphrase is needed before
+    /// another wallet can be added (review: second wallet with a locked vault).
+    case unlockVault
     case restorePhrase
     /// BIP39 passphrase, Core compatibility, birth date (QT-104/105).
     case restoreOptions
@@ -63,6 +66,8 @@ public final class OnboardingViewModel {
     // Passphrase.
     public private(set) var passphraseStrength: PassphraseStrength = .none
     public private(set) var passphraseError: String?
+    /// Why the last `unlockVault(passphrase:)` failed.
+    public private(set) var unlockError: String?
 
     // Restore.
     public private(set) var restoreCheck: MnemonicCheck?
@@ -87,6 +92,9 @@ public final class OnboardingViewModel {
     private let vault: any VaultProviding
     private let lifecycle: any LifecycleQueueing
     private let host: any WalletHosting
+    /// Unlocks an existing locked vault before adding a wallet; without it a
+    /// locked vault ends the flow with `vault.locked`.
+    private let auth: (any AuthenticationGating)?
     private let screenCapture: (any ScreenCaptureGuard)?
     private let timing: Timing
     private var rng: AnyRandomNumberGenerator
@@ -102,11 +110,13 @@ public final class OnboardingViewModel {
     public init(
         vault: any VaultProviding, lifecycle: any LifecycleQueueing, host: any WalletHosting,
         screenCapture: (any ScreenCaptureGuard)?, timing: Timing, developerMode: Bool,
+        auth: (any AuthenticationGating)? = nil,
         randomNumberGenerator: any RandomNumberGenerator = SystemRandomNumberGenerator()
     ) {
         self.vault = vault
         self.lifecycle = lifecycle
         self.host = host
+        self.auth = auth
         self.screenCapture = screenCapture
         self.timing = timing
         self.rng = AnyRandomNumberGenerator(base: randomNumberGenerator)
@@ -116,7 +126,7 @@ public final class OnboardingViewModel {
     public convenience init(env: AppEnvironment) {
         self.init(
             vault: env.vault, lifecycle: env.lifecycle, host: env.host, screenCapture: env.screenCapture,
-            timing: env.timing, developerMode: env.developerMode)
+            timing: env.timing, developerMode: env.developerMode, auth: env.auth)
     }
 
     public func load() async {
@@ -144,6 +154,10 @@ public final class OnboardingViewModel {
     /// Generates a phrase and shows it. Nothing is stored until `finish()`.
     public func startCreate() async {
         flow = .create
+        // A new wallet has no history: `nil` lets the engine start at its tip
+        // (review H-5; restore sets a height instead).
+        options = WalletImportOptions()
+        bip39Passphrase = nil
         do {
             let phrase = try await vault.generateMnemonic(wordCount: wordCount, language: .english)
             mnemonic = phrase
@@ -334,7 +348,29 @@ public final class OnboardingViewModel {
             clearSecrets()
             step = .done(id)
         } catch {
-            step = .failed(failure(error))
+            if auth != nil, Self.lockedCodes.contains(error.code) {
+                unlockError = nil
+                step = .unlockVault
+            } else {
+                step = .failed(failure(error))
+            }
+        }
+    }
+
+    /// Unlocks the existing vault with its passphrase, then adds the wallet.
+    /// A wrong passphrase stays on `.unlockVault` with `unlockError` set.
+    public func unlockVault(passphrase: String) async {
+        guard step == .unlockVault, let auth else { return }
+        guard !passphrase.isEmpty else {
+            unlockError = L10n.Common.passphraseRequired
+            return
+        }
+        do {
+            try await auth.unlock(passphrase: vault.makeSecret(utf8: passphrase), scope: .full)
+            unlockError = nil
+            await finish()
+        } catch {
+            unlockError = ErrorText.common(error.code)
         }
     }
 
@@ -353,7 +389,8 @@ public final class OnboardingViewModel {
             }
         case .restoreOptions:
             step = .restorePhrase
-        case .choosePassphrase:
+        case .choosePassphrase, .unlockVault:
+            unlockError = nil
             step = flow == .restore ? .restoreOptions : .verifyPhrase
         case .failed:
             if mnemonic == nil {
@@ -377,16 +414,25 @@ public final class OnboardingViewModel {
         retryStep = step
         do {
             let status = try await vault.status()
-            if status.state == .noVault {
+            switch status.state {
+            case .noVault:
                 passphraseStrength = .none
                 step = .choosePassphrase
-            } else {
+            case .locked where auth != nil, .unlockedMixingOnly where auth != nil:
+                unlockError = nil
+                step = .unlockVault
+            default:
                 await finish()
             }
         } catch {
             step = .failed(failure(error))
         }
     }
+
+    /// Errors that mean the vault must be unlocked before the import.
+    private static let lockedCodes: Set<ServiceErrorCode> = [
+        .vaultLocked, .vaultMixingOnly, EngineCode.walletVaultLocked,
+    ]
 
     private func applyRestoreCheck(_ check: MnemonicCheck) {
         restoreCheck = check
