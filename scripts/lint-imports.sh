@@ -26,12 +26,14 @@ allowed_for() {
     PlatformServicesDesktop) echo "Foundation DashKit PlatformServices" ;;
     WalletFeatures)          echo "Foundation Observation WalletRuntime AppServices PlatformServices DesignTokens" ;;
     DesignTokens)            echo "Foundation" ;;
-    DashUIMac)               echo "Foundation SwiftUI DashUIKit DesignTokens" ;;
+    # AppKit: DashUIKit's AppKit ports and desktop components (DESIGN-opus §1.6 DashUIMac row).
+    DashUIMac)               echo "Foundation SwiftUI AppKit DashUIKit DesignTokens" ;;
     MacUI)                   echo "Foundation SwiftUI DashUIMac WalletFeatures PlatformServicesMac" ;;
     DashUICross)             echo "Foundation SwiftCrossUI DesignTokens" ;;
     CrossUI)                 echo "Foundation SwiftCrossUI DashUICross WalletFeatures PlatformServicesDesktop" ;;
     DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DesignTokens" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
+    DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
     *)                       return 1 ;;
   esac
 }

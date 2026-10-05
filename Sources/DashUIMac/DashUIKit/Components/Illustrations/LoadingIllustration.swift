@@ -20,7 +20,6 @@
 //
 
 #if os(macOS)
-import Combine
 import SwiftUI
 
 // MARK: - LoadingIllustration
@@ -72,22 +71,14 @@ public struct LoadingSpinner: View {
     /// Seconds for the bright head to travel once around the ring.
     public let duration: Double
 
-    /// Index of the currently-brightest spoke; advances clockwise on each timer tick.
+    /// Index of the currently-brightest spoke; advances clockwise once per step.
     @State private var phase = 0
-    /// Fires once per spoke step (duration / spokeCount). Created once so it isn't restarted
-    /// on every body re-evaluation; connected on appear and cancelled on disappear so no timer
-    /// runs while the view is off-screen.
-    private let timer: Timer.TimerPublisher
-    /// Handle for the connected timer; `nil` while the view is off-screen.
-    @State private var timerCancellable: Cancellable?
 
     public init(size: CGFloat = 61.73, color: Color = defaultColor, spokeCount: Int = 12, duration: Double = 1) {
         self.size = size
         self.color = color
         self.spokeCount = max(spokeCount, 1)
         self.duration = duration
-        self.timer = Timer
-            .publish(every: duration / Double(max(spokeCount, 1)), on: .main, in: .common)
     }
 
     private var stepInterval: Double { duration / Double(max(spokeCount, 1)) }
@@ -106,20 +97,17 @@ public struct LoadingSpinner: View {
             }
         }
         .frame(width: size, height: size)
-        .onReceive(timer) { _ in
-            // Step the bright head one spoke clockwise; crossfade the opacities.
-            withAnimation(.linear(duration: stepInterval)) {
-                phase = (phase + 1) % spokeCount
+        // Steps the bright head one spoke clockwise per interval and crossfades
+        // the opacities. SwiftUI cancels the task when the view disappears, so
+        // nothing runs off-screen.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(stepInterval))
+                guard !Task.isCancelled else { break }
+                withAnimation(.linear(duration: stepInterval)) {
+                    phase = (phase + 1) % spokeCount
+                }
             }
-        }
-        .onAppear {
-            if timerCancellable == nil {
-                timerCancellable = timer.connect()
-            }
-        }
-        .onDisappear {
-            timerCancellable?.cancel()
-            timerCancellable = nil
         }
     }
 
