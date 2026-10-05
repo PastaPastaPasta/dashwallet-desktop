@@ -1,0 +1,101 @@
+use platform_wallet::PlatformWalletError;
+use platform_wallet_storage::WalletStorageError;
+
+/// Engine error. The `Display` text is diagnostic detail for logs; the UI maps
+/// the variant (and `code()`) to localized copy and never shows this text raw.
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+    #[error("network session is not open: {0}")]
+    NetworkNotOpen(String),
+    /// The wallet database for this network is still held by a previous
+    /// session in this process (SqlitePersister's open-path registry).
+    #[error("wallet storage already open in this process: {0}")]
+    StorageInUse(String),
+    #[error("storage error: {0}")]
+    Storage(String),
+    #[error("wallet not found: {0}")]
+    WalletNotFound(String),
+    #[error("wallet error: {0}")]
+    Wallet(String),
+    #[error("platform sdk error: {0}")]
+    Sdk(String),
+    #[error("spv error: {0}")]
+    Spv(String),
+    #[error("io error: {0}")]
+    Io(String),
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+    /// A bug: a panic inside an engine task, a poisoned lock, a runtime that
+    /// could not be built.
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+impl EngineError {
+    /// Stable machine-readable code for each variant.
+    pub fn code(&self) -> &'static str {
+        match self {
+            EngineError::InvalidConfig(_) => "invalid_config",
+            EngineError::InvalidArgument(_) => "invalid_argument",
+            EngineError::NetworkNotOpen(_) => "network_not_open",
+            EngineError::StorageInUse(_) => "storage_in_use",
+            EngineError::Storage(_) => "storage",
+            EngineError::WalletNotFound(_) => "wallet_not_found",
+            EngineError::Wallet(_) => "wallet",
+            EngineError::Sdk(_) => "sdk",
+            EngineError::Spv(_) => "spv",
+            EngineError::Io(_) => "io",
+            EngineError::NotImplemented(_) => "not_implemented",
+            EngineError::Internal(_) => "internal",
+        }
+    }
+}
+
+impl From<std::io::Error> for EngineError {
+    fn from(e: std::io::Error) -> Self {
+        EngineError::Io(e.to_string())
+    }
+}
+
+impl From<WalletStorageError> for EngineError {
+    fn from(e: WalletStorageError) -> Self {
+        match e {
+            WalletStorageError::AlreadyOpen { .. } => EngineError::StorageInUse(e.to_string()),
+            other => EngineError::Storage(other.to_string()),
+        }
+    }
+}
+
+impl From<PlatformWalletError> for EngineError {
+    fn from(e: PlatformWalletError) -> Self {
+        match e {
+            PlatformWalletError::SpvAlreadyRunning | PlatformWalletError::SpvError(_) => {
+                EngineError::Spv(e.to_string())
+            }
+            PlatformWalletError::PersisterLoad(_) | PlatformWalletError::PersisterRestore(_) => {
+                EngineError::Storage(e.to_string())
+            }
+            other => EngineError::Wallet(other.to_string()),
+        }
+    }
+}
+
+impl From<dash_sdk::Error> for EngineError {
+    fn from(e: dash_sdk::Error) -> Self {
+        EngineError::Sdk(e.to_string())
+    }
+}
+
+impl From<tokio::task::JoinError> for EngineError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        if e.is_panic() {
+            EngineError::Internal(format!("engine task panicked: {e}"))
+        } else {
+            EngineError::Internal(format!("engine task cancelled: {e}"))
+        }
+    }
+}

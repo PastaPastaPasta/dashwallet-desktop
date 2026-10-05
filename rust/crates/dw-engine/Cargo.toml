@@ -1,0 +1,27 @@
+[package]
+name = "dw-engine"
+description = "dashwallet-desktop engine: tokio runtime, per-network sessions over platform-wallet + SqlitePersister"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-wallet = { workspace = true }
+platform-wallet-storage = { workspace = true }
+dash-sdk = { workspace = true }
+dash-context-provider = { workspace = true }
+rs-sdk-trusted-context-provider = { workspace = true }
+dpp = { workspace = true }
+dashcore = { workspace = true }
+key-wallet = { workspace = true }
+dash-spv = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

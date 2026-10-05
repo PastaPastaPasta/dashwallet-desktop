@@ -1,0 +1,16 @@
+[package]
+name = "dwcli"
+description = "Headless CLI over dw-engine (regtest test driver)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dw-engine = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
