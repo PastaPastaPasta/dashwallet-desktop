@@ -74,6 +74,15 @@ pub enum EngineError {
     /// could not be built.
     #[error("internal error: {0}")]
     Internal(String),
+    /// A payment could not be drafted, prepared or sent (`send.*` codes).
+    #[error("send: {0}")]
+    Send(crate::send::SendFailure),
+    /// An address-book rule was violated (`labels.*` codes).
+    #[error("labels: {0}")]
+    Labels(crate::labels::LabelsFailure),
+    /// Not an unspent output of the wallet (`coins.outpoint_not_found`).
+    #[error("outpoint not found: {0}")]
+    OutpointNotFound(String),
 }
 
 impl EngineError {
@@ -105,6 +114,9 @@ impl EngineError {
             EngineError::AddressNoKey(_) => "address_no_key",
             EngineError::AddressNotMine(_) => "address_not_mine",
             EngineError::Internal(_) => "internal",
+            EngineError::Send(_) => "send",
+            EngineError::Labels(_) => "labels",
+            EngineError::OutpointNotFound(_) => "outpoint_not_found",
         }
     }
 }
@@ -118,6 +130,12 @@ impl From<std::io::Error> for EngineError {
 impl From<VaultError> for EngineError {
     fn from(e: VaultError) -> Self {
         EngineError::Vault(e)
+    }
+}
+
+impl From<dw_appdb::AppDbError> for EngineError {
+    fn from(e: dw_appdb::AppDbError) -> Self {
+        EngineError::Storage(format!("app.sqlite: {e}"))
     }
 }
 

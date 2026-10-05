@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use dash_sdk::SdkBuilder;
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
+use dw_appdb::{APP_DB_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
@@ -111,6 +112,11 @@ pub struct NetworkSession {
     /// registers wallets external-signable, so this is the only key material.
     pub(crate) vault: Vault,
     spv_peers: Vec<SocketAddr>,
+    /// App metadata (`<network dir>/app.sqlite`): address book, labels,
+    /// transaction messages, UTXO locks, settings.
+    pub(crate) appdb: Arc<AppDb>,
+    /// Inputs of prepared, not yet settled transactions (E2 send).
+    pub(crate) spends: crate::send::PendingSpends,
     /// `None` once closed. Taken out on close so the persister (and its
     /// process-wide open-path claim) is released even while hosts still hold
     /// `Arc<NetworkSession>`.
@@ -144,6 +150,11 @@ impl NetworkSession {
             Vault::open(vault_dir, core_network, &tag, vault_config)
         })
         .await??;
+
+        let appdb_path = data_dir.join(APP_DB_FILE);
+        let appdb = tokio::task::spawn_blocking(move || AppDb::open(&appdb_path))
+            .await?
+            .map_err(|e| EngineError::Storage(format!("app.sqlite: {e}")))?;
 
         let context = Arc::new(LazyTrustedContext::new(
             network.core_network(),
@@ -198,6 +209,8 @@ impl NetworkSession {
             context,
             vault,
             spv_peers,
+            appdb: Arc::new(appdb),
+            spends: Default::default(),
             manager: RwLock::new(Some(manager)),
         }))
     }

@@ -17,6 +17,7 @@ dpp = { workspace = true }
 dashcore = { workspace = true }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
+dw-appdb = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 tokio = { workspace = true }
