@@ -12,7 +12,8 @@
 #       include/DashWalletCoreFFI.h, include/module.modulemap
 #   Artifacts/DashWalletCore.artifactbundle/info.json           (all variants present)
 #
-# Env: CARGO_TARGET_DIR (macOS default: the shared dir from DESIGN.md R3),
+# Env: CARGO_TARGET_DIR (default: the shared dir from DESIGN.md R3 when it
+#      exists, else rust/target),
 #      DWD_MIN_FREE_GB (disk guard threshold, default 15).
 set -euo pipefail
 
@@ -32,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     --no-bindings) bindings=0; shift ;;
     # Do not write bindings; fail if the committed ones differ (CI check).
     --check-bindings) bindings=0; check_bindings=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "build-core: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -54,9 +55,12 @@ case "$triple" in
   *) echo "build-core: unsupported triple $triple" >&2; exit 2 ;;
 esac
 
+# The shared dev-Mac target dir (DESIGN.md R3) is used only where it exists;
+# every other machine builds into rust/target.
+SHARED_DEPS_DIR=/Users/pasta/workspace/dashwallet-desktop-deps
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    export CARGO_TARGET_DIR=/Users/pasta/workspace/dashwallet-desktop-deps/target
+  if [[ -d "$SHARED_DEPS_DIR" ]]; then
+    export CARGO_TARGET_DIR="$SHARED_DEPS_DIR/target"
   else
     export CARGO_TARGET_DIR="$RUST_DIR/target"
   fi

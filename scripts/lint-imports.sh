@@ -37,7 +37,8 @@ allowed_for() {
 }
 
 # Prints "<file>:<line>:<module>" for every import declaration in a target dir.
-# Handles attributes (@testable, @_implementationOnly, @preconcurrency),
+# Handles attributes with or without arguments (@testable, @preconcurrency,
+# @_spi(Name), @_implementationOnly),
 # access modifiers (public/internal/package/...), and kind imports
 # (`import struct Foundation.URL`). Submodules count as their top module.
 imports_in() {
@@ -47,7 +48,7 @@ imports_in() {
       {
         line = $0
         sub(/\/\/.*/, "", line)
-        if (line !~ /^[ \t]*(@[A-Za-z_]+[ \t]+)*((public|internal|package|private|fileprivate)[ \t]+)?import[ \t]/) next
+        if (line !~ /^[ \t]*(@[A-Za-z_]+(\([^)]*\)[ \t]*|[ \t]+))*((public|internal|package|private|fileprivate)[ \t]+)?import[ \t]/) next
         sub(/^.*import[ \t]+/, "", line)
         sub(/^(typealias|struct|class|enum|protocol|let|var|func)[ \t]+/, "", line)
         split(line, parts, /[ \t.;]/)

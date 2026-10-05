@@ -5,8 +5,10 @@
 // scripts/build-core.sh into Artifacts/ (gitignored). Run that script before
 // `swift build`.
 //
-// DWD_HEADLESS=1 drops every SwiftCrossUI-based target (and the dependency
-// itself). Use it for headless CI and Linux containers without GTK.
+// DWD_HEADLESS=1 drops every SwiftCrossUI-based target. The swift-cross-ui
+// dependency stays declared, so headless resolution keeps its pin in
+// Package.resolved; SwiftPM only builds the targets that remain. Use it for
+// headless CI and Linux containers without GTK.
 import Foundation
 import PackageDescription
 
@@ -25,7 +27,10 @@ var products: [Product] = [
     .library(name: "MacUI", targets: ["MacUI"]),
 ]
 
-var dependencies: [Package.Dependency] = []
+// TODO(fork): switch to the dashpay/swift-cross-ui fork pinned by revision.
+let dependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/stackotter/swift-cross-ui", exact: "0.10.0"),
+]
 
 var targets: [Target] = [
     // Rust core: C header + module map + libdashwallet_core.a
@@ -65,8 +70,6 @@ var targets: [Target] = [
 ]
 
 if !headless {
-    // TODO(fork): switch to the dashpay/swift-cross-ui fork pinned by revision.
-    dependencies.append(.package(url: "https://github.com/stackotter/swift-cross-ui", exact: "0.10.0"))
     products.append(.executable(name: "dash-wallet", targets: ["DashWalletCross"]))
     targets += [
         .target(name: "DashUICross", dependencies: ["DesignTokens"] + crossUI),

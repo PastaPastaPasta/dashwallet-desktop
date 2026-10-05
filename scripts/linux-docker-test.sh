@@ -5,8 +5,8 @@
 #   scripts/linux-docker-test.sh [extra swift test args...]
 #
 # The repo is mounted read-only and copied into the container, so Linux
-# builds never touch the host .build/ or Package.resolved (headless
-# resolution drops the SwiftCrossUI pins). Only Artifacts/ is shared.
+# builds never touch the host .build/ or Package.resolved. Only Artifacts/
+# is shared.
 # Cargo caches and build dirs live in named volumes.
 set -euo pipefail
 
@@ -19,7 +19,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f "$ROOT/ci/linux/Dockerfile.swift" -t "$IMAGE" "$ROOT/ci/linux"
 fi
 
-filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|RepoChecksTests}"
+filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|DesignTokensTests|RepoChecksTests}"
 
 # Separate target volume from the Rust-only image (dwd-linux-target): this
 # image is Ubuntu noble (glibc 2.39), that one Debian bookworm (glibc 2.36),

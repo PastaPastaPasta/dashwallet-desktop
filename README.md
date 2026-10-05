@@ -46,14 +46,15 @@ swift test                            # DashKitTests run against the real Rust s
 committed Swift differs from a fresh generation). It runs `scripts/disk-guard.sh`
 first and aborts below 15 GB free (`DWD_MIN_FREE_GB` overrides).
 
-On the shared dev Mac the Cargo target dir defaults to
-`/Users/pasta/workspace/dashwallet-desktop-deps/target` (DESIGN.md R3); set
-`CARGO_TARGET_DIR` to override. Build only the `dev` profile locally.
+`build-core.sh` uses the shared Cargo target dir
+`/Users/pasta/workspace/dashwallet-desktop-deps/target` (DESIGN.md R3) when
+that directory exists and `rust/target` otherwise; set `CARGO_TARGET_DIR` to
+override. Build only the `dev` profile locally.
 
-Rust tests:
+Rust tests (every crate in the workspace):
 
 ```sh
-cd rust && cargo test -p dw-engine -p dw-ffi -p dwcli
+cd rust && cargo test --workspace
 ```
 
 CLI:
@@ -73,9 +74,10 @@ scripts/linux-docker-test.sh
 
 Builds `ci/linux/Dockerfile.swift` (swift:6.3.3-noble + Rust 1.98.1 + protoc)
 if missing, copies the repo into the container, builds the Linux artifact
-variant, checks the committed bindings, and runs `DashKitTests` and
-`RepoChecksTests` with `DWD_HEADLESS=1`. That variable removes the
-SwiftCrossUI targets from the package graph, so no GTK is needed.
+variant, checks the committed bindings, and runs `DashKitTests`,
+`DesignTokensTests` and `RepoChecksTests` with `DWD_HEADLESS=1`. That variable
+removes the SwiftCrossUI targets from the package graph (the dependency stays
+declared, so `Package.resolved` is unchanged), so no GTK is needed.
 `DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` caps cargo jobs.
 
 ## Checks

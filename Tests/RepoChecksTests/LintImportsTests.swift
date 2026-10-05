@@ -50,6 +50,9 @@ import Testing
                        to: tmp.appendingPathComponent("Sources/WalletFeatures/A.swift"))
         try Self.write("import struct Combine.AnyPublisher\n",
                        to: tmp.appendingPathComponent("Sources/DashKit/B.swift"))
+        // Attributes with arguments (`@_spi(Name)`) are recognised as well.
+        try Self.write("import Foundation\n@_spi(Internal) import AppKit\n",
+                       to: tmp.appendingPathComponent("Sources/WalletRuntime/F.swift"))
         try Self.write("import Foundation\n", to: tmp.appendingPathComponent("Sources/Mystery/C.swift"))
         // Allowed: a test target importing its target and that target's deps.
         try Self.write("import Testing\n@testable import DashKit\nimport DashWalletCore\n",
@@ -62,6 +65,7 @@ import Testing
         #expect(r.status == 1)
         #expect(r.stderr.contains("imports 'SwiftUI', not allowed in WalletFeatures"))
         #expect(r.stderr.contains("imports 'Combine', not allowed in DashKit"))
+        #expect(r.stderr.contains("imports 'AppKit', not allowed in WalletRuntime"))
         #expect(r.stderr.contains("no allowed-imports entry for Sources/Mystery"))
         #expect(!r.stderr.contains("DashKitTests"))
         #expect(!r.stderr.contains("PlatformServices/E.swift"))
