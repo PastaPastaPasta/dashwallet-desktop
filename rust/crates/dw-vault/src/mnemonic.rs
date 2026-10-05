@@ -152,7 +152,8 @@ pub fn derive_secret(
             },
         });
     }
-    let passphrase = std::str::from_utf8(bip39_passphrase).map_err(|_| MnemonicError::PassphraseNotUtf8)?;
+    let passphrase =
+        std::str::from_utf8(bip39_passphrase).map_err(|_| MnemonicError::PassphraseNotUtf8)?;
     let mnemonic = Mnemonic::from_phrase(&normalized(text))
         .map_err(|e| MnemonicError::Invalid(e.to_string()))?;
     let mut raw = mnemonic.to_seed(passphrase);
@@ -170,17 +171,20 @@ pub fn derive_secret(
 /// The network-scoped wallet id platform-wallet assigns to a wallet built
 /// from `seed` (`Wallet::compute_wallet_id`).
 pub fn wallet_id_for_seed(seed: &[u8; 64], network: Network) -> Result<WalletId, MnemonicError> {
-    let root = RootExtendedPrivKey::new_master(seed).map_err(|e| MnemonicError::Invalid(e.to_string()))?;
+    let root =
+        RootExtendedPrivKey::new_master(seed).map_err(|e| MnemonicError::Invalid(e.to_string()))?;
     let root_pub = root.to_root_extended_pub_key();
-    Ok(Wallet::compute_wallet_id_from_root_extended_pub_key(&root_pub, Some(network)))
+    Ok(Wallet::compute_wallet_id_from_root_extended_pub_key(
+        &root_pub,
+        Some(network),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ABANDON: &str =
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     #[test]
     fn generate_word_counts() {
@@ -237,7 +241,10 @@ mod tests {
             key_wallet::wallet::initialization::WalletAccountCreationOptions::None,
         )
         .unwrap();
-        assert_eq!(wallet_id_for_seed(&s.seed, Network::Regtest).unwrap(), w.compute_wallet_id());
+        assert_eq!(
+            wallet_id_for_seed(&s.seed, Network::Regtest).unwrap(),
+            w.compute_wallet_id()
+        );
         assert_ne!(
             wallet_id_for_seed(&s.seed, Network::Regtest).unwrap(),
             wallet_id_for_seed(&s.seed, Network::Testnet).unwrap()

@@ -105,7 +105,9 @@ fn encode_seed(secret: &WalletSecret) -> Zeroizing<Vec<u8>> {
     v.push(SEED_RECORD_VERSION);
     match secret.derivation {
         SeedDerivation::Bip39 => v.extend_from_slice(&[0, 0]),
-        SeedDerivation::DashCore { weak_checksum } => v.extend_from_slice(&[1, weak_checksum as u8]),
+        SeedDerivation::DashCore { weak_checksum } => {
+            v.extend_from_slice(&[1, weak_checksum as u8])
+        }
     }
     v.extend_from_slice(&secret.seed[..]);
     v
@@ -274,7 +276,11 @@ impl Vault {
             quick_unlock_enrolled: false,
             failed_attempts: f.throttle.failed_attempts,
             retry_after_secs: retry_after(&f.throttle, self.now()),
-            wallets_with_secrets: f.records.keys().filter_map(|k| seed_record_wallet(k)).collect(),
+            wallets_with_secrets: f
+                .records
+                .keys()
+                .filter_map(|k| seed_record_wallet(k))
+                .collect(),
         }
     }
 
@@ -320,7 +326,10 @@ impl Vault {
             }
             None => {
                 let service = os_service(&vault_id, tag);
-                self.shared.config.os_store.put(&service, OS_LABEL, &dek[..])?;
+                self.shared
+                    .config
+                    .os_store
+                    .put(&service, OS_LABEL, &dek[..])?;
                 (
                     None,
                     Some(OsSlot {
@@ -370,7 +379,11 @@ impl Vault {
     /// dash-qt "Encrypt Wallet" (QT-111): adds slot P and deletes slot O.
     /// Needs a `ChangeCredential` grant. Leaves the vault locked, as Core
     /// does after `encryptwallet`. There is no way back to unencrypted.
-    pub fn encrypt(&self, new_passphrase_bytes: &[u8], grant_id: &str) -> Result<VaultStatus, VaultError> {
+    pub fn encrypt(
+        &self,
+        new_passphrase_bytes: &[u8],
+        grant_id: &str,
+    ) -> Result<VaultStatus, VaultError> {
         let pw = new_passphrase(new_passphrase_bytes)?;
         {
             let inner = self.inner();
@@ -382,8 +395,12 @@ impl Vault {
         self.redeem_grant(grant_id, GrantKind::ChangeCredential)?;
         let dek = self.full_dek()?;
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
-        let (kdf, kek) =
-            crypto::derive_new_kek(&pw, &salt, self.shared.config.kdf, self.production_network())?;
+        let (kdf, kek) = crypto::derive_new_kek(
+            &pw,
+            &salt,
+            self.shared.config.kdf,
+            self.production_network(),
+        )?;
 
         let mut inner = self.inner();
         let mut next = inner.file.clone().ok_or(VaultError::NoVault)?;
@@ -449,8 +466,12 @@ impl Vault {
         let new = new_passphrase(new)?;
         let (dek, disk) = self.check_passphrase(old)?;
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
-        let (kdf, kek) =
-            crypto::derive_new_kek(&new, &salt, self.shared.config.kdf, self.production_network())?;
+        let (kdf, kek) = crypto::derive_new_kek(
+            &new,
+            &salt,
+            self.shared.config.kdf,
+            self.production_network(),
+        )?;
         let mut inner = self.inner();
         let mut next = disk;
         let aad = file::slot_p_aad(&next.vault_id, &next.network, &kdf, &salt);
@@ -473,7 +494,11 @@ impl Vault {
         let slot = disk.slot_p.clone().ok_or(VaultError::NotEncrypted)?;
         {
             let inner = self.inner();
-            let throttle = inner.file.as_ref().map(|f| &f.throttle).unwrap_or(&disk.throttle);
+            let throttle = inner
+                .file
+                .as_ref()
+                .map(|f| &f.throttle)
+                .unwrap_or(&disk.throttle);
             if let Some(secs) = retry_after(throttle, self.now()) {
                 return Err(VaultError::Throttled {
                     retry_after_secs: secs,
@@ -531,7 +556,11 @@ impl Vault {
     }
 
     /// Checks `credential` and issues a single-use grant for `purpose`.
-    pub fn authorize(&self, purpose: GrantPurpose, credential: Credential<'_>) -> Result<AuthGrant, VaultError> {
+    pub fn authorize(
+        &self,
+        purpose: GrantPurpose,
+        credential: Credential<'_>,
+    ) -> Result<AuthGrant, VaultError> {
         match credential {
             // TODO(biometric): slot B (Touch ID / Windows Hello) lands in M2.
             Credential::QuickUnlock(_) => return Err(VaultError::QuickUnlockUnavailable),
@@ -578,10 +607,18 @@ impl Vault {
     }
 
     /// Checks and consumes a grant. A purpose mismatch leaves it in place.
-    pub fn redeem_grant(&self, grant_id: &str, expected: GrantKind) -> Result<GrantToken, VaultError> {
+    pub fn redeem_grant(
+        &self,
+        grant_id: &str,
+        expected: GrantKind,
+    ) -> Result<GrantToken, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
-        let grant = inner.grants.get(grant_id).cloned().ok_or(VaultError::GrantInvalid)?;
+        let grant = inner
+            .grants
+            .get(grant_id)
+            .cloned()
+            .ok_or(VaultError::GrantInvalid)?;
         if now > grant.expires_at {
             inner.grants.remove(grant_id);
             return Err(VaultError::GrantInvalid);
@@ -625,7 +662,9 @@ impl Vault {
             .config
             .os_store
             .get(&service, &label)?
-            .ok_or_else(|| VaultError::Corrupt("the OS store has no data key for this vault".into()))?;
+            .ok_or_else(|| {
+                VaultError::Corrupt("the OS store has no data key for this vault".into())
+            })?;
         let dek: Key32 = Zeroizing::new(
             raw[..]
                 .try_into()
@@ -633,8 +672,9 @@ impl Vault {
         );
         let mut inner = self.inner();
         let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
-        let manifest = verify_manifest(f, &dek, inner.high_water)
-            .map_err(|_| VaultError::Corrupt("the OS store data key does not open this vault".into()))?;
+        let manifest = verify_manifest(f, &dek, inner.high_water).map_err(|_| {
+            VaultError::Corrupt("the OS store data key does not open this vault".into())
+        })?;
         let unencrypted = f.slot_p.is_none();
         inner.high_water = inner.high_water.max(manifest.generation);
         if inner.dek.is_none() && unencrypted {
@@ -647,7 +687,11 @@ impl Vault {
     /// Applies record changes (`None` deletes), bumps the manifest
     /// generation, writes the file, then reads it back from disk and checks
     /// every change landed byte for byte (seed-safety ordering, iOS rule 3).
-    fn commit_records(&self, dek: &Key32, changes: &[(String, Option<&[u8]>)]) -> Result<(), VaultError> {
+    fn commit_records(
+        &self,
+        dek: &Key32,
+        changes: &[(String, Option<&[u8]>)],
+    ) -> Result<(), VaultError> {
         let mut inner = self.inner();
         let current = inner.file.clone().ok_or(VaultError::NoVault)?;
         let mut manifest = verify_manifest(&current, dek, inner.high_water)?;
@@ -655,8 +699,11 @@ impl Vault {
         for (id, value) in changes {
             match value {
                 Some(v) => {
-                    let sealed = crypto::seal(dek, v, &file::record_aad(&next.vault_id, &next.network, id))?;
-                    manifest.records.insert(id.clone(), file::record_digest(&sealed));
+                    let sealed =
+                        crypto::seal(dek, v, &file::record_aad(&next.vault_id, &next.network, id))?;
+                    manifest
+                        .records
+                        .insert(id.clone(), file::record_digest(&sealed));
                     next.records.insert(id.clone(), sealed);
                 }
                 None => {
@@ -677,13 +724,19 @@ impl Vault {
         for (id, value) in changes {
             let stored = disk.records.get(id);
             let matches = match (value, stored) {
-                (Some(v), Some(sealed)) => crypto::open(dek, sealed, &file::record_aad(&disk.vault_id, &disk.network, id))
-                    .is_some_and(|read| bool::from(read[..].ct_eq(v))),
+                (Some(v), Some(sealed)) => crypto::open(
+                    dek,
+                    sealed,
+                    &file::record_aad(&disk.vault_id, &disk.network, id),
+                )
+                .is_some_and(|read| bool::from(read[..].ct_eq(v))),
                 (None, None) => true,
                 _ => false,
             };
             if !matches {
-                return Err(VaultError::Corrupt(format!("read-back of {id} did not match")));
+                return Err(VaultError::Corrupt(format!(
+                    "read-back of {id} did not match"
+                )));
             }
         }
         Ok(())
@@ -704,14 +757,21 @@ impl Vault {
 
     /// Stores a wallet's phrase, BIP39 passphrase and seed, then verifies the
     /// write by reading the file back. Needs the data key with full scope.
-    pub fn store_wallet_secret(&self, wallet: &WalletId, secret: &WalletSecret) -> Result<(), VaultError> {
+    pub fn store_wallet_secret(
+        &self,
+        wallet: &WalletId,
+        secret: &WalletSecret,
+    ) -> Result<(), VaultError> {
         let dek = self.full_dek()?;
         let seed = encode_seed(secret);
         self.commit_records(
             &dek,
             &[
                 (record_id(wallet, REC_MNEMONIC), Some(&secret.mnemonic[..])),
-                (record_id(wallet, REC_PASSPHRASE), Some(&secret.mnemonic_passphrase[..])),
+                (
+                    record_id(wallet, REC_PASSPHRASE),
+                    Some(&secret.mnemonic_passphrase[..]),
+                ),
                 (record_id(wallet, REC_SEED), Some(&seed[..])),
             ],
         )
@@ -756,7 +816,11 @@ impl Vault {
 
     /// The recovery phrase and BIP39 passphrase (QT-113, IOS-006). Needs a
     /// `RevealSecret` grant.
-    pub fn reveal_mnemonic(&self, wallet: &WalletId, grant_id: &str) -> Result<RevealedMnemonic, VaultError> {
+    pub fn reveal_mnemonic(
+        &self,
+        wallet: &WalletId,
+        grant_id: &str,
+    ) -> Result<RevealedMnemonic, VaultError> {
         self.redeem_grant(grant_id, GrantKind::RevealSecret)?;
         let dek = self.full_dek()?;
         let phrase = self
@@ -802,7 +866,12 @@ impl Vault {
         self.signer_locked(&inner, wallet, SignerScope::CoinJoinOnly)
     }
 
-    fn signer_locked(&self, inner: &Inner, wallet: &WalletId, scope: SignerScope) -> Result<VaultSigner, VaultError> {
+    fn signer_locked(
+        &self,
+        inner: &Inner,
+        wallet: &WalletId,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
         if inner.dek.is_none() {
             return Err(VaultError::Locked);
         }
@@ -817,7 +886,11 @@ impl Vault {
     }
 
     /// Seed of `wallet` for a signer issued at `epoch`.
-    pub(crate) fn signing_seed(&self, wallet: &WalletId, epoch: u64) -> Result<Zeroizing<[u8; 64]>, SignerError> {
+    pub(crate) fn signing_seed(
+        &self,
+        wallet: &WalletId,
+        epoch: u64,
+    ) -> Result<Zeroizing<[u8; 64]>, SignerError> {
         let dek = {
             let inner = self.inner();
             if inner.epoch != epoch {
@@ -842,7 +915,12 @@ impl Vault {
     }
 }
 
-fn seal_manifest(dek: &[u8; 32], vault_id: &[u8], network: &str, manifest: &Manifest) -> Result<Sealed, VaultError> {
+fn seal_manifest(
+    dek: &[u8; 32],
+    vault_id: &[u8],
+    network: &str,
+    manifest: &Manifest,
+) -> Result<Sealed, VaultError> {
     let plain = Zeroizing::new(
         serde_json::to_vec(manifest).map_err(|e| VaultError::Internal(format!("manifest: {e}")))?,
     );
@@ -852,8 +930,12 @@ fn seal_manifest(dek: &[u8; 32], vault_id: &[u8], network: &str, manifest: &Mani
 /// Decrypts the manifest and checks it lists exactly the records in the file
 /// with matching digests, at a generation no older than `high_water`.
 fn verify_manifest(f: &VaultFile, dek: &[u8; 32], high_water: u64) -> Result<Manifest, VaultError> {
-    let plain = crypto::open(dek, &f.manifest, &file::manifest_aad(&f.vault_id, &f.network))
-        .ok_or_else(|| VaultError::Corrupt("manifest failed authentication".into()))?;
+    let plain = crypto::open(
+        dek,
+        &f.manifest,
+        &file::manifest_aad(&f.vault_id, &f.network),
+    )
+    .ok_or_else(|| VaultError::Corrupt("manifest failed authentication".into()))?;
     let manifest: Manifest = serde_json::from_slice(&plain)
         .map_err(|e| VaultError::Corrupt(format!("manifest does not parse: {e}")))?;
     if manifest.generation < high_water {
@@ -865,11 +947,15 @@ fn verify_manifest(f: &VaultFile, dek: &[u8; 32], high_water: u64) -> Result<Man
     let listed: Vec<&String> = manifest.records.keys().collect();
     let present: Vec<&String> = f.records.keys().collect();
     if listed != present {
-        return Err(VaultError::Corrupt("record set differs from the manifest".into()));
+        return Err(VaultError::Corrupt(
+            "record set differs from the manifest".into(),
+        ));
     }
     for (id, sealed) in &f.records {
         if manifest.records.get(id) != Some(&file::record_digest(sealed)) {
-            return Err(VaultError::Corrupt(format!("record {id} differs from the manifest")));
+            return Err(VaultError::Corrupt(format!(
+                "record {id} differs from the manifest"
+            )));
         }
     }
     Ok(manifest)
@@ -923,7 +1009,10 @@ mod tests {
         let nfc = "\u{e9}".as_bytes();
         assert_eq!(*normalize_passphrase(nfd), *normalize_passphrase(nfc));
         assert_eq!(&normalize_passphrase(&[0xff, 0x00])[..], &[0xff, 0x00]);
-        assert!(matches!(new_passphrase(b""), Err(VaultError::PassphraseRejected(_))));
+        assert!(matches!(
+            new_passphrase(b""),
+            Err(VaultError::PassphraseRejected(_))
+        ));
     }
 
     #[test]

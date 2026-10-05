@@ -184,7 +184,10 @@ pub(crate) fn derive_new_kek(
                 ));
             }
             if !params.meets_floor() {
-                tracing::warn!(?params, "vault uses Argon2id parameters below the floor (test build)");
+                tracing::warn!(
+                    ?params,
+                    "vault uses Argon2id parameters below the floor (test build)"
+                );
             }
             Ok((params, derive_kek(passphrase, salt, &params)?))
         }

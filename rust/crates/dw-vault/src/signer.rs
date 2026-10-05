@@ -13,9 +13,9 @@ use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPu
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
 
+use crate::SignerError;
 use crate::types::WalletId;
 use crate::vault::Vault;
-use crate::SignerError;
 
 /// Which derivations a signer may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,7 +35,11 @@ pub trait WalletSigner: ExtendedPubKeySigner + Signer<Error = SignerError> {
     /// Dash Core `signmessage` for the key at `path`: base64 of the 65-byte
     /// compact signature over `"DarkCoin Signed Message:\n" ‖ message`,
     /// compressed public key.
-    async fn sign_message(&self, path: &DerivationPath, message: &[u8]) -> Result<String, SignerError>;
+    async fn sign_message(
+        &self,
+        path: &DerivationPath,
+        message: &[u8],
+    ) -> Result<String, SignerError>;
 }
 
 const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
@@ -140,13 +144,18 @@ impl Signer for VaultSigner {
     }
 
     async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
-        self.with_key(path, |secp, x| PublicKey::from_secret_key(secp, &x.private_key))
+        self.with_key(path, |secp, x| {
+            PublicKey::from_secret_key(secp, &x.private_key)
+        })
     }
 }
 
 #[async_trait]
 impl ExtendedPubKeySigner for VaultSigner {
-    async fn extended_public_key(&self, path: &DerivationPath) -> Result<ExtendedPubKey, SignerError> {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
         self.with_key(path, ExtendedPubKey::from_priv)
     }
 }
@@ -157,7 +166,11 @@ impl WalletSigner for VaultSigner {
         self.wallet_id
     }
 
-    async fn sign_message(&self, path: &DerivationPath, message: &[u8]) -> Result<String, SignerError> {
+    async fn sign_message(
+        &self,
+        path: &DerivationPath,
+        message: &[u8],
+    ) -> Result<String, SignerError> {
         self.with_key(path, |_, x| {
             let secret = dw_uri::keyio::Secret {
                 key: Zeroizing::new(x.private_key.secret_bytes()),
@@ -181,7 +194,12 @@ mod tests {
         assert!(!is_coinjoin_path(&ok, Network::Mainnet));
         let main = DerivationPath::from_str("m/9'/5'/4'/0'").unwrap();
         assert!(is_coinjoin_path(&main, Network::Mainnet));
-        for bad in ["m/44'/1'/0'/0/0", "m/9'/1'/5'/0'", "m/9'/1'/4'", "m/9/1'/4'/0'"] {
+        for bad in [
+            "m/44'/1'/0'/0/0",
+            "m/9'/1'/5'/0'",
+            "m/9'/1'/4'",
+            "m/9/1'/4'/0'",
+        ] {
             let p = DerivationPath::from_str(bad).unwrap();
             assert!(!is_coinjoin_path(&p, Network::Testnet), "{bad}");
         }

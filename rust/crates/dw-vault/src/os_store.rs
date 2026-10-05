@@ -22,8 +22,11 @@ pub trait OsSecretStore: Send + Sync {
     /// Stores `secret`, replacing any previous value.
     fn put(&self, service: &[u8; 32], label: &str, secret: &[u8]) -> Result<(), VaultError>;
     /// The stored value, or `None` when there is none.
-    fn get(&self, service: &[u8; 32], label: &str)
-    -> Result<Option<Zeroizing<Vec<u8>>>, VaultError>;
+    fn get(
+        &self,
+        service: &[u8; 32],
+        label: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, VaultError>;
     /// Deletes the value. `Ok(false)` when there was none.
     fn delete(&self, service: &[u8; 32], label: &str) -> Result<bool, VaultError>;
     /// Short backend name for logs.
@@ -54,7 +57,9 @@ impl KeyringOsStore {
         if guard.is_none() {
             *guard = Some(SecretStore::os().map_err(unavailable)?);
         }
-        let store = guard.as_ref().ok_or_else(|| VaultError::Internal("keyring store".into()))?;
+        let store = guard
+            .as_ref()
+            .ok_or_else(|| VaultError::Internal("keyring store".into()))?;
         let result = f(store);
         if result.is_err() {
             // Drop the handle so the next call re-opens the backend.
@@ -71,7 +76,10 @@ fn unavailable(e: impl std::fmt::Display) -> VaultError {
 impl OsSecretStore for KeyringOsStore {
     fn put(&self, service: &[u8; 32], label: &str, secret: &[u8]) -> Result<(), VaultError> {
         let value = SecretBytes::from_slice(secret);
-        self.with_store(|s| s.set(&WalletId(*service), label, &value).map_err(unavailable))
+        self.with_store(|s| {
+            s.set(&WalletId(*service), label, &value)
+                .map_err(unavailable)
+        })
     }
 
     fn get(
@@ -129,8 +137,10 @@ impl MemoryOsStore {
 
     fn entries(
         &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<([u8; 32], String), Zeroizing<Vec<u8>>>>, VaultError>
-    {
+    ) -> Result<
+        std::sync::MutexGuard<'_, HashMap<([u8; 32], String), Zeroizing<Vec<u8>>>>,
+        VaultError,
+    > {
         if self.unavailable {
             return Err(VaultError::OsStoreUnavailable(
                 "no default credential store".into(),
@@ -144,8 +154,10 @@ impl MemoryOsStore {
 
 impl OsSecretStore for MemoryOsStore {
     fn put(&self, service: &[u8; 32], label: &str, secret: &[u8]) -> Result<(), VaultError> {
-        self.entries()?
-            .insert((*service, label.to_owned()), Zeroizing::new(secret.to_vec()));
+        self.entries()?.insert(
+            (*service, label.to_owned()),
+            Zeroizing::new(secret.to_vec()),
+        );
         Ok(())
     }
 
@@ -161,7 +173,10 @@ impl OsSecretStore for MemoryOsStore {
     }
 
     fn delete(&self, service: &[u8; 32], label: &str) -> Result<bool, VaultError> {
-        Ok(self.entries()?.remove(&(*service, label.to_owned())).is_some())
+        Ok(self
+            .entries()?
+            .remove(&(*service, label.to_owned()))
+            .is_some())
     }
 
     fn name(&self) -> &'static str {

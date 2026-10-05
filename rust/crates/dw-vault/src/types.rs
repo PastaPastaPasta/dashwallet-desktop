@@ -81,7 +81,9 @@ impl std::fmt::Debug for Credential<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GrantPurpose {
     /// Signing a transaction that debits at most `max_duffs`.
-    Spend { max_duffs: u64 },
+    Spend {
+        max_duffs: u64,
+    },
     RevealSecret,
     SignMessage,
     ChangeCredential,
