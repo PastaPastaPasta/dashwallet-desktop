@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
 use dash_spv::sync::SyncProgress;
-use dash_spv::EventHandler;
-use platform_wallet::events::WalletEvent;
 use platform_wallet::PlatformEventHandler;
+use platform_wallet::events::WalletEvent;
 
 use crate::{DashNetwork, WalletId};
 

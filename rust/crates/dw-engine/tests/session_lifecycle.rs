@@ -127,11 +127,12 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
     let dev = engine
         .block_on(engine.open_network(devnet.clone(), local_opts()))
         .unwrap();
-    assert!(dir
-        .path()
-        .join("devnet-dwtest")
-        .join("wallet.sqlite")
-        .exists());
+    assert!(
+        dir.path()
+            .join("devnet-dwtest")
+            .join("wallet.sqlite")
+            .exists()
+    );
     let b = engine
         .block_on(dev.import_wallet(Zeroizing::new(ABANDON_12.into()), Some(0)))
         .unwrap();
@@ -139,12 +140,16 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
 
     // Close and reopen the regtest session inside the same engine: the
     // persister claim is released by close, and the id is unchanged.
-    assert!(engine
-        .block_on(engine.close_network(DashNetwork::Regtest))
-        .unwrap());
-    assert!(!engine
-        .block_on(engine.close_network(DashNetwork::Regtest))
-        .unwrap());
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    assert!(
+        !engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
     let regtest = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();

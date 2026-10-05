@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use dash_sdk::sdk::AddressList;
 use dash_sdk::SdkBuilder;
+use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
 use key_wallet::mnemonic::{Language, Mnemonic};
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
@@ -442,7 +442,7 @@ fn build_sdk(
             DashNetwork::Devnet { .. } | DashNetwork::Regtest => {
                 return Err(EngineError::InvalidConfig(format!(
                     "{network} has no default DAPI addresses; pass dapi_addresses"
-                )))
+                )));
             }
         }
     } else {

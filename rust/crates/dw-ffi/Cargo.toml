@@ -21,6 +21,3 @@ zeroize = { workspace = true }
 # runtime libssl (DESIGN-opus §1.9; upstream U4 moves Linux to rustls).
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
-
-[dev-dependencies]
-tempfile = { workspace = true }

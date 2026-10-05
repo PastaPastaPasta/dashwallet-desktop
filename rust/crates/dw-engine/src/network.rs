@@ -94,10 +94,12 @@ mod tests {
                 "{bad:?}"
             );
         }
-        assert!(DashNetwork::Devnet {
-            name: "my-devnet1".into()
-        }
-        .validate()
-        .is_ok());
+        assert!(
+            DashNetwork::Devnet {
+                name: "my-devnet1".into()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }
