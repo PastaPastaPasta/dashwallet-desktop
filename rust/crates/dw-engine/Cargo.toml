@@ -17,6 +17,7 @@ dpp = { workspace = true }
 dashcore = { workspace = true }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
+dw-appdb = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 tokio = { workspace = true }
@@ -24,6 +25,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }
+# Read-only enumeration of persisted transaction ids in wallet.sqlite (the
+# persister has no list API); same version dw-appdb and
+# platform-wallet-storage link, so one bundled libsqlite3.
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 [dev-dependencies]
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
