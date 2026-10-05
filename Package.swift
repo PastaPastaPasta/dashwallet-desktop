@@ -53,9 +53,14 @@ var targets: [Target] = [
         name: "WalletFeatures",
         dependencies: ["WalletRuntime", "AppServices", "PlatformServices", "DesignTokens"]
     ),
-    // TODO(DashUIKit): depend on the dashpay/DashUIKit fork (macOS support)
-    // once it exists; DashUIMac is a placeholder until then.
-    .target(name: "DashUIMac", dependencies: ["DesignTokens"]),
+    // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see VENDORED.md there).
+    // Sources/DashUIMac/Resources/Icons is a symlink to the repository's exported icon set
+    // (Resources/Icons); `.process` copies its files flat into the resource bundle.
+    .target(
+        name: "DashUIMac",
+        dependencies: ["DesignTokens"],
+        resources: [.process("Resources/Icons")]
+    ),
     .target(
         name: "MacUI",
         dependencies: [
@@ -66,6 +71,13 @@ var targets: [Target] = [
     ),
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
+    // macOS-only: the sources compile to nothing elsewhere. Reference PNGs are read from
+    // __Snapshots__ by path, not bundled.
+    .testTarget(
+        name: "DashUIMacSnapshotTests",
+        dependencies: ["DashUIMac", "DesignTokens"],
+        exclude: ["__Snapshots__"]
+    ),
     .testTarget(name: "RepoChecksTests"),
 ]
 
