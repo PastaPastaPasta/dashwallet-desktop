@@ -100,8 +100,8 @@ impl NetworkSession {
         self: &Arc<Self>,
         word_count: u8,
     ) -> Result<CreatedWallet, EngineError> {
-        let phrase = mnemonic::generate(word_count.into(), Language::English)
-            .map_err(mnemonic_error)?;
+        let phrase =
+            mnemonic::generate(word_count.into(), Language::English).map_err(mnemonic_error)?;
         let wallet_id = self
             .import_wallet(
                 Zeroizing::new(phrase.to_vec()),
@@ -147,12 +147,9 @@ impl NetworkSession {
             // PBKDF2, vault file writes and fsync stay off the async workers.
             let (wallet_id, seed, had_secret) = tokio::task::spawn_blocking(
                 move || -> Result<(WalletId, Zeroizing<[u8; 64]>, bool), EngineError> {
-                    let secret = mnemonic::derive_secret(
-                        &phrase,
-                        &bip39_passphrase,
-                        options.core_compat,
-                    )
-                    .map_err(mnemonic_error)?;
+                    let secret =
+                        mnemonic::derive_secret(&phrase, &bip39_passphrase, options.core_compat)
+                            .map_err(mnemonic_error)?;
                     let id = mnemonic::wallet_id_for_seed(&secret.seed, network)
                         .map_err(mnemonic_error)?;
                     let had_secret = vault.has_wallet_secret(&id);

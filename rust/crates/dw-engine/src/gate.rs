@@ -132,6 +132,9 @@ mod tests {
         assert!(gate.try_enter().is_none());
         drop(held);
         closing.await.unwrap();
-        assert!(late.await.unwrap(), "an operation admitted after close must be refused");
+        assert!(
+            late.await.unwrap(),
+            "an operation admitted after close must be refused"
+        );
     }
 }

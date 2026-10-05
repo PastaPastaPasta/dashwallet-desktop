@@ -70,7 +70,11 @@ mod tests {
         let net = root.join("regtest").join("spv");
         create_private_dir(&net).unwrap();
 
-        assert_eq!(mode(&root), 0o755, "an existing user-chosen root keeps its mode");
+        assert_eq!(
+            mode(&root),
+            0o755,
+            "an existing user-chosen root keeps its mode"
+        );
         assert_eq!(mode(&root.join("regtest")), 0o700);
         assert_eq!(mode(&net), 0o700);
     }

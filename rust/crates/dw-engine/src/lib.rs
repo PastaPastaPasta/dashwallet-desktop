@@ -26,13 +26,13 @@ mod events;
 mod fsutil;
 #[allow(dead_code)]
 mod gate;
-#[allow(dead_code)]
-mod pump;
-#[allow(dead_code)]
-mod sync;
 mod keys;
 mod network;
+#[allow(dead_code)]
+mod pump;
 mod session;
+#[allow(dead_code)]
+mod sync;
 
 pub use engine::{Engine, EngineConfig};
 pub use error::EngineError;

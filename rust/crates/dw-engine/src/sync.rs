@@ -457,7 +457,12 @@ mod tests {
         assert!(s.caught_up);
         assert_eq!(s.active_phase, None);
         assert_eq!(s.tip_height, Some(1000));
-        assert!(s.phases.iter().filter(|p| p.current_height.is_some()).all(|p| p.done));
+        assert!(
+            s.phases
+                .iter()
+                .filter(|p| p.current_height.is_some())
+                .all(|p| p.done)
+        );
         assert_eq!(s.seconds_since_progress, None);
     }
 

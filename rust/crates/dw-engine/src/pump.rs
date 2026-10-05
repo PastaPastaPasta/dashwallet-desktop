@@ -302,8 +302,14 @@ mod tests {
         settle().await;
 
         let log = rec.log();
-        let history: Vec<_> = log.iter().filter(|(_, w)| w.starts_with("history=")).collect();
-        let balances: Vec<_> = log.iter().filter(|(_, w)| w.starts_with("balances=")).collect();
+        let history: Vec<_> = log
+            .iter()
+            .filter(|(_, w)| w.starts_with("history="))
+            .collect();
+        let balances: Vec<_> = log
+            .iter()
+            .filter(|(_, w)| w.starts_with("balances="))
+            .collect();
         assert_eq!(history.len(), 2, "{log:?}");
         assert_eq!(history[0].1, "history=1");
         assert_eq!(history[1].1, "history=200");
@@ -315,7 +321,10 @@ mod tests {
         pump.mark_history(wallet, Some(&[txid(1)]));
         tokio::time::advance(MIN_INTERVAL).await;
         settle().await;
-        assert_eq!(rec.log().last().unwrap().1, format!("history={}", usize::MAX));
+        assert_eq!(
+            rec.log().last().unwrap().1,
+            format!("history={}", usize::MAX)
+        );
 
         stop_tx.send(true).unwrap();
         task.await.unwrap();
