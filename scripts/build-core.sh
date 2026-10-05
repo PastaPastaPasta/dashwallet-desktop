@@ -8,9 +8,10 @@
 # Outputs:
 #   Sources/DashWalletCore/Generated/DashWalletCore.swift      (committed)
 #   Artifacts/DashWalletCore.artifactbundle/<variant>/          (gitignored)
-#       libdashwallet_core.a
+#       libdashwallet_core.a, source-stamp (hash of rust/ sources)
 #       include/DashWalletCoreFFI.h, include/module.modulemap
-#   Artifacts/DashWalletCore.artifactbundle/info.json           (all variants present)
+#   Artifacts/DashWalletCore.artifactbundle/info.json           (variants built from
+#                                                                the current sources)
 #
 # Env: CARGO_TARGET_DIR (default: the shared dir from DESIGN.md R3 when it
 #      exists, else rust/target),
@@ -33,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --no-bindings) bindings=0; shift ;;
     # Do not write bindings; fail if the committed ones differ (CI check).
     --check-bindings) bindings=0; check_bindings=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "build-core: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -68,6 +69,18 @@ fi
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"
+
+# Source stamp: one hash over every file under rust/ except build output. A
+# bundle variant is listed in info.json only when its stamp matches the
+# current sources, so a variant built from older sources (for example a Linux
+# variant left by an earlier Docker run) can never be linked silently.
+source_stamp() {
+  local hasher
+  if command -v sha256sum >/dev/null 2>&1; then hasher="sha256sum"; else hasher="shasum -a 256"; fi
+  (cd "$RUST_DIR" && find . -type f -not -path './target/*' -not -name '.DS_Store' -print0 \
+      | LC_ALL=C sort -z | xargs -0 $hasher | $hasher | cut -d' ' -f1)
+}
+stamp="$(source_stamp)"
 
 # Building the host triple without --target shares target/<profile> with
 # plain `cargo build`/`cargo test`, instead of compiling the graph twice.
@@ -152,6 +165,8 @@ ln -f "$lib" "$vdir/libdashwallet_core.a" 2>/dev/null || cp "$lib" "$vdir/libdas
   echo "}"
 } > "$vdir/include/module.modulemap"
 
+echo "$stamp" > "$vdir/source-stamp"
+
 cat > "$vdir/variant.json" <<EOF
         {
           "path": "$variant/libdashwallet_core.a",
@@ -163,8 +178,9 @@ cat > "$vdir/variant.json" <<EOF
         }
 EOF
 
-# info.json lists every variant currently present in the bundle, so a macOS
-# and a Linux build (shared checkout, Docker) can coexist.
+# info.json lists every variant present in the bundle whose source stamp
+# matches, so a macOS and a Linux build of the same sources (shared checkout,
+# Docker) coexist, and stale variants are left out with a warning.
 {
   echo '{'
   echo '  "schemaVersion": "1.0",'
@@ -175,6 +191,11 @@ EOF
   echo '      "variants": ['
   first=1
   for f in "$BUNDLE"/*/variant.json; do
+    d="$(dirname "$f")"
+    if [[ "$(cat "$d/source-stamp" 2>/dev/null)" != "$stamp" ]]; then
+      echo "build-core: leaving stale variant $(basename "$d") out of info.json (rebuild it with --triple)" >&2
+      continue
+    fi
     (( first )) || echo '        ,'
     cat "$f"
     first=0
