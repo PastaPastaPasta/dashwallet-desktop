@@ -37,11 +37,20 @@ import Testing
         }
     }
 
+    @Test func qrMatrixEncodesAsDashQtDoes() throws {
+        // testdata/qr_cases.json (qrencode -l L -8 -m 0).
+        let matrix = try qrMatrix(text: "dash:XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg")
+        #expect(matrix.size == 29)
+        #expect(matrix.modules.count == 29 * 29)
+        let firstRow = matrix.modules.prefix(29).map { $0 ? "1" : "0" }.joined()
+        #expect(firstRow == "11111110111101010011001111111")
+        #expect(throws: UriError.TooLongForQr) { try qrMatrix(text: String(repeating: "a", count: 256)) }
+    }
+
     @Test func unimplementedCallsFailTyped() {
         #expect(throws: WalletError.NotImplemented(call: "generate_mnemonic")) {
             try generateMnemonic(wordCount: 12, language: .english)
         }
-        #expect(throws: UriError.NotImplemented(call: "qr_matrix")) { try qrMatrix(text: "dash:x") }
     }
 
     final class NullObserver: DashWalletCore.EngineObserver, @unchecked Sendable {
