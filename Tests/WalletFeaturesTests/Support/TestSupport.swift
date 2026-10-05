@@ -42,16 +42,36 @@ func txid(_ n: Int) -> String {
 
 /// Records sleeps and lets the test decide when each one returns.
 final class ManualSleeper: @unchecked Sendable {
-    private let pending = Locked<[(Duration, CheckedContinuation<Void, any Error>)]>([])
+    private struct Pending {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private let pending = Locked<[Pending]>([])
     let requested = Locked<[Duration]>([])
 
+    /// Suspends until `fireNext()`; a cancelled task returns with `CancellationError`.
     var sleeper: Sleeper {
         { [self] duration in
             requested.withLock { $0.append(duration) }
-            try await withCheckedThrowingContinuation { continuation in
-                pending.withLock { $0.append((duration, continuation)) }
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    pending.withLock { $0.append(Pending(id: id, continuation: continuation)) }
+                    if Task.isCancelled { resume(id, throwing: CancellationError()) }
+                }
+            } onCancel: {
+                resume(id, throwing: CancellationError())
             }
         }
+    }
+
+    private func resume(_ id: UUID, throwing error: any Error) {
+        let match = pending.withLock { list -> Pending? in
+            guard let index = list.firstIndex(where: { $0.id == id }) else { return nil }
+            return list.remove(at: index)
+        }
+        match?.continuation.resume(throwing: error)
     }
 
     var pendingCount: Int { pending.current.count }
@@ -59,15 +79,7 @@ final class ManualSleeper: @unchecked Sendable {
     /// Returns from the oldest pending sleep.
     func fireNext() {
         let next = pending.withLock { $0.isEmpty ? nil : $0.removeFirst() }
-        next?.1.resume()
-    }
-
-    func cancelAll() {
-        let all = pending.withLock { list -> [(Duration, CheckedContinuation<Void, any Error>)] in
-            defer { list = [] }
-            return list
-        }
-        all.forEach { $0.1.resume(throwing: CancellationError()) }
+        next?.continuation.resume()
     }
 }
 

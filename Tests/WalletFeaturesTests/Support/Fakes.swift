@@ -542,6 +542,8 @@ final class FakeHistory: HistoryProviding, @unchecked Sendable {
         var labels: [(String, String?)] = []
         /// Errors thrown by the next `page` calls, in order.
         var pageErrors: [ServiceError] = []
+        /// Errors thrown once by the n-th `page` call (1-based).
+        var failAtQuery: [Int: ServiceError] = [:]
     }
 
     let state = Locked(State())
@@ -553,6 +555,7 @@ final class FakeHistory: HistoryProviding, @unchecked Sendable {
         try state.withLock { (s) throws(ServiceError) -> HistoryPage in
             s.queries.append(query)
             if !s.pageErrors.isEmpty { throw s.pageErrors.removeFirst() }
+            if let error = s.failAtQuery.removeValue(forKey: s.queries.count) { throw error }
             let filtered = s.records.filter { query.filter.types.isEmpty || query.filter.types.contains($0.type) }
             let start = query.cursor.flatMap(Int.init) ?? 0
             let end = min(filtered.count, start + query.limit)

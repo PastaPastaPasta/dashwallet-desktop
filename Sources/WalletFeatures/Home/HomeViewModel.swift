@@ -158,7 +158,9 @@ public final class HomeViewModel {
             discreet = display.hideBalances
             errorMessage = nil
         } catch {
+            // Nothing changed; keep the message instead of reloading over it.
             errorMessage = L10n.Settings.settingsNotSaved
+            return
         }
         rebuildRows()
         await reloadRecent()
