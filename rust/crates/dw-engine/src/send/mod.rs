@@ -16,6 +16,8 @@
 //! does not own (recipients and a foreign change address). The fee is not
 //! part of the cap; it is bounded by [`MAX_TX_FEE`] (`send.absurd_fee`).
 
+#[cfg(test)]
+mod flow_tests;
 pub(crate) mod plan;
 
 use std::collections::{HashMap, HashSet};
@@ -1187,11 +1189,15 @@ mod tests {
         let e = validate_recipients(vec![rc("XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg", 1000)], net)
             .unwrap_err();
         assert_eq!(e, SendFailure::InvalidAddress { index: 0 });
-        let e = validate_recipients(
-            vec![rc(ADDR, MAX_MONEY), rc("yX3d5a5NQb9dCmYyJYnEYNDQqyZFkNDUCB", 1000)],
-            net,
-        );
-        assert!(matches!(e, Err(SendFailure::InvalidAmount { .. }) | Err(SendFailure::InvalidAddress { .. })));
+        let other = Address::new(net, Payload::PubkeyHash(PubkeyHash::from_byte_array([5; 20])));
+        let e = validate_recipients(vec![rc(ADDR, MAX_MONEY), rc(&other.to_string(), 1000)], net)
+            .unwrap_err();
+        assert_eq!(e, SendFailure::InvalidAmount { index: 1 });
+        // A Platform (DIP-18) address is rejected with its own code
+        // (testdata/address_cases.json).
+        let platform = "tdash1kpauhq3lu52qdjqzxtx34wr4zsxangwrg5ddkfkq";
+        let e = validate_recipients(vec![rc(ADDR, 1000), rc(platform, 1000)], net).unwrap_err();
+        assert_eq!(e, SendFailure::PlatformAddress { index: 1 });
     }
 
     #[test]
