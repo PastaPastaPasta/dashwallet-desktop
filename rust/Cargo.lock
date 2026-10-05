@@ -1531,6 +1531,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-appdb"
+version = "0.1.0"
+dependencies = [
+ "refinery",
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dw-compat"
 version = "0.1.0"
 dependencies = [
