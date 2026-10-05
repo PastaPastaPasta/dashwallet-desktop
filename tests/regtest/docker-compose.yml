@@ -1,0 +1,46 @@
+# Single-node Dash Core regtest network for dashwallet-desktop tests.
+#
+#   docker compose -f tests/regtest/docker-compose.yml up -d --build dashd
+#   tests/regtest/scripts/regtest.sh mine 101
+#
+# Host ports default to the regtest defaults and bind to loopback only. Override with
+# DWD_RPC_HOST_PORT / DWD_P2P_HOST_PORT (the pytest harness does this to avoid clashes).
+# The masternode functional test runs in the `functional` service (profile `functional`), which
+# spawns its own dashd processes inside the container and does not use the `dashd` service.
+name: ${DWD_COMPOSE_PROJECT:-dwd-regtest}
+
+x-image: &image
+  image: dwd-regtest-dashd:24.0.0-rc.2
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  dashd:
+    <<: *image
+    environment:
+      DWD_RPC_USER: ${DWD_RPC_USER:-dwd}
+      DWD_RPC_PASSWORD: ${DWD_RPC_PASSWORD:-dwd}
+    ports:
+      - "127.0.0.1:${DWD_RPC_HOST_PORT:-19898}:19898"
+      - "127.0.0.1:${DWD_P2P_HOST_PORT:-19899}:19899"
+    # Chain state is scratch data: a tmpfs keeps every `up` on a fresh genesis.
+    tmpfs:
+      - /home/dash/.dashcore:uid=1000,gid=1000
+    healthcheck:
+      test: ["CMD", "dash-cli", "-regtest", "-rpcport=19898", "-rpcuser=${DWD_RPC_USER:-dwd}", "-rpcpassword=${DWD_RPC_PASSWORD:-dwd}", "getblockchaininfo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    stop_grace_period: 30s
+
+  functional:
+    <<: *image
+    profiles: ["functional"]
+    entrypoint: ["/opt/dwd-functional/run.sh"]
+    command: ["dwd_mn_chainlock.py"]
+    # The working-tree copy overrides the one baked into the image, so edits need no rebuild.
+    volumes:
+      - ./functional:/opt/dwd-functional:ro
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,exec
