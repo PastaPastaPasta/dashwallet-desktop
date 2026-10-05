@@ -84,6 +84,21 @@ import Testing
         try await client.shutdown()
     }
 
+    /// `createWallet` stores no key (review H-1), so only regtest may use it.
+    @Test func createWalletIsRegtestOnly() async throws {
+        let dir = try TempDir()
+        let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
+        for network: DashNetwork in [.mainnet, .testnet, .devnet(name: "x")] {
+            do {
+                _ = try await client.createWallet(on: network)
+                Issue.record("createWallet on \(network) should be refused")
+            } catch {
+                #expect(error.code == "wallet.no_vault")
+            }
+        }
+        try await client.shutdown()
+    }
+
     @Test func errorsCrossTheBoundaryTyped() async throws {
         let dir = try TempDir()
         let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
