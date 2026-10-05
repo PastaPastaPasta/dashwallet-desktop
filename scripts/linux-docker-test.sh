@@ -37,6 +37,7 @@ docker run --rm \
   -e CARGO_TARGET_DIR=/target \
   -e CARGO_BUILD_JOBS="${DWD_LINUX_JOBS:-8}" \
   -e DWD_HEADLESS=1 \
+  -e DWD_MIN_FREE_GB="${DWD_MIN_FREE_GB:-15}" \
   -e DWD_SWIFT_TEST_FILTER="$filter" \
   "$IMAGE" bash -euo pipefail -c '
     mkdir -p /work
