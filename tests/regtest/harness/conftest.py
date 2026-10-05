@@ -20,11 +20,14 @@ from dwd_regtest import COINBASE_MATURITY_BLOCKS, RegtestNode, node_from_env
 def regtest_node(request: pytest.FixtureRequest) -> Iterator[RegtestNode]:
     """One fresh regtest dashd for the whole session, stopped (and its chain discarded) afterwards."""
     node = node_from_env()
-    node.start()
+    started = False
     try:
+        # start() is inside the try so a failed start still tears down containers/processes.
+        node.start()
+        started = True
         yield node
     finally:
-        if request.session.testsfailed:
+        if not started or request.session.testsfailed:
             # Keep the tail of dashd's console log in the pytest report for failed sessions.
             print("\n--- dashd log (tail) ---\n" + "\n".join(node.logs().splitlines()[-200:]))
         node.stop()

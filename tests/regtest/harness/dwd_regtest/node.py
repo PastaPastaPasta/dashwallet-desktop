@@ -19,6 +19,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.error
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -86,8 +87,12 @@ class RegtestNode:
     def logs(self) -> str:
         raise NotImplementedError
 
+    def check_alive(self) -> None:
+        """Raise if the node process is known to have exited. Backends without a process handle do nothing."""
+
     def wait_for_rpc(self, timeout: float = 60.0) -> None:
         def ready() -> bool:
+            self.check_alive()
             try:
                 self.rpc.getblockchaininfo()
                 return True
@@ -95,6 +100,11 @@ class RegtestNode:
                 if err.code == RPC_IN_WARMUP:
                     return False
                 raise
+            except urllib.error.HTTPError as err:
+                # 401/403 mean wrong credentials or a rejected client address; retrying cannot help.
+                if err.code in (401, 403):
+                    raise
+                return False
             except OSError:
                 # Connection refused/reset while dashd (or the port forward) is still coming up.
                 return False
@@ -225,9 +235,15 @@ class LocalBinaryNode(RegtestNode):
         )
         try:
             self.wait_for_rpc()
-        except Exception:
+        except Exception as err:
+            # stop() deletes the temporary datadir, so carry the console log in the error.
+            tail = "\n".join(self.logs().splitlines()[-50:])
             self.stop()
-            raise
+            raise RuntimeError(f"dashd did not become ready: {err}\n--- dashd log (tail) ---\n{tail}") from err
+
+    def check_alive(self) -> None:
+        if self._process is not None and self._process.poll() is not None:
+            raise RuntimeError(f"dashd exited with status {self._process.returncode}")
 
     def stop(self) -> None:
         if self._process is not None and self._process.poll() is None:

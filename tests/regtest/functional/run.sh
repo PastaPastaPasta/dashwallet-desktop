@@ -7,6 +7,7 @@
 # Environment:
 #   DASHCORE_DIR  unpacked release (bin/dashd, bin/dash-cli, ...); default /opt/dashcore
 #   DWD_FUNC_TMP  scratch root for config.ini, cache and node datadirs; default ${TMPDIR:-/tmp}/dwd-functional
+#   DWD_PYTHON    Python interpreter with dash_hash installed; default python3
 #
 # The functional framework normally reads config.ini produced by ./configure in a source build.
 # Release binaries have no build tree, so this script writes an equivalent config.ini that declares
@@ -58,7 +59,9 @@ export DASHCLI="$dashcore/bin/dash-cli"
 export DASHUTIL="$dashcore/bin/dash-util"
 export DASHWALLET="$dashcore/bin/dash-wallet"
 
-exec python3 "$here/$test_script" \
+# --tmpdir must not exist yet; options given on the command line come later and win.
+exec "${DWD_PYTHON:-python3}" "$here/$test_script" \
     --configfile="$config" \
     --cachedir="$scratch/cache" \
+    --tmpdir="$scratch/run-$(date +%s)-$$" \
     "$@"
