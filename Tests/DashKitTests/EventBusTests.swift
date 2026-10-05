@@ -56,3 +56,38 @@ import Testing
         #expect(bus.subscriberCount == 0)
     }
 }
+
+@Suite struct EventBusOverflowTests {
+    static let wallet = WalletID(hex: String(repeating: "ab", count: 32))!
+
+    @Test func lifecycleEventsSurviveSignalOverflow() async {
+        let bus = EventBus()
+        let sub = bus.subscribe(signalLimit: 4)
+        bus.publish(.sessionOpened(.regtest))
+        for height in 0..<50 {
+            bus.publish(.syncProgress(.regtest, headerTipHeight: UInt32(height), synced: false))
+            if height == 25 { bus.publish(.walletCreated(.regtest, Self.wallet)) }
+        }
+        bus.publish(.lockStateChanged(.regtest))
+        bus.finish()
+
+        var got: [EngineEvent] = []
+        for await e in sub { got.append(e) }
+        let lifecycle = got.filter(\.isLifecycle)
+        #expect(lifecycle == [.sessionOpened(.regtest), .walletCreated(.regtest, Self.wallet), .lockStateChanged(.regtest)])
+        // The dropped signals are covered by one resynchronize marker.
+        #expect(got.contains(.resynchronize))
+        #expect(got.filter { !$0.isLifecycle }.count <= 5)
+    }
+
+    @Test func duplicateSignalsAreMerged() async {
+        let bus = EventBus()
+        let sub = bus.subscribe()
+        for _ in 0..<10 { bus.publish(.syncChanged(.regtest)) }
+        bus.publish(.balancesChanged(.regtest, Self.wallet))
+        bus.finish()
+        var got: [EngineEvent] = []
+        for await e in sub { got.append(e) }
+        #expect(got == [.syncChanged(.regtest), .balancesChanged(.regtest, Self.wallet)])
+    }
+}
