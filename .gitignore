@@ -10,3 +10,5 @@ Artifacts/
 # Local build logs and measurement helpers
 .build-logs/
 .swiftpm/
+# SwiftPM / Xcode derived data from local builds
+.derived/
