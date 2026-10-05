@@ -30,6 +30,7 @@ mod keys;
 mod network;
 #[allow(dead_code)]
 mod pump;
+mod send;
 mod session;
 #[allow(dead_code)]
 mod sync;
