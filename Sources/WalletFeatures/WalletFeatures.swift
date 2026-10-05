@@ -1,8 +1,6 @@
-// View models, routes, formatters, L10n (WS-10).
-// Placeholder until the first feature lands.
+// Shared view models, routes, amount formatting and L10n tables
+// (DESIGN-opus §1.6, §1.11). Feature code lives in the per-feature folders.
 import Foundation
-import WalletRuntime
-import AppServices
 
 public enum WalletFeaturesModule {
     public static let name = "WalletFeatures"
