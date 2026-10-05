@@ -70,6 +70,7 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
+    .testTarget(name: "WalletRuntimeTests", dependencies: ["WalletRuntime", "DashKit"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
     // macOS-only: the sources compile to nothing elsewhere. Reference PNGs are read from
     // __Snapshots__ by path, not bundled.
