@@ -1,0 +1,13 @@
+# Wallet dump created by Dash Core v24.0.0-rc.2
+# * Created on 2026-10-05T07:03:44Z
+# * Best block at time of backup was 0 (000008ca1832a4baf228eb1553c03d3a2c8e02399550dd6ea8d65cec3ef23d2e),
+#   mined on 2014-12-04T17:15:37Z
+
+cMiWPrRA5KYDiRAq4nkgGsEf2TfcpqGbhT6YbfDpoy8ZsaAHiDeo 1970-01-01T00:00:01Z label=first # addr=yYmUY8Gj7h9bVT5xd3MmeuyDwfP6nErTEk
+cMkTafzStDS4RMRPYD7Emw9DfN5Yendp9R9eKBaNg7tBWwGU43fD 1970-01-01T00:00:01Z label= # addr=yafm7meGGGcaKQr7UiMtvcq2BxcmtaG2QK
+91da2UKHvVd12emAkBypeA5Fo44HCGdi9F6Nz2a4XCFEBLVBkmV 1970-01-01T00:00:01Z label=uncompressed # addr=ybxFNtWXT2zGNxZNrHZ3d344KiZfW1QXHK
+
+512103462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b51ae 0 script=1 # addr=8qhBXeQH1Hp2NKjhB17gqHqeYSnSeNAfdN
+a9147ba2886ea898ac7728a5ffddb8e075c1d5a4617b87 0 script=1 # addr=91TkSfNzjo4M9WxyjFboZrhqt6DeWru5dS
+
+# End of dump
