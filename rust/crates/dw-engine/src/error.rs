@@ -35,6 +35,25 @@ pub enum EngineError {
     Io(String),
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    /// The call needs a running SPV client.
+    #[error("spv is not running")]
+    SpvNotRunning,
+    /// A block height above the known tip.
+    #[error("height {0} is out of range")]
+    HeightOutOfRange(u32),
+    /// A history query with a bad limit, date range or search text.
+    #[error("invalid history query: {0}")]
+    InvalidQuery(String),
+    /// A history cursor from a different query, or one that cannot be parsed.
+    #[error("stale history cursor")]
+    StaleCursor,
+    /// The wallet has no transaction with this txid.
+    #[error("transaction not found: {0}")]
+    TxNotFound(String),
+    /// Issuing another receive address would leave more unused addresses
+    /// than the gap limit lets a restore find.
+    #[error("receive gap limit reached")]
+    GapLimit,
     /// A bug: a panic inside an engine task, a poisoned lock, a runtime that
     /// could not be built.
     #[error("internal error: {0}")]
@@ -58,6 +77,12 @@ impl EngineError {
             EngineError::Spv(_) => "spv",
             EngineError::Io(_) => "io",
             EngineError::NotImplemented(_) => "not_implemented",
+            EngineError::SpvNotRunning => "spv_not_running",
+            EngineError::HeightOutOfRange(_) => "height_out_of_range",
+            EngineError::InvalidQuery(_) => "invalid_query",
+            EngineError::StaleCursor => "stale_cursor",
+            EngineError::TxNotFound(_) => "tx_not_found",
+            EngineError::GapLimit => "gap_limit",
             EngineError::Internal(_) => "internal",
         }
     }
