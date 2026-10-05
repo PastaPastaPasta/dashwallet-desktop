@@ -25,8 +25,15 @@ public enum DashKitError: Error, Sendable, Equatable {
     case recipient(code: String, index: Int)
     /// A vault passphrase attempt failed or is throttled (IOS-012).
     case vaultAttempt(code: String, failedAttempts: UInt32?, retryAfterSeconds: UInt64?)
+    /// A domain error whose engine variant carries numbers the UI shows, such
+    /// as the fee in dash-qt's "amount with fee exceeds balance" text
+    /// (review M-5). Keys are the engine's field names.
+    case parameterized(code: String, parameters: [String: Int64])
 
-    /// Stable machine-readable code (the engine's `code()` strings).
+    /// Stable machine-readable code: the engine's `code()` strings
+    /// (docs/contracts/m1-engine.md §4). The legacy `EngineError` variants
+    /// `InvalidMnemonic` and `WalletAlreadyExists` report the `wallet.*` code
+    /// of the same condition, so the UI has one code per condition.
     public var code: String {
         switch self {
         case .invalidConfig: "invalid_config"
@@ -43,7 +50,28 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .io: "io"
         case .notImplemented: "not_implemented"
         case .internal: "internal"
-        case .domain(let code, _), .recipient(let code, _), .vaultAttempt(let code, _, _): code
+        case .domain(let code, _), .recipient(let code, _), .vaultAttempt(let code, _, _),
+             .parameterized(let code, _):
+            code
+        }
+    }
+
+    /// Numbers the error carries, keyed by the engine's field names: `index`
+    /// (recipient), `failed_attempts`, `retry_after_secs`, `fee`, `available`,
+    /// `max_duffs`, `height`. Empty when there are none.
+    public var parameters: [String: Int64] {
+        switch self {
+        case .recipient(_, let index):
+            return ["index": Int64(index)]
+        case .vaultAttempt(_, let failed, let retry):
+            var values: [String: Int64] = [:]
+            if let failed { values["failed_attempts"] = Int64(failed) }
+            if let retry { values["retry_after_secs"] = Int64(clamping: retry) }
+            return values
+        case .parameterized(_, let parameters):
+            return parameters
+        default:
+            return [:]
         }
     }
 
@@ -58,6 +86,8 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .recipient(_, let index): "recipient \(index)"
         case .vaultAttempt(_, let failed, let retry):
             "failed_attempts=\(failed.map(String.init) ?? "?") retry_after=\(retry.map(String.init) ?? "-")"
+        case .parameterized(_, let parameters):
+            parameters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
         }
     }
 
@@ -142,7 +172,8 @@ public enum DashKitError: Error, Sendable, Equatable {
     init(_ e: DashWalletCore.SyncError) {
         switch e {
         case .SpvNotRunning: self = .domain(code: "sync.spv_not_running", detail: "")
-        case .HeightOutOfRange(let h): self = .domain(code: "sync.height_out_of_range", detail: "\(h)")
+        case .HeightOutOfRange(let h):
+            self = .parameterized(code: "sync.height_out_of_range", parameters: ["height": Int64(h)])
         case .Spv(let d): self = .domain(code: "sync.spv", detail: d)
         case .InvalidArgument(let d): self = .invalidArgument(detail: d)
         case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
@@ -189,20 +220,26 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .DustAmount(let i): self = .recipient(code: "send.dust_amount", index: Int(i))
         case .DuplicateAddress(let i): self = .recipient(code: "send.duplicate_address", index: Int(i))
         case .AmountExceedsBalance(let available):
-            self = .domain(code: "send.amount_exceeds_balance", detail: "available=\(available)")
+            self = .parameterized(
+                code: "send.amount_exceeds_balance", parameters: ["available": Int64(clamping: available)])
         case .AmountWithFeeExceedsBalance(let fee, let available):
-            self = .domain(code: "send.amount_with_fee_exceeds_balance", detail: "fee=\(fee) available=\(available)")
+            self = .parameterized(
+                code: "send.amount_with_fee_exceeds_balance",
+                parameters: ["fee": Int64(clamping: fee), "available": Int64(clamping: available)])
         case .InsufficientMixedFunds(let available):
-            self = .domain(code: "send.insufficient_mixed_funds", detail: "available=\(available)")
+            self = .parameterized(
+                code: "send.insufficient_mixed_funds", parameters: ["available": Int64(clamping: available)])
         case .OutpointUnavailable(let o):
             self = .domain(code: "send.outpoint_unavailable", detail: "\(o.txid):\(o.vout)")
-        case .AbsurdFee(let fee): self = .domain(code: "send.absurd_fee", detail: "fee=\(fee)")
+        case .AbsurdFee(let fee):
+            self = .parameterized(code: "send.absurd_fee", parameters: ["fee": Int64(clamping: fee)])
         case .TxTooLarge: self = .domain(code: "send.tx_too_large", detail: "")
         case .InvalidChangeAddress: self = .domain(code: "send.invalid_change_address", detail: "")
         case .WatchOnly: self = .domain(code: "send.watch_only", detail: "")
         case .VaultLocked: self = .domain(code: "send.vault_locked", detail: "")
         case .GrantInvalid: self = .domain(code: "send.grant_invalid", detail: "")
-        case .GrantExceeded(let max): self = .domain(code: "send.grant_exceeded", detail: "max=\(max)")
+        case .GrantExceeded(let max):
+            self = .parameterized(code: "send.grant_exceeded", parameters: ["max_duffs": Int64(clamping: max)])
         case .PreparedTxSpent: self = .domain(code: "send.prepared_tx_spent", detail: "")
         case .NoPeers: self = .domain(code: "send.no_peers", detail: "")
         case .BroadcastRejected(let reason): self = .domain(code: "send.broadcast_rejected", detail: reason)

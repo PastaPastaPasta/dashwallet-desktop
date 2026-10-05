@@ -453,14 +453,20 @@ public struct HistoryFilter: Sendable, Hashable {
 
     func ffi() throws(DashKitError) -> DashWalletCore.HistoryFilter {
         // Sets are sent in declaration order so equal filters send equal queries.
-        func unixSeconds(_ date: Date?) -> UInt64? {
-            date.map { UInt64(max(0, $0.timeIntervalSince1970.rounded(.down))) }
+        // Dates before 1970 clamp to 0; a date with no exact `u64` second
+        // count (non-finite or past year 5e11) is `invalid_argument` (review M-8).
+        func unixSeconds(_ date: Date?) throws(DashKitError) -> UInt64? {
+            guard let date else { return nil }
+            guard let seconds = UInt64(exactly: max(0, date.timeIntervalSince1970.rounded(.down))) else {
+                throw .invalidArgument(detail: "history date \(date) out of range")
+            }
+            return seconds
         }
         return .init(
             types: TxType.allCases.filter(types.contains).map(\.ffi),
             categories: TxCategory.allCases.filter(categories.contains).map(\.ffi),
             statuses: TxStatusKind.allCases.filter(statuses.contains).map(\.ffi),
-            dateFrom: unixSeconds(from), dateTo: unixSeconds(until), text: text,
+            dateFrom: try unixSeconds(from), dateTo: try unixSeconds(until), text: text,
             minAmount: try minimumAmount.map { (a) throws(DashKitError) in try a.engineDuffs() },
             watchOnly: watchOnly.ffi)
     }
@@ -501,7 +507,9 @@ public struct HistoryPage: Sendable, Hashable {
         for record in ffi.records {
             records.append(try TxRecord(record))
         }
-        self.init(records: records, nextCursor: ffi.nextCursor, totalMatching: ffi.totalMatching.map { Int($0) })
+        // A count beyond `Int` is unknown, not a trap.
+        self.init(
+            records: records, nextCursor: ffi.nextCursor, totalMatching: ffi.totalMatching.flatMap { Int(exactly: $0) })
     }
 }
 
