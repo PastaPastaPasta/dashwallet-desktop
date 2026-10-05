@@ -335,7 +335,9 @@ public final class OnboardingViewModel {
     /// lifecycle queue.
     public func finish() async {
         guard let mnemonic else { return }
-        if step != .working { retryStep = step }
+        // A failure after the unlock step returns to the step before it; the
+        // vault stays unlocked.
+        if step != .working && step != .unlockVault { retryStep = step }
         step = .working
         do {
             let status = try await vault.status()

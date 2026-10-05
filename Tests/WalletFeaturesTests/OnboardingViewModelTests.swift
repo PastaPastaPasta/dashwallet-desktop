@@ -199,6 +199,24 @@ struct OnboardingViewModelTests {
         #expect(model.step == .done(world.lifecycle.nextWalletID))
     }
 
+    @Test func failureAfterUnlockReturnsToTheStepBeforeIt() async {
+        world.vault.state.withLock {
+            $0.status = VaultStatus(
+                state: .locked, encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0,
+                retryAfterSeconds: nil, walletsWithSecrets: [walletA])
+        }
+        world.lifecycle.importErrors.withLock { $0 = [ServiceError(code: .walletAlreadyExists)] }
+        let model = makeModel()
+        model.startRestore()
+        await model.updateRestoreText(Self.phrase)
+        model.continueRestore()
+        await model.finishRestore()
+        await model.unlockVault(passphrase: "pw")
+        #expect(model.step == .failed(OnboardingFailure(code: .walletAlreadyExists, message: L10n.Onboarding.walletAlreadyExists)))
+        model.back()
+        #expect(model.step == .restoreOptions)
+    }
+
     @Test func withoutAnAuthGateALockedVaultFails() async {
         world.vault.state.withLock {
             $0.status = VaultStatus(
