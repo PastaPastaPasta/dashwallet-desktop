@@ -55,6 +55,10 @@ private struct GeneralSettings: View {
             }
             Toggle(MacStrings.Settings.menuBar, isOn: Binding(
                 get: { model.showsMenuBarExtra }, set: { model.showsMenuBarExtra = $0 }))
+            .accessibilityIdentifier("settings.menuBar")
+            if let error = model.preferencesError {
+                Text(error).foregroundStyle(Color.dash.errorText)
+            }
             if let error = settings.errorMessage {
                 Text(error).foregroundStyle(Color.dash.errorText)
             }

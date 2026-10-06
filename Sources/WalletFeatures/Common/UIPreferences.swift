@@ -41,10 +41,13 @@ public struct UIPreferences: Sendable, Hashable, Codable {
     /// Exclusive end (dash-qt).
     public var transactionDateTo: Date?
     public var transactionType: TypeFilterPreset
+    /// macOS menu bar companion (QT-028 tray stand-in); `nil` = shown, the default.
+    public var showsMenuBarExtra: Bool?
 
     public init(
         theme: AppTheme = .system, languageCode: String? = nil, transactionDate: DateFilterPreset = .all,
-        transactionDateFrom: Date? = nil, transactionDateTo: Date? = nil, transactionType: TypeFilterPreset = .all
+        transactionDateFrom: Date? = nil, transactionDateTo: Date? = nil, transactionType: TypeFilterPreset = .all,
+        showsMenuBarExtra: Bool? = nil
     ) {
         self.theme = theme
         self.languageCode = languageCode
@@ -52,6 +55,7 @@ public struct UIPreferences: Sendable, Hashable, Codable {
         self.transactionDateFrom = transactionDateFrom
         self.transactionDateTo = transactionDateTo
         self.transactionType = transactionType
+        self.showsMenuBarExtra = showsMenuBarExtra
     }
 }
 

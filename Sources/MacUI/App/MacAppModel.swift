@@ -29,7 +29,20 @@ public final class MacAppModel {
     public let unavailableReason: String?
 
     public var isOpenURIPresented = false
-    public var showsMenuBarExtra: Bool
+    /// The menu bar companion. Changes (the Settings toggle, or the user
+    /// dragging the item out of the menu bar) are saved in the UI
+    /// preferences; `--no-menu-bar-extra` hides it for this run without
+    /// saving anything.
+    public var showsMenuBarExtra: Bool {
+        get { menuBarExtraShown }
+        set {
+            menuBarExtraShown = newValue
+            saveMenuBarExtra(newValue)
+        }
+    }
+    private var menuBarExtraShown: Bool
+    /// Why saving a preference failed (shown in Settings).
+    public private(set) var preferencesError: String?
     /// Purpose the Address Book window opens on.
     public var addressBookPurpose: AddressPurpose = .send
     public var signVerifyTab: SignVerifyTab = .sign
@@ -57,7 +70,7 @@ public final class MacAppModel {
         self.env = environment
         self.main = MainViewModel(env: environment)
         self.unavailableReason = nil
-        self.showsMenuBarExtra = launch.menuBarExtra
+        self.menuBarExtraShown = launch.menuBarExtra && environment.preferences.preferences.showsMenuBarExtra != false
         self.lifecycle = lifecycle
     }
 
@@ -67,11 +80,24 @@ public final class MacAppModel {
         self.env = nil
         self.main = nil
         self.unavailableReason = unavailableReason
-        self.showsMenuBarExtra = false
+        self.menuBarExtraShown = false
         self.lifecycle = nil
     }
 
     public var isDemo: Bool { launch.isDemo }
+
+    private func saveMenuBarExtra(_ shown: Bool) {
+        guard let preferences = env?.preferences else { return }
+        var stored = preferences.preferences
+        guard (stored.showsMenuBarExtra ?? true) != shown else { return }
+        stored.showsMenuBarExtra = shown
+        do {
+            try preferences.update(stored)
+            preferencesError = nil
+        } catch {
+            preferencesError = ErrorText.common(error.code)
+        }
+    }
 
     /// Starts following the runtime, then opens the last network (live
     /// runtime only). The view models observe the lifecycle first, so the

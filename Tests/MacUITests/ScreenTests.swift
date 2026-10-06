@@ -236,6 +236,26 @@ struct ScreenTests {
         #expect(model.uriError != nil)
     }
 
+    /// The menu bar companion choice is saved in the UI preferences and read
+    /// back at the next start; `--no-menu-bar-extra` hides it without saving.
+    @Test func menuBarChoiceIsSaved() {
+        let env = DemoEnvironment.make(scenario: .funded)
+        let model = MacAppModel(environment: env, launch: LaunchOptions(demoScenario: .funded))
+        #expect(model.showsMenuBarExtra)
+        model.showsMenuBarExtra = false
+        #expect(env.preferences.preferences.showsMenuBarExtra == false)
+        #expect(model.preferencesError == nil)
+        let next = MacAppModel(environment: env, launch: LaunchOptions(demoScenario: .funded))
+        #expect(!next.showsMenuBarExtra)
+        next.showsMenuBarExtra = true
+        #expect(env.preferences.preferences.showsMenuBarExtra == true)
+
+        let fresh = DemoEnvironment.make(scenario: .funded)
+        let hidden = MacAppModel(environment: fresh, launch: LaunchOptions(demoScenario: .funded, menuBarExtra: false))
+        #expect(!hidden.showsMenuBarExtra)
+        #expect(fresh.preferences.preferences.showsMenuBarExtra == nil)
+    }
+
     @Test func launchOptions() throws {
         #expect(LaunchOptions.parse(["app"]).demoScenario == nil)
         #expect(LaunchOptions.parse(["app", "--demo"]).demoScenario == .funded)
