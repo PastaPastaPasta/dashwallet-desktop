@@ -166,7 +166,39 @@ struct ScreenTests {
     @Test(arguments: [ColorScheme.light, .dark])
     func menuBar(_ scheme: ColorScheme) async throws {
         let model = try await Self.model(.funded, scheme)
-        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 470), scheme, "menu-bar")
+        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 560), scheme, "menu-bar")
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func syncOverlay(_ scheme: ColorScheme) async throws {
+        let model = try await Self.model(.funded, scheme)
+        let tip = Date().addingTimeInterval(-3 * 86_400)
+        let status = SyncStatus(
+            running: true,
+            phases: [SyncPhaseProgress(phase: .headers, currentHeight: 1_180_000, targetHeight: 1_190_000, done: false)],
+            activePhase: .headers, tipHeight: 1_180_000, tipDate: tip, chainLockHeight: nil, connectedPeers: 6,
+            progress: 0.42, isDone: false, isStalled: false)
+        #expect(SyncRateTracker.tipIsOld(status))
+        let rates = SyncRateTracker()
+        rates.record(status, at: Date().addingTimeInterval(-600))
+        let later = SyncStatus(
+            running: true,
+            phases: [SyncPhaseProgress(phase: .headers, currentHeight: 1_182_000, targetHeight: 1_190_000, done: false)],
+            activePhase: .headers, tipHeight: 1_182_000, tipDate: tip, chainLockHeight: nil, connectedPeers: 6,
+            progress: 0.47, isDone: false, isStalled: false)
+        rates.record(later)
+        // The overlay alone: the demo chrome's status bar reports a synced wallet.
+        try await Self.capture(
+            SyncOverlayView(status: later, rates: rates, syncText: "Syncing Headers (47%)…", hide: {}),
+            CGSize(width: 640, height: 480), scheme, "sync-overlay")
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func peers(_ scheme: ColorScheme) async throws {
+        let model = try await Self.model(.funded, scheme)
+        let sync = try #require(model.env?.sync)
+        #expect(try await sync.peers().count == 8)
+        try await Self.capture(PeersSheet(sync: sync), CGSize(width: 680, height: 380), scheme, "peers")
     }
 
     // MARK: Behaviour without rendering

@@ -52,6 +52,8 @@ struct MenuBarContentView: View {
                                 Spacer()
                                 Text(last.amountText)
                                     .monospacedDigit()
+                                    .lineLimit(1)
+                                    .fixedSize()
                                     .foregroundStyle(last.isIncoming ? Color.dash.successText : Color.dash.primaryText)
                             }
                             .dashFont(.footnote)
