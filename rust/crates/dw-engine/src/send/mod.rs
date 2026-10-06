@@ -976,31 +976,30 @@ impl TxDraft {
                 .broadcast_transaction(signed.transaction())
                 .await
         };
-        let failure = match sent {
-            Ok(txid) => {
-                return Ok(BroadcastOutcome {
-                    txid: txid.to_string(),
-                });
-            }
+        match sent {
+            Ok(txid) => Ok(BroadcastOutcome {
+                txid: txid.to_string(),
+            }),
             Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
-                SendFailure::BroadcastUnknown { reason }
+                Err(SendFailure::BroadcastUnknown { reason }.into())
             }
-            Err(PlatformWalletError::TransactionBroadcast(reason)) if !first => {
-                SendFailure::BroadcastUnknown {
-                    reason: format!("not sent this time: {reason}"),
-                }
+            // Whatever a repeat ran into, the first dispatch may have
+            // reached the network.
+            Err(other) if !first => Err(SendFailure::BroadcastUnknown {
+                reason: format!("not sent this time: {other}"),
             }
+            .into()),
             Err(PlatformWalletError::TransactionBroadcast(reason)) => {
-                if reason_means_no_peers(&reason) {
+                Err(if reason_means_no_peers(&reason) {
                     SendFailure::NoPeers
                 } else {
                     SendFailure::BroadcastRejected { reason }
                 }
+                .into())
             }
-            Err(PlatformWalletError::StaleReservation) => SendFailure::PreparedTxSpent,
-            Err(other) => return Err(other.into()),
-        };
-        Err(failure.into())
+            Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
+            Err(other) => Err(other.into()),
+        }
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or
