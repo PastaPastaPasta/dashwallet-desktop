@@ -116,21 +116,105 @@ struct SendViewModelTests {
 
     // MARK: Duplicates (QT-060)
 
-    @Test func QT060_duplicateRecipientsAskFirst() async {
+    /// "Yes" merges the entries that pay the same address, because the
+    /// engine refuses an address twice (review H3).
+    @Test func QT060_duplicateRecipientsAskFirstThenMerge() async {
+        let model = makeModel()
+        fillValid(model, amount: "1.5", label: "")
+        model.entries[0].message = "first"
+        model.addRecipient()
+        model.entries[1].address = testnetAddress2
+        model.entries[1].amountText = "0.5"
+        model.addRecipient()
+        model.entries[2].address = " " + testnetAddress1
+        model.entries[2].amountText = "2,25"
+        model.entries[2].subtractFee = true
+        model.entries[2].label = "Shop"
+        model.entries[2].message = "second"
+        let firstID = model.entries[0].id
+        await model.review()
+        #expect(model.phase == .confirmDuplicates)
+        #expect(world.sender.drafts.current.isEmpty)
+
+        await model.acknowledgeDuplicates()
+        guard case .confirm = model.phase else {
+            Issue.record("expected confirm after acknowledging, got \(model.phase)")
+            return
+        }
+        #expect(model.entries.count == 2)
+        let merged = model.entries[0]
+        #expect(merged.id == firstID)
+        #expect(merged.address == testnetAddress1)
+        #expect(merged.amountText == "3.75000000")
+        #expect(merged.subtractFee)
+        #expect(merged.label == "Shop")
+        #expect(merged.message == "first\nsecond")
+        #expect(model.entries[1].address == testnetAddress2 && model.entries[1].amountText == "0.5")
+        let sent = world.sender.lastDraft?.state.current.recipients
+        #expect(sent?.map(\.address) == [testnetAddress1, testnetAddress2])
+        #expect(sent?.map(\.amount.duffs) == [375_000_000, 50_000_000])
+        #expect(sent?.first?.subtractFeeFromAmount == true)
+        // The merge is the view model's own edit: nothing was abandoned.
+        #expect(world.sender.lastDraft?.state.current.abandoned.isEmpty == true)
+    }
+
+    @Test func QT060_mergeKeepsTheFirstLabel() async {
+        let model = makeModel()
+        fillValid(model, amount: "1", label: "Alice")
+        model.addRecipient()
+        model.entries[1].address = testnetAddress1
+        model.entries[1].amountText = "1"
+        model.entries[1].label = "Bob"
+        await model.review()
+        await model.acknowledgeDuplicates()
+        #expect(model.entries.map(\.label) == ["Alice"])
+        #expect(model.entries[0].amountText == "2.00000000")
+        #expect(!model.entries[0].subtractFee)
+    }
+
+    @Test func QT060_mergedAmountAbove21MillionIsAnAmountError() async {
+        let model = makeModel()
+        fillValid(model, amount: "20000000")
+        model.addRecipient()
+        model.entries[1].address = testnetAddress1
+        model.entries[1].amountText = "2000000"
+        await model.review()
+        await model.acknowledgeDuplicates()
+        #expect(model.phase == .editing)
+        #expect(model.entries.count == 1)
+        #expect(model.entries[0].amountError == L10n.Send.amountTooLarge)
+        #expect(world.sender.drafts.current.isEmpty)
+    }
+
+    @Test func QT060_noOnTheQuestionKeepsTheEntries() async {
         let model = makeModel()
         fillValid(model)
         model.addRecipient()
         model.entries[1].address = testnetAddress1
         model.entries[1].amountText = "2"
         await model.review()
-        #expect(model.phase == .confirmDuplicates)
-        #expect(world.sender.drafts.current.isEmpty)
-        await model.acknowledgeDuplicates()
-        guard case .confirm = model.phase else {
-            Issue.record("expected confirm after acknowledging, got \(model.phase)")
-            return
+        await model.cancel()
+        #expect(model.phase == .editing)
+        #expect(model.entries.count == 2)
+    }
+
+    /// The fake refuses duplicates like the engine's `validate_recipients`,
+    /// so a view model that sent them would fail here as it does live.
+    @Test func H3_fakeDraftRefusesDuplicatesLikeTheEngine() async throws {
+        let draft = try await world.sender.makeDraft(wallet: walletA)
+        do {
+            try await draft.setRecipients([
+                PaymentRecipient(address: testnetAddress1, amount: Amount(duffs: 1000)),
+                PaymentRecipient(address: testnetAddress2, amount: Amount(duffs: 1000)),
+                PaymentRecipient(address: testnetAddress1, amount: Amount(duffs: 2000)),
+            ])
+            Issue.record("duplicates must be refused")
+        } catch {
+            #expect(error.code == .sendDuplicateAddress)
+            #expect(error.recipientIndex == 2)
+            #expect(error.parameters["index"] == 2)
         }
-        #expect(world.sender.lastDraft?.state.current.recipients.count == 2)
+        #expect(world.sender.lastDraft?.state.current.recipients.isEmpty == true)
     }
 
     // MARK: Happy path (QT-059, QT-063, IOS rule 4)
@@ -169,9 +253,9 @@ struct SendViewModelTests {
         #expect(draft.broadcasts.isEmpty)
     }
 
-    @Test func QT063_broadcastClearsFormRoutesAndRemembersRecipient() async {
+    @Test func QT063_broadcastClearsFormRoutesAndRemembersAnUnlabelledRecipient() async {
         let model = makeModel()
-        fillValid(model, label: "Shop")
+        fillValid(model)
         await reviewToConfirm(model)
         await model.confirm()
         let txid = String(repeating: "f", count: 64)
@@ -182,15 +266,38 @@ struct SendViewModelTests {
         #expect(world.sender.lastDraft?.state.current.abandoned.isEmpty == true)
         let saves = world.addressBook.saves.current
         #expect(saves.count == 1)
-        #expect(saves.first?.address == testnetAddress1 && saves.first?.label == "Shop" && saves.first?.purpose == .send)
+        #expect(saves.first?.address == testnetAddress1 && saves.first?.label == "" && saves.first?.purpose == .send)
+        #expect(saves.first?.replace == false)
     }
 
-    @Test func QT063_existingLabelIsNotOverwritten() async {
+    /// Labels from the send form are the engine's to record at broadcast
+    /// (review M7): the view model writes nothing for a labelled recipient.
+    @Test func M7_labelledRecipientsAreLeftToTheEngine() async {
+        let model = makeModel()
+        fillValid(model, label: "Shop")
+        await reviewToConfirm(model)
+        await model.confirm()
+        #expect(world.sender.lastDraft?.state.current.recipients.first?.label == "Shop")
+        #expect(world.addressBook.saves.current.isEmpty)
+    }
+
+    @Test func QT063_knownAddressIsNotTouched() async {
         world.addressBook.entries.withLock {
-            $0 = [AddressBookEntry(address: testnetAddress1, label: "Old", purpose: .send, createdAt: nil)]
+            $0 = [AddressBookEntry(address: testnetAddress1, label: "", purpose: .send, createdAt: nil)]
         }
         let model = makeModel()
-        fillValid(model, label: "New")
+        fillValid(model)
+        await reviewToConfirm(model)
+        await model.confirm()
+        #expect(world.addressBook.saves.current.isEmpty)
+    }
+
+    @Test func QT063_nothingIsRememberedWithoutASend() async {
+        world.sender.configure.withLock {
+            $0 = { draft in draft.state.withLock { $0.broadcastError = ServiceError(code: .sendBroadcastRejected) } }
+        }
+        let model = makeModel()
+        fillValid(model)
         await reviewToConfirm(model)
         await model.confirm()
         #expect(world.addressBook.saves.current.isEmpty)
@@ -220,15 +327,18 @@ struct SendViewModelTests {
 
     // MARK: Authorization (QT-061, H-4)
 
-    @Test func H4_spendGrantCapsAmountsPlusMaximumFee() async {
+    /// The engine caps `external_sent` (fee excluded) at the grant's
+    /// `max_duffs`, so the cap is the sum of the amounts, without slack.
+    @Test func H4_spendGrantCapsTheSumOfTheAmounts() async {
         let model = makeModel()
         fillValid(model, amount: "1")
         model.addRecipient()
         model.entries[1].address = testnetAddress2
         model.entries[1].amountText = "2"
+        model.entries[1].subtractFee = true
         await model.review()
         let call = world.auth.authorizeCalls.last
-        #expect(call?.purpose == .spend(max: Amount(duffs: 300_000_000 + SendViewModel.maximumFee.duffs)))
+        #expect(call?.purpose == .spend(max: Amount(duffs: 300_000_000)))
         #expect(call?.passphrase == nil)
     }
 
@@ -246,6 +356,30 @@ struct SendViewModelTests {
             return
         }
         #expect(world.sender.lastDraft?.state.current.prepareGrants.first?.id == "grant-1")
+    }
+
+    /// A second passphrase submission while the first is being checked is
+    /// ignored: one grant, one prepare.
+    @Test func QT061_secondAuthorizeWhileCheckingIsIgnored() async {
+        world.auth.defaultRequirement = .passphrase
+        let gate = Gate()
+        world.auth.authorizeGate = gate
+        let model = makeModel()
+        fillValid(model)
+        await model.review()
+        #expect(model.phase == .authorizing)
+        let first = Task { await model.authorize(passphrase: "secret") }
+        await eventually { gate.waiterCount == 1 }
+        #expect(model.phase == .preparing)
+        await model.authorize(passphrase: "secret")
+        gate.open()
+        await first.value
+        #expect(world.auth.authorizeCalls.count == 1)
+        #expect(world.sender.lastDraft?.state.current.prepareGrants.count == 1)
+        guard case .confirm = model.phase else {
+            Issue.record("expected confirm, got \(model.phase)")
+            return
+        }
     }
 
     @Test func QT061_wrongPassphraseFails() async {
@@ -357,16 +491,83 @@ struct SendViewModelTests {
         #expect(unknownTxid == txid)
         #expect(model.route == .transaction(txid: txid))
         #expect(!model.isEditable)
+        #expect(model.canBroadcastAgain)
         await model.cancel()
         model.addRecipient()
         #expect(model.entries.count == 1)
         await model.dismiss()
         #expect(model.phase == .editing)
         #expect(model.entries[0].isBlank)
-        #expect(world.sender.lastDraft?.state.current.abandoned.isEmpty == true)
+        #expect(!model.canBroadcastAgain)
+        let draft = world.sender.lastDraft!.state.current
+        #expect(draft.abandoned.isEmpty)
+        #expect(draft.released.isEmpty)
     }
 
-    @Test func M7_rejectedBroadcastIsAbandonedOnDismiss() async {
+    /// After an unknown outcome the prepared transaction is kept and can be
+    /// sent again, same txid, without a new grant (review M3).
+    @Test func M3_unknownOutcomeCanBeBroadcastAgain() async {
+        world.sender.configure.withLock {
+            $0 = { draft in
+                draft.state.withLock { $0.broadcastErrors = [ServiceError(code: .sendBroadcastUnknown, detail: "no verdict")] }
+            }
+        }
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        await model.confirm()
+        guard case .broadcastUnknown = model.phase else {
+            Issue.record("expected broadcastUnknown, got \(model.phase)")
+            return
+        }
+        await model.broadcastAgain()
+        let txid = String(repeating: "f", count: 64)
+        #expect(model.phase == .done(txid: txid))
+        let draft = world.sender.lastDraft!.state.current
+        #expect(draft.broadcasts.count == 2)
+        #expect(draft.broadcasts.allSatisfy { $0.summary.txid == txid })
+        #expect(draft.prepareGrants.count == 1)
+        #expect(world.auth.authorizeCalls.count == 1)
+        #expect(model.entries[0].isBlank)
+    }
+
+    /// A failed second attempt does not settle the first one: the phase
+    /// stays `.broadcastUnknown`. When the engine released the transaction
+    /// (`send.no_peers`), nothing is left to broadcast again.
+    @Test func M3_failedSecondAttemptKeepsTheOutcomeUnknown() async {
+        world.sender.configure.withLock {
+            $0 = { draft in
+                draft.state.withLock {
+                    $0.broadcastErrors = [
+                        ServiceError(code: .sendBroadcastUnknown), ServiceError(code: .networkNotOpen),
+                        ServiceError(code: .sendNoPeers),
+                    ]
+                }
+            }
+        }
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        await model.confirm()
+        await model.broadcastAgain()
+        guard case .broadcastUnknown(_, let failure) = model.phase else {
+            Issue.record("expected broadcastUnknown, got \(model.phase)")
+            return
+        }
+        #expect(failure.code == .networkNotOpen)
+        #expect(model.canBroadcastAgain)
+        await model.broadcastAgain()
+        guard case .broadcastUnknown(_, let second) = model.phase else {
+            Issue.record("expected broadcastUnknown, got \(model.phase)")
+            return
+        }
+        #expect(second.code == .sendNoPeers)
+        #expect(!model.canBroadcastAgain)
+        await model.broadcastAgain()
+        #expect(world.sender.lastDraft?.state.current.broadcasts.count == 3)
+    }
+
+    @Test func M7_rejectedBroadcastIsReleasedByTheEngine() async {
         world.sender.configure.withLock {
             $0 = { draft in draft.state.withLock { $0.broadcastError = ServiceError(code: .sendBroadcastRejected) } }
         }
@@ -375,29 +576,55 @@ struct SendViewModelTests {
         await reviewToConfirm(model)
         await model.confirm()
         #expect(model.phase == .failed(SendFailure(code: .sendBroadcastRejected, message: L10n.Send.broadcastRejected)))
-        #expect(!model.canRetryBroadcast)
+        #expect(!model.canBroadcastAgain)
         await model.dismiss()
         #expect(model.phase == .editing)
-        #expect(world.sender.lastDraft?.state.current.abandoned.count == 1)
+        let draft = world.sender.lastDraft!.state.current
+        #expect(draft.released.count == 1)
+        #expect(draft.abandoned.isEmpty)
     }
 
-    @Test func M7_noPeersBroadcastCanBeRetried() async {
+    @Test func M7_sessionErrorOnBroadcastIsAbandonedOnDismiss() async {
         world.sender.configure.withLock {
-            $0 = { draft in draft.state.withLock { $0.broadcastError = ServiceError(code: .sendNoPeers) } }
+            $0 = { draft in draft.state.withLock { $0.broadcastErrors = [ServiceError(code: .networkNotOpen)] } }
         }
         let model = makeModel()
         fillValid(model)
         await reviewToConfirm(model)
         await model.confirm()
-        #expect(model.canRetryBroadcast)
-        world.sender.lastDraft?.state.withLock { $0.broadcastError = nil }
-        await model.retryBroadcast()
-        guard case .done = model.phase else {
-            Issue.record("expected done, got \(model.phase)")
+        guard case .failed(let failure) = model.phase else {
+            Issue.record("expected failed, got \(model.phase)")
             return
         }
-        #expect(world.sender.lastDraft?.state.current.broadcasts.count == 2)
-        #expect(world.sender.lastDraft?.state.current.abandoned.isEmpty == true)
+        #expect(failure.code == .networkNotOpen)
+        await model.dismiss()
+        #expect(world.sender.lastDraft?.state.current.abandoned.count == 1)
+    }
+
+    /// `send.no_peers` releases the inputs in the engine and spends the
+    /// prepared transaction, so the user goes back to the form and Review
+    /// runs a new grant and prepare (review M1).
+    @Test func M1_noPeersReturnsToReviewWithANewGrantAndPrepare() async {
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        world.sender.lastDraft?.state.withLock { $0.broadcastErrors = [ServiceError(code: .sendNoPeers)] }
+        await model.confirm()
+        #expect(model.phase == .failed(SendFailure(code: .sendNoPeers, message: L10n.Send.noPeers)))
+        let first = world.sender.lastDraft!
+        #expect(first.state.current.released.count == 1)
+        await model.dismiss()
+        #expect(model.phase == .editing)
+        #expect(model.entries[0].address == testnetAddress1)
+        #expect(first.state.current.abandoned.isEmpty)
+
+        await reviewToConfirm(model)
+        await model.confirm()
+        #expect(model.phase == .done(txid: String(repeating: "f", count: 64)))
+        #expect(world.sender.drafts.current.count == 2)
+        #expect(world.auth.authorizeCalls.count == 2)
+        #expect(first.state.current.broadcasts.count == 1)
+        #expect(world.sender.lastDraft?.state.current.prepareGrants.map(\.id) == ["grant-2"])
     }
 
     // MARK: Engine errors (QT-062)
@@ -416,6 +643,45 @@ struct SendViewModelTests {
         #expect(model.phase == .editing)
         #expect(model.entries[0].error == .sendAmountExceedsBalance)
         #expect(model.entries[0].amountError == L10n.Send.amountExceedsBalance)
+    }
+
+    /// The engine reports the fee with the error; `estimate()` failed, so
+    /// there is no estimate to read it from (review M6).
+    @Test func M6_amountWithFeeExceedsBalanceShowsTheEngineFee() async {
+        world.sender.configure.withLock {
+            $0 = { draft in
+                draft.state.withLock {
+                    $0.estimateError = ServiceError(
+                        code: .sendAmountWithFeeExceedsBalance, parameters: ["fee": 1234, "available": 150_000_000])
+                }
+            }
+        }
+        let model = makeModel()
+        fillValid(model)
+        await model.review()
+        #expect(model.estimate == nil)
+        #expect(model.phase == .failed(SendFailure(
+            code: .sendAmountWithFeeExceedsBalance,
+            message: L10n.Send.amountWithFeeExceedsBalance("0.00001234 tDASH"))))
+    }
+
+    @Test func amountTooSmallAfterFeeMarksTheAmount() async {
+        world.sender.configure.withLock {
+            $0 = { draft in
+                draft.state.withLock {
+                    $0.estimateError = ServiceError(
+                        code: .sendAmountTooSmallAfterFee, recipientIndex: 0, parameters: ["index": 0])
+                }
+            }
+        }
+        let model = makeModel()
+        fillValid(model, amount: "0.00001")
+        model.entries[0].subtractFee = true
+        await model.review()
+        #expect(model.phase == .editing)
+        #expect(model.entries[0].error == .sendAmountTooSmallAfterFee)
+        #expect(model.entries[0].amountError == L10n.Send.amountTooSmallAfterFee)
+        #expect(model.entries[0].addressError == nil)
     }
 
     @Test func QT062_insufficientMixedFundsText() async {

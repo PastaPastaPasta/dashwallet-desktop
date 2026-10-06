@@ -11,6 +11,9 @@ extension L10n {
         public static let insufficientMixedFunds =
             "Unable to locate enough mixed funds for this transaction. CoinJoin uses exact denominated amounts to send funds, you might simply need to mix some more coins."
         public static let dustAmount = "Transaction amount too small"
+        /// Dash Core's wallet text for a subtract-fee recipient whose share of
+        /// the fee leaves nothing above the dust threshold.
+        public static let amountTooSmallAfterFee = "The transaction amount is too small to pay the fee"
         public static let amountTooLarge = "The amount is larger than 21 million DASH."
         public static let unparsableAmount = "The amount is not a valid number."
         public static let platformAddress = "This is a Dash Platform address, not a Dash Core address"
