@@ -60,6 +60,16 @@ impl ImportOptions {
     }
 }
 
+/// What the blocking part of an import stored.
+struct Stored {
+    wallet_id: WalletId,
+    seed: Zeroizing<[u8; 64]>,
+    /// The vault already held this wallet's seed.
+    had_secret: bool,
+    /// Hex BIP32 fingerprint of the master key.
+    fingerprint: String,
+}
+
 pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
     match e {
         MnemonicError::Invalid(detail) => EngineError::InvalidMnemonic(detail),
@@ -204,31 +214,34 @@ impl NetworkSession {
             let network = this.network.core_network();
             let vault = this.vault.clone();
             // PBKDF2, vault file writes and fsync stay off the async workers.
-            let (wallet_id, seed, had_secret, fingerprint) = tokio::task::spawn_blocking(
-                move || -> Result<(WalletId, Zeroizing<[u8; 64]>, bool, String), EngineError> {
-                    let secret = make_secret()?;
-                    let id = mnemonic::wallet_id_for_seed(&secret.seed, network)
-                        .map_err(mnemonic_error)?;
-                    let had_secret = vault.has_wallet_secret(&id);
-                    if !had_secret {
-                        vault.store_wallet_secret(&id, &secret)?;
-                    }
-                    // Kept for PSBT derivation records (watch-only use, no key needed).
-                    let fingerprint =
-                        key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
-                            .map(|m| {
-                                m.fingerprint(&dashcore::secp256k1::Secp256k1::signing_only())
-                                    .to_string()
-                            })
-                            .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
-                    Ok((
-                        WalletId(id),
-                        Zeroizing::new(*secret.seed),
-                        had_secret,
-                        fingerprint,
-                    ))
-                },
-            )
+            let Stored {
+                wallet_id,
+                seed,
+                had_secret,
+                fingerprint,
+            } = tokio::task::spawn_blocking(move || -> Result<Stored, EngineError> {
+                let secret = make_secret()?;
+                let id =
+                    mnemonic::wallet_id_for_seed(&secret.seed, network).map_err(mnemonic_error)?;
+                let had_secret = vault.has_wallet_secret(&id);
+                if !had_secret {
+                    vault.store_wallet_secret(&id, &secret)?;
+                }
+                // Kept for PSBT derivation records (watch-only use, no key needed).
+                let fingerprint =
+                    key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
+                        .map(|m| {
+                            m.fingerprint(&dashcore::secp256k1::Secp256k1::signing_only())
+                                .to_string()
+                        })
+                        .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
+                Ok(Stored {
+                    wallet_id: WalletId(id),
+                    seed: Zeroizing::new(*secret.seed),
+                    had_secret,
+                    fingerprint,
+                })
+            })
             .await??;
             this.store_fingerprint(wallet_id, fingerprint).await;
 

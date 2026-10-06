@@ -453,12 +453,11 @@ fn test_qt_109_exports_for_dash_qt_read_back() {
     let d = dw_compat::descriptor::PkhDescriptor::parse(first).unwrap();
     assert_eq!(d.key.as_str(), hd.xprv.as_str());
     assert_eq!(d.path, "44h/1h/0h/0");
-    assert_eq!(
+    assert!(
         json[2]["desc"]
             .as_str()
             .unwrap()
-            .contains("/9h/1h/4h/0h/0/*"),
-        true
+            .contains("/9h/1h/4h/0h/0/*")
     );
 
     // The exported dump imports into another engine as the same wallet.

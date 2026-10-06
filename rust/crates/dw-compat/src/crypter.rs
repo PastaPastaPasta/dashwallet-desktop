@@ -60,7 +60,7 @@ pub fn key_from_passphrase(
 /// AES-256-CBC decryption with PKCS#7 padding (`CCrypter::Decrypt`). `None`
 /// when the padding does not verify, which is how a wrong key usually shows.
 pub fn aes_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ct: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    if ct.is_empty() || ct.len() % 16 != 0 {
+    if ct.is_empty() || !ct.len().is_multiple_of(16) {
         return None;
     }
     let mut buf = Zeroizing::new(ct.to_vec());

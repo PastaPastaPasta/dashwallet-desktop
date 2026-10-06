@@ -238,11 +238,14 @@ impl std::fmt::Debug for SqliteWallet {
     }
 }
 
+/// A BIP39 phrase and its passphrase, as bytes.
+pub type PhraseAndPassphrase = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
+
 /// The HD root recovered from a wallet.dat.
 pub struct HdRoot {
     /// BIP39 phrase and passphrase bytes as Core stored them (Dash
     /// descriptor wallets created with `createwallet`/`upgradetohd`).
-    pub mnemonic: Option<(Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>)>,
+    pub mnemonic: Option<PhraseAndPassphrase>,
     /// The 32-byte secret of the master key the active receive descriptor is
     /// rooted at, and its compressed public key.
     pub master_secret: Zeroizing<[u8; 32]>,

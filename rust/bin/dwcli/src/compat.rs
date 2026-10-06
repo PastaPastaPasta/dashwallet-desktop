@@ -133,7 +133,7 @@ impl ImportArgs {
     }
 }
 
-fn first_line(path: &PathBuf) -> Result<Zeroizing<Vec<u8>>, String> {
+fn first_line(path: &std::path::Path) -> Result<Zeroizing<Vec<u8>>, String> {
     crate::read_passphrase(path)
 }
 
@@ -198,7 +198,10 @@ pub fn run(
             walletpass_file,
             opts,
         } => {
-            let pass = walletpass_file.as_ref().map(first_line).transpose()?;
+            let pass = walletpass_file
+                .as_ref()
+                .map(|p| first_line(p))
+                .transpose()?;
             let r = engine
                 .block_on(session.import_wallet_dat(path, pass, opts.options()))
                 .map_err(e)?;
@@ -301,7 +304,10 @@ pub fn run(
             dest,
             backup_pass_file,
         } => {
-            let pass = backup_pass_file.as_ref().map(first_line).transpose()?;
+            let pass = backup_pass_file
+                .as_ref()
+                .map(|p| first_line(p))
+                .transpose()?;
             let info = engine
                 .block_on(session.backup_wallet(wallet_id(&wallet)?, dest, pass))
                 .map_err(e)?;
@@ -313,7 +319,7 @@ pub fn run(
         } => {
             let pass = backup_pass_file
                 .as_ref()
-                .map(first_line)
+                .map(|p| first_line(p))
                 .transpose()?
                 .or_else(|| passphrase.cloned());
             for id in engine

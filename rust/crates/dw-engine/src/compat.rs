@@ -309,7 +309,7 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
 /// A wallet's root as found in a Dash Core file, before it is imported.
 struct CoreRoot {
     /// Phrase and passphrase bytes as Core stored them.
-    phrase: Option<(Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>)>,
+    phrase: Option<dw_compat::walletdat::PhraseAndPassphrase>,
     /// The 64-byte HD seed, when the file has one and no phrase.
     seed: Option<Zeroizing<[u8; 64]>>,
     /// Compressed public key of the BIP32 master key the file's keys derive
