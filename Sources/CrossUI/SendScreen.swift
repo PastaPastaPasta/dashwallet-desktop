@@ -37,7 +37,22 @@ struct SendScreen: View {
                 }
             }
             .disabled(!model.isEditable)
+            let options = state.m2.desktopPreferences.desktop.options
+            if options.coinControl {
+                CoinControlPanel(state: state)
+            }
             feeSection(model)
+            if options.psbtControls {
+                // QT-077: the draft Create Unsigned needs is private to
+                // SendViewModel, which does not offer it yet.
+                HStack(spacing: Int(DashSpacing.s)) {
+                    DashButton(
+                        L10n.PSBT.createUnsigned, style: .tintedGray, size: .small, isEnabled: false,
+                        help: CrossStrings.createUnsignedUnavailable
+                    ) {}
+                    Text(CrossStrings.createUnsignedUnavailable).dashFont(.caption1).dashForeground(.secondaryText)
+                }
+            }
             HStack(spacing: Int(DashSpacing.s)) {
                 DashButton(L10n.Send.send, style: .filledBlue, isEnabled: model.phase == .editing) {
                     Task { await model.review() }

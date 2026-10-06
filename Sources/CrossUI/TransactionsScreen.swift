@@ -19,6 +19,7 @@ struct TransactionsScreen: View {
     @State var labelText = ""
     @State var exportMessage: String?
     @State var exportFailed = false
+    @State var groupByDay = false
 
     var body: some View {
         let model = model
@@ -41,10 +42,16 @@ struct TransactionsScreen: View {
             if let exportMessage {
                 Toast(exportMessage, kind: exportFailed ? .error : .success)
             }
-            recordList(model)
+            chips(model)
+            if groupByDay {
+                DayGroupList(model: model, state: state)
+            } else {
+                recordList(model)
+            }
             if model.hasMore {
                 DashButton(CrossStrings.loadMore, style: .strokeGray, size: .small) { Task { await model.loadMore() } }
             }
+            TransactionActionBanner(model: model)
             if let detail = model.detail {
                 TransactionDetailCard(model: model, state: state, detail: detail, labelText: $labelText)
             }
@@ -53,6 +60,26 @@ struct TransactionsScreen: View {
             searchText = model.searchText
             minimumText = model.minimumAmountText
             await model.reload()
+            await model.refreshChips()
+        }
+    }
+
+    /// iOS filter chips (IOS-028) and day grouping (IOS-027, IOS-030).
+    @ViewBuilder
+    private func chips(_ model: TransactionsViewModel) -> some View {
+        HStack(spacing: Int(DashSpacing.xs)) {
+            DashButton(
+                L10n.TransactionsM2.all,
+                style: Set(model.offeredChips).isSubset(of: model.selectedChips) ? .tintedBlue : .plainBlue,
+                size: .small
+            ) { Task { await model.selectAllChips() } }
+            ForEach(model.offeredChips, id: \.self) { chip in
+                DashButton(
+                    chip.title, style: model.selectedChips.contains(chip) ? .tintedBlue : .plainBlue, size: .small
+                ) { Task { await model.toggleChip(chip) } }
+            }
+            Spacer()
+            DashToggle(CrossStrings.groupByDay, isOn: $groupByDay)
         }
     }
 
@@ -163,57 +190,6 @@ struct TransactionsScreen: View {
                 exportFailed = true
                 exportMessage = L10n.Transactions.exportFailed
             }
-        }
-    }
-}
-
-/// Details of the selected transaction with label editing (QT-090, QT-092).
-struct TransactionDetailCard: View {
-    let model: TransactionsViewModel
-    let state: CrossAppState
-    let detail: TransactionDetail
-    let labelText: Binding<String>
-
-    var body: some View {
-        let model = model
-        let detail = detail
-        let labelText = labelText
-        DashCard {
-            HStack {
-                SectionHeader(CrossStrings.transactionDetails, style: .subheadMedium)
-                Spacer()
-                DashButton(CrossStrings.close, style: .plainBlue, size: .small) { model.clearDetail() }
-            }
-            KeyValueRow(CrossStrings.status, L10n.Transactions.statusText(detail.status))
-            KeyValueRow(CrossStrings.date, Format.date(detail.date))
-            KeyValueRow(CrossStrings.transactionID, detail.txid)
-            ForEach(Array(detail.records.enumerated()), id: \.offset) { item in
-                KeyValueRow(model.typeText(for: item.element), model.amountText(for: item.element))
-            }
-            if let fee = detail.fee {
-                KeyValueRow(CrossStrings.fee, state.format(fee))
-            }
-            KeyValueRow(CrossStrings.size, "\(detail.sizeBytes) bytes")
-            KeyValueRow(CrossStrings.block, Format.height(detail.blockHeight))
-            if let message = detail.message {
-                KeyValueRow(CrossStrings.message, message)
-            }
-            KeyValueRow(CrossStrings.inputs, "\(detail.inputs.count)")
-            ForEach(Array(detail.outputs.enumerated()), id: \.offset) { item in
-                KeyValueRow(
-                    "\(CrossStrings.outputs) #\(item.element.vout)",
-                    "\(item.element.address ?? "-")  \(state.format(item.element.amount))\(item.element.isMine ? "  (mine)" : "")")
-            }
-            HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
-                DashTextField(CrossStrings.label, placeholder: CrossStrings.labelPlaceholder, text: labelText)
-                DashButton(CrossStrings.saveLabel, style: .tintedBlue, size: .small) {
-                    let label = labelText.wrappedValue
-                    Task { await model.setLabel(label, txid: detail.txid) }
-                }
-            }
-        }
-        .task(id: detail.txid) {
-            labelText.wrappedValue = detail.label ?? ""
         }
     }
 }
