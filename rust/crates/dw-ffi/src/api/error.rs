@@ -60,6 +60,8 @@ impl From<dw_engine::EngineError> for EngineError {
             E::InvalidAddress(_) | E::AddressNoKey(_) => Self::InvalidArgument { detail },
             E::AddressNotMine(_) | E::Vault(_) | E::Signer(_) => Self::Wallet { detail },
             E::Internal(_) => Self::Internal { detail },
+            E::Send(_) | E::Labels(_) => Self::Wallet { detail },
+            E::OutpointNotFound(_) => Self::InvalidArgument { detail },
         }
     }
 }

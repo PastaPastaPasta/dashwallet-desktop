@@ -10,6 +10,8 @@ pub mod labels;
 pub mod message;
 pub mod receive;
 pub mod send;
+#[cfg(test)]
+mod send_tests;
 pub mod session;
 pub mod sync;
 pub mod units;

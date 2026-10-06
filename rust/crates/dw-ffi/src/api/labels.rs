@@ -2,7 +2,7 @@
 //! Contract: docs/contracts/m1-engine.md §labels.
 
 use crate::NetworkSession;
-use crate::api::common::{domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::parse_wallet_id;
 
 /// dash-qt address-book purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -60,7 +60,57 @@ pub enum LabelsError {
     Internal { detail: String },
 }
 
-domain_error_common!(LabelsError);
+impl crate::api::common::NotImplementedError for LabelsError {
+    fn not_implemented(call: &'static str) -> Self {
+        Self::NotImplemented {
+            call: call.to_string(),
+        }
+    }
+}
+
+impl From<dw_engine::EngineError> for LabelsError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        use dw_engine::LabelsFailure as F;
+        let detail = e.to_string();
+        match e {
+            E::Labels(F::InvalidAddress) => Self::InvalidAddress,
+            E::Labels(F::DuplicateAddress) => Self::DuplicateAddress,
+            E::Labels(F::OwnAddress) => Self::OwnAddress,
+            E::Labels(F::EntryNotFound) => Self::EntryNotFound,
+            E::Labels(F::ReceiveEntryNotDeletable) => Self::ReceiveEntryNotDeletable,
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<AddressPurpose> for dw_engine::BookPurpose {
+    fn from(p: AddressPurpose) -> Self {
+        match p {
+            AddressPurpose::Send => Self::Send,
+            AddressPurpose::Receive => Self::Receive,
+        }
+    }
+}
+
+impl From<dw_engine::BookEntryInfo> for AddressBookEntry {
+    fn from(e: dw_engine::BookEntryInfo) -> Self {
+        Self {
+            address: e.address,
+            label: e.label,
+            purpose: match e.purpose {
+                dw_engine::BookPurpose::Send => AddressPurpose::Send,
+                dw_engine::BookPurpose::Receive => AddressPurpose::Receive,
+            },
+            created_at: e.created_at,
+        }
+    }
+}
 
 impl LabelsError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -83,21 +133,29 @@ impl LabelsError {
 
 #[uniffi::export]
 impl NetworkSession {
-    /// Address-book entries of `wallet_id`. `search` matches label or
-    /// address, case-insensitively (dash-qt wildcard search).
+    /// Address-book entries of `wallet_id`, sorted by label then address.
+    /// `search` is dash-qt's case-insensitive wildcard match (`*`, `?`) on
+    /// label or address.
     pub async fn address_book(
         &self,
         wallet_id: String,
         purpose: Option<AddressPurpose>,
         search: Option<String>,
     ) -> Result<Vec<AddressBookEntry>, LabelsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, purpose, search);
-        not_implemented("NetworkSession.address_book")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .address_book(id, purpose.map(Into::into), search)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
-    /// Adds or relabels an entry. Adding an existing Send address returns
-    /// `DuplicateAddress`; relabel by passing the same address and purpose
-    /// with `replace = true`.
+    /// Adds or relabels an entry. A Send entry for one of the wallet's own
+    /// addresses is `OwnAddress`; a Receive entry must be one of them
+    /// (`invalid_argument` otherwise). An address already in the book is
+    /// `DuplicateAddress` unless `replace` is set with the same purpose.
     pub async fn save_address_book_entry(
         &self,
         wallet_id: String,
@@ -106,14 +164,12 @@ impl NetworkSession {
         purpose: AddressPurpose,
         replace: bool,
     ) -> Result<AddressBookEntry, LabelsError> {
-        let _ = (
-            parse_wallet_id(&wallet_id)?,
-            address,
-            label,
-            purpose,
-            replace,
-        );
-        not_implemented("NetworkSession.save_address_book_entry")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .save_address_book_entry(id, address, label, purpose.into(), replace)
+            .await?
+            .into())
     }
 
     /// Deletes a Send entry.
@@ -122,18 +178,18 @@ impl NetworkSession {
         wallet_id: String,
         address: String,
     ) -> Result<(), LabelsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, address);
-        not_implemented("NetworkSession.delete_address_book_entry")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.delete_address_book_entry(id, address).await?)
     }
 
-    /// Sets or clears (`None`) the label of a transaction.
+    /// Sets or clears (`None` or empty) the label of a transaction.
     pub async fn set_tx_label(
         &self,
         wallet_id: String,
         txid: String,
         label: Option<String>,
     ) -> Result<(), LabelsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, txid, label);
-        not_implemented("NetworkSession.set_tx_label")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.set_tx_label(id, txid, label).await?)
     }
 }

@@ -771,9 +771,9 @@ impl TxDraft {
     /// history shows it as soon as the transaction appears.
     ///
     /// - accepted: `Ok`, the transaction is done;
-    /// - never sent (no peers, SPV stopped): `NoPeers` / `BroadcastRejected`;
-    ///   platform-wallet released the inputs, so the prepared transaction is
-    ///   spent and a new `prepare` is needed;
+    /// - never sent (SPV stopped, no peers, rejected before dispatch):
+    ///   `NoPeers` / `BroadcastRejected`; the inputs are released and the
+    ///   prepared transaction is spent, so a new `prepare` is needed;
     /// - outcome unknown: `BroadcastUnknown`; the inputs stay reserved and
     ///   `broadcast` may be called again (same transaction, same txid), but
     ///   never `abandon` (review M-7).
@@ -797,23 +797,24 @@ impl TxDraft {
             }
         }
         let outcome = self.dispatch(&prepared).await;
-        let mut phase = prepared.phase();
-        match &outcome {
-            Ok(_) => {
-                *phase = Phase::Sent;
-                self.session.spends.remove(&self.wallet_id, prepared.inputs.iter().copied());
-            }
-            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => *phase = Phase::Unknown,
+        let next = match &outcome {
+            Ok(_) => Phase::Sent,
+            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => Phase::Unknown,
             Err(EngineError::Send(
                 SendFailure::NoPeers | SendFailure::BroadcastRejected { .. } | SendFailure::PreparedTxSpent,
-            )) => {
-                *phase = Phase::Released;
-                self.session.spends.remove(&self.wallet_id, prepared.inputs.iter().copied());
-            }
+            )) => Phase::Released,
             // Not dispatched (session closed, wallet gone): still pending.
-            Err(_) => *phase = Phase::Pending,
+            Err(_) => Phase::Pending,
+        };
+        *prepared.phase() = next;
+        if next == Phase::Sent {
+            self.session.spends.remove(&self.wallet_id, prepared.inputs.iter().copied());
         }
-        drop(phase);
+        if next == Phase::Released {
+            // Never sent: release key-wallet's reservation (owner-guarded, a
+            // no-op where platform-wallet already did) and the engine's.
+            prepared.release(&self.session).await;
+        }
         if outcome.is_ok() || matches!(outcome, Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))) {
             self.session.sink.emit(EngineEvent::WalletChanged {
                 network: self.session.network.clone(),
@@ -827,9 +828,9 @@ impl TxDraft {
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let manager = self.session.manager()?;
         if !manager.spv().is_started() {
-            // Nothing was sent; the reservation stays and the transaction
-            // remains pending for a later broadcast.
-            return Err(EngineError::SpvNotRunning);
+            // Nothing to send to; handled like dash-spv's never-sent
+            // rejection (inputs released, prepare again).
+            return Err(SendFailure::NoPeers.into());
         }
         self.session.record_send_metadata(self.wallet_id, prepared).await?;
         // `Phase::Broadcasting` keeps abandon and drop away while the

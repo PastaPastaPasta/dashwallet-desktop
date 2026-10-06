@@ -398,8 +398,20 @@ fn broadcast_needs_spv_and_drop_releases() {
         .block_on(draft.prepare(f.spend_grant(10_000_000)))
         .unwrap();
     let r = f.engine.block_on(draft.broadcast(Arc::clone(&p)));
-    assert!(matches!(r, Err(EngineError::SpvNotRunning)), "{r:?}");
-    // Not sent: still pending and still reserved.
+    assert_eq!(send_failure(r), SendFailure::NoPeers);
+    // Never sent: released, and spent for any further broadcast.
+    assert!(f.reserved().is_empty());
+    f.engine.block_on(draft.abandon(Arc::clone(&p))).unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.broadcast(p))),
+        SendFailure::PreparedTxSpent
+    );
+
+    // Dropping a pending transaction releases its inputs.
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .unwrap();
     assert_eq!(f.reserved(), vec![a]);
     drop(p);
     assert!(f.reserved().is_empty());

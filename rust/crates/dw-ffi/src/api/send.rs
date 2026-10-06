@@ -1,21 +1,22 @@
 //! Sending: transaction drafts, prepare (sign, never broadcast), broadcast.
 //! Owner: E2 (engine-send). Shape follows DESIGN-opus §1.5.
-//! Contract: docs/contracts/m1-engine.md §send.
+//! Contract: docs/contracts/m1-engine.md §2.7. Behaviour lives in
+//! `dw_engine::send`; this module maps types.
 
 use std::sync::Arc;
 
 use crate::NetworkSession;
-use crate::api::common::{OutPoint, domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{NotImplementedError, OutPoint, parse_wallet_id};
 
 /// One payment line (QT-052/053).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Recipient {
     pub address: String,
-    /// Duffs; must be above the dust threshold.
+    /// Duffs; must be at least the output's dust threshold (546 for P2PKH).
     pub amount: u64,
     /// dash-qt "Subtract fee from amount".
     pub subtract_fee_from_amount: bool,
-    /// Saved to the address book when set (QT-053 "Add to address book").
+    /// Saved to the address book after a broadcast (QT-063).
     pub label: Option<String>,
     /// `message` from a `dash:` URI; stored with the transaction.
     pub message: Option<String>,
@@ -24,20 +25,22 @@ pub struct Recipient {
 /// Which coins a draft may spend.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum CoinSource {
-    /// Any spendable coin of the standard account.
+    /// Any spendable coin of the standard accounts, except user-locked,
+    /// reserved, immature and untrusted unconfirmed coins.
     Any,
     /// Only fully mixed CoinJoin coins (CoinJoin send page, QT-051).
+    /// `NotImplemented` until CoinJoin rounds are tracked.
     FullyMixedOnly,
-    /// Exactly these outpoints (coin control, QT-068..074).
+    /// Exactly these outpoints, all of them (coin control, QT-068..074).
     Outpoints { outpoints: Vec<OutPoint> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum FeeMode {
     /// Engine-recommended rate for a confirmation target (QT-057; on SPV this
-    /// is the minimum relay fee for every target, DESIGN-opus §1.14).
+    /// is the minimum relay fee, 1000 duff/kB, for every target 1..=1008).
     Recommended { target_blocks: u32 },
-    /// Custom rate in duffs per 1000 bytes.
+    /// Custom rate in duffs per 1000 bytes, 1000..=10,000,000.
     PerKb { duffs_per_kb: u64 },
 }
 
@@ -45,7 +48,8 @@ pub enum FeeMode {
 pub enum ChangePolicy {
     /// Fresh internal-chain address.
     Auto,
-    /// Custom change address (QT-073).
+    /// Custom change address (QT-073). A foreign address counts against the
+    /// spend cap.
     Address { address: String },
 }
 
@@ -58,7 +62,7 @@ pub struct TxEstimate {
     pub input_count: u32,
     /// Change output value; `None` when the change is dropped into the fee.
     pub change: Option<u64>,
-    /// Sum the recipients receive.
+    /// Sum the recipients receive (after any subtract-fee share).
     pub total_sent: u64,
 }
 
@@ -75,6 +79,9 @@ pub struct PreparedOutput {
     pub amount: u64,
     pub is_change: bool,
     pub label: Option<String>,
+    /// Pays one of this wallet's addresses (review H-3: a change output
+    /// with `is_mine == false` is a foreign custom change address).
+    pub is_mine: bool,
 }
 
 /// What the confirm dialog shows (QT-059, IOS-046).
@@ -88,15 +95,20 @@ pub struct PreparedTxSummary {
     pub outputs: Vec<PreparedOutput>,
     /// Sum the recipients receive.
     pub total_sent: u64,
-    /// `total_sent + fee`: what leaves the wallet.
+    /// Inputs minus outputs back to the wallet: what leaves the wallet,
+    /// fee included.
     pub total_debit: u64,
+    /// Paid to scripts the wallet does not own (recipients and a foreign
+    /// change address), fee excluded: the figure a `Spend` grant caps.
+    pub external_sent: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct BroadcastOutcome {
     pub txid: String,
-    /// Peers the transaction was announced to.
-    pub peers_announced: u32,
+    /// Peers the transaction was announced to; `None`: dash-spv does not
+    /// report it.
+    pub peers_announced: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -128,10 +140,11 @@ pub enum SendError {
     /// Code `send.insufficient_mixed_funds`: `FullyMixedOnly` cannot cover it.
     #[error("insufficient mixed funds")]
     InsufficientMixedFunds { available: u64 },
-    /// Code `send.outpoint_unavailable`: spent, locked or not the wallet's.
+    /// Code `send.outpoint_unavailable`: spent, locked, reserved, immature or
+    /// not the wallet's.
     #[error("outpoint unavailable")]
     OutpointUnavailable { outpoint: OutPoint },
-    /// Code `send.absurd_fee` (QT-058 fee cap).
+    /// Code `send.absurd_fee` (QT-058: above 0.1 DASH).
     #[error("absurd fee {fee}")]
     AbsurdFee { fee: u64 },
     /// Code `send.tx_too_large`.
@@ -143,23 +156,25 @@ pub enum SendError {
     /// Code `send.watch_only`: the wallet has no signing keys.
     #[error("watch-only wallet")]
     WatchOnly,
-    /// Code `send.vault_locked`.
+    /// Code `send.vault_locked` (also a mixing-only unlock).
     #[error("vault locked")]
     VaultLocked,
-    /// Code `send.grant_invalid`: missing, expired or not a Spend grant.
+    /// Code `send.grant_invalid`: missing, expired, used or not a Spend grant.
     #[error("grant invalid")]
     GrantInvalid,
-    /// Code `send.grant_exceeded`: the debit is above the grant's `max_duffs`.
+    /// Code `send.grant_exceeded`: `external_sent` is above the grant's
+    /// `max_duffs`.
     #[error("grant allows {max_duffs}")]
     GrantExceeded { max_duffs: u64 },
     /// Code `send.prepared_tx_spent`: the prepared transaction was already
-    /// broadcast or abandoned.
+    /// broadcast, abandoned or released after a failed broadcast.
     #[error("prepared transaction no longer pending")]
     PreparedTxSpent,
-    /// Code `send.no_peers`: nothing to broadcast to.
+    /// Code `send.no_peers`: SPV is not running or has no peer; nothing was
+    /// sent and the inputs were released.
     #[error("no peers")]
     NoPeers,
-    /// Code `send.broadcast_rejected`: a peer rejected the transaction.
+    /// Code `send.broadcast_rejected`: provably not sent; inputs released.
     #[error("broadcast rejected: {reason}")]
     BroadcastRejected { reason: String },
     /// Code `invalid_argument`.
@@ -180,9 +195,71 @@ pub enum SendError {
     /// Code `internal`.
     #[error("internal: {detail}")]
     Internal { detail: String },
+    /// Code `send.amount_too_small_after_fee` (review M-5): a subtract-fee
+    /// recipient would be left with dust.
+    #[error("recipient {index}: too small after the fee")]
+    AmountTooSmallAfterFee { index: u32 },
+    /// Code `send.broadcast_unknown` (review M-7): handed to the network
+    /// without an acceptance verdict. The inputs stay reserved; `broadcast`
+    /// may be retried, `abandon` is refused.
+    #[error("broadcast outcome unknown: {reason}")]
+    BroadcastUnknown { reason: String },
 }
 
-domain_error_common!(SendError);
+impl NotImplementedError for SendError {
+    fn not_implemented(call: &'static str) -> Self {
+        Self::NotImplemented {
+            call: call.to_string(),
+        }
+    }
+}
+
+impl From<dw_engine::EngineError> for SendError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        use dw_engine::SendFailure as F;
+        let detail = e.to_string();
+        match e {
+            E::Send(f) => match f {
+                F::NoRecipients => Self::NoRecipients,
+                F::InvalidAddress { index } => Self::InvalidAddress { index },
+                F::PlatformAddress { index } => Self::PlatformAddress { index },
+                F::InvalidAmount { index } => Self::InvalidAmount { index },
+                F::DustAmount { index } => Self::DustAmount { index },
+                F::DuplicateAddress { index } => Self::DuplicateAddress { index },
+                F::AmountExceedsBalance { available } => Self::AmountExceedsBalance { available },
+                F::AmountWithFeeExceedsBalance { fee, available } => {
+                    Self::AmountWithFeeExceedsBalance { fee, available }
+                }
+                F::AmountTooSmallAfterFee { index } => Self::AmountTooSmallAfterFee { index },
+                F::InsufficientMixedFunds { available } => {
+                    Self::InsufficientMixedFunds { available }
+                }
+                F::OutpointUnavailable(o) => Self::OutpointUnavailable { outpoint: o.into() },
+                F::AbsurdFee { fee } => Self::AbsurdFee { fee },
+                F::TxTooLarge => Self::TxTooLarge,
+                F::InvalidChangeAddress => Self::InvalidChangeAddress,
+                F::WatchOnly => Self::WatchOnly,
+                F::VaultLocked => Self::VaultLocked,
+                F::GrantInvalid => Self::GrantInvalid,
+                F::GrantExceeded { max_duffs, .. } => Self::GrantExceeded { max_duffs },
+                F::PreparedTxSpent => Self::PreparedTxSpent,
+                F::NoPeers => Self::NoPeers,
+                F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
+                F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },
+            },
+            E::SpvNotRunning => Self::NoPeers,
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::InvalidAddress(_) => {
+                Self::InvalidArgument { detail }
+            }
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            _ => Self::Internal { detail },
+        }
+    }
+}
 
 impl SendError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -196,6 +273,7 @@ impl SendError {
             Self::DuplicateAddress { .. } => "send.duplicate_address",
             Self::AmountExceedsBalance { .. } => "send.amount_exceeds_balance",
             Self::AmountWithFeeExceedsBalance { .. } => "send.amount_with_fee_exceeds_balance",
+            Self::AmountTooSmallAfterFee { .. } => "send.amount_too_small_after_fee",
             Self::InsufficientMixedFunds { .. } => "send.insufficient_mixed_funds",
             Self::OutpointUnavailable { .. } => "send.outpoint_unavailable",
             Self::AbsurdFee { .. } => "send.absurd_fee",
@@ -208,6 +286,7 @@ impl SendError {
             Self::PreparedTxSpent => "send.prepared_tx_spent",
             Self::NoPeers => "send.no_peers",
             Self::BroadcastRejected { .. } => "send.broadcast_rejected",
+            Self::BroadcastUnknown { .. } => "send.broadcast_unknown",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",
@@ -218,25 +297,84 @@ impl SendError {
     }
 }
 
+impl CoinSource {
+    fn to_engine(&self) -> Result<dw_engine::CoinSource, SendError> {
+        Ok(match self {
+            CoinSource::Any => dw_engine::CoinSource::Any,
+            CoinSource::FullyMixedOnly => dw_engine::CoinSource::FullyMixedOnly,
+            CoinSource::Outpoints { outpoints } => dw_engine::CoinSource::Outpoints(
+                outpoints
+                    .iter()
+                    .map(OutPoint::to_core)
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
+    }
+}
+
+impl From<FeeMode> for dw_engine::FeeMode {
+    fn from(f: FeeMode) -> Self {
+        match f {
+            FeeMode::Recommended { target_blocks } => Self::Recommended { target_blocks },
+            FeeMode::PerKb { duffs_per_kb } => Self::PerKb(duffs_per_kb),
+        }
+    }
+}
+
+impl From<dw_engine::PreparedSummary> for PreparedTxSummary {
+    fn from(s: dw_engine::PreparedSummary) -> Self {
+        Self {
+            txid: s.txid,
+            fee: s.fee,
+            fee_rate_per_kb: s.fee_rate_per_kb,
+            size_bytes: s.size_bytes,
+            inputs: s
+                .inputs
+                .into_iter()
+                .map(|i| PreparedInput {
+                    outpoint: i.outpoint.into(),
+                    address: i.address,
+                    amount: i.amount,
+                })
+                .collect(),
+            outputs: s
+                .outputs
+                .into_iter()
+                .map(|o| PreparedOutput {
+                    address: o.address,
+                    amount: o.amount,
+                    is_change: o.is_change,
+                    label: o.label,
+                    is_mine: o.is_mine,
+                })
+                .collect(),
+            total_sent: s.total_sent,
+            total_debit: s.total_debit,
+            external_sent: s.external_sent,
+        }
+    }
+}
+
 /// A signed transaction held by the engine with its inputs reserved. Only
-/// `TxDraft::broadcast` sends it; `TxDraft::abandon` releases the inputs.
-#[derive(uniffi::Object)]
+/// `TxDraft::broadcast` sends it; `TxDraft::abandon`, or releasing the last
+/// reference while it is pending, releases the inputs.
+#[derive(Debug, uniffi::Object)]
 pub struct PreparedTx {
-    summary: PreparedTxSummary,
+    inner: Arc<dw_engine::PreparedTx>,
 }
 
 #[uniffi::export]
 impl PreparedTx {
     pub fn summary(&self) -> PreparedTxSummary {
-        self.summary.clone()
+        self.inner.summary().clone().into()
     }
 }
 
 /// An editable payment for one wallet. Setters validate what they can
-/// without the network; `prepare` does the rest.
-#[derive(uniffi::Object)]
+/// without the network; `estimate` and `prepare` read the wallet.
+#[derive(Debug, uniffi::Object)]
 pub struct TxDraft {
-    wallet_id: String,
+    inner: Arc<dw_engine::TxDraft>,
 }
 
 #[uniffi::export]
@@ -244,75 +382,105 @@ impl NetworkSession {
     /// A new, empty draft for `wallet_id` (source `Any`, fee
     /// `Recommended{target_blocks: 6}`, change `Auto`).
     pub fn new_tx_draft(&self, wallet_id: String) -> Result<Arc<TxDraft>, SendError> {
-        let _ = parse_wallet_id(&wallet_id)?;
-        not_implemented("NetworkSession.new_tx_draft")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(Arc::new(TxDraft {
+            inner: self.inner.new_tx_draft(id)?,
+        }))
     }
 
-    /// The largest single-recipient amount `source` can pay at `fee`, with
-    /// the fee subtracted (iOS "Max", dash-qt "Use available balance").
+    /// The spendable amount of `source` for dash-qt's "Use available
+    /// balance" (review M-4): put this minus the other recipients' amounts
+    /// in the entry and set `subtract_fee_from_amount`. Excludes user-locked,
+    /// reserved, immature and untrusted unconfirmed coins. `fee` is
+    /// validated only; with subtract-fee the fee comes out of the amount.
     pub async fn max_spendable(
         &self,
         wallet_id: String,
         source: CoinSource,
         fee: FeeMode,
     ) -> Result<u64, SendError> {
-        let _ = (parse_wallet_id(&wallet_id)?, source, fee);
-        not_implemented("NetworkSession.max_spendable")
+        let id = parse_wallet_id(&wallet_id)?;
+        let source = source.to_engine()?;
+        Ok(self.inner.max_spendable(id, source, fee.into()).await?)
     }
 }
 
 #[uniffi::export]
 impl TxDraft {
     pub fn wallet_id(&self) -> String {
-        self.wallet_id.clone()
+        self.inner.wallet_id().to_string()
     }
 
     /// Replaces the recipient list. Validates addresses (network, Platform
     /// rejection), amounts and duplicates; errors carry the recipient index.
     pub fn set_recipients(&self, recipients: Vec<Recipient>) -> Result<(), SendError> {
-        let _ = recipients;
-        not_implemented("TxDraft.set_recipients")
+        let recipients = recipients
+            .into_iter()
+            .map(|r| dw_engine::Recipient {
+                address: r.address,
+                amount: r.amount,
+                subtract_fee_from_amount: r.subtract_fee_from_amount,
+                label: r.label,
+                message: r.message,
+            })
+            .collect();
+        Ok(self.inner.set_recipients(recipients)?)
     }
 
+    /// Coin source. Outpoints must be distinct; whether they are spendable
+    /// is checked by `estimate`/`prepare` (`send.outpoint_unavailable`).
     pub fn set_source(&self, source: CoinSource) -> Result<(), SendError> {
-        let _ = source;
-        not_implemented("TxDraft.set_source")
+        Ok(self.inner.set_source(source.to_engine()?)?)
     }
 
     pub fn set_fee(&self, fee: FeeMode) -> Result<(), SendError> {
-        let _ = fee;
-        not_implemented("TxDraft.set_fee")
+        Ok(self.inner.set_fee(fee.into())?)
     }
 
     pub fn set_change(&self, change: ChangePolicy) -> Result<(), SendError> {
-        let _ = change;
-        not_implemented("TxDraft.set_change")
+        let change = match change {
+            ChangePolicy::Auto => dw_engine::ChangePolicy::Auto,
+            ChangePolicy::Address { address } => dw_engine::ChangePolicy::Address(address),
+        };
+        Ok(self.inner.set_change(change)?)
     }
 
     /// Coin selection and fee for the current draft without signing.
     pub async fn estimate(&self) -> Result<TxEstimate, SendError> {
-        not_implemented("TxDraft.estimate")
+        let e = self.inner.estimate().await?;
+        Ok(TxEstimate {
+            fee: e.fee,
+            size_bytes: e.size_bytes,
+            input_count: e.input_count,
+            change: e.change,
+            total_sent: e.total_sent,
+        })
     }
 
-    /// Selects coins, builds, signs (through the vault, with a `Spend` grant)
-    /// and reserves the inputs. Never broadcasts.
+    /// Selects coins, builds, signs (through the vault, with a `Spend` grant
+    /// that caps `external_sent`) and reserves the inputs. Never broadcasts.
     pub async fn prepare(&self, grant_id: String) -> Result<Arc<PreparedTx>, SendError> {
-        let _ = grant_id;
-        not_implemented("TxDraft.prepare")
+        Ok(Arc::new(PreparedTx {
+            inner: self.inner.prepare(grant_id).await?,
+        }))
     }
 
-    /// Announces `prepared` to the network and records it in history.
+    /// Announces `prepared` and waits for the network's acceptance (up to
+    /// about a minute on SPV). See `send.broadcast_unknown`.
     pub async fn broadcast(
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, SendError> {
-        let _ = prepared;
-        not_implemented("TxDraft.broadcast")
+        let outcome = self.inner.broadcast(Arc::clone(&prepared.inner)).await?;
+        Ok(BroadcastOutcome {
+            txid: outcome.txid,
+            peers_announced: None,
+        })
     }
 
-    /// Discards `prepared` and releases its reserved inputs. Idempotent.
+    /// Discards `prepared` and releases its reserved inputs. Idempotent;
+    /// `send.prepared_tx_spent` once it was handed to the network.
     pub async fn abandon(&self, prepared: Arc<PreparedTx>) -> Result<(), SendError> {
-        let _ = prepared;
-        not_implemented("TxDraft.abandon")
+        Ok(self.inner.abandon(Arc::clone(&prepared.inner)).await?)
     }
 }

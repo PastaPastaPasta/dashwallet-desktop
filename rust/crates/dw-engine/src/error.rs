@@ -82,7 +82,7 @@ pub enum EngineError {
     Labels(crate::labels::LabelsFailure),
     /// Not an unspent output of the wallet (`coins.outpoint_not_found`).
     #[error("outpoint not found: {0}")]
-    OutpointNotFound(String),
+    OutpointNotFound(dashcore::OutPoint),
 }
 
 impl EngineError {

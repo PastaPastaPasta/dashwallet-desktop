@@ -200,6 +200,9 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::SpvNotRunning
             | E::TxNotFound(_)
             | E::GapLimit
+            | E::Send(_)
+            | E::Labels(_)
+            | E::OutpointNotFound(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

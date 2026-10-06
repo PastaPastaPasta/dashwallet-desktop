@@ -338,7 +338,7 @@ impl NetworkSession {
                 .collect()
         };
         match outpoints.iter().find(|o| !unspent.contains(o)) {
-            Some(o) => Err(EngineError::OutpointNotFound(o.to_string())),
+            Some(o) => Err(EngineError::OutpointNotFound(*o)),
             None => Ok(()),
         }
     }
