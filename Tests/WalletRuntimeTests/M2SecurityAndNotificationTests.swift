@@ -248,6 +248,33 @@ private func notice(_ txid: String, amount: Int64, coinJoin: Bool = false, label
         #expect(rows[0].deepLink == "dashwallet://tx/\(Fixtures.walletA.hex)/aa")
     }
 
+    @Test func discreetModeMasksAmountsAndHidesTheCounterparty() throws {
+        let h = Harness()
+        let services = desktop(h)
+        let presenter = services.notifications
+        let rows = [notice("aa", amount: 150_000_000, label: "Rent"), notice("bb", amount: -25_000_000)]
+        let shown = presenter.notifications(for: batch(rows))
+        #expect(shown[0].body.contains("1.5"))
+        var display = h.services.settings.display
+        display.hideBalances = true
+        try h.services.settings.update(display)
+        let hidden = presenter.notifications(for: batch(rows))
+        #expect(hidden.count == 2)
+        #expect(hidden[0].title == "Incoming transaction")
+        for notification in hidden {
+            #expect(notification.body.contains("Amount: #.########"), "\(notification.body)")
+            #expect(!notification.body.contains("1.5") && !notification.body.contains("0.25"))
+            #expect(!notification.body.contains("Label:") && !notification.body.contains("Address:"))
+            #expect(!notification.body.contains("Rent") && !notification.body.contains("yAddress"))
+        }
+        let many = (0..<100).map { notice(String(format: "%02x", $0), amount: $0 % 2 == 0 ? 10_000 : -5_000) }
+        let summary = presenter.notifications(for: batch(many))
+        #expect(summary.count == 1)
+        #expect(summary[0].body.contains("Sent Amount: #.########"), "\(summary[0].body)")
+        #expect(summary[0].body.contains("Received Amount: #.########"))
+        #expect(!summary[0].body.contains("0.005"))
+    }
+
     @Test func QT032_catchUpIsSilentAndHundredRowsSummarize() {
         let h = Harness()
         let presenter = desktop(h).notifications

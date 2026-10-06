@@ -130,7 +130,11 @@ public struct TransactionNotificationText: Sendable {
 /// - CoinJoin-internal rows only with "show CoinJoin popups" on (QT-033);
 /// - 100 or more rows: one summary with the sent and received totals;
 ///   otherwise one notification per row with Date, Amount, Wallet (when
-///   more than one wallet is loaded), Type, and Label or else Address.
+///   more than one wallet is loaded), Type, and Label or else Address;
+/// - in discreet mode (`hideBalances`, review L2) every amount is masked
+///   (`#` for each digit, like the Overview) and the Label / Address line is
+///   left out, so a notification on a shared screen shows no value and no
+///   counterparty.
 /// Notifications open `dashwallet://tx/<wallet>/<txid>` when clicked.
 @MainActor
 @Observable
@@ -146,23 +150,28 @@ public final class NotificationPresenter {
     @ObservationIgnored private let shell: any ShellSettingsProviding
     @ObservationIgnored private let formatter: any AmountFormatting
     @ObservationIgnored private let unit: @MainActor () -> DisplayUnit
+    @ObservationIgnored private let discreet: @MainActor () -> Bool
     @ObservationIgnored private let walletNames: @MainActor () -> [WalletID: String]
     @ObservationIgnored private let text: TransactionNotificationText
     @ObservationIgnored private let tasks = TaskBag()
 
     /// - Parameters:
     ///   - unit: the display unit for amounts.
+    ///   - discreet: whether discreet mode (`DisplaySettings.hideBalances`)
+    ///     is on; read for every batch.
     ///   - walletNames: names of the loaded wallets (the Wallet line shows
     ///     with two or more).
     public init(
         notifier: any SystemNotifying, shell: any ShellSettingsProviding, formatter: any AmountFormatting,
-        unit: @escaping @MainActor () -> DisplayUnit, walletNames: @escaping @MainActor () -> [WalletID: String],
+        unit: @escaping @MainActor () -> DisplayUnit, discreet: @escaping @MainActor () -> Bool,
+        walletNames: @escaping @MainActor () -> [WalletID: String],
         text: TransactionNotificationText = TransactionNotificationText()
     ) {
         self.notifier = notifier
         self.shell = shell
         self.formatter = formatter
         self.unit = unit
+        self.discreet = discreet
         self.walletNames = walletNames
         self.text = text
     }
@@ -189,7 +198,15 @@ public final class NotificationPresenter {
         let rows = batch.notices.filter { settings.showCoinJoinNotifications || !$0.coinJoinInternal }
         guard !rows.isEmpty else { return [] }
         let unit = unit()
-        let amount = { (a: Amount) in self.formatter.format(a, unit: unit, style: .withUnit(plusSign: true, separators: .standard)) }
+        let discreet = discreet()
+        let amount = { (a: Amount) -> String in
+            guard discreet else {
+                return self.formatter.format(a, unit: unit, style: .withUnit(plusSign: true, separators: .standard))
+            }
+            // dash-qt `floorWithPrivacy`: a zero amount with every digit as `#`.
+            return self.formatter.format(.zero, unit: unit, style: .withUnit(plusSign: false, separators: .standard))
+                .replacingOccurrences(of: "0", with: "#")
+        }
         if rows.count >= Self.summaryThreshold {
             let sent = rows.filter { $0.amount.duffs < 0 }
             let received = rows.filter { $0.amount.duffs >= 0 }
@@ -222,7 +239,9 @@ public final class NotificationPresenter {
                 lines.append(text.line(text.walletLine, name))
             }
             lines.append(text.line(text.typeLine, text.typeName(row.type)))
-            if let label = row.label, !label.isEmpty {
+            if discreet {
+                // No counterparty on screen in discreet mode.
+            } else if let label = row.label, !label.isEmpty {
                 lines.append(text.line(text.labelLine, label))
             } else if let address = row.address, !address.isEmpty {
                 lines.append(text.line(text.addressLine, address))

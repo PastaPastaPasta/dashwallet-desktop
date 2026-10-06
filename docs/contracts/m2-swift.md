@@ -236,7 +236,9 @@ for each wallet, then `destroy`.
   M5 and is shown as unavailable.
 - **NotificationPresenter** (S1, QT-031…033): consumes `TransactionNotifying`. It drops `catchUp` batches, hides
   CoinJoin-internal rows unless enabled, and shows one summary for ≥ 100 rows. Titles "Incoming transaction" /
-  "Sent transaction"; the body has Date, Amount, Wallet (multiwallet only), Type, and Label or Address.
+  "Sent transaction"; the body has Date, Amount, Wallet (multiwallet only), Type, and Label or Address. In
+  discreet mode (`DisplaySettings.hideBalances`, read per batch; review L2) every amount is masked as
+  `#.######## DASH` and the Label / Address line is left out.
 - **MenuBarCompanionViewModel** (IOS-117): the M1 companion plus a request amount and pay-from-clipboard.
 
 ## 4. S1 implementation status (2026-10-06, branch `m2/s1-desktop-services`)

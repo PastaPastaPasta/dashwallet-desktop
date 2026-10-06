@@ -173,6 +173,7 @@ public final class DesktopRuntimeServices {
         notifications = NotificationPresenter(
             notifier: platform.notifications, shell: shellSettings, formatter: runtime.amounts,
             unit: { [weak settings] in settings?.display.unit ?? .dash },
+            discreet: { [weak settings] in settings?.display.hideBalances ?? true },
             walletNames: { [weak walletState] in
                 Dictionary((walletState?.wallets ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
             },
