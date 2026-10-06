@@ -103,6 +103,7 @@ public struct DashUICrossGallery: View {
             .padding(points(DashSpacing.xl))
         }
         .background(CrossRole.canvas.color)
+        .toolkitThemeFromEnvironment()
     }
 }
 

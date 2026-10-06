@@ -12,6 +12,8 @@ public struct WalletRootView: View {
     let state: CrossAppState
 
     @Environment(\.chooseFile) var chooseFile
+    /// The system's appearance, used when the Theme setting is System.
+    @Environment(\.colorScheme) var systemColorScheme
 
     public init(state: CrossAppState) {
         self.state = state
@@ -34,6 +36,9 @@ public struct WalletRootView: View {
         }
         .background(CrossRole.canvas.color)
         .toolkitThemeFromEnvironment()
+        // GtkBackend ignores `preferredColorScheme` (no window override), so
+        // the Theme setting reaches the views through the environment too.
+        .environment(\.colorScheme, scheme ?? systemColorScheme)
         .preferredColorScheme(scheme)
         .onChange(of: main.home?.sync, initial: true) {
             if let status = main.home?.sync { main.syncRates.record(status) }
@@ -427,7 +432,8 @@ struct StatusRow: View {
                 case .unlockedMixingOnly: .warning
                 }
             items.append(StatusBarItem(id: "lock", text: Format.lockState(main.lockState), help: lock.tooltip, tone: tone))
-        } else if main.lockState != nil {
+        } else if main.lockState == .unencrypted {
+            // dash-qt's red open lock for an unencrypted wallet; no item without a vault or keys.
             items.append(StatusBarItem(id: "lock", text: Format.lockState(main.lockState), tone: .danger))
         }
         let progress = home?.sync.flatMap { $0.isDone ? nil : $0.progress }

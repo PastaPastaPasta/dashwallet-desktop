@@ -205,6 +205,9 @@ public struct ShortcutItem: Sendable, Hashable, Identifiable {
 
 /// The shortcut card (C6): one white card, four equal items, hover tint.
 public struct ShortcutCard: View {
+    /// One item's width: four items fill the 520 pt card.
+    static let itemWidth = 124.0
+
     let items: [ShortcutItem]
     let action: @MainActor @Sendable (ShortcutItem) -> Void
 
@@ -243,7 +246,9 @@ struct ShortcutButton: View {
                     .foregroundColor((enabled ? CrossRole.textPrimary : CrossRole.textTertiary).color)
                     .lineLimit(2)
             }
-            .frame(maxWidth: .infinity)
+            // A fixed width: SwiftCrossUI's Button converts its label's size
+            // to Int, and an unbounded (`maxWidth: .infinity`) label traps.
+            .frame(width: ShortcutCard.itemWidth)
             .padding(.vertical, points(DashSpacing.s))
         }
         .buttonStyle(.plain)
