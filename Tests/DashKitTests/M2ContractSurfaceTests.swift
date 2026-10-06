@@ -5,8 +5,8 @@ import Testing
 
 /// The M2 contract surface (docs/contracts/m2-engine.md) through the
 /// generated bindings: stubs fail with their domain's typed `NotImplemented`
-/// after the argument and session checks, and DashKit maps every M2 error
-/// domain to the engine's code.
+/// after the argument and session checks, implemented calls answer, and
+/// DashKit maps every M2 error domain to the engine's code.
 @Suite struct M2ContractSurfaceTests {
     final class NullObserver: DashWalletCore.EngineObserver, @unchecked Sendable {
         func onEvent(event: DashWalletCore.EngineEvent) {}
@@ -40,9 +40,11 @@ import Testing
         #expect(throws: PsbtError.TooLarge(sizeBytes: 100 * 1024 * 1024 + 1)) {
             try parsePsbt(data: Data(count: 100 * 1024 * 1024 + 1))
         }
-        #expect(throws: VaultError.NotImplemented(call: "Vault.quick_unlock_policy")) {
-            try session.vault().quickUnlockPolicy()
-        }
+        // S1's vault and desktop calls are implemented: defaults before a
+        // vault exists, typed image errors.
+        let policy = try session.vault().quickUnlockPolicy()
+        #expect(!policy.enrolled && policy.spendLimitDuffs == 50_000_000 && policy.passphraseMaxAgeSecs == 604_800)
+        #expect(throws: DesktopError.self) { try decodeQrCodes(image: Data("x".utf8)) }
         #expect(desktopQuickUnlockProvider() == .unavailable)
         try await engine.shutdown()
     }
