@@ -250,7 +250,7 @@
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                        [label] "36 transactions" text="36 transactions" {sensitive,showing,visible}
+                                                                                                                        [label] "37 transactions" text="37 transactions" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
@@ -282,8 +282,37 @@
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [list] "" {focusable,sensitive,showing,visible} @(221,248 860x2016)
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-10-05 22:38" {focusable,selectable,sensitive,showing,visible} @(221,248 860x56)
+                                                                                                                                  [list] "" {focusable,sensitive,showing,visible} @(221,248 860x2072)
+                                                                                                                                    [list item] "Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000374 tDASH, 2026-10-06 01:03" {focusable,selectable,sensitive,showing,visible} @(221,248 860x56)
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [label] "-" text="-" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [label] "Sent to  yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98" text="Sent to  yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-10-06 01:03  Unconfirmed, verified via InstantSend" text="2026-10-06 01:03  Unconfirmed, verified via InstantSend" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [label] "-0.25000374 tDASH" text="-0.25000374 tDASH" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-10-05 22:39" {focusable,selectable,sensitive,showing,visible} @(221,304 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -304,7 +333,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-10-05 22:38  Unconfirmed" text="2026-10-05 22:38  Unconfirmed" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-10-05 22:39  Unconfirmed" text="2026-10-05 22:39  Unconfirmed" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -312,7 +341,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.15000000 tDASH" text="+0.15000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-10-02 15:26" {focusable,selectable,sensitive,showing,visible} @(221,304 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-10-02 15:27" {focusable,selectable,sensitive,showing,visible} @(221,360 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -333,7 +362,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-10-02 15:26  Confirmed (1441 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-10-02 15:26  Confirmed (1441 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-10-02 15:27  Confirmed (1441 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-10-02 15:27  Confirmed (1441 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -341,7 +370,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.75002260 tDASH" text="-0.75002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-09-30 22:38" {focusable,selectable,sensitive,showing,visible} @(221,360 860x56)
+                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-09-30 22:39" {focusable,selectable,sensitive,showing,visible} @(221,416 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -362,7 +391,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-30 22:38  Confirmed (2161 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-30 22:38  Confirmed (2161 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-30 22:39  Confirmed (2161 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-30 22:39  Confirmed (2161 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -370,7 +399,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+2.00000000 tDASH" text="+2.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-09-29 05:50" {focusable,selectable,sensitive,showing,visible} @(221,416 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-09-29 05:51" {focusable,selectable,sensitive,showing,visible} @(221,472 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -391,7 +420,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-29 05:50  Confirmed (2881 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-29 05:50  Confirmed (2881 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-29 05:51  Confirmed (2881 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-29 05:51  Confirmed (2881 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -399,7 +428,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.12347938 tDASH" text="-0.12347938 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-09-27 13:02" {focusable,selectable,sensitive,showing,visible} @(221,472 860x56)
+                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-09-27 13:03" {focusable,selectable,sensitive,showing,visible} @(221,528 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -420,7 +449,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-27 13:02  Confirmed (3601 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-27 13:02  Confirmed (3601 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-27 13:03  Confirmed (3601 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-27 13:03  Confirmed (3601 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -428,7 +457,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.50000000 tDASH" text="+0.50000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-09-25 20:14" {focusable,selectable,sensitive,showing,visible} @(221,528 860x56)
+                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-09-25 20:15" {focusable,selectable,sensitive,showing,visible} @(221,584 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -449,7 +478,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-25 20:14  Confirmed (4321 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-25 20:14  Confirmed (4321 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-25 20:15  Confirmed (4321 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-25 20:15  Confirmed (4321 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -457,7 +486,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-4.00002260 tDASH" text="-4.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-09-24 03:26" {focusable,selectable,sensitive,showing,visible} @(221,584 860x56)
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-09-24 03:27" {focusable,selectable,sensitive,showing,visible} @(221,640 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -478,7 +507,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-24 03:26  Confirmed (5041 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-24 03:26  Confirmed (5041 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-24 03:27  Confirmed (5041 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-24 03:27  Confirmed (5041 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -486,7 +515,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+1.00000000 tDASH" text="+1.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-09-22 10:38" {focusable,selectable,sensitive,showing,visible} @(221,640 860x56)
+                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-09-22 10:39" {focusable,selectable,sensitive,showing,visible} @(221,696 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -507,7 +536,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-22 10:38  Confirmed (5761 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-22 10:38  Confirmed (5761 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-22 10:39  Confirmed (5761 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-22 10:39  Confirmed (5761 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -515,7 +544,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.00002260 tDASH" text="-0.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-09-20 17:50" {focusable,selectable,sensitive,showing,visible} @(221,696 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-09-20 17:51" {focusable,selectable,sensitive,showing,visible} @(221,752 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -536,7 +565,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-20 17:50  Confirmed (6481 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-20 17:50  Confirmed (6481 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-20 17:51  Confirmed (6481 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-20 17:51  Confirmed (6481 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -544,7 +573,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.25002260 tDASH" text="-0.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-09-19 01:02" {focusable,selectable,sensitive,showing,visible} @(221,752 860x56)
+                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-09-19 01:03" {focusable,selectable,sensitive,showing,visible} @(221,808 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -565,7 +594,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-19 01:02  Confirmed (7201 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-19 01:02  Confirmed (7201 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-19 01:03  Confirmed (7201 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-19 01:03  Confirmed (7201 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -573,7 +602,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+3.75000000 tDASH" text="+3.75000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-09-17 08:14" {focusable,selectable,sensitive,showing,visible} @(221,808 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-09-17 08:15" {focusable,selectable,sensitive,showing,visible} @(221,864 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -594,7 +623,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-17 08:14  Confirmed (7921 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-17 08:14  Confirmed (7921 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-17 08:15  Confirmed (7921 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-17 08:15  Confirmed (7921 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -602,7 +631,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-1.25002260 tDASH" text="-1.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-09-15 15:26" {focusable,selectable,sensitive,showing,visible} @(221,864 860x56)
+                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-09-15 15:27" {focusable,selectable,sensitive,showing,visible} @(221,920 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -623,7 +652,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-15 15:26  Confirmed (8641 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-15 15:26  Confirmed (8641 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-15 15:27  Confirmed (8641 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-15 15:27  Confirmed (8641 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -631,7 +660,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+25.00000000 tDASH" text="+25.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-09-13 22:38" {focusable,selectable,sensitive,showing,visible} @(221,920 860x56)
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-09-13 22:39" {focusable,selectable,sensitive,showing,visible} @(221,976 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -652,7 +681,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-13 22:38  Confirmed (9361 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-13 22:38  Confirmed (9361 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-13 22:39  Confirmed (9361 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-13 22:39  Confirmed (9361 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -660,7 +689,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.15000000 tDASH" text="+0.15000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-09-12 05:50" {focusable,selectable,sensitive,showing,visible} @(221,976 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-09-12 05:51" {focusable,selectable,sensitive,showing,visible} @(221,1032 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -681,7 +710,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-12 05:50  Confirmed (10081 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-12 05:50  Confirmed (10081 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-12 05:51  Confirmed (10081 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-12 05:51  Confirmed (10081 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -689,7 +718,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.75002260 tDASH" text="-0.75002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-09-10 13:02" {focusable,selectable,sensitive,showing,visible} @(221,1032 860x56)
+                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-09-10 13:03" {focusable,selectable,sensitive,showing,visible} @(221,1088 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -710,7 +739,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-10 13:02  Confirmed (10801 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-10 13:02  Confirmed (10801 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-10 13:03  Confirmed (10801 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-10 13:03  Confirmed (10801 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -718,7 +747,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+2.00000000 tDASH" text="+2.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-09-08 20:14" {focusable,selectable,sensitive,showing,visible} @(221,1088 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-09-08 20:15" {focusable,selectable,sensitive,showing,visible} @(221,1144 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -739,7 +768,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-08 20:14  Confirmed (11521 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-08 20:14  Confirmed (11521 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-08 20:15  Confirmed (11521 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-08 20:15  Confirmed (11521 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -747,7 +776,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.12347938 tDASH" text="-0.12347938 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-09-07 03:26" {focusable,selectable,sensitive,showing,visible} @(221,1144 860x56)
+                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-09-07 03:27" {focusable,selectable,sensitive,showing,visible} @(221,1200 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -768,7 +797,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-07 03:26  Confirmed (12241 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-07 03:26  Confirmed (12241 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-07 03:27  Confirmed (12241 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-07 03:27  Confirmed (12241 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -776,7 +805,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.50000000 tDASH" text="+0.50000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-09-05 10:38" {focusable,selectable,sensitive,showing,visible} @(221,1200 860x56)
+                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-09-05 10:39" {focusable,selectable,sensitive,showing,visible} @(221,1256 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -797,7 +826,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-05 10:38  Confirmed (12961 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-05 10:38  Confirmed (12961 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-05 10:39  Confirmed (12961 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-05 10:39  Confirmed (12961 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -805,7 +834,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-4.00002260 tDASH" text="-4.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-09-03 17:50" {focusable,selectable,sensitive,showing,visible} @(221,1256 860x56)
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-09-03 17:51" {focusable,selectable,sensitive,showing,visible} @(221,1312 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -826,7 +855,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-03 17:50  Confirmed (13681 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-03 17:50  Confirmed (13681 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-03 17:51  Confirmed (13681 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-03 17:51  Confirmed (13681 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -834,7 +863,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+1.00000000 tDASH" text="+1.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-09-02 01:02" {focusable,selectable,sensitive,showing,visible} @(221,1312 860x56)
+                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-09-02 01:03" {focusable,selectable,sensitive,showing,visible} @(221,1368 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -855,7 +884,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-09-02 01:02  Confirmed (14401 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-02 01:02  Confirmed (14401 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-09-02 01:03  Confirmed (14401 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-09-02 01:03  Confirmed (14401 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -863,7 +892,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.00002260 tDASH" text="-0.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-08-31 08:14" {focusable,selectable,sensitive,showing,visible} @(221,1368 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-08-31 08:15" {focusable,selectable,sensitive,showing,visible} @(221,1424 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -884,7 +913,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-31 08:14  Confirmed (15121 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-31 08:14  Confirmed (15121 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-31 08:15  Confirmed (15121 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-31 08:15  Confirmed (15121 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -892,7 +921,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.25002260 tDASH" text="-0.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-08-29 15:26" {focusable,selectable,sensitive,showing,visible} @(221,1424 860x56)
+                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-08-29 15:27" {focusable,selectable,sensitive,showing,visible} @(221,1480 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -913,7 +942,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-29 15:26  Confirmed (15841 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-29 15:26  Confirmed (15841 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-29 15:27  Confirmed (15841 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-29 15:27  Confirmed (15841 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -921,7 +950,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+3.75000000 tDASH" text="+3.75000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-08-27 22:38" {focusable,selectable,sensitive,showing,visible} @(221,1480 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-08-27 22:39" {focusable,selectable,sensitive,showing,visible} @(221,1536 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -942,7 +971,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-27 22:38  Confirmed (16561 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-27 22:38  Confirmed (16561 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-27 22:39  Confirmed (16561 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-27 22:39  Confirmed (16561 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -950,7 +979,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-1.25002260 tDASH" text="-1.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-08-26 05:50" {focusable,selectable,sensitive,showing,visible} @(221,1536 860x56)
+                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-08-26 05:51" {focusable,selectable,sensitive,showing,visible} @(221,1592 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -971,7 +1000,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-26 05:50  Confirmed (17281 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-26 05:50  Confirmed (17281 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-26 05:51  Confirmed (17281 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-26 05:51  Confirmed (17281 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -979,7 +1008,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+25.00000000 tDASH" text="+25.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-08-24 13:02" {focusable,selectable,sensitive,showing,visible} @(221,1592 860x56)
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-08-24 13:03" {focusable,selectable,sensitive,showing,visible} @(221,1648 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1000,7 +1029,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-24 13:02  Confirmed (18001 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-24 13:02  Confirmed (18001 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-24 13:03  Confirmed (18001 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-24 13:03  Confirmed (18001 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1008,7 +1037,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.15000000 tDASH" text="+0.15000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-08-22 20:14" {focusable,selectable,sensitive,showing,visible} @(221,1648 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.75002260 tDASH, 2026-08-22 20:15" {focusable,selectable,sensitive,showing,visible} @(221,1704 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1029,7 +1058,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-22 20:14  Confirmed (18721 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-22 20:14  Confirmed (18721 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-22 20:15  Confirmed (18721 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-22 20:15  Confirmed (18721 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1037,7 +1066,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.75002260 tDASH" text="-0.75002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-08-21 03:26" {focusable,selectable,sensitive,showing,visible} @(221,1704 860x56)
+                                                                                                                                    [list item] "Received with, yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B, +2.00000000 tDASH, 2026-08-21 03:27" {focusable,selectable,sensitive,showing,visible} @(221,1760 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1058,7 +1087,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-21 03:26  Confirmed (19441 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-21 03:26  Confirmed (19441 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-21 03:27  Confirmed (19441 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-21 03:27  Confirmed (19441 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1066,7 +1095,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+2.00000000 tDASH" text="+2.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-08-19 10:38" {focusable,selectable,sensitive,showing,visible} @(221,1760 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -0.12347938 tDASH, 2026-08-19 10:39" {focusable,selectable,sensitive,showing,visible} @(221,1816 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1087,7 +1116,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-19 10:38  Confirmed (20161 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-19 10:38  Confirmed (20161 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-19 10:39  Confirmed (20161 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-19 10:39  Confirmed (20161 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1095,7 +1124,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.12347938 tDASH" text="-0.12347938 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-08-17 17:50" {focusable,selectable,sensitive,showing,visible} @(221,1816 860x56)
+                                                                                                                                    [list item] "Received with, yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw, +0.50000000 tDASH, 2026-08-17 17:51" {focusable,selectable,sensitive,showing,visible} @(221,1872 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1116,7 +1145,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-17 17:50  Confirmed (20881 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-17 17:50  Confirmed (20881 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-17 17:51  Confirmed (20881 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-17 17:51  Confirmed (20881 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1124,7 +1153,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+0.50000000 tDASH" text="+0.50000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-08-16 01:02" {focusable,selectable,sensitive,showing,visible} @(221,1872 860x56)
+                                                                                                                                    [list item] "Sent to, Exchange deposit, -4.00002260 tDASH, 2026-08-16 01:03" {focusable,selectable,sensitive,showing,visible} @(221,1928 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1145,7 +1174,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-16 01:02  Confirmed (21601 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-16 01:02  Confirmed (21601 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-16 01:03  Confirmed (21601 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-16 01:03  Confirmed (21601 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1153,7 +1182,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-4.00002260 tDASH" text="-4.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-08-14 08:14" {focusable,selectable,sensitive,showing,visible} @(221,1928 860x56)
+                                                                                                                                    [list item] "Received with, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +1.00000000 tDASH, 2026-08-14 08:15" {focusable,selectable,sensitive,showing,visible} @(221,1984 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1174,7 +1203,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-14 08:14  Confirmed (22321 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-14 08:14  Confirmed (22321 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-14 08:15  Confirmed (22321 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-14 08:15  Confirmed (22321 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1182,7 +1211,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+1.00000000 tDASH" text="+1.00000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-08-12 15:26" {focusable,selectable,sensitive,showing,visible} @(221,1984 860x56)
+                                                                                                                                    [list item] "Payment to yourself, yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, -0.00002260 tDASH, 2026-08-12 15:27" {focusable,selectable,sensitive,showing,visible} @(221,2040 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1203,7 +1232,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-12 15:26  Confirmed (23041 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-12 15:26  Confirmed (23041 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-12 15:27  Confirmed (23041 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-12 15:27  Confirmed (23041 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1211,7 +1240,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.00002260 tDASH" text="-0.00002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-08-10 22:38" {focusable,selectable,sensitive,showing,visible} @(221,2040 860x56)
+                                                                                                                                    [list item] "Sent to, Alice, -0.25002260 tDASH, 2026-08-10 22:39" {focusable,selectable,sensitive,showing,visible} @(221,2096 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1232,7 +1261,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-10 22:38  Confirmed (23761 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-10 22:38  Confirmed (23761 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-10 22:39  Confirmed (23761 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-10 22:39  Confirmed (23761 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1240,7 +1269,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-0.25002260 tDASH" text="-0.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-08-09 05:50" {focusable,selectable,sensitive,showing,visible} @(221,2096 860x56)
+                                                                                                                                    [list item] "Received with, yMSGUgRUN8cvqLawxWkrWpmcvp2uJFcsyG, +3.75000000 tDASH, 2026-08-09 05:51" {focusable,selectable,sensitive,showing,visible} @(221,2152 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1261,7 +1290,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-09 05:50  Confirmed (24481 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-09 05:50  Confirmed (24481 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-09 05:51  Confirmed (24481 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-09 05:51  Confirmed (24481 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1269,7 +1298,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "+3.75000000 tDASH" text="+3.75000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-08-07 13:02" {focusable,selectable,sensitive,showing,visible} @(221,2152 860x56)
+                                                                                                                                    [list item] "Sent to, Bob's shop, -1.25002260 tDASH, 2026-08-07 13:03" {focusable,selectable,sensitive,showing,visible} @(221,2208 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1290,7 +1319,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-07 13:02  Confirmed (25201 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-07 13:02  Confirmed (25201 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-07 13:03  Confirmed (25201 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-07 13:03  Confirmed (25201 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1298,7 +1327,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [label] "-1.25002260 tDASH" text="-1.25002260 tDASH" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-08-05 20:14" {focusable,selectable,sensitive,showing,visible} @(221,2208 860x56)
+                                                                                                                                    [list item] "Received with, yLYprFXH7G1JokbWvHUJ2Sm2cgAR7cfHj2, +25.00000000 tDASH, 2026-08-05 20:15" {focusable,selectable,sensitive,showing,visible} @(221,2264 860x56)
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -1319,7 +1348,7 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [label] "2026-08-05 20:14  Confirmed (25921 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-05 20:14  Confirmed (25921 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
+                                                                                                                                                          [label] "2026-08-05 20:15  Confirmed (25921 confirmations), verified via InstantSend, locked via ChainLocks" text="2026-08-05 20:15  Confirmed (25921 confirmations), verified via InstantSend, locked via ChainLocks" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -1331,7 +1360,186 @@
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                               [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [label] "Transaction details" text="Transaction details" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Status" text="Status" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Unconfirmed, verified via InstantSend" text="Unconfirmed, verified via InstantSend" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Date" text="Date" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "2026-10-06 01:03" text="2026-10-06 01:03" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Transaction ID" text="Transaction ID" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "b08040bbcc20af949f8176f03164ca532c10e48a0ccd3ee60b51ccaced8da9bd" text="b08040bbcc20af949f8176f03164ca532c10e48a0ccd3ee60b51ccaced8da9bd" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Sent to" text="Sent to" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "-0.25000374 tDASH" text="-0.25000374 tDASH" {focusable,sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Transaction fee" text="Transaction fee" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "0.00000374 tDASH" text="0.00000374 tDASH" {focusable,sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Size" text="Size" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "374 bytes" text="374 bytes" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Block" text="Block" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Unknown" text="Unknown" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Inputs" text="Inputs" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "1" text="1" {focusable,sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Outputs #0" text="Outputs #0" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98  0.25000000 tDASH" text="yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98  0.25000000 tDASH" {focusable,sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Outputs #1" text="Outputs #1" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874  1.00000000 tDASH  (mine)" text="yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874  1.00000000 tDASH  (mine)" {focusable,sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [label] "Label:" text="Label:" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [text] "Label" actions=activate attrs=placeholder-text:Label for the address book {editable,focusable,sensitive,showing,visible} @(245,948 721x32)
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
+                                                                                                [scroll bar] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
                                     [panel] "" {sensitive,showing,visible}
                                       [panel] "" {sensitive,showing,visible}
                                         [panel] "" {sensitive,showing,visible}

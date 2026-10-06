@@ -1,63 +1,8 @@
 info: syncing channel updates for 1.98.1-aarch64-unknown-linux-gnu
 info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
 info: downloading 2 components
-disk-guard: 77 GB free on /target (>= 15 GB)
+disk-guard: 17 GB free on /target (>= 15 GB)
 build-core: cargo rustc -p dw-ffi (aarch64-unknown-linux-gnu, dev) -> /target
-   Compiling ring v0.17.14
-   Compiling blake3 v1.8.5
-   Compiling secp256k1-sys v0.10.1
-   Compiling blst v0.3.12
-   Compiling openssl-sys v0.9.117
-   Compiling libdbus-sys v0.2.7
-   Compiling libsqlite3-sys v0.36.0
-   Compiling grovedb-merkle-mountain-range v6.0.1 (https://github.com/dashpay/grovedb?rev=dce8252f8665bf06c7bd788e739efba354141690#dce8252f)
-   Compiling grovedb-dense-fixed-sized-merkle-tree v6.0.1 (https://github.com/dashpay/grovedb?rev=dce8252f8665bf06c7bd788e739efba354141690#dce8252f)
-   Compiling grovedb-bulk-append-tree v6.0.1 (https://github.com/dashpay/grovedb?rev=dce8252f8665bf06c7bd788e739efba354141690#dce8252f)
-   Compiling blstrs_plus v0.8.18
-   Compiling rustls v0.23.40
-   Compiling blsful v3.0.0 (https://github.com/dashpay/agora-blsful?rev=0c34a7a488a0bd1c9a9a2196e793b303ad35c900#0c34a7a4)
-   Compiling rustls-webpki v0.103.13
-   Compiling grovedb-merk v6.0.1 (https://github.com/dashpay/grovedb?rev=dce8252f8665bf06c7bd788e739efba354141690#dce8252f)
-   Compiling secp256k1 v0.30.0
-   Compiling dashcore v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling grovedb v6.0.1 (https://github.com/dashpay/grovedb?rev=dce8252f8665bf06c7bd788e739efba354141690#dce8252f)
-   Compiling dbus v0.9.11
-   Compiling ureq v3.3.0
-   Compiling key-wallet v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling tenderdash-proto-compiler v1.8.0 (https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f)
-   Compiling key-wallet-manager v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling tenderdash-proto v1.8.0 (https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f)
-   Compiling dashcore-rpc-json v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling tokio-rustls v0.26.4
-   Compiling tonic v0.14.6
-   Compiling platform-encryption v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling dash-spv v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling dashcore-rpc v0.45.0 (https://github.com/dashpay/rust-dashcore?rev=e4208c90786a6854bd498315bcb571ef24182c15#e4208c90)
-   Compiling tonic-prost v0.14.6
-   Compiling dpp v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling dapi-grpc v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling tenderdash-abci v1.8.0 (https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f)
-   Compiling rusqlite v0.38.0
-   Compiling dbus-secret-service v4.1.0
-   Compiling refinery-core v0.9.2
-   Compiling refinery v0.9.2
-   Compiling dbus-secret-service-keyring-store v1.0.0
-   Compiling dw-uri v0.1.0 (/work/rust/crates/dw-uri)
-   Compiling dw-message v0.1.0 (/work/rust/crates/dw-message)
-   Compiling rs-dapi-client v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling drive v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling dash-context-provider v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling drive-proof-verifier v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling dash-platform-queries v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling openssl v0.10.81
-   Compiling native-tls v0.2.18
-   Compiling tokio-native-tls v0.3.1
-   Compiling hyper-tls v0.6.0
-   Compiling reqwest v0.12.28
-   Compiling dash-sdk v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling rs-sdk-trusted-context-provider v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling platform-wallet v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
-   Compiling platform-wallet-storage v5.0.0-beta.1 (https://github.com/dashpay/platform?rev=bc321362b9ff9c8ac24244f9d4b09ec3de7a5938#bc321362)
    Compiling dw-engine v0.1.0 (/work/rust/crates/dw-engine)
    Compiling dw-ffi v0.1.0 (/work/rust/crates/dw-ffi)
 note: link against the following native artifacts when linking against this static library. The order and any duplication can be significant on some platforms
@@ -69,11 +14,11 @@ warning: the gold linker is deprecated and has known bugs with Rust
   = help: consider using LLD or ld from GNU binutils instead
 
 warning: `dw-ffi` (lib) generated 1 warning
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 06s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.78s
 build-core: uniffi-bindgen generate (library mode)
 build-core: native libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
-build-core: bundle variant linux-aarch64 ready: 375M
-== build-core took 256s; target volume 3.1G
+build-core: bundle variant linux-aarch64 ready: 432M
+== build-core took 127s; target volume 3.7G
 warning: prohibited flag(s): -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread
 warning: you may be able to install gtk+-3.0 using your system-packager:
     apt-get install libgtk-3-dev clang
@@ -82,1360 +27,276 @@ warning: you may be able to install gtk+-3.0 using your system-packager:
     apt-get install libgtk-3-dev clang
 [0/1] Planning build
 Building for debugging...
-[0/281] Compiling pnglibconf pnglibconf.c
-[1/281] Compiling sharpyuv_sse2.c
-[2/281] Compiling sharpyuv_cpu.c
-[3/281] Compiling sharpyuv_csp.c
-[4/281] Compiling pngdec.c
-[5/281] Compiling sharpyuv_gamma.c
-[6/281] Compiling sharpyuv_dsp.c
-[7/281] Compiling metadata.c
-[8/281] Compiling tiffdec.c
-[9/281] Compiling sharpyuv.c
-[10/281] Compiling pnmdec.c
-[11/281] Compiling webpdec.c
-[12/281] Compiling jpegdec.c
-[13/281] Compiling wicdec.c
-[14/281] Compiling imageio_util.c
-[14/281] Compiling ZLibC zutil.c
-[16/281] Compiling image_dec.c
-[17/281] Compiling ZLibC uncompr.c
-[17/281] Compiling _SwiftSyntaxCShims PlatformMutex.c
-[19/281] Compiling ZLibC inftrees.c
-[20/281] Compiling image_enc.c
-[21/281] Compiling ZLibC inffast.c
-[22/281] Write swift-version-24593BA9C3E375BF.txt
-[23/281] Write sources
-[24/281] Compiling ZLibC gzclose.c
-[25/281] Compiling ZLibC adler32.c
-[26/281] Write sources
-[27/281] Compiling ZLibC gzread.c
-[28/281] Compiling ZLibC crc32.c
-[29/281] Compiling ZLibC compress.c
-[30/281] Compiling ZLibC gzwrite.c
-[31/281] Compiling ZLibC gzlib.c
-[32/281] Compiling ZLibC inflate.c
-[32/281] Compiling ZLibC infback.c
-[34/281] Compiling ZLibC trees.c
-[35/281] Write sources
-[54/281] Compiling SwiftCrossUIMetadataSupport dummy.c
-[57/281] Write sources
-[65/286] Compiling ZLibC deflate.c
-[65/286] Write sources
-[70/300] Compiling SwiftSyntax600 Empty.swift
-[71/300] Compiling SwiftSyntax509 Empty.swift
-[72/302] Emitting module SwiftSyntax600
-[73/302] Emitting module SwiftSyntax602
-[74/303] Compiling SwiftSyntax510 Empty.swift
-[75/303] Compiling SwiftSyntax602 Empty.swift
-[76/304] Emitting module SwiftSyntax509
-[77/304] Emitting module SwiftSyntax510
-[78/305] Emitting module SwiftSyntax603
-[79/308] Compiling SwiftSyntax603 Empty.swift
-[80/309] Emitting module SwiftSyntax601
-[81/326] Compiling SwiftSyntax601 Empty.swift
-[81/328] Compiling sharpyuv_neon.c
-[83/329] Compiling Mutex MutexSwift5.swift
-[90/334] Emitting module PlatformServices
-[90/343] Write sources
-[92/351] Compiling ZLib ZLib.swift
-[93/351] Emitting module ZLib
-[93/352] Wrapping AST for SwiftSyntax601 for debugging
-[95/352] Emitting module Mutex
-[97/352] Compiling Mutex Mutex.swift
-[98/352] Compiling Mutex AllocatedLock.swift
-[98/352] Wrapping AST for SwiftSyntax602 for debugging
-[99/352] Wrapping AST for SwiftSyntax603 for debugging
-[100/353] Write sources
-[103/353] Wrapping AST for SwiftSyntax600 for debugging
-[106/353] Compiling PlatformServices PlatformServices.swift
-[107/353] Compiling PlatformServices ScreenCaptureGuard.swift
-[107/354] Wrapping AST for SwiftSyntax510 for debugging
-[108/354] Copying libdashwallet_core.a
-[110/354] Compiling Logging MetadataProvider.swift
-[111/355] Wrapping AST for SwiftSyntax509 for debugging
-[113/359] Compiling Logging SwiftLogNoOpLogHandler.swift
-[114/359] Compiling Logging Logger+With.swift
-[114/363] Compiling filter_vsx_intrinsics.c
-[116/363] Compiling DesignTokens ComponentMetrics.swift
-[116/363] Compiling powerpc_init.c
-[117/363] Compiling png pngwio.c
-[118/363] Compiling png pngwtran.c
-[119/429] Compiling png pngtrans.c
-[121/429] Emitting module Logging
-[121/429] Compiling png pngwrite.c
-[123/429] Compiling Logging LoggingSystem.swift
-[123/429] Compiling png pngrio.c
-[124/429] Compiling png pngset.c
-[125/429] Compiling png pngpread.c
-[127/429] Compiling Logging StreamLogHandler.swift
-[128/429] Compiling Logging MultiplexLogHandler.swift
-[128/429] Compiling png pngwutil.c
-[130/429] Compiling SwiftSyntax CustomTraits.swift
-[131/429] Compiling SwiftSyntax EditorPlaceholder.swift
-[131/430] Compiling png pngmem.c
-[133/430] Compiling SwiftSyntax Identifier.swift
-[134/430] Compiling SwiftSyntax SourcePresence.swift
-[135/430] Compiling SwiftSyntax SyntaxChildren.swift
-[136/430] Compiling SwiftSyntax SyntaxCollection.swift
-[137/430] Compiling JPEG common.swift
-[138/430] Compiling IssueReporting ReportIssue.swift
-[139/430] Compiling JPEG os.swift
-[139/430] Compiling png pngread.c
-[140/430] Compiling png pngerror.c
-[141/430] Compiling mips_init.c
-[143/430] Compiling IssueReporting TestContext.swift
-[144/430] Compiling SwiftSyntax Utils.swift
-[145/430] Compiling SwiftSyntax ChildNameForKeyPath.swift
-[146/430] Compiling IssueReporting _Test.swift
-[146/430] Compiling filter_mmi_inline_assembly.c
-[147/430] Compiling filter_lsx_intrinsics.c
-[149/430] Compiling Logging LogEvent.swift
-[150/430] Compiling IssueReporting WithIssueContext.swift
-[151/430] Compiling Logging LogHandler.swift
-[151/430] Compiling filter_msa_intrinsics.c
-[152/430] Compiling intel_init.c
-[153/430] Compiling loongarch_lsx_init.c
-[154/430] Compiling filter_sse2_intrinsics.c
-[156/430] Compiling DesignTokens ColorTypes.swift
-[156/430] Compiling filter_neon.S
-[157/430] Compiling png pngget.c
-[158/430] Compiling arm_init.c
-[159/430] Wrapping AST for ZLib for debugging
-[160/430] Compiling png pngrutil.c
-[160/430] Compiling png png.c
-[160/430] Write sources
-[168/430] Emitting module DesignTokens
-[168/430] Compiling palette_neon_intrinsics.c
-[169/430] Wrapping AST for PlatformServices for debugging
-[170/430] Wrapping AST for Mutex for debugging
-[171/430] Compiling filter_neon_intrinsics.c
-[173/430] Compiling Logging Locks.swift
-[174/430] Compiling Logging Logger+Attributes.swift
-[175/430] Compiling Logging Logger.swift
-[175/430] Compiling png pngrtran.c
-[178/435] Emitting module JPEG
-[178/435] Wrapping AST for Logging for debugging
-[180/435] Compiling SwiftSyntax CommonAncestor.swift
-[181/435] Compiling SwiftSyntax Convenience.swift
-[182/435] Emitting module IssueReporting
-[183/435] Emitting module LibPNG
-[184/435] Compiling LibPNG LibPNG.swift
-[190/441] Compiling random_utils.c
-[191/441] Compiling SwiftSyntax AbsolutePosition.swift
-[192/441] Compiling SwiftSyntax AbsoluteSyntaxInfo.swift
-[193/441] Compiling SwiftSyntax ArenaAllocatedBuffer.swift
-[194/441] Compiling SwiftSyntax Assert.swift
-[195/441] Compiling SwiftSyntax BumpPtrAllocator.swift
-[196/441] Compiling utils.c
-[197/441] Compiling quant_levels_utils.c
-[197/441] Compiling thread_utils.c
-[200/441] Compiling IssueReporting WithExpectedIssue.swift
-[201/441] Compiling SwiftSyntax SwiftSyntaxCompatibility.swift
-[202/441] Compiling SwiftSyntax Syntax.swift
-[202/441] Compiling color_cache_utils.c
-[204/441] Compiling JPEG metadata.swift
-[204/441] Compiling huffman_utils.c
-[205/441] Compiling rescaler_utils.c
-[206/441] Compiling palette.c
-[207/441] Compiling huffman_encode_utils.c
-[209/441] Compiling DesignTokens Radii.swift
-[210/441] Compiling DesignTokens IconTypes.swift
-[211/441] Compiling DesignTokens Typography.swift
-[212/441] Compiling DesignTokens Spacing.swift
-[212/441] Compiling filters_utils.c
-[214/441] Compiling DesignTokens Colors.swift
-[215/441] Compiling DesignTokens Icons.swift
-[215/441] Compiling quant_levels_dec_utils.c
-[216/442] Compiling bit_reader_utils.c
-[217/442] Compiling bit_writer_utils.c
-[218/442] Compiling muxread.c
-[220/442] Compiling SwiftSyntax RenamedNodesCompatibility.swift
-[221/442] Compiling SwiftSyntax SyntaxTreeViewMode.swift
-[222/442] Compiling SwiftSyntax Keyword.swift
-[223/442] Compiling SwiftSyntax RenamedChildrenCompatibility.swift
-[224/442] Compiling IssueReporting Unimplemented.swift
-[225/442] Compiling muxinternal.c
-[226/443] Compiling muxedit.c
-[227/443] Compiling token_enc.c
-[228/443] Compiling tree_enc.c
-[229/442] Compiling syntax_enc.c
-[231/442] Compiling anim_encode.c
-[232/442] Compiling picture_tools_enc.c
-[233/442] Compiling vp8l_enc.c
-[234/442] Compiling picture_rescale_enc.c
-[235/442] Compiling picture_psnr_enc.c
-[235/442] Compiling webp_enc.c
-[235/442] Compiling predictor_enc.c
-[238/442] Compiling iterator_enc.c
-[239/442] Compiling picture_enc.c
-[240/442] Compiling picture_csp_enc.c
-[241/442] Compiling config_enc.c
-[242/442] Compiling filter_enc.c
-[243/442] Compiling cost_enc.c
-[244/442] Compiling near_lossless_enc.c
-[245/447] Compiling yuv_sse41.c
-[246/447] Compiling frame_enc.c
-[247/457] Compiling backward_references_enc.c
-[248/457] Compiling alpha_enc.c
-[251/457] Compiling SwiftSyntax TokenDiagnostic.swift
-[252/457] Compiling SwiftSyntax TokenSequence.swift
-[253/457] Compiling SwiftSyntax TokenSyntax.swift
-[254/457] Compiling SwiftSyntax Trivia.swift
-[254/457] Compiling backward_references_cost_enc.c
-[255/457] Compiling analysis_enc.c
-[256/457] Compiling yuv_sse2.c
-[258/457] Compiling SwiftSyntax SyntaxHashable.swift
-[259/457] Compiling SwiftSyntax SyntaxIdentifier.swift
-[260/457] Compiling SwiftSyntax SyntaxNodeStructure.swift
-[261/457] Compiling SwiftSyntax SyntaxProtocol.swift
-[262/457] Compiling SwiftSyntax SyntaxText.swift
-[262/457] Compiling yuv_mips_dsp_r2.c
-[263/457] Compiling yuv_mips32.c
-[264/457] Compiling histogram_enc.c
-[266/457] Compiling ObservationPolyfillCore Observable.swift
-[266/457] Compiling yuv.c
-[267/458] Compiling upsampling_sse41.c
-[268/458] Compiling upsampling_sse2.c
-[269/458] Compiling upsampling_mips_dsp_r2.c
-[270/458] Compiling quant_enc.c
-[271/458] Compiling upsampling_msa.c
-[273/458] Compiling ObservationPolyfillCore ObservationBeta.swift
-[273/458] Compiling ssim_sse2.c
-[274/458] Compiling upsampling.c
-[274/458] Compiling rescaler_msa.c
-[276/458] Compiling rescaler_sse2.c
-[278/458] Compiling ObservationPolyfillCore Locking.swift
-[279/458] Compiling ObservationPolyfillCore ObservationPolyfillChecking.swift
-[280/458] Compiling ObservationPolyfillCore Bindable.swift
-[280/458] Compiling rescaler_mips_dsp_r2.c
-[281/458] Compiling ssim.c
-[283/458] Emitting module ObservationPolyfillCore
-[284/458] Compiling ObservationPolyfillCore Locals.swift
-[285/458] Compiling ObservationPolyfillCore Deprecations.swift
-[286/458] Compiling ObservationPolyfillCore Exports.swift
-[286/458] Compiling rescaler_mips32.c
-[287/458] Compiling lossless_sse41.c
-[288/458] Compiling lossless_sse2.c
-[289/458] Compiling lossless_msa.c
-[290/458] Compiling rescaler.c
-[291/458] Compiling lossless_mips_dsp_r2.c
-[292/458] Compiling lossless_enc_sse41.c
-[292/458] Compiling yuv_neon.c
-[294/458] Compiling lossless_enc_msa.c
-[295/458] Compiling lossless_enc_sse2.c
-[296/458] Compiling rescaler_neon.c
-[297/458] Compiling lossless_enc_mips_dsp_r2.c
-[298/458] Compiling GtkCHelpers gtk_custom_root_widget.c
-[299/458] Compiling filters_sse2.c
-[300/458] Compiling GtkCHelpers gtk_helpers.c
-[301/458] Compiling ObservationPolyfillCore WithObservationTracking.swift
-[302/458] Compiling ObservationPolyfillCore ThreadLocal.swift
-[303/458] Compiling ObservationPolyfillCore ObservationTracking.swift
-[303/458] Compiling lossless_enc_mips32.c
-[303/458] Compiling filters.c
-[303/458] Compiling filters_msa.c
-[304/458] Compiling ObservationPolyfillCore ObservationPolyfillRegistrar.swift
-[305/458] Compiling ObservationPolyfillCore Environment.swift
-[306/458] Compiling ObservationPolyfillCore ObservationPolyfills.swift
-[310/458] Compiling filters_mips_dsp_r2.c
-[312/458] Compiling ObservationPolyfillCore _ObservationPolyfillRegistrar.swift
-[312/459] Compiling lossless_enc.c
-[313/459] Compiling enc_sse2.c
-[314/459] Compiling enc_sse41.c
-[315/459] Compiling enc_msa.c
-[317/459] Compiling enc_mips32.c
-[318/459] Compiling enc_mips_dsp_r2.c
-[319/459] Compiling dec_sse41.c
-[321/459] Compiling SwiftSyntax RawSyntaxNodeProtocol.swift
-[322/459] Compiling SwiftSyntax RawSyntaxTokenView.swift
-[323/459] Compiling SwiftSyntax SourceEdit.swift
-[324/459] Compiling SwiftSyntax SourceLength.swift
-[325/459] Compiling SwiftSyntax SourceLocation.swift
-[325/460] Compiling enc.c
-[331/460] Compiling dec_sse2.c
-[331/460] Compiling dec_msa.c
-[333/460] Compiling lossless_neon.c
-[334/460] Compiling dec_mips_dsp_r2.c
-[335/460] Compiling lossless.c
-[336/460] Compiling cost_sse2.c
-[337/460] Compiling dec_mips32.c
-[338/460] Compiling lossless_enc_neon.c
-[339/460] Compiling cost_mips_dsp_r2.c
-[340/460] Compiling cpu.c
-[341/475] Compiling dec_clip_tables.c
-[341/475] Compiling cost_mips32.c
-[343/475] Compiling alpha_processing_sse41.c
-[344/475] Compiling alpha_processing_sse2.c
-[345/475] Compiling dec.c
-[346/475] Compiling enc_neon.c
-[347/475] Compiling alpha_processing_mips_dsp_r2.c
-[347/475] Compiling upsampling_neon.c
-[347/475] Compiling cost.c
-[351/475] Compiling SwiftSyntax MemoryLayout.swift
-[352/475] Compiling SwiftSyntax MissingNodeInitializers.swift
-[353/475] Compiling SwiftSyntax RawSyntax.swift
-[354/475] Compiling SwiftSyntax RawSyntaxArena.swift
-[355/475] Compiling SwiftSyntax RawSyntaxLayoutView.swift
-[355/475] Compiling webp_dec.c
-[356/475] Compiling alpha_processing.c
-[357/509] Compiling anim_decode.c
-[358/549] Compiling quant_dec.c
-[359/549] Compiling vp8l_dec.c
-[359/549] Compiling io_dec.c
-[359/570] Compiling tree_dec.c
-[362/602] Compiling cost_neon.c
-[362/603] Compiling vp8_dec.c
-[364/649] Compiling filters_neon.c
-[365/649] Compiling demux.c
-[366/649] Compiling buffer_dec.c
-[367/649] Compiling idec_dec.c
-[368/649] Wrapping AST for LibPNG for debugging
-[369/649] Compiling alpha_processing_neon.c
-[370/649] Wrapping AST for ObservationPolyfillCore for debugging
-[371/649] Compiling alpha_dec.c
-[372/649] Wrapping AST for IssueReporting for debugging
-[373/649] Compiling frame_dec.c
-[374/649] Compiling dec_neon.c
-[376/651] Emitting module WebP
-[377/651] Compiling JPEG encode.swift
-[378/651] Compiling JPEG error.swift
-[379/651] Compiling JPEG decode.swift
-[380/651] Compiling JPEG debug.swift
-[381/651] Compiling WebP WebP.swift
-[382/652] Wrapping AST for WebP for debugging
-[384/652] Compiling JPEG jpeg.swift
-[385/653] Wrapping AST for JPEG for debugging
-[387/667] Compiling ImageFormats RGBAConvertible.swift
-[388/668] Compiling ImageFormats InterpolatableConvertible.swift
-[389/668] Compiling ImageFormats Interpolatable.swift
-[390/668] Compiling ImageFormats InMemoryStream.swift
-[391/668] Compiling ImageFormats ImageFormat.swift
-[392/668] Compiling ImageFormats Utility.swift
-[393/668] Compiling ImageFormats PNGSupportedFormat.swift
-[394/668] Compiling ImageFormats RGB.swift
-[395/668] Emitting module ImageFormats
-[396/668] Compiling ImageFormats BytesConvertible.swift
-[397/668] Compiling ImageFormats RGBA.swift
-[398/668] Compiling ImageFormats Image.swift
-[399/668] Compiling ImageFormats HSV.swift
-[400/668] Compiling ImageFormats Image+Operations.swift
-[401/668] Compiling ImageFormats ARGB.swift
-[402/669] Wrapping AST for ImageFormats for debugging
-[404/669] Emitting module Gtk
-[405/683] Compiling Gtk StackTransitionType.swift
-[406/683] Compiling Gtk StringFilterMatchMode.swift
-[407/683] Compiling Gtk StyleProvider.swift
-[408/683] Compiling Gtk Switch.swift
-[409/683] Compiling Gtk SystemSetting.swift
-[410/683] Compiling Gtk TextDirection.swift
-[411/683] Compiling Gtk TextExtendSelection.swift
-[412/683] Compiling Gtk TextViewLayer.swift
-[413/683] Compiling Gtk TextWindowType.swift
-[414/683] Compiling Gtk TreeDragDest.swift
-[415/683] Compiling Gtk TreeDragSource.swift
-[416/683] Compiling Gtk TreeSortable.swift
-[417/683] Compiling Gtk TreeViewColumnSizing.swift
-[418/683] Compiling Gtk TreeViewDropPosition.swift
-[419/683] Compiling Gtk ProgressBar.swift
-[420/683] Compiling Gtk PropagationLimit.swift
-[421/683] Compiling Gtk PropagationPhase.swift
-[422/683] Compiling Gtk Range.swift
-[423/683] Compiling Gtk RecentManagerError.swift
-[424/683] Compiling Gtk ResponseType.swift
-[425/683] Compiling Gtk RevealerTransitionType.swift
-[426/683] Compiling Gtk Root.swift
-[427/683] Compiling Gtk Scale.swift
-[428/683] Compiling Gtk ScrollStep.swift
-[429/683] Compiling Gtk ScrollType.swift
-[430/683] Compiling Gtk Scrollable.swift
-[431/683] Compiling Gtk ScrollablePolicy.swift
-[432/683] Compiling Gtk SelectionMode.swift
-[433/683] Compiling Gtk PadActionType.swift
-[434/683] Compiling Gtk PageOrientation.swift
-[435/683] Compiling Gtk PageSet.swift
-[436/683] Compiling Gtk PanDirection.swift
-[437/683] Compiling Gtk Picture.swift
-[438/683] Compiling Gtk PolicyType.swift
-[439/683] Compiling Gtk Popover.swift
-[440/683] Compiling Gtk PositionType.swift
-[441/683] Compiling Gtk PrintDuplex.swift
-[442/683] Compiling Gtk PrintError.swift
-[443/683] Compiling Gtk PrintOperationAction.swift
-[444/683] Compiling Gtk PrintOperationResult.swift
-[445/683] Compiling Gtk PrintPages.swift
-[446/683] Compiling Gtk PrintQuality.swift
-[447/683] Compiling Gtk PrintStatus.swift
-[448/683] Compiling Gtk CssParserWarning.swift
-[449/683] Compiling Gtk DeleteType.swift
-[450/683] Compiling Gtk DirectionType.swift
-[451/683] Compiling Gtk DrawingArea.swift
-[452/683] Compiling Gtk DropDown.swift
-[453/683] Compiling Gtk Editable.swift
-[454/683] Compiling Gtk EditableProperties.swift
-[455/683] Compiling Gtk Entry.swift
-[456/683] Compiling Gtk EntryIconPosition.swift
-[457/683] Compiling Gtk EventController.swift
-[458/683] Compiling Gtk EventControllerKey.swift
-[459/683] Compiling Gtk EventControllerMotion.swift
-[460/683] Compiling Gtk EventSequenceState.swift
-[461/683] Compiling Gtk FileChooser.swift
-[462/683] Compiling Gtk FileChooserAction.swift
-[463/683] Compiling Gtk SelectionModel.swift
-[464/683] Compiling Gtk SensitivityType.swift
-[465/683] Compiling Gtk ShortcutManager.swift
-[466/683] Compiling Gtk ShortcutScope.swift
-[467/683] Compiling Gtk ShortcutType.swift
-[468/683] Compiling Gtk SizeGroupMode.swift
-[469/683] Compiling Gtk SizeRequestMode.swift
-[470/683] Compiling Gtk SortType.swift
-[471/683] Compiling Gtk SorterChange.swift
-[472/683] Compiling Gtk SorterOrder.swift
-[473/683] Compiling Gtk SpinButton.swift
-[474/683] Compiling Gtk SpinButtonUpdatePolicy.swift
-[475/683] Compiling Gtk SpinType.swift
-[476/683] Compiling Gtk Spinner.swift
-[477/683] Compiling Gtk Button.swift
-[478/683] Compiling Gtk ButtonsType.swift
-[479/683] Compiling Gtk Calendar.swift
-[480/683] Compiling Gtk CellEditable.swift
-[481/683] Compiling Gtk CellLayout.swift
-[482/683] Compiling Gtk CellRendererAccelMode.swift
-[483/683] Compiling Gtk CellRendererMode.swift
-[484/683] Compiling Gtk CheckButton.swift
-[485/683] Compiling Gtk ConstraintAttribute.swift
-[486/683] Compiling Gtk ConstraintRelation.swift
-[487/683] Compiling Gtk ConstraintStrength.swift
-[488/683] Compiling Gtk ConstraintTarget.swift
-[489/683] Compiling Gtk ConstraintVflParserError.swift
-[490/683] Compiling Gtk CornerType.swift
-[491/683] Compiling Gtk CssParserError.swift
-[492/683] Compiling Gtk Application.swift
-[493/683] Compiling Gtk Cancellable.swift
-[494/683] Compiling Gtk SignalBox.swift
-[495/683] Compiling Gtk Signals.swift
-[496/683] Compiling Gtk Color.swift
-[497/683] Compiling Gtk EllipsizeMode.swift
-[498/683] Compiling Gtk Size.swift
-[499/683] Compiling Gtk Conversions.swift
-[500/683] Compiling Gtk UnsafePointerGChar+ToString.swift
-[501/683] Compiling Gtk Widget+CastedPointer.swift
-[502/683] Compiling Gtk GObject.swift
-[503/683] Compiling Gtk Accessible.swift
-[504/683] Compiling Gtk AccessibleAutocomplete.swift
-[505/683] Compiling Gtk AccessibleInvalidState.swift
-[506/683] Compiling Gtk AccessibleProperty.swift
-[512/683] Compiling Gtk FileChooserError.swift
-[513/683] Compiling Gtk FileChooserNative.swift
-[514/683] Compiling Gtk FilterChange.swift
-[515/683] Compiling Gtk FilterMatch.swift
-[516/683] Compiling Gtk FontChooser.swift
-[517/683] Compiling Gtk GLArea.swift
-[518/683] Compiling Gtk Gesture.swift
-[519/683] Compiling Gtk GestureClick.swift
-[520/683] Compiling Gtk GestureLongPress.swift
-[521/683] Compiling Gtk GestureSingle.swift
-[522/683] Compiling Gtk IconSize.swift
-[523/683] Compiling Gtk IconThemeError.swift
-[524/683] Compiling Gtk IconViewDropPosition.swift
-[525/683] Compiling Gtk Image.swift
-[526/683] Compiling Gtk ImageType.swift
-[527/683] Compiling Gtk TreeViewGridLines.swift
-[528/683] Compiling Gtk Unit.swift
-[529/683] Compiling Gtk WrapMode.swift
-[530/683] Compiling Gtk PathBuilder.swift
-[531/683] Compiling Gtk GtkError.swift
-[532/683] Compiling Gtk MemoryTexture.swift
-[533/683] Compiling Gtk CSSBlock.swift
-[534/683] Compiling Gtk CSSProperty.swift
-[535/683] Compiling Gtk CSSProvider.swift
-[536/683] Compiling Gtk GAction.swift
-[537/683] Compiling Gtk GActionGroup.swift
-[538/683] Compiling Gtk GActionMap.swift
-[539/683] Compiling Gtk GDateTime.swift
-[540/683] Compiling Gtk GFile.swift
-[541/683] Compiling Gtk GListModel.swift
-[542/683] Compiling Gtk GMenu.swift
-[543/683] Compiling Gtk GObjectProperty.swift
-[544/683] Compiling Gtk GObjectRepresentable.swift
-[545/683] Compiling Gtk GSimpleAction.swift
-[546/683] Compiling Gtk GSimpleActionGroup.swift
-[547/683] Compiling Gtk GTimeZone.swift
-[548/683] Compiling Gtk GValueRepresentable.swift
-[549/683] Compiling Gtk GValueRepresentableEnum.swift
-[550/683] Compiling Gtk MaxDepthTypeDescription.swift
-[551/683] Compiling Gtk Pango.swift
-[552/683] Compiling Gtk String.swift
-[553/683] Compiling Gtk TextBuffer.swift
-[554/683] Compiling Gtk ApplicationWindow.swift
-[555/683] Compiling Gtk Box.swift
-[556/683] Compiling Gtk Calendar+ManualAdditions.swift
-[557/683] Compiling Gtk ColorButton.swift
-[558/683] Compiling Gtk CustomRootWidget.swift
-[559/683] Compiling Gtk Dialog.swift
-[560/683] Compiling Gtk DrawingArea+ManualAdditions.swift
-[561/683] Compiling Gtk FileChooser+ManualAdditions.swift
-[562/683] Compiling Gtk Fixed.swift
-[563/683] Compiling Gtk Grid.swift
-[564/683] Compiling Gtk Image+ManualAdditions.swift
-[565/683] Compiling Gtk Label+ManualAdditions.swift
-[566/683] Compiling Gtk ListBox+ManualAdditions.swift
-[567/683] Compiling Gtk MessageDialog.swift
-[568/683] Compiling Gtk Orientable.swift
-[569/683] Compiling Gtk InputPurpose.swift
-[570/683] Compiling Gtk Justification.swift
-[571/683] Compiling Gtk Label.swift
-[572/683] Compiling Gtk LevelBarMode.swift
-[573/683] Compiling Gtk ListBox.swift
-[574/683] Compiling Gtk MessageType.swift
-[575/683] Compiling Gtk MovementStep.swift
-[576/683] Compiling Gtk Native.swift
-[577/683] Compiling Gtk NativeDialog.swift
-[578/683] Compiling Gtk NotebookTab.swift
-[579/683] Compiling Gtk NumberUpLayout.swift
-[580/683] Compiling Gtk Ordering.swift
-[581/683] Compiling Gtk Orientation.swift
-[582/683] Compiling Gtk Overflow.swift
-[583/683] Compiling Gtk PackType.swift
-[584/683] Compiling Gtk AccessibleRelation.swift
-[585/683] Compiling Gtk AccessibleRole.swift
-[586/683] Compiling Gtk AccessibleSort.swift
-[587/683] Compiling Gtk AccessibleState.swift
-[588/683] Compiling Gtk AccessibleTristate.swift
-[589/683] Compiling Gtk Actionable.swift
-[590/683] Compiling Gtk Align.swift
-[591/683] Compiling Gtk AppChooser.swift
-[592/683] Compiling Gtk ArrowType.swift
-[593/683] Compiling Gtk AssistantPageType.swift
-[594/683] Compiling Gtk BaselinePosition.swift
-[595/683] Compiling Gtk BorderStyle.swift
-[596/683] Compiling Gtk Buildable.swift
-[597/683] Compiling Gtk BuilderError.swift
-[598/683] Compiling Gtk BuilderScope.swift
-[599/683] Compiling DashWalletCore DashWalletCore.swift
-[600/683] Emitting module DashWalletCore
-[601/684] Wrapping AST for DashWalletCore for debugging
-[608/691] Emitting module SwiftSyntax
-[609/691] Compiling DashKit SecretBytes.swift
-[610/691] Emitting module DashKit
-[611/691] Compiling Gtk Paned.swift
-[612/691] Compiling Gtk Picture+ManualAdditions.swift
-[613/691] Compiling Gtk PopoverMenu.swift
-[614/691] Compiling Gtk Range+ManualAdditions.swift
-[615/691] Compiling Gtk Scale+ManualAdditions.swift
-[616/691] Compiling Gtk ScrolledWindow.swift
-[617/691] Compiling Gtk SpinButton+ManualAdditions.swift
-[618/691] Compiling Gtk Stack.swift
-[619/691] Compiling Gtk TextView.swift
-[620/691] Compiling Gtk ToggleButton.swift
-[621/691] Compiling Gtk Viewport.swift
-[622/691] Compiling Gtk Widget.swift
-[623/691] Compiling Gtk Window.swift
-[624/691] Compiling Gtk WrapMode+PangoWrapMode.swift
-[626/692] Compiling DashKit DashKitError.swift
-[627/692] Compiling DashKit Amount.swift
-[628/692] Compiling DashKit EngineClient.swift
-[628/692] Wrapping AST for Gtk for debugging
-[635/692] Compiling DashKit Models.swift
-[636/692] Compiling DashKit EventBus.swift
-[638/707] Emitting module AppServices
-[639/710] Compiling AppServices AppServices.swift
-[640/711] Compiling PlatformServicesDesktop PlatformServicesDesktop.swift
-[642/711] Emitting module PlatformServicesDesktop
-[643/711] Compiling PlatformServicesDesktop DesktopDataDirectory.swift
-[644/711] Compiling WalletRuntime WalletRuntime.swift
-[644/712] Wrapping AST for AppServices for debugging
-[647/712] Compiling WalletRuntime Send.swift
-[648/712] Compiling WalletRuntime WalletState.swift
-[649/712] Compiling WalletRuntime Vault.swift
-[649/712] Wrapping AST for PlatformServicesDesktop for debugging
-[651/712] Compiling WalletRuntime Lifecycle.swift
-[652/712] Compiling WalletRuntime Receive.swift
-[653/712] Compiling WalletRuntime Sync.swift
-[654/712] Compiling WalletRuntime Tools.swift
-[655/712] Compiling WalletRuntime ServiceError.swift
-[656/712] Compiling WalletRuntime CoinsAndLabels.swift
-[657/712] Compiling WalletRuntime CommonTypes.swift
-[658/712] Compiling WalletRuntime History.swift
-[659/712] Emitting module WalletRuntime
-[665/713] Wrapping AST for WalletRuntime for debugging
-[667/743] Compiling WalletFeatures L10n+SignVerify.swift
-[668/743] Compiling WalletFeatures L10n+Transactions.swift
-[669/745] Compiling WalletFeatures L10n+Home.swift
-[670/745] Compiling WalletFeatures L10n+Lock.swift
-[671/745] Compiling WalletFeatures EngineCode.swift
-[672/745] Compiling WalletFeatures ErrorText.swift
-[673/745] Compiling WalletFeatures InputValidation.swift
-[674/745] Compiling WalletFeatures BIP39EnglishWords.swift
-[675/745] Compiling WalletFeatures OnboardingSupport.swift
-[676/745] Compiling WalletFeatures L10n+Onboarding.swift
-[677/745] Compiling WalletFeatures L10n+Receive.swift
-[678/745] Compiling WalletFeatures L10n.swift
-[679/745] Compiling WalletFeatures LockViewModel.swift
-[680/745] Compiling WalletFeatures L10n+Send.swift
-[681/745] Compiling WalletFeatures L10n+Settings.swift
-[682/745] Compiling WalletFeatures SignVerifyViewModel.swift
-[683/745] Compiling WalletFeatures TransactionFilters.swift
-[684/745] Compiling WalletFeatures AddressBookViewModel.swift
-[685/745] Compiling WalletFeatures AmountFormatter.swift
-[686/745] Compiling WalletFeatures AppEnvironment.swift
-[687/745] Compiling WalletFeatures UIPreferences.swift
-[688/745] Compiling WalletFeatures HomeViewModel.swift
-[689/745] Compiling WalletFeatures L10n+AddressBook.swift
-[690/745] Compiling WalletFeatures TransactionsViewModel.swift
-[691/745] Compiling WalletFeatures WalletFeatures.swift
-[692/745] Compiling WalletFeatures SendViewModel.swift
-[693/745] Compiling WalletFeatures SettingsViewModel.swift
-[694/745] Compiling WalletFeatures OnboardingViewModel.swift
-[695/745] Compiling WalletFeatures ReceiveViewModel.swift
-[696/745] Compiling WalletFeatures MainViewModel.swift
-[697/745] Compiling WalletFeatures AppRoute.swift
-[698/745] Emitting module WalletFeatures
-[699/746] Wrapping AST for WalletFeatures for debugging
-[716/747] Wrapping AST for SwiftSyntax for debugging
-[718/809] Compiling SwiftDiagnostics Note.swift
-[719/809] Compiling SwiftDiagnostics Message.swift
-[720/809] Compiling SwiftBasicFormat SyntaxProtocol+Formatted.swift
-[721/809] Compiling SwiftBasicFormat Trivia+FormatExtensions.swift
-[722/809] Compiling SwiftDiagnostics BasicDiagnosticDecorator.swift
-[723/809] Compiling SwiftParser SwiftParserCompatibility.swift
-[724/809] Compiling SwiftParser SwiftVersion.swift
-[725/809] Compiling SwiftParser SyntaxUtils.swift
-[726/809] Compiling SwiftDiagnostics Convenience.swift
-[727/809] Emitting module SwiftDiagnostics
-[728/812] Compiling SwiftDiagnostics GroupedDiagnostics.swift
-[729/812] Compiling SwiftDiagnostics FixIt.swift
-[730/812] Compiling SwiftParser TokenConsumer.swift
-[731/812] Compiling SwiftParser TokenPrecedence.swift
-[732/812] Compiling SwiftParser TokenSpec.swift
-[733/812] Compiling SwiftBasicFormat Syntax+Extensions.swift
-[734/812] Compiling SwiftBasicFormat InferIndentation.swift
-[735/812] Compiling SwiftBasicFormat Indenter.swift
-[736/812] Compiling SwiftDiagnostics Diagnostic.swift
-[737/812] Compiling SwiftParser Modifiers.swift
-[738/812] Compiling SwiftParser Names.swift
-[739/812] Compiling SwiftParser Nominals.swift
-[740/812] Compiling SwiftDiagnostics ANSIDiagnosticDecorator.swift
-[741/812] Compiling SwiftDiagnostics DiagnosticDecorator.swift
-[742/812] Compiling SwiftDiagnostics DiagnosticsFormatter.swift
-[744/813] Compiling SwiftParser UnicodeScalarExtensions.swift
-[745/813] Compiling SwiftParser Lookahead.swift
-[746/813] Compiling SwiftParser LoopProgressCondition.swift
-[747/813] Compiling SwiftParser Lexeme.swift
-[748/813] Compiling SwiftParser LexemeSequence.swift
-[749/813] Compiling SwiftParser Lexer.swift
-[750/813] Compiling SwiftParser RegexLiteralLexer.swift
-[750/813] Wrapping AST for SwiftDiagnostics for debugging
-[752/813] Emitting module SwiftBasicFormat
-[753/813] Compiling SwiftBasicFormat BasicFormat.swift
-[754/814] Compiling SwiftParser Attributes.swift
-[755/814] Compiling SwiftParser Availability.swift
-[756/814] Compiling SwiftParser CharacterInfo.swift
-[757/814] Compiling SwiftParser CollectionNodes+Parsable.swift
-[758/814] Wrapping AST for SwiftBasicFormat for debugging
-[760/814] Compiling SwiftParser Types.swift
-[761/814] Compiling SwiftParser ExperimentalFeatures.swift
-[762/814] Compiling SwiftParser IsLexerClassified.swift
-[763/814] Compiling SwiftParser CompilerFiles.swift
-[764/814] Compiling SwiftParser Declarations.swift
-[765/814] Compiling SwiftParser Directives.swift
-[766/814] Compiling SwiftParser ExpressionInterpretedAsVersionTuple.swift
-[767/814] Compiling SwiftParser Statements.swift
-[768/814] Compiling SwiftParser StringLiteralRepresentedLiteralValue.swift
-[769/814] Compiling SwiftParser StringLiterals.swift
-[770/814] Compiling SwiftParser Patterns.swift
-[771/814] Compiling SwiftParser Recovery.swift
-[772/814] Compiling SwiftParser Specifiers.swift
-[773/814] Compiling SwiftParser TokenSpecSet.swift
-[774/814] Compiling SwiftParser TopLevel.swift
-[775/814] Compiling SwiftParser TriviaParser.swift
-[776/814] Compiling SwiftParser Parameters.swift
-[777/814] Compiling SwiftParser ParseSourceFile.swift
-[778/814] Compiling SwiftParser Parser.swift
-[779/814] Emitting module SwiftParser
-[780/814] Compiling SwiftParser LayoutNodes+Parsable.swift
-[781/814] Compiling SwiftParser Parser+TokenSpecSet.swift
-[782/814] Compiling SwiftParser TokenSpecStaticMembers.swift
-[783/814] Compiling SwiftParser Expressions.swift
-[784/814] Compiling SwiftParser IncrementalParseTransition.swift
-[785/814] Compiling SwiftParser IsValidIdentifier.swift
-[786/814] Compiling SwiftParser Cursor.swift
-[787/815] Wrapping AST for SwiftParser for debugging
-[789/840] Compiling SwiftParserDiagnostics TokenNameForDiagnostics.swift
-[790/840] Compiling SwiftOperators OperatorError+Diagnostics.swift
-[791/840] Compiling SwiftOperators Operator.swift
-[792/840] Compiling SwiftOperators PrecedenceGroup.swift
-[793/840] Compiling SwiftParserDiagnostics SyntaxKindNameForDiagnostics.swift
-[794/840] Compiling SwiftOperators PrecedenceGraph.swift
-[795/840] Compiling SwiftParserDiagnostics SyntaxExtensions.swift
-[796/840] Compiling SwiftOperators SyntaxSynthesis.swift
-[797/840] Compiling SwiftOperators OperatorTable.swift
-[798/840] Compiling SwiftParserDiagnostics PresenceUtils.swift
-[799/840] Compiling SwiftOperators OperatorTable+Semantics.swift
-[800/840] Compiling SwiftOperators OperatorTable+Defaults.swift
-[801/840] Compiling SwiftOperators OperatorTable+Folding.swift
-[802/840] Compiling SwiftOperators OperatorError.swift
-[803/840] Emitting module SwiftOperators
-[805/841] Compiling SwiftParserDiagnostics MissingTokenError.swift
-[806/841] Compiling SwiftParserDiagnostics MultiLineStringLiteralDiagnosticsGenerator.swift
-[806/841] Wrapping AST for SwiftOperators for debugging
-[808/841] Compiling SwiftParserDiagnostics ChildNameForDiagnostics.swift
-[809/841] Compiling SwiftParserDiagnostics Utils.swift
-[810/841] Compiling SwiftParserDiagnostics LexerDiagnosticMessages.swift
-[811/841] Compiling SwiftParserDiagnostics MissingNodesError.swift
-[812/841] Compiling SwiftParserDiagnostics DiagnosticExtensions.swift
-[813/841] Emitting module SwiftParserDiagnostics
-[814/841] Compiling SwiftParserDiagnostics ParseDiagnosticsGenerator.swift
-[815/841] Compiling SwiftParserDiagnostics ParserDiagnosticMessages.swift
-[816/842] Wrapping AST for SwiftParserDiagnostics for debugging
-[818/857] Compiling SwiftSyntaxBuilder ListBuilder.swift
-[819/858] Compiling SwiftSyntaxBuilder ValidatingSyntaxNodes.swift
-[820/858] Compiling SwiftSyntaxBuilder ResultBuilderExtensions.swift
-[821/858] Compiling SwiftSyntaxBuilder Indenter.swift
-[822/858] Compiling SwiftSyntaxBuilder SyntaxExpressibleByStringInterpolationConformances.swift
-[823/858] Compiling SwiftSyntaxBuilder RenamedChildrenBuilderCompatibility.swift
-[824/858] Compiling SwiftSyntaxBuilder ConvenienceInitializers.swift
-[825/858] Compiling SwiftSyntaxBuilder DeclSyntaxParseable.swift
-[826/858] Compiling SwiftSyntaxBuilder BuildableNodes.swift
-[827/858] Compiling SwiftSyntaxBuilder SyntaxParsable+ExpressibleByStringInterpolation.swift
-[828/858] Compiling SwiftSyntaxBuilder WithTrailingCommaSyntax+EnsuringTrailingComma.swift
-[829/858] Compiling SwiftSyntaxBuilder SyntaxNodeWithBody.swift
-[830/858] Compiling SwiftSyntaxBuilder SwiftSyntaxBuilderCompatibility.swift
-[831/858] Compiling SwiftSyntaxBuilder Syntax+StringInterpolation.swift
-[832/858] Emitting module SwiftSyntaxBuilder
-[833/858] Compiling SwiftSyntaxBuilder ResultBuilders.swift
-[834/859] Wrapping AST for SwiftSyntaxBuilder for debugging
-[836/874] Compiling SwiftIfConfig SyntaxProtocol+IfConfig.swift
-[837/875] Compiling SwiftIfConfig IfConfigRegionState.swift
-[838/875] Compiling SwiftIfConfig VersionTuple+Parsing.swift
-[839/875] Compiling SwiftIfConfig SyntaxLiteralUtils.swift
-[840/875] Compiling SwiftIfConfig IfConfigDecl+IfConfig.swift
-[841/875] Compiling SwiftIfConfig IfConfigDiagnostic.swift
-[842/875] Compiling SwiftIfConfig VersionTuple.swift
-[843/875] Compiling SwiftIfConfig StaticBuildConfiguration.swift
-[844/875] Compiling SwiftIfConfig ConfiguredRegions.swift
-[845/875] Compiling SwiftIfConfig ActiveSyntaxVisitor.swift
-[846/875] Compiling SwiftIfConfig BuildConfiguration.swift
-[847/875] Compiling SwiftIfConfig IfConfigEvaluation.swift
-[848/875] Compiling SwiftIfConfig IfConfigFunctions.swift
-[849/875] Compiling SwiftIfConfig ActiveClauseEvaluator.swift
-[850/875] Compiling SwiftIfConfig ActiveSyntaxRewriter.swift
-[851/875] Emitting module SwiftIfConfig
-[852/876] Wrapping AST for SwiftIfConfig for debugging
-[854/894] Compiling SwiftSyntaxMacros Macro.swift
-[855/895] Compiling SwiftSyntaxMacros ExtensionMacro.swift
-[856/895] Compiling SwiftSyntaxMacros CodeItemMacro.swift
-[857/895] Compiling SwiftSyntaxMacros DeclarationMacro.swift
-[858/895] Compiling SwiftSyntaxMacros ExpressionMacro.swift
-[859/895] Compiling SwiftSyntaxMacros PeerMacro.swift
-[860/895] Compiling SwiftSyntaxMacros AttachedMacro.swift
-[861/895] Compiling SwiftSyntaxMacros BodyMacro.swift
-[862/895] Compiling SwiftSyntaxMacros MemberAttributeMacro.swift
-[863/895] Compiling SwiftSyntaxMacros MemberMacro.swift
-[864/895] Compiling SwiftSyntaxMacros PreambleMacro.swift
-[865/895] Compiling SwiftSyntaxMacros FreestandingMacro.swift
-[866/895] Compiling SwiftSyntaxMacros Macro+Format.swift
-[867/895] Compiling SwiftSyntaxMacros MacroExpansionDiagnosticMessages.swift
-[868/895] Compiling SwiftSyntaxMacros AccessorMacro.swift
-[869/895] Emitting module SwiftSyntaxMacros
-[870/895] Compiling SwiftSyntaxMacros AbstractSourceLocation.swift
-[871/895] Compiling SwiftSyntaxMacros MacroExpansionContext.swift
-[872/895] Compiling SwiftSyntaxMacros Syntax+LexicalContext.swift
-[873/896] Wrapping AST for SwiftSyntaxMacros for debugging
-[875/906] Compiling SwiftSyntaxMacroExpansion MacroSpec.swift
-[876/906] Compiling SwiftSyntaxMacroExpansion BasicMacroExpansionContext.swift
-[877/906] Emitting module SwiftSyntaxMacroExpansion
-[878/906] Compiling SwiftSyntaxMacroExpansion FunctionParameterUtils.swift
-[879/906] Compiling SwiftSyntaxMacroExpansion IndentationUtils.swift
-[880/906] Compiling SwiftSyntaxMacroExpansion MacroExpansionDiagnosticMessages.swift
-[881/906] Compiling SwiftSyntaxMacroExpansion MacroArgument.swift
-[882/906] Compiling SwiftSyntaxMacroExpansion MacroExpansion.swift
-[883/906] Compiling SwiftSyntaxMacroExpansion MacroReplacement.swift
-[884/906] Compiling SwiftSyntaxMacroExpansion MacroSystem.swift
-[885/907] Wrapping AST for SwiftSyntaxMacroExpansion for debugging
-[887/920] Compiling SwiftCompilerPluginMessageHandling PluginMessageCompatibility.swift
-[888/920] Compiling SwiftCompilerPluginMessageHandling Macros.swift
-[889/920] Compiling SwiftCompilerPluginMessageHandling CodingUtilities.swift
-[890/920] Compiling SwiftCompilerPluginMessageHandling StandardIOMessageConnection.swift
-[891/920] Compiling SwiftCompilerPluginMessageHandling LRUCache.swift
-[892/920] Compiling SwiftCompilerPluginMessageHandling PluginMacroExpansionContext.swift
-[893/920] Compiling SwiftCompilerPluginMessageHandling Diagnostics.swift
-[894/920] Compiling SwiftCompilerPluginMessageHandling JSONEncoding.swift
-[895/920] Compiling SwiftCompilerPluginMessageHandling JSONDecoding.swift
-[896/920] Compiling SwiftCompilerPluginMessageHandling CompilerPluginMessageHandler.swift
-[897/920] Emitting module SwiftCompilerPluginMessageHandling
-[898/920] Compiling SwiftCompilerPluginMessageHandling JSON.swift
-[899/920] Compiling SwiftCompilerPluginMessageHandling PluginMessages.swift
-[900/921] Wrapping AST for SwiftCompilerPluginMessageHandling for debugging
-[902/923] Emitting module SwiftCompilerPlugin
-[903/923] Compiling SwiftCompilerPlugin CompilerPlugin.swift
-[904/924] Wrapping AST for SwiftCompilerPlugin for debugging
-[906/940] Compiling ObservationPolyfillMacros Plugins.swift
-[907/940] Compiling SwiftJavaMacros MacroErrors.swift
-[908/940] Compiling SwiftJavaMacros SwiftJNIMacrosPlugin.swift
-[909/993] Compiling MacroToolkit ClassRestrictionType.swift
-[910/993] Compiling MacroToolkit CompositionType.swift
-[911/993] Compiling MacroToolkit ConditionalCompilationBlock.swift
-[912/993] Compiling MacroToolkit Decl.swift
-[913/993] Emitting module MacroToolkit
-[914/997] Compiling SwiftJavaMacros SwiftSyntaxUtils.swift
-[915/997] Emitting module ObservationPolyfillMacros
-[916/997] Compiling ObservationPolyfillMacros Availability.swift
-[917/997] Compiling MacroToolkit Enum.swift
-[918/997] Compiling MacroToolkit Extension.swift
-[919/997] Compiling MacroToolkit Protocol.swift
-[920/997] Compiling MacroToolkit Struct.swift
-[921/997] Compiling MacroToolkit RepresentableBySyntax.swift
-[922/997] Compiling MacroToolkit SimpleType.swift
-[923/997] Compiling MacroToolkit SomeOrAnyType.swift
-[924/997] Compiling MacroToolkit String+Extensions.swift
-[925/997] Compiling MacroToolkit EnumCaseAssociatedValueParameter.swift
-[926/997] Compiling MacroToolkit EnumCaseValue.swift
-[927/997] Compiling MacroToolkit Expr.swift
-[928/997] Compiling MacroToolkit ExprProtocol.swift
-[929/997] Compiling MacroToolkit Actor.swift
-[930/997] Compiling MacroToolkit Class.swift
-[931/997] Compiling MacroToolkit DeclGroup.swift
-[932/997] Compiling MacroToolkit DeclGroupProtocol.swift
-[933/997] Compiling MacroToolkit DeclarationContextModifier.swift
-[934/997] Compiling MacroToolkit ModifierProtocol.swift
-[935/997] Compiling MacroToolkit NilLiteral.swift
-[936/997] Compiling MacroToolkit OptionalType.swift
-[937/997] Compiling MacroToolkit MemberType.swift
-[938/997] Compiling MacroToolkit MetatypeType.swift
-[939/997] Compiling MacroToolkit MissingType.swift
-[940/997] Compiling MacroToolkit AccessLevel.swift
-[941/997] Compiling MacroToolkit ImplicitlyUnwrappedOptionalType.swift
-[942/997] Compiling MacroToolkit IntegerLiteral.swift
-[943/997] Compiling MacroToolkit LiteralProtocol.swift
-[944/997] Compiling MacroToolkit MacroAttribute.swift
-[945/997] Compiling SwiftJavaMacros JavaMethodMacro.swift
-[946/997] Compiling SwiftJavaMacros JavaExportMacro.swift
-[947/997] Compiling SwiftJavaMacros JavaClassMacro.swift
-[948/997] Compiling SwiftJavaMacros JavaFieldMacro.swift
-[949/997] Compiling ObservationPolyfillMacros ObservableMacro.swift
-[950/997] Compiling ObservationPolyfillMacros Extensions.swift
-[951/997] Emitting module SwiftJavaMacros
-[952/997] Compiling SwiftJavaMacros GenerationMode.swift
-[953/997] Compiling SwiftJavaMacros ImplementsJavaMacro.swift
-[956/999] Compiling MacroToolkit ArrayType.swift
-[957/999] Compiling MacroToolkit AssociatedType.swift
-[958/999] Compiling MacroToolkit Attribute.swift
-[959/999] Compiling MacroToolkit AttributeListElement.swift
-[960/999] Compiling MacroToolkit BooleanLiteral.swift
-[961/999] Compiling MacroToolkit PackExpansionType.swift
-[962/999] Compiling MacroToolkit PackReferenceType.swift
-[963/999] Compiling MacroToolkit Property.swift
-[964/999] Compiling MacroToolkit RegexLiteral.swift
-[965/999] Compiling MacroToolkit Type.swift
-[966/999] Compiling MacroToolkit TypeProtocol.swift
-[967/999] Compiling MacroToolkit Variable.swift
-[968/999] Compiling MacroToolkit VariableBinding.swift
-[968/999] Wrapping AST for SwiftJavaMacros for debugging
-[969/999] Wrapping AST for ObservationPolyfillMacros for debugging
-[970/999] Write Objects.LinkFileList
-[973/999] Compiling MacroToolkit FloatLiteral.swift
-[974/999] Compiling MacroToolkit Function.swift
-[975/999] Compiling MacroToolkit FunctionParameter.swift
-[976/999] Compiling MacroToolkit FunctionType.swift
-[977/999] Compiling MacroToolkit Destructuring.swift
-[978/999] Compiling MacroToolkit Diagnostics.swift
-[979/999] Compiling MacroToolkit DictionaryType.swift
-[980/999] Compiling MacroToolkit EnumCase.swift
-[981/999] Compiling MacroToolkit StringLiteral.swift
-[982/999] Compiling MacroToolkit SuppressedType.swift
-[983/999] Compiling MacroToolkit SwiftSyntax+Extensions.swift
-[984/999] Compiling MacroToolkit TupleType.swift
-[985/1000] Wrapping AST for MacroToolkit for debugging
-[987/1009] Compiling SwiftCrossUIMacrosPlugin SwiftCrossUIMacrosPlugin.swift
-[988/1009] Compiling SwiftCrossUIMacrosPlugin TypeExtension.swift
-[989/1009] Compiling SwiftCrossUIMacrosPlugin HotReloadableExprMacro.swift
-[990/1009] Compiling SwiftCrossUIMacrosPlugin ObservableObjectMacro.swift
-[991/1009] Compiling SwiftCrossUIMacrosPlugin VariableExtension.swift
-[992/1009] Emitting module SwiftCrossUIMacrosPlugin
-[993/1009] Compiling SwiftCrossUIMacrosPlugin HotReloadableAppMacro.swift
-[994/1009] Compiling SwiftCrossUIMacrosPlugin EntryMacro.swift
-[995/1009] Compiling SwiftCrossUIMacrosPlugin CastBackendMacro.swift
-[996/1010] Wrapping AST for SwiftCrossUIMacrosPlugin for debugging
-[997/1010] Write Objects.LinkFileList
-[998/1010] Linking ObservationPolyfillMacros-tool
-[999/1010] Linking SwiftJavaMacros-tool
-[1001/1013] Compiling ObservationPolyfill Macros.swift
-[1002/1013] Compiling ObservationPolyfill Exports.swift
-[1003/1013] Emitting module ObservationPolyfill
-[1004/1014] Wrapping AST for ObservationPolyfill for debugging
-[1005/1014] Linking SwiftCrossUIMacrosPlugin-tool
-[1007/1294] Compiling SwiftCrossUI TextFields.swift
-[1008/1294] Compiling SwiftCrossUI ToggleButtons.swift
-[1009/1294] Compiling SwiftCrossUI Core.swift
-[1010/1294] Compiling SwiftCrossUI CoreWindowing.swift
-[1011/1294] Compiling SwiftCrossUI GenericContainers.swift
-[1012/1294] Compiling SwiftCrossUI Widgets.swift
-[1013/1294] Compiling SwiftCrossUI CornerRadius.swift
-[1014/1294] Compiling SwiftCrossUI DatePickers.swift
-[1015/1294] Compiling SwiftCrossUI ExternalURLs.swift
-[1016/1294] Compiling SwiftCrossUI FileDialogs.swift
-[1017/1294] Compiling SwiftCrossUI FileOpenDialogs.swift
-[1018/1294] Compiling SwiftCrossUI FileSaveDialogs.swift
-[1019/1294] Compiling SwiftCrossUI FocusHandling.swift
-[1020/1294] Compiling SwiftCrossUI Gestures.swift
-[1021/1294] Compiling SwiftCrossUI HoverGestures.swift
-[1022/1294] Compiling SwiftCrossUI TapGestures.swift
-[1023/1294] Compiling SwiftCrossUI Gradients.swift
-[1024/1294] Compiling SwiftCrossUI AngularGradients.swift
-[1025/1294] Compiling SwiftCrossUI LinearGradients.swift
-[1026/1294] Compiling SwiftCrossUI RadialGradients.swift
-[1027/1294] Compiling SwiftCrossUI IncomingURLs.swift
-[1028/1294] Compiling SwiftCrossUI Menus.swift
-[1029/1315] Compiling SwiftCrossUI Images.swift
-[1030/1315] Compiling SwiftCrossUI PassiveViews.swift
-[1031/1315] Compiling SwiftCrossUI TextViews.swift
-[1032/1315] Compiling SwiftCrossUI Paths.swift
-[1033/1315] Compiling SwiftCrossUI RevealFiles.swift
-[1034/1315] Compiling SwiftCrossUI Sheets.swift
-[1035/1315] Compiling SwiftCrossUI Tables.swift
-[1036/1315] Compiling SwiftCrossUI Tooltips.swift
-[1037/1315] Compiling SwiftCrossUI WebViews.swift
-[1038/1315] Compiling SwiftCrossUI Windowing.swift
-[1039/1315] Compiling SwiftCrossUI BackendHelpers.swift
-[1040/1315] Compiling SwiftCrossUI BackendPickerStyle.swift
-[1041/1315] Compiling SwiftCrossUI BaseAppBackend.swift
-[1042/1315] Compiling SwiftCrossUI CastBackendMacro.swift
-[1043/1315] Compiling SwiftCrossUI CellPosition.swift
-[1044/1315] Compiling SwiftCrossUI DialogResult.swift
-[1045/1315] Compiling SwiftCrossUI FileChooserResult.swift
-[1046/1315] Compiling SwiftCrossUI FileDialogOptions.swift
-[1047/1315] Compiling SwiftCrossUI FocusChainManager.swift
-[1048/1315] Compiling SwiftCrossUI FullAppBackend.swift
-[1049/1315] Compiling SwiftCrossUI MenuImplementationStyle.swift
-[1050/1315] Compiling SwiftCrossUI OpenDialogOptions.swift
-[1051/1315] Compiling SwiftCrossUI App.swift
-[1052/1315] Compiling SwiftCrossUI AnyWidget.swift
-[1053/1315] Compiling SwiftCrossUI BackendFeatures.swift
-[1054/1315] Compiling SwiftCrossUI Alerts.swift
-[1055/1315] Compiling SwiftCrossUI ApplicationMenus.swift
-[1056/1315] Compiling SwiftCrossUI BaseStubs.swift
-[1057/1315] Compiling SwiftCrossUI ColorPickers.swift
-[1058/1315] Compiling SwiftCrossUI Colors.swift
-[1059/1315] Compiling SwiftCrossUI Containers.swift
-[1060/1315] Compiling SwiftCrossUI ScrollContainers.swift
-[1061/1315] Compiling SwiftCrossUI SelectableListViews.swift
-[1062/1315] Compiling SwiftCrossUI SplitViews.swift
-[1063/1315] Compiling SwiftCrossUI Buttons.swift
-[1064/1315] Compiling SwiftCrossUI Checkboxes.swift
-[1065/1315] Compiling SwiftCrossUI Controls.swift
-[1066/1315] Compiling SwiftCrossUI Pickers.swift
-[1067/1315] Compiling SwiftCrossUI ProgressBars.swift
-[1068/1315] Compiling SwiftCrossUI ProgressSpinners.swift
-[1069/1315] Compiling SwiftCrossUI SecureFields.swift
-[1070/1315] Compiling SwiftCrossUI Sliders.swift
-[1071/1315] Compiling SwiftCrossUI Switches.swift
-[1072/1315] Compiling SwiftCrossUI TextEditors.swift
-[1073/1315] Compiling SwiftCrossUI Gradient.swift
-[1074/1315] Compiling SwiftCrossUI HorizontalAlignment.swift
-[1075/1315] Compiling SwiftCrossUI LineLimit.swift
-[1076/1315] Compiling SwiftCrossUI MainActorBox.swift
-[1077/1315] Compiling SwiftCrossUI MenuOrder.swift
-[1078/1315] Compiling SwiftCrossUI Meta.swift
-[1079/1315] Compiling SwiftCrossUI Orientation.swift
-[1080/1315] Compiling SwiftCrossUI Path.swift
-[1081/1315] Compiling SwiftCrossUI PresentationDetent.swift
-[1082/1315] Compiling SwiftCrossUI SceneLaunchBehavior.swift
-[1083/1315] Compiling SwiftCrossUI ScenePhase.swift
-[1084/1315] Compiling SwiftCrossUI ScrollDismissesKeyboardMode.swift
-[1085/1315] Compiling SwiftCrossUI StackAlignment.swift
-[1086/1315] Compiling SwiftCrossUI TextCase.swift
-[1087/1315] Compiling SwiftCrossUI TextContentType.swift
-[1088/1315] Compiling SwiftCrossUI TextStyle.swift
-[1089/1315] Compiling SwiftCrossUI UncheckedSendable.swift
-[1090/1315] Compiling SwiftCrossUI UnitPoint.swift
-[1091/1315] Compiling SwiftCrossUI VerticalAlignment.swift
-[1092/1315] Compiling SwiftCrossUI Visibility.swift
-[1093/1315] Compiling SwiftCrossUI WidgetFocusObserver.swift
-[1094/1315] Compiling SwiftCrossUI Window.swift
-[1095/1315] Compiling SwiftCrossUI WindowGroup.swift
-[1096/1315] Compiling SwiftCrossUI WindowReference.swift
-[1097/1315] Compiling SwiftCrossUI WindowingScene.swift
-[1098/1315] Compiling SwiftCrossUI AppStorage.swift
-[1099/1315] Compiling SwiftCrossUI AppStorageKey.swift
-[1100/1315] Compiling SwiftCrossUI AppStorageValues.swift
-[1101/1315] Compiling SwiftCrossUI Bindable.swift
-[1102/1315] Compiling SwiftCrossUI Binding.swift
-[1103/1315] Compiling SwiftCrossUI Box.swift
-[1104/1315] Compiling SwiftCrossUI Cancellable.swift
-[1105/1315] Compiling SwiftCrossUI DynamicKeyPath.swift
-[1106/1315] Compiling SwiftCrossUI DynamicProperty.swift
-[1107/1315] Compiling SwiftCrossUI DynamicPropertyUpdater.swift
-[1108/1315] Compiling SwiftCrossUI Entry.swift
-[1109/1315] Compiling SwiftCrossUI FocusState.swift
-[1110/1315] Compiling SwiftCrossUI ForEachField.swift
-[1111/1315] Compiling SwiftCrossUI ModelObserver.swift
-[1112/1315] Compiling SwiftCrossUI ObservableObject.swift
-[1113/1315] Compiling SwiftCrossUI ObservableProperty.swift
-[1114/1315] Compiling SwiftCrossUI Observation.swift
-[1115/1315] Compiling SwiftCrossUI Published.swift
-[1116/1315] Compiling SwiftCrossUI ResolvedMenu.swift
-[1117/1315] Compiling SwiftCrossUI SaveDialogOptions.swift
-[1118/1315] Compiling SwiftCrossUI AlertActionsBuilder.swift
-[1119/1315] Compiling SwiftCrossUI CommandsBuilder.swift
-[1120/1315] Compiling SwiftCrossUI SceneBuilder.swift
-[1121/1315] Compiling SwiftCrossUI TableRowBuilder.swift
-[1122/1315] Compiling SwiftCrossUI ViewBuilder.swift
-[1123/1315] Compiling SwiftCrossUI AlertAction.swift
-[1124/1315] Compiling SwiftCrossUI DismissAction.swift
-[1125/1315] Compiling SwiftCrossUI DismissWindowAction.swift
-[1126/1315] Compiling SwiftCrossUI OpenURLAction.swift
-[1127/1315] Compiling SwiftCrossUI OpenWindowAction.swift
-[1128/1315] Compiling SwiftCrossUI PickerSupportedAction.swift
-[1129/1315] Compiling SwiftCrossUI PresentAlertAction.swift
-[1130/1315] Compiling SwiftCrossUI PresentFileSaveDialogAction.swift
-[1131/1315] Compiling SwiftCrossUI PresentSingleFileOpenDialogAction.swift
-[1132/1315] Compiling SwiftCrossUI RevealFileAction.swift
-[1133/1315] Compiling SwiftCrossUI AppStorageProvider.swift
-[1134/1315] Compiling SwiftCrossUI Environment.swift
-[1135/1315] Compiling SwiftCrossUI EnvironmentValues.swift
-[1136/1315] Compiling SwiftCrossUI ListStyle.swift
-[1137/1315] Compiling SwiftCrossUI Sequence.swift
-[1138/1315] Compiling SwiftCrossUI PresentationModifiers.swift
-[1139/1315] Compiling SwiftCrossUI ScrollDismissesKeyboardModifier.swift
-[1140/1315] Compiling SwiftCrossUI SheetModifier.swift
-[1141/1315] Compiling SwiftCrossUI ButtonStyleModifier.swift
-[1142/1315] Compiling SwiftCrossUI ColorSchemeModifier.swift
-[1143/1315] Compiling SwiftCrossUI CornerRadiusModifier.swift
-[1144/1315] Compiling SwiftCrossUI FontModifier.swift
-[1145/1315] Compiling SwiftCrossUI ForegroundColorModifier.swift
-[1146/1315] Compiling SwiftCrossUI LineLimitModifier.swift
-[1147/1315] Compiling SwiftCrossUI TextCaseModifier.swift
-[1148/1315] Compiling SwiftCrossUI ToggleStyleModifier.swift
-[1149/1315] Compiling SwiftCrossUI TextContentTypeModifier.swift
-[1150/1315] Compiling SwiftCrossUI TextSelectionModifier.swift
-[1151/1315] Compiling SwiftCrossUI WindowModifiers.swift
-[1152/1315] Compiling SwiftCrossUI NavigationLink.swift
-[1153/1315] Compiling SwiftCrossUI NavigationPath.swift
-[1154/1315] Compiling SwiftCrossUI NavigationSplitView.swift
-[1155/1315] Compiling SwiftCrossUI NavigationStack.swift
-[1156/1315] Compiling SwiftCrossUI OptionalView.swift
-[1157/1315] Compiling SwiftCrossUI Picker.swift
-[1158/1315] Compiling SwiftCrossUI ProgressView.swift
-[1159/1315] Compiling SwiftCrossUI ScrollView.swift
-[1160/1315] Compiling SwiftCrossUI SecureField.swift
-[1161/1315] Compiling SwiftCrossUI Capsule.swift
-[1162/1315] Compiling SwiftCrossUI Circle.swift
-[1163/1315] Compiling SwiftCrossUI Ellipse.swift
-[1164/1315] Compiling SwiftCrossUI InsettableShape.swift
-[1165/1315] Compiling SwiftCrossUI Rectangle.swift
-[1166/1315] Compiling SwiftCrossUI RoundedRectangle.swift
-[1167/1315] Compiling SwiftCrossUI Shape.swift
-[1168/1315] Compiling SwiftCrossUI StyledShape.swift
-[1169/1315] Compiling SwiftCrossUI Slider.swift
-[1170/1315] Compiling SwiftCrossUI Spacer.swift
-[1171/1315] Compiling SwiftCrossUI SplitView.swift
-[1172/1315] Compiling SwiftCrossUI DefaultPickerStyle.swift
-[1173/1315] Compiling SwiftCrossUI InlinePickerStyle.swift
-[1174/1315] Compiling SwiftCrossUI MenuPickerStyle.swift
-[1175/1315] Compiling SwiftCrossUI PalettePickerStyle.swift
-[1176/1315] Compiling SwiftCrossUI PickerStyle.swift
-[1177/1315] Compiling SwiftCrossUI RadioGroupPickerStyle.swift
-[1178/1315] Compiling SwiftCrossUI SegmentedPickerStyle.swift
-[1179/1315] Compiling SwiftCrossUI WheelPickerStyle.swift
-[1180/1315] Compiling SwiftCrossUI OnHoverModifier.swift
-[1181/1315] Compiling SwiftCrossUI OnOpenURLModifier.swift
-[1182/1315] Compiling SwiftCrossUI OnSubmitModifier.swift
-[1183/1315] Compiling SwiftCrossUI OnTapGestureModifier.swift
-[1184/1315] Compiling SwiftCrossUI HelpModifier.swift
-[1185/1315] Compiling SwiftCrossUI InspectModifier.swift
-[1186/1315] Compiling SwiftCrossUI AspectRatioModifier.swift
-[1187/1315] Compiling SwiftCrossUI BackgroundModifier.swift
-[1188/1315] Compiling SwiftCrossUI FixedSizeModifier.swift
-[1189/1315] Compiling SwiftCrossUI FrameModifier.swift
-[1190/1315] Compiling SwiftCrossUI LayoutPriorityModifier.swift
-[1191/1315] Compiling SwiftCrossUI MultilineTextAlignmentModifier.swift
-[1192/1315] Compiling SwiftCrossUI OverlayModifier.swift
-[1193/1315] Compiling SwiftCrossUI PaddingModifier.swift
-[1194/1315] Compiling SwiftCrossUI OnAppearModifier.swift
-[1195/1315] Compiling SwiftCrossUI OnCommitModifier.swift
-[1196/1315] Compiling SwiftCrossUI OnDisappearModifier.swift
-[1197/1315] Compiling SwiftCrossUI TaskModifier.swift
-[1198/1315] Compiling SwiftCrossUI MenuModifiers.swift
-[1199/1315] Compiling SwiftCrossUI PickerStyleModifier.swift
-[1200/1315] Compiling SwiftCrossUI PreferenceModifier.swift
-[1201/1315] Compiling SwiftCrossUI AngularGradient.swift
-[1202/1315] Compiling SwiftCrossUI LinearGradient.swift
-[1203/1315] Compiling SwiftCrossUI RadialGradient.swift
-[1204/1315] Compiling SwiftCrossUI Group.swift
-[1205/1315] Compiling SwiftCrossUI HStack.swift
-[1206/1315] Compiling SwiftCrossUI HorizontalControlSpacer.swift
-[1207/1315] Compiling SwiftCrossUI HotReloadableView.swift
-[1208/1315] Compiling SwiftCrossUI Image.swift
-[1209/1315] Compiling SwiftCrossUI List.swift
-[1210/1315] Compiling SwiftCrossUI Menu.swift
-[1211/1315] Compiling SwiftCrossUI MenuItem.swift
-[1212/1315] Compiling SwiftCrossUI AlertModifier.swift
-[1213/1315] Compiling SwiftCrossUI AppStorageProviderModifier.swift
-[1214/1315] Compiling SwiftCrossUI ConditionalApplicationModifier.swift
-[1215/1315] Compiling SwiftCrossUI DatePickerStyleModifier.swift
-[1216/1315] Compiling SwiftCrossUI DisabledModifier.swift
-[1217/1315] Compiling SwiftCrossUI EnvironmentModifier.swift
-[1218/1315] Compiling SwiftCrossUI FocusEffectDisabledModifier.swift
-[1219/1315] Compiling SwiftCrossUI FocusableModifier.swift
-[1220/1315] Compiling SwiftCrossUI FocusedModifier.swift
-[1221/1315] Compiling SwiftCrossUI OnChangeModifier.swift
-[1222/1315] Compiling SwiftCrossUI WindowInteractionBehavior.swift
-[1223/1315] Compiling SwiftCrossUI WindowResizability.swift
-[1224/1315] Compiling SwiftCrossUI AnyViewGraphNode.swift
-[1225/1315] Compiling SwiftCrossUI ErasedViewGraphNode.swift
-[1226/1315] Compiling SwiftCrossUI PreferenceValues.swift
-[1227/1315] Compiling SwiftCrossUI ViewGraph.swift
-[1228/1315] Compiling SwiftCrossUI ViewGraphNode.swift
-[1229/1315] Compiling SwiftCrossUI ViewGraphNodeChildren.swift
-[1230/1315] Compiling SwiftCrossUI ViewGraphSnapshotter.swift
-[1231/1315] Compiling SwiftCrossUI AnyView.swift
-[1232/1315] Compiling SwiftCrossUI Button.swift
-[1233/1315] Compiling SwiftCrossUI Checkbox.swift
-[1234/1315] Compiling SwiftCrossUI ColorPicker.swift
-[1235/1315] Compiling SwiftCrossUI ContentUnavailableView.swift
-[1236/1315] Compiling SwiftCrossUI DatePicker.swift
-[1237/1315] Compiling SwiftCrossUI Divider.swift
-[1238/1315] Compiling SwiftCrossUI EitherView.swift
-[1239/1315] Compiling SwiftCrossUI ElementaryView.swift
-[1240/1315] Compiling SwiftCrossUI EmptyView.swift
-[1241/1315] Compiling SwiftCrossUI ForEach.swift
-[1242/1315] Compiling SwiftCrossUI GeometryReader.swift
-[1243/1315] Compiling SwiftCrossUI HotReloadingMacros.swift
-[1244/1315] Compiling SwiftCrossUI LayoutPriorityGroup.swift
-[1245/1315] Compiling SwiftCrossUI LayoutSystem.swift
-[1246/1315] Compiling SwiftCrossUI Position.swift
-[1247/1315] Compiling SwiftCrossUI ProposedViewSize.swift
-[1248/1315] Compiling SwiftCrossUI StackLayoutCache.swift
-[1249/1315] Compiling SwiftCrossUI ViewLayoutResult.swift
-[1250/1315] Compiling SwiftCrossUI ViewSize.swift
-[1251/1315] Compiling SwiftCrossUI Logging.swift
-[1252/1315] Compiling SwiftCrossUI AlertScene.swift
-[1253/1315] Compiling SwiftCrossUI CommandMenu.swift
-[1254/1315] Compiling SwiftCrossUI Commands.swift
-[1255/1315] Compiling SwiftCrossUI SceneGraphNode.swift
-[1256/1315] Compiling SwiftCrossUI SceneNodeUpdateResult.swift
-[1257/1315] Compiling SwiftCrossUI ScenePreferenceValues.swift
-[1258/1315] Compiling SwiftCrossUI CommandsModifier.swift
-[1259/1315] Compiling SwiftCrossUI DefaultLaunchBehaviorModifier.swift
-[1260/1315] Compiling SwiftCrossUI DefaultWindowSize.swift
-[1261/1315] Compiling SwiftCrossUI SceneEnvironmentModifier.swift
-[1262/1315] Compiling SwiftCrossUI WindowResizabilityModifier.swift
-[1263/1315] Compiling SwiftCrossUI Scene.swift
-[1264/1315] Compiling SwiftCrossUI TupleScene.swift
-[1265/1315] Emitting module SwiftCrossUI
-[1266/1315] Compiling SwiftCrossUI Publisher.swift
-[1267/1315] Compiling SwiftCrossUI State.swift
-[1268/1315] Compiling SwiftCrossUI StateImpl.swift
-[1269/1315] Compiling SwiftCrossUI Alignment.swift
-[1270/1315] Compiling SwiftCrossUI Angle.swift
-[1271/1315] Compiling SwiftCrossUI AppMetadata.swift
-[1272/1315] Compiling SwiftCrossUI AppPhase.swift
-[1273/1315] Compiling SwiftCrossUI Axis.swift
-[1274/1315] Compiling SwiftCrossUI ButtonStyle.swift
-[1275/1315] Compiling SwiftCrossUI Color+Representation.swift
-[1276/1315] Compiling SwiftCrossUI Color+Resolved.swift
-[1277/1315] Compiling SwiftCrossUI Color.swift
-[1278/1315] Compiling SwiftCrossUI ColorScheme.swift
-[1279/1315] Compiling SwiftCrossUI ContentMode.swift
-[1280/1315] Compiling SwiftCrossUI ContentType.swift
-[1281/1315] Compiling SwiftCrossUI DeviceClass.swift
-[1282/1315] Compiling SwiftCrossUI Edge.swift
-[1283/1315] Compiling SwiftCrossUI Focus.swift
-[1284/1315] Compiling SwiftCrossUI Focusability.swift
-[1285/1315] Compiling SwiftCrossUI Font.swift
-[1286/1315] Compiling SwiftCrossUI GeometryProxy.swift
-[1287/1315] Compiling SwiftCrossUI _BuiltinPickerStyle.swift
-[1288/1315] Compiling SwiftCrossUI Table.swift
-[1289/1315] Compiling SwiftCrossUI TableColumn.swift
-[1290/1315] Compiling SwiftCrossUI TableRowContent.swift
-[1291/1315] Compiling SwiftCrossUI Text.swift
-[1292/1315] Compiling SwiftCrossUI TextEditor.swift
-[1293/1315] Compiling SwiftCrossUI TextField.swift
-[1294/1315] Compiling SwiftCrossUI Toggle.swift
-[1295/1315] Compiling SwiftCrossUI ToggleButton.swift
-[1296/1315] Compiling SwiftCrossUI ToggleSwitch.swift
-[1297/1315] Compiling SwiftCrossUI TupleView.swift
-[1298/1315] Compiling SwiftCrossUI TupleViewChildren.swift
-[1299/1315] Compiling SwiftCrossUI TypeSafeView.swift
-[1300/1315] Compiling SwiftCrossUI VStack.swift
-[1301/1315] Compiling SwiftCrossUI View.swift
-[1302/1315] Compiling SwiftCrossUI ViewContent.swift
-[1303/1315] Compiling SwiftCrossUI WebView.swift
-[1304/1315] Compiling SwiftCrossUI ZStack.swift
-[1305/1315] Compiling SwiftCrossUI _BuiltinPickerImplementation.swift
-[1306/1315] Compiling SwiftCrossUI _App.swift
-[1307/1315] Compiling SwiftCrossUI _RemoveGlobalActorIsolation.swift
-[1308/1316] Wrapping AST for SwiftCrossUI for debugging
-[1310/1369] Emitting module GtkBackend
-[1311/1372] Compiling GtkBackend CustomListBox.swift
-[1312/1372] Compiling GtkBackend Extensions.swift
-[1313/1372] Compiling GtkBackend GtkCustomButton.swift
-[1314/1372] Compiling GtkBackend ThreadActionContext.swift
-[1315/1372] Compiling GtkBackend ProgressBars.swift
-[1316/1372] Compiling GtkBackend ProgressSpinners.swift
-[1317/1372] Compiling GtkBackend RadialGradients.swift
-[1318/1372] Compiling GtkBackend RevealFiles.swift
-[1319/1372] Compiling GtkBackend GenericContainers.swift
-[1320/1372] Compiling GtkBackend HoverGestures.swift
-[1321/1372] Compiling GtkBackend Images.swift
-[1322/1372] Compiling GtkBackend IncomingURLs.swift
-[1323/1372] Compiling GtkBackend Alerts.swift
-[1324/1372] Compiling GtkBackend ApplicationMenus.swift
-[1325/1372] Compiling GtkBackend Checkboxes.swift
-[1326/1372] Compiling GtkBackend ColorPickers.swift
-[1327/1372] Compiling GtkBackend Widgets.swift
-[1328/1372] Compiling GtkBackend WindowBehaviors.swift
-[1329/1372] Compiling GtkBackend WindowClosing.swift
-[1330/1372] Compiling GtkBackend GtkBackend.swift
-[1331/1372] Compiling GtkBackend Sliders.swift
-[1332/1372] Compiling GtkBackend SplitViews.swift
-[1333/1372] Compiling GtkBackend StringLabelButtons.swift
-[1334/1372] Compiling GtkBackend Switches.swift
-[1335/1372] Compiling GtkBackend TextViews.swift
-[1336/1372] Compiling GtkBackend ToggleButtons.swift
-[1337/1372] Compiling GtkBackend Tooltips.swift
-[1338/1372] Compiling GtkBackend ViewLabelButtons.swift
-[1339/1372] Compiling GtkBackend ScrollContainers.swift
-[1340/1372] Compiling GtkBackend SecureFields.swift
-[1341/1372] Compiling GtkBackend SelectableListViews.swift
-[1342/1372] Compiling GtkBackend Sheets.swift
-[1343/1372] Compiling GtkBackend Colors.swift
-[1344/1372] Compiling GtkBackend Core.swift
-[1345/1372] Compiling GtkBackend CoreWindowing.swift
-[1346/1372] Compiling GtkBackend CornerRadius.swift
-[1347/1372] Compiling GtkBackend DatePickers.swift
-[1348/1372] Compiling GtkBackend ExternalURLs.swift
-[1349/1372] Compiling GtkBackend FileOpenDialogs.swift
-[1350/1372] Compiling GtkBackend FileSaveDialogs.swift
-[1351/1372] Compiling GtkBackend GtkWidgetRepresentable.swift
-[1352/1372] Compiling GtkBackend Conversions.swift
-[1353/1372] Compiling GtkBackend CustomColorButton.swift
-[1354/1372] Compiling GtkBackend CustomLabel.swift
-[1355/1372] Compiling GtkBackend Tables.swift
-[1356/1372] Compiling GtkBackend TapGestures.swift
-[1357/1372] Compiling GtkBackend TextEditors.swift
-[1358/1372] Compiling GtkBackend TextFields.swift
-[1359/1372] Compiling GtkBackend LinearGradients.swift
-[1360/1372] Compiling GtkBackend Paths.swift
-[1361/1372] Compiling GtkBackend Pickers.swift
-[1362/1372] Compiling GtkBackend PopoverMenus.swift
-[1363/1372] Compiling GtkBackend TimePicker.swift
-[1364/1372] Compiling GtkBackend TooltipContainer.swift
-[1365/1372] Compiling GtkBackend InspectionModifiers.swift
-[1366/1373] Wrapping AST for GtkBackend for debugging
-[1368/1375] Emitting module DefaultBackend
-[1369/1375] Compiling DefaultBackend DefaultBackend.swift
-[1370/1376] Wrapping AST for DefaultBackend for debugging
-[1372/1385] Compiling DashUICross TransactionView.swift
-[1373/1385] Compiling DashUICross QRCodeView.swift
-/work/Sources/DashUICross/QRCodeView.swift:67:10: warning: 'frame(width:height:alignment:)' is deprecated: renamed to 'frame(width:height:alignment:)' [#DeprecatedDeclaration]
-65 |             QRModulesShape(size: size, modules: modules).fill(Color.black)
-66 |         }
-67 |         .frame(width: side, height: side)
-   |          |- warning: 'frame(width:height:alignment:)' is deprecated: renamed to 'frame(width:height:alignment:)' [#DeprecatedDeclaration]
-   |          `- note: use 'frame(width:height:alignment:)' instead
-68 |     }
-69 | }
-
-[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
-[1374/1385] Compiling DashUICross Containers.swift
-[1375/1385] Emitting module DashUICross
-[1376/1385] Compiling DashUICross Gallery.swift
-[1377/1385] Compiling DashUICross Fields.swift
-/work/Sources/DashUICross/Fields.swift:29:52: warning: 'frame(width:height:alignment:)' is deprecated: renamed to 'frame(width:height:alignment:)' [#DeprecatedDeclaration]
- 27 |             FieldCaption(caption)
- 28 |             if let width {
- 29 |                 TextField(placeholder, text: text).frame(width: width)
-    |                                                    |- warning: 'frame(width:height:alignment:)' is deprecated: renamed to 'frame(width:height:alignment:)' [#DeprecatedDeclaration]
-    |                                                    `- note: use 'frame(width:height:alignment:)' instead
- 30 |             } else {
- 31 |                 TextField(placeholder, text: text).frame(minWidth: 200, maxWidth: .infinity)
-
-[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
-[1378/1385] Compiling DashUICross DashUICross.swift
-[1379/1385] Compiling DashUICross DashButton.swift
-[1380/1385] Compiling DashUICross Feedback.swift
-[1381/1391] Wrapping AST for DashUICross for debugging
-[1383/1398] Compiling CrossUI CrossUI.swift
-[1384/1398] Compiling CrossUI ReceiveScreen.swift
-[1385/1398] Compiling CrossUI CrossAppState.swift
-[1386/1398] Emitting module CrossUI
-[1387/1398] Compiling CrossUI Support.swift
-[1388/1398] Compiling CrossUI WalletRootView.swift
-[1389/1398] Compiling CrossUI SettingsScreen.swift
-[1390/1398] Compiling CrossUI SendScreen.swift
-[1391/1398] Compiling CrossUI ToolScreens.swift
-[1392/1398] Compiling CrossUI TransactionsScreen.swift
-[1393/1398] Compiling CrossUI OnboardingScreen.swift
-[1394/1398] Compiling CrossUI OverviewScreen.swift
-[1395/1399] Wrapping AST for CrossUI for debugging
-[1397/1408] Compiling DashWalletCross LiveEngineProbe.swift
-[1398/1408] Compiling DashWalletCross LiveEnvironment.swift
-[1399/1408] Compiling DashWalletCross LaunchOptions.swift
-[1400/1408] Emitting module DashWalletCross
-[1401/1408] Compiling DashWalletCross DashWalletCrossApp.swift
-[1402/1408] Compiling DashWalletCross DemoWorld.swift
-[1403/1408] Compiling DashWalletCross DemoServices.swift
-[1404/1408] Compiling DashWalletCross DemoEnvironment.swift
-[1405/1408] Compiling DashWalletCross CoreFunctionServices.swift
-[1406/1409] Wrapping AST for DashWalletCross for debugging
-[1407/1409] Write Objects.LinkFileList
+[0/185] Write sources
+[9/185] Write swift-version-24593BA9C3E375BF.txt
+[11/37] Compiling PlatformServices PlatformServices.swift
+[12/37] Compiling PlatformServices DataLocation.swift
+[13/37] Emitting module PlatformServices
+[14/37] Compiling PlatformServices ScreenCaptureGuard.swift
+[15/38] Wrapping AST for PlatformServices for debugging
+[17/38] Compiling DashUICross TransactionView.swift
+[18/38] Compiling DashUICross Containers.swift
+[19/38] Compiling DashUICross DashButton.swift
+[20/38] Compiling DashUICross DashUICross.swift
+[21/38] Compiling DashUICross Gallery.swift
+[22/38] Compiling DashUICross Feedback.swift
+[23/38] Compiling DashUICross QRCodeView.swift
+[24/38] Compiling DashUICross Fields.swift
+[24/38] Copying libdashwallet_core.a
+[26/40] Compiling DashUICross Accessibility.swift
+[27/40] Emitting module DashUICross
+[28/41] Wrapping AST for DashUICross for debugging
+[30/41] Emitting module DashWalletCore
+[31/41] Compiling DashWalletCore DashWalletCore.swift
+[32/42] Wrapping AST for DashWalletCore for debugging
+[34/53] Compiling DashKit SimpleEnums.swift
+[35/53] Compiling DashKit SecretBytes.swift
+[36/53] Emitting module DashKit
+[37/53] Compiling DashKit EngineProtocol.swift
+[38/53] Compiling DashKit Amount.swift
+[39/53] Compiling DashKit CoreFunctions.swift
+[40/53] Compiling DashKit EventBus.swift
+[41/53] Compiling DashKit Models.swift
+[42/53] Compiling DashKit DashKitError.swift
+[43/53] Compiling DashKit EngineClient.swift
+[44/53] Compiling DashKit EngineModels.swift
+[45/54] Wrapping AST for DashKit for debugging
+[47/60] Compiling PlatformServicesDesktop PlatformServicesDesktop.swift
+[48/60] Emitting module AppServices
+[49/60] Compiling AppServices AppServices.swift
+[51/90] Emitting module PlatformServicesDesktop
+[52/90] Compiling PlatformServicesDesktop DesktopDataDirectory.swift
+[54/91] Compiling WalletRuntime RuntimeClock.swift
+[55/91] Compiling WalletRuntime TaskBag.swift
+[56/93] Compiling WalletRuntime Broadcasters.swift
+[57/93] Compiling WalletRuntime Coalescer.swift
+[57/93] Wrapping AST for PlatformServicesDesktop for debugging
+[59/93] Compiling WalletRuntime Vault.swift
+[60/93] Compiling WalletRuntime WalletState.swift
+[61/93] Compiling WalletRuntime Watchdog.swift
+[62/93] Compiling WalletRuntime WalletRuntime.swift
+[63/93] Compiling WalletRuntime LifecycleQueue.swift
+[64/93] Compiling WalletRuntime WalletHost.swift
+[65/93] Compiling WalletRuntime ToolServices.swift
+[66/93] Compiling WalletRuntime TransactionSender.swift
+[67/93] Compiling WalletRuntime EngineContext.swift
+[68/93] Compiling WalletRuntime QueryServices.swift
+[69/93] Compiling WalletRuntime Lifecycle.swift
+[70/93] Compiling WalletRuntime Receive.swift
+[71/93] Compiling WalletRuntime Send.swift
+[72/93] Compiling WalletRuntime ServiceError.swift
+[73/93] Compiling WalletRuntime Sync.swift
+[74/93] Compiling WalletRuntime Tools.swift
+[75/93] Compiling WalletRuntime SyncProgressDamper.swift
+[76/93] Compiling WalletRuntime WalletStateModel.swift
+[77/93] Compiling WalletRuntime CoinsAndLabels.swift
+[78/93] Compiling WalletRuntime CommonTypes.swift
+[79/93] Compiling WalletRuntime History.swift
+[80/93] Compiling WalletRuntime Conversions.swift
+[81/93] Compiling WalletRuntime EnumConversions.swift
+[82/93] Compiling WalletRuntime WalletRuntimeServices.swift
+[83/93] Emitting module WalletRuntime
+[84/93] Compiling WalletRuntime SPVCoordinator.swift
+[85/93] Compiling WalletRuntime SettingsStore.swift
+[86/93] Compiling WalletRuntime VaultService.swift
+[87/93] Compiling WalletRuntime AuthenticationGate.swift
+[88/94] Wrapping AST for WalletRuntime for debugging
+[90/125] Compiling WalletFeatures L10n+Send.swift
+[91/125] Compiling WalletFeatures L10n+Settings.swift
+[92/127] Compiling WalletFeatures L10n+AddressBook.swift
+[93/127] Compiling WalletFeatures L10n+Home.swift
+[94/127] Compiling WalletFeatures L10n+Lock.swift
+[95/127] Compiling WalletFeatures AppEnvironment.swift
+[96/127] Compiling WalletFeatures EngineCode.swift
+[97/127] Compiling WalletFeatures ErrorText.swift
+[98/127] Compiling WalletFeatures BIP39EnglishWords.swift
+[99/127] Compiling WalletFeatures OnboardingSupport.swift
+[100/127] Compiling WalletFeatures SignVerifyViewModel.swift
+[101/127] Compiling WalletFeatures TransactionFilters.swift
+[102/127] Compiling WalletFeatures AddressBookViewModel.swift
+[103/127] Compiling WalletFeatures AmountFormatter.swift
+[104/127] Compiling WalletFeatures AppEnvironment+Runtime.swift
+[105/127] Compiling WalletFeatures L10n+Onboarding.swift
+[106/127] Compiling WalletFeatures L10n+Receive.swift
+[107/127] Compiling WalletFeatures TransactionsViewModel.swift
+[108/127] Compiling WalletFeatures WalletFeatures.swift
+[109/127] Compiling WalletFeatures OnboardingViewModel.swift
+[110/127] Compiling WalletFeatures ReceiveViewModel.swift
+[111/127] Compiling WalletFeatures SendViewModel.swift
+[112/127] Compiling WalletFeatures SettingsViewModel.swift
+[113/127] Compiling WalletFeatures MainViewModel.swift
+[114/127] Compiling WalletFeatures AppRoute.swift
+[115/127] Compiling WalletFeatures L10n+SignVerify.swift
+[116/127] Compiling WalletFeatures L10n+Transactions.swift
+[117/127] Compiling WalletFeatures InputValidation.swift
+[118/127] Compiling WalletFeatures UIPreferences.swift
+[119/127] Compiling WalletFeatures HomeViewModel.swift
+[120/127] Compiling WalletFeatures L10n.swift
+[121/127] Compiling WalletFeatures LockViewModel.swift
+[122/127] Emitting module WalletFeatures
+[123/128] Wrapping AST for WalletFeatures for debugging
+[125/140] Compiling CrossUI SettingsScreen.swift
+[126/140] Compiling CrossUI Support.swift
+[127/140] Compiling CrossUI WalletRootView.swift
+[128/140] Compiling CrossUI ReceiveScreen.swift
+[129/140] Compiling CrossUI SendScreen.swift
+[130/140] Compiling CrossUI OverviewScreen.swift
+[131/140] Compiling CrossUI TransactionsScreen.swift
+[132/140] Compiling CrossUI ToolScreens.swift
+[133/140] Compiling CrossUI CrossUI.swift
+[134/140] Compiling CrossUI OnboardingScreen.swift
+[135/140] Compiling CrossUI CrossAppState.swift
+[136/140] Emitting module CrossUI
+[137/141] Wrapping AST for CrossUI for debugging
+[139/149] Compiling DashWalletCross LaunchOptions.swift
+[140/149] Compiling DashWalletCross LiveEnvironment.swift
+[141/149] Emitting module DashWalletCross
+[142/149] Compiling DashWalletCross DashWalletCrossApp.swift
+[143/149] Compiling DashWalletCross DemoWorld.swift
+[144/149] Compiling DashWalletCross DemoEnvironment.swift
+[145/149] Compiling DashWalletCross DemoServices.swift
+[146/149] Compiling DashWalletCross CoreFunctionServices.swift
+[147/150] Wrapping AST for DashWalletCross for debugging
+[148/150] Write Objects.LinkFileList
 clang: warning: argument unused during compilation: '-F/swiftpm/.build/aarch64-unknown-linux-gnu/debug' [-Wunused-command-line-argument]
-[1408/1409] Linking dash-wallet
-Build of product 'dash-wallet' complete! (98.68s)
-== swift build dash-wallet took 101s
+[149/150] Linking dash-wallet
+Build of product 'dash-wallet' complete! (22.31s)
+== swift build dash-wallet took 26s
 == binary: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked
-dbus-daemon[15046]: [session uid=0 pid=15046] Activating service name='org.a11y.Bus' requested by ':1.0' (uid=0 pid=15057 comm="dbus-send --session --print-reply --dest=org.a11y.")
-dbus-daemon[15046]: [session uid=0 pid=15046] Successfully activated service 'org.a11y.Bus'
-== demo: launched dash-wallet --demo (pid 15073)
-dbus-daemon[15071]: Activating service name='org.a11y.atspi.Registry' requested by ':1.0' (uid=0 pid=15074 comm="python3 /work/ci/linux/crossui/atspi_demo.py --pid")
-dbus-daemon[15071]: Successfully activated service 'org.a11y.atspi.Registry'
+dbus-daemon[2044]: [session uid=0 pid=2044] Activating service name='org.a11y.Bus' requested by ':1.0' (uid=0 pid=2055 comm="dbus-send --session --print-reply --dest=org.a11y.")
+dbus-daemon[2044]: [session uid=0 pid=2044] Successfully activated service 'org.a11y.Bus'
+== demo: launched dash-wallet --demo (pid 2071)
+dbus-daemon[2070]: Activating service name='org.a11y.atspi.Registry' requested by ':1.0' (uid=0 pid=2072 comm="python3 /work/ci/linux/crossui/atspi_demo.py --pid")
+dbus-daemon[2070]: Successfully activated service 'org.a11y.atspi.Registry'
 SpiRegistry daemon is running with well-known name - org.a11y.atspi.Registry
-[PASS] hard: app pid 15073 on the AT-SPI bus
+[PASS] hard: app pid 2071 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
 [PASS] hard: 1-overview: marker text 'Balances' is exposed
-== 1-overview: dumped 486 nodes
+== 1-overview: dumped 493 nodes
 == screenshot /out/1-overview.png (window 0x200004): ok
-[PASS] soft: 1-overview: control naming -- {"list item": {"total": 9, "named": 0, "examples_unnamed": ["(no name)", "(no name)", "(no name)"]}, "push button": {"total": 4, "named": 4, "examples_unnamed": []}, "check box": {"total": 1, "named": 0, "examples_unnamed": ["(no name)"]}}
+[PASS] soft: 1-overview: control naming -- {"list item": {"total": 9, "named": 9, "examples_unnamed": []}, "push button": {"total": 4, "named": 4, "examples_unnamed": []}, "check box": {"total": 1, "named": 0, "examples_unnamed": ["(no name)"]}}
 [PASS] hard: 1-overview: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
+[FAIL] hard: 1-overview: every entry, switch and picker has an accessible name -- ['check box']
+[PASS] hard: 1-overview: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions', 'yNZpqbukFJzBUJSca4Q1Ny2YD8qwkBp874, +0.15000000 tDASH, 2026-10-05 22:38', 'Alice, -0.75002260 tDASH, 2026-10-02 15:26']
 [PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
 [PASS] hard: 2-send: marker text 'Pay To:' is exposed
-== 2-send: dumped 440 nodes
+== 2-send: dumped 458 nodes
 == screenshot /out/2-send.png (window 0x200004): ok
-[PASS] soft: 2-send: control naming -- {"list item": {"total": 4, "named": 0, "examples_unnamed": ["(no name)", "(no name)", "(no name)"]}, "push button": {"total": 10, "named": 10, "examples_unnamed": []}, "text": {"total": 5, "named": 0, "examples_unnamed": ["placeholder-text:Pay to: Dash address", "placeholder-text:Amount to send", "placeholder-text:Label for the address book"]}, "check box": {"total": 1, "named": 0, "examples_unnamed": ["(no name)"]}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
+[PASS] soft: 2-send: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 10, "named": 10, "examples_unnamed": []}, "text": {"total": 5, "named": 5, "examples_unnamed": []}, "check box": {"total": 1, "named": 0, "examples_unnamed": ["(no name)"]}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
 [PASS] hard: 2-send: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
+[FAIL] hard: 2-send: every entry, switch and picker has an accessible name -- ['check box']
+[PASS] hard: 2-send: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions']
 [PASS] hard: send: push button named 'Send'
 [PASS] hard: send: push button named 'Add Recipient'
 [PASS] hard: send: push button named 'Clear All'
 [PASS] hard: send: push button named 'Use available balance'
 [PASS] hard: send: address entry exposes placeholder 'Pay to: Dash address'
-== 14 checks, 0 hard failures
-== demo: alive at end (rss 332028 KB)
-== transactions: launched dash-wallet --demo --page transactions (pid 15137)
-[PASS] hard: app pid 15137 on the AT-SPI bus
-[FAIL] hard: window is a frame named "Dash Wallet" -- []
+== 18 checks, 2 hard failures
+== demo: alive at end (rss 335104 KB)
+== transactions: launched dash-wallet --demo --page transactions (pid 2137)
+[PASS] hard: app pid 2137 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
 [PASS] hard: 3-transactions: marker text 'Export…' is exposed
-== 3-transactions: dumped 1371 nodes
+== 3-transactions: dumped 1383 nodes
 == screenshot /out/3-transactions.png (window 0x200004): ok
-[PASS] soft: 3-transactions: control naming -- {"list item": {"total": 40, "named": 0, "examples_unnamed": ["(no name)", "(no name)", "(no name)"]}, "push button": {"total": 5, "named": 5, "examples_unnamed": []}, "combo box": {"total": 2, "named": 2, "examples_unnamed": []}, "toggle button": {"total": 2, "named": 2, "examples_unnamed": []}, "text": {"total": 2, "named": 0, "examples_unnamed": ["placeholder-text:Enter address, transaction id, or label to search", "placeholder-text:Min amount"]}}
-== 4 checks, 1 hard failures
-== transactions: alive at end (rss 295316 KB)
-== receive: launched dash-wallet --demo --page receive (pid 15195)
-[PASS] hard: app pid 15195 on the AT-SPI bus
+[PASS] soft: 3-transactions: control naming -- {"list item": {"total": 40, "named": 40, "examples_unnamed": []}, "push button": {"total": 5, "named": 5, "examples_unnamed": []}, "combo box": {"total": 2, "named": 2, "examples_unnamed": []}, "toggle button": {"total": 2, "named": 2, "examples_unnamed": []}, "text": {"total": 2, "named": 2, "examples_unnamed": []}}
+== 4 checks, 0 hard failures
+== transactions: alive at end (rss 298416 KB)
+== receive: launched dash-wallet --demo --page receive (pid 2193)
+[PASS] hard: app pid 2193 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
 [PASS] hard: 4-receive: marker text 'Request payment' is exposed
-== 4-receive: dumped 363 nodes
+== 4-receive: dumped 371 nodes
 == screenshot /out/4-receive.png (window 0x200004): ok
-[PASS] soft: 4-receive: control naming -- {"list item": {"total": 4, "named": 0, "examples_unnamed": ["(no name)", "(no name)", "(no name)"]}, "push button": {"total": 7, "named": 7, "examples_unnamed": []}, "text": {"total": 3, "named": 0, "examples_unnamed": ["placeholder-text:Amount to request (optional)", "placeholder-text:Enter a label to associate with the new receiving address", "placeholder-text:Message for the payer (optional)"]}}
+[PASS] soft: 4-receive: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 7, "named": 7, "examples_unnamed": []}, "text": {"total": 3, "named": 3, "examples_unnamed": []}}
 == 4 checks, 0 hard failures
-== receive: alive at end (rss 278284 KB)
-== onboarding: launched dash-wallet --demo onboarding (pid 15250)
-[PASS] hard: app pid 15250 on the AT-SPI bus
+== receive: alive at end (rss 280648 KB)
+== onboarding: launched dash-wallet --demo onboarding (pid 2249)
+[PASS] hard: app pid 2249 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
 [PASS] hard: 5-onboarding: marker text 'Create a new wallet' is exposed
-== 5-onboarding: dumped 181 nodes
+== 5-onboarding: dumped 185 nodes
 == screenshot /out/5-onboarding.png (window 0x200004): ok
 [PASS] soft: 5-onboarding: control naming -- {"combo box": {"total": 2, "named": 2, "examples_unnamed": []}, "toggle button": {"total": 2, "named": 2, "examples_unnamed": []}, "push button": {"total": 2, "named": 2, "examples_unnamed": []}}
 == 4 checks, 0 hard failures
-== onboarding: alive at end (rss 274976 KB)
+== onboarding: alive at end (rss 274308 KB)
+== onboarding-flow: launched dash-wallet --demo onboarding (pid 2304)
+[PASS] hard: app pid 2304 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
+[PASS] hard: onboarding: welcome page
+[PASS] hard: press 'Create a new wallet' through AT-SPI Action
+[PASS] hard: onboarding: recovery phrase page
+== 6-onboarding-phrase: dumped 227 nodes
+== screenshot /out/6-onboarding-phrase.png (window 0x200004): ok
+[PASS] hard: onboarding: the phrase page exposes 12 numbered words -- 12
+[PASS] hard: press 'I wrote it down' through AT-SPI Action
+[PASS] hard: press 'abandon' through AT-SPI Action
+[PASS] hard: press 'abandon' through AT-SPI Action
+[PASS] hard: press 'abandon' through AT-SPI Action
+[PASS] hard: press 'about' through AT-SPI Action
+[PASS] hard: onboarding: phrase verified, passphrase page shown
+== 6-onboarding-passphrase: dumped 182 nodes
+== screenshot /out/6-onboarding-passphrase.png (window 0x200004): ok
+[PASS] hard: type into the field named 'New passphrase' through AT-SPI EditableText
+[PASS] hard: type into the field named 'Repeat new passphrase' through AT-SPI EditableText
+[PASS] hard: press 'Encrypt wallet' through AT-SPI Action
+[PASS] hard: onboarding: the new wallet's Overview is shown
+== 6-onboarding-done: dumped 493 nodes
+== screenshot /out/6-onboarding-done.png (window 0x200004): ok
+== 16 checks, 0 hard failures
+== onboarding-flow: alive at end (rss 291096 KB)
+== send-flow: launched dash-wallet --demo --page send (pid 2380)
+[PASS] hard: app pid 2380 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
+[PASS] hard: send: page shown
+[PASS] hard: type into the field named 'Pay To' through AT-SPI EditableText
+[PASS] hard: type into the field named 'Amount' through AT-SPI EditableText
+== 7-send-filled: dumped 458 nodes
+== screenshot /out/7-send-filled.png (window 0x200004): ok
+[PASS] hard: press 'Send' through AT-SPI Action
+== 7-send-authorize: dumped 517 nodes
+== screenshot /out/7-send-authorize.png (window 0x200004): ok
+[PASS] hard: type into the field named 'Passphrase' through AT-SPI EditableText
+[PASS] hard: press 'Authorize' through AT-SPI Action
+[PASS] hard: send: review (confirm) panel shown
+== 7-send-review: dumped 543 nodes
+== screenshot /out/7-send-review.png (window 0x200004): ok
+[PASS] hard: send: review lists the recipient address
+[PASS] hard: press 'Send' through AT-SPI Action
+[FAIL] hard: send: demo broadcast reports the transaction as sent
+== 7-send-done: dumped 1591 nodes
+== screenshot /out/7-send-done.png (window 0x200004): ok
+== 12 checks, 1 hard failures
+== send-flow: alive at end (rss 311068 KB)
+== live: launched dash-wallet (pid 2461), XDG_DATA_HOME=/tmp/xdg-live
+[PASS] hard: app pid 2461 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet" -- ['Dash Wallet']
+[PASS] hard: onboarding: welcome page
+[PASS] hard: press 'Create a new wallet' through AT-SPI Action
+[PASS] hard: onboarding: recovery phrase page
+== 8-live-phrase: dumped 227 nodes
+[PASS] hard: onboarding: the phrase page exposes 12 numbered words -- 12
+[PASS] hard: press 'I wrote it down' through AT-SPI Action
+[PASS] hard: press '<live phrase word, redacted>' through AT-SPI Action
+[PASS] hard: press '<live phrase word, redacted>' through AT-SPI Action
+[PASS] hard: press '<live phrase word, redacted>' through AT-SPI Action
+[PASS] hard: press '<live phrase word, redacted>' through AT-SPI Action
+[PASS] hard: onboarding: phrase verified, passphrase page shown
+== 8-live-passphrase: dumped 182 nodes
+== screenshot /out/8-live-passphrase.png (window 0x200004): ok
+[PASS] hard: type into the field named 'New passphrase' through AT-SPI EditableText
+[PASS] hard: type into the field named 'Repeat new passphrase' through AT-SPI EditableText
+[PASS] hard: press 'Encrypt wallet' through AT-SPI Action
+[PASS] hard: onboarding: the new wallet's Overview is shown
+== 8-live-done: dumped 329 nodes
+== screenshot /out/8-live-done.png (window 0x200004): ok
+== 16 checks, 0 hard failures
+== live: data root contents
+.
+./dashwallet
+./dashwallet/global.json
+./dashwallet/regtest
+== live: PASS regtest data under $XDG_DATA_HOME/dashwallet
+close_window: sent WM_DELETE_WINDOW to 0x200004 ('Dash Wallet')
+== live: exit after window close: 0
+== live: FAIL no engine shutdown message

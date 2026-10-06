@@ -191,7 +191,7 @@
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [text] "Pay To" actions=activate attrs=placeholder-text:Pay to: Dash address {editable,focusable,sensitive,showing,visible} @(245,100 828x32)
+                                                                                                                                      [text] "Pay To" text="yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98" actions=activate attrs=placeholder-text:Pay to: Dash address {editable,focusable,sensitive,showing,visible} @(245,100 828x32)
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -206,7 +206,7 @@
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [text] "Amount" actions=activate attrs=placeholder-text:Amount to send {editable,focusable,sensitive,showing,visible} @(245,161 200x32)
+                                                                                                                                        [text] "Amount" text="0.25" actions=activate attrs=placeholder-text:Amount to send {editable,focusable,sensitive,showing,visible} @(245,161 200x32)
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}

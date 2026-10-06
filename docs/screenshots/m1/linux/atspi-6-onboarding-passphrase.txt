@@ -51,6 +51,33 @@
                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                             [panel] "" {sensitive,showing,visible}
+                                                                                              [label] "Warning: If you encrypt your wallet and lose your passphrase, you will LOSE ALL OF YOUR DASH! Your recovery phrase still restores the wallet." text="Warning: If you encrypt your wallet and lose your passphrase, you will LOSE ALL OF YOUR DASH! Your recovery phrase still restores the wallet." {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [label] "New passphrase" text="New passphrase" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [text] "New passphrase" actions=activate attrs=placeholder-text:New passphrase {editable,focusable,sensitive,showing,visible} @(44,125 420x32)
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [label] "Repeat new passphrase" text="Repeat new passphrase" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [text] "Repeat new passphrase" actions=activate attrs=placeholder-text:Repeat new passphrase {editable,focusable,sensitive,showing,visible} @(44,186 420x32)
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -59,80 +86,50 @@
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                              [label] "Network" text="Network" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [push button] "Back" actions=click {focusable,sensitive,showing,visible} @(52,236 37x17)
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [label] "Back" text="Back" {sensitive,showing,visible}
+                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [panel] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                  [combo box] "Testnet" {sensitive,showing,visible}
-                                                                                                                    [toggle button] "Testnet" actions=click {focusable,sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                            [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                            [push button] "Encrypt wallet" actions=click {focusable,showing,visible} @(129,236 114x17)
                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                [label] "Testnet" text="Testnet" {sensitive,showing,visible}
-                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                [label] "Encrypt wallet" text="Encrypt wallet" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                          [label] "Recovery phrase length" text="Recovery phrase length" {sensitive,showing,visible}
-                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                        [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                              [combo box] "12 words" {sensitive,showing,visible}
-                                                                                                                [toggle button] "12 words" actions=click {focusable,sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                        [push button] "Continue without encryption" actions=click {focusable,sensitive,showing,visible} @(283,236 228x17)
                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                            [label] "12 words" text="12 words" {sensitive,showing,visible}
-                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [push button] "Create a new wallet" actions=click {focusable,sensitive,showing,visible} @(56,219 182x19)
-                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                              [label] "Create a new wallet" text="Create a new wallet" {sensitive,showing,visible}
-                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [push button] "Restore wallet" actions=click {focusable,sensitive,showing,visible} @(286,219 126x19)
-                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                              [label] "Restore wallet" text="Restore wallet" {sensitive,showing,visible}
+                                                                                                                            [label] "Continue without encryption" text="Continue without encryption" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                     [panel] "" {sensitive,showing,visible}
                                       [panel] "" {sensitive,showing,visible}

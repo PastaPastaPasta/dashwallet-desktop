@@ -1,4 +1,4 @@
-[application] "dash-wallet" desc="dash-wallet" {}
+[application] "dash-wallet" desc="Dash Wallet" {}
   [frame] "Dash Wallet" actions=window.close,window.minimize,window.toggle-maximized,default.activate {sensitive,showing,visible} @(0,0 1100x760)
     [panel] "" {sensitive,showing,visible}
       [panel] "" {sensitive,showing,visible}
@@ -42,27 +42,29 @@
                                                                       [panel] "" {sensitive,showing,visible}
                                                                         [panel] "" {sensitive,showing,visible}
                                                                           [panel] "" {sensitive,showing,visible}
-                                                                            [list] "" {focusable,sensitive,showing,visible} @(12,45 176x108)
-                                                                              [list item] "" {focusable,selectable,sensitive,showing,visible} @(12,45 176x27)
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [list] "" {focusable,sensitive,showing,visible} @(12,45 176x108)
+                                                                                  [list item] "Overview" {focusable,selectable,sensitive,showing,visible} @(12,45 176x27)
                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "Overview" text="Overview" {sensitive,showing,visible}
-                                                                              [list item] "" {focusable,selectable,sensitive,showing,visible} @(12,72 176x27)
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Overview" text="Overview" {sensitive,showing,visible}
+                                                                                  [list item] "Send" {focusable,selectable,sensitive,showing,visible} @(12,72 176x27)
                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "Send" text="Send" {sensitive,showing,visible}
-                                                                              [list item] "" {focusable,selectable,selected,sensitive,showing,visible} @(12,99 176x27)
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Send" text="Send" {sensitive,showing,visible}
+                                                                                  [list item] "Receive" {focusable,selectable,selected,sensitive,showing,visible} @(12,99 176x27)
                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "Receive" text="Receive" {sensitive,showing,visible}
-                                                                              [list item] "" {focusable,selectable,sensitive,showing,visible} @(12,126 176x27)
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Receive" text="Receive" {sensitive,showing,visible}
+                                                                                  [list item] "Transactions" {focusable,selectable,sensitive,showing,visible} @(12,126 176x27)
                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "Transactions" text="Transactions" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Transactions" text="Transactions" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
@@ -246,7 +248,9 @@
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [text] "" actions=activate attrs=placeholder-text:Amount to request (optional) {editable,focusable,sensitive,showing,visible} @(245,394 200x32)
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [text] "Amount" actions=activate attrs=placeholder-text:Amount to request (optional) {editable,focusable,sensitive,showing,visible} @(245,394 200x32)
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -258,7 +262,9 @@
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [text] "" actions=activate attrs=placeholder-text:Enter a label to associate with the new receiving address {editable,focusable,sensitive,showing,visible} @(245,455 828x32)
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [text] "Label" actions=activate attrs=placeholder-text:Enter a label to associate with the new receiving address {editable,focusable,sensitive,showing,visible} @(245,455 828x32)
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -270,7 +276,9 @@
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [text] "" actions=activate attrs=placeholder-text:Message for the payer (optional) {editable,focusable,sensitive,showing,visible} @(245,516 828x32)
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [text] "Message" actions=activate attrs=placeholder-text:Message for the payer (optional) {editable,focusable,sensitive,showing,visible} @(245,516 828x32)
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
