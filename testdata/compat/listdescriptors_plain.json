@@ -1,0 +1,47 @@
+{
+ "wallet_name": "desc_plain",
+ "descriptors": [
+  {
+   "desc": "pkh(tprv8ZgxMBicQKsPeWHBt7a68nPnvgTnuDhUgDWC8wZCgA8GahrQ3f3uWpq7wE7Uc1dLBnCe1hhCZ886K6ND37memRDWqsA9HgSKDXtwh2Qxo6J/44h/1h/0h/0/*)#z7zp59jx",
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "mnemonicpassphrase": "TREZOR",
+   "timestamp": 1791260906,
+   "active": true,
+   "internal": false,
+   "range": [
+    0,
+    1003
+   ],
+   "next": 4,
+   "next_index": 4
+  },
+  {
+   "desc": "pkh(tprv8ZgxMBicQKsPeWHBt7a68nPnvgTnuDhUgDWC8wZCgA8GahrQ3f3uWpq7wE7Uc1dLBnCe1hhCZ886K6ND37memRDWqsA9HgSKDXtwh2Qxo6J/44h/1h/0h/1/*)#n28qfsz7",
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "mnemonicpassphrase": "TREZOR",
+   "timestamp": 1791260906,
+   "active": true,
+   "internal": true,
+   "range": [
+    0,
+    1000
+   ],
+   "next": 1,
+   "next_index": 1
+  },
+  {
+   "desc": "pkh(tprv8ZgxMBicQKsPeWHBt7a68nPnvgTnuDhUgDWC8wZCgA8GahrQ3f3uWpq7wE7Uc1dLBnCe1hhCZ886K6ND37memRDWqsA9HgSKDXtwh2Qxo6J/9h/1h/4h/0h/0/*)#8fqepppg",
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "mnemonicpassphrase": "TREZOR",
+   "timestamp": 1791260906,
+   "active": false,
+   "coinjoin": true,
+   "range": [
+    0,
+    999
+   ],
+   "next": 0,
+   "next_index": 0
+  }
+ ]
+}
