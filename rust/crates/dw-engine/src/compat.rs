@@ -345,12 +345,13 @@ impl NetworkSession {
 
     /// Imports a Dash Core wallet root: derives (or takes) the seed, checks
     /// it against the file's master key, registers the wallet in seed-safety
-    /// order and carries the labels into the address book.
+    /// order and carries the labels into the address book. The report counts
+    /// no keys or scripts left out; callers that leave some out set them.
     async fn import_core_root(
         self: &Arc<Self>,
         root: CoreRoot,
         options: ImportOptions,
-    ) -> Result<(WalletId, u32, bool), EngineError> {
+    ) -> Result<ImportReport, EngineError> {
         let options = ImportOptions {
             // A restored wallet may have funds anywhere in the chain.
             birth_height: options.birth_height.or(Some(0)),
@@ -389,9 +390,15 @@ impl NetworkSession {
             }
             Ok(secret)
         };
-        let id = self.import_secret_with(options, make_secret).await?;
-        let labels_imported = self.import_labels(id, labels).await;
-        Ok((id, labels_imported, core_compat_seed))
+        let wallet_id = self.import_secret_with(options, make_secret).await?;
+        let labels_imported = self.import_labels(wallet_id, labels).await;
+        Ok(ImportReport {
+            wallet_id,
+            labels_imported,
+            keys_not_imported: 0,
+            scripts_not_imported: 0,
+            core_compat_seed,
+        })
     }
 
     /// Adds address-book entries; entries the wallet refuses (an address
@@ -503,14 +510,11 @@ impl NetworkSession {
             used_per_chain,
             labels,
         };
-        let (wallet_id, labels_imported, core_compat_seed) =
-            self.import_core_root(root, options).await?;
+        let report = self.import_core_root(root, options).await?;
         Ok(ImportReport {
-            wallet_id,
-            labels_imported,
             keys_not_imported: report_keys,
             scripts_not_imported: report_scripts,
-            core_compat_seed,
+            ..report
         })
     }
 
@@ -578,15 +582,7 @@ impl NetworkSession {
                 .await?
             })
             .await?;
-        let (wallet_id, labels_imported, core_compat_seed) =
-            self.import_core_root(root, options).await?;
-        Ok(ImportReport {
-            wallet_id,
-            labels_imported,
-            keys_not_imported: 0,
-            scripts_not_imported: 0,
-            core_compat_seed,
-        })
+        self.import_core_root(root, options).await
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
@@ -666,15 +662,7 @@ impl NetworkSession {
                 }
             }
         };
-        let (wallet_id, labels_imported, core_compat_seed) =
-            self.import_core_root(root, options).await?;
-        Ok(ImportReport {
-            wallet_id,
-            labels_imported,
-            keys_not_imported: 0,
-            scripts_not_imported: 0,
-            core_compat_seed,
-        })
+        self.import_core_root(root, options).await
     }
 
     /// The warning for CoinJoin funds a legacy dash-qt wallet would not see.
