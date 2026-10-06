@@ -136,6 +136,27 @@ pub enum EngineEvent {
         network: DashNetwork,
         state: VaultLockState,
     },
+    /// M2 (QT-031…033, IOS-116): transactions of the wallet seen for the
+    /// first time, batched over 100 ms as dash-qt batches its popups. Sent
+    /// once per transaction, never for status changes (those are
+    /// `HistoryChanged`). `catch_up` is true while SPV is not caught up
+    /// (dash-qt shows no popups during initial block download). The host
+    /// reads the rows with `NetworkSession::tx_notices`. Owner R1; not sent
+    /// yet.
+    NewTransactions {
+        network: DashNetwork,
+        wallet_id: String,
+        txids: Vec<String>,
+        catch_up: bool,
+    },
+    /// M2 (QT-101): a wallet was loaded (opened) or unloaded (closed) without
+    /// being removed. Reload the wallet list and `wallet_load_states`.
+    /// Owner R1; not sent yet.
+    WalletLoadChanged {
+        network: DashNetwork,
+        wallet_id: String,
+        loaded: bool,
+    },
 }
 
 impl From<dw_engine::EngineEvent> for EngineEvent {
@@ -216,7 +237,7 @@ impl dw_engine::EventSink for ObserverSink {
 
 #[derive(uniffi::Object)]
 pub struct Engine {
-    inner: dw_engine::Engine,
+    pub(crate) inner: dw_engine::Engine,
 }
 
 #[uniffi::export]

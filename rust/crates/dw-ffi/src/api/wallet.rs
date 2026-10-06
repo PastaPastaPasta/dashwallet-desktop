@@ -153,6 +153,10 @@ pub enum WalletError {
     /// Code `wallet.name_rejected`: empty or longer than 64 characters.
     #[error("name rejected: {detail}")]
     NameRejected { detail: String },
+    /// Code `wallet.invalid_xpub` (M2, QT-114): not an extended public key of
+    /// this network, or not at an account level the engine can watch.
+    #[error("invalid extended public key: {detail}")]
+    InvalidXpub { detail: String },
     /// Code `invalid_argument`.
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -288,6 +292,7 @@ impl WalletError {
             Self::VaultLocked => "wallet.vault_locked",
             Self::GrantInvalid => "wallet.grant_invalid",
             Self::NameRejected { .. } => "wallet.name_rejected",
+            Self::InvalidXpub { .. } => "wallet.invalid_xpub",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",

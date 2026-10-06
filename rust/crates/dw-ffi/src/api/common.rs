@@ -48,15 +48,13 @@ impl From<dashcore::OutPoint> for OutPoint {
 /// Builds the typed "not implemented" case of a domain error. Every domain
 /// error implements it, so a contract call that has no engine behaviour yet
 /// fails with a value the UI can recognise instead of pretending to succeed.
-/// No M1 call needs it after E1 and E2; it stays for later stub calls.
-#[allow(dead_code)]
+/// The M2 stub calls (docs/contracts/m2-engine.md) use it.
 pub(crate) trait NotImplementedError: Sized {
     fn not_implemented(call: &'static str) -> Self;
 }
 
 /// `Err(E::NotImplemented { call })` for a contract call with no engine
 /// behaviour yet. `call` is `"<Object>.<method>"` or the free function name.
-#[allow(dead_code)]
 pub(crate) fn not_implemented<T, E: NotImplementedError>(call: &'static str) -> Result<T, E> {
     Err(E::not_implemented(call))
 }
@@ -115,6 +113,31 @@ macro_rules! export_error_code {
 }
 
 pub(crate) use export_error_code;
+
+/// `network_not_open` once the engine closed `session`. M2 stub calls run it
+/// (after parsing their arguments) before they report `NotImplemented`, so a
+/// host sees the same precondition errors it will see once the call lands.
+pub(crate) fn ensure_open(
+    session: &dw_engine::NetworkSession,
+) -> Result<(), dw_engine::EngineError> {
+    if session.is_open() {
+        Ok(())
+    } else {
+        Err(dw_engine::EngineError::NetworkNotOpen(
+            session.network().to_string(),
+        ))
+    }
+}
+
+/// Parses a txid argument: 64 lower-case hex characters, display order.
+pub(crate) fn parse_txid(txid: &str) -> Result<dashcore::Txid, dw_engine::EngineError> {
+    OutPoint {
+        txid: txid.to_string(),
+        vout: 0,
+    }
+    .to_core()
+    .map(|o| o.txid)
+}
 
 /// Parses a wallet id argument: 64 lower-case hex characters.
 pub(crate) fn parse_wallet_id(

@@ -192,6 +192,24 @@ pub enum VaultError {
     /// Code `vault.corrupt`: a record failed authentication or did not parse.
     #[error("vault corrupt: {detail}")]
     Corrupt { detail: String },
+    /// Code `vault.quick_unlock_limit_exceeded` (M2, IOS-016): a quick-unlock
+    /// `Spend` grant asked for more than the biometric spending limit; the
+    /// host asks for the passphrase instead.
+    #[error("quick unlock spending limit {limit_duffs} exceeded")]
+    QuickUnlockLimitExceeded { limit_duffs: u64 },
+    /// Code `vault.passphrase_stale` (M2, IOS-011): quick unlock refused
+    /// because the passphrase was last entered more than the policy's
+    /// maximum age ago (7 days); the host asks for the passphrase.
+    #[error("passphrase not entered recently enough for quick unlock")]
+    PassphraseStale,
+    /// Code `vault.not_empty` (M2, IOS-009/109): `destroy` while the vault
+    /// still holds secrets of registered wallets.
+    #[error("vault still holds wallet secrets")]
+    NotEmpty,
+    /// Code `vault.recovery_mismatch` (M2, IOS-014): the recovery phrase does
+    /// not derive the wallet it was entered for.
+    #[error("recovery phrase does not match the wallet")]
+    RecoveryMismatch,
     /// Code `invalid_argument`.
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -345,7 +363,7 @@ impl From<dw_vault::AuthGrant> for AuthGrant {
 }
 
 /// The credential with its bytes moved into a zeroing buffer.
-enum OwnedCredential {
+pub(crate) enum OwnedCredential {
     Passphrase(Zeroizing<Vec<u8>>),
     QuickUnlock(Zeroizing<Vec<u8>>),
     None,
@@ -397,6 +415,10 @@ impl VaultError {
             Self::QuickUnlockUnavailable => "vault.quick_unlock_unavailable",
             Self::OsStoreUnavailable { .. } => "vault.os_store_unavailable",
             Self::Corrupt { .. } => "vault.corrupt",
+            Self::QuickUnlockLimitExceeded { .. } => "vault.quick_unlock_limit_exceeded",
+            Self::PassphraseStale => "vault.passphrase_stale",
+            Self::NotEmpty => "vault.not_empty",
+            Self::RecoveryMismatch => "vault.recovery_mismatch",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",
@@ -425,7 +447,7 @@ impl NetworkSession {
 }
 
 impl Vault {
-    fn check_open(&self) -> Result<(), VaultError> {
+    pub(crate) fn check_open(&self) -> Result<(), VaultError> {
         if self.session.is_open() {
             Ok(())
         } else {

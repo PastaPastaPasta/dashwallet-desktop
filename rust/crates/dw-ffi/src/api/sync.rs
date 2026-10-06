@@ -84,6 +84,18 @@ pub enum SyncError {
     /// Code `sync.spv`: dash-spv failed; `detail` is diagnostic.
     #[error("spv: {detail}")]
     Spv { detail: String },
+    /// Code `sync.spv_running` (M2, QT-148): the call needs SPV stopped
+    /// (resetting chain data).
+    #[error("spv running")]
+    SpvRunning,
+    /// Code `sync.rescan_in_progress` (M2, QT-117): a rescan is already
+    /// running (dash-qt "Wallet is currently rescanning").
+    #[error("rescan in progress")]
+    RescanInProgress,
+    /// Code `sync.peer_not_found` (M2, QT-147): no connected or banned peer
+    /// with that address.
+    #[error("peer {address} not found")]
+    PeerNotFound { address: String },
     /// Code `invalid_argument`.
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -195,6 +207,9 @@ impl SyncError {
             Self::SpvNotRunning => "sync.spv_not_running",
             Self::HeightOutOfRange { .. } => "sync.height_out_of_range",
             Self::Spv { .. } => "sync.spv",
+            Self::SpvRunning => "sync.spv_running",
+            Self::RescanInProgress => "sync.rescan_in_progress",
+            Self::PeerNotFound { .. } => "sync.peer_not_found",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",
