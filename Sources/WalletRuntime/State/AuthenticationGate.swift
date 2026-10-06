@@ -111,6 +111,16 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
         }
     }
 
+    /// Withdraws an unused grant on the open network (engine
+    /// `Vault.revoke_grant`). Runs in the background; without an open network,
+    /// or for an id the engine no longer knows, there is nothing to withdraw.
+    public func revoke(_ grant: AuthGrant) {
+        guard let network else { return }
+        let engine = engine
+        let grantID = grant.id
+        Task { try? await engine.revokeGrant(on: network, grantID: grantID) }
+    }
+
     public func unlock(passphrase: any SecretBuffer, scope: UnlockScope) async throws(ServiceError) {
         let network = try requireNetwork()
         let engine = engine

@@ -241,12 +241,12 @@ private final class Latch: @unchecked Sendable {
         let h = Harness()
         let (draft, fake) = try await draft(h)
         let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
-        fake.with { $0.broadcastErrors = [.domain(code: "send.broadcast_rejected", detail: "timeout")] }
+        fake.with { $0.broadcastErrors = [.domain(code: "send.broadcast_unknown", detail: "timeout")] }
         do {
             _ = try await draft.broadcast(prepared)
             Issue.record("broadcast must fail")
         } catch {
-            #expect(error.code == .sendBroadcastRejected)
+            #expect(error.code == .sendBroadcastUnknown)
         }
         do {
             try await draft.abandon(prepared)

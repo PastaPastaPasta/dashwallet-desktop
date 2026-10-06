@@ -44,8 +44,8 @@ public final class TransactionSender: TransactionSending {
 ///   broadcast, so an edit after "Review" never leaves inputs reserved for a
 ///   transaction the user will not confirm.
 /// - A broadcast that fails after it may have reached a peer (any failure
-///   except `send.no_peers`, `send.prepared_tx_spent` and argument/session
-///   errors) marks the transaction "outcome unknown". `abandon` then refuses
+///   except `send.no_peers`, `send.prepared_tx_spent`,
+///   `send.broadcast_rejected` and argument/session errors) marks the transaction "outcome unknown". `abandon` then refuses
 ///   with `send.broadcast_outcome_unknown` and keeps the inputs reserved;
 ///   `broadcast` may be retried (same signed transaction, same txid).
 /// - While a broadcast is in flight the transaction is neither abandoned (by
@@ -133,7 +133,9 @@ public actor TransactionDraft: TransactionDrafting {
                 // Nothing left the engine. A transaction that was uncertain
                 // before this retry stays uncertain.
                 prepared[transaction.id]?.state = entry.state
-            case .sendPreparedTxSpent:
+            case .sendPreparedTxSpent, .sendBroadcastRejected:
+                // The engine released the inputs and spent the PreparedTx
+                // (m1-engine.md §2.7): nothing is left to abandon or retry.
                 prepared[transaction.id] = nil
             default:
                 prepared[transaction.id]?.state = .outcomeUnknown
