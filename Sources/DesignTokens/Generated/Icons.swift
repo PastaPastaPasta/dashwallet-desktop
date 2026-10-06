@@ -20,6 +20,7 @@ public enum DashIconGroup: String, CaseIterable, Sendable {
     case settings = "settings"
     case form = "form"
     case status = "status"
+    case shortcut = "shortcut"
     case brand = "brand"
 }
 
@@ -168,7 +169,18 @@ public enum DashIconToken: String, CaseIterable, Sendable {
     case validationCheckmark = "status-validation-checkmark"
     case validationCross = "status-validation-cross"
 
+    // MARK: shortcut
+    case shortcutReceive = "shortcut-receive"
+    case shortcutSend = "shortcut-send"
+    case shortcutScanQR = "shortcut-scan-qr"
+    case shortcutSendToAddress = "shortcut-send-address"
+    case shortcutBackup = "shortcut-backup"
+    case shortcutExplore = "shortcut-explore"
+    case shortcutSwitchNetwork = "shortcut-switch-network"
+    case shortcutSyncNow = "shortcut-sync-now"
+
     // MARK: brand
+    case dashLogoSquare = "brand-dash-logo-square"
     case dashLogo = "brand-dash-logo"
     case dashLogoTestnet = "brand-dash-logo-testnet"
 
@@ -409,6 +421,24 @@ public enum DashIconToken: String, CaseIterable, Sendable {
             DashIconMetadata(group: .status, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: true, source: "ios:validation_checkmark.imageset")
         case .validationCross:
             DashIconMetadata(group: .status, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:validation_cross.imageset")
+        case .shortcutReceive:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-receive.imageset")
+        case .shortcutSend:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-send.imageset")
+        case .shortcutScanQR:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-scan-qr.imageset")
+        case .shortcutSendToAddress:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-send-address.imageset")
+        case .shortcutBackup:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-backup.imageset")
+        case .shortcutExplore:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:Shortcuts/shortcut-bar-explore.imageset")
+        case .shortcutSwitchNetwork:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: true, isTemplate: false, source: "ios:Shortcuts/shortcut_switchNetwork.imageset")
+        case .shortcutSyncNow:
+            DashIconMetadata(group: .shortcut, format: .png(scales: [2, 3]), hasDarkVariant: true, isTemplate: false, source: "ios:Shortcuts/shortcut_syncNow.imageset")
+        case .dashLogoSquare:
+            DashIconMetadata(group: .brand, format: .png(scales: [2, 3]), hasDarkVariant: true, isTemplate: false, source: "dashuikit:Icons & Illustrations/Menu/menu-dash-logo-square.imageset")
         case .dashLogo:
             DashIconMetadata(group: .brand, format: .png(scales: [2, 3]), hasDarkVariant: false, isTemplate: false, source: "ios:logo.imageset")
         case .dashLogoTestnet:

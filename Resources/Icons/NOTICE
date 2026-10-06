@@ -1,13 +1,13 @@
 Icons in this directory are copied by scripts/gen-tokens.swift from two repositories owned by
 Dash Core Group (github.com/dashpay). Both are MIT-licensed.
 
-dashwallet-ios (commit 7c0064d6b21f09d7a9ba86c1fecd77c819a09492)
+dashwallet-ios (commit cc85f56f1b08b65ac964a9ffe6712458949277e7)
   Source: DashWallet/Resources/AppAssets.xcassets
   Licence: the repository LICENSE file, reproduced below. It is the MIT licence text under the
   heading "breadwallet license"; the Dash source files carry "Copyright (c) Dash Core Group,
   Licensed under the MIT License".
 
-DashUIKit (commit e8d92434bfc28fbf933b896cd40a01dd61835b5f)
+DashUIKit (commit unknown)
   Source: Sources/DashUIKit/Resources/Media.xcassets
   Licence: MIT. The repository has no LICENSE file; its README states "MIT — see the per-file
   headers", and the headers read "Copyright (c) 2026 Dash Core Group. Licensed under the MIT
