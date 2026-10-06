@@ -384,9 +384,11 @@ impl From<dw_engine::TxDetail> for TxDetail {
     }
 }
 
+crate::api::common::export_error_code!(HistoryError);
+
 impl HistoryError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::InvalidQuery { .. } => "history.invalid_query",
             Self::StaleCursor => "history.stale_cursor",

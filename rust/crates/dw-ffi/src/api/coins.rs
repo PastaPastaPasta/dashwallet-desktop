@@ -87,9 +87,11 @@ impl From<dw_engine::EngineError> for CoinsError {
     }
 }
 
+crate::api::common::export_error_code!(CoinsError);
+
 impl CoinsError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::OutpointNotFound { .. } => "coins.outpoint_not_found",
             Self::InvalidArgument { .. } => "invalid_argument",

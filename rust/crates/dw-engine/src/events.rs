@@ -100,6 +100,10 @@ pub enum NoticeCode {
     /// An automatic wallet backup failed (QT-116). Automatic backups are not
     /// implemented yet, so the engine never sends it.
     BackupFailed,
+    /// `remove_wallet` removed the wallet but could not delete its seed from
+    /// the vault (for example the vault was locked meanwhile). The detail
+    /// names the wallet id; the seed stays in the vault, encrypted.
+    WalletSecretNotDeleted,
 }
 
 /// Receives engine events. Called from engine threads; must not block.

@@ -107,9 +107,11 @@ pub enum UriError {
 
 domain_error_common!(@not_implemented UriError);
 
+crate::api::common::export_error_code!(UriError);
+
 impl UriError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::DoubleSlash => "uri.double_slash",
             Self::NotDashUri => "uri.not_dash_uri",
@@ -123,6 +125,10 @@ impl UriError {
         }
     }
 }
+
+/// Dash Core `MAX_MONEY`: 21 million DASH in duffs. A URI amount above it is
+/// `InvalidAmount` (dash-qt accepts it and fails later, at send).
+const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
 fn core_network(network: DashNetwork) -> dw_uri::Network {
     dw_engine::DashNetwork::from(network).core_network()
@@ -144,7 +150,10 @@ pub fn parse_payment_uri(network: DashNetwork, text: String) -> Result<PaymentUr
         UriRejection::Bip70Unsupported => UriError::Bip70Unsupported,
         UriRejection::InvalidAddress(p) => UriError::InvalidAddress { problem: p.into() },
     })?;
-    let amount = u64::try_from(r.amount).map_err(|_| UriError::InvalidAmount)?;
+    let amount = u64::try_from(r.amount)
+        .ok()
+        .filter(|a| *a <= MAX_MONEY)
+        .ok_or(UriError::InvalidAmount)?;
     Ok(PaymentUri {
         address: r.address,
         amount: (amount > 0).then_some(amount),
@@ -162,7 +171,11 @@ pub fn build_payment_uri(
     label: Option<String>,
     message: Option<String>,
 ) -> Result<String, UriError> {
-    let amount = i64::try_from(amount.unwrap_or(0)).map_err(|_| UriError::InvalidAmount)?;
+    let amount = amount.unwrap_or(0);
+    if amount > MAX_MONEY {
+        return Err(UriError::InvalidAmount);
+    }
+    let amount = i64::try_from(amount).map_err(|_| UriError::InvalidAmount)?;
     Ok(format_bitcoin_uri(&SendCoinsRecipient {
         address,
         label: label.unwrap_or_default(),
@@ -220,6 +233,22 @@ mod tests {
         ));
         assert!(matches!(
             parse_payment_uri(DashNetwork::Mainnet, format!("dash:{ADDR}?amount=-1")),
+            Err(UriError::InvalidAmount)
+        ));
+        // At most the maximum supply, 21 million DASH, both ways.
+        let max = parse_payment_uri(DashNetwork::Mainnet, format!("dash:{ADDR}?amount=21000000"))
+            .unwrap();
+        assert_eq!(max.amount, Some(MAX_MONEY));
+        assert!(matches!(
+            parse_payment_uri(
+                DashNetwork::Mainnet,
+                format!("dash:{ADDR}?amount=21000000.00000001")
+            ),
+            Err(UriError::InvalidAmount)
+        ));
+        assert!(build_payment_uri(ADDR.into(), Some(MAX_MONEY), None, None).is_ok());
+        assert!(matches!(
+            build_payment_uri(ADDR.into(), Some(MAX_MONEY + 1), None, None),
             Err(UriError::InvalidAmount)
         ));
         assert_eq!(

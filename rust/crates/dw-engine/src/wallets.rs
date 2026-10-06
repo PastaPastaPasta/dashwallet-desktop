@@ -10,7 +10,7 @@ use std::sync::Arc;
 use dw_vault::GrantKind;
 
 use crate::events::{WalletName, unix_now};
-use crate::{EngineError, EngineEvent, NetworkSession, WalletBalances, WalletId};
+use crate::{EngineError, EngineEvent, NetworkSession, NoticeCode, WalletBalances, WalletId};
 
 /// Longest wallet name, in characters, after trimming.
 pub const MAX_WALLET_NAME: usize = 64;
@@ -185,8 +185,18 @@ impl NetworkSession {
 
     /// Removes a wallet: unloads it, deletes its wallet-state rows, its app
     /// metadata and finally its vault records (IOS-109, QT-101). Needs a
-    /// `Wipe` grant, redeemed after the wallet is found. Emits
-    /// `WalletRemoved`.
+    /// `Wipe` grant, redeemed after the wallet is found.
+    ///
+    /// Deleting the vault records needs a full-scope data key: the vault's,
+    /// or the grant's own key when it was issued with the passphrase on a
+    /// locked or mixing-only vault. For a wallet with a seed the grant is
+    /// checked up front without consuming it, so a locked vault with a grant
+    /// that carries no key is refused (`Vault(Locked)`) before anything is
+    /// consumed or deleted. `WalletRemoved` is sent as soon as the wallet's
+    /// rows are gone. If the vault records then cannot be deleted (the vault
+    /// was locked in the meantime, a write failed), the wallet stays removed,
+    /// the call still succeeds and `Notice{WalletSecretNotDeleted}` reports
+    /// the leftover seed (review M8).
     pub async fn remove_wallet(
         self: &Arc<Self>,
         id: WalletId,
@@ -197,6 +207,10 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let live = this.live()?;
             this.require_wallet(&id)?;
+            if this.vault.has_wallet_secret(&id.0) {
+                this.vault
+                    .check_grant(&grant_id, GrantKind::Wipe, Some(&id.0))?;
+            }
             let vault = this.vault.clone();
             // The grant is redeemed (consumed) before anything is deleted. Its
             // token carries the key of a passphrase grant on a locked vault.
@@ -207,26 +221,37 @@ impl NetworkSession {
 
             live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
-            let (persister, appdb, vault) = (
-                Arc::clone(&live.persister),
-                Arc::clone(&live.appdb),
-                this.vault.clone(),
-            );
+            let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+            // Wallet rows first: until the vault records go, the seed can
+            // still restore the wallet if a later step fails.
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                // Wallet rows first: until the vault records go, the seed
-                // can still restore the wallet if a later step fails.
                 persister.delete_wallet(id.0)?;
                 appdb
                     .delete_wallet(&id.to_string())
-                    .map_err(|e| EngineError::Storage(e.to_string()))?;
-                vault.wipe_wallet_secret(&id.0, &token)?;
-                Ok(())
+                    .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await??;
             this.sink.emit(EngineEvent::WalletRemoved {
                 network: this.network.clone(),
                 wallet_id: id,
             });
+
+            let vault = this.vault.clone();
+            let deleted =
+                tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await;
+            let failure = match deleted {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(detail) = failure {
+                tracing::warn!(wallet_id = %id, error = %detail, "removed wallet's vault records were not deleted");
+                this.sink.emit(EngineEvent::Notice {
+                    network: Some(this.network.clone()),
+                    code: NoticeCode::WalletSecretNotDeleted,
+                    detail: format!("wallet {id}: {detail}"),
+                });
+            }
             Ok(())
         })
         .await

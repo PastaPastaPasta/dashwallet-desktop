@@ -96,9 +96,11 @@ impl From<dw_engine::EngineError> for ReceiveError {
     }
 }
 
+crate::api::common::export_error_code!(ReceiveError);
+
 impl ReceiveError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::RequestNotFound { .. } => "receive.request_not_found",
             Self::GapLimit => "receive.gap_limit",

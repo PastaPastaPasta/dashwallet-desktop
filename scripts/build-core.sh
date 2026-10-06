@@ -70,17 +70,18 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"
 
-# Source stamp: one hash over every file under rust/ except build output. A
-# bundle variant is listed in info.json only when its stamp matches the
-# current sources, so a variant built from older sources (for example a Linux
-# variant left by an earlier Docker run) can never be linked silently.
+# Source stamp: one hash over every file under rust/ except build output,
+# followed by the cargo profile. A bundle variant is listed in info.json only
+# when its stamp matches this build's, so a variant built from older sources
+# or with another profile (for example a release Linux variant left by an
+# earlier Docker run next to a dev macOS build) can never be linked silently.
 source_stamp() {
   local hasher
   if command -v sha256sum >/dev/null 2>&1; then hasher="sha256sum"; else hasher="shasum -a 256"; fi
   (cd "$RUST_DIR" && find . -type f -not -path './target/*' -not -name '.DS_Store' -print0 \
       | LC_ALL=C sort -z | xargs -0 $hasher | $hasher | cut -d' ' -f1)
 }
-stamp="$(source_stamp)"
+stamp="$(source_stamp) $profile"
 
 # Building the host triple without --target shares target/<profile> with
 # plain `cargo build`/`cargo test`, instead of compiling the graph twice.
@@ -193,7 +194,7 @@ EOF
   for f in "$BUNDLE"/*/variant.json; do
     d="$(dirname "$f")"
     if [[ "$(cat "$d/source-stamp" 2>/dev/null)" != "$stamp" ]]; then
-      echo "build-core: leaving stale variant $(basename "$d") out of info.json (rebuild it with --triple)" >&2
+      echo "build-core: leaving stale variant $(basename "$d") out of info.json (other sources or profile; rebuild it with --triple ... --profile $profile)" >&2
       continue
     fi
     (( first )) || echo '        ,'

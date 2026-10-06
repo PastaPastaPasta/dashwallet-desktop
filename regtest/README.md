@@ -96,9 +96,11 @@ instead (`dwcli sync --min-height` / `--txid`).
 
 **l1-send** (`tests/test_l1_send.py`) drives a host-built `dwcli` (`DWCLI=/path/to/dwcli`; skipped when
 absent) over SPV against the node: receive and sync, a custom-fee payment, coin control, a locked coin left
-out of selection, subtract-fee, a foreign change address, exact amounts at dashd, and sign/verify both ways.
-With one peer and no InstantSend quorum, dash-spv accepts a broadcast only once it is mined, so the suite
-mines each payment from dashd's mempool while `dwcli send` waits.
+out of selection, subtract-fee, a foreign change address, a re-broadcast after an unknown outcome, exact
+amounts at dashd, and sign/verify both ways. With one peer and no InstantSend quorum, dash-spv accepts a
+broadcast only once it is mined, so the suite mines each payment from dashd's mempool while `dwcli send`
+waits; the re-broadcast test leaves one unmined past dash-spv's 60 s acceptance timeout to get
+`send.broadcast_unknown`, then sends the same prepared transaction again (`dwcli send --rebroadcast-unknown`).
 
 ```sh
 DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \

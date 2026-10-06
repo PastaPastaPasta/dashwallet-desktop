@@ -186,9 +186,11 @@ impl From<RescanFrom> for dw_engine::RescanFrom {
     }
 }
 
+crate::api::common::export_error_code!(SyncError);
+
 impl SyncError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::SpvNotRunning => "sync.spv_not_running",
             Self::HeightOutOfRange { .. } => "sync.height_out_of_range",

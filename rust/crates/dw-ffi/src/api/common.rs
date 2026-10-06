@@ -98,6 +98,24 @@ macro_rules! domain_error_common {
 
 pub(crate) use domain_error_common;
 
+/// Exports a domain error's stable code (docs/contracts/m1-engine.md §4) as
+/// a `code()` method on the generated host type, so hosts can read the code
+/// instead of keeping their own copy of the strings. The error type defines
+/// `fn code_str(&self) -> &'static str`.
+macro_rules! export_error_code {
+    ($name:ident) => {
+        #[uniffi::export]
+        impl $name {
+            /// Stable code (docs/contracts/m1-engine.md §4).
+            pub fn code(&self) -> String {
+                self.code_str().to_string()
+            }
+        }
+    };
+}
+
+pub(crate) use export_error_code;
+
 /// Parses a wallet id argument: 64 lower-case hex characters.
 pub(crate) fn parse_wallet_id(
     wallet_id: &str,
