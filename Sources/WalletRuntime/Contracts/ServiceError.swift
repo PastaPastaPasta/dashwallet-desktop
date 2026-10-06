@@ -203,6 +203,57 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let desktopNoQRCode = Self(rawValue: "desktop.no_qr_code")
     public static let desktopImageUnreadable = Self(rawValue: "desktop.image_unreadable")
 
+    // CoinJoin, governance, masternodes (M3; m3-engine.md §4).
+    public static let coinjoinDisabled = Self(rawValue: "coinjoin.disabled")
+    public static let coinjoinWatchOnly = Self(rawValue: "coinjoin.watch_only")
+    public static let coinjoinInsufficientFunds = Self(rawValue: "coinjoin.insufficient_funds")
+    public static let coinjoinVaultLocked = Self(rawValue: "coinjoin.vault_locked")
+    public static let coinjoinGrantInvalid = Self(rawValue: "coinjoin.grant_invalid")
+    public static let coinjoinNothingToMove = Self(rawValue: "coinjoin.nothing_to_move")
+    public static let coinjoinSpvNotRunning = Self(rawValue: "coinjoin.spv_not_running")
+    public static let coinjoinNoPeers = Self(rawValue: "coinjoin.no_peers")
+    public static let coinjoinBroadcastRejected = Self(rawValue: "coinjoin.broadcast_rejected")
+    public static let governanceSyncDisabled = Self(rawValue: "governance.sync_disabled")
+    public static let governanceNotSynced = Self(rawValue: "governance.not_synced")
+    public static let governanceProposalNotFound = Self(rawValue: "governance.proposal_not_found")
+    public static let governanceInvalidProposal = Self(rawValue: "governance.invalid_proposal")
+    public static let governanceNoVotingKeys = Self(rawValue: "governance.no_voting_keys")
+    public static let governanceVoteTooOften = Self(rawValue: "governance.vote_too_often")
+    public static let governanceInsufficientFunds = Self(rawValue: "governance.insufficient_funds")
+    public static let governanceCollateralUnconfirmed = Self(rawValue: "governance.collateral_unconfirmed")
+    public static let governanceProposalExpired = Self(rawValue: "governance.proposal_expired")
+    public static let governanceWatchOnly = Self(rawValue: "governance.watch_only")
+    public static let governanceVaultLocked = Self(rawValue: "governance.vault_locked")
+    public static let governanceGrantInvalid = Self(rawValue: "governance.grant_invalid")
+    public static let governanceNoPeers = Self(rawValue: "governance.no_peers")
+    public static let governanceBroadcastRejected = Self(rawValue: "governance.broadcast_rejected")
+    public static let masternodeListUnavailable = Self(rawValue: "masternode.list_unavailable")
+    public static let masternodeNotFound = Self(rawValue: "masternode.not_found")
+    public static let masternodeKeyNotInWallet = Self(rawValue: "masternode.key_not_in_wallet")
+    public static let masternodeInvalidService = Self(rawValue: "masternode.invalid_service")
+    public static let masternodeInvalidKey = Self(rawValue: "masternode.invalid_key")
+    public static let masternodeInvalidPayout = Self(rawValue: "masternode.invalid_payout")
+    public static let masternodeDuplicateAddress = Self(rawValue: "masternode.duplicate_address")
+    public static let masternodeCollateralUnavailable = Self(rawValue: "masternode.collateral_unavailable")
+    public static let masternodeInsufficientFunds = Self(rawValue: "masternode.insufficient_funds")
+    public static let masternodeOperatorSecretMismatch = Self(rawValue: "masternode.operator_secret_mismatch")
+    public static let masternodeOperatorSecretUnconfirmed = Self(rawValue: "masternode.operator_secret_unconfirmed")
+    public static let masternodeCollateralSignatureInvalid = Self(rawValue: "masternode.collateral_signature_invalid")
+    public static let masternodeUnsupportedEntry = Self(rawValue: "masternode.unsupported_entry")
+    public static let masternodeWatchOnly = Self(rawValue: "masternode.watch_only")
+    public static let masternodeVaultLocked = Self(rawValue: "masternode.vault_locked")
+    public static let masternodeGrantInvalid = Self(rawValue: "masternode.grant_invalid")
+    public static let masternodeNoPeers = Self(rawValue: "masternode.no_peers")
+    public static let masternodeBroadcastRejected = Self(rawValue: "masternode.broadcast_rejected")
+    public static let masternodeSharedEnvelopeInvalid = Self(rawValue: "masternode.shared_envelope_invalid")
+    public static let masternodeSharedEnvelopeTooLarge = Self(rawValue: "masternode.shared_envelope_too_large")
+    public static let masternodeSharedNetworkMismatch = Self(rawValue: "masternode.shared_network_mismatch")
+    public static let masternodeSharedSessionNotFound = Self(rawValue: "masternode.shared_session_not_found")
+    public static let masternodeSharedInputsRefused = Self(rawValue: "masternode.shared_inputs_refused")
+    public static let masternodeSharedCoinSpent = Self(rawValue: "masternode.shared_coin_spent")
+    public static let masternodeAlreadyTracked = Self(rawValue: "masternode.already_tracked")
+    public static let masternodePlatformUnavailable = Self(rawValue: "masternode.platform_unavailable")
+
     // Swift-side codes (not from the engine).
     /// The authentication gate's watchdog fired before the vault answered.
     public static let authTimedOut = Self(rawValue: "auth.timed_out")
@@ -276,6 +327,25 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
         .walletInvalidXpub,
         .syncSpvRunning, .syncRescanInProgress, .syncPeerNotFound,
     ]
+
+    /// Every domain code of docs/contracts/m3-engine.md §4; a test compares it
+    /// with the table.
+    public static let m3EngineCodes: [ServiceErrorCode] = [
+        .coinjoinDisabled, .coinjoinWatchOnly, .coinjoinInsufficientFunds, .coinjoinVaultLocked,
+        .coinjoinGrantInvalid, .coinjoinNothingToMove, .coinjoinSpvNotRunning, .coinjoinNoPeers,
+        .coinjoinBroadcastRejected, .governanceSyncDisabled, .governanceNotSynced, .governanceProposalNotFound,
+        .governanceInvalidProposal, .governanceNoVotingKeys, .governanceVoteTooOften, .governanceInsufficientFunds,
+        .governanceCollateralUnconfirmed, .governanceProposalExpired, .governanceWatchOnly, .governanceVaultLocked,
+        .governanceGrantInvalid, .governanceNoPeers, .governanceBroadcastRejected, .masternodeListUnavailable,
+        .masternodeNotFound, .masternodeKeyNotInWallet, .masternodeInvalidService, .masternodeInvalidKey,
+        .masternodeInvalidPayout, .masternodeDuplicateAddress, .masternodeCollateralUnavailable,
+        .masternodeInsufficientFunds, .masternodeOperatorSecretMismatch, .masternodeOperatorSecretUnconfirmed,
+        .masternodeCollateralSignatureInvalid, .masternodeUnsupportedEntry, .masternodeWatchOnly,
+        .masternodeVaultLocked, .masternodeGrantInvalid, .masternodeNoPeers, .masternodeBroadcastRejected,
+        .masternodeSharedEnvelopeInvalid, .masternodeSharedEnvelopeTooLarge, .masternodeSharedNetworkMismatch,
+        .masternodeSharedSessionNotFound, .masternodeSharedInputsRefused, .masternodeSharedCoinSpent,
+        .masternodeAlreadyTracked, .masternodePlatformUnavailable,
+    ]
 }
 
 /// An error from any M1 service.
@@ -292,6 +362,8 @@ public struct ServiceError: Error, Sendable, Equatable {
     /// for `send.grant_exceeded`, `failed_attempts` for vault attempts,
     /// `height` for `sync.height_out_of_range`, `index` for recipient errors;
     /// M2: `limit_duffs`, `size_bytes`, `duffs_per_kb`, `version`, `refusal`.
+    /// M3: `min_duffs`, `needed`, `available`, `confirmations`,
+    /// `retry_after_secs`, `field`, `role`, `refusal` (m3-engine.md §4).
     public let parameters: [String: Int64]
 
     public init(
