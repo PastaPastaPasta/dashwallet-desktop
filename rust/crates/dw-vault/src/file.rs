@@ -234,16 +234,36 @@ pub(crate) fn write(dir: &Path, file: &VaultFile) -> Result<(), VaultError> {
 /// vault file (`vault.dwv.replaced-<unix seconds>`).
 pub(crate) const REPLACED_PREFIX: &str = "vault.dwv.replaced-";
 
-/// Copies the current vault file to `vault.dwv.replaced-<now>` (mode 0600)
+/// Copies the current vault file to `vault.dwv.replaced-<now>` (mode 0600;
+/// `-<now>-<n>` when that name is taken, so no earlier copy is replaced)
 /// and returns the copy's path.
 pub(crate) fn keep_replaced_copy(dir: &Path, now: u64) -> Result<PathBuf, VaultError> {
-    let copy = dir.join(format!("{REPLACED_PREFIX}{now}"));
-    std::fs::copy(file_path(dir), &copy)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let source = std::fs::read(file_path(dir))?;
+    let mut n = 0u32;
+    let copy = loop {
+        let name = if n == 0 {
+            format!("{REPLACED_PREFIX}{now}")
+        } else {
+            format!("{REPLACED_PREFIX}{now}-{n}")
+        };
+        let path = dir.join(name);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut f) => {
+                f.write_all(&source)?;
+                f.sync_all()?;
+                break path;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(e) => return Err(e.into()),
+        }
+    };
     Ok(copy)
 }
 

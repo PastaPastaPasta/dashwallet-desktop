@@ -50,6 +50,14 @@ pub(crate) fn exec_arg(arg: &str) -> String {
     out
 }
 
+/// The `Exec` value for `args` (program first): each argument quoted by
+/// [`exec_arg`], then the line escaped as a string value, so a backslash
+/// becomes `\\\\` inside quotes and a line break cannot start a new key.
+pub(crate) fn exec_line<'a>(args: impl IntoIterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = args.into_iter().map(exec_arg).collect();
+    value(&quoted.join(" "))
+}
+
 /// A value of a string key: no line breaks (`\n`, `\r` escaped per spec)
 /// and backslashes escaped.
 pub(crate) fn value(s: &str) -> String {
@@ -160,6 +168,9 @@ mod tests {
             "\"/home/a b/Dash Wallet\""
         );
         assert_eq!(exec_arg("a\"b$c`d\\e"), "\"a\\\"b\\$c\\`d\\\\e\"");
+        // The value escape doubles every backslash of the quoted form.
+        assert_eq!(exec_line(["/a b", "x\\y"]), "\"/a b\" \"x\\\\\\\\y\"");
+        assert_eq!(exec_line(["/x\nName=evil"]), "\"/x\\nName=evil\"");
         assert_eq!(exec_arg("100%"), "100%%");
         assert_eq!(exec_arg(""), "\"\"");
         assert_eq!(value("a\nb\\c"), "a\\nb\\\\c");

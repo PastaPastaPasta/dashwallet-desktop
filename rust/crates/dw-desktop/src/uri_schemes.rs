@@ -73,7 +73,7 @@ pub(crate) mod linux {
 
     use super::HANDLER_NAME;
     use crate::DesktopError;
-    use crate::desktop_entry::{exec_arg, set_mime_defaults, write_atomic};
+    use crate::desktop_entry::{exec_line, set_mime_defaults, write_atomic};
 
     pub(crate) fn register_in(
         applications: &Path,
@@ -89,7 +89,7 @@ pub(crate) mod linux {
             .collect();
         let entry = format!(
             "[Desktop Entry]\nType=Application\nVersion=1.5\nName={HANDLER_NAME}\nExec={} %u\nTerminal=false\nNoDisplay=true\nMimeType={};\n",
-            exec_arg(exec_path),
+            exec_line([exec_path]),
             mime_types.join(";")
         );
         write_atomic(&applications.join(&desktop_file), &entry)?;

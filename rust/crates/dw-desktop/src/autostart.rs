@@ -74,7 +74,7 @@ pub(crate) mod linux {
 
     use super::AutostartEntry;
     use crate::DesktopError;
-    use crate::desktop_entry::{config_home, exec_arg, value, write_atomic};
+    use crate::desktop_entry::{config_home, exec_line, value, write_atomic};
 
     pub(crate) fn autostart_dir() -> Result<PathBuf, DesktopError> {
         Ok(config_home()?.join("autostart"))
@@ -111,14 +111,13 @@ pub(crate) mod linux {
     }
 
     pub(crate) fn contents(entry: &AutostartEntry) -> String {
-        let exec: Vec<String> = std::iter::once(entry.exec_path.as_str())
-            .chain(entry.args.iter().map(String::as_str))
-            .map(exec_arg)
-            .collect();
+        let exec = exec_line(
+            std::iter::once(entry.exec_path.as_str()).chain(entry.args.iter().map(String::as_str)),
+        );
         format!(
             "[Desktop Entry]\nType=Application\nVersion=1.5\nName={}\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
             value(&entry.display_name),
-            exec.join(" ")
+            exec
         )
     }
 
