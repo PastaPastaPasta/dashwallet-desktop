@@ -332,8 +332,6 @@ enum CrossStrings {
     }
 
     // Send / PSBT.
-    static let createUnsignedUnavailable =
-        "Create Unsigned is not available yet: the Send page cannot hand its prepared transaction to the PSBT dialog."
     static let loadPSBT = "Load a partially signed transaction"
     static let psbtBase64 = "PSBT (base64)"
     static let psbtBase64Placeholder = "Paste a base64 PSBT"

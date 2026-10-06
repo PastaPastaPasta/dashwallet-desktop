@@ -43,14 +43,17 @@ struct SendScreen: View {
             }
             feeSection(model)
             if options.psbtControls {
-                // QT-077: the draft Create Unsigned needs is private to
-                // SendViewModel, which does not offer it yet.
-                HStack(spacing: Int(DashSpacing.s)) {
-                    DashButton(
-                        L10n.PSBT.createUnsigned, style: .tintedGray, size: .small, isEnabled: false,
-                        help: CrossStrings.createUnsignedUnavailable
-                    ) {}
-                    Text(CrossStrings.createUnsignedUnavailable).dashFont(.caption1).dashForeground(.secondaryText)
+                // QT-076: an unsigned PSBT of this form, copied to the
+                // clipboard and shown in the PSBT Operations page.
+                DashButton(
+                    L10n.PSBT.createUnsigned, style: .tintedGray, size: .small,
+                    isEnabled: model.phase == .editing
+                ) {
+                    Task {
+                        guard let draft = await model.makeUnsignedDraft() else { return }
+                        await state.psbt.createUnsigned(draft: draft)
+                        state.open(.psbt)
+                    }
                 }
             }
             HStack(spacing: Int(DashSpacing.s)) {
