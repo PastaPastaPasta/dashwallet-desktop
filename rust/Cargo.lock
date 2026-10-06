@@ -1546,7 +1546,10 @@ version = "0.1.0"
 dependencies = [
  "dashcore",
  "dw-p2p",
+ "rand 0.8.6",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
