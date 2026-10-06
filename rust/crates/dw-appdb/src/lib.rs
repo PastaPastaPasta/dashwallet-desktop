@@ -18,6 +18,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod rows;
+pub use rows::{SqlValue, TableRows};
+
 mod embedded {
     refinery::embed_migrations!("./migrations");
 }

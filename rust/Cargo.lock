@@ -1562,13 +1562,16 @@ dependencies = [
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dash-context-provider",
  "dash-sdk",
  "dash-spv",
  "dashcore",
  "dpp",
  "dw-appdb",
+ "dw-compat",
  "dw-message",
+ "dw-psbt",
  "dw-uri",
  "dw-vault",
  "hex",
@@ -1577,6 +1580,8 @@ dependencies = [
  "platform-wallet-storage",
  "rs-sdk-trusted-context-provider",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

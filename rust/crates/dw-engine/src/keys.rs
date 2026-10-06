@@ -15,7 +15,7 @@ use dashcore::Address;
 use dw_uri::keyio::{Destination, decode_destination};
 use dw_vault::MnemonicError;
 use dw_vault::mnemonic;
-use dw_vault::{GrantKind, LockState, Vault, VaultError, VaultStatus, WalletSigner};
+use dw_vault::{GrantKind, LockState, Vault, VaultError, VaultStatus, WalletSecret, WalletSigner};
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
@@ -57,7 +57,7 @@ impl ImportOptions {
     }
 }
 
-fn mnemonic_error(e: MnemonicError) -> EngineError {
+pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
     match e {
         MnemonicError::Invalid(detail) => EngineError::InvalidMnemonic(detail),
         MnemonicError::UnsupportedWordCount(n) => {
@@ -166,6 +166,25 @@ impl NetworkSession {
         bip39_passphrase: Zeroizing<Vec<u8>>,
         options: ImportOptions,
     ) -> Result<WalletId, EngineError> {
+        let core_compat = options.core_compat;
+        self.import_secret_with(options, move || {
+            mnemonic::derive_secret(&phrase, &bip39_passphrase, core_compat).map_err(mnemonic_error)
+        })
+        .await
+    }
+
+    /// [`Self::import_wallet`] for a secret built by `make_secret` (a phrase,
+    /// a raw seed from a Dash Core file, a restored backup). `make_secret`
+    /// runs on the blocking pool; everything after it follows the same
+    /// seed-safety order and the same rules for registered wallets.
+    pub(crate) async fn import_secret_with<F>(
+        self: &Arc<Self>,
+        options: ImportOptions,
+        make_secret: F,
+    ) -> Result<WalletId, EngineError>
+    where
+        F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
+    {
         let name = options.name.as_deref().map(validate_name).transpose()?;
         let lookahead = options.effective_lookahead();
         if let Some(n) = lookahead
@@ -182,21 +201,33 @@ impl NetworkSession {
             let network = this.network.core_network();
             let vault = this.vault.clone();
             // PBKDF2, vault file writes and fsync stay off the async workers.
-            let (wallet_id, seed, had_secret) = tokio::task::spawn_blocking(
-                move || -> Result<(WalletId, Zeroizing<[u8; 64]>, bool), EngineError> {
-                    let secret =
-                        mnemonic::derive_secret(&phrase, &bip39_passphrase, options.core_compat)
-                            .map_err(mnemonic_error)?;
+            let (wallet_id, seed, had_secret, fingerprint) = tokio::task::spawn_blocking(
+                move || -> Result<(WalletId, Zeroizing<[u8; 64]>, bool, String), EngineError> {
+                    let secret = make_secret()?;
                     let id = mnemonic::wallet_id_for_seed(&secret.seed, network)
                         .map_err(mnemonic_error)?;
                     let had_secret = vault.has_wallet_secret(&id);
                     if !had_secret {
                         vault.store_wallet_secret(&id, &secret)?;
                     }
-                    Ok((WalletId(id), Zeroizing::new(*secret.seed), had_secret))
+                    // Kept for PSBT derivation records (watch-only use, no key needed).
+                    let fingerprint =
+                        key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
+                            .map(|m| {
+                                m.fingerprint(&dashcore::secp256k1::Secp256k1::signing_only())
+                                    .to_string()
+                            })
+                            .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
+                    Ok((
+                        WalletId(id),
+                        Zeroizing::new(*secret.seed),
+                        had_secret,
+                        fingerprint,
+                    ))
                 },
             )
             .await??;
+            this.store_fingerprint(wallet_id, fingerprint).await;
 
             if manager.get_wallet(&wallet_id.0).await.is_some() {
                 if had_secret {
@@ -207,6 +238,7 @@ impl NetworkSession {
                     network: this.network.clone(),
                     wallet_id,
                 });
+                this.schedule_automatic_backup(wallet_id);
                 return Ok(wallet_id);
             }
 
@@ -259,9 +291,28 @@ impl NetworkSession {
                 network: this.network.clone(),
                 wallet_id,
             });
+            this.schedule_automatic_backup(wallet_id);
             Ok(wallet_id)
         })
         .await
+    }
+
+    /// Stores the master key fingerprint of a wallet (dw-appdb, wallet
+    /// scope); a failure only costs PSBT derivation records.
+    async fn store_fingerprint(&self, wallet_id: WalletId, fingerprint: String) {
+        let Ok(live) = self.live() else { return };
+        let key = wallet_id.to_string();
+        let stored = tokio::task::spawn_blocking(move || {
+            live.appdb.set_setting(
+                &key,
+                crate::send::psbt::FINGERPRINT_SETTING,
+                Some(&fingerprint),
+            )
+        })
+        .await;
+        if !matches!(stored, Ok(Ok(()))) {
+            tracing::warn!(%wallet_id, "could not store the master key fingerprint");
+        }
     }
 
     /// Deletes the vault records of a wallet whose registration failed.

@@ -90,6 +90,15 @@ pub enum EngineError {
     /// Not an unspent output of the wallet (`coins.outpoint_not_found`).
     #[error("outpoint not found: {0}")]
     OutpointNotFound(dashcore::OutPoint),
+    /// A Dash Core file or export failed (`compat.*` codes).
+    #[error("compat: {0}")]
+    Compat(crate::compat::CompatFailure),
+    /// A backup could not be written or restored (`backup.*` codes).
+    #[error("backup: {0}")]
+    Backup(crate::backup::BackupFailure),
+    /// A PSBT could not be read, signed or sent (`psbt.*` codes).
+    #[error("psbt: {0}")]
+    Psbt(crate::send::psbt::PsbtFailure),
 }
 
 impl EngineError {
@@ -126,6 +135,9 @@ impl EngineError {
             EngineError::Send(_) => "send",
             EngineError::Labels(_) => "labels",
             EngineError::OutpointNotFound(_) => "outpoint_not_found",
+            EngineError::Compat(_) => "compat",
+            EngineError::Backup(_) => "backup",
+            EngineError::Psbt(_) => "psbt",
         }
     }
 }

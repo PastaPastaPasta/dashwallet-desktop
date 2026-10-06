@@ -55,15 +55,16 @@ impl NetworkSession {
     fn info_of(&self, id: WalletId) -> WalletInfo {
         let name = self.hub.name_of(&id);
         let state = self.hub.wallet_state(&id);
-        let has_mnemonic = self.vault.has_wallet_secret(&id.0);
+        let has_secret = self.vault.has_wallet_secret(&id.0);
         WalletInfo {
             wallet_id: id,
             name: name
                 .as_ref()
                 .map(|n| n.name.clone())
                 .unwrap_or_else(|| default_name_for(&id)),
-            watch_only: !has_mnemonic,
-            has_mnemonic,
+            watch_only: !has_secret,
+            // A wallet imported from a raw seed has keys but no phrase.
+            has_mnemonic: self.vault.has_wallet_mnemonic(&id.0),
             hd: true,
             birth_height: state.as_ref().map(|s| s.birth_height),
             created_at: name.and_then(|n| n.created_at),

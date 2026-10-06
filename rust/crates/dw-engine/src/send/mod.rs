@@ -19,6 +19,7 @@
 #[cfg(test)]
 mod flow_tests;
 pub(crate) mod plan;
+pub(crate) mod psbt;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
