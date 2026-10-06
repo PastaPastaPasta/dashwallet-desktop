@@ -170,6 +170,24 @@ Status of every call: **stub** unless marked **works**. "In-memory read" calls a
 | `governance_info()` | async | `GovernanceInfo` (QT-134 fields: cycle, last/next superblock + ETA, voting cutoff, MN/EvoNode participation "N (M eligible)", threshold `max(min_quorum, weighted_valid/10)`, controlled MNs and votes, counts passing/failing/unfunded + short, budget allocated/available). Fields needing synced objects are `None` until synced; the budget comes from the height. | — | QT-134, QT-144 |
 | `governance_clock()` | sync | `GovernanceClock { cycle_progress, next_superblock, blocks_to_superblock, superblock_eta, voting_cutoff, voting_open, budget_committed }`. Needs the tip; `budget_committed` `None` until synced. | `governance.not_synced` (no tip) | QT-026 |
 
+**R2 status (m3/r2-governance):** every call of this table works (no `NotImplemented` left). Notes on the SPV
+answers, binding for hosts:
+
+- Votes are matched to masternodes by the voting key id recovered from their signature (the SPV list has no
+  collateral outpoints); a key shared by `n` masternodes counts for at most `n` outpoints, and a key shared by
+  regular masternodes and EvoNodes weighs 1 per vote (`dw-governance::tally` module docs). On mainnet this gave
+  Core's exact Y/N counts for every current proposal (G7, `docs/research/g7-govsync.md`).
+- `voting_masternodes` offers a wallet masternode only when its collateral is known: from a ProRegTx in the
+  wallet's history (owner, voting or payout key, or the collateral, in the wallet) or, for a voting key no other
+  masternode uses, from a synced vote that key signed. Tracked masternodes with attached voting keys are not
+  offered yet (R3's attach call stores no key in this branch).
+- `ProposalRow.collateral_confirmations` is `Some` for the wallet's own proposals only: peers relay objects only
+  after 6 confirmations, so synced objects are past `Confirming`.
+- "Funded" comes from synced trigger objects (type 2) whose `event_block_height` ≤ tip lists the proposal; the
+  trigger's operator signature is not checked (no collateral → operator key mapping on SPV).
+- Synced objects are kept in memory for the session (a restart syncs again; a peer full-synced less than an hour
+  ago is not asked again, Core penalizes that). The wallet's own proposals persist in app.sqlite.
+
 Status rule (dash-qt order, research 02 §11.1): Funded (in an active trigger) → Lapsed (past end) → Confirming
 (< 6 collateral confirmations) → Pending (not broadcast) → inside the maturity window Passing/Failing → Voting
 (needs votes) → Passing/Unfunded (budget saturated). Margin = `(yes − no) − threshold` with weighted votes.

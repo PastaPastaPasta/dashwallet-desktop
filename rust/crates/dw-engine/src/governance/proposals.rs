@@ -407,8 +407,8 @@ impl NetworkSession {
             submitted: false,
         };
         let inputs: Vec<OutPoint> = planned.inputs.iter().map(|u| u.outpoint).collect();
-        self.spends.add(wallet_id, inputs.iter().copied());
         self.store_record(wallet_id, &hash_hex, &record).await?;
+        self.spends.add(wallet_id, inputs.iter().copied());
 
         let manager = self.manager()?;
         let outcome = if manager.spv().is_started() {

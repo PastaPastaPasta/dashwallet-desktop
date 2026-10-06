@@ -444,8 +444,9 @@ pub async fn run(
             return Err(SyncError::PeersLost);
         }
         tokio::select! {
-            _ = stop.changed() => {
-                if *stop.borrow() { return Ok(()); }
+            // A dropped sender counts as stop (no busy loop on `Err`).
+            r = stop.changed() => {
+                if r.is_err() || *stop.borrow() { return Ok(()); }
             }
             ev = rx.recv() => {
                 let Some((from, ev)) = ev else { return Err(SyncError::PeersLost) };
@@ -494,8 +495,8 @@ async fn drain(
         }
         let wait = cfg.idle_timeout.saturating_sub(last_change.elapsed());
         tokio::select! {
-            _ = stop.changed() => {
-                if *stop.borrow() { return Drained::Stopped; }
+            r = stop.changed() => {
+                if r.is_err() || *stop.borrow() { return Drained::Stopped; }
             }
             _ = tokio::time::sleep(wait) => return Drained::Idle,
             ev = rx.recv() => {
