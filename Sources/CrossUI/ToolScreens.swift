@@ -17,65 +17,77 @@ struct AddressBookScreen: View {
 
     var body: some View {
         let model = model
-        Page(CrossStrings.addressBook) {
-            HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
-                DashPicker(
-                    nil, accessibleName: CrossStrings.purpose,
+        Page(CrossStrings.addressBook, subtitle: model.header) {
+            HStack(spacing: Int(DashSpacing.s)) {
+                SegmentedControl(
                     options: [
                         PickerOption(AddressPurpose.send, CrossStrings.sending),
                         PickerOption(AddressPurpose.receive, CrossStrings.receiving),
                     ],
-                    selection: bind({ model.purpose }, { model.setPurpose($0) }))
-                DashTextField(
-                    CrossStrings.search, placeholder: L10n.AddressBook.searchPlaceholder,
-                    text: bind({ model.search }, { model.setSearch($0) }))
-                DashButton(CrossStrings.exportCSV, style: .tintedBlue, size: .small) { export(model) }
+                    selection: model.purpose
+                ) { model.setPurpose($0) }
+                Spacer()
+                DashButton(CrossStrings.exportCSV, style: .plainBlue, size: .small, icon: .csvExport) { export(model) }
             }
-            Text(model.header).dashFont(.footnote).dashForeground(.secondaryText)
+            DashTextField(
+                CrossStrings.search, placeholder: L10n.AddressBook.searchPlaceholder,
+                text: bind({ model.search }, { model.setSearch($0) }))
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
             }
             if let exportMessage {
                 Toast(exportMessage)
             }
-            DashCard {
+            DashCard(padding: Int(DashSpacing.sm), spacing: Int(DashSpacing.xxxs)) {
                 if model.entries.isEmpty {
-                    Text(CrossStrings.noEntries).dashFont(.footnote).dashForeground(.secondaryText)
+                    EmptyState(icon: .addressBook, title: CrossStrings.noEntries)
                 }
                 ForEach(model.entries) { entry in
-                    HStack(spacing: Int(DashSpacing.s)) {
-                        MenuItem(title: model.labelText(for: entry), subtitle: entry.address)
-                        DashButton(CrossStrings.copyAddress, style: .plainBlue, size: .small) {
+                    // UX-SPEC §4.10: initial avatar, label, middle-truncated address.
+                    HStack(spacing: Int(DashSpacing.m)) {
+                        InitialAvatar(text: model.labelText(for: entry))
+                        VStack(alignment: .leading, spacing: Int(DashSpacing.xxxs)) {
+                            Text(model.labelText(for: entry)).dashFont(.subheadMedium).dashForeground(CrossRole.textPrimary)
+                            Text(AmountTextRules.middleTruncated(entry.address))
+                                .dashFont(.footnote)
+                                .dashForeground(CrossRole.textSecondary)
+                                .help(entry.address)
+                        }
+                        Spacer()
+                        DashButton(CrossStrings.copyAddress, style: .tintedGray, size: .small) {
                             state.copy(entry.address, what: CrossStrings.addressWord)
                         }
-                        DashButton(CrossStrings.showQR, style: .plainBlue, size: .small) { model.showQR(for: entry) }
+                        DashButton(CrossStrings.showQR, style: .tintedBlue, size: .small) { model.showQR(for: entry) }
                         if model.canDelete {
                             DashButton(CrossStrings.delete, style: .plainRed, size: .small) {
                                 Task { await model.delete(address: entry.address) }
                             }
                         }
                     }
+                    .padding(.vertical, Int(DashSpacing.xs))
                 }
             }
             if let entry = model.qrEntry, let qr = model.qr {
                 DashCard {
                     HStack {
-                        SectionHeader(model.labelText(for: entry), style: .subheadMedium)
+                        SectionHeader(model.labelText(for: entry), style: .headline)
                         Spacer()
-                        DashButton(CrossStrings.hideQR, style: .plainBlue, size: .small) { model.hideQR() }
+                        DashButton(CrossStrings.hideQR, style: .tintedGray, size: .small) { model.hideQR() }
                     }
-                    QRCodeView(size: qr.size, modules: qr.modules)
+                    QRCodeView(size: qr.size, modules: qr.modules, side: 200)
+                        .padding(Int(DashSpacing.sm))
+                        .cardBackground(fill: CrossRole.white, radius: Int(DashRadius.standard))
                     if let uri = model.qrURI {
-                        Text(uri).dashFont(.footnote).textSelectionEnabled()
+                        Text(uri).dashFont(.footnote).dashForeground(CrossRole.textSecondary).textSelectionEnabled()
                     }
                 }
             }
             if model.canCreate {
                 DashCard {
-                    SectionHeader(L10n.AddressBook.newSendingAddress, style: .subheadMedium)
+                    SectionHeader(L10n.AddressBook.newSendingAddress, style: .headline)
                     DashTextField(CrossStrings.address, placeholder: CrossStrings.payToPlaceholder, text: $newAddress)
                     DashTextField(CrossStrings.label, placeholder: CrossStrings.labelPlaceholder, text: $newLabel)
-                    DashButton(CrossStrings.save, isEnabled: !newAddress.isEmpty) {
+                    DashButton(CrossStrings.save, style: .tintedBlue, isEnabled: !newAddress.isEmpty) {
                         let address = newAddress
                         let label = newLabel
                         Task {
@@ -117,12 +129,17 @@ struct SignVerifyScreen: View {
     let model: SignVerifyViewModel
 
     @State var passphrase = ""
+    @State var verifying = false
 
     var body: some View {
         let model = model
-        Page(L10n.SignVerify.windowTitle) {
+        Page(L10n.SignVerify.windowTitle, width: .form) {
+            SegmentedControl(
+                options: [PickerOption(false, CrossStrings.signMessage), PickerOption(true, CrossStrings.verifyMessage)],
+                selection: verifying
+            ) { verifying = $0 }
+            if !verifying {
             DashCard {
-                SectionHeader(CrossStrings.signMessage, style: .subheadMedium)
                 DashTextField(
                     CrossStrings.address, placeholder: CrossStrings.signingAddress,
                     text: bind({ model.address }, { model.address = $0 }))
@@ -139,22 +156,22 @@ struct SignVerifyScreen: View {
                         Task { await model.sign(passphrase: model.needsPassphrase ? text : nil) }
                     }
                     if model.needsPassphrase {
-                        DashButton(CrossStrings.cancel, style: .strokeGray) {
+                        DashButton(CrossStrings.cancel, style: .tintedGray) {
                             passphrase = ""
                             model.cancelPassphrase()
                         }
                     }
-                    DashButton(CrossStrings.clearAll, style: .strokeGray) { model.clearSign() }
+                    DashButton(CrossStrings.clearAll, style: .tintedGray) { model.clearSign() }
                 }
                 if !model.signature.isEmpty {
-                    KeyValueRow(CrossStrings.signature, model.signature)
+                    KeyValueRow(CrossStrings.signature, model.signature, monospaced: true)
                 }
                 if let result = model.signResult {
                     ResultText(result: result)
                 }
             }
+            } else {
             DashCard {
-                SectionHeader(CrossStrings.verifyMessage, style: .subheadMedium)
                 DashTextField(
                     CrossStrings.address, placeholder: CrossStrings.verifyingAddress,
                     text: bind({ model.verifyAddress }, { model.verifyAddress = $0 }))
@@ -166,13 +183,29 @@ struct SignVerifyScreen: View {
                     text: bind({ model.verifySignature }, { model.verifySignature = $0 }))
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(CrossStrings.verify) { model.verify() }
-                    DashButton(CrossStrings.clearAll, style: .strokeGray) { model.clearVerify() }
+                    DashButton(CrossStrings.clearAll, style: .tintedGray) { model.clearVerify() }
                 }
                 if let result = model.verifyResult {
                     ResultText(result: result)
                 }
             }
+            }
         }
+    }
+}
+
+/// A 30 pt blue circle with a white initial (iOS contact avatar).
+struct InitialAvatar: View {
+    let text: String
+
+    var body: some View {
+        ZStack {
+            Circle().fill(CrossRole.accent.color)
+            Text(text.first.map { String($0).uppercased() } ?? "")
+                .dashFont(.subheadMedium)
+                .foregroundColor(CrossRole.white.color)
+        }
+        .frame(width: 30, height: 30)
     }
 }
 
@@ -183,6 +216,6 @@ struct ResultText: View {
     var body: some View {
         Text(result.text)
             .dashFont(.footnoteMedium)
-            .dashForeground(result.isSuccess ? .green : .red)
+            .dashForeground(result.isSuccess ? CrossRole.success : CrossRole.danger)
     }
 }

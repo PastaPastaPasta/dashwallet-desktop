@@ -79,6 +79,22 @@ public struct DashToggle: View {
     }
 }
 
+/// A switch alone, for a menu row whose title is the visible label (C11
+/// toggle accessory). The title is the switch's accessible name.
+public struct DashSwitch: View {
+    let accessibleName: String
+    let isOn: Binding<Bool>
+
+    public init(_ accessibleName: String, isOn: Binding<Bool>) {
+        self.accessibleName = accessibleName
+        self.isOn = isOn
+    }
+
+    public var body: some View {
+        Toggle("", isOn: isOn).toggleStyle(.switch).accessibilityLabel(accessibleName)
+    }
+}
+
 /// A caption without the trailing colon dash-qt puts on form labels.
 func accessibleCaption(_ caption: String) -> String {
     caption.hasSuffix(":") ? String(caption.dropLast()) : caption

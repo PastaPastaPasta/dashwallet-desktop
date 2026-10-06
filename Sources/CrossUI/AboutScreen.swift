@@ -25,7 +25,7 @@ struct AboutScreen: View {
             } else {
                 about(model)
             }
-            DashButton(CrossStrings.close, style: .strokeGray, size: .small) { state.closePage() }
+            DashButton(CrossStrings.close, style: .tintedGray, size: .small) { state.closePage() }
         }
         .task { await model.load() }
     }
@@ -33,11 +33,12 @@ struct AboutScreen: View {
     @ViewBuilder
     private func about(_ model: AboutViewModel) -> some View {
         DashCard {
+            DashIcon(.dashLogo, size: 28)
             SectionHeader(L10n.Navigation.appName, style: .title3)
             KeyValueRow(CrossStrings.versionTitle, model.versionText ?? L10n.Common.unknown)
             KeyValueRow(L10n.HomeM2.network, model.networkName ?? L10n.Common.unknown)
             KeyValueRow(L10n.HomeM2.dataDirectory, model.dataDirectory?.path ?? L10n.Common.unknown)
-            Text(model.licenseText).dashFont(.footnote).dashForeground(.secondaryText)
+            Text(model.licenseText).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
             }
@@ -53,7 +54,7 @@ struct AboutScreen: View {
             }
         }
         DashCard {
-            SectionHeader(L10n.HomeM2.exportLogs, style: .subheadMedium)
+            SectionHeader(L10n.HomeM2.exportLogs, style: .headline)
             DashButton(L10n.HomeM2.exportLogs, style: .tintedBlue, size: .small, isEnabled: model.logExport != .exporting) {
                 let choose = chooseFileSaveDestination
                 Task {
@@ -67,7 +68,7 @@ struct AboutScreen: View {
             }
             switch model.logExport {
             case .idle: EmptyView()
-            case .exporting: Text(CrossStrings.working).dashFont(.footnote).dashForeground(.secondaryText)
+            case .exporting: Text(CrossStrings.working).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             case .exported(let url): Toast("\(L10n.HomeM2.logsExported) \(url.path)", kind: .success)
             case .failed(let text): Toast(text, kind: .error)
             }
@@ -86,7 +87,7 @@ struct AboutScreen: View {
         }
         if !state.appUsage.isEmpty {
             DashCard {
-                SectionHeader(CrossStrings.appOptions, style: .subheadMedium)
+                SectionHeader(CrossStrings.appOptions, style: .headline)
                 Text(state.appUsage).font(.system(size: 12).monospaced()).textSelectionEnabled()
             }
         }

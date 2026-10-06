@@ -17,7 +17,7 @@ struct CoinSelectionScreen: View {
     var body: some View {
         let model = model
         let state = state
-        Page(L10n.CoinControl.title) {
+        Page(L10n.CoinControl.title, width: .full) {
             HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
                 DashButton(L10n.CoinControl.selectAll, style: .tintedGray, size: .small) {
                     Task { await model.selectAll() }
@@ -26,19 +26,19 @@ struct CoinSelectionScreen: View {
                     Task { await model.lockAll() }
                 }
                 if !model.coinJoinPage {
-                    DashPicker(
-                        nil, accessibleName: CrossStrings.coinMode,
+                    SegmentedControl(
                         options: [
-                            PickerOption(CoinControlMode.list, L10n.CoinControl.listMode),
-                            PickerOption(.tree, L10n.CoinControl.treeMode),
+                            PickerOption(CoinControlMode.tree, L10n.CoinControl.treeMode),
+                            PickerOption(.list, L10n.CoinControl.listMode),
                         ],
-                        selection: bind({ model.mode }, { model.setMode($0) }))
+                        selection: model.mode
+                    ) { model.setMode($0) }
                     DashButton(model.coinJoinToggleTitle, style: .plainBlue, size: .small) {
                         let show = !model.showCoinJoinCoins
                         Task { await model.setShowCoinJoinCoins(show) }
                     }
                 }
-                Text(model.lockedText).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(model.lockedText).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
@@ -53,7 +53,7 @@ struct CoinSelectionScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Int(DashSpacing.xs)) {
                     if model.coins.isEmpty {
-                        Text(CrossStrings.noCoins).dashFont(.footnote).dashForeground(.secondaryText)
+                        Text(CrossStrings.noCoins).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
                     }
                     if model.mode == .tree {
                         ForEach(model.groups) { group in
@@ -61,7 +61,7 @@ struct CoinSelectionScreen: View {
                                 Text(CrossStrings.coinGroup(
                                     address: group.address, label: group.label, count: group.coins.count,
                                     total: state.format(group.total)))
-                                    .dashFont(.footnoteMedium).dashForeground(.primaryText)
+                                    .dashFont(.footnoteMedium).dashForeground(CrossRole.textPrimary)
                                 ForEach(group.coins) { coin in
                                     CoinRow(model: model, state: state, coin: coin).padding(.leading, Int(DashSpacing.l))
                                 }
@@ -94,7 +94,7 @@ struct CoinSelectionScreen: View {
     /// Column buttons in dash-qt's order; the active one shows the direction.
     private func sortHeader(_ model: CoinControlViewModel) -> some View {
         HStack(spacing: Int(DashSpacing.xxs)) {
-            Text(CrossStrings.sortBy).dashFont(.footnote).dashForeground(.secondaryText)
+            Text(CrossStrings.sortBy).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             ForEach(CoinColumn.allCases, id: \.self) { column in
                 let active = model.sort.column == column
                 DashButton(
@@ -113,7 +113,7 @@ struct CoinSelectionScreen: View {
             VStack(alignment: .leading, spacing: Int(DashSpacing.xxs)) {
                 DashTextField(L10n.CoinControl.customChange, text: bind({ model.customChange ?? "" }, { _ in }))
                     .disabled(true)
-                Text(CrossStrings.customChangeUnavailable).dashFont(.caption1).dashForeground(.secondaryText)
+                Text(CrossStrings.customChangeUnavailable).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
             }
         }
     }
@@ -139,8 +139,8 @@ struct CoinRow: View {
             .disabled(!selectable)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(model.amountText(coin))   \(model.label(of: coin))\(coin.userLocked ? "   " + CrossStrings.lockedCoin : "")")
-                    .dashFont(.footnoteMedium).dashForeground(.primaryText).lineLimit(1)
-                Text(Self.columns(coin)).dashFont(.caption1).dashForeground(.secondaryText).lineLimit(1)
+                    .dashFont(.footnoteMedium).dashForeground(CrossRole.textPrimary).lineLimit(1)
+                Text(Self.columns(coin)).dashFont(.caption1).dashForeground(CrossRole.textSecondary).lineLimit(1)
             }
             Spacer()
             Menu(CrossStrings.copyMenu) {
@@ -183,7 +183,7 @@ struct SummaryPanel: View {
         let state = state
         DashCard {
             if model.isAutomatic {
-                Text(L10n.CoinControl.automaticallySelected).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.CoinControl.automaticallySelected).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             } else if let text = model.summaryText {
                 // A two-column grid of fixed-width cells: three flexible
                 // `KeyValueRow`s side by side left GTK one character per
@@ -191,9 +191,9 @@ struct SummaryPanel: View {
                 SummaryGridRow(L10n.CoinControl.quantity, text.quantity, L10n.CoinControl.bytes, text.bytes)
                 SummaryGridRow(L10n.CoinControl.amount, text.amount, L10n.CoinControl.fee, text.fee)
                 SummaryGridRow(L10n.CoinControl.afterFee, text.afterFee, L10n.CoinControl.change, text.change)
-                Text(text.tolerance).dashFont(.caption1).dashForeground(.secondaryText)
+                Text(text.tolerance).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
                 if model.insufficientFunds {
-                    Text(L10n.CoinControl.insufficientFunds).dashFont(.footnoteMedium).dashForeground(.red)
+                    Text(L10n.CoinControl.insufficientFunds).dashFont(.footnoteMedium).dashForeground(CrossRole.danger)
                 }
                 Menu(CrossStrings.copyMenu) {
                     Button(L10n.CoinControl.copyQuantity) { state.copy(model.copy(.quantity), what: L10n.CoinControl.quantity) }
@@ -204,9 +204,9 @@ struct SummaryPanel: View {
                     Button(L10n.CoinControl.copyChange) { state.copy(model.copy(.change), what: L10n.CoinControl.change) }
                 }
             } else if model.summaryUnavailable {
-                Text(L10n.CoinControl.summaryUnavailable).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.CoinControl.summaryUnavailable).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             } else {
-                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
         }
     }
@@ -236,14 +236,14 @@ private struct SummaryGridRow: View {
     private func label(_ text: String) -> some View {
         Text(text)
             .dashFont(.footnoteMedium)
-            .dashForeground(.secondaryText)
+            .dashForeground(CrossRole.textSecondary)
             .frame(width: Self.labelWidth, alignment: .leading)
     }
 
     private func value(_ text: String) -> some View {
         Text(text)
             .dashFont(.footnote)
-            .dashForeground(.primaryText)
+            .dashForeground(CrossRole.textPrimary)
             .textSelectionEnabled()
             .fixedSize()
             .frame(width: Self.valueWidth, alignment: .leading)
@@ -259,18 +259,18 @@ struct CoinControlPanel: View {
         let state = state
         if let model = state.coinControl() {
             DashCard {
-                SectionHeader(L10n.CoinControl.featuresHeader, style: .subheadMedium)
+                SectionHeader(L10n.CoinControl.featuresHeader, style: .headline)
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(L10n.CoinControl.inputs, style: .tintedBlue, size: .small) { state.open(.coinSelection) }
                     if model.isAutomatic {
-                        Text(L10n.CoinControl.automaticallySelected).dashFont(.footnote).dashForeground(.secondaryText)
+                        Text(L10n.CoinControl.automaticallySelected).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
                     } else if let text = model.summaryText {
                         Text("\(L10n.CoinControl.quantity) \(text.quantity)   \(L10n.CoinControl.amount) \(text.amount)")
                             .dashFont(.footnote)
                     }
                 }
                 if model.insufficientFunds {
-                    Text(L10n.CoinControl.insufficientFunds).dashFont(.footnoteMedium).dashForeground(.red)
+                    Text(L10n.CoinControl.insufficientFunds).dashFont(.footnoteMedium).dashForeground(CrossRole.danger)
                 }
             }
         }

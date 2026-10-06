@@ -39,7 +39,7 @@ struct WalletsScreen: View {
             if let xpub = model.xpub {
                 DashCard {
                     HStack {
-                        SectionHeader(L10n.Wallets.xpubTitle, style: .subheadMedium)
+                        SectionHeader(L10n.Wallets.xpubTitle, style: .headline)
                         Spacer()
                         DashButton(CrossStrings.copyXpub, style: .plainBlue, size: .small) {
                             state.copy(xpub.xpub, what: L10n.Wallets.xpubTitle)
@@ -69,7 +69,7 @@ struct WalletsScreen: View {
         case .idle:
             EmptyView()
         case .working(let operation):
-            Text(CrossStrings.walletOperation(operation)).dashFont(.footnote).dashForeground(.secondaryText)
+            Text(CrossStrings.walletOperation(operation)).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
         case .needsFilePassphrase(let url, _):
             DashCard {
                 Text(CrossStrings.filePassphrasePrompt(url.lastPathComponent)).dashFont(.footnote)
@@ -80,7 +80,7 @@ struct WalletsScreen: View {
                         passphrase = ""
                         Task { await model.provideFilePassphrase(text) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                         passphrase = ""
                         model.dismiss()
                     }
@@ -96,7 +96,7 @@ struct WalletsScreen: View {
                         passphrase = ""
                         Task { await model.provideVaultPassphrase(text) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                         passphrase = ""
                         model.dismiss()
                     }
@@ -143,24 +143,28 @@ struct WalletsScreen: View {
     private func walletList(_ model: WalletManagementViewModel) -> some View {
         DashCard {
             HStack {
-                SectionHeader(CrossStrings.walletsPage, style: .subheadMedium)
+                SectionHeader(CrossStrings.walletsPage, style: .headline)
                 Spacer()
-                DashButton(L10n.Shell.closeAllWallets, style: .plainBlue, size: .small, isEnabled: model.wallets.contains(where: \.loaded)) {
+                DashButton(L10n.Shell.closeAllWallets, style: .plainRed, size: .small, isEnabled: model.wallets.contains(where: \.loaded)) {
                     Task { await model.closeAll() }
                 }
             }
             if model.loadStatesUnavailable {
-                Text(CrossStrings.loadStatesUnavailable).dashFont(.caption1).dashForeground(.secondaryText)
+                Text(CrossStrings.loadStatesUnavailable).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
             }
             if model.wallets.isEmpty {
-                Text(L10n.Shell.noWalletsAvailable).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.Shell.noWalletsAvailable).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
             ForEach(model.wallets) { wallet in
                 VStack(alignment: .leading, spacing: Int(DashSpacing.xxs)) {
                     HStack(spacing: Int(DashSpacing.s)) {
                         MenuItem(
+                            icon: .wallet,
                             title: wallet.name.isEmpty ? String(wallet.walletID.hex.prefix(8)) : wallet.name,
-                            subtitle: CrossStrings.walletState(loaded: wallet.loaded, watchOnly: wallet.watchOnly))
+                            subtitle: AmountTextRules.middleTruncated(wallet.walletID.hex, keep: 8))
+                        DashBadge(
+                            CrossStrings.walletState(loaded: wallet.loaded, watchOnly: wallet.watchOnly),
+                            tone: wallet.loaded ? .success : .neutral)
                         if wallet.loaded {
                             DashButton(CrossStrings.closeWallet, style: .plainBlue, size: .small) {
                                 Task { await model.close(wallet.walletID) }
@@ -194,7 +198,7 @@ struct WalletsScreen: View {
                                 renaming = nil
                                 Task { await model.rename(wallet.walletID, to: name) }
                             }
-                            DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) { renaming = nil }
+                            DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) { renaming = nil }
                         }
                     }
                 }
@@ -208,8 +212,8 @@ struct WalletsScreen: View {
     @ViewBuilder
     private func imports(_ model: WalletManagementViewModel) -> some View {
         DashCard {
-            SectionHeader(CrossStrings.importSection, style: .subheadMedium)
-            Text(CrossStrings.importFileHelp).dashFont(.caption1).dashForeground(.secondaryText)
+            SectionHeader(CrossStrings.importSection, style: .headline)
+            Text(CrossStrings.importFileHelp).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
             HStack(spacing: Int(DashSpacing.s)) {
                 DashButton(CrossStrings.importFile, style: .tintedBlue, size: .small) {
                     let choose = chooseFile
@@ -264,7 +268,7 @@ struct WalletsScreen: View {
     private func backups(_ model: WalletManagementViewModel) -> some View {
         let selected = state.main.selectedWalletID
         DashCard {
-            SectionHeader(L10n.Shell.backupWallet, style: .subheadMedium)
+            SectionHeader(L10n.Shell.backupWallet, style: .headline)
             if state.main.lockState == .unencrypted {
                 DashSecureField(CrossStrings.backupPassphrase, text: $backupPassphrase)
             }
@@ -328,7 +332,7 @@ struct CreateWalletScreen: View {
         VStack(alignment: .leading, spacing: Int(DashSpacing.s)) {
             HStack {
                 Spacer()
-                DashButton(CrossStrings.close, style: .strokeGray, size: .small) { state.closePage() }
+                DashButton(CrossStrings.close, style: .tintedGray, size: .small) { state.closePage() }
             }
             .padding(.horizontal, Int(DashSpacing.xl))
             OnboardingScreen(model: model)
@@ -357,7 +361,7 @@ struct OpenURIScreen: View {
                         await state.main.open(uri: text)
                     }
                 }
-                DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) { state.closePage() }
+                DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) { state.closePage() }
             }
         }
     }

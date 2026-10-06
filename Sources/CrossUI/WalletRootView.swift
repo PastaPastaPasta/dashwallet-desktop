@@ -67,7 +67,7 @@ public struct WalletRootView: View {
         } else if main.needsOnboarding, let onboarding = main.onboarding {
             OnboardingScreen(model: onboarding)
         } else if main.showsLockScreen {
-            LockScreen(model: main.lock)
+            LockScreen(model: main.lock, network: main.network)
         } else if main.showsSyncOverlay, let status = main.home?.sync {
             SyncOverlayScreen(state: state, status: status)
         } else {
@@ -391,11 +391,12 @@ struct ConfirmationCard: View {
 
     var body: some View {
         DashCard {
-            SectionHeader(title, style: .subheadMedium)
-            Text(message).dashFont(.footnote).dashForeground(.primaryText)
+            SectionHeader(title, style: .headline)
+            Text(message).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
             HStack(spacing: Int(DashSpacing.s)) {
+                Spacer()
+                DashButton(CrossStrings.cancel, style: .tintedGray, size: .small, action: onCancel)
                 DashButton(confirmTitle, style: destructive ? .filledRed : .filledBlue, size: .small, action: onConfirm)
-                DashButton(CrossStrings.cancel, style: .strokeGray, size: .small, action: onCancel)
             }
         }
     }
@@ -471,9 +472,10 @@ struct CenteredMessage: View {
         VStack(spacing: Int(DashSpacing.m)) {
             Spacer()
             if busy { ProgressView() }
-            Text(text).dashFont(.callout).dashForeground(.primaryText)
+            Text(text).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CrossRole.canvas.color)
     }
 }

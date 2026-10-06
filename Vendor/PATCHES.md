@@ -60,3 +60,15 @@ Change:
 Not in this patch: `accessibilityHidden` (no control needs it yet), list-row names (P4, still
 done by `DashUICross.accessibleRowNames` through `inspect`), and P2/P3 as separate defaults —
 `DashToggle`, `DashTextField`, `DashSecureField` and `DashPicker` pass their caption explicitly.
+
+### P2 — CSS font weights in GtkBackend (UX-SPEC §2.2, Inter on Linux)
+
+Rationale: the app bundles Inter (Regular, Medium, SemiBold, Bold) as the Linux/Windows UI face.
+Upstream 0.10.0 maps SwiftCrossUI's weights one step heavier on GTK (regular→500, medium→600,
+semibold→700) to imitate AppKit with the default GTK face, so with Inter every regular text drew
+in Medium and every medium text in SemiBold.
+
+Change (`Sources/GtkBackend/GtkBackend.swift`, `cssProperties(for:isControl:)`, comment
+`dashwallet-desktop patch P2`): light→300, regular→400, medium→500, semibold→600 (the CSS /
+OpenType numbers); ultraLight, thin, bold, heavy and black are unchanged. Other backends are not
+touched.

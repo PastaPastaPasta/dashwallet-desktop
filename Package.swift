@@ -156,6 +156,13 @@ if !headless {
                 .target(name: "PlatformServicesDesktop", condition: .when(platforms: [.linux, .windows])),
             ] + crossUI
         ),
+        // Colour roles, text rules, icon tinting and bundled resources of DashUICross.
+        .testTarget(
+            name: "DashUICrossTests",
+            dependencies: [
+                "DashUICross", "DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats"),
+            ]
+        ),
         // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(
             name: "DashWalletCross",

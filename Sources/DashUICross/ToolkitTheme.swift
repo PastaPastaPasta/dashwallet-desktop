@@ -25,12 +25,15 @@ public enum ToolkitTheme {
     /// GTK's default size for text the app does not size itself.
     static let defaultFontSize = 11
 
+    /// The bundled font files (Inter and its OFL licence).
+    static var fontDirectory: URL? { Bundle.module.url(forResource: "Fonts", withExtension: nil) }
+
     /// Makes the bundled Inter files available to the toolkit. Call before the
     /// first window exists (fontconfig adds them to the current configuration,
     /// which Pango's font map uses). Returns the number of font files found.
     @discardableResult
     public static func registerFonts() -> Int {
-        guard let directory = Bundle.module.url(forResource: "Fonts", withExtension: nil) else { return 0 }
+        guard let directory = fontDirectory else { return 0 }
         let fonts = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.filter {
             $0.hasSuffix(".ttf")
         } ?? []

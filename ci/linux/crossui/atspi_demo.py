@@ -29,8 +29,10 @@ from atspi_smoke import (  # noqa: E402
 )
 
 # Text that shows the page has rendered, by step suffix.
+# The Overview is the iOS hero layout (UX-SPEC §4.5): "History" marks it.
+OVERVIEW = "History"
 MARKERS = {
-    "overview": "Balances",
+    "overview": OVERVIEW,
     "send": "Pay To:",
     "transactions": "Export…",
     "receive": "Request payment",
@@ -152,14 +154,14 @@ def onboarding_flow(report, app, out_dir, step):
     # Live mode creates the vault with the engine's key derivation (debug
     # build). Without a node the wallet is not synced, so the sync overlay
     # (QT-027) covers the Overview until hidden.
-    ready = wait_for(app, lambda n, i: has_text("Balances")(n, i)
+    ready = wait_for(app, lambda n, i: has_text(OVERVIEW)(n, i)
                      or has_text("Recent transactions may not yet be visible")(n, i),
                      300 if "live" in step else 60)
     if ready and (ready[0][1].get("text") or ready[0][1]["name"]).startswith("Recent transactions"):
         record(app, out_dir, f"{step}-overlay")
         if not press(report, app, "Hide"):
             return
-        ready = wait_for(app, has_text("Balances"), 15)
+        ready = wait_for(app, has_text(OVERVIEW), 15)
     report.check("hard", "onboarding: the new wallet's Overview is shown", bool(ready))
     record(app, out_dir, f"{step}-done")
 
@@ -196,7 +198,7 @@ def send_flow(report, app, out_dir, step):
 def tools_flow(report, app, out_dir, step):
     """`--demo`: the status row's unit selector, the peers page from its peer
     count (QT-147), then Show QR in the address book (QT-095)."""
-    report.check("hard", "tools: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    report.check("hard", "tools: overview shown", bool(wait_for(app, has_text(OVERVIEW), 30)))
     unit = wait_for(app, lambda n, i: i["role"] == "combo box" and i["name"] == "Unit to show amounts in", 15)
     report.check("hard", "tools: status-row unit selector is a combo box named 'Unit to show amounts in'", bool(unit))
     peers_button = wait_for(app, lambda n, i: i["role"] == "push button" and re.fullmatch(r"\d+ peers", i["name"] or ""), 15)
@@ -222,8 +224,9 @@ def tools_flow(report, app, out_dir, step):
                  and bool(wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Hide QR", 5)),
                  (uri[0][1].get("text") or uri[0][1]["name"]) if uri else "")
     _lines, nodes = walk(app)
-    names = [i["name"] for _n, i, _d in nodes if i["role"] == "combo box"]
-    report.check("hard", "tools: the address-list picker is named 'Address list'", "Address list" in names, str(names))
+    names = [i["name"] for _n, i, _d in nodes if i["role"] == "push button"]
+    report.check("hard", "tools: the address lists are segments named 'Sending addresses' / 'Receiving addresses'",
+                 "Sending addresses" in names and "Receiving addresses" in names, str(names[:12]))
     record(app, out_dir, f"{step}-qr")
 
 
@@ -237,7 +240,7 @@ def overlay_flow(report, app, out_dir, step):
     record(app, out_dir, f"{step}-shown")
     if not press(report, app, "Hide"):
         return
-    report.check("hard", "overlay: Hide returns to the wallet", bool(wait_for(app, has_text("Balances"), 15)))
+    report.check("hard", "overlay: Hide returns to the wallet", bool(wait_for(app, has_text(OVERVIEW), 15)))
     report.check("hard", "overlay: status row offers 'Sync details'",
                  bool(wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Sync details", 10)))
     record(app, out_dir, f"{step}-hidden")
@@ -275,7 +278,7 @@ def named(role_names, title):
 def m2_menus_flow(report, app, out_dir, step):
     """`--demo`: dash-qt's menu bar (File, Settings, Window, Help) from the
     shell model, and the window title with the network tag (QT-011)."""
-    report.check("hard", "menus: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    report.check("hard", "menus: overview shown", bool(wait_for(app, has_text(OVERVIEW), 30)))
     frames = [c for c in children(app) if role(c) == "frame"]
     titles = [name(f) for f in frames]
     report.check("hard", "menus: window title is 'Dash Wallet - … - [testnet]' (QT-011)",
@@ -387,7 +390,7 @@ def m2_psbt_flow(report, app, out_dir, step):
 def m2_pages_flow(report, app, out_dir, step):
     """`--demo`: Wallets, Security, About, Command-line options from the
     sidebar, then a transaction's details with dash-qt's actions."""
-    report.check("hard", "pages: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    report.check("hard", "pages: overview shown", bool(wait_for(app, has_text(OVERVIEW), 30)))
     if press(report, app, "Wallets"):
         report.check("hard", "wallets: import, restore and watch-only controls",
                      bool(wait_for(app, named(("push button",), "Import File…"), 10))
@@ -411,7 +414,10 @@ def m2_pages_flow(report, app, out_dir, step):
         return
     rows = wait_for(app, lambda n, i: i["role"] == "list item" and ("Received" in (i["name"] or "") or "Sent" in (i["name"] or "")), 15)
     report.check("hard", "transactions: rows listed", bool(rows))
-    lists = [n for n, info in find_all(app, lambda n, i: is_list_container(i)) if len(list_items(n)) > 0]
+    # List mode has one list per day; the sidebar is a list too and is skipped.
+    sidebar_list, _texts = sidebar(app)
+    lists = [n for n, info in find_all(app, lambda n, i: is_list_container(i))
+             if len(list_items(n)) > 0 and n != sidebar_list]
     target = max(lists, key=lambda n: len(list_items(n))) if lists else None
     selection = safe(lambda: target.querySelection()) if target is not None else None
     ok = selection is not None and bool(safe(lambda: selection.selectChild(0), False))
@@ -439,6 +445,69 @@ def m2_chooser_flow(report, app, out_dir, step):
     report.check("hard", "chooser: OK opens the wallet (onboarding on the new root)",
                  bool(wait_for(app, has_text("Create a new wallet"), 300)))
     record(app, out_dir, f"{step}-opened")
+
+
+def ux_wait_record(report, app, out_dir, name, predicate, label, timeout=15):
+    found = wait_for(app, predicate, timeout)
+    report.check("hard", f"ux: {name} shows {label}", bool(found))
+    record(app, out_dir, name)
+    return bool(found)
+
+
+def ux_main_flow(report, app, out_dir, step):
+    """`--demo [--appearance dark]`: the shell pages and the More pages."""
+    ux_wait_record(report, app, out_dir, f"{step}-01-overview", has_text(OVERVIEW), "'History'", 30)
+    if select_sidebar(report, app, "Send"):
+        ux_wait_record(report, app, out_dir, f"{step}-02-send", has_text("Pay To:"), "'Pay To:'")
+    if select_sidebar(report, app, "Receive"):
+        ux_wait_record(report, app, out_dir, f"{step}-03-receive", has_text("Request payment"), "'Request payment'")
+    if select_sidebar(report, app, "Transactions"):
+        ux_wait_record(report, app, out_dir, f"{step}-04-transactions", has_text("Export…"), "'Export…'")
+        sidebar_list, _texts = sidebar(app)
+        lists = [n for n, info in find_all(app, lambda n, i: is_list_container(i))
+                 if len(list_items(n)) > 0 and n != sidebar_list]
+        target = max(lists, key=lambda n: len(list_items(n))) if lists else None
+        selection = safe(lambda: target.querySelection()) if target is not None else None
+        if selection is not None and safe(lambda: selection.selectChild(0), False):
+            ux_wait_record(report, app, out_dir, f"{step}-05-transaction-details", has_text("Net amount"),
+                           "'Net amount'")
+        if press(report, app, "Table"):
+            ux_wait_record(report, app, out_dir, f"{step}-06-transactions-table", has_text("Export…"), "'Export…'")
+    pages = [
+        ("07-address-book", "Address Book", has_text("Sending addresses")),
+        ("08-sign-verify", "Sign / Verify Message", has_text("Sign Message")),
+        ("09-tools-information", "Tools Window", has_text("Client version")),
+        ("10-psbt", "PSBT Operations", has_text("Load a partially signed transaction")),
+        ("11-wallets", "Wallets", named(("push button",), "Import File…")),
+        ("12-options", "Options", has_text("Reset Options")),
+        ("13-security", "Security", named(("combo box",), "Auto Lock")),
+        ("14-settings", "Settings", has_text("Display")),
+        ("15-about", "About", named(("push button",), "Export Logs")),
+    ]
+    for name, button, predicate in pages:
+        if press(report, app, button):
+            ux_wait_record(report, app, out_dir, f"{step}-{name}", predicate, button)
+    if press(report, app, "Tools Window"):
+        for tab, predicate in (("Console", has_text_prefix("Welcome to the Dash Wallet RPC console.")),
+                               ("Peers", named(("push button",), "Change Peers"))):
+            if press(report, app, tab):
+                ux_wait_record(report, app, out_dir, f"{step}-16-tools-{tab.lower()}", predicate, tab)
+
+
+def ux_single_flow(report, app, out_dir, step):
+    """One screen of a scenario: onboarding welcome + phrase, lock, sync overlay, gallery."""
+    kind = step.rsplit("-", 1)[-1]
+    if kind == "onboarding":
+        if ux_wait_record(report, app, out_dir, f"{step}-welcome", has_text("Create a new wallet"),
+                          "'Create a new wallet'", 30) and press(report, app, "Create a new wallet"):
+            ux_wait_record(report, app, out_dir, f"{step}-phrase", has_text("I wrote it down"), "the phrase")
+    elif kind == "lock":
+        ux_wait_record(report, app, out_dir, f"{step}", has_text("Unlock"), "'Unlock'", 30)
+    elif kind == "overlay":
+        ux_wait_record(report, app, out_dir, f"{step}", has_text("Recent transactions may not yet be visible"),
+                       "the sync overlay", 30)
+    elif kind == "gallery":
+        ux_wait_record(report, app, out_dir, f"{step}", has_text("DashUICross gallery"), "the gallery", 30)
 
 
 def sidebar(app):
@@ -494,7 +563,8 @@ def main():
         if action.startswith("flow:"):
             flows = {"onboarding": onboarding_flow, "send": send_flow, "tools": tools_flow, "overlay": overlay_flow,
                      "m2-menus": m2_menus_flow, "m2-options": m2_options_flow, "m2-tools": m2_tools_flow,
-                     "m2-psbt": m2_psbt_flow, "m2-pages": m2_pages_flow, "m2-chooser": m2_chooser_flow}
+                     "m2-psbt": m2_psbt_flow, "m2-pages": m2_pages_flow, "m2-chooser": m2_chooser_flow,
+                     "ux-main": ux_main_flow, "ux-single": ux_single_flow}
             flows[action[len("flow:"):]](report, app, args.out, step_name)
             continue
         if action.startswith("select:"):

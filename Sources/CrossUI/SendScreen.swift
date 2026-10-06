@@ -158,7 +158,7 @@ struct SendScreen: View {
             // dash-qt's lines in a card, Cancel and the counting-down Send.
             DashCard(padding: Int(DashSpacing.xl)) {
                 VStack(spacing: Int(DashSpacing.xs)) {
-                    SectionHeader(L10n.Send.confirmTitle, style: .subheadMedium)
+                    SectionHeader(L10n.Send.confirmTitle, style: .headline)
                     AmountText(
                         state.amountPresenter.full(summary.totalDebit), unit: state.amountPresenter.unitDisplay,
                         style: .title1, weight: .bold)
