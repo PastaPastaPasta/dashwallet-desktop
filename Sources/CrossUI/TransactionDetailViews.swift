@@ -146,7 +146,7 @@ struct DayGroupList: View {
                             }
                         case .coinJoinMixing(let row):
                             MenuItem(
-                                title: row.title, subtitle: CrossStrings.mixingCount(row.records.count),
+                                title: row.title, subtitle: L10n.TransactionsM2.mixingCount(row.records.count),
                                 trailing: state.format(row.total))
                         }
                     }

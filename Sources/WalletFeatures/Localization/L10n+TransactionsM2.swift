@@ -90,6 +90,9 @@ extension L10n {
         public static let only = "Only"
         public static let dateUnknown = "Date unknown"
         public static let mixingTransactions = "Mixing Transactions"
+        public static func mixingCount(_ count: Int) -> String {
+            count == 1 ? "1 transaction" : "\(count) transactions"
+        }
         public static let insight = "Insight"
         public static let blockchair = "Blockchair"
     }

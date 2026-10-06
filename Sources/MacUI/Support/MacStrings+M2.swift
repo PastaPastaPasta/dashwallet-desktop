@@ -38,7 +38,6 @@ extension MacStrings {
 
     enum Security {
         static let quickUnlockUnavailable = "Not available on this Mac or with an unencrypted wallet"
-        static let typeSentence = "Type the sentence above"
     }
 
     enum Wallets {
@@ -80,7 +79,6 @@ extension MacStrings {
     }
 
     enum PeerTools {
-        static let banned = "Banned peers"
         static let ban = "Ban"
     }
 
@@ -95,7 +93,6 @@ extension MacStrings {
         static let empty = "No coins."
         static let reserved = "Reserved by a payment in progress"
         static let locked = "Locked"
-        static let summaryUnavailable = "The selection summary is not available yet."
         static let customChangeUnavailable =
             "Sending to a custom change address is not available yet; change returns to this wallet."
     }
@@ -110,9 +107,6 @@ extension MacStrings.Transactions {
     static let tableLayout = "dash-qt table"
     static let historyLayout = "History by day"
     static let actionResult = "Transaction"
-    static func mixingCount(_ count: Int) -> String {
-        count == 1 ? "1 transaction" : "\(count) transactions"
-    }
 }
 
 extension MacStrings.Overview {

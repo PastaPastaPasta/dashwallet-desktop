@@ -241,7 +241,7 @@ struct PeersTab: View {
             }
             if model.showsBannedList {
                 DashCard {
-                    SectionHeader(CrossStrings.bannedPeers, style: .subheadMedium)
+                    SectionHeader(L10n.Tools.bannedPeers, style: .subheadMedium)
                     ForEach(model.banned, id: \.subnet) { peer in
                         HStack(spacing: Int(DashSpacing.s)) {
                             MenuItem(

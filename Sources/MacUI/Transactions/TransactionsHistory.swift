@@ -102,7 +102,7 @@ struct HistoryList: View {
             Image(systemName: "shuffle").foregroundStyle(Color.dash.blueText).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
                 Text(row.title).dashFont(.subheadMedium)
-                Text(MacStrings.Transactions.mixingCount(row.records.count))
+                Text(L10n.TransactionsM2.mixingCount(row.records.count))
                     .dashFont(.footnote)
                     .foregroundStyle(Color.dash.secondaryText)
             }

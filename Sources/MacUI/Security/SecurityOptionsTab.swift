@@ -206,7 +206,7 @@ private struct WipeSheet: View {
             Text("“\(L10n.Wallets.wipeAcceptPhrase)”")
                 .dashFont(.footnoteMedium)
                 .textSelection(.enabled)
-            TextField(MacStrings.Security.typeSentence, text: $sentence, axis: .vertical)
+            TextField(L10n.Wallets.typeSentence, text: $sentence, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("wipe.sentence")
             if security.vaultStatus?.encrypted == true {

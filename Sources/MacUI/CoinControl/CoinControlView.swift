@@ -277,7 +277,7 @@ struct CoinSummaryGrid: View {
                     .foregroundStyle(Color.dash.errorText)
             }
         } else if coinControl.summaryUnavailable {
-            Text(MacStrings.CoinControl.summaryUnavailable)
+            Text(L10n.CoinControl.summaryUnavailable)
                 .dashFont(.footnote)
                 .foregroundStyle(Color.dash.secondaryText)
         } else {

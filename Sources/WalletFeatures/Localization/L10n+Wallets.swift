@@ -47,6 +47,7 @@ extension L10n {
         public static let wipeAcceptPhrase =
             "I accept that I will lose my coins if I no longer possess the recovery phrase"
         public static let acceptPhraseMismatch = "Type the sentence exactly as shown."
+        public static let typeSentence = "Type the sentence above"
     }
 
     /// Security copy (research 03 §1.2, §1.16; IOS-011, IOS-014…016, IOS-108/109).

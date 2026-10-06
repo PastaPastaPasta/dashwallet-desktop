@@ -452,7 +452,7 @@ struct ExistingDataSheet: View {
             if confirmingDelete {
                 Text(L10n.Wallets.deleteAllMessage).dashFont(.footnote)
                 Text("“\(L10n.Wallets.wipeAcceptPhrase)”").dashFont(.footnoteMedium)
-                TextField(MacStrings.Security.typeSentence, text: $sentence, axis: .vertical)
+                TextField(L10n.Wallets.typeSentence, text: $sentence, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                 SecureField(MacStrings.Common.passphrase, text: $passphrase).textFieldStyle(.roundedBorder)
             }

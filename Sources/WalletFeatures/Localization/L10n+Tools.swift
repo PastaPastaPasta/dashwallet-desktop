@@ -81,6 +81,7 @@ extension L10n {
         public static let banYear = "Ban for 1 year"
         public static let bannedSubnet = "IP/Netmask"
         public static let bannedUntil = "Banned Until"
+        public static let bannedPeers = "Banned peers"
         public static let copySubnet = "Copy IP/Netmask"
         public static let unban = "Unban"
 

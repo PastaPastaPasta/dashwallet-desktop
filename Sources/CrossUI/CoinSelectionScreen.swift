@@ -212,7 +212,7 @@ struct SummaryPanel: View {
                     Button(L10n.CoinControl.copyChange) { state.copy(model.copy(.change), what: L10n.CoinControl.change) }
                 }
             } else if model.summaryUnavailable {
-                Text(CrossStrings.summaryUnavailable).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.CoinControl.summaryUnavailable).dashFont(.footnote).dashForeground(.secondaryText)
             } else {
                 Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
             }

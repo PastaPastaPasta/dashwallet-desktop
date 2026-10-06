@@ -9,6 +9,7 @@ extension L10n {
         public static let featuresHeader = "Coin Control Features"
         public static let inputs = "Inputs…"
         public static let automaticallySelected = "automatically selected"
+        public static let summaryUnavailable = "The selection summary is not available yet."
         public static let insufficientFunds = "Insufficient funds!"
         public static let quantity = "Quantity:"
         public static let bytes = "Bytes:"

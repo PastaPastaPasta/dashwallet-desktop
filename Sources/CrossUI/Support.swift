@@ -305,7 +305,6 @@ enum CrossStrings {
     static let complete = "Complete"
     static let banDuration = "Ban duration"
     static let ban = "Ban"
-    static let bannedPeers = "Banned peers"
     static let rescanning = "Rescanning…"
     static let blockHeight = "Block height"
 
@@ -323,7 +322,6 @@ enum CrossStrings {
     static let noCoins = "No coins."
     static let sortBy = "Sort by:"
     static let lockedCoin = "(locked)"
-    static let summaryUnavailable = "The selection summary is not available yet."
     static let customChangeUnavailable =
         "A custom change address cannot be used yet: the Send page does not pass one to the transaction."
     static func selectCoin(_ amount: String, _ address: String) -> String { "Select \(amount) at \(address)" }
@@ -338,14 +336,12 @@ enum CrossStrings {
 
     // Transactions.
     static let groupByDay = "Group by day"
-    static func mixingCount(_ count: Int) -> String { count == 1 ? "1 transaction" : "\(count) transactions" }
 
     // Wallets.
     static let copyXpub = "Copy"
     static let derivationPath = "Derivation path"
     static let filePassphrase = "File passphrase"
     static func filePassphrasePrompt(_ name: String) -> String { "\(name) is encrypted. Enter its passphrase." }
-    static let typeSentence = "Type the sentence above"
     static let closeWallet = "Close"
     static let openWallet = "Open"
     static let xpub = "Extended public key"

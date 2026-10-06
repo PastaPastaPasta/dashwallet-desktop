@@ -325,7 +325,7 @@ struct PeersToolView: View {
             .frame(minHeight: 200)
             .accessibilityIdentifier("peers.table")
             if peers.showsBannedList {
-                Text(MacStrings.PeerTools.banned).dashFont(.headline)
+                Text(L10n.Tools.bannedPeers).dashFont(.headline)
                 Table(bannedRows, selection: $bannedSelection) {
                     TableColumn(L10n.Tools.bannedSubnet) { Text($0.peer.subnet).monospaced() }
                     TableColumn(L10n.Tools.bannedUntil) { Text($0.peer.bannedUntil.formatted()) }

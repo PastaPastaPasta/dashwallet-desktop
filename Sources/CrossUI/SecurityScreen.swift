@@ -195,7 +195,7 @@ struct SecurityScreen: View {
             case .confirming:
                 Text(L10n.Wallets.deleteAllMessage).dashFont(.footnote)
                 Text(L10n.Wallets.wipeAcceptPhrase).dashFont(.footnoteMedium).textSelectionEnabled()
-                DashTextField(CrossStrings.typeSentence, text: $wipeSentence)
+                DashTextField(L10n.Wallets.typeSentence, text: $wipeSentence)
                 if model.vaultStatus?.encrypted ?? false {
                     DashSecureField(CrossStrings.passphrase, placeholder: CrossStrings.walletPassphrase, text: $wipePassphrase)
                 }
