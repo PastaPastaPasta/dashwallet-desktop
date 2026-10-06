@@ -44,7 +44,7 @@ pub struct VaultStatus {
     pub state: LockState,
     /// A passphrase slot exists.
     pub encrypted: bool,
-    /// Always `false` until slot B lands (TODO(biometric), M2).
+    /// Slot B (quick unlock) is enrolled.
     pub quick_unlock_enrolled: bool,
     pub failed_attempts: u32,
     /// Seconds until the next passphrase attempt is accepted, when throttled.
@@ -59,7 +59,11 @@ pub enum Credential<'a> {
     /// Vault passphrase bytes. Does not change the lock state: on a locked or
     /// mixing-only vault the unwrapped key serves the issued grant only.
     Passphrase(&'a [u8]),
-    /// Key released by the OS biometric store (slot B, M2).
+    /// The 32-byte wrap key the OS biometric store released (slot B). Issues
+    /// `Spend` grants up to the quick-unlock spending limit and `SignMessage`
+    /// grants, only while the passphrase was entered within
+    /// [`PASSPHRASE_MAX_AGE_SECS`]. Like `Passphrase`, it does not change the
+    /// lock state.
     QuickUnlock(&'a [u8]),
     /// No credential: accepted when the vault is unencrypted, or unlocked
     /// with scope Full for purposes other than
@@ -302,3 +306,25 @@ impl std::fmt::Debug for VaultConfig {
 
 /// Default grant lifetime: long enough for one confirm-and-sign round.
 pub const DEFAULT_GRANT_TTL_SECS: u64 = 120;
+
+/// The iOS biometric spending-limit options (IOS-016): 0, 0.1, 0.5, 1 and
+/// 5 DASH, in duffs.
+pub const QUICK_UNLOCK_SPEND_LIMITS: [u64; 5] =
+    [0, 10_000_000, 50_000_000, 100_000_000, 500_000_000];
+/// Spending limit of a new enrolment: 0.5 DASH (iOS default).
+pub const DEFAULT_QUICK_UNLOCK_SPEND_LIMIT: u64 = 50_000_000;
+/// Quick unlock is refused once the passphrase was last entered longer ago
+/// than this: 7 days (iOS).
+pub const PASSPHRASE_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Quick-unlock rules `Vault::authorize` enforces (DESIGN-opus §1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuickUnlockPolicy {
+    /// Slot B exists.
+    pub enrolled: bool,
+    /// Largest `Spend` grant quick unlock may issue.
+    pub spend_limit_duffs: u64,
+    pub passphrase_max_age_secs: u64,
+    /// Last successful passphrase check (UNIX seconds), if known.
+    pub last_passphrase_at: Option<u64>,
+}

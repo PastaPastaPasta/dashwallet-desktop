@@ -45,9 +45,23 @@ pub enum VaultError {
     /// The wallet has no secret in the vault.
     #[error("no secret for wallet")]
     NoSecret,
-    /// The biometric slot is not available (TODO(biometric), M2).
+    /// No slot B on this vault (not enrolled, not encrypted), or the wrap
+    /// key does not open it (the OS item is from an older enrolment).
     #[error("quick unlock unavailable")]
     QuickUnlockUnavailable,
+    /// A quick-unlock `Spend` grant above the spending limit (IOS-016).
+    #[error("quick unlock spending limit {limit_duffs} exceeded")]
+    QuickUnlockLimitExceeded { limit_duffs: u64 },
+    /// Quick unlock refused: the passphrase was last entered longer ago
+    /// than the policy allows (IOS-011).
+    #[error("passphrase not entered recently enough for quick unlock")]
+    PassphraseStale,
+    /// `destroy` while the vault still holds records.
+    #[error("vault still holds wallet secrets")]
+    NotEmpty,
+    /// The recovery phrase does not derive the wallet (IOS-014).
+    #[error("recovery phrase does not match the wallet")]
+    RecoveryMismatch,
     /// The OS secret store refused the operation or does not exist.
     #[error("OS secret store unavailable: {0}")]
     OsStoreUnavailable(String),
@@ -87,6 +101,10 @@ impl VaultError {
             Self::MixingOnly => "vault.mixing_only",
             Self::NoSecret => "vault.no_secret",
             Self::QuickUnlockUnavailable => "vault.quick_unlock_unavailable",
+            Self::QuickUnlockLimitExceeded { .. } => "vault.quick_unlock_limit_exceeded",
+            Self::PassphraseStale => "vault.passphrase_stale",
+            Self::NotEmpty => "vault.not_empty",
+            Self::RecoveryMismatch => "vault.recovery_mismatch",
             Self::OsStoreUnavailable(_) => "vault.os_store_unavailable",
             Self::Corrupt(_) => "vault.corrupt",
             Self::InvalidArgument(_) => "invalid_argument",

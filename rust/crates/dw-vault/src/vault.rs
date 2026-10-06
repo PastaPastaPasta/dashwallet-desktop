@@ -24,12 +24,20 @@ use subtle::ConstantTimeEq;
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
+use serde::{Deserialize, Serialize};
+
 use crate::crypto::{self, Key32, SALT_LEN, Sealed};
-use crate::file::{self, Manifest, OsSlot, PassphraseSlot, Throttle, VaultFile};
+use crate::file::{
+    self, Manifest, OsSlot, PassphraseSlot, QuickUnlockSettings, QuickUnlockSlot, Throttle,
+    VaultFile,
+};
+use crate::mnemonic;
 use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
-    AuthGrant, Credential, GrantKind, GrantPurpose, GrantToken, LockState, RevealedMnemonic,
-    SeedDerivation, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
+    AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
+    LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy,
+    RevealedMnemonic, SeedDerivation, UnlockScope, VaultConfig, VaultStatus, WalletId,
+    WalletSecret,
 };
 use crate::{SignerError, VaultError};
 
@@ -142,6 +150,65 @@ fn decode_seed(payload: &[u8]) -> Result<(Zeroizing<[u8; 64]>, SeedDerivation), 
     Ok((seed, derivation))
 }
 
+/// The authenticated payload of [`QuickUnlockSettings::sealed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct PolicyPayload {
+    spend_limit_duffs: u64,
+    last_passphrase_at: Option<u64>,
+}
+
+impl Default for PolicyPayload {
+    fn default() -> Self {
+        Self {
+            spend_limit_duffs: DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+            last_passphrase_at: None,
+        }
+    }
+}
+
+/// Seals `payload` under the data key and returns the file section with
+/// the matching plain copy.
+fn seal_policy(
+    dek: &[u8; 32],
+    vault_id: &[u8],
+    network: &str,
+    payload: PolicyPayload,
+) -> Result<QuickUnlockSettings, VaultError> {
+    let plain = Zeroizing::new(
+        serde_json::to_vec(&payload)
+            .map_err(|e| VaultError::Internal(format!("quick-unlock policy: {e}")))?,
+    );
+    Ok(QuickUnlockSettings {
+        spend_limit_duffs: payload.spend_limit_duffs,
+        last_passphrase_at: payload.last_passphrase_at,
+        sealed: crypto::seal(dek, &plain, &file::quick_unlock_aad(vault_id, network))?,
+    })
+}
+
+/// The authenticated policy of `f`; `None` when the file has none. A plain
+/// copy that differs from the sealed one is `Corrupt`.
+fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, VaultError> {
+    let Some(settings) = &f.quick_unlock else {
+        return Ok(None);
+    };
+    let plain = crypto::open(
+        dek,
+        &settings.sealed,
+        &file::quick_unlock_aad(&f.vault_id, &f.network),
+    )
+    .ok_or_else(|| VaultError::Corrupt("quick-unlock policy failed authentication".into()))?;
+    let payload: PolicyPayload = serde_json::from_slice(&plain)
+        .map_err(|e| VaultError::Corrupt(format!("quick-unlock policy does not parse: {e}")))?;
+    if payload.spend_limit_duffs != settings.spend_limit_duffs
+        || payload.last_passphrase_at != settings.last_passphrase_at
+    {
+        return Err(VaultError::Corrupt(
+            "quick-unlock policy differs from its sealed copy".into(),
+        ));
+    }
+    Ok(Some(payload))
+}
+
 /// A grant held in vault memory.
 struct IssuedGrant {
     grant: AuthGrant,
@@ -163,6 +230,9 @@ struct Inner {
     /// Highest manifest generation seen by this process (rollback check).
     high_water: u64,
     grants: HashMap<String, IssuedGrant>,
+    /// Last successful passphrase check in this process (UNIX seconds). The
+    /// file keeps it (sealed) only while slot B is enrolled.
+    last_passphrase_at: Option<u64>,
 }
 
 impl Inner {
@@ -245,6 +315,7 @@ impl Vault {
                     epoch: 0,
                     high_water: 0,
                     grants: HashMap::new(),
+                    last_passphrase_at: None,
                 }),
             }),
         })
@@ -320,7 +391,7 @@ impl Vault {
         VaultStatus {
             state: Self::state_of(inner),
             encrypted: f.slot_p.is_some(),
-            quick_unlock_enrolled: false,
+            quick_unlock_enrolled: f.slot_b.is_some(),
             failed_attempts: f.throttle.failed_attempts,
             retry_after_secs: retry_after(&f.throttle, self.now()),
             wallets_with_secrets: f
@@ -401,6 +472,8 @@ impl Vault {
             throttle: Throttle::default(),
             manifest: seal_manifest(&dek, &vault_id, tag, &manifest)?,
             records: BTreeMap::new(),
+            slot_b: None,
+            quick_unlock: None,
         };
 
         if let Err(e) = file::write(&self.shared.dir, &vault_file) {
@@ -412,10 +485,15 @@ impl Vault {
             }
             return Err(e);
         }
+        let encrypted = vault_file.slot_p.is_some();
+        let now = self.now();
         let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
         inner.install_key(dek, UnlockScope::Full);
+        if encrypted {
+            inner.last_passphrase_at = Some(now);
+        }
         drop(writer);
         Ok(self.status_of(&inner))
     }
@@ -556,17 +634,37 @@ impl Vault {
                 .map_err(|_| VaultError::Corrupt("data key length".into()))?,
         );
 
-        let had_failures = {
+        let now = self.now();
+        let (had_failures, policy) = {
             let mut inner = self.inner();
             let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
             let manifest = verify_manifest(f, &dek, inner.high_water)?;
             let had_failures = f.throttle != Throttle::default();
+            // With slot B enrolled the passphrase time is enforced from the
+            // file, so it is persisted (sealed) on every successful check.
+            let policy = if f.slot_b.is_some() {
+                Some(open_policy(f, &dek)?.unwrap_or_default())
+            } else {
+                None
+            };
             inner.high_water = inner.high_water.max(manifest.generation);
-            had_failures
+            inner.last_passphrase_at = Some(now);
+            (had_failures, policy)
         };
-        if had_failures {
+        if had_failures || policy.is_some() {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
+            if let Some(policy) = policy {
+                next.quick_unlock = Some(seal_policy(
+                    &dek,
+                    &next.vault_id,
+                    &next.network,
+                    PolicyPayload {
+                        last_passphrase_at: Some(now),
+                        ..policy
+                    },
+                )?);
+            }
             self.persist(writer, next)?;
         }
         Ok(dek)
@@ -609,7 +707,13 @@ impl Vault {
     /// - `None`: accepted on an unencrypted vault, and on a vault unlocked
     ///   with scope Full except for [`GrantPurpose::requires_credential`]
     ///   purposes, which need the passphrase whenever slot P exists.
-    /// - `QuickUnlock`: not available until slot B (M2).
+    /// - `QuickUnlock`: the slot B wrap key. Issues `Spend` grants up to the
+    ///   spending limit (`QuickUnlockLimitExceeded` above it) and
+    ///   `SignMessage` grants, only while the passphrase was entered within
+    ///   [`PASSPHRASE_MAX_AGE_SECS`] (`PassphraseStale`). Every other purpose
+    ///   is `CredentialRequired`. The lock state does not change; on a locked
+    ///   or mixing-only vault the grant carries its own key, as a passphrase
+    ///   grant does.
     pub fn authorize(
         &self,
         purpose: GrantPurpose,
@@ -632,8 +736,9 @@ impl Vault {
             _ => {}
         }
         match credential {
-            // TODO(biometric): slot B (Touch ID / Windows Hello) lands in M2.
-            Credential::QuickUnlock(_) => Err(VaultError::QuickUnlockUnavailable),
+            Credential::QuickUnlock(wrap_key) => {
+                self.authorize_quick_unlock(purpose, wallet, wrap_key)
+            }
             Credential::Passphrase(pw) => {
                 let writer = self.writer();
                 let dek = self.check_passphrase(&writer, pw)?;
@@ -669,6 +774,67 @@ impl Vault {
                 self.issue(&mut inner, purpose, wallet, None)
             }
         }
+    }
+
+    /// The `QuickUnlock` arm of [`Self::authorize`].
+    fn authorize_quick_unlock(
+        &self,
+        purpose: GrantPurpose,
+        wallet: Option<&WalletId>,
+        wrap_key: &[u8],
+    ) -> Result<AuthGrant, VaultError> {
+        if !matches!(
+            purpose,
+            GrantPurpose::Spend { .. } | GrantPurpose::SignMessage
+        ) {
+            return Err(VaultError::CredentialRequired);
+        }
+        let now = self.now();
+        let mut inner = self.inner();
+        let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+        let slot = f
+            .slot_b
+            .as_ref()
+            .ok_or(VaultError::QuickUnlockUnavailable)?;
+        let key: Key32 = Zeroizing::new(wrap_key.try_into().map_err(|_| {
+            VaultError::InvalidArgument("the quick-unlock key must be 32 bytes".into())
+        })?);
+        let opened = crypto::open(
+            &key,
+            &slot.wrapped_dek,
+            &file::slot_b_aad(&f.vault_id, &f.network),
+        )
+        .ok_or(VaultError::QuickUnlockUnavailable)?;
+        let dek: Key32 = Zeroizing::new(
+            opened[..]
+                .try_into()
+                .map_err(|_| VaultError::Corrupt("data key length".into()))?,
+        );
+        let manifest = verify_manifest(f, &dek, inner.high_water)?;
+        let policy = open_policy(f, &dek)?.unwrap_or_default();
+        inner.high_water = inner.high_water.max(manifest.generation);
+
+        // A clock set back gives age 0 (fresh); one set forward only stales.
+        let fresh = policy
+            .last_passphrase_at
+            .is_some_and(|at| now.saturating_sub(at) <= PASSPHRASE_MAX_AGE_SECS);
+        if !fresh {
+            return Err(VaultError::PassphraseStale);
+        }
+        if let GrantPurpose::Spend { max_duffs } = purpose
+            && max_duffs > policy.spend_limit_duffs
+        {
+            return Err(VaultError::QuickUnlockLimitExceeded {
+                limit_duffs: policy.spend_limit_duffs,
+            });
+        }
+        let full_in_memory = inner.dek.is_some() && inner.scope == UnlockScope::Full;
+        self.issue(
+            &mut inner,
+            purpose,
+            wallet,
+            (!full_in_memory).then_some(dek),
+        )
     }
 
     /// Stores a new grant, dropping expired ones.
@@ -1127,14 +1293,294 @@ impl Vault {
         Ok(decode_seed(&payload)?.0)
     }
 
-    /// Biometric slot B. TODO(biometric): M2.
-    pub fn enroll_quick_unlock(&self, _grant_id: &str) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-        Err(VaultError::NotImplemented("Vault.enroll_quick_unlock"))
+    /// Adds slot B (IOS-011): seals the data key under a fresh random
+    /// 256-bit wrap key and returns that key for the host to keep in the OS
+    /// biometric store; the vault does not keep it. Re-enrolling replaces
+    /// the slot (the old key stops working). Needs an encrypted vault
+    /// (`NotEncrypted`) and a `ChangeCredential` grant, which on an
+    /// encrypted vault only the passphrase issues. The spending limit of an
+    /// earlier enrolment is kept; a first enrolment gets
+    /// [`DEFAULT_QUICK_UNLOCK_SPEND_LIMIT`].
+    pub fn enroll_quick_unlock(&self, grant_id: &str) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        let writer = self.writer();
+        let mut next = self.file_copy(&writer)?;
+        if next.slot_p.is_none() {
+            return Err(VaultError::NotEncrypted);
+        }
+        let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
+        let dek = self.key_for(&token)?;
+        let policy = open_policy(&next, &dek)?.unwrap_or_default();
+        let last_passphrase_at = policy
+            .last_passphrase_at
+            .max(self.inner().last_passphrase_at);
+        let wrap_key = crypto::random_key()?;
+        next.slot_b = Some(QuickUnlockSlot {
+            wrapped_dek: crypto::seal(
+                &wrap_key,
+                &dek[..],
+                &file::slot_b_aad(&next.vault_id, &next.network),
+            )?,
+            enrolled_at: self.now(),
+        });
+        next.quick_unlock = Some(seal_policy(
+            &dek,
+            &next.vault_id,
+            &next.network,
+            PolicyPayload {
+                last_passphrase_at,
+                ..policy
+            },
+        )?);
+        self.persist(&writer, next)?;
+        Ok(Zeroizing::new(wrap_key.to_vec()))
     }
 
-    /// Biometric slot B. TODO(biometric): M2.
+    /// Deletes slot B. Idempotent; the spending limit is kept for a later
+    /// enrolment. Needs no grant: it only removes a way in.
     pub fn remove_quick_unlock(&self) -> Result<VaultStatus, VaultError> {
-        Err(VaultError::NotImplemented("Vault.remove_quick_unlock"))
+        let writer = self.writer();
+        let mut next = self.file_copy(&writer)?;
+        if next.slot_b.take().is_some() {
+            self.persist(&writer, next)?;
+        }
+        drop(writer);
+        Ok(self.status())
+    }
+
+    /// The quick-unlock rules (IOS-016). In-memory read of the plain copy,
+    /// so it works while locked; `authorize` enforces the sealed copy.
+    pub fn quick_unlock_policy(&self) -> QuickUnlockPolicy {
+        let inner = self.inner();
+        let file = inner.file.as_ref();
+        let settings = file.and_then(|f| f.quick_unlock.as_ref());
+        QuickUnlockPolicy {
+            enrolled: file.is_some_and(|f| f.slot_b.is_some()),
+            spend_limit_duffs: settings
+                .map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs),
+            passphrase_max_age_secs: PASSPHRASE_MAX_AGE_SECS,
+            last_passphrase_at: settings
+                .and_then(|s| s.last_passphrase_at)
+                .max(inner.last_passphrase_at),
+        }
+    }
+
+    /// Sets the quick-unlock spending limit to one of
+    /// [`QUICK_UNLOCK_SPEND_LIMITS`] (`InvalidArgument` otherwise). Needs an
+    /// encrypted vault (`NotEncrypted`) and a `ChangeCredential` grant.
+    pub fn set_quick_unlock_spend_limit(
+        &self,
+        grant_id: &str,
+        spend_limit_duffs: u64,
+    ) -> Result<QuickUnlockPolicy, VaultError> {
+        if !QUICK_UNLOCK_SPEND_LIMITS.contains(&spend_limit_duffs) {
+            return Err(VaultError::InvalidArgument(format!(
+                "spending limit {spend_limit_duffs} is not one of {QUICK_UNLOCK_SPEND_LIMITS:?}"
+            )));
+        }
+        let writer = self.writer();
+        let mut next = self.file_copy(&writer)?;
+        if next.slot_p.is_none() {
+            return Err(VaultError::NotEncrypted);
+        }
+        let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
+        let dek = self.key_for(&token)?;
+        let policy = open_policy(&next, &dek)?.unwrap_or_default();
+        next.quick_unlock = Some(seal_policy(
+            &dek,
+            &next.vault_id,
+            &next.network,
+            PolicyPayload {
+                spend_limit_duffs,
+                last_passphrase_at: policy
+                    .last_passphrase_at
+                    .max(self.inner().last_passphrase_at),
+            },
+        )?);
+        self.persist(&writer, next)?;
+        drop(writer);
+        Ok(self.quick_unlock_policy())
+    }
+
+    /// Forgot passphrase (IOS-014, DESIGN-opus §1.8).
+    ///
+    /// 1. Checks that `phrase` + `bip39_passphrase` derive `wallet` on this
+    ///    network, with standard BIP39 or else Dash Core's derivation
+    ///    (`RecoveryMismatch` when neither does, or the phrase is invalid).
+    /// 2. Keeps a copy of the current file as `vault.dwv.replaced-<now>`:
+    ///    the old secrets stay readable with the old passphrase.
+    /// 3. Replaces the vault with a new one (new data key and vault id)
+    ///    encrypted with `new_passphrase` and holding only this wallet's
+    ///    phrase, BIP39 passphrase and seed, checked by reading it back.
+    ///
+    /// The new vault is unlocked; grants, signers, the throttle and slot B of
+    /// the old one are gone. Returns the other wallets whose seeds were in
+    /// the old vault: they are watch-only until their phrases are imported.
+    /// Needs an existing encrypted vault (`NoVault`, `NotEncrypted`).
+    pub fn recover_with_mnemonic(
+        &self,
+        wallet: &WalletId,
+        phrase: &[u8],
+        bip39_passphrase: &[u8],
+        new_passphrase_bytes: &[u8],
+    ) -> Result<Vec<WalletId>, VaultError> {
+        let pw = new_passphrase(new_passphrase_bytes)?;
+        let secret = [false, true]
+            .into_iter()
+            .filter_map(|core| mnemonic::derive_secret(phrase, bip39_passphrase, core).ok())
+            .find(|s| {
+                mnemonic::wallet_id_for_seed(&s.seed, self.shared.network)
+                    .is_ok_and(|id| id == *wallet)
+            })
+            .ok_or(VaultError::RecoveryMismatch)?;
+
+        let writer = self.writer();
+        let old = self.file_copy(&writer)?;
+        if old.slot_p.is_none() {
+            return Err(VaultError::NotEncrypted);
+        }
+        let lost: Vec<WalletId> = old
+            .records
+            .keys()
+            .filter_map(|k| seed_record_wallet(k))
+            .filter(|w| w != wallet)
+            .collect();
+
+        let now = self.now();
+        let tag = &self.shared.tag;
+        let dek = crypto::random_key()?;
+        let vault_id: [u8; 16] = crypto::random_array()?;
+        let salt: [u8; SALT_LEN] = crypto::random_array()?;
+        let (kdf, kek) = crypto::derive_new_kek(
+            &pw,
+            &salt,
+            self.shared.config.kdf,
+            self.production_network(),
+        )?;
+        let slot_p = PassphraseSlot {
+            wrapped_dek: crypto::seal(
+                &kek,
+                &dek[..],
+                &file::slot_p_aad(&vault_id, tag, &kdf, &salt),
+            )?,
+            kdf,
+            salt: salt.to_vec(),
+        };
+        let seed = encode_seed(&secret);
+        let payloads: [(String, &[u8]); 3] = [
+            (record_id(wallet, REC_MNEMONIC), &secret.mnemonic[..]),
+            (
+                record_id(wallet, REC_PASSPHRASE),
+                &secret.mnemonic_passphrase[..],
+            ),
+            (record_id(wallet, REC_SEED), &seed[..]),
+        ];
+        let mut records = BTreeMap::new();
+        let mut manifest = Manifest {
+            generation: 1,
+            records: BTreeMap::new(),
+        };
+        for (id, payload) in &payloads {
+            let sealed = crypto::seal(&dek, payload, &file::record_aad(&vault_id, tag, id))?;
+            manifest
+                .records
+                .insert(id.clone(), file::record_digest(&sealed));
+            records.insert(id.clone(), sealed);
+        }
+        let next = VaultFile {
+            format: file::FORMAT,
+            vault_id: vault_id.to_vec(),
+            network: tag.clone(),
+            created_at: now,
+            slot_p: Some(slot_p),
+            slot_o: None,
+            throttle: Throttle::default(),
+            manifest: seal_manifest(&dek, &vault_id, tag, &manifest)?,
+            records,
+            slot_b: None,
+            quick_unlock: Some(seal_policy(
+                &dek,
+                &vault_id,
+                tag,
+                PolicyPayload {
+                    last_passphrase_at: Some(now),
+                    ..PolicyPayload::default()
+                },
+            )?),
+        };
+
+        file::keep_replaced_copy(&self.shared.dir, now)?;
+        file::write(&self.shared.dir, &next)?;
+        // From here the old vault is replaced on disk; memory follows even
+        // if the read-back check below fails, so nothing keeps using the
+        // old key.
+        {
+            let mut inner = self.inner();
+            inner.file = Some(next);
+            inner.high_water = manifest.generation;
+            inner.forget_key();
+            inner.install_key(Zeroizing::new(*dek), UnlockScope::Full);
+            inner.last_passphrase_at = Some(now);
+        }
+        let disk = file::read(&self.shared.dir)?
+            .ok_or_else(|| VaultError::Corrupt("vault file vanished after write".into()))?;
+        verify_manifest(&disk, &dek, manifest.generation)?;
+        for (id, payload) in &payloads {
+            let read = disk.records.get(id).and_then(|sealed| {
+                crypto::open(&dek, sealed, &file::record_aad(&vault_id, tag, id))
+            });
+            if !read.is_some_and(|r| bool::from(r[..].ct_eq(payload))) {
+                return Err(VaultError::Corrupt(format!(
+                    "read-back of {id} did not match"
+                )));
+            }
+        }
+        drop(writer);
+        Ok(lost)
+    }
+
+    /// Deletes the vault (IOS-009 "Delete All", IOS-109 wipe): the vault
+    /// file, its replaced copies and the slot O key in the OS store. The
+    /// host deletes its slot B item. Refused while the vault holds any
+    /// record (`NotEmpty`): remove every wallet first. An encrypted vault
+    /// needs the passphrase (`CredentialRequired` for any other credential;
+    /// attempts are throttled); an unencrypted one needs none. Idempotent:
+    /// without a vault it returns the `NoVault` status.
+    pub fn destroy(&self, credential: Credential<'_>) -> Result<VaultStatus, VaultError> {
+        let writer = self.writer();
+        let Some(current) = self.inner().file.clone() else {
+            drop(writer);
+            return Ok(self.status());
+        };
+        if !current.records.is_empty() {
+            return Err(VaultError::NotEmpty);
+        }
+        if current.slot_p.is_some() {
+            match credential {
+                Credential::Passphrase(pw) => {
+                    self.check_passphrase(&writer, pw)?;
+                }
+                Credential::QuickUnlock(_) | Credential::None => {
+                    return Err(VaultError::CredentialRequired);
+                }
+            }
+        }
+        file::remove_all(&self.shared.dir)?;
+        {
+            let mut inner = self.inner();
+            inner.file = None;
+            inner.high_water = 0;
+            inner.last_passphrase_at = None;
+            inner.forget_key();
+        }
+        drop(writer);
+        if let Some(o) = current.slot_o
+            && let Ok(service) = <[u8; 32]>::try_from(o.service.as_slice())
+            && let Err(e) = self.shared.config.os_store.delete(&service, &o.label)
+        {
+            // The vault file is gone, so the orphaned key opens nothing.
+            tracing::warn!(error = %e, "could not delete the OS store key of a destroyed vault");
+        }
+        Ok(self.status())
     }
 }
 
