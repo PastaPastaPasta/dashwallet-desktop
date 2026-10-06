@@ -109,7 +109,7 @@ func rotatePeers() async                   // shown when sync.isStalled
 ### SendViewModel (QT-052…063, IOS-041…052; DESIGN-opus §1.11)
 
 ```swift
-enum SendPhase { case editing, authorizing, preparing, confirm(PreparedTxSummary), broadcasting, done(txid: String), failed(ServiceError) }
+enum SendPhase { case editing, authorizing, preparing, confirm(PreparedTxSummary), broadcasting, done(txid: String), broadcastUnknown(txid: String), failed(ServiceError) }
 struct RecipientEntry: Identifiable { var address: String; var amountText: String; var subtractFee: Bool; var label: String; var error: ServiceErrorCode? }
 var entries: [RecipientEntry]
 var phase: SendPhase
@@ -118,11 +118,26 @@ var fee: FeeChoice
 var estimate: TxEstimate?
 func addRecipient(); func removeRecipient(_ id: RecipientEntry.ID)
 func paste(_ text: String)                 // URIHandling.parsePaymentURI fills an entry (QT-054)
-func useMax(for id: RecipientEntry.ID) async
-func review() async                        // validate → AuthenticationGating.authorize(.spend) → prepare → .confirm
+func useMax(for id: RecipientEntry.ID) async  // maxSpendable − other entries, and subtractFee = true (M-4)
+func review() async                        // validate → authorize(.spend(max: Σ amounts [+ foreign change])) → prepare → .confirm
 func confirm() async                       // broadcast ONLY here (iOS rule 4)
-func cancel() async                        // abandon the prepared tx
+func cancel() async                        // abandon the prepared tx; revoke an unused grant
 ```
+
+Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8):
+- `authorize(.spend(max:))` uses `max = Σ recipient amounts`, plus `estimate.change` when the custom change
+  address is not the wallet's. The engine caps `external_sent`, not the fee.
+- Editing an entry, the fee or the source while in `.confirm` abandons the prepared transaction and returns to
+  `.editing`. `cancel()` abandons it and revokes a grant that `prepare` did not consume.
+- `broadcast` outcomes: success → `.done`; `send.no_peers` / `send.broadcast_rejected` → `.failed` (inputs
+  released; review again to retry); `send.broadcast_unknown` → `.broadcastUnknown(txid)`: never abandon; offer
+  "retry broadcast" (same `PreparedTx`, same txid) and otherwise wait for history to show the transaction.
+- `ServiceError` needs the numeric context of a code (review M-5): `parameters: [String: Int64]` with `index`,
+  `fee`, `available`, `max_duffs` as the engine reports them (dash-qt's AmountWithFeeExceedsBalance text shows
+  the fee).
+- Integer conversions to the engine use `UInt64(exactly:)` / `UInt8(exactly:)` and map a failure to
+  `send.invalid_amount{index}` (amounts) or `invalid_argument` (counts, digits); never a trapping `UInt64(x)`
+  (review M-8).
 
 ### ReceiveViewModel (QT-081…085, IOS-053…055)
 

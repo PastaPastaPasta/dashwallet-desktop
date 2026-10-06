@@ -31,7 +31,7 @@ Owners:
 | Pure functions | `units`, `uri`, `verify_message`, `generate_mnemonic`, `check_mnemonic` are free functions; they need no session and run on the caller's thread. |
 | Events | Signals, not data (DESIGN-opus §1.5 rule 4). Hosts re-query on arrival. Rust debounces each domain to ≤ 4 Hz and **always delivers the last change of a burst** (review H2). |
 | Errors | One `uniffi::Error` enum per domain. Each variant has a stable code (§4). `detail` strings are diagnostics for logs; Rust never produces user-facing copy. |
-| Grants | Calls that spend, reveal, sign or wipe take a `grant_id` from `Vault.authorize`. The engine checks purpose, expiry and (for `Spend`) the debit cap. |
+| Grants | Calls that spend, reveal, sign or wipe take a `grant_id` from `Vault.authorize`. Grants are single-use. The engine checks purpose, expiry and, for `Spend`, that `external_sent` (§2.7.1) is at most `max_duffs`. |
 
 Object model:
 
@@ -122,33 +122,62 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `NetworkSession.new_tx_draft(id)` | sync | Empty draft: source `Any`, fee `Recommended{6}`, change `Auto`. | — | QT-052 | stub |
-| `NetworkSession.max_spendable(id, source, fee)` | async | Largest single-recipient amount with the fee subtracted. | `send.insufficient_mixed_funds` | QT-053, IOS-044 | stub |
-| `TxDraft.set_recipients([Recipient{address, amount, subtract_fee_from_amount, label, message}])` | sync | Offline validation; errors carry the recipient `index`. Platform (DIP-18) addresses are rejected on L1. | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address` | QT-052…056, QT-060, QT-067 | stub |
-| `TxDraft.set_source(Any\|FullyMixedOnly\|Outpoints)` | sync | Coin control and the CoinJoin send page. | `send.outpoint_unavailable` | QT-051, QT-068…071 | stub |
-| `TxDraft.set_fee(Recommended{target_blocks}\|PerKb{duffs_per_kb})` | sync | On SPV every target uses the minimum relay fee (DESIGN-opus §1.14). | `invalid_argument` | QT-057 | stub |
-| `TxDraft.set_change(Auto\|Address{address})` | sync | Custom change address. | `send.invalid_change_address` | QT-073 | stub |
-| `TxDraft.estimate()` | async | `TxEstimate { fee, size_bytes, input_count, change, total_sent }`; nothing signed or reserved. | balance errors, `send.tx_too_large` | QT-072, IOS-044 | stub |
-| `TxDraft.prepare(grant_id)` | async | Select coins, build, sign through `VaultSigner`, reserve inputs. **Never broadcasts.** Returns `PreparedTx`; `PreparedTx.summary()` = `PreparedTxSummary { txid, fee, fee_rate_per_kb, size_bytes, inputs, outputs, total_sent, total_debit }`. `Spend` grant; `total_debit` must be ≤ `max_duffs`. | `send.amount_exceeds_balance{available}`, `send.amount_with_fee_exceeds_balance{fee, available}`, `send.absurd_fee`, `send.watch_only`, `send.vault_locked`, `send.grant_invalid`, `send.grant_exceeded` | QT-058/059/061, QT-064/065/066, IOS-046 | stub |
-| `TxDraft.broadcast(prepared)` | async | Announces, records in history, emits `HistoryChanged`/`Balances`. | `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected{reason}` | QT-062/063, IOS-052 | stub |
-| `TxDraft.abandon(prepared)` | async | Releases reserved inputs. Idempotent. | — | IOS rule 4 | stub |
+| `NetworkSession.new_tx_draft(id)` | sync | Empty draft: source `Any`, fee `Recommended{6}`, change `Auto`. Checks the wallet is registered (in-memory). | `wallet_not_found` | QT-052 | **works** |
+| `NetworkSession.max_spendable(id, source, fee)` | async | The spendable sum of `source` for dash-qt "Use available balance" (review M-4): the host puts `max_spendable − other recipients' amounts` into the entry **and sets `subtract_fee_from_amount`**, so the fee comes out of it at any rate and with any number of recipients. Excludes user-locked, reserved, immature and untrusted unconfirmed coins. `fee` is validated only. | `invalid_argument`, `send.outpoint_unavailable` | QT-053, IOS-044 | **works** |
+| `TxDraft.set_recipients([Recipient{address, amount, subtract_fee_from_amount, label, message}])` | sync | Offline validation; errors carry the recipient `index`. Address on the session network; Platform (DIP-18) addresses rejected; amount 1..=21M DASH and at least the output's dust threshold (546 duffs P2PKH, 540 P2SH); no address twice. | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address` | QT-052…056, QT-060, QT-067 | **works** |
+| `TxDraft.set_source(Any\|FullyMixedOnly\|Outpoints)` | sync | `Any`: every coin of the BIP44, BIP32 and DashPay-receiving accounts that is mature, trusted (confirmed, InstantSend-locked or own change), not user-locked and not reserved; CoinJoin coins are never pooled with them. `Outpoints`: exactly these coins, **all of them** (Dash Core coin control); they may be unconfirmed but not locked, reserved, immature or CoinJoin-account coins (checked by `estimate`/`prepare`). `FullyMixedOnly`: `not_implemented` until CoinJoin rounds are tracked (WS-06). | `invalid_argument` (empty or repeated outpoints), `not_implemented` | QT-051, QT-068…071 | **works** (`FullyMixedOnly`: stub) |
+| `TxDraft.set_fee(Recommended{target_blocks}\|PerKb{duffs_per_kb})` | sync | `Recommended`: target 1..=1008; on SPV every target pays the minimum relay fee, 1000 duff/kB (DESIGN-opus §1.14). `PerKb`: 1000..=10,000,000 duff/kB. | `invalid_argument` | QT-057 | **works** |
+| `TxDraft.set_change(Auto\|Address{address})` | sync | `Auto`: a fresh BIP44 internal address, derived only when the payment has change. `Address`: any L1 address of the network; a foreign one counts against the spend cap. | `send.invalid_change_address` | QT-073 | **works** |
+| `TxDraft.estimate()` | async | Plans the payment (§2.7.1) against the wallet's current coins: `TxEstimate { fee, size_bytes, input_count, change, total_sent }` (`total_sent` after subtract-fee shares). Nothing signed or reserved. | balance errors, `send.amount_too_small_after_fee`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large` | QT-072, IOS-044 | **works** |
+| `TxDraft.prepare(grant_id)` | async | Plans, then redeems the `Spend` grant (single-use; refused if `external_sent > max_duffs`), builds with key-wallet's builder through platform-wallet's reservation-only finalize, signs through dw-vault's `VaultSigner`, checks the transaction against the plan and reserves the inputs. **Never broadcasts.** A balance error does not consume the grant. `PreparedTx.summary()` = `PreparedTxSummary { txid, fee, fee_rate_per_kb, size_bytes, inputs, outputs[{address, amount, is_change, label, is_mine}], total_sent, total_debit, external_sent }`. | `send.amount_exceeds_balance{available}`, `send.amount_with_fee_exceeds_balance{fee, available}`, `send.amount_too_small_after_fee{index}`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.watch_only`, `send.vault_locked` (locked or mixing-only), `send.grant_invalid`, `send.grant_exceeded{max_duffs}` | QT-058/059/061, QT-064/065/066, IOS-046 | **works** |
+| `TxDraft.broadcast(prepared)` | async | Stores the payment's message and recipient labels (dash-qt `sendCoins` address-book rule), then announces through platform-wallet's SPV broadcaster and waits for dash-spv's acceptance verdict (peer echo, InstantSend lock or block; up to ~60 s). Outcomes: accepted → `BroadcastOutcome { txid, peers_announced: None }` (dash-spv does not report the count); never sent (SPV stopped, no peer, rejected before dispatch) → `send.no_peers` / `send.broadcast_rejected`, inputs released, the `PreparedTx` is spent; no verdict → `send.broadcast_unknown`, inputs stay reserved, `broadcast` may be retried (same txid), `abandon` is refused. | `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected{reason}`, `send.broadcast_unknown{reason}`, `invalid_argument` (another draft's `PreparedTx`) | QT-062/063, IOS-052 | **works** |
+| `TxDraft.abandon(prepared)` | async | Releases the reserved inputs (key-wallet's reservation, owner-guarded, and the engine's). Idempotent while pending or released. Releasing the last reference to a pending `PreparedTx` does the same. | `send.prepared_tx_spent` (sent or outcome unknown), `invalid_argument` (another draft's) | IOS rule 4 | **works** |
+
+#### 2.7.1 Payment rules (settles review H-3, H-4, M-4, M-5, M-7, M-8 and the send Lows)
+
+- **Plan.** Automatic selection runs key-wallet's branch-and-bound selector over the candidate set; coin control
+  spends every chosen coin. Sizes are key-wallet's estimate (148 bytes per input, outputs at their real script
+  length, +10, a budgeted change output). Change is kept only above its dust threshold, otherwise it goes to the
+  fee. The builder is then handed exactly the planned inputs plus the change as an explicit output, and the
+  engine checks the signed transaction matches the plan (inputs, output values, fee) before reserving it.
+- **Subtract fee (QT-053).** The recipients that ticked it pay the size-based fee, split equally, the first of
+  them paying the remainder (Dash Core). Selection for such a payment targets the amounts alone. A dust remainder
+  that cannot become change goes to the fee and is paid by the wallet. A recipient left below its dust threshold
+  is `send.amount_too_small_after_fee{index}` (review M-5).
+- **Spend cap (H-3, H-4 option A).** `external_sent` = value paid to scripts the wallet does not own (recipients
+  and a foreign custom change address); `total_debit` = inputs − outputs back to the wallet = `external_sent +
+  fee`. A `Spend{max_duffs}` grant caps `external_sent`; the fee is bounded separately by `send.absurd_fee`
+  (fee > 0.1 DASH, dash-qt `-maxtxfee`). The host authorizes `max_duffs = Σ recipient amounts` (plus
+  `estimate.change` when the change address is foreign). Spend grants are single-use (all grants are). Binding a
+  grant to a wallet id (review M-6) is the vault's (B) and not done yet.
+- **Max (M-4).** See `max_spendable`.
+- **Draft binding (Low).** A `TxDraft` keeps its session alive but works only while it is open
+  (`network_not_open` after close) and while the wallet is registered (`wallet_not_found` after removal). A
+  `PreparedTx` belongs to the draft that made it. `estimate` has no revision token: the host discards an estimate
+  that returns after the draft changed (it knows the order of its own calls).
+- **FullyMixedOnly (Low).** Dash Core's `ONLY_FULLY_MIXED` (QT-051) has no change output: the excess goes to the
+  fee. That is the rule when the source lands; until then it is `not_implemented`.
+- **Not dash-qt (QT-066).** key-wallet builds version-3 transactions with `nSequence = 0xffffffff` and locktime 0
+  (dash-qt: `SEQUENCE_FINAL − 1` with anti-fee-sniping locktime); BIP69 ordering matches. `send.duplicate_address`
+  is an error, not dash-qt's confirm question (QT-060): the host asks first and merges or removes the duplicate.
 
 ### 2.8 Coins (`coins.rs`) — owner E2
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `utxos(id, UtxoFilter{include_locked, fully_mixed_only, min_confirmations})` | async | `Utxo { outpoint, address, amount, confirmations, block_height, timestamp, instant_locked, chain_locked, user_locked, reserved, label, is_change, is_coinbase, coinjoin_denominated, coinjoin_rounds, spendable }`. | — | QT-068…071, QT-075 | stub |
-| `lock_outpoints` / `unlock_outpoints(id, outpoints)` | async | Persisted user locks (dw-appdb). | `coins.outpoint_not_found` | QT-070 | stub |
-| `locked_outpoints(id)` | async | — | — | QT-070 | stub |
+| `utxos(id, UtxoFilter{include_locked, fully_mixed_only, min_confirmations})` | async | Every unspent output of the wallet's funds accounts, largest first: `Utxo { outpoint, address, amount, confirmations, block_height, timestamp, instant_locked, chain_locked, user_locked, reserved, label, is_change, is_coinbase, coinjoin_denominated, coinjoin_rounds, spendable }`. `timestamp` is the block time (`None` unconfirmed or after key-wallet pruned the record); `reserved` = an input of a pending `PreparedTx`; `coinjoin_rounds` is always `None` (not tracked); `fully_mixed_only` is `not_implemented`. Applies dust protection first. | `not_implemented` | QT-068…071, QT-075 | **works** |
+| `lock_outpoints` / `unlock_outpoints(id, outpoints)` | async | Persisted in dw-appdb (`utxo_locks`). Lock: the outpoint must be an unspent output of the wallet. Unlock deletes a user lock or releases a dust lock (dust protection then leaves the coin alone). | `coins.outpoint_not_found`, `invalid_argument` | QT-070 | **works** |
+| `locked_outpoints(id)` | async | Active locks (user and dust), oldest first. | — | QT-070 | **works** |
+| `dust_protection()` / `set_dust_protection(threshold: Option<u64>)` | async | dash-qt dust attack protection: `None` = off, else 1..=1,000,000 duffs. Coins ≤ threshold whose funding transaction spent none of the wallet's coins (not change, not coinbase) are dust-locked when coins are next read. | `invalid_argument` | QT-075 | **works** |
 
 ### 2.9 Labels and address book (`labels.rs`) — owner E2
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `address_book(id, purpose, search)` | async | Per-wallet entries (dash-qt keeps the book per wallet). `search` matches label or address. | — | QT-095…097 | stub |
-| `save_address_book_entry(id, address, label, purpose, replace)` | async | Add, or relabel with `replace`. A `Receive` entry labels one of the wallet's own addresses. | `labels.invalid_address`, `labels.duplicate_address`, `labels.own_address` | QT-095, QT-098 | stub |
-| `delete_address_book_entry(id, address)` | async | Send entries only. | `labels.entry_not_found`, `labels.receive_entry_not_deletable` | QT-095 | stub |
-| `set_tx_label(id, txid, label)` | async | `None` clears. | — | QT-090 | stub |
+| `address_book(id, purpose, search)` | async | Per-wallet entries, sorted by label (case-insensitive, unlabelled last) then address. `search` is dash-qt's case-insensitive wildcard (`*`, `?`) match anywhere in the label or address. | — | QT-095…097 | **works** |
+| `save_address_book_entry(id, address, label, purpose, replace)` | async | Add, or relabel with `replace` (same purpose). Send entries are other people's addresses; a Receive entry labels one of the wallet's own addresses. Stored canonical. | `labels.invalid_address`, `labels.duplicate_address` (listed and not `replace`, or listed with the other purpose), `labels.own_address` (Send entry for an own address), `invalid_argument` (Receive entry for a foreign address) | QT-095, QT-098 | **works** |
+| `delete_address_book_entry(id, address)` | async | Send entries only. | `labels.entry_not_found`, `labels.receive_entry_not_deletable` | QT-095 | **works** |
+| `set_tx_label(id, txid, label)` | async | `None` or empty clears. `txid` must be 64 lowercase hex. | `invalid_argument` | QT-090 | **works** |
 
 ### 2.10 Message (`message.rs`) — owner E2 (signing through B's `VaultSigner`)
 
@@ -208,7 +237,7 @@ and `not_implemented` of these. Domain codes:
 | `SyncError` | `sync.spv_not_running`, `sync.height_out_of_range`, `sync.spv` |
 | `HistoryError` | `history.invalid_query`, `history.stale_cursor`, `history.tx_not_found` |
 | `ReceiveError` | `receive.request_not_found`, `receive.gap_limit` |
-| `SendError` | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address`, `send.amount_exceeds_balance`, `send.amount_with_fee_exceeds_balance`, `send.insufficient_mixed_funds`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large`, `send.invalid_change_address`, `send.watch_only`, `send.vault_locked`, `send.grant_invalid`, `send.grant_exceeded`, `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected` |
+| `SendError` | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address`, `send.amount_exceeds_balance`, `send.amount_with_fee_exceeds_balance`, `send.amount_too_small_after_fee`, `send.insufficient_mixed_funds`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large`, `send.invalid_change_address`, `send.watch_only`, `send.vault_locked`, `send.grant_invalid`, `send.grant_exceeded`, `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected`, `send.broadcast_unknown` |
 | `CoinsError` | `coins.outpoint_not_found` |
 | `LabelsError` | `labels.invalid_address`, `labels.duplicate_address`, `labels.own_address`, `labels.entry_not_found`, `labels.receive_entry_not_deletable` |
 | `MessageError` | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed`, `message.address_not_mine`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` |
@@ -250,13 +279,14 @@ everywhere, README test command, unused dev-dep, redundant script, DesignTokensT
 - Remove `list_wallets` and the M0 events once C has migrated.
 
 ### E2 engine-send
-- Create `dw-appdb` (`app.sqlite` per network, refinery migrations, DESIGN-opus §1.7) with tables for
-  wallet names (used by E1), address book, tx/address labels, receive requests, UTXO locks.
-- Implement §2.7–§2.11 stubs: `TxDraft`/`PreparedTx` state (reserved inputs released on `abandon` and on
-  drop of an un-broadcast `PreparedTx`), coin selection, fee policy, `sign_message` through `VaultSigner`,
-  `qr_matrix` (`qrcode` crate in dw-uri).
-- **L4** `dw-uri` `printf_2f` (iOS `local=` amounts): match printf's sign handling for negative and
-  negative-zero values.
+Status: `dw-appdb`, §2.7–§2.12 work (except `FullyMixedOnly`), tested in dw-engine (`send::plan` unit tests with a
+key-wallet builder parity check, `send::flow_tests` offline flows that sign through the vault), dw-ffi
+(`send_tests`) and the regtest suite `regtest/harness/tests/test_l1_send.py` (dwcli over SPV against dashd).
+Review findings H-3, H-4 (option A), M-4, M-5, M-7 (engine side), M-8 (contract) and the send Lows are settled in
+§2.7.1; Swift-side follow-ups are in m1-swift.md §3 (SendViewModel). Still owed:
+- `FullyMixedOnly` (and `utxos.fully_mixed_only`, `coinjoin_rounds`) need per-coin CoinJoin rounds (WS-06).
+- Grant ↔ wallet binding (review M-6) is the vault's.
+- `nSequence`/locktime differ from dash-qt (key-wallet builder), see §2.7.1.
 
 ### B vault
 Status on main: dw-vault, §2.2 (except quick unlock, M2), `generate_mnemonic`, `check_mnemonic`,
