@@ -35,7 +35,7 @@ mod vault;
 pub use crypto::{CALIBRATION_TARGET, KdfParams, KdfPolicy};
 pub use error::{MnemonicError, SignerError, VaultError};
 pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
-pub use signer::{SignerScope, VaultSigner, WalletSigner, is_coinjoin_path};
+pub use signer::{SignerScope, VaultSigner, WalletSigner, is_bip44_path, is_coinjoin_path};
 pub use types::{
     AuthGrant, Clock, Credential, DEFAULT_GRANT_TTL_SECS, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
     GrantKind, GrantPurpose, GrantToken, LockState, PASSPHRASE_MAX_AGE_SECS,

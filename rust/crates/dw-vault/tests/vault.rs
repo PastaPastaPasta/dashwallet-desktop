@@ -816,6 +816,17 @@ async fn mixing_only_unlock_limits_keys_to_the_coinjoin_account() {
         VaultError::NoSecret
     );
 
+    // QT-112: mixing makes denominations from BIP44 coins under the
+    // mixing-only unlock, through the funding scope.
+    let funding = v.mixing_funding_signer(&wallet(1)).unwrap();
+    assert_eq!(funding.scope(), dw_vault::SignerScope::CoinJoinFunding);
+    funding.sign_ecdsa(&path(BIP44), [7; 32]).await.unwrap();
+    funding.sign_ecdsa(&path(COINJOIN), [7; 32]).await.unwrap();
+    assert_eq!(
+        funding.public_key(&path(BIP44)).await.unwrap(),
+        expected_pubkey(1, BIP44)
+    );
+
     // Upgrading to a full unlock changes the scope and invalidates the
     // mixing signer (new epoch).
     v.unlock(PASS, UnlockScope::Full).unwrap();
