@@ -123,7 +123,8 @@ pub struct CoinInfo {
     pub is_change: bool,
     pub is_coinbase: bool,
     pub coinjoin_denominated: bool,
-    /// Mixing rounds are not tracked yet: always `None` (unknown).
+    /// Rounds of a CoinJoin denomination (input-chain walk); `None` for
+    /// other coins and unknown chains ("n/a").
     pub coinjoin_rounds: Option<u32>,
     pub spendable: bool,
 }
@@ -273,35 +274,32 @@ impl NetworkSession {
     }
 
     /// Coin control list of `wallet_id`, largest first (dash-qt's default
-    /// sort). `fully_mixed_only` needs CoinJoin rounds, which are not
-    /// tracked yet: `NotImplemented`.
+    /// sort), with each CoinJoin denomination's mixing rounds (dash-qt's
+    /// "Mixing Rounds" column, the input-chain walk; `None` shows "n/a").
+    /// `fully_mixed_only` lists the CoinJoin page's coins (QT-071): fully
+    /// mixed denominations by the QT-043 rule.
     pub async fn utxos(
         self: &Arc<Self>,
         wallet_id: WalletId,
         filter: CoinFilter,
     ) -> Result<Vec<CoinInfo>, EngineError> {
-        if filter.fully_mixed_only {
-            return Err(EngineError::NotImplemented(
-                "NetworkSession.utxos(fully_mixed_only): CoinJoin rounds are not tracked yet"
-                    .into(),
-            ));
-        }
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let wallet = this.wallet(&wallet_id).await?;
-            let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
+            let view = this.mix_view(wallet_id).await?;
             let has_keys = this.vault.has_wallet_secret(&wallet_id.0);
             let id = wallet_id.to_string();
             let labels: HashMap<String, String> = this
                 .appdb_op(move |db| Ok(db.labels(&id, LabelKind::Address)?.into_iter().collect()))
                 .await?;
-            let height = snapshot.height;
-            let mut rows: Vec<CoinInfo> = snapshot
+            let height = view.height;
+            let mut rows: Vec<CoinInfo> = view
                 .coins
                 .iter()
-                .filter(|c| filter.include_locked || !c.user_locked)
-                .map(|c| {
+                .filter(|m| filter.include_locked || !m.coin.user_locked)
+                .filter(|m| !filter.fully_mixed_only || (m.denominated() && m.fully_mixed))
+                .map(|m| {
+                    let c = &m.coin;
                     let u = &c.utxo;
                     let address = u.address.to_string();
                     CoinInfo {
@@ -319,7 +317,8 @@ impl NetworkSession {
                         is_change: c.is_change,
                         is_coinbase: u.is_coinbase,
                         coinjoin_denominated: c.denominated(),
-                        coinjoin_rounds: None,
+                        coinjoin_rounds: (m.denominated() && m.rounds >= 0)
+                            .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
                     }
                 })

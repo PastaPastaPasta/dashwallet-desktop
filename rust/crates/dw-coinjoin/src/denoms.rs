@@ -36,6 +36,11 @@ pub const QUEUE_TIMEOUT_SECS: u64 = 30;
 /// Seconds the signing phase may take (`COINJOIN_SIGNING_TIMEOUT`).
 pub const SIGNING_TIMEOUT_SECS: u64 = 15;
 
+/// Maintenance ticks between automatic denominating passes
+/// (`COINJOIN_AUTO_TIMEOUT_MIN/MAX`, coinjoin.h:45-46).
+pub const AUTO_TIMEOUT_MIN: u64 = 5;
+pub const AUTO_TIMEOUT_MAX: u64 = 15;
+
 /// Whether `amount` is one of the standard denominations.
 pub fn is_denominated(amount: u64) -> bool {
     DENOMINATIONS.contains(&amount)

@@ -75,9 +75,10 @@ pub struct WalletBalances {
     pub immature: u64,
     pub locked: u64,
     pub total: u64,
-    /// Spendable balance (confirmed + unconfirmed) of the wallet's DIP9
-    /// CoinJoin accounts. dash-qt's "fully mixed" rounds rule is not applied
-    /// here (CoinJoin mixing is WS-06).
+    /// Fully mixed CoinJoin balance (QT-043, `CoinJoinBalances.fully_mixed`)
+    /// once the wallet's CoinJoin status was computed; before that, the
+    /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
+    /// accounts.
     pub coinjoin: u64,
 }
 
@@ -158,6 +159,8 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
+    pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
 }
 
 impl NetworkSession {
@@ -199,6 +202,10 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
+        let coinjoin_settings = {
+            let db = Arc::clone(&appdb);
+            tokio::task::spawn_blocking(move || crate::coinjoin::load_settings(&db)).await?
+        };
 
         let context = Arc::new(LazyTrustedContext::new(
             network.core_network(),
@@ -308,6 +315,7 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
         });
         if let Err(e) = std::fs::write(&marker, b"") {
             tracing::warn!(error = %e, "could not write the open-session marker");
@@ -378,6 +386,7 @@ impl NetworkSession {
                 processed_height: core.last_processed_height(),
                 balance: balance.unwrap_or_else(|| core.balance()),
                 accounts: core.account_balances(),
+                fully_mixed: self.hub.wallet_state(&id).and_then(|s| s.fully_mixed),
             },
         );
     }
@@ -532,6 +541,7 @@ impl NetworkSession {
     pub(crate) async fn close(&self) {
         let _closing = self.gate.close().await;
         self.cancel_relock();
+        self.coinjoin.shutdown();
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(pump) = pump {
             let _ = pump.stop.send(true);

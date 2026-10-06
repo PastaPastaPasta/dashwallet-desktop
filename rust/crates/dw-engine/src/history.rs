@@ -724,6 +724,18 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
         {
             return single(TxType::CoinJoinCollateralPayment, -to_i64(debit));
         }
+        // A payment from the CoinJoin send page (QT-051): every input a
+        // denomination of the CoinJoin account. dash-qt marks these with
+        // `mapValue["DS"] = "1"` and shows them as CoinJoin Send
+        // (`TransactionRecord::decomposeTransaction`); the inputs say the
+        // same without a stored mark.
+        let coinjoin_send = inputs.iter().flatten().all(|(v, a)| {
+            is_denominated_amount(*v)
+                && view
+                    .owned
+                    .get(&a.script_pubkey())
+                    .is_some_and(|o| o.coinjoin)
+        });
         let mut remaining_fee = fee.unwrap_or(0);
         for (vout, out) in tx.output.iter().enumerate() {
             if outputs[vout].is_some() {
@@ -734,6 +746,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
                 (TxType::DataTransaction, None)
             } else {
                 match address_of(vout) {
+                    Some(a) if coinjoin_send => (TxType::CoinJoinSend, Some(a)),
                     Some(a) => (TxType::SendToAddress, Some(a)),
                     None => (TxType::SendToOther, None),
                 }

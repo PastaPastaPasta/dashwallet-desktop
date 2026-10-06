@@ -224,6 +224,9 @@ pub struct SqliteWallet {
     /// `activeexternalspk` / `activeinternalspk` descriptor ids.
     pub active_external: Option<[u8; 32]>,
     pub active_internal: Option<[u8; 32]>,
+    /// The CoinJoin salt (`cj_salt`, or the older `ps_salt`), uint256 in
+    /// internal byte order (Dash Core `src/wallet/walletdb.cpp:224-233`).
+    pub coinjoin_salt: Option<[u8; 32]>,
     master_keys: Vec<MasterKeyRecord>,
     keys: Vec<KeyRecord>,
 }
@@ -475,6 +478,7 @@ pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
         address_book: Vec::new(),
         active_external: None,
         active_internal: None,
+        coinjoin_salt: None,
         master_keys: Vec::new(),
         keys: Vec::new(),
     };
@@ -589,6 +593,10 @@ fn parse_record(
                 rounds,
                 other_params,
             });
+        }
+        b"cj_salt" => w.coinjoin_salt = Some(v.hash256().ok_or_else(|| bad("cj_salt"))?),
+        b"ps_salt" if w.coinjoin_salt.is_none() => {
+            w.coinjoin_salt = Some(v.hash256().ok_or_else(|| bad("ps_salt"))?);
         }
         b"name" | b"purpose" => {
             let address = utf8(k.bytes().ok_or_else(|| bad("address book"))?, "address")?;

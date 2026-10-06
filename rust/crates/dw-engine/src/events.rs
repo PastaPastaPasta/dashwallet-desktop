@@ -167,6 +167,9 @@ pub(crate) struct WalletState {
     pub balance: WalletCoreBalance,
     /// Latest balance per account.
     pub accounts: BTreeMap<AccountType, WalletCoreBalance>,
+    /// Fully mixed CoinJoin balance by the QT-043 rule, once the CoinJoin
+    /// view of the wallet was computed (`coinjoin.rs`).
+    pub fully_mixed: Option<u64>,
 }
 
 impl WalletState {
@@ -177,12 +180,15 @@ impl WalletState {
             return None;
         }
         let b = &self.balance;
-        let coinjoin = self
-            .accounts
-            .iter()
-            .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
-            .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
-            .sum();
+        // Before the CoinJoin view is computed: the CoinJoin accounts'
+        // spendable balance (an upper bound of the fully mixed one).
+        let coinjoin = self.fully_mixed.unwrap_or_else(|| {
+            self.accounts
+                .iter()
+                .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
+                .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
+                .sum()
+        });
         Some(WalletBalances {
             confirmed: b.confirmed(),
             unconfirmed: b.unconfirmed(),
@@ -368,6 +374,23 @@ impl SessionHub {
             state.accounts.insert(*t, *b);
         }
         before != state.balances()
+    }
+
+    /// Records the fully mixed balance the CoinJoin view computed and
+    /// announces it as a balance change when it differs.
+    pub(crate) fn set_fully_mixed(&self, id: WalletId, value: u64) {
+        let changed = {
+            let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            let Some(state) = map.get_mut(&id) else {
+                return;
+            };
+            let before = state.balances();
+            state.fully_mixed = Some(value);
+            before != state.balances()
+        };
+        if changed {
+            self.pump.mark_balances(id);
+        }
     }
 
     /// Advances the wallet's scan heights. Returns whether the balances

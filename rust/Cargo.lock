@@ -1628,6 +1628,7 @@ dependencies = [
  "key-wallet",
  "platform-wallet",
  "platform-wallet-storage",
+ "rand 0.8.6",
  "rs-sdk-trusted-context-provider",
  "rusqlite",
  "serde",

@@ -557,61 +557,77 @@ impl NetworkSession {
     ) -> Result<ImportReport, EngineError> {
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
-        let root = self
+        let (root, coinjoin_salt) = self
             .on_runtime(async move {
-                tokio::task::spawn_blocking(move || -> Result<CoreRoot, EngineError> {
-                    match walletdat::sniff_container(&head(&path)?) {
-                        Some(Container::Sqlite) => {}
-                        Some(Container::BerkeleyDb) => {
-                            return Err(EngineError::NotImplemented(
-                                "import_wallet_dat.bdb".into(),
-                            ));
+                tokio::task::spawn_blocking(
+                    move || -> Result<(CoreRoot, Option<[u8; 32]>), EngineError> {
+                        match walletdat::sniff_container(&head(&path)?) {
+                            Some(Container::Sqlite) => {}
+                            Some(Container::BerkeleyDb) => {
+                                return Err(EngineError::NotImplemented(
+                                    "import_wallet_dat.bdb".into(),
+                                ));
+                            }
+                            None => {
+                                return Err(CompatFailure::UnsupportedFormat(
+                                    "not a wallet.dat".into(),
+                                )
+                                .into());
+                            }
                         }
-                        None => {
-                            return Err(CompatFailure::UnsupportedFormat(
-                                "not a wallet.dat".into(),
-                            )
+                        let wallet = walletdat::read_sqlite(&path).map_err(walletdat_failure)?;
+                        let root = wallet
+                            .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
+                            .map_err(walletdat_failure)?;
+                        let mainnet = key_is_mainnet(&root.external.key);
+                        if mainnet.is_some_and(|m| m != network_mainnet) {
+                            return Err(CompatFailure::NetworkMismatch {
+                                mainnet: mainnet == Some(true),
+                            }
                             .into());
                         }
-                    }
-                    let wallet = walletdat::read_sqlite(&path).map_err(walletdat_failure)?;
-                    let root = wallet
-                        .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
-                        .map_err(walletdat_failure)?;
-                    let mainnet = key_is_mainnet(&root.external.key);
-                    if mainnet.is_some_and(|m| m != network_mainnet) {
-                        return Err(CompatFailure::NetworkMismatch {
-                            mainnet: mainnet == Some(true),
-                        }
-                        .into());
-                    }
-                    let Some(phrase) = root.mnemonic else {
-                        return Err(EngineError::NotImplemented("import_wallet_dat.xprv".into()));
-                    };
-                    let labels = wallet
-                        .address_book
-                        .iter()
-                        .map(|e| {
-                            let purpose = if e.purpose.as_deref() == Some("send") {
-                                BookPurpose::Send
-                            } else {
-                                BookPurpose::Receive
-                            };
-                            (e.address.clone(), e.label.clone(), purpose)
-                        })
-                        .collect();
-                    Ok(CoreRoot {
-                        phrase: Some(phrase),
-                        seed: None,
-                        master_pubkey: Some(root.master_pubkey),
-                        used_per_chain: wallet.next_index(),
-                        labels,
-                    })
-                })
+                        let Some(phrase) = root.mnemonic else {
+                            return Err(EngineError::NotImplemented(
+                                "import_wallet_dat.xprv".into(),
+                            ));
+                        };
+                        let labels = wallet
+                            .address_book
+                            .iter()
+                            .map(|e| {
+                                let purpose = if e.purpose.as_deref() == Some("send") {
+                                    BookPurpose::Send
+                                } else {
+                                    BookPurpose::Receive
+                                };
+                                (e.address.clone(), e.label.clone(), purpose)
+                            })
+                            .collect();
+                        Ok((
+                            CoreRoot {
+                                phrase: Some(phrase),
+                                seed: None,
+                                master_pubkey: Some(root.master_pubkey),
+                                used_per_chain: wallet.next_index(),
+                                labels,
+                            },
+                            wallet.coinjoin_salt,
+                        ))
+                    },
+                )
                 .await?
             })
             .await?;
-        self.import_core_root(root, options).await
+        let report = self.import_core_root(root, options).await?;
+        // The wallet keeps Dash Core's salt, so the same coins count as
+        // fully mixed (QT-043, m3-engine.md §5).
+        if let Some(salt) = coinjoin_salt {
+            let this = Arc::clone(self);
+            let id = report.wallet_id;
+            self.on_runtime(async move { this.import_coinjoin_salt(id, salt).await })
+                .await?;
+        }
+        Ok(report)
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
