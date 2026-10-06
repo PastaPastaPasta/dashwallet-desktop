@@ -64,6 +64,7 @@ final class DemoLifecycle: LifecycleQueueing {
 
     func removeWallet(_ id: WalletID, grant: AuthGrant) async throws(ServiceError) {
         guard grant.purpose == .wipe else { throw ServiceError(code: .vaultGrantInvalid, detail: "demo") }
+        try await world.redeem(grant)
         try await run(.removingWallet(id)) { $0.removeWallet(id) }
     }
 
@@ -179,7 +180,8 @@ final class DemoVault: VaultProviding {
     }
 
     func encrypt(newPassphrase: any SecretBuffer, grant: AuthGrant) async throws(ServiceError) -> VaultStatus {
-        try await world.encryptVault()
+        try await world.redeem(grant)
+        return try await world.encryptVault()
     }
 
     func changePassphrase(old: any SecretBuffer, new: any SecretBuffer) async throws(ServiceError) -> VaultStatus {
@@ -189,6 +191,7 @@ final class DemoVault: VaultProviding {
 
     func revealMnemonic(wallet: WalletID, grant: AuthGrant) async throws(ServiceError) -> RevealedMnemonic {
         guard grant.purpose == .revealSecret else { throw ServiceError(code: .vaultGrantInvalid, detail: "demo") }
+        try await world.redeem(grant)
         return RevealedMnemonic(
             phrase: DemoSecret(utf8: DemoWorld.phrase12.joined(separator: " ")), bip39Passphrase: DemoSecret([]))
     }
@@ -243,7 +246,13 @@ final class DemoAuth: AuthenticationGating {
         case .passphrase(let secret):
             try world.checkPassphrase(DemoVault.text(secret))
         }
-        return AuthGrant(id: UUID().uuidString, purpose: purpose, expiresAt: Date().addingTimeInterval(60), singleUse: true)
+        let grant = AuthGrant(id: UUID().uuidString, purpose: purpose, expiresAt: Date().addingTimeInterval(60), singleUse: true)
+        world.outstandingGrants.insert(grant.id)
+        return grant
+    }
+
+    func revoke(_ grant: AuthGrant) {
+        world.outstandingGrants.remove(grant.id)
     }
 
     func unlock(passphrase: any SecretBuffer, scope: UnlockScope) async throws(ServiceError) {
@@ -280,6 +289,14 @@ extension DemoWorld {
 
     /// The demo vault's passphrase is "demo" (any passphrase chosen during
     /// demo onboarding is not kept).
+    /// Uses up a single-use grant; unknown, revoked or already used ids fail
+    /// with `vault.grant_invalid`, as the engine's do.
+    func redeem(_ grant: AuthGrant) throws(ServiceError) {
+        guard outstandingGrants.remove(grant.id) != nil else {
+            throw ServiceError(code: .vaultGrantInvalid, detail: "demo")
+        }
+    }
+
     func checkPassphrase(_ text: String) throws(ServiceError) {
         guard text == Self.passphrase else {
             failedAttempts += 1
@@ -353,6 +370,7 @@ final class DemoDraft: TransactionDrafting {
         guard case .spend(let max) = grant.purpose, max.duffs >= estimate.totalSent.duffs else {
             throw ServiceError(code: .sendGrantExceeded, detail: "demo")
         }
+        try world.redeem(grant)
         var subtractDone = false
         let outputs = recipients.map { recipient -> PreparedOutput in
             var amount = recipient.amount.duffs

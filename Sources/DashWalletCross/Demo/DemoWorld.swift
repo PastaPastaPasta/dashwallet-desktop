@@ -114,6 +114,8 @@ final class DemoWorld {
     var states: [DashNetwork: DemoNetworkState] = [:]
     var vaults: [DashNetwork: (encrypted: Bool, state: VaultLockState)] = [:]
     var failedAttempts: UInt32 = 0
+    /// Ids of grants `authorize` issued that were neither redeemed nor revoked.
+    var outstandingGrants: Set<String> = []
     var transition: LifecycleTransition = .idle
     var display = DisplaySettings()
     var preferences = UIPreferences()

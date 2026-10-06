@@ -32,7 +32,7 @@ enum LiveEngineProbe {
         }
         do {
             try await engine.open(network)
-            let count = try await engine.wallets(on: network).count
+            let count = try await engine.walletInfos(on: network).count
             try await engine.shutdown()
             return report(count, nil)
         } catch {

@@ -163,6 +163,21 @@ struct OnboardingScreen: View {
                     }
                 }
             }
+        case .unlockVault:
+            DashCard {
+                Text(CrossStrings.unlockVaultPrompt).dashFont(.footnote)
+                DashSecureField(CrossStrings.passphrase, placeholder: CrossStrings.walletPassphrase, text: $passphrase)
+                if let error = model.unlockError {
+                    Text(error).dashFont(.caption1).dashForeground(.errorText)
+                }
+                navigation(model) {
+                    DashButton(CrossStrings.unlock, isEnabled: !passphrase.isEmpty) {
+                        let text = passphrase
+                        passphrase = ""
+                        Task { await model.unlockVault(passphrase: text) }
+                    }
+                }
+            }
         case .working:
             CenteredMessage(text: CrossStrings.creatingWallet, busy: true)
         case .done:

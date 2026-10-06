@@ -103,9 +103,10 @@ final class CoreAmountFormatting: AmountFormatting {
     }
 }
 
-/// Message verification is the engine's; signing needs the vault-backed
-/// `sign_message`, which is still a stub in the engine (m1-engine.md §2.10),
-/// so the demo reports it as not implemented instead of inventing a signature.
+/// Message verification is the engine's. Signing needs the vault-backed
+/// `sign_message` and the wallet's keys; the demo's sample wallets have no
+/// keys in any vault, so the demo reports signing as not implemented instead
+/// of inventing a signature. The live app signs through WalletRuntime.
 final class CoreMessageSigning: MessageSigning {
     let box: NetworkBox
 
@@ -118,7 +119,7 @@ final class CoreMessageSigning: MessageSigning {
     func sign(wallet: WalletID, address: String, message: String, grant: WalletRuntime.AuthGrant) async throws(ServiceError)
         -> String
     {
-        throw ServiceError(code: .notImplemented, detail: "sign_message is not implemented in the engine yet")
+        throw ServiceError(code: .notImplemented, detail: "the demo wallets have no keys to sign with")
     }
 
     func verify(address: String, message: String, signature: String) throws(ServiceError) {
