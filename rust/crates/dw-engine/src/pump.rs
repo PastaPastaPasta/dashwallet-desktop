@@ -27,6 +27,9 @@ use crate::WalletId;
 pub const MIN_INTERVAL: Duration = Duration::from_millis(250);
 /// Period of [`PumpTarget::tick`] (stall detection).
 pub(crate) const TICK_INTERVAL: Duration = Duration::from_secs(1);
+/// dash-qt collects transaction popups for this long after the first one
+/// and then shows the batch (`BitcoinGUI::incomingTransaction` timer).
+pub const NEW_TX_BATCH: Duration = Duration::from_millis(100);
 
 /// Transactions of one wallet whose history changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +54,10 @@ struct Pending {
     sync: bool,
     balances: BTreeSet<WalletId>,
     history: BTreeMap<WalletId, TxidSet>,
+    /// Transactions seen for the first time, in arrival order per wallet.
+    new_txs: BTreeMap<WalletId, Vec<Txid>>,
+    /// When the current new-transaction batch is delivered.
+    new_txs_due: Option<Instant>,
 }
 
 /// Receives the merged changes of one flush. Implemented by the session.
@@ -58,6 +65,9 @@ pub(crate) trait PumpTarget: Send + Sync {
     fn flush_sync(&self) -> impl Future<Output = ()> + Send;
     fn flush_balances(&self, wallets: BTreeSet<WalletId>);
     fn flush_history(&self, changes: BTreeMap<WalletId, TxidSet>);
+    /// One batch of first-seen transactions, [`NEW_TX_BATCH`] after the
+    /// first of them.
+    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>);
     /// Called every [`TICK_INTERVAL`].
     fn tick(&self);
 }
@@ -81,6 +91,22 @@ impl EventPump {
     pub(crate) fn mark_balances(&self, wallet: WalletId) {
         self.with_pending(|p| {
             p.balances.insert(wallet);
+        });
+    }
+
+    /// Transactions seen for the first time. The first mark of a batch
+    /// starts its [`NEW_TX_BATCH`] window.
+    pub(crate) fn mark_new_txs(&self, wallet: WalletId, txids: &[Txid]) {
+        self.with_pending(|p| {
+            let list = p.new_txs.entry(wallet).or_default();
+            for t in txids {
+                if !list.contains(t) {
+                    list.push(*t);
+                }
+            }
+            if p.new_txs_due.is_none() {
+                p.new_txs_due = Some(Instant::now() + NEW_TX_BATCH);
+            }
         });
     }
 
@@ -132,10 +158,26 @@ impl EventPump {
                 deadline = Some(deadline.map_or(at, |d: Instant| d.min(at)));
             };
 
-            let (sync, balances, history) = {
+            let (sync, balances, history, new_txs_due) = {
                 let p = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-                (p.sync, !p.balances.is_empty(), !p.history.is_empty())
+                (
+                    p.sync,
+                    !p.balances.is_empty(),
+                    !p.history.is_empty(),
+                    p.new_txs_due,
+                )
             };
+            if let Some(at) = new_txs_due {
+                if at <= now {
+                    let batches = self.take(|p| {
+                        p.new_txs_due = None;
+                        std::mem::take(&mut p.new_txs)
+                    });
+                    target.flush_new_txs(batches);
+                } else {
+                    push_deadline(at);
+                }
+            }
             if sync {
                 match due(last_sync) {
                     Ok(()) => {
@@ -222,6 +264,10 @@ mod tests {
                 .sum();
             self.push(format!("history={n}"));
         }
+        fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+            let n: usize = batches.values().map(Vec::len).sum();
+            self.push(format!("new={n}/{}", batches.len()));
+        }
         fn tick(&self) {}
     }
 
@@ -269,6 +315,48 @@ mod tests {
         assert_eq!(syncs.first().unwrap().1, "sync=0", "leading edge");
         assert_eq!(syncs.last().unwrap().1, "sync=99", "trailing edge kept");
 
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    /// QT-032: first-seen transactions are held for 100 ms after the first
+    /// one and delivered together, per wallet, each txid once.
+    #[tokio::test(start_paused = true)]
+    async fn test_qt_032_new_transactions_are_batched_over_100_ms() {
+        let pump = Arc::new(EventPump::default());
+        let rec = Arc::new(Recorder::default());
+        *rec.start.lock().unwrap() = Some(Instant::now());
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = {
+            let (pump, rec) = (Arc::clone(&pump), Arc::clone(&rec));
+            tokio::spawn(async move { pump.run(&*rec, stop_rx).await })
+        };
+        let (a, b) = (WalletId([1; 32]), WalletId([2; 32]));
+        pump.mark_new_txs(a, &[txid(1)]);
+        settle().await;
+        tokio::time::advance(Duration::from_millis(40)).await;
+        pump.mark_new_txs(a, &[txid(2), txid(1)]);
+        pump.mark_new_txs(b, &[txid(3)]);
+        settle().await;
+        tokio::time::advance(Duration::from_millis(40)).await;
+        settle().await;
+        assert!(
+            rec.log().is_empty(),
+            "nothing before 100 ms: {:?}",
+            rec.log()
+        );
+        tokio::time::advance(Duration::from_millis(30)).await;
+        settle().await;
+        let log = rec.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(log[0].1, "new=3/2");
+        assert!(log[0].0 >= 100 && log[0].0 < 120, "{log:?}");
+        // A later transaction opens a new batch.
+        pump.mark_new_txs(a, &[txid(4)]);
+        settle().await;
+        tokio::time::advance(NEW_TX_BATCH).await;
+        settle().await;
+        assert_eq!(rec.log().last().unwrap().1, "new=1/1");
         stop_tx.send(true).unwrap();
         task.await.unwrap();
     }

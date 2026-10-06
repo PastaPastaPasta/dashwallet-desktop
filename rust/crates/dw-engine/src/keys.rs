@@ -198,6 +198,13 @@ impl NetworkSession {
             )
             .await??;
 
+            // A closed (unloaded) wallet is registered: open it instead.
+            if this.live()?.store.is_unloaded(&wallet_id.0) {
+                if !had_secret {
+                    this.forget_secret(wallet_id).await;
+                }
+                return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+            }
             if manager.get_wallet(&wallet_id.0).await.is_some() {
                 if had_secret {
                     return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));

@@ -630,6 +630,20 @@ impl AppDb {
         };
         Ok(())
     }
+
+    /// Every `(key, value)` of `scope` whose key starts with `prefix`, by
+    /// key.
+    pub fn settings_with_prefix(&self, scope: &str, prefix: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM settings_kv WHERE scope = ?1 AND substr(key, 1, ?3) = ?2
+             ORDER BY key",
+        )?;
+        let rows = stmt.query_map(params![scope, prefix, prefix.chars().count() as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
 }
 
 fn write_label(
@@ -831,6 +845,23 @@ mod tests {
         assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("w"));
         db.set_setting(GLOBAL_SCOPE, "k", None).unwrap();
         assert_eq!(db.setting(GLOBAL_SCOPE, "k").unwrap(), None);
+    }
+
+    #[test]
+    fn settings_with_prefix_lists_one_scope() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "abandoned:b", Some("2")).unwrap();
+        db.set_setting(W, "abandoned:a", Some("1")).unwrap();
+        db.set_setting(W, "other", Some("x")).unwrap();
+        db.set_setting(W2, "abandoned:c", Some("3")).unwrap();
+        assert_eq!(
+            db.settings_with_prefix(W, "abandoned:").unwrap(),
+            vec![
+                ("abandoned:a".to_string(), "1".to_string()),
+                ("abandoned:b".to_string(), "2".to_string())
+            ]
+        );
+        assert!(db.settings_with_prefix(W, "none").unwrap().is_empty());
     }
 
     #[test]

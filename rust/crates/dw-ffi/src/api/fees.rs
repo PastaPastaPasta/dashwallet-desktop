@@ -1,7 +1,7 @@
 //! M2 fee policy and the coin-control summary. Owner: R1 (engine-tools,
 //! `dw-engine::fee`). Contract: docs/contracts/m2-engine.md §2.3.
 
-use crate::api::common::{OutPoint, ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{OutPoint, ensure_open, parse_wallet_id};
 use crate::{CoinsError, FeeMode, NetworkSession, SendError};
 
 /// Where the recommended rates come from (DESIGN-opus §1.14).
@@ -69,12 +69,58 @@ pub struct CoinSelectionSummary {
     pub unavailable: Vec<OutPoint>,
 }
 
+impl From<dw_engine::FeeSource> for FeeSource {
+    fn from(s: dw_engine::FeeSource) -> Self {
+        match s {
+            dw_engine::FeeSource::MinimumRelay => Self::MinimumRelay,
+            dw_engine::FeeSource::NodeEstimate => Self::NodeEstimate,
+        }
+    }
+}
+
+impl From<dw_engine::FeePolicy> for FeePolicy {
+    fn from(p: dw_engine::FeePolicy) -> Self {
+        Self {
+            source: p.source.into(),
+            min_relay_per_kb: p.min_relay_per_kb,
+            max_custom_per_kb: p.max_custom_per_kb,
+            max_tx_fee: p.max_tx_fee,
+            max_broadcast_rate_per_kb: p.max_broadcast_rate_per_kb,
+            targets: p
+                .targets
+                .into_iter()
+                .map(|t| FeeTarget {
+                    target_blocks: t.target_blocks,
+                    duffs_per_kb: t.duffs_per_kb,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<dw_engine::CoinSelectionSummary> for CoinSelectionSummary {
+    fn from(s: dw_engine::CoinSelectionSummary) -> Self {
+        Self {
+            quantity: s.quantity,
+            amount: s.amount,
+            bytes: s.bytes,
+            fee: s.fee,
+            after_fee: s.after_fee,
+            change: s.change,
+            change_to_fee: s.change_to_fee,
+            insufficient_funds: s.insufficient_funds,
+            fee_tolerance_per_input: s.fee_tolerance_per_input,
+            unavailable: s.unavailable.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[uniffi::export]
 impl NetworkSession {
     /// Fee rules for this network (in-memory, constant on SPV).
     pub fn fee_policy(&self) -> Result<FeePolicy, SendError> {
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.fee_policy")
+        Ok(dw_engine::fee_policy().into())
     }
 
     /// The coin-control summary for `outpoints` paying `pay_amounts` at
@@ -88,12 +134,16 @@ impl NetworkSession {
         fee: FeeMode,
         all_change_to_fee: bool,
     ) -> Result<CoinSelectionSummary, CoinsError> {
-        let _ = (pay_amounts, fee, all_change_to_fee);
-        parse_wallet_id(&wallet_id)?;
-        for outpoint in &outpoints {
-            outpoint.to_core()?;
-        }
+        let id = parse_wallet_id(&wallet_id)?;
+        let outpoints = outpoints
+            .iter()
+            .map(OutPoint::to_core)
+            .collect::<Result<Vec<_>, _>>()?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.coin_selection_summary")
+        Ok(self
+            .inner
+            .coin_selection_summary(id, outpoints, pay_amounts, fee.into(), all_change_to_fee)
+            .await?
+            .into())
     }
 }

@@ -193,6 +193,7 @@ impl From<dw_engine::EngineError> for WalletError {
             E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },
             E::NameRejected(detail) => Self::NameRejected { detail },
+            E::InvalidXpub(detail) => Self::InvalidXpub { detail },
             E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
                 Self::InvalidArgument { detail }
             }
@@ -218,6 +219,10 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::Sdk(_)
             | E::Spv(_)
             | E::SpvNotRunning
+            | E::SpvRunning
+            | E::RescanInProgress
+            | E::TxActionRefused(_)
+            | E::NoPeers
             | E::TxNotFound(_)
             | E::GapLimit
             | E::RequestNotFound(_)

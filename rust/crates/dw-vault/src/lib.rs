@@ -44,3 +44,38 @@ pub use vault::{MAX_PASSPHRASE_BYTES, Vault, throttle_wait_secs};
 
 /// Directory of the vault inside a network data directory.
 pub const VAULT_DIR: &str = "vault";
+
+/// What a vault directory holds, read without opening the vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VaultDirInfo {
+    /// A vault file exists (readable or not).
+    pub has_vault: bool,
+    /// The vault file names an OS-store slot and the OS store holds its
+    /// key. `false` when the store cannot be reached.
+    pub has_os_store_key: bool,
+}
+
+/// Inspects `dir` (a network's `vault/` directory) for IOS-009's
+/// existing-wallet detection. Reads the file and queries the OS store only.
+pub fn inspect_vault_dir(dir: &std::path::Path, os_store: &dyn OsSecretStore) -> VaultDirInfo {
+    let has_vault = file::file_path(dir).is_file();
+    let slot = match file::read(dir) {
+        Ok(Some(f)) => f.slot_o,
+        _ => None,
+    };
+    let has_os_store_key = slot.is_some_and(|o| {
+        <[u8; 32]>::try_from(o.service.as_slice()).is_ok_and(|service| {
+            match os_store.get(&service, &o.label) {
+                Ok(v) => v.is_some(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "OS store unavailable while inspecting a vault");
+                    false
+                }
+            }
+        })
+    });
+    VaultDirInfo {
+        has_vault,
+        has_os_store_key,
+    }
+}

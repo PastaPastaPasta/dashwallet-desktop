@@ -207,6 +207,10 @@ pub(crate) struct SyncTracker {
     peers: BTreeMap<SocketAddr, PeerEntry>,
     last_progress: Instant,
     stall_notified: bool,
+    /// Masternode and evonode counts of the synced list, with the
+    /// masternode-phase height they were read at.
+    masternode_counts: Option<(crate::MasternodeCount, crate::MasternodeCount)>,
+    masternode_counts_height: Option<u32>,
 }
 
 impl Default for SyncTracker {
@@ -219,6 +223,8 @@ impl Default for SyncTracker {
             peers: BTreeMap::new(),
             last_progress: Instant::now(),
             stall_notified: false,
+            masternode_counts: None,
+            masternode_counts_height: None,
         }
     }
 }
@@ -317,6 +323,48 @@ impl SyncTracker {
     pub(crate) fn set_tip_time(&mut self, height: u32, time: Option<u64>) {
         self.tip_time_height = Some(height);
         self.tip_time = time;
+    }
+
+    /// Forgets every reading (the chain data was deleted). Keeps the
+    /// running flag.
+    pub(crate) fn reset(&mut self) {
+        let running = self.running;
+        *self = Self::default();
+        self.running = running;
+    }
+
+    /// The masternode-phase height a masternode count is due for: the
+    /// phase is done and the counts were not read at this height yet.
+    pub(crate) fn masternode_counts_due(&self) -> Option<u32> {
+        let r = self.readings.masternodes.filter(|r| r.done())?;
+        (self.masternode_counts_height != Some(r.current)).then_some(r.current)
+    }
+
+    pub(crate) fn set_masternode_counts(
+        &mut self,
+        height: u32,
+        counts: Option<(crate::MasternodeCount, crate::MasternodeCount)>,
+    ) {
+        self.masternode_counts_height = Some(height);
+        self.masternode_counts = counts;
+    }
+
+    /// Masternode and evonode counts, once the masternode phase finished.
+    pub(crate) fn masternode_counts(
+        &self,
+    ) -> Option<(crate::MasternodeCount, crate::MasternodeCount)> {
+        self.readings
+            .masternodes
+            .is_some_and(|r| r.done())
+            .then_some(self.masternode_counts)
+            .flatten()
+    }
+
+    /// Seconds without progress while a stall is reported (same rule as
+    /// `Notice{SyncStalled}`).
+    pub(crate) fn stalled_for(&self) -> Option<u64> {
+        (self.running && self.stall_notified && !caught_up(&self.readings))
+            .then(|| self.last_progress.elapsed().as_secs())
     }
 
     /// `true` once per stall: running, not caught up, and no progress for
@@ -440,7 +488,8 @@ impl crate::NetworkSession {
     /// the running filter sync re-matches from there. Progress arrives as
     /// `Sync` events; found transactions as `HistoryChanged`. The rewound
     /// checkpoint is in memory only: a restart before the rescan finishes
-    /// needs another `rescan`.
+    /// needs another `rescan`. `RescanInProgress` while an earlier rescan
+    /// runs.
     pub async fn rescan(
         self: &std::sync::Arc<Self>,
         from: RescanFrom,
@@ -452,31 +501,33 @@ impl crate::NetworkSession {
             if !manager.spv().is_started() {
                 return Err(crate::EngineError::SpvNotRunning);
             }
-            if let RescanFrom::Height(h) = from {
-                let tip = this.hub.tracker().tip_height().unwrap_or(0);
-                if h > tip {
-                    return Err(crate::EngineError::HeightOutOfRange(h));
-                }
+            if let RescanFrom::Height(h) = from
+                // No known height yet: nothing to rescan up to (M1 rule).
+                && h > this.known_tip().unwrap_or(0)
+            {
+                return Err(crate::EngineError::HeightOutOfRange(h));
             }
-            for id in manager.list_wallet_ids_blocking() {
-                let wallet = crate::WalletId(id);
-                let start = match from {
-                    RescanFrom::WalletBirth => {
-                        this.hub.wallet_state(&wallet).map_or(0, |s| s.birth_height)
-                    }
-                    RescanFrom::Genesis => 0,
-                    RescanFrom::Height(h) => h,
-                };
-                // The checkpoint is the last scanned height: rewind to just
-                // below the first block to scan.
-                let checkpoint = start.saturating_sub(1);
-                let m = std::sync::Arc::clone(&manager);
-                tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id, checkpoint))
-                    .await?;
-                this.hub.pump.mark_history(wallet, None);
-            }
-            this.hub.pump.mark_sync();
-            Ok(())
+            let ids: Vec<crate::WalletId> = manager
+                .list_wallet_ids_blocking()
+                .into_iter()
+                .map(crate::WalletId)
+                .collect();
+            let from_height = match from {
+                RescanFrom::WalletBirth => ids
+                    .iter()
+                    .map(|id| this.hub.wallet_state(id).map_or(0, |s| s.birth_height))
+                    .min()
+                    .unwrap_or(0),
+                RescanFrom::Genesis => 0,
+                RescanFrom::Height(h) => h,
+            };
+            let hub = std::sync::Arc::clone(&this.hub);
+            this.start_rescan(ids, from_height, move |wallet| match from {
+                RescanFrom::WalletBirth => hub.wallet_state(wallet).map_or(0, |s| s.birth_height),
+                RescanFrom::Genesis => 0,
+                RescanFrom::Height(h) => h,
+            })
+            .await
         })
         .await
     }

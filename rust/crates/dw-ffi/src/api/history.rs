@@ -320,20 +320,25 @@ impl From<dw_engine::TxRecord> for TxRecord {
     }
 }
 
+impl From<HistoryFilter> for dw_engine::HistoryFilter {
+    fn from(f: HistoryFilter) -> Self {
+        Self {
+            types: f.types.into_iter().map(Into::into).collect(),
+            categories: f.categories.into_iter().map(Into::into).collect(),
+            statuses: f.statuses.into_iter().map(Into::into).collect(),
+            date_from: f.date_from,
+            date_to: f.date_to,
+            text: f.text,
+            min_amount: f.min_amount,
+            watch_only: f.watch_only.into(),
+        }
+    }
+}
+
 impl From<HistoryQuery> for dw_engine::HistoryQuery {
     fn from(q: HistoryQuery) -> Self {
-        let f = q.filter;
         Self {
-            filter: dw_engine::HistoryFilter {
-                types: f.types.into_iter().map(Into::into).collect(),
-                categories: f.categories.into_iter().map(Into::into).collect(),
-                statuses: f.statuses.into_iter().map(Into::into).collect(),
-                date_from: f.date_from,
-                date_to: f.date_to,
-                text: f.text,
-                min_amount: f.min_amount,
-                watch_only: f.watch_only.into(),
-            },
+            filter: q.filter.into(),
             sort: q.sort.into(),
             cursor: q.cursor,
             limit: q.limit,

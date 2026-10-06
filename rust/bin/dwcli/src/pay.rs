@@ -108,11 +108,11 @@ pub enum PayCommand {
     },
 }
 
-fn wallet_id(s: &str) -> Result<WalletId, String> {
+pub(crate) fn wallet_id(s: &str) -> Result<WalletId, String> {
     s.parse().map_err(|e: dw_engine::EngineError| e.to_string())
 }
 
-fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
+pub(crate) fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
     dashcore::OutPoint::from_str(s).map_err(|e| format!("bad outpoint {s:?}: {e}"))
 }
 
@@ -146,7 +146,7 @@ fn recipient(
 
 /// The credential a grant needs: the passphrase of an encrypted vault, none
 /// for an unencrypted one.
-fn credential<'a>(
+pub(crate) fn credential<'a>(
     session: &NetworkSession,
     passphrase: Option<&'a Zeroizing<Vec<u8>>>,
 ) -> Credential<'a> {
@@ -156,7 +156,7 @@ fn credential<'a>(
     }
 }
 
-fn wait_for_height(
+pub(crate) fn wait_for_height(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,

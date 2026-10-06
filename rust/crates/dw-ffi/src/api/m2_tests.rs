@@ -105,27 +105,24 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     let rt = &f.rt;
 
     // Multiwallet (R1).
-    assert_code!(s.wallet_load_states(), not_implemented: "NetworkSession.wallet_load_states");
+    assert!(s.wallet_load_states().unwrap().is_empty());
     assert_code!(
         rt.block_on(s.load_wallet("AB".repeat(32))),
         "invalid_argument"
     );
     assert_code!(
         rt.block_on(s.unload_wallet(WALLET.into())),
-        not_implemented: "NetworkSession.unload_wallet"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.import_watch_only("tpub".into(), WatchOnlyOptions::default())),
-        not_implemented: "NetworkSession.import_watch_only"
+        "wallet.invalid_xpub"
     );
     assert_code!(
         rt.block_on(s.account_xpub(WALLET.into(), 0)),
-        not_implemented: "NetworkSession.account_xpub"
+        "wallet_not_found"
     );
-    assert_code!(
-        rt.block_on(f.engine.existing_networks()),
-        not_implemented: "Engine.existing_networks"
-    );
+    assert_eq!(rt.block_on(f.engine.existing_networks()).unwrap().len(), 1);
 
     // Transaction actions (R1).
     assert_code!(
@@ -134,15 +131,15 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.abandon_transaction(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.abandon_transaction"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.resend_transaction(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.resend_transaction"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.drop_unconfirmed(None)),
-        not_implemented: "NetworkSession.drop_unconfirmed"
+        "tx_action.spv_not_running"
     );
     assert_code!(
         rt.block_on(s.export_history_csv(
@@ -150,10 +147,10 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
             filter(),
             HistorySort::NewestFirst,
             crate::DisplayUnit::Dash,
-            vec![],
+            vec!["x".into()],
             0
         )),
-        not_implemented: "NetworkSession.export_history_csv"
+        "history.invalid_query"
     );
     assert_code!(
         rt.block_on(s.tx_notices(WALLET.into(), vec![TXID.into(), "bad".into()])),
@@ -161,11 +158,14 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.tx_detail_extras(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.tx_detail_extras"
+        "wallet_not_found"
     );
 
     // Fees, tools, console (R1).
-    assert_code!(s.fee_policy(), not_implemented: "NetworkSession.fee_policy");
+    assert_eq!(
+        s.fee_policy().unwrap().source,
+        crate::FeeSource::MinimumRelay
+    );
     let bad_outpoint = OutPoint {
         txid: "nothex".into(),
         vout: 0,
@@ -180,25 +180,30 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
         )),
         "invalid_argument"
     );
-    assert_code!(s.node_info(), not_implemented: "NetworkSession.node_info");
-    assert_code!(s.warnings(), not_implemented: "NetworkSession.warnings");
+    assert_eq!(s.node_info().unwrap().mempool_tx_count, None);
+    assert!(s.warnings().is_ok());
     assert_code!(
         rt.block_on(s.ban_peer("127.0.0.1".into(), 3600)),
         not_implemented: "NetworkSession.ban_peer"
     );
-    assert_code!(s.rescan_progress(), not_implemented: "NetworkSession.rescan_progress");
+    assert_eq!(s.rescan_progress().unwrap(), None);
+    rt.block_on(s.reset_chain_data()).unwrap();
     assert_code!(
-        rt.block_on(s.reset_chain_data()),
-        not_implemented: "NetworkSession.reset_chain_data"
+        rt.block_on(s.console_execute(None, b"getblockhash 0".to_vec(), None)),
+        "console.not_available"
     );
     assert_code!(
-        rt.block_on(s.console_execute(None, b"getblockcount".to_vec(), None)),
-        not_implemented: "NetworkSession.console_execute"
+        rt.block_on(s.console_execute(None, b"getbalance".to_vec(), None)),
+        "console.wallet_required"
     );
-    assert_code!(crate::console_commands(), not_implemented: "console_commands");
     assert_code!(
-        crate::console_redact(b"walletpassphrase x 60".to_vec()),
-        not_implemented: "console_redact"
+        rt.block_on(s.console_execute(None, b"help \"x".to_vec(), None)),
+        "console.parse_error"
+    );
+    assert!(crate::console_commands().unwrap().len() >= 80);
+    assert_eq!(
+        crate::console_redact(b"walletpassphrase x 60".to_vec()).unwrap(),
+        "walletpassphrase(…)"
     );
 
     // Compat, backups, PSBT (R2).
@@ -271,6 +276,10 @@ fn stubs_report_a_closed_session() {
             .unwrap()
     );
     assert_code!(f.session.wallet_load_states(), "network_not_open");
+    assert_code!(
+        f.rt.block_on(f.session.load_wallet(WALLET.into())),
+        "network_not_open"
+    );
     assert_code!(f.session.node_info(), "network_not_open");
     assert_code!(
         f.rt.block_on(f.session.drop_unconfirmed(None)),

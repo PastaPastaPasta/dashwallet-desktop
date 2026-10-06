@@ -76,7 +76,11 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Spv(_) => Self::Spv { detail },
             E::Io(_) => Self::Io { detail },
             E::NotImplemented(_) => Self::NotImplemented { detail },
-            E::SpvNotRunning => Self::Spv { detail },
+            E::SpvNotRunning | E::SpvRunning | E::RescanInProgress | E::NoPeers => {
+                Self::Spv { detail }
+            }
+            E::InvalidXpub(_) => Self::InvalidArgument { detail },
+            E::TxActionRefused(_) => Self::Wallet { detail },
             E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
                 Self::InvalidArgument { detail }
             }

@@ -18,6 +18,7 @@ dashcore = { workspace = true }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
 dw-appdb = { workspace = true }
+dw-units = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 tokio = { workspace = true }
@@ -34,6 +35,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 dw-message = { workspace = true }
+serde_json = "1"
 tempfile = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests.
 tokio = { workspace = true, features = ["test-util"] }

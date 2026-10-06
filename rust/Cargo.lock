@@ -1554,6 +1554,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-console"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "dw-engine",
+ "dw-message",
+ "dw-vault",
+ "hex",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
@@ -1564,6 +1581,7 @@ dependencies = [
  "dpp",
  "dw-appdb",
  "dw-message",
+ "dw-units",
  "dw-uri",
  "dw-vault",
  "hex",
@@ -1572,6 +1590,7 @@ dependencies = [
  "platform-wallet-storage",
  "rs-sdk-trusted-context-provider",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1584,6 +1603,7 @@ name = "dw-ffi"
 version = "0.1.0"
 dependencies = [
  "dashcore",
+ "dw-console",
  "dw-engine",
  "dw-message",
  "dw-units",
@@ -1664,8 +1684,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dashcore",
+ "dw-console",
  "dw-engine",
  "dw-message",
+ "dw-units",
  "dw-vault",
  "tempfile",
  "zeroize",
