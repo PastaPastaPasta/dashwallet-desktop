@@ -1599,6 +1599,7 @@ name = "dw-ffi"
 version = "0.1.0"
 dependencies = [
  "dashcore",
+ "dw-desktop",
  "dw-engine",
  "dw-message",
  "dw-units",
