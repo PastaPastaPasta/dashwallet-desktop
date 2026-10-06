@@ -107,7 +107,11 @@ Payload plaintext (JSON):
 | `birth_height` | The wallet's birth height; a restore scans from it (0 when `null`). |
 | `created_at` | When the wallet was added on the source device. |
 | `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column plus `settings_kv` rows scoped to the wallet. Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
-| `wallet_sqlite` | Base64 of a SQLite online backup of `wallet.sqlite` (SqlitePersister `backup_to`). |
+
+The payload holds this wallet's data only and is built in memory (no temporary file). Backups
+written before review M4 also carry `wallet_sqlite`, a base64 online backup of the whole network's
+`wallet.sqlite` (every wallet's xpubs and history); it was never read back, readers ignore it, and
+it is no longer written.
 
 ## 3. Restore
 
@@ -124,10 +128,9 @@ Payload plaintext (JSON):
 5. Insert the `app_rows` (`INSERT OR IGNORE`; identical rows are skipped), so labels, address
    book, receive requests, UTXO locks and wallet settings return.
 
-Wallet state is rebuilt by the compact-filter scan from the birth height. **v1 does not read
-`wallet_sqlite` back**: replacing the live `wallet.sqlite` would drop the other wallets of the
-network, and merging one wallet's rows is a platform-wallet-storage feature that does not exist
-yet. The snapshot is carried so a later version or offline tooling can use it.
+Wallet state is rebuilt by the compact-filter scan from the birth height. A restore that fails
+after a wallet was registered (its app rows, or a later bundle of the file) removes the wallets it
+registered, so a failed restore leaves the vault and the wallet list as they were.
 
 ## 4. Automatic backups (QT-116)
 
@@ -135,7 +138,9 @@ yet. The snapshot is carried so a later version or offline tooling can use it.
 - Written when a wallet is added (create, import, restore, keys attached) and for every wallet
   when a session opens, if the policy keeps any and the DEK is available (vault unlocked or
   unencrypted); otherwise skipped silently, as dash-qt backs up only what it can.
-- Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`.
+- Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
+  automatic backup of the same wallet can run at the same time: neither writes anything but its
+  own destination file (created with `O_EXCL`, mode 0600).
 - The newest `keep` per wallet are kept (`backup_policy`, 0..=10, default 10, dw-appdb setting
   `backup.keep`); lowering `keep` deletes the oldest at once.
 - A failure sends `Notice{BackupFailed}` with the wallet id and cause.

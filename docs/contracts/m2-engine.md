@@ -220,8 +220,8 @@ Release-blocking checks are DESIGN-opus §4.3 `restore` and §4.4 items 1–3, i
 
 | Call | Kind | Semantics | Errors | Serves |
 |---|---|---|---|---|
-| `backup_wallet(id, dest_path, backup_passphrase?)` | async | Writes a `.dwbackup` (vault records still under the data key, a passphrase wrap slot, the wallet's app.sqlite rows, an online backup of wallet.sqlite, MAC under the data key). Encrypted vault: uses the vault passphrase slot, needs the vault unlocked, `backup_passphrase` must be `None`. Unencrypted vault: `backup_passphrase` is required. Replaces no file. `BackupInfo { path, wallet_id, created_at, size_bytes, automatic }`. | `backup.vault_locked`, `backup.passphrase_required`, `backup.destination_unwritable`, `invalid_argument` | QT-110 |
-| `restore_backup(path, passphrase?)` | async | Verifies the MAC, re-encrypts the records under this vault's key (vault unlocked) and registers the wallets in seed-safety order. Returns their ids. | `backup.wrong_passphrase`, `backup.corrupt`, `backup.unsupported_version`, `backup.network_mismatch`, `backup.already_exists`, `backup.vault_locked` | QT-110 |
+| `backup_wallet(id, dest_path, backup_passphrase?)` | async | Writes a `.dwbackup` (the wallet's secrets and app.sqlite rows sealed under a fresh per-backup key, a slot wrapping only that key — never the vault's data key — built in memory; nothing of other wallets). Encrypted vault: uses the vault passphrase slot, needs the vault unlocked, `backup_passphrase` must be `None`. Unencrypted vault: `backup_passphrase` is required. Replaces no file. `BackupInfo { path, wallet_id, created_at, size_bytes, automatic }`. | `backup.vault_locked`, `backup.passphrase_required`, `backup.destination_unwritable`, `invalid_argument` | QT-110 |
+| `restore_backup(path, passphrase?)` | async | Verifies the MAC, re-encrypts the records under this vault's key (vault unlocked) and registers the wallets in seed-safety order. Returns their ids. A failure after a wallet was registered removes every wallet the call registered (all or nothing). | `backup.wrong_passphrase`, `backup.corrupt`, `backup.unsupported_version`, `backup.network_mismatch`, `backup.already_exists`, `backup.vault_locked` | QT-110 |
 | `automatic_backups(id?)` | async | Newest first. Format: [`dwbackup-v1.md`](dwbackup-v1.md). The engine writes `backups/<wallet>.YYYY-MM-DD-HH-MM.dwbackup` when a wallet loads or is created and the data key is available (vault unlocked or unencrypted), keeps the newest `keep`, and sends `Notice{BackupFailed}` on failure. CoinJoin is not gated on backups (dash-qt quirk #10). | — | QT-116 |
 | `backup_policy()` / `set_backup_policy(keep)` | sync / async | `BackupPolicy { keep (0..=10, default 10), directory }`. Lowering `keep` deletes the oldest automatic backups. | `invalid_argument` | QT-116 |
 
@@ -229,7 +229,9 @@ Release-blocking checks are DESIGN-opus §4.3 `restore` and §4.4 items 1–3, i
 open with the vault passphrase of backup time; an unencrypted vault's user backups need a backup
 passphrase; its automatic backups open only in the vault that wrote them (no passphrase to wrap
 with). `restore_backup` registers the wallet from its seed and restores its app.sqlite rows; wallet
-state comes from the rescan (the wallet.sqlite snapshot is carried, not read back, in v1).
+state comes from the rescan. A backup holds one wallet's data only (no wallet.sqlite snapshot since
+review M4; older files carry one, which is ignored). Each bundle has its own key, so a backup's
+passphrase opens that backup and nothing else (review H2).
 Watch-only wallets: `NotImplemented{call: "backup_wallet.watch_only"}`.
 
 ### 2.8 PSBT (`psbt.rs`) — owner R2 (`dw-psbt`)

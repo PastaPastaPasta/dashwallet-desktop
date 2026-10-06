@@ -679,3 +679,151 @@ fn test_qt_105_core_lookahead_survives_a_restart() {
     assert_eq!(receive_addresses(&e, &s, id, 2000).len(), before);
     assert!(chain_addresses(&e, &s, id, AddressChain::Change, 2000).len() >= 1000);
 }
+
+const PHRASE_A: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+const PHRASE_B: &str =
+    "letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+
+fn import(e: &Engine, s: &Arc<NetworkSession>, phrase: &str, name: &str) -> WalletId {
+    e.block_on(s.import_wallet(
+        Zeroizing::new(phrase.as_bytes().to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions {
+            birth_height: Some(3),
+            name: Some(name.into()),
+            ..ImportOptions::default()
+        },
+    ))
+    .unwrap()
+}
+
+/// A `.dwbackup` file: (header line, body line).
+fn backup_lines(path: &Path) -> (Vec<u8>, serde_json::Value) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut lines = bytes.split(|b| *b == b'\n');
+    assert_eq!(lines.next().unwrap(), b"DWBACKUP 1");
+    let header = lines.next().unwrap().to_vec();
+    let body = serde_json::from_slice(lines.next().unwrap()).unwrap();
+    (header, body)
+}
+
+/// Review M4: a one-wallet backup carries that wallet's data only; the
+/// whole-network wallet.sqlite snapshot (other wallets' xpubs and history)
+/// is gone.
+#[test]
+fn a_backup_holds_only_its_wallets_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(dir.path());
+    let s = open(&e, None);
+    let a = import(&e, &s, PHRASE_A, "A");
+    let b = import(&e, &s, PHRASE_B, "B");
+    let dest = dir.path().join("a.dwbackup");
+    e.block_on(s.backup_wallet(a, dest.clone(), Some(Zeroizing::new(b"bk".to_vec()))))
+        .unwrap();
+    let (header, body) = backup_lines(&dest);
+    let bundle: dw_vault::WalletBackupBundle =
+        serde_json::from_value(body["bundles"][0].clone()).unwrap();
+    let (_, payload) = s
+        .vault()
+        .open_backup_bundle(&bundle, Some(b"bk"), &header)
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+    assert!(json.get("wallet_sqlite").is_none(), "{json}");
+    assert_eq!(json["name"], "A");
+    let text = String::from_utf8(payload.to_vec()).unwrap();
+    assert!(!text.contains(&b.to_string()), "another wallet's rows");
+    assert!(text.contains(&a.to_string()));
+    // No temporary copy is left (or made) in the network directory.
+    let stray: Vec<_> = std::fs::read_dir(s.data_dir())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".backup-"))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
+}
+
+/// Writes a `.dwbackup` with `bundles` (wallet ids in the header in order)
+/// and the given payload per bundle, sealed by `s`'s vault.
+fn craft_backup(s: &Arc<NetworkSession>, path: &Path, wallets: &[(WalletId, serde_json::Value)]) {
+    let header = serde_json::json!({
+        "format": "dwbackup", "format_version": 1, "network": "regtest",
+        "created_at": 1, "wallet_ids": wallets.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>(),
+        "automatic": false, "app_version": "test",
+    });
+    let header_line = serde_json::to_vec(&header).unwrap();
+    let bundles: Vec<_> = wallets
+        .iter()
+        .map(|(id, payload)| {
+            s.vault()
+                .backup_bundle(
+                    &id.0,
+                    Some(b"bk"),
+                    &serde_json::to_vec(payload).unwrap(),
+                    &header_line,
+                )
+                .unwrap()
+        })
+        .collect();
+    let mut out = b"DWBACKUP 1\n".to_vec();
+    out.extend_from_slice(&header_line);
+    out.push(b'\n');
+    out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": bundles })).unwrap());
+    out.push(b'\n');
+    std::fs::write(path, out).unwrap();
+}
+
+/// Review L3: a restore that fails after registering a wallet removes what
+/// it registered, so a failure leaves no half-restored wallet behind.
+#[test]
+fn a_failed_restore_rolls_back_the_wallets_it_registered() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(&dir.path().join("src"));
+    let s = open(&e, None);
+    let a = import(&e, &s, PHRASE_A, "A");
+    let b = import(&e, &s, PHRASE_B, "B");
+    let good = |name: &str| serde_json::json!({"name": name, "birth_height": 0, "created_at": null, "app_rows": []});
+
+    let e2 = engine(&dir.path().join("dst"));
+    let s2 = open(&e2, None);
+    let pw = || Some(Zeroizing::new(b"bk".to_vec()));
+    let gone = |id: &WalletId| s2.wallet_info(id).is_err() && !s2.vault().has_wallet_secret(&id.0);
+
+    // Multi-bundle: A restores, then B's bundle fails (A twice).
+    let multi = dir.path().join("multi.dwbackup");
+    craft_backup(
+        &s,
+        &multi,
+        &[(a, good("A")), (b, good("B")), (a, good("A"))],
+    );
+    let r = e2.block_on(s2.restore_backup(multi, pw()));
+    assert!(
+        matches!(r, Err(EngineError::Backup(BackupFailure::AlreadyExists(id))) if id == a),
+        "{r:?}"
+    );
+    assert!(
+        gone(&a) && gone(&b),
+        "a failed restore left wallets registered"
+    );
+
+    // A bad app row value fails the restore; nothing stays registered.
+    let bad = dir.path().join("bad.dwbackup");
+    let rows = serde_json::json!({"name": "A", "birth_height": 0, "created_at": null,
+        "app_rows": [{"table": "wallet_names", "columns": ["wallet_id"], "rows": [[{"x": 1}]]}]});
+    craft_backup(&s, &bad, &[(a, rows)]);
+    let r = e2.block_on(s2.restore_backup(bad, pw()));
+    assert!(
+        matches!(r, Err(EngineError::Backup(BackupFailure::Corrupt(_)))),
+        "{r:?}"
+    );
+    assert!(gone(&a));
+
+    // The same wallets restore once the file is good.
+    let ok = dir.path().join("ok.dwbackup");
+    craft_backup(&s, &ok, &[(a, good("A")), (b, good("B"))]);
+    assert_eq!(
+        e2.block_on(s2.restore_backup(ok, pw())).unwrap(),
+        vec![a, b]
+    );
+    assert_eq!(s2.wallet_info(&b).unwrap().name, "B");
+}

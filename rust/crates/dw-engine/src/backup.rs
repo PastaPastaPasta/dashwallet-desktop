@@ -7,17 +7,17 @@
 //! <body JSON>\n        {"bundles": [dw-vault WalletBackupBundle, …]}
 //! ```
 //!
-//! Each bundle carries the wallet's vault records as stored, a slot that
-//! unwraps the vault's data key (dw-vault) and a payload sealed under a key
-//! derived from that data key, with the header line as AAD. The payload is
-//! JSON: the wallet's name, birth height and creation time, its app.sqlite
-//! rows, and an online backup of wallet.sqlite.
+//! Each bundle (dw-vault) carries the wallet's secrets and a payload, both
+//! sealed under a random key of the bundle's own, and a slot that wraps only
+//! that key; the header line is the payload's AAD. The payload is JSON: the
+//! wallet's name, birth height and creation time and its app.sqlite rows.
+//! It holds nothing of other wallets (review M4: the wallet.sqlite snapshot
+//! of the whole network is no longer written) and is built in memory: no
+//! temporary file is written.
 //!
 //! Restoring registers the wallet from its stored seed in seed-safety order
 //! with the backup's birth height and name, then inserts its app.sqlite
-//! rows. Wallet state is rebuilt by the scan from the birth height; the
-//! wallet.sqlite snapshot is carried for offline recovery tooling and not
-//! read back by v1.
+//! rows. Wallet state is rebuilt by the scan from the birth height.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -145,8 +145,9 @@ struct Payload {
     birth_height: Option<u32>,
     created_at: Option<u64>,
     app_rows: Vec<JsonTable>,
-    /// Base64 of a SQLite online backup of wallet.sqlite.
-    wallet_sqlite: String,
+    // Backups written before review M4 also carry `wallet_sqlite` (base64
+    // of the whole network's wallet.sqlite); it was never read back and is
+    // ignored.
 }
 
 #[derive(Serialize, Deserialize)]
@@ -271,8 +272,8 @@ impl NetworkSession {
             .min(MAX_KEEP))
     }
 
-    /// Builds the file bytes of a backup of `id`. Reads app.sqlite and
-    /// wallet.sqlite; needs the data key.
+    /// Builds the file bytes of a backup of `id` in memory. Reads the
+    /// wallet's app.sqlite rows; needs the data key.
     async fn backup_bytes(
         &self,
         id: WalletId,
@@ -282,9 +283,6 @@ impl NetworkSession {
         let live = self.live()?;
         let name = self.hub.name_of(&id);
         let birth_height = self.hub.wallet_state(&id).map(|s| s.birth_height);
-        let tmp = self
-            .data_dir()
-            .join(format!(".backup-{id}-{}.sqlite", std::process::id()));
         let header = BackupHeader {
             format: "dwbackup".into(),
             format_version: FORMAT_VERSION,
@@ -299,11 +297,6 @@ impl NetworkSession {
         let vault = self.vault.clone();
         tokio::task::spawn_blocking(move || -> Result<Zeroizing<Vec<u8>>, EngineError> {
             let rows = live.appdb.export_wallet_rows(&id.to_string())?;
-            let _ = std::fs::remove_file(&tmp);
-            live.persister.backup_to(&tmp)?;
-            let db = std::fs::read(&tmp);
-            let _ = std::fs::remove_file(&tmp);
-            let db = db?;
             let payload = Payload {
                 name: name.as_ref().map(|n| n.name.clone()),
                 birth_height,
@@ -320,7 +313,6 @@ impl NetworkSession {
                             .collect(),
                     })
                     .collect(),
-                wallet_sqlite: base64::engine::general_purpose::STANDARD.encode(&db),
             };
             let plain = Zeroizing::new(
                 serde_json::to_vec(&payload)
@@ -500,51 +492,116 @@ impl NetworkSession {
             return Err(BackupFailure::VaultLocked.into());
         }
         let network = self.network.core_network();
-        let mut ids = Vec::new();
+        // What this call registered, for the rollback (review L3): the id
+        // and whether the wallet was new (not keys attached to a watch-only
+        // wallet that was there before).
+        let mut done: Vec<(WalletId, bool)> = Vec::new();
         for (id, secret, payload) in opened {
-            let derived = dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, network)
-                .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
-            if derived != id.0 {
-                return Err(BackupFailure::Corrupt("the seed is not the wallet's".into()).into());
+            if let Err(e) = self
+                .restore_one(network, id, secret, payload, &mut done)
+                .await
+            {
+                self.roll_back_restore(&done).await;
+                return Err(e);
             }
-            let options = ImportOptions {
-                birth_height: Some(payload.birth_height.unwrap_or(0)),
-                core_compat: false,
-                name: payload.name.clone(),
-                lookahead: None,
-            };
-            match self.import_secret_with(options, move || Ok(secret)).await {
-                Ok(_) => {}
-                Err(EngineError::WalletAlreadyExists(_)) => {
-                    return Err(BackupFailure::AlreadyExists(id).into());
-                }
-                Err(EngineError::Vault(e)) => return Err(vault_failure(e)),
-                Err(e) => return Err(e),
-            }
-            let tables = payload
-                .app_rows
-                .iter()
-                .map(|t| {
-                    Ok(TableRows {
-                        table: t.table.clone(),
-                        columns: t.columns.clone(),
-                        rows: t
-                            .rows
-                            .iter()
-                            .map(|r| r.iter().map(from_json).collect::<Result<_, _>>())
-                            .collect::<Result<_, EngineError>>()?,
-                    })
-                })
-                .collect::<Result<Vec<_>, EngineError>>()?;
-            let appdb = self.live()?.appdb;
-            let wid = id.to_string();
-            let inserted =
-                tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables))
-                    .await??;
-            tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
-            ids.push(id);
         }
-        Ok(ids)
+        Ok(done.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// Restores one opened bundle; pushes the wallet to `done` once it is
+    /// registered.
+    async fn restore_one(
+        self: &Arc<Self>,
+        network: dashcore::Network,
+        id: WalletId,
+        secret: dw_vault::WalletSecret,
+        payload: Payload,
+        done: &mut Vec<(WalletId, bool)>,
+    ) -> Result<(), EngineError> {
+        let derived = dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, network)
+            .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
+        if derived != id.0 {
+            return Err(BackupFailure::Corrupt("the seed is not the wallet's".into()).into());
+        }
+        // Every row value is checked before anything is registered.
+        let tables = payload
+            .app_rows
+            .iter()
+            .map(|t| {
+                Ok(TableRows {
+                    table: t.table.clone(),
+                    columns: t.columns.clone(),
+                    rows: t
+                        .rows
+                        .iter()
+                        .map(|r| r.iter().map(from_json).collect::<Result<_, _>>())
+                        .collect::<Result<_, EngineError>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        let existed = self.manager()?.get_wallet(&id.0).await.is_some();
+        let options = ImportOptions {
+            birth_height: Some(payload.birth_height.unwrap_or(0)),
+            core_compat: false,
+            name: payload.name.clone(),
+            lookahead: None,
+        };
+        match self.import_secret_with(options, move || Ok(secret)).await {
+            Ok(_) => done.push((id, !existed)),
+            Err(EngineError::WalletAlreadyExists(_)) => {
+                return Err(BackupFailure::AlreadyExists(id).into());
+            }
+            Err(EngineError::Vault(e)) => return Err(vault_failure(e)),
+            Err(e) => return Err(e),
+        }
+        let appdb = self.live()?.appdb;
+        let wid = id.to_string();
+        let inserted =
+            tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables)).await??;
+        tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
+        Ok(())
+    }
+
+    /// Undoes what a failed restore registered, newest first: a new wallet
+    /// is unloaded and its rows and vault records deleted; keys attached
+    /// to a watch-only wallet are deleted again. Best effort: a failing
+    /// step is logged and the rest still runs.
+    async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
+        for &(id, created) in done.iter().rev() {
+            if created {
+                let removed = async {
+                    let live = self.live()?;
+                    live.manager.remove_wallet(&id.0).await?;
+                    self.hub.forget_wallet(&id);
+                    let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+                    tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+                        persister.delete_wallet(id.0)?;
+                        appdb
+                            .delete_wallet(&id.to_string())
+                            .map_err(|e| EngineError::Storage(e.to_string()))
+                    })
+                    .await?
+                }
+                .await;
+                if let Err(e) = removed {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
+                }
+            }
+            self.forget_secret(id).await;
+            self.sink.emit(if created {
+                EngineEvent::WalletRemoved {
+                    network: self.network.clone(),
+                    wallet_id: id,
+                }
+            } else {
+                // Watch-only again: hosts reload it.
+                EngineEvent::WalletCreated {
+                    network: self.network.clone(),
+                    wallet_id: id,
+                }
+            });
+            tracing::info!(wallet_id = %id, "rolled back a wallet of a failed restore");
+        }
     }
 
     /// Automatic backups of `wallet` (every wallet when `None`), newest
@@ -754,6 +811,110 @@ mod tests {
             SqlValue::Blob(vec![0, 255]),
         ] {
             assert_eq!(from_json(&to_json(&v)).unwrap(), v);
+        }
+    }
+
+    /// Review M4: a user backup and an automatic backup of the same wallet
+    /// at the same time both succeed and touch no shared file; the network
+    /// directory gets no temporary copy (it can even be read-only).
+    #[test]
+    fn user_and_automatic_backups_of_one_wallet_run_together() {
+        use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+
+        struct Quiet;
+        impl crate::EventSink for Quiet {
+            fn emit(&self, _: EngineEvent) {}
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::new(
+            crate::EngineConfig {
+                data_root: dir.path().join("data"),
+                worker_threads: Some(4),
+                vault: VaultConfig {
+                    kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                    os_store: Arc::new(MemoryOsStore::new()),
+                    ..VaultConfig::default()
+                },
+            },
+            Arc::new(Quiet),
+        )
+        .unwrap();
+        let session = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                crate::SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                },
+            ))
+            .unwrap();
+        engine
+            .block_on(session.vault_op(|v| v.create(Some(b"pw"))))
+            .unwrap();
+        let id = engine
+            .block_on(
+                session.import_wallet(
+                    Zeroizing::new(
+                        b"abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                      abandon abandon about"
+                            .to_vec(),
+                    ),
+                    Zeroizing::new(Vec::new()),
+                    ImportOptions::default(),
+                ),
+            )
+            .unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        crate::fsutil::create_private_dir(&session.backup_directory()).unwrap();
+
+        // Nothing but the destinations may be written.
+        use std::os::unix::fs::PermissionsExt;
+        let net = session.data_dir().to_path_buf();
+        let mode = std::fs::metadata(&net).unwrap().permissions().mode();
+        std::fs::set_permissions(&net, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let results: Vec<Result<BackupInfo, EngineError>> = engine.block_on(async {
+            let mut tasks = Vec::new();
+            for n in 0..6 {
+                let s = Arc::clone(&session);
+                let dest = out.join(format!("{n}.dwbackup"));
+                tasks.push(tokio::spawn(async move {
+                    let (user, ()) =
+                        tokio::join!(s.backup_wallet(id, dest, None), s.automatic_backup(id));
+                    user
+                }));
+            }
+            let mut results = Vec::new();
+            for t in tasks {
+                results.push(t.await.unwrap());
+            }
+            results
+        });
+        std::fs::set_permissions(&net, std::fs::Permissions::from_mode(mode)).unwrap();
+        for r in &results {
+            let info = r.as_ref().expect("user backup");
+            let meta = std::fs::metadata(&info.path).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+        let stray: Vec<_> = std::fs::read_dir(&net)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".backup-"))
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
+        // Each user backup opens in this vault.
+        for r in results {
+            let path = r.unwrap().path;
+            let bytes = std::fs::read(&path).unwrap();
+            let (_, header_line) = split_header(&bytes).unwrap();
+            let body_start =
+                MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
+            let body: Body = serde_json::from_slice(&bytes[body_start..]).unwrap();
+            session
+                .vault()
+                .open_backup_bundle(&body.bundles[0], None, header_line)
+                .unwrap();
         }
     }
 }

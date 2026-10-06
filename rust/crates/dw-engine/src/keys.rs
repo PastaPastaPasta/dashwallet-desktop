@@ -382,7 +382,7 @@ impl NetworkSession {
     }
 
     /// Deletes the vault records of a wallet whose registration failed.
-    async fn forget_secret(&self, wallet_id: WalletId) {
+    pub(crate) async fn forget_secret(&self, wallet_id: WalletId) {
         let vault = self.vault.clone();
         let deleted = tokio::task::spawn_blocking(move || vault.delete_wallet_secret(&wallet_id.0))
             .await
