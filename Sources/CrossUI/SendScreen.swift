@@ -84,10 +84,10 @@ struct SendScreen: View {
         case .confirmDuplicates:
             DashCard {
                 SectionHeader(L10n.Send.duplicateTitle)
-                Text(L10n.Send.duplicateText).dashFont(.footnote)
+                Text(L10n.Send.duplicateMergeText).dashFont(.footnote)
                 HStack(spacing: Int(DashSpacing.s)) {
-                    DashButton(CrossStrings.yes) { Task { await model.acknowledgeDuplicates() } }
-                    DashButton(CrossStrings.no, style: .strokeGray) { Task { await model.cancel() } }
+                    DashButton(L10n.Send.combine) { Task { await model.acknowledgeDuplicates() } }
+                    DashButton(CrossStrings.cancel, style: .strokeGray) { Task { await model.cancel() } }
                 }
             }
         case .authorizing:

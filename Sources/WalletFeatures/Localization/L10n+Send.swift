@@ -25,7 +25,8 @@ extension L10n {
         public static let watchOnly = "This wallet cannot sign transactions."
         public static let preparedTxSpent =
             "The coins of this transaction were spent meanwhile. Review the payment again."
-        public static let noPeers = "No connected peers. The transaction was not sent."
+        public static let noPeers =
+            "No connected peers. The transaction was not sent. Review the payment again once the wallet is connected."
         public static let broadcastRejected = "The transaction was rejected by the network."
         public static let grantExceeded = "The amount is larger than this authorization allows. Enter your passphrase."
         public static let syncing = "Please wait until the wallet has finished synchronizing."
@@ -33,6 +34,10 @@ extension L10n {
         public static let noRecipients = "Add a recipient."
         public static let duplicateTitle = "Confirm duplicate recipients"
         public static let duplicateText = "Duplicate address found: addresses should only be used once each."
+        /// The duplicates question: Yes merges the entries (`SendViewModel.acknowledgeDuplicates`).
+        public static let duplicateMergeText =
+            "Duplicate address found: addresses should only be used once each. Combine the payments to the same address into one recipient? Their amounts are added up."
+        public static let combine = "Combine"
         public static let confirmTitle = "Confirm send coins"
         public static let confirmQuestion = "Do you want to create this transaction?"
         public static let confirmReview = "Please, review your transaction."

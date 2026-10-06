@@ -51,10 +51,10 @@ struct SendView: View {
             }
         }
         .alert(L10n.Send.duplicateTitle, isPresented: duplicatesBinding) {
-            Button(MacStrings.Common.yes) { Task { await send.acknowledgeDuplicates() } }
+            Button(L10n.Send.combine) { Task { await send.acknowledgeDuplicates() } }
             Button(MacStrings.Common.cancel, role: .cancel) { Task { await send.cancel() } }
         } message: {
-            Text(L10n.Send.duplicateText)
+            Text(L10n.Send.duplicateMergeText)
         }
         // The broadcast may have reached a peer: the inputs stay reserved and
         // the user is sent to the transaction instead of sending again (M-7).
