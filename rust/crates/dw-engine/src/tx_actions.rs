@@ -77,6 +77,10 @@ pub struct TxNotice {
     pub coinjoin_internal: bool,
 }
 
+/// How long `resend_transaction` waits for dash-spv to refuse the send
+/// before it reports the transaction as handed over.
+const RESEND_HANDOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Settings key prefix (wallet scope) of an abandoned transaction; the
 /// value is its consensus hex.
 const ABANDONED_PREFIX: &str = "abandoned:";
@@ -370,8 +374,9 @@ impl NetworkSession {
     }
 
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
-    /// to the SPV client again and returns; the announcement's outcome is
-    /// only logged (there is no verdict).
+    /// to the SPV client again. Returns once handed over (or `NoPeers` when
+    /// dash-spv refused to send it); the network's verdict is only logged.
+    /// The send continues only while the session stays open.
     pub async fn resend_transaction(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -392,15 +397,29 @@ impl NetworkSession {
                 return Err(EngineError::NoPeers);
             }
             let handle = this.wallet(&wallet).await?;
-            this.hub.note_announced(txid);
-            tokio::spawn(async move {
-                match handle.core().broadcast_transaction(&entry.tx).await {
+            // platform-wallet's only broadcast entry point waits for the
+            // network's acceptance (up to dash-spv's 60 s timeout). The send
+            // itself happens at once, so the call returns after a short
+            // hand-off window and leaves the wait to a background task; a
+            // send dash-spv refuses outright (no connection) is reported.
+            let mut task = tokio::spawn(async move {
+                let outcome = handle.core().broadcast_transaction(&entry.tx).await;
+                match &outcome {
                     Ok(_) => tracing::info!(%txid, "resent transaction accepted"),
                     Err(e) => {
                         tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
                     }
                 }
+                outcome
             });
+            match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
+                Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
+                    return Err(EngineError::NoPeers);
+                }
+                Ok(Err(e)) => return Err(e.into()),
+                Ok(Ok(_)) | Err(_) => {}
+            }
+            this.hub.note_announced(txid);
             Ok(())
         })
         .await

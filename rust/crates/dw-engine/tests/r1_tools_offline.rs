@@ -89,6 +89,17 @@ fn account_tpub(phrase: &str) -> String {
     ExtendedPubKey::from_priv(&secp, &xprv).to_string()
 }
 
+fn address_at(phrase: &str, path: &str) -> String {
+    let secret = dw_vault::mnemonic::derive_secret(phrase.as_bytes(), b"", false).unwrap();
+    let secp = Secp256k1::new();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
+    let child = master
+        .derive_priv(&secp, &DerivationPath::from_str(path).unwrap())
+        .unwrap();
+    let pubkey = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+    dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string()
+}
+
 fn loaded_ids(s: &NetworkSession) -> Vec<WalletId> {
     s.wallet_infos()
         .unwrap()
@@ -207,6 +218,11 @@ fn test_qt_114_watch_only_wallet_from_an_account_xpub() {
         engine.block_on(s.account_xpub(id, 5)),
         Err(EngineError::InvalidArgument(_))
     ));
+
+    // It watches the seed wallet's addresses.
+    let first = engine.block_on(s.current_receive_address(id)).unwrap();
+    assert_eq!(first.derivation_path, "m/44'/1'/0'/0/0");
+    assert_eq!(first.address, address_at(ABANDON_12, "m/44'/1'/0'/0/0"));
 
     // Survives a restart (rebuilt from wallet.sqlite like any wallet).
     engine

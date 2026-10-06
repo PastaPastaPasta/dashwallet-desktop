@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 dashcore = { workspace = true }
+dw-console = { workspace = true }
 dw-engine = { workspace = true }
+dw-units = { workspace = true }
 dw-message = { workspace = true }
 dw-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }

@@ -1684,8 +1684,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dashcore",
+ "dw-console",
  "dw-engine",
  "dw-message",
+ "dw-units",
  "dw-vault",
  "tempfile",
  "zeroize",

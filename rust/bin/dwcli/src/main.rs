@@ -2,6 +2,7 @@
 //! and console host (DESIGN-opus §1.4).
 
 mod pay;
+mod tools;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -112,6 +113,8 @@ enum Command {
     },
     #[command(flatten)]
     Pay(pay::PayCommand),
+    #[command(flatten)]
+    Tools(tools::ToolsCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -132,10 +135,28 @@ fn parse_network(s: &str) -> Result<DashNetwork, String> {
 
 struct StderrSink {
     verbose: bool,
+    /// Print `NewTransactions` events to stdout (`watch-events`).
+    new_tx: bool,
 }
 
 impl EventSink for StderrSink {
     fn emit(&self, event: EngineEvent) {
+        if self.new_tx
+            && let EngineEvent::NewTransactions {
+                wallet_id,
+                txids,
+                catch_up,
+                ..
+            } = &event
+        {
+            let list: Vec<String> = txids.iter().map(ToString::to_string).collect();
+            println!(
+                "newtx wallet={wallet_id} count={} catch_up={} txids={}",
+                txids.len(),
+                u8::from(*catch_up),
+                list.join(",")
+            );
+        }
         if self.verbose {
             eprintln!("event: {event:?}");
         }
@@ -288,6 +309,10 @@ fn run(cli: Cli) -> Result<(), String> {
         },
         Arc::new(StderrSink {
             verbose: cli.verbose_events,
+            new_tx: matches!(
+                cli.command,
+                Command::Tools(tools::ToolsCommand::WatchEvents { .. })
+            ),
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -400,6 +425,14 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }),
+        Command::Tools(cmd) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = tools::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
         Command::Pay(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = pay::run(&engine, &session, passphrase.as_ref(), cmd);
