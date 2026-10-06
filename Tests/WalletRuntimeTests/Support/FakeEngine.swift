@@ -56,6 +56,12 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         var txNotices: Result<[TxNotice], DashKitError> = .failure(.notImplemented(detail: "tx_notices"))
         var logExport: Result<LogExport, DashKitError> = .failure(.notImplemented(detail: "export_logs"))
         var exportedExtraFiles: [URL] = []
+        // M2 R1/R2 (FakeEngine+M2Engine.swift).
+        var loadStates: Result<[WalletLoadState], DashKitError> = .failure(.notImplemented(detail: "wallet_load_states"))
+        var dustThreshold: Result<Amount?, DashKitError> = .failure(.notImplemented(detail: "dust_protection"))
+        var console: Result<ConsoleExecution, DashKitError> = .failure(.notImplemented(detail: "console_execute"))
+        var consoleGrants: [String?] = []
+        var feePolicy: Result<FeePolicy, DashKitError> = .failure(.notImplemented(detail: "fee_policy"))
     }
 
     let events = EventBus()

@@ -69,6 +69,13 @@ public final class SecretBytes: @unchecked Sendable, CustomStringConvertible {
         return try await body(data)
     }
 
+    /// Synchronous `withTemporaryData`.
+    public func withTemporaryData<R>(_ body: (Data) throws -> R) rethrows -> R {
+        var data = withUnsafeBytes { Data($0) }
+        defer { data.withUnsafeMutableBytes { secureZero($0) } }
+        return try body(data)
+    }
+
     /// Decodes the bytes as UTF-8 for transient display. The returned `String`
     /// is not zeroed; keep its lifetime as short as possible.
     public func utf8String() -> String? {

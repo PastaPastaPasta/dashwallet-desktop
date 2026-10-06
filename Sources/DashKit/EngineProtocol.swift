@@ -87,6 +87,91 @@ public protocol EngineProtocol: AnyObject, Sendable {
     /// Zips the log files plus `extraFiles` into `file` (IOS-112).
     func exportLogs(to file: URL, extraFiles: [URL]) async throws(DashKitError) -> LogExport
 
+    // MARK: Wallet lifecycle (M2 R1, m2-engine.md §2.1)
+
+    /// Networks with data under the data root; opens nothing.
+    func existingNetworks() async throws(DashKitError) -> [NetworkDataInfo]
+    func walletLoadStates(on network: DashNetwork) async throws(DashKitError) -> [WalletLoadState]
+    func loadWallet(on network: DashNetwork, wallet: WalletID) async throws(DashKitError)
+    func unloadWallet(on network: DashNetwork, wallet: WalletID) async throws(DashKitError)
+    func setLoadOnStartup(on network: DashNetwork, wallet: WalletID, loadOnStartup: Bool) async throws(DashKitError)
+    func importWatchOnly(on network: DashNetwork, xpub: String, options: WatchOnlyOptions) async throws(DashKitError)
+        -> WalletID
+    func accountXpub(on network: DashNetwork, wallet: WalletID, account: UInt32) async throws(DashKitError)
+        -> AccountXpub
+
+    // MARK: Transactions, fees, dust (M2 R1, §2.2–2.3; dust is M1)
+
+    func txDetailExtras(on network: DashNetwork, wallet: WalletID, txid: String) async throws(DashKitError)
+        -> TxDetailExtras
+    func abandonTransaction(on network: DashNetwork, wallet: WalletID, txid: String) async throws(DashKitError)
+    func resendTransaction(on network: DashNetwork, wallet: WalletID, txid: String) async throws(DashKitError)
+    /// `wallet == nil` = every loaded wallet. Returns how many were abandoned.
+    func dropUnconfirmed(on network: DashNetwork, wallet: WalletID?) async throws(DashKitError) -> UInt32
+    /// dash-qt's CSV text; `utcOffsetSeconds` is the zone dates are written in.
+    func exportHistoryCSV(
+        on network: DashNetwork, wallet: WalletID, filter: HistoryFilter, sort: HistorySort, unit: DisplayUnit,
+        typeNames: [String], utcOffsetSeconds: Int32
+    ) async throws(DashKitError) -> String
+    func feePolicy(on network: DashNetwork) async throws(DashKitError) -> FeePolicy
+    func coinSelectionSummary(
+        on network: DashNetwork, wallet: WalletID, outpoints: [OutPoint], payAmounts: [Amount], fee: FeeMode,
+        allChangeToFee: Bool
+    ) async throws(DashKitError) -> CoinSelectionSummary
+    /// `nil` = dust protection off.
+    func dustProtection(on network: DashNetwork) async throws(DashKitError) -> Amount?
+    func setDustProtection(on network: DashNetwork, threshold: Amount?) async throws(DashKitError)
+
+    // MARK: Tools window (M2 R1, §2.4–2.5)
+
+    func nodeInfo(on network: DashNetwork) async throws(DashKitError) -> NodeInfo
+    func warnings(on network: DashNetwork) async throws(DashKitError) -> [EngineWarning]
+    func rescanProgress(on network: DashNetwork) async throws(DashKitError) -> RescanProgress?
+    func cancelRescan(on network: DashNetwork) async throws(DashKitError) -> Bool
+    /// Deletes the SPV chain data; SPV must be stopped (`sync.spv_running`).
+    func resetChainData(on network: DashNetwork) async throws(DashKitError)
+    func setBirthHeight(on network: DashNetwork, wallet: WalletID, height: UInt32) async throws(DashKitError)
+    func disconnectPeer(on network: DashNetwork, address: String) async throws(DashKitError)
+    func banPeer(on network: DashNetwork, address: String, durationSeconds: UInt64) async throws(DashKitError)
+    func unbanPeer(on network: DashNetwork, subnet: String) async throws(DashKitError)
+    func bannedPeers(on network: DashNetwork) async throws(DashKitError) -> [BannedPeer]
+    /// One console line (dash-qt grammar). `grantID` answers an earlier
+    /// `.authorizationRequired`.
+    func consoleExecute(on network: DashNetwork, wallet: WalletID?, line: SecretBytes, grantID: String?)
+        async throws(DashKitError) -> ConsoleExecution
+
+    // MARK: Dash Core compatibility, backups, PSBT (M2 R2, §2.6–2.8)
+
+    /// Detects a file's kind from its content; opens no session.
+    func inspectWalletFile(_ file: URL) async throws(DashKitError) -> WalletFileKind
+    func importDumpWallet(on network: DashNetwork, file: URL, options: ImportOptions) async throws(DashKitError)
+        -> ImportReport
+    func importWalletDat(on network: DashNetwork, file: URL, walletPassphrase: SecretBytes?, options: ImportOptions)
+        async throws(DashKitError) -> ImportReport
+    func importKeyMaterial(on network: DashNetwork, material: KeyMaterial, options: ImportOptions)
+        async throws(DashKitError) -> ImportReport
+    /// Needs a `.revealSecret` grant.
+    func exportForCore(on network: DashNetwork, wallet: WalletID, format: CoreExportFormat, to file: URL, grantID: String)
+        async throws(DashKitError) -> ExportReport
+    func coreMnemonicCompatibility(on network: DashNetwork, wallet: WalletID) async throws(DashKitError)
+        -> CoreMnemonicCompatibility
+    func backupWallet(on network: DashNetwork, wallet: WalletID, to file: URL, passphrase: SecretBytes?)
+        async throws(DashKitError) -> BackupInfo
+    func restoreBackup(on network: DashNetwork, file: URL, passphrase: SecretBytes?) async throws(DashKitError)
+        -> [WalletID]
+    func automaticBackups(on network: DashNetwork, wallet: WalletID?) async throws(DashKitError) -> [BackupInfo]
+    func backupPolicy(on network: DashNetwork) async throws(DashKitError) -> BackupPolicy
+    func setBackupPolicy(on network: DashNetwork, keep: UInt32) async throws(DashKitError) -> BackupPolicy
+    /// Binary or base64 PSBT, at most 100 MiB.
+    func parsePSBT(_ data: Data) throws(DashKitError) -> PSBTHandle
+    func analyzePSBT(on network: DashNetwork, wallet: WalletID?, psbt: PSBTHandle) async throws(DashKitError)
+        -> PSBTAnalysis
+    /// Needs a `.spend` grant covering the external outputs; returns a new handle.
+    func signPSBT(on network: DashNetwork, wallet: WalletID, psbt: PSBTHandle, grantID: String)
+        async throws(DashKitError) -> PSBTHandle
+    /// Finalizes and broadcasts; returns the txid.
+    func broadcastPSBT(on network: DashNetwork, psbt: PSBTHandle) async throws(DashKitError) -> String
+
     // MARK: Sync
 
     func syncSnapshot(on network: DashNetwork) async throws(DashKitError) -> SyncSnapshot
@@ -155,6 +240,9 @@ public protocol TxDraftHandle: AnyObject, Sendable {
     func broadcast(_ prepared: PreparedTxHandle) async throws(DashKitError) -> BroadcastOutcome
     /// Releases the reserved inputs. Idempotent.
     func abandon(_ prepared: PreparedTxHandle) async throws(DashKitError)
+    /// dash-qt "Create Unsigned" (QT-076): the draft as an unsigned PSBT.
+    /// Reserves nothing and needs no grant.
+    func createUnsigned() async throws(DashKitError) -> PSBTHandle
 }
 
 /// A signed, not yet broadcast transaction (engine `PreparedTx`).

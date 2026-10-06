@@ -543,6 +543,10 @@ final class EngineTxDraft: TxDraftHandle {
         try await mapped { try await draft.abandon(prepared: tx) }
     }
 
+    func createUnsigned() async throws(DashKitError) -> PSBTHandle {
+        PSBTHandle(try await mapped { try await draft.createUnsigned() })
+    }
+
     private func engineObject(of prepared: PreparedTxHandle) throws(DashKitError) -> DashWalletCore.PreparedTx {
         guard let tx = prepared.engineObject else {
             throw .invalidArgument(detail: "prepared transaction was not made by the engine")
