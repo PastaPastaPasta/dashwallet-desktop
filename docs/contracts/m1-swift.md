@@ -18,8 +18,8 @@ WalletRuntime adapters (WalletHost, LifecycleQueue, SPVCoordinator, …) ──�
   `WalletID`, `DashNetwork`, `WalletBalances`); inside WalletRuntime the module's own types shadow
   DashKit's, so adapter code spells the DashKit ones `DashKit.Amount` etc.
 - Every service throws one error type, `ServiceError { code: ServiceErrorCode, detail, recipientIndex,
-  retryAfterSeconds }`. `code.rawValue` is the engine's stable code (m1-engine.md §4). View models pick UI
-  copy by code; `detail` is for logs only.
+  retryAfterSeconds, parameters }`. `code.rawValue` is the engine's stable code (m1-engine.md §4). View models
+  pick UI copy by code and fill numbers from `parameters`; `detail` is for logs only.
 - Unknown values are `nil` (balances, fees, heights, sync status before the first snapshot). View models
   render "unknown", never zero.
 - Secrets are `any SecretBuffer` (zeroing class). The adapter's conforming type wraps DashKit
@@ -57,7 +57,45 @@ adapter calls; owners of those calls are in m1-engine.md.
 
 Review findings for C (details in m1-engine.md §5): **M2** stale cached session in `EngineClient.open`,
 **M4** `EventBus` drops lifecycle events under load, **L2** release the engine off the main thread,
-**L3** `SecretBytes` wipe.
+**L3** `SecretBytes` wipe. All four are fixed in DashKit (generation counter in `EngineClient`, lifecycle
+events queued apart from signals, `shutdown()` on the client's actor plus a debug assertion, `memset_s` /
+unoptimised wipe of one owned allocation).
+
+### 2.1 Adapters (implemented)
+
+| Protocol | Adapter (`Sources/WalletRuntime`) | Notes |
+|---|---|---|
+| `WalletHosting` | `Host/WalletHost` (actor) | Owns the engine; `ActiveNetwork` is readable from any thread. |
+| `LifecycleQueueing` | `Host/LifecycleQueue` (actor) | Start: host → observers → SPV; stop: reverse; `shutdown()` releases the engine. |
+| `WalletStateProviding` | `State/WalletStateModel` → `WalletState` | `wallets` `nil` until `wallet_infos` succeeds (`lastError` otherwise); `Balances` events re-read one wallet. |
+| `SyncStatusProviding` | `State/SPVCoordinator` + `SyncProgressDamper` | 10 % max step, monotonic per SPV run, `isDone` after 3.25 s of `caught_up`, stall at 45 s or `SyncStalled`. |
+| `AuthenticationGating` | `State/AuthenticationGate` | Lock state from `Vault.status` + `LockState` events; `authorize` under a 60 s watchdog (`auth.timed_out`, late grant revoked). `requirement(for:)`: none for no-vault/unencrypted; passphrase when locked; when unlocked, passphrase for reveal/credential change/wipe and, while "require authentication for every payment" is on (default), for spend/sign. |
+| `VaultProviding` | `Services/VaultService` | Grant purpose checked before the engine; every returned status is forwarded to the gate. `SecretBuffer` = DashKit `SecretBytes` (zeroed on deinit); foreign buffers are copied into one. |
+| `TransactionSending` / `TransactionDrafting` | `Services/TransactionSender`, `TransactionDraft` (actor) | Holds engine `PreparedTx` handles by `PreparedTransaction.id`. Setters abandon unsent prepared txs (M-7). A broadcast failure that may have reached a peer marks the tx "outcome unknown": `abandon` then throws `send.broadcast_outcome_unknown` and keeps the inputs reserved; `broadcast` may be retried. |
+| `HistoryProviding` | `Services/HistoryService` | `changes(wallet:)` merges pending txid lists; `.resynchronize` yields `[]`. |
+| `ReceiveProviding`, `CoinControlProviding`, `AddressBookProviding` | `Services/QueryServices` | Thin; engine stubs surface as `not_implemented`. |
+| `MessageSigning`, `URIHandling`, `AmountFormatting` | `Services/ToolServices` (`MessageService`, `URIService`, `EngineAmountFormatter`) | Pure engine functions on the open network, else the last one, else the composition's fallback network. |
+| `SettingsProviding` | `State/SettingsStore` | `settings.json` (display, payment-auth setting, named sections) and `global.json` (`lastNetwork`) in the data root; atomic writes; unreadable file → `.bak` + defaults + `recoveredFromCorruption`. |
+
+`ServiceError` carries `parameters: [String: Int64]` (M-5: `fee`, `available`, `max_duffs`, `failed_attempts`,
+`retry_after_secs`, `height`, `index`). `ServiceErrorCode.engineCodes` lists every §4 code; a test compares it
+with m1-engine.md (M-9). Swift→FFI integers convert with `exactly:` / range checks in DashKit (M-8); the
+`AmountStyle` digit counts clamp to 0...8 because `format` cannot throw.
+
+### 2.2 Composition
+
+```swift
+// macOS @main (Linux/Windows: FixedDataLocation or the XDG / %APPDATA% root)
+let root = try MacDataLocation().defaultDataRoot()
+let runtime = try WalletRuntimeServices.live(dataRoot: root, networkOptions: { _ in NetworkOptions() })
+let env = AppEnvironment(runtime: runtime, screenCapture: nil)   // WalletFeatures
+Task { try await runtime.launch(defaultNetwork: .mainnet) }      // opens settings.lastNetwork ?? default
+// applicationShouldTerminate / window close: try await runtime.shutdown()
+```
+
+`WalletRuntimeServices.init(engine:settings:…)` builds the same graph on any `EngineProtocol` (tests use
+`FakeEngine`). Session observers run in the order settings → auth → wallet state → sync on start, reversed
+on stop.
 
 ## 3. M1 view models (WalletFeatures) — public API sketch
 

@@ -10,7 +10,8 @@ extension ServiceError {
     init(_ error: DashKitError) {
         self.init(
             code: ServiceErrorCode(rawValue: error.code), detail: error.detail,
-            recipientIndex: error.recipientIndex, retryAfterSeconds: error.retryAfterSeconds)
+            recipientIndex: error.recipientIndex, retryAfterSeconds: error.retryAfterSeconds,
+            parameters: error.parameters)
     }
 }
 

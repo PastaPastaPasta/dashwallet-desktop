@@ -1,7 +1,7 @@
-// Adapter layer (WalletHost, LifecycleQueue, SPVCoordinator, …), WS-08.
-// Placeholder until the first adapter lands.
+// Adapter layer (WS-08): Contracts/ holds the protocols and value types view
+// models see; Host/, State/ and Services/ implement them on DashKit;
+// Composition/WalletRuntimeServices wires one engine to all of them.
 import Foundation
-import DashKit
 
 public enum WalletRuntimeModule {
     public static let name = "WalletRuntime"
