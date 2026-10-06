@@ -4,6 +4,7 @@
 #if os(macOS)
 import DashUIMac
 import DesignTokens
+import PlatformServicesMac
 import SwiftUI
 import WalletFeatures
 import WalletRuntime
@@ -57,13 +58,13 @@ struct OverviewView: View {
             breakdown: breakdown,
             onToggleHidden: toggleDiscreet,
             toggleLabel: home.discreet ? MacStrings.Toolbar.showBalances : MacStrings.Toolbar.hideBalances,
+            amountHelp: home.discreet ? L10n.UX.clickToShowBalance : L10n.UX.clickToHideBalance,
             overlapHeight: shortcuts == nil ? 0 : 46
         ) {
             if let shortcuts {
                 ShortcutBarView(bar: shortcuts, perform: perform)
             }
         }
-        .help(home.discreet ? L10n.UX.clickToShowBalance : L10n.UX.clickToHideBalance)
         .contextMenu {
             Button(home.discreet ? MacStrings.Toolbar.showBalances : MacStrings.Toolbar.hideBalances, action: toggleDiscreet)
             if let setUnit {
@@ -75,8 +76,7 @@ struct OverviewView: View {
             }
             if !home.discreet, let total = home.rows.first(where: { $0.kind == .total })?.text, home.formattedTotal != nil {
                 Button(MacStrings.Overview.copyBalance) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(total, forType: .string)
+                    MacPasteboard.copy(total)
                     toast = ToastMessage(.copied, L10n.UX.copied)
                 }
             }

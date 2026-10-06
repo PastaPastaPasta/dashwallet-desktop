@@ -78,6 +78,7 @@ struct SecuritySheet: View {
         }
         .padding(DashSpacing.xl)
         .frame(width: 460)
+        .dashCanvas()
     }
 }
 
@@ -89,7 +90,7 @@ private struct EncryptWalletForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Menu.encryptWallet.replacingOccurrences(of: "…", with: "")).dashFont(.title3)
+            Text(MacStrings.Menu.encryptWallet.replacingOccurrences(of: "…", with: "")).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             PassphraseField(label: MacStrings.Common.newPassphrase, text: $passphrase)
             PassphraseField(label: MacStrings.Common.repeatPassphrase, text: $confirmation)
             SystemNotice(text: L10n.Onboarding.encryptWarning, tone: .warning)
@@ -122,7 +123,7 @@ private struct ChangePassphraseForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Menu.changePassphrase.replacingOccurrences(of: "…", with: "")).dashFont(.title3)
+            Text(MacStrings.Menu.changePassphrase.replacingOccurrences(of: "…", with: "")).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             PassphraseField(label: MacStrings.Common.oldPassphrase, text: $old)
             PassphraseField(label: MacStrings.Common.newPassphrase, text: $new)
             PassphraseField(label: MacStrings.Common.repeatPassphrase, text: $confirmation)
@@ -167,7 +168,7 @@ private struct RevealPhraseView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Settings.phraseTitle).dashFont(.title3)
+            Text(MacStrings.Settings.phraseTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             if words.isEmpty {
                 if settings.needsPassphrase {
                     Text(L10n.Lock.prompt).dashFont(.subhead)
@@ -178,15 +179,9 @@ private struct RevealPhraseView: View {
                 FormMessages(settings: settings)
             } else {
                 SystemNotice(text: MacStrings.Settings.phraseWarning, tone: .warning)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: DashSpacing.s) {
-                    ForEach(Array(words.enumerated()), id: \.offset) { index, word in
-                        Text("\(index + 1). \(word)")
-                            .font(.system(.body, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+                PhraseGrid(words: words)
                 if !bip39.isEmpty {
-                    LabeledContent(MacStrings.Settings.bip39, value: bip39)
+                    DetailRow(MacStrings.Settings.bip39, value: bip39)
                 }
             }
             HStack {

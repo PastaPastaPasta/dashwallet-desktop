@@ -63,6 +63,8 @@ public struct BalanceHero<Overlap: View>: View {
     /// Click on the amount toggles discreet mode (iOS tap-to-hide).
     public let onToggleHidden: (() -> Void)?
     public let toggleLabel: String
+    /// Tooltip of the amount ("Click to hide balance").
+    public let amountHelp: String?
     /// Height of the part of `overlap` that hangs below the band.
     public let overlapHeight: Double
     @ViewBuilder public let overlap: () -> Overlap
@@ -74,7 +76,7 @@ public struct BalanceHero<Overlap: View>: View {
         network: String?, caption: BalanceHeroCaption?, amount: String?, unit: AmountUnitDisplay,
         fiat: String? = nil, isHidden: Bool, unavailableText: String, hint: String? = nil,
         breakdown: [BalanceBreakdownCell], onToggleHidden: (() -> Void)?, toggleLabel: String,
-        overlapHeight: Double = 46, @ViewBuilder overlap: @escaping () -> Overlap
+        amountHelp: String? = nil, overlapHeight: Double = 46, @ViewBuilder overlap: @escaping () -> Overlap
     ) {
         self.network = network
         self.caption = caption
@@ -87,6 +89,7 @@ public struct BalanceHero<Overlap: View>: View {
         self.breakdown = breakdown
         self.onToggleHidden = onToggleHidden
         self.toggleLabel = toggleLabel
+        self.amountHelp = amountHelp
         self.overlapHeight = overlapHeight
         self.overlap = overlap
     }
@@ -184,6 +187,7 @@ public struct BalanceHero<Overlap: View>: View {
             }
             .foregroundStyle(Color.role.textOnHero)
             .contentShape(Rectangle())
+            .help(amountHelp ?? "")
             .onTapGesture { onToggleHidden?() }
             .accessibilityAddTraits(onToggleHidden == nil ? [] : .isButton)
             .accessibilityHint(onToggleHidden == nil ? Text("") : Text(toggleLabel))
