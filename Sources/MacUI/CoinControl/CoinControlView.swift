@@ -17,9 +17,10 @@ struct CoinControlWindow: View {
     var body: some View {
         if let coinControl = model.features?.coinControl {
             CoinControlView(coinControl: coinControl, formatAmount: model.formatAmount, onDone: {
-                model.main?.send?.setSource(coinControl.source())
                 dismissWindow(id: SceneID.coinControl)
             })
+            // OK or the close button: Send pays from the selection (or any coins).
+            .onDisappear { model.main?.send?.setSource(coinControl.source()) }
         } else {
             Text(model.unavailableReason ?? L10n.Options.unavailable).padding(DashSpacing.xl)
         }

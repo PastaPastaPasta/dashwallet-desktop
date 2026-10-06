@@ -298,6 +298,8 @@ public final class MacAppModel {
             return
         }
         await shell.perform(command)
+        // Close Wallet / Close All ask on the main window; errors show there.
+        if shell.confirmation != nil || shell.errorMessage != nil { openWindow(SceneID.main) }
         if let pending = shell.pendingPresentation {
             shell.presentationHandled()
             await presentNow(pending)
