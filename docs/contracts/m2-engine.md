@@ -195,9 +195,10 @@ Release-blocking checks are DESIGN-opus §4.3 `restore` and §4.4 items 1–3, i
 
 - Every Core import derives a phrase with Core's BIP39 rules and checks the seed against the file's
   master key (dumpwallet header xprv, wallet.dat descriptor key, listdescriptors key) before
-  storing it. Birth height defaults to 0. The lookahead is Core's 1000 (more when the file says
-  more addresses were handed out, up to 1000); a raised lookahead is stored with the wallet and
-  applied again whenever the session opens.
+  storing it. Birth height defaults to 0. The lookahead is `max(1000, used + 100)` — Core's 1000, or
+  100 past the most addresses the file says were handed out on one chain — capped at key-wallet's
+  `MAX_LOOKAHEAD` (`core_lookahead`); a raised lookahead is stored with the wallet and applied again
+  whenever the session opens.
 - Valid input platform-wallet cannot register stays `NotImplemented` with a stable `call`:
   `import_wallet_dat.bdb` (M6), `import_wallet_dat.xprv` / `import_dump_wallet.xprv` /
   `import_key_material.xprv` (a master key without its seed or phrase; platform-wallet registers
@@ -271,7 +272,7 @@ unless noted.
 
 | Call | Kind | Semantics | Errors | Serves |
 |---|---|---|---|---|
-| `acquire_single_instance(key, InstanceObserver)` | sync, free | `Some(InstanceGuard)` = primary; it delivers later launches' args to `on_forwarded`. `None` = another instance holds `key` (`DashWallet-<network>`): call `forward_to_primary(key, args)` and exit 0. Windows: named pipe; Linux: abstract Unix socket. | `desktop.os_error` | QT-001 |
+| `acquire_single_instance(key, InstanceObserver)` | sync, free | `Some(InstanceGuard)` = primary; it delivers later launches' args to `on_forwarded`. `None` = another instance holds `key` (`DashWallet-<network>`): call `forward_to_primary(key, args)` and exit 0. Windows: named pipe; macOS and Linux: a path Unix socket `<key>.sock` in a 0700 directory whose owner is checked (`instance/unix.rs`, §8), not an abstract socket. | `desktop.os_error` | QT-001 |
 | `forward_to_primary(key, args)` | sync, free | `false` when no primary listens. | `desktop.os_error` | QT-001 |
 | `register_uri_schemes(app_id, exec_path, schemes)` | sync, free | Per-user registration for the Linux tarball and unpackaged Windows builds. Packages register at install time. | `desktop.os_error` | QT-150, IOS-048 |
 | `autostart_enabled(app_id)` / `set_autostart(AutostartEntry, enabled)` | sync, free | Windows Startup shortcut; Linux XDG autostart (Flatpak: Background portal), launched with `--min --network=<net>`. macOS: hidden (dash-qt). | `desktop.unsupported`, `desktop.os_error` | QT-009 |
@@ -323,8 +324,11 @@ them adds a code. Parameters that the UI shows (review M-5 rule): `limit_duffs`,
   watch-only wallet. Balances of watch-only wallets are computed like any other's: the host shows them in
   dash-qt's watch-only column (QT-035). dash-qt mixes spendable and watch-only scripts in one wallet; we do not,
   so the two columns never both have values.
-- **Wallet registry (R1).** `wallet_infos` lists loaded wallets only (§2.1). `import_wallet` over a watch-only
-  wallet with the same id attaches the keys and emits `WalletCreated` (M1 already reserved this path).
+- **Wallet registry (R1).** `wallet_infos` lists loaded wallets only (§2.1). `import_wallet` of a seed whose
+  wallet id is already registered without vault keys (for example a wallet `recover_with_mnemonic` left
+  without its seed) attaches the keys and emits `WalletCreated` (M1 already reserved this path). An
+  account-xpub watch-only wallet from `import_watch_only` never has a seed wallet's id (its id digests the
+  account key, §2.1), so importing the matching phrase adds a second wallet; nothing attaches to it.
 - **Rescan (R1).** `rescan` returns `sync.rescan_in_progress` while a rescan runs.
 - **Vault (S1).** `VaultCredential::QuickUnlock` is accepted (§2.9); `enroll_quick_unlock` stops returning
   `NotImplemented` on macOS.
