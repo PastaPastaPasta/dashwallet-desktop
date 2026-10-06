@@ -165,10 +165,17 @@ struct ScreenTests {
         try await Self.capture(SignVerifyWindow(model: model), CGSize(width: 640, height: 520), scheme, "sign-verify")
     }
 
+    /// The M1 settings now live in the Options window's General and
+    /// Security tabs (M2Tests covers the other tabs).
     @Test(arguments: [ColorScheme.light, .dark])
     func settings(_ scheme: ColorScheme) async throws {
-        let model = try await Self.model(.funded, scheme)
-        try await Self.capture(SettingsView(model: model), CGSize(width: 520, height: 420), scheme, "settings")
+        let model = try await M2ScreenTests.model(.funded, scheme)
+        let features = try #require(model.features)
+        let main = try #require(model.main)
+        try await Self.capture(
+            OptionsView(
+                model: model, options: features.options, settings: main.settings, security: features.security),
+            CGSize(width: 600, height: 520), scheme, "settings")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -248,6 +255,7 @@ struct ScreenTests {
     @Test func menuBarChoiceIsSaved() {
         let env = DemoEnvironment.make(scenario: .funded)
         let model = MacAppModel(environment: env, launch: LaunchOptions(demoScenario: .funded))
+        #expect(model.features == nil)
         #expect(model.showsMenuBarExtra)
         model.showsMenuBarExtra = false
         #expect(env.preferences.preferences.showsMenuBarExtra == false)
@@ -390,9 +398,9 @@ struct ScreenTests {
     /// out empty while AppKit warms up, so an empty bitmap is redrawn for up
     /// to three seconds before the test fails.
     @discardableResult
-    static func capture<V: View>(_ view: V, _ size: CGSize, _ scheme: ColorScheme, _ name: String) async throws
-        -> NSBitmapImageRep
-    {
+    static func capture<V: View>(
+        _ view: V, _ size: CGSize, _ scheme: ColorScheme, _ name: String, milestone: String = "m1"
+    ) async throws -> NSBitmapImageRep {
         _ = NSApplication.shared
         let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         // A ScrollView that fills the hosting view draws nothing through
@@ -439,7 +447,7 @@ struct ScreenTests {
         if ProcessInfo.processInfo.environment["DWD_WRITE_SCREENSHOTS"] == "1" {
             let directory = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("docs/screenshots/m1", isDirectory: true)
+                .appendingPathComponent("docs/screenshots/\(milestone)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try #require(rep.representation(using: .png, properties: [:]))
             try data.write(to: directory.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
