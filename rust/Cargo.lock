@@ -1661,7 +1661,9 @@ name = "dwcli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dashcore",
  "dw-engine",
+ "dw-message",
  "dw-vault",
  "tempfile",
  "zeroize",

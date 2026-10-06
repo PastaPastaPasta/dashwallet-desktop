@@ -433,6 +433,39 @@ impl NetworkSession {
         .await
     }
 
+    /// The height through which the wallet has processed blocks
+    /// (key-wallet's `last_processed_height`). dwcli waits on it in regtest.
+    pub async fn wallet_processed_height(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<u32, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let wallet = this.wallet(&wallet_id).await?;
+            let state = wallet.state().await;
+            Ok(state.core_wallet.last_processed_height())
+        })
+        .await
+    }
+
+    /// A fresh address on the BIP44 account 0 external chain, marked used.
+    /// Headless funding helper for dwcli; hosts use the receive API.
+    pub async fn bip44_receive_address(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<String, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let wallet = this.wallet(&wallet_id).await?;
+            Ok(wallet
+                .core()
+                .next_receive_address_for_account(0)
+                .await?
+                .to_string())
+        })
+        .await
+    }
+
     /// Dust attack protection threshold in duffs (`None` = off; QT-075).
     pub async fn dust_protection(self: &Arc<Self>) -> Result<Option<u64>, EngineError> {
         self.manager()?;
