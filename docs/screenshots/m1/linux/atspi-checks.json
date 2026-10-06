@@ -442,5 +442,599 @@
   "name": "onboarding: the new wallet's Overview is shown",
   "ok": true,
   "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2799 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: marker text 'Balances' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "1-overview: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 9, \"named\": 9, \"examples_unnamed\": []}, \"push button\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"check box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"combo box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions']",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: every entry, switch and picker has an accessible name",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "kind": "hard",
+  "name": "1-overview: every list row has an accessible name",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 03:02', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 02:32']"
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Send' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: marker text 'Pay To:' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "2-send: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"push button\": {\"total\": 10, \"named\": 10, \"examples_unnamed\": []}, \"text\": {\"total\": 5, \"named\": 5, \"examples_unnamed\": []}, \"check box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"combo box\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions']",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: every entry, switch and picker has an accessible name",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "kind": "hard",
+  "name": "2-send: every list row has an accessible name",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Send'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Add Recipient'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Clear All'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: push button named 'Use available balance'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: text named 'Pay To'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: text named 'Amount'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: check box named 'Subtract fee from amount'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: combo box named 'Confirmation time target'",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: address entry exposes placeholder 'Pay to: Dash address'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2864 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "3-transactions: marker text 'Export\u2026' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "3-transactions: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 29, \"named\": 29, \"examples_unnamed\": []}, \"push button\": {\"total\": 5, \"named\": 5, \"examples_unnamed\": []}, \"combo box\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"text\": {\"total\": 2, \"named\": 2, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2920 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "4-receive: marker text 'Request payment' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "4-receive: control naming",
+  "ok": true,
+  "detail": "{\"list item\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"push button\": {\"total\": 8, \"named\": 8, \"examples_unnamed\": []}, \"text\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"combo box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2975 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "5-onboarding: marker text 'Create a new wallet' is exposed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "soft",
+  "name": "5-onboarding: control naming",
+  "ok": true,
+  "detail": "{\"combo box\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"push button\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}}"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 3030 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: welcome page",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Create a new wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: recovery phrase page",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: the phrase page exposes 12 numbered words",
+  "ok": true,
+  "detail": "12"
+ },
+ {
+  "kind": "hard",
+  "name": "press 'I wrote it down' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'galaxy' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'rocket' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'harbor' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'crane' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: phrase verified, passphrase page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'New passphrase' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'Repeat new passphrase' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Encrypt wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: the new wallet's Overview is shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 3106 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "send: page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'Pay To' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'Amount' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Send' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: review (confirm) panel shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: review lists the recipient address",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Send' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "send: the sent payment is listed on the Transactions page",
+  "ok": true,
+  "detail": "Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 03:09"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 3183 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "tools: overview shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: status-row unit selector is a combo box named 'Unit to show amounts in'",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: status-row peers button",
+  "ok": true,
+  "detail": "8 peers"
+ },
+ {
+  "kind": "hard",
+  "name": "press '8 peers' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: peers page with 'Change Peers'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: peer rows are named after their address",
+  "ok": true,
+  "detail": "203.0.113.11:19999, User Agent: /Dash Core:23.1.7/  Height: 1234567  Ping: 27 ms  Outbound"
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Close' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Address Book' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: address book lists entries with 'Show QR'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Show QR' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: the entry's QR code and dash: URI are shown",
+  "ok": true,
+  "detail": "dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice"
+ },
+ {
+  "kind": "hard",
+  "name": "tools: the address-list picker is named 'Address list'",
+  "ok": false,
+  "detail": "['Sending addresses', 'tDASH']"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 3249 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: shown by itself while the tip is old",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: row 'Number of blocks left'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: row 'Last block time'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: row 'Progress increase per hour'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Hide' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: Hide returns to the wallet",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "overlay: status row offers 'Sync details'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 3312 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: welcome page",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Create a new wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: recovery phrase page",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: the phrase page exposes 12 numbered words",
+  "ok": true,
+  "detail": "12"
+ },
+ {
+  "kind": "hard",
+  "name": "press 'I wrote it down' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'word #3' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'word #4' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'word #5' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'word #12' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: phrase verified, passphrase page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'New passphrase' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'Repeat new passphrase' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Encrypt wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "onboarding: the new wallet's Overview is shown",
+  "ok": false,
+  "detail": ""
  }
 ]

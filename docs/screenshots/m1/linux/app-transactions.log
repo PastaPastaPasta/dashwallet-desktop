@@ -1,74 +1,52 @@
 libEGL warning: DRI3 error: Could not get DRI3 device
 libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.908: GtkLabel 0xaaaace2d06d0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.602: GtkLabel 0xaaaad6fb0e20 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.908: GtkLabel 0xaaaace1a9d50 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.602: GtkLabel 0xaaaad7061240 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.909: GtkLabel 0xaaaace3fa400 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.602: GtkLabel 0xaaaad718f790 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.909: GtkLabel 0xaaaace41eb80 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.603: GtkLabel 0xaaaad6c15d70 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.910: GtkLabel 0xaaaace4435a0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.603: GtkLabel 0xaaaad7e9a8b0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.910: GtkLabel 0xaaaace467fa0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.603: GtkLabel 0xaaaad7ebeb30 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.911: GtkLabel 0xaaaace48cd30 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.604: GtkLabel 0xaaaad7ee3530 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.911: GtkLabel 0xaaaace4b2080 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.604: GtkLabel 0xaaaad7f087b0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.912: GtkLabel 0xaaaace4d7490 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.605: GtkLabel 0xaaaad7f2db40 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.912: GtkLabel 0xaaaace4fc860 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.605: GtkLabel 0xaaaad7f52e90 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.913: GtkLabel 0xaaaace521c30 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.605: GtkLabel 0xaaaad7f78260 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.913: GtkLabel 0xaaaace547000 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.606: GtkLabel 0xaaaad7f9d630 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.914: GtkLabel 0xaaaace56c3d0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.606: GtkLabel 0xaaaad7fc2a00 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.914: GtkLabel 0xaaaace5917a0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.606: GtkLabel 0xaaaad7fe7dd0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.914: GtkLabel 0xaaaace5b6b70 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.607: GtkLabel 0xaaaad80191b0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.915: GtkLabel 0xaaaace5de740 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.607: GtkLabel 0xaaaad803e580 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.915: GtkLabel 0xaaaace60fa70 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.608: GtkLabel 0xaaaad80638b0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.916: GtkLabel 0xaaaace634e40 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.608: GtkLabel 0xaaaad8088c80 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.916: GtkLabel 0xaaaace65a210 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.608: GtkLabel 0xaaaad80ae050 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.916: GtkLabel 0xaaaace67f5e0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.609: GtkLabel 0xaaaad80d3420 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.917: GtkLabel 0xaaaace6a49b0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.609: GtkLabel 0xaaaad80f87f0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.917: GtkLabel 0xaaaace6c9d80 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.609: GtkLabel 0xaaaad811dbc0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.918: GtkLabel 0xaaaace6ef150 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.610: GtkLabel 0xaaaad8142f90 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.918: GtkLabel 0xaaaace714520 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.610: GtkLabel 0xaaaad8168360 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.918: GtkLabel 0xaaaace7398f0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.919: GtkLabel 0xaaaace75ecc0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.919: GtkLabel 0xaaaace784090 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.919: GtkLabel 0xaaaace7a9460 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.920: GtkLabel 0xaaaace7ce830 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.920: GtkLabel 0xaaaace7f3c00 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.921: GtkLabel 0xaaaace818fd0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.921: GtkLabel 0xaaaace83e3a0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.921: GtkLabel 0xaaaace863990 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.922: GtkLabel 0xaaaace888d60 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.922: GtkLabel 0xaaaace8ae130 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
-
-(dash-wallet:2137): Gtk-WARNING **: 01:02:54.923: GtkLabel 0xaaaace8d3500 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2864): Gtk-WARNING **: 03:08:16.611: GtkLabel 0xaaaad818d730 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size

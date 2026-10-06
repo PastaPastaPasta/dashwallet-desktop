@@ -47,7 +47,7 @@
                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                     [list] "" {focusable,sensitive,showing,visible} @(12,45 176x108)
-                                                                                      [list item] "Overview" {focusable,selectable,selected,sensitive,showing,visible} @(12,45 176x27)
+                                                                                      [list item] "Overview" {focusable,selectable,sensitive,showing,visible} @(12,45 176x27)
                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                             [panel] "" {sensitive,showing,visible}
@@ -80,12 +80,15 @@
                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                       [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                              [push button] "Address Book" actions=click {focusable,sensitive,showing,visible} @(24,268 101x17)
+                                                                                              [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                  [label] "Address Book" text="Address Book" {sensitive,showing,visible}
+                                                                                                  [push button] "Address Book" actions=click {focusable,sensitive,showing,visible} @(24,268 101x17)
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [label] "Address Book" text="Address Book" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
                                                                         [panel] "" {sensitive,showing,visible}
                                                                           [panel] "" {sensitive,showing,visible}
@@ -137,53 +140,22 @@
                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                          [scroll pane] "" {focusable,sensitive,showing,visible} @(201,0 900x714)
+                                                                                          [panel] "" {sensitive,showing,visible}
                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                    [scroll pane] "" {focusable,sensitive,showing,visible} @(201,0 900x714)
                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                              [label] "Overview" text="Overview" {sensitive,showing,visible}
-                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [label] "Balances" text="Balances" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                            [label] "Testnet" text="Testnet" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                              [label] "Discreet mode" text="Discreet mode" {sensitive,showing,visible}
-                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                              [check box] "Discreet mode" actions=toggle {focusable,sensitive,showing,visible} @(1032,64 50x26)
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                        [label] "Address Book" text="Address Book" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -196,16 +168,30 @@
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [label] "Available:" text="Available:" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [label] "30.19695801 tDASH" text="30.19695801 tDASH" {sensitive,showing,visible}
+                                                                                                                                          [combo box] "Sending addresses" {sensitive,showing,visible}
+                                                                                                                                            [toggle button] "Sending addresses" actions=click {focusable,sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [label] "Sending addresses" text="Sending addresses" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                [label] "Search" text="Search" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [text] "Search" actions=activate attrs=placeholder-text:Enter address or label to search {editable,focusable,sensitive,showing,visible} @(401,84 596x32)
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                             [panel] "" {sensitive,showing,visible}
@@ -214,219 +200,352 @@
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [label] "Pending:" text="Pending:" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [label] "0.20000000 tDASH" text="0.20000000 tDASH" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [push button] "Export…" actions=click {focusable,sensitive,showing,visible} @(1009,93 60x17)
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Export…" text="Export…" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [label] "These are your Dash addresses for sending payments. Always check the amount and the receiving address before sending coins." text="These are your Dash addresses for sending payments. Always check the amount and the receiving address before sending coins." {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [label] "Total:" text="Total:" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [label] "30.39695801 tDASH" text="30.39695801 tDASH" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [label] "Up to date" text="Up to date" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [label] "Recent transactions" text="Recent transactions" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [scroll pane] "" {focusable,sensitive,showing,visible} @(221,284 860x320)
-                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Alice" text="Alice" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po" text="yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Show QR" actions=click {focusable,sensitive,showing,visible} @(908,189 65x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Bob" text="Bob" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yZSi34ZDVxhWxT6fepKBKfDh5i98NsisHt" text="yZSi34ZDVxhWxT6fepKBKfDh5i98NsisHt" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Show QR" actions=click {focusable,sensitive,showing,visible} @(908,229 65x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Carol" text="Carol" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yR9CKZxBp7Z6jYaNRDPtCRirZkQW4CCJWe" text="yR9CKZxBp7Z6jYaNRDPtCRirZkQW4CCJWe" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Show QR" actions=click {focusable,sensitive,showing,visible} @(908,269 65x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Exchange deposit" text="Exchange deposit" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yM99t5V7RLZtguYhr2Z7ZjMFonbas3mb5V" text="yM99t5V7RLZtguYhr2Z7ZjMFonbas3mb5V" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Show QR" actions=click {focusable,sensitive,showing,visible} @(908,309 65x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [label] "Hosting" text="Hosting" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "yXnc7fTb7BFPP24qFTSnjdVzGKTPYEpEF7" text="yXnc7fTb7BFPP24qFTSnjdVzGKTPYEpEF7" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Show QR" actions=click {focusable,sensitive,showing,visible} @(908,349 65x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                            [list] "" {focusable,sensitive,showing,visible} @(221,284 860x280)
-                                                                                                                              [list item] "ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 03:02" {focusable,selectable,sensitive,showing,visible} @(221,284 860x56)
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+" text="+" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4" text="ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "2026-10-06 03:02" text="2026-10-06 03:02" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+0.20000000 tDASH" text="+0.20000000 tDASH" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                              [list item] "yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 02:32" {focusable,selectable,sensitive,showing,visible} @(221,340 860x56)
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [label] "Alice" text="Alice" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+" text="+" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS" text="yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "2026-10-06 02:32" text="2026-10-06 02:32" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+1.25000000 tDASH" text="+1.25000000 tDASH" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "InstantSend" text="InstantSend" {sensitive,showing,visible}
-                                                                                                                              [list item] "Alice, -0.50000226 tDASH, 2026-10-05 07:08" {focusable,selectable,sensitive,showing,visible} @(221,396 860x56)
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [push button] "Hide QR" actions=click {focusable,sensitive,showing,visible} @(994,427 59x17)
+                                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [label] "dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice" text="dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice" {focusable,sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [label] "New sending address" text="New sending address" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [label] "Address" text="Address" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [text] "Address" actions=activate attrs=placeholder-text:Pay to: Dash address {editable,focusable,sensitive,showing,visible} @(245,798 828x32)
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [label] "Label:" text="Label:" {sensitive,showing,visible}
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [text] "Label" actions=activate attrs=placeholder-text:Label for the address book {editable,focusable,sensitive,showing,visible} @(245,859 828x32)
+                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "-" text="-" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "Alice" text="Alice" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "2026-10-05 07:08" text="2026-10-05 07:08" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "-0.50000226 tDASH" text="-0.50000226 tDASH" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "ChainLocked" text="ChainLocked" {sensitive,showing,visible}
-                                                                                                                              [list item] "yZbj1bdoh4cDGx74cqRDfMF9jwfgKG9czj, +3.00000000 tDASH, 2026-10-04 07:08" {focusable,selectable,sensitive,showing,visible} @(221,452 860x56)
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+" text="+" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "yZbj1bdoh4cDGx74cqRDfMF9jwfgKG9czj" text="yZbj1bdoh4cDGx74cqRDfMF9jwfgKG9czj" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "2026-10-04 07:08" text="2026-10-04 07:08" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "+3.00000000 tDASH" text="+3.00000000 tDASH" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "ChainLocked" text="ChainLocked" {sensitive,showing,visible}
-                                                                                                                              [list item] "Hosting, -0.12000226 tDASH, 2026-10-02 09:08" {focusable,selectable,sensitive,showing,visible} @(221,508 860x56)
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "-" text="-" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "Hosting" text="Hosting" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "2026-10-02 09:08" text="2026-10-02 09:08" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "-0.12000226 tDASH" text="-0.12000226 tDASH" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "ChainLocked" text="ChainLocked" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [push button] "Save" actions=click {focusable,showing,visible} @(253,909 37x17)
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                      [scroll bar] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                       [panel] "" {sensitive,showing,visible}
                                         [panel] "" {sensitive,showing,visible}

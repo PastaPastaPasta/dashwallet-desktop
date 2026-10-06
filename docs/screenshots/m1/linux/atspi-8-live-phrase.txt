@@ -22,7 +22,7 @@
                                         [panel] "" {sensitive,showing,visible}
                                           [panel] "" {sensitive,showing,visible}
                                             [panel] "" {sensitive,showing,visible}
-                                            [panel] "" {sensitive,showing,visible}
+                                              [panel] "" {sensitive,showing,visible}
                                               [panel] "" {sensitive,showing,visible}
                                                 [panel] "" {sensitive,showing,visible}
                                                   [panel] "" {sensitive,showing,visible}
@@ -31,8 +31,8 @@
                                                         [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
-                                                              [scroll pane] "" {focusable,sensitive,showing,visible} @(0,0 1100x733)
-                                                                [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [scroll pane] "" {focusable,sensitive,showing,visible} @(0,0 1100x714)
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
@@ -41,8 +41,8 @@
                                                                             [panel] "" {sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                  [label] "Welcome to Dash Wallet" text="Welcome to Dash Wallet" {sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [label] "Welcome to Dash Wallet" text="Welcome to Dash Wallet" {sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                   [panel] "" {sensitive,showing,visible}
@@ -52,23 +52,23 @@
                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                    [label] "Write down these words in order and keep them somewhere safe. Anyone with them can spend your funds." text="Write down these words in order and keep them somewhere safe. Anyone with them can spend your funds." {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [label] "Write down these words in order and keep them somewhere safe. Anyone with them can spend your funds." text="Write down these words in order and keep them somewhere safe. Anyone with them can spend your funds." {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                        [panel] "" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
@@ -77,91 +77,73 @@
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "1. ****" text="1. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "2. ****" text="2. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "3. ****" text="3. ****" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "4. ****" text="4. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "5. ****" text="5. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "6. ****" text="6. ****" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "7. ****" text="7. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "8. ****" text="8. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "9. ****" text="9. ****" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "10. ****" text="10. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "11. ****" text="11. ****" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                          [label] "12. ****" text="12. ****" {sensitive,showing,visible}
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                        [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [push button] "Back" actions=click {focusable,sensitive,showing,visible} @(52,228 37x17)
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [label] "Back" text="Back" {sensitive,showing,visible}
+                                                                                                                            [label] "1. ****" text="1. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "2. ****" text="2. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "3. ****" text="3. ****" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "4. ****" text="4. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "5. ****" text="5. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "6. ****" text="6. ****" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "7. ****" text="7. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "8. ****" text="8. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "9. ****" text="9. ****" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "10. ****" text="10. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "11. ****" text="11. ****" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [label] "12. ****" text="12. ****" {sensitive,showing,visible}
                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
@@ -178,21 +160,39 @@
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [push button] "I wrote it down" actions=click {focusable,sensitive,showing,visible} @(129,228 121x17)
+                                                                                                                                      [push button] "Back" actions=click {focusable,sensitive,showing,visible} @(52,228 37x17)
                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [label] "I wrote it down" text="I wrote it down" {sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
-                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [label] "Back" text="Back" {sensitive,showing,visible}
+                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                        [push button] "I wrote it down" actions=click {focusable,sensitive,showing,visible} @(129,228 121x17)
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [label] "I wrote it down" text="I wrote it down" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
                                                 [panel] "" {sensitive,showing,visible}
                                                   [panel] "" {sensitive,showing,visible}
-                                                  [panel] "" {sensitive,showing,visible}
+                                                    [panel] "" {sensitive,showing,visible}
                                                     [panel] "" {sensitive,showing,visible}
                                                       [panel] "" {sensitive,showing,visible}
                                                         [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
-                                                              [label] "Connecting to peers…" text="Connecting to peers…" {sensitive,showing,visible}
-                                                        [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [label] "Connecting to peers…" text="Connecting to peers…" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
@@ -201,27 +201,79 @@
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
                                                                         [panel] "" {sensitive,showing,visible}
-                                                                          [progress bar] "" {sensitive,showing,visible}
-                                                        [panel] "" {sensitive,showing,visible}
-                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [progress bar] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
-                                                                      [label] "Regtest" text="Regtest" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [label] "Regtest" text="Regtest" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [label] "No vault" text="No vault" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
-                                                                      [label] "No vault" text="No vault" {sensitive,showing,visible}
-                                                          [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [push button] "Sync details" actions=click {focusable,sensitive,showing,visible} @(801,729 88x17)
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [label] "Sync details" text="Sync details" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [push button] "0 peers" actions=click {focusable,sensitive,showing,visible} @(925,729 55x17)
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [label] "0 peers" text="0 peers" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
-                                                                      [label] "0 peers" text="0 peers" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [combo box] "tDASH" {sensitive,showing,visible}
+                                                                                      [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [label] "tDASH" text="tDASH" {sensitive,showing,visible}

@@ -1,12 +1,12 @@
 libEGL warning: DRI3 error: Could not get DRI3 device
 libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
 
-(dash-wallet:2071): Gtk-WARNING **: 01:02:43.242: GtkLabel 0xaaaacb96f390 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2799): Gtk-WARNING **: 03:08:04.567: GtkLabel 0xaaaaea2edd50 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2071): Gtk-WARNING **: 01:02:43.242: GtkLabel 0xaaaaccc3d1e0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2799): Gtk-WARNING **: 03:08:04.567: GtkLabel 0xaaaaea534920 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2071): Gtk-WARNING **: 01:02:43.242: GtkLabel 0xaaaaccd0f9d0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2799): Gtk-WARNING **: 03:08:04.567: GtkLabel 0xaaaaea5b5620 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2071): Gtk-WARNING **: 01:02:43.243: GtkLabel 0xaaaacc9194d0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2799): Gtk-WARNING **: 03:08:04.568: GtkLabel 0xaaaaea5e1cf0 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
 
-(dash-wallet:2071): Gtk-WARNING **: 01:02:43.243: GtkLabel 0xaaaacc0df800 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+(dash-wallet:2799): Gtk-WARNING **: 03:08:04.568: GtkLabel 0xaaaaea60dbf0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size

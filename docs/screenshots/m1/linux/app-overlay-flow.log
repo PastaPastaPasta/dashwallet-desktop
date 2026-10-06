@@ -1,0 +1,12 @@
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(dash-wallet:3249): Gtk-WARNING **: 03:10:00.825: GtkLabel 0xaaab113fc890 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+
+(dash-wallet:3249): Gtk-WARNING **: 03:10:00.827: GtkLabel 0xaaab11420e40 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+
+(dash-wallet:3249): Gtk-WARNING **: 03:10:00.828: GtkLabel 0xaaab1144d0d0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
+
+(dash-wallet:3249): Gtk-WARNING **: 03:10:00.828: GtkLabel 0xaaab11479940 (label) reported min width 17 and natural width 14 in measure() with for_size=21; natural size must be >= min size
+
+(dash-wallet:3249): Gtk-WARNING **: 03:10:00.828: GtkLabel 0xaaab114a61d0 (label) reported min width 17 and natural width 7 in measure() with for_size=21; natural size must be >= min size
