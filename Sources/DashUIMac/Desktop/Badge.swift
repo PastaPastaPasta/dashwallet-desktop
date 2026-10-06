@@ -1,4 +1,5 @@
-// Small capsule label for a state: InstantSend, ChainLocked, unconfirmed, network name.
+// Small tinted label for a state: InstantSend, ChainLocked, unconfirmed, "Demo" (UX-SPEC C20:
+// `caption1Medium` on a radius-7 tinted background). The network name uses `NetworkCapsule`.
 #if os(macOS)
 import DesignTokens
 import SwiftUI
@@ -8,24 +9,24 @@ public enum DashTone: Sendable, Hashable, CaseIterable {
     case neutral, info, success, warning, error
 
     /// Text and icon colour.
-    var foreground: Color {
+    public var foreground: Color {
         switch self {
-        case .neutral: .dash.secondaryText
-        case .info: .dash.blueText
-        case .success: .dash.successText
-        case .warning: .dash.orange
-        case .error: .dash.errorText
+        case .neutral: .role.textSecondary
+        case .info: .role.textLink
+        case .success: .role.success
+        case .warning: .role.warning
+        case .error: .role.danger
         }
     }
 
-    /// Capsule fill.
-    var background: Color {
+    /// Badge fill (UX-SPEC C20 tones).
+    public var background: Color {
         switch self {
-        case .neutral: .dash.gray300Alpha10
-        case .info: .dash.blueAlpha10
-        case .success: .dash.greenAlpha10
-        case .warning: .dash.orangeAlpha10
-        case .error: .dash.redAlpha10
+        case .neutral: .role.neutralTint
+        case .info: .role.accentTint
+        case .success: .role.successTint
+        case .warning: .role.warningTint
+        case .error: .role.dangerTint
         }
     }
 }
@@ -57,6 +58,7 @@ public struct Badge: View {
         .foregroundStyle(tone.foreground)
         .padding(.horizontal, DashSpacing.xs)
         .padding(.vertical, DashSpacing.xxxs)
+        .frame(minHeight: 18)
         .background(
             RoundedRectangle(cornerRadius: DashRadius.switcher, style: .continuous)
                 .fill(tone.background)
