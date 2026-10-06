@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
 use crate::api::masternode::parse_pro_tx_hash;
@@ -139,13 +139,84 @@ pub struct OperatorSecret {
 #[derive(uniffi::Object)]
 pub struct PreparedRegistration {
     pub(crate) session: Arc<dw_engine::NetworkSession>,
+    pub(crate) inner: Arc<dw_engine::masternodes::PreparedRegistration>,
+}
+
+impl From<dw_engine::masternodes::PlatformFields> for PlatformFields {
+    fn from(p: dw_engine::masternodes::PlatformFields) -> Self {
+        Self {
+            node_id_hex: p.node_id_hex,
+            p2p_addresses: p.p2p_addresses,
+            https_addresses: p.https_addresses,
+        }
+    }
+}
+
+impl From<PlatformFields> for dw_engine::masternodes::PlatformFields {
+    fn from(p: PlatformFields) -> Self {
+        Self {
+            node_id_hex: p.node_id_hex,
+            p2p_addresses: p.p2p_addresses,
+            https_addresses: p.https_addresses,
+        }
+    }
+}
+
+impl From<FeeSourceChoice> for dw_engine::masternodes::FeeSourceChoice {
+    fn from(f: FeeSourceChoice) -> Self {
+        match f {
+            FeeSourceChoice::Automatic => Self::Automatic,
+            FeeSourceChoice::Address { address } => Self::Address(address),
+        }
+    }
+}
+
+/// Moves a typed operator secret into a zeroing buffer.
+fn take_secret(secret: &mut Option<Vec<u8>>) -> Option<Zeroizing<Vec<u8>>> {
+    secret.take().map(Zeroizing::new)
+}
+
+fn provider_summary(s: &dw_engine::masternodes::ProviderTxSummary) -> ProviderTxSummary {
+    use dw_engine::masternodes::ProviderTxKind as K;
+    ProviderTxSummary {
+        kind: match s.kind {
+            K::UpdateService => ProviderTxKind::UpdateService,
+            K::UpdateRegistrar => ProviderTxKind::UpdateRegistrar,
+            K::Revoke => ProviderTxKind::Revoke,
+            K::UpdateShare => ProviderTxKind::UpdateShare,
+            K::UpdateSharedRegistrar => ProviderTxKind::UpdateSharedRegistrar,
+            K::Dissolve => ProviderTxKind::Dissolve,
+        },
+        pro_tx_hash: s.pro_tx_hash.clone(),
+        txid: s.txid.clone(),
+        fee: s.fee,
+        penalty: s.penalty,
+        bans_masternode: s.bans_masternode,
+    }
 }
 
 #[uniffi::export]
 impl PreparedRegistration {
     pub fn summary(&self) -> Result<RegistrationSummary, MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedRegistration.summary")
+        let s = self.inner.summary().clone();
+        Ok(RegistrationSummary {
+            node_type: s.node_type.into(),
+            pro_tx_hash: s.pro_tx_hash,
+            collateral: s.collateral.into(),
+            collateral_address: s.collateral_address,
+            owner_address: s.owner_address,
+            voting_address: s.voting_address,
+            payout_address: s.payout_address,
+            operator_public_key: s.operator_public_key,
+            operator_reward_x100: s.operator_reward_x100,
+            service_addresses: s.service_addresses,
+            platform: s.platform.map(Into::into),
+            fee: s.fee,
+            total_spent: s.total_spent,
+            operator_secret_required: s.operator_secret_required,
+            collateral_sign_message: s.collateral_sign_message,
+        })
     }
 
     /// The generated secret. Available until `submit` succeeds or the
@@ -153,16 +224,19 @@ impl PreparedRegistration {
     /// generated. The host holds the bytes in a zeroing buffer.
     pub fn operator_secret(&self) -> Result<OperatorSecret, MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedRegistration.operator_secret")
+        let (secret, line) = self.inner.operator_secret()?;
+        Ok(OperatorSecret {
+            secret_hex: secret.to_vec(),
+            config_line: line.to_vec(),
+        })
     }
 
     /// The "type the last 4 characters" gate: `true` and the gate opens
     /// when `last4` equals the secret's last four hex characters
     /// (case-insensitive). `submit` refuses until then.
     pub fn confirm_operator_secret(&self, last4: String) -> Result<bool, MasternodeError> {
-        let _ = last4;
         ensure_open(&self.session)?;
-        not_implemented("PreparedRegistration.confirm_operator_secret")
+        Ok(self.inner.confirm_operator_secret(&last4)?)
     }
 
     /// Broadcasts. `collateral_signature`: the base64 `signmessage`
@@ -174,15 +248,14 @@ impl PreparedRegistration {
         &self,
         collateral_signature: Option<String>,
     ) -> Result<String, MasternodeError> {
-        let _ = collateral_signature;
         ensure_open(&self.session)?;
-        not_implemented("PreparedRegistration.submit")
+        Ok(self.inner.submit(collateral_signature).await?)
     }
 
     /// Releases the reserved inputs and forgets the secret.
     pub async fn abandon(&self) -> Result<(), MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedRegistration.abandon")
+        Ok(self.inner.abandon().await?)
     }
 }
 
@@ -265,24 +338,25 @@ pub struct ProviderTxSummary {
 #[derive(uniffi::Object)]
 pub struct PreparedProviderTx {
     pub(crate) session: Arc<dw_engine::NetworkSession>,
+    pub(crate) inner: Arc<dw_engine::masternodes::PreparedProviderTx>,
 }
 
 #[uniffi::export]
 impl PreparedProviderTx {
     pub fn summary(&self) -> Result<ProviderTxSummary, MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedProviderTx.summary")
+        Ok(provider_summary(self.inner.summary()))
     }
 
     /// Returns the txid.
     pub async fn broadcast(&self) -> Result<String, MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedProviderTx.broadcast")
+        Ok(self.inner.broadcast().await?)
     }
 
     pub async fn abandon(&self) -> Result<(), MasternodeError> {
         ensure_open(&self.session)?;
-        not_implemented("PreparedProviderTx.abandon")
+        Ok(self.inner.abandon().await?)
     }
 }
 
@@ -401,14 +475,6 @@ pub struct StandbyDissolution {
     pub suggested_file_name: String,
 }
 
-/// Overwrites a typed operator secret the call no longer needs. Stubs wipe
-/// it before returning; implementations move it into a `Zeroizing` buffer.
-fn wipe(secret: &mut Option<Vec<u8>>) {
-    if let Some(bytes) = secret.as_mut() {
-        bytes.zeroize();
-    }
-}
-
 #[uniffi::export]
 impl NetworkSession {
     /// "Existing wallet UTXO" choices for `node_type`, usable ones first.
@@ -417,10 +483,22 @@ impl NetworkSession {
         wallet_id: String,
         node_type: MasternodeType,
     ) -> Result<Vec<CollateralCandidate>, MasternodeError> {
-        let _ = node_type;
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.collateral_candidates")
+        let rows = self
+            .inner
+            .collateral_candidates(id, node_type.into())
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|c| CollateralCandidate {
+                outpoint: c.outpoint.into(),
+                address: c.address,
+                amount: c.amount,
+                confirmations: c.confirmations,
+                refusal: c.refusal.map(Into::into),
+            })
+            .collect())
     }
 
     /// Wallet addresses with spendable coins ("Fee source" list).
@@ -428,9 +506,17 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<Vec<FeeSourceCandidate>, MasternodeError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.fee_source_candidates")
+        let rows = self.inner.fee_source_candidates(id).await?;
+        Ok(rows
+            .into_iter()
+            .map(|c| FeeSourceCandidate {
+                address: c.address,
+                spendable: c.spendable,
+                label: c.label,
+            })
+            .collect())
     }
 
     /// Builds the registration (QT-123). `grant_id`: a `MasternodeOp`
@@ -442,10 +528,44 @@ impl NetworkSession {
         request: RegistrationRequest,
         grant_id: String,
     ) -> Result<Arc<PreparedRegistration>, MasternodeError> {
-        let _ = grant_id;
-        parse_wallet_id(&request.wallet_id)?;
+        use dw_engine::masternodes as m;
+        let wallet_id = parse_wallet_id(&request.wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.prepare_registration")
+        let collateral = match request.collateral {
+            CollateralChoice::FundNew => m::CollateralChoice::FundNew,
+            CollateralChoice::ExistingUtxo { outpoint } => {
+                m::CollateralChoice::ExistingUtxo(outpoint.to_core()?)
+            }
+            CollateralChoice::External { outpoint } => {
+                m::CollateralChoice::External(outpoint.to_core()?)
+            }
+        };
+        let engine_request = m::RegistrationRequest {
+            wallet_id,
+            node_type: request.node_type.into(),
+            collateral,
+            service_addresses: request.service_addresses,
+            owner_address: request.owner_address,
+            voting_address: request.voting_address,
+            operator_key: match request.operator_key {
+                OperatorKeyChoice::Generate => m::OperatorKeyChoice::Generate,
+                OperatorKeyChoice::Existing { public_key_hex } => {
+                    m::OperatorKeyChoice::Existing(public_key_hex)
+                }
+            },
+            payout_address: request.payout_address,
+            operator_reward_x100: request.operator_reward_x100,
+            platform: request.platform.map(Into::into),
+            fee_source: request.fee_source.into(),
+        };
+        let inner = self
+            .inner
+            .prepare_registration(engine_request, grant_id)
+            .await?;
+        Ok(Arc::new(PreparedRegistration {
+            session: Arc::clone(&self.inner),
+            inner,
+        }))
     }
 
     /// Update Service (QT-125, IOS-081 unban). `MasternodeOp` grant.
@@ -454,12 +574,29 @@ impl NetworkSession {
         mut request: UpdateServiceRequest,
         grant_id: String,
     ) -> Result<Arc<PreparedProviderTx>, MasternodeError> {
-        let _ = grant_id;
-        wipe(&mut request.operator_secret);
+        let secret = take_secret(&mut request.operator_secret);
         parse_pro_tx_hash(&request.pro_tx_hash)?;
-        parse_wallet_id(&request.fee_wallet_id)?;
+        let fee_wallet_id = parse_wallet_id(&request.fee_wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.prepare_update_service")
+        let inner = self
+            .inner
+            .prepare_update_service(
+                dw_engine::masternodes::UpdateServiceRequest {
+                    pro_tx_hash: request.pro_tx_hash,
+                    service_addresses: request.service_addresses,
+                    operator_secret: secret,
+                    platform: request.platform.map(Into::into),
+                    operator_payout_address: request.operator_payout_address,
+                    fee_source: request.fee_source.into(),
+                    fee_wallet_id,
+                },
+                grant_id,
+            )
+            .await?;
+        Ok(Arc::new(PreparedProviderTx {
+            session: Arc::clone(&self.inner),
+            inner,
+        }))
     }
 
     /// Update Registrar (QT-125). `MasternodeOp` grant. Refused for shared
@@ -469,11 +606,27 @@ impl NetworkSession {
         request: UpdateRegistrarRequest,
         grant_id: String,
     ) -> Result<Arc<PreparedProviderTx>, MasternodeError> {
-        let _ = grant_id;
         parse_pro_tx_hash(&request.pro_tx_hash)?;
-        parse_wallet_id(&request.fee_wallet_id)?;
+        let fee_wallet_id = parse_wallet_id(&request.fee_wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.prepare_update_registrar")
+        let inner = self
+            .inner
+            .prepare_update_registrar(
+                dw_engine::masternodes::UpdateRegistrarRequest {
+                    pro_tx_hash: request.pro_tx_hash,
+                    operator_public_key: request.operator_public_key,
+                    voting_address: request.voting_address,
+                    payout_address: request.payout_address,
+                    fee_source: request.fee_source.into(),
+                    fee_wallet_id,
+                },
+                grant_id,
+            )
+            .await?;
+        Ok(Arc::new(PreparedProviderTx {
+            session: Arc::clone(&self.inner),
+            inner,
+        }))
     }
 
     /// Revoke (QT-125). `MasternodeOp` grant.
@@ -482,12 +635,33 @@ impl NetworkSession {
         mut request: RevokeRequest,
         grant_id: String,
     ) -> Result<Arc<PreparedProviderTx>, MasternodeError> {
-        let _ = grant_id;
-        wipe(&mut request.operator_secret);
+        use dw_engine::masternodes::RevocationReason as R;
+        let secret = take_secret(&mut request.operator_secret);
         parse_pro_tx_hash(&request.pro_tx_hash)?;
-        parse_wallet_id(&request.fee_wallet_id)?;
+        let fee_wallet_id = parse_wallet_id(&request.fee_wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.prepare_revoke")
+        let inner = self
+            .inner
+            .prepare_revoke(
+                dw_engine::masternodes::RevokeRequest {
+                    pro_tx_hash: request.pro_tx_hash,
+                    operator_secret: secret,
+                    reason: match request.reason {
+                        RevocationReason::NotSpecified => R::NotSpecified,
+                        RevocationReason::TerminationOfService => R::TerminationOfService,
+                        RevocationReason::CompromisedKeys => R::CompromisedKeys,
+                        RevocationReason::ChangeOfKeys => R::ChangeOfKeys,
+                    },
+                    fee_source: request.fee_source.into(),
+                    fee_wallet_id,
+                },
+                grant_id,
+            )
+            .await?;
+        Ok(Arc::new(PreparedProviderTx {
+            session: Arc::clone(&self.inner),
+            inner,
+        }))
     }
 
     /// Starts a shared-masternode registration as coordinator (QT-126).

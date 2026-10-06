@@ -12,7 +12,7 @@
 //! score, ban/revive heights, last paid and next payment need a full node:
 //! they are `None` here, never estimated.
 
-use crate::api::common::{ensure_open, not_implemented, parse_txid};
+use crate::api::common::{ensure_open, parse_txid};
 use crate::{DashNetwork, NetworkSession, OutPoint};
 use dw_protx::params;
 
@@ -462,12 +462,163 @@ pub(crate) fn parse_pro_tx_hash(hash: &str) -> Result<(), MasternodeError> {
     parse_txid(hash).map(|_| ()).map_err(Into::into)
 }
 
+// Engine ↔ FFI conversions of the list model.
+
+impl From<dw_engine::masternodes::MasternodeType> for MasternodeType {
+    fn from(t: dw_engine::masternodes::MasternodeType) -> Self {
+        match t {
+            dw_engine::masternodes::MasternodeType::Regular => Self::Regular,
+            dw_engine::masternodes::MasternodeType::Evo => Self::Evo,
+        }
+    }
+}
+
+impl From<MasternodeType> for dw_engine::masternodes::MasternodeType {
+    fn from(t: MasternodeType) -> Self {
+        match t {
+            MasternodeType::Regular => Self::Regular,
+            MasternodeType::Evo => Self::Evo,
+        }
+    }
+}
+
+impl From<MasternodeKeyRole> for dw_engine::MasternodeKeyRole {
+    fn from(r: MasternodeKeyRole) -> Self {
+        match r {
+            MasternodeKeyRole::Owner => Self::Owner,
+            MasternodeKeyRole::Voting => Self::Voting,
+            MasternodeKeyRole::Operator => Self::Operator,
+            MasternodeKeyRole::PlatformNode => Self::PlatformNode,
+            MasternodeKeyRole::OwnerPayout => Self::OwnerPayout,
+            MasternodeKeyRole::OperatorPayout => Self::OperatorPayout,
+        }
+    }
+}
+
+impl From<dw_engine::masternodes::OwnedRole> for OwnedRole {
+    fn from(r: dw_engine::masternodes::OwnedRole) -> Self {
+        use dw_engine::masternodes::OwnedRole as R;
+        match r {
+            R::Collateral => Self::Collateral,
+            R::Owner => Self::Owner,
+            R::Voting => Self::Voting,
+            R::Operator => Self::Operator,
+            R::Payout => Self::Payout,
+            R::OperatorPayout => Self::OperatorPayout,
+            R::PlatformNode => Self::PlatformNode,
+            R::ShareOwner => Self::ShareOwner,
+            R::ShareRefund => Self::ShareRefund,
+            R::Tracked => Self::Tracked,
+        }
+    }
+}
+
+impl From<dw_engine::masternodes::MasternodeListStatus> for MasternodeListStatus {
+    fn from(s: dw_engine::masternodes::MasternodeListStatus) -> Self {
+        use dw_engine::masternodes::MasternodeListStatus as S;
+        match s {
+            S::Active { since_height } => Self::Active { since_height },
+            S::Banned { since_height } => Self::Banned { since_height },
+            S::Retired => Self::Retired,
+            S::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<dw_engine::masternodes::MasternodeRow> for MasternodeRow {
+    fn from(r: dw_engine::masternodes::MasternodeRow) -> Self {
+        Self {
+            pro_tx_hash: r.pro_tx_hash,
+            service: r.service,
+            node_type: r.node_type.into(),
+            shared: r.shared.map(|(held_shares, total_shares)| SharedHolding {
+                held_shares,
+                total_shares,
+            }),
+            status: r.status.into(),
+            pose_score: r.pose_score,
+            registered_height: r.registered_height,
+            last_paid_height: r.last_paid_height,
+            next_payment_height: r.next_payment_height,
+            operator_reward: r.operator_reward.map(|o| OperatorReward {
+                percent_x100: o.percent_x100,
+                payout_address: o.payout_address,
+            }),
+            collateral: r.collateral.map(Into::into),
+            collateral_address: r.collateral_address,
+            owner_address: r.owner_address,
+            voting_address: r.voting_address,
+            payout_addresses: r.payout_addresses,
+            operator_public_key: r.operator_public_key,
+            platform_node_id: r.platform_node_id,
+            owned_roles: r.owned_roles.into_iter().map(Into::into).collect(),
+            label: r.label,
+        }
+    }
+}
+
+impl From<MasternodeQuery> for dw_engine::masternodes::MasternodeQuery {
+    fn from(q: MasternodeQuery) -> Self {
+        use dw_engine::masternodes::MasternodeTypeFilter as F;
+        Self {
+            type_filter: match q.type_filter {
+                MasternodeTypeFilter::All => F::All,
+                MasternodeTypeFilter::Regular => F::Regular,
+                MasternodeTypeFilter::Evo => F::Evo,
+                MasternodeTypeFilter::Shared => F::Shared,
+            },
+            text: q.text,
+            owned_only: q.owned_only,
+            hide_banned: q.hide_banned,
+        }
+    }
+}
+
+impl From<dw_engine::masternodes::MasternodeDetail> for MasternodeDetail {
+    fn from(d: dw_engine::masternodes::MasternodeDetail) -> Self {
+        Self {
+            row: d.row.into(),
+            consecutive_payments: d.consecutive_payments,
+            pose_ban_height: d.pose_ban_height,
+            pose_revived_height: d.pose_revived_height,
+            network_addresses: d.network_addresses,
+            platform_p2p_addresses: d.platform_p2p_addresses,
+            platform_https_addresses: d.platform_https_addresses,
+            shares: d
+                .shares
+                .into_iter()
+                .map(|s| MasternodeShare {
+                    amount: s.amount,
+                    owner_address: s.owner_address,
+                    payout_address: s.payout_address,
+                    refund_address: s.refund_address,
+                    mine: s.mine,
+                })
+                .collect(),
+            early_period_end: d.early_period_end,
+            early_exit_penalty: d.early_exit_penalty,
+            has_standby_dissolution: d.has_standby_dissolution,
+            revocation_reason: d.revocation_reason,
+            wallet_transactions: d.wallet_transactions,
+        }
+    }
+}
+
 #[uniffi::export]
 impl NetworkSession {
     /// In-memory read; re-query on `Masternodes` events.
     pub fn masternode_list_state(&self) -> Result<MasternodeListState, MasternodeError> {
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.masternode_list_state")
+        let s = self.inner.masternode_list_state()?;
+        Ok(MasternodeListState {
+            available: s.available,
+            height: s.height,
+            total: s.total,
+            enabled: s.enabled,
+            evo_total: s.evo_total,
+            evo_enabled: s.evo_enabled,
+            syncing: s.syncing,
+        })
     }
 
     /// The filtered list (QT-118/119), list order. Works without a wallet
@@ -477,9 +628,9 @@ impl NetworkSession {
         &self,
         query: MasternodeQuery,
     ) -> Result<Vec<MasternodeRow>, MasternodeError> {
-        let _ = query;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.masternodes")
+        let rows = self.inner.masternodes(query.into()).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// The details dialog (QT-122) and IOS-080 detail.
@@ -489,6 +640,6 @@ impl NetworkSession {
     ) -> Result<MasternodeDetail, MasternodeError> {
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.masternode_detail")
+        Ok(self.inner.masternode_detail(pro_tx_hash).await?.into())
     }
 }

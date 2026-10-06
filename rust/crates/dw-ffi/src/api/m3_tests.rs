@@ -274,23 +274,25 @@ fn governance_stubs_check_arguments_then_report_not_implemented() {
 }
 
 #[test]
-fn masternode_stubs_check_arguments_then_report_not_implemented() {
+fn masternode_calls_answer_offline_and_shared_sessions_stay_not_implemented() {
     let f = fixture();
     let s = &f.session;
     let rt = &f.rt;
-    assert_code!(
-        s.masternode_list_state(),
-        not_implemented: "NetworkSession.masternode_list_state"
-    );
+    // The list before any sync: unavailable, no rows (no wallet, nothing
+    // tracked), unknown hashes are not found.
+    let state = s.masternode_list_state().unwrap();
+    assert!(!state.available);
+    assert_eq!(state.total, 0);
     let query = MasternodeQuery {
         type_filter: MasternodeTypeFilter::All,
         text: None,
         owned_only: false,
         hide_banned: false,
     };
-    assert_code!(
-        rt.block_on(s.masternodes(query)),
-        not_implemented: "NetworkSession.masternodes"
+    assert!(
+        rt.block_on(s.masternodes(query.clone()))
+            .unwrap()
+            .is_empty()
     );
     assert_code!(
         rt.block_on(s.masternode_detail("zz".into())),
@@ -298,21 +300,25 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.masternode_detail(HASH.into())),
-        not_implemented: "NetworkSession.masternode_detail"
+        "masternode.not_found"
+    );
+    assert_code!(
+        rt.block_on(s.locate_masternodes("1.2.3.4".into())),
+        "masternode.list_unavailable"
     );
 
-    // ProTx (protx.rs).
+    // ProTx (protx.rs): arguments, then the wallet.
     assert_code!(
         rt.block_on(s.prepare_registration(registration("zz"), "g".into())),
         "invalid_argument"
     );
     assert_code!(
         rt.block_on(s.prepare_registration(registration(WALLET), "g".into())),
-        not_implemented: "NetworkSession.prepare_registration"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.collateral_candidates(WALLET.into(), MasternodeType::Evo)),
-        not_implemented: "NetworkSession.collateral_candidates"
+        "wallet_not_found"
     );
     let update = UpdateServiceRequest {
         pro_tx_hash: "zz".into(),
@@ -336,8 +342,9 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
     };
     assert_code!(
         rt.block_on(s.prepare_revoke(revoke, "g".into())),
-        not_implemented: "NetworkSession.prepare_revoke"
+        "wallet_not_found"
     );
+    // v24 shared masternodes: not built yet.
     let too_large = "x".repeat(dw_protx::params::MAX_ENVELOPE_BYTES + 1);
     assert_code!(
         rt.block_on(s.import_shared_message(WALLET.into(), too_large)),
@@ -359,12 +366,21 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.masternode_keys(WALLET.into(), MasternodeKeyRole::Operator, 0, 10)),
-        not_implemented: "NetworkSession.masternode_keys"
+        "wallet_not_found"
     );
+    // IOS-082: tracking works before the list synced, and persists.
+    let tracked = rt
+        .block_on(s.track_masternode(HASH.into(), Some("rack 3".into())))
+        .unwrap();
+    assert_eq!(tracked.label.as_deref(), Some("rack 3"));
+    assert!(tracked.attached_roles.is_empty());
+    assert_eq!(tracked.row.status, crate::MasternodeListStatus::Unknown);
     assert_code!(
         rt.block_on(s.track_masternode(HASH.into(), None)),
-        not_implemented: "NetworkSession.track_masternode"
+        "masternode.already_tracked"
     );
+    assert_eq!(rt.block_on(s.tracked_masternodes()).unwrap().len(), 1);
+    assert_eq!(rt.block_on(s.masternodes(query)).unwrap().len(), 1);
     assert_code!(
         rt.block_on(s.attach_masternode_key(
             HASH.into(),
@@ -372,8 +388,10 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
             b"not a real key".to_vec(),
             "g".into()
         )),
-        not_implemented: "NetworkSession.attach_masternode_key"
+        "masternode.invalid_key"
     );
+    assert!(rt.block_on(s.untrack_masternode(HASH.into())).unwrap());
+    assert!(!rt.block_on(s.untrack_masternode(HASH.into())).unwrap());
     assert_code!(
         rt.block_on(s.evonode_status(HASH.into())),
         not_implemented: "NetworkSession.evonode_status.platform"
@@ -397,7 +415,7 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
             0,
             "g".into()
         )),
-        not_implemented: "Vault.reveal_masternode_key"
+        "wallet_not_found"
     );
 }
 

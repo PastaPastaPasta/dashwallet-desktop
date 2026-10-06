@@ -13,11 +13,25 @@
 //! are part of this contract but may land with M4's Platform work; until
 //! then they return `NotImplemented` with a `.platform` call name.
 
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
 use crate::api::masternode::parse_pro_tx_hash;
 use crate::{MasternodeError, MasternodeKeyRole, MasternodeRow, NetworkSession, Vault};
+
+fn tracked(t: dw_engine::masternodes::TrackedMasternodeInfo) -> TrackedMasternode {
+    TrackedMasternode {
+        row: t.row.into(),
+        label: t.label,
+        attached_roles: t.attached_roles.into_iter().map(Into::into).collect(),
+        capabilities: TrackedCapabilities {
+            can_withdraw: t.capabilities.can_withdraw,
+            can_update_service: t.capabilities.can_update_service,
+            can_update_registrar: t.capabilities.can_update_registrar,
+            can_vote: t.capabilities.can_vote,
+        },
+    }
+}
 
 /// Where a keychain key is used (IOS-083 "Used at ip:port" / revoked).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -111,15 +125,38 @@ impl NetworkSession {
         start: u32,
         count: u32,
     ) -> Result<Vec<MasternodeKeyInfo>, MasternodeError> {
-        let _ = (role, start);
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         if count > 100 {
             return Err(MasternodeError::InvalidArgument {
                 detail: "count must be at most 100".to_string(),
             });
         }
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.masternode_keys")
+        let keys = self
+            .inner
+            .masternode_keys(id, role.into(), start, count)
+            .await?;
+        Ok(keys
+            .into_iter()
+            .map(|k| MasternodeKeyInfo {
+                role: k.role.into(),
+                index: k.index,
+                derivation_path: k.derivation_path,
+                address: k.address,
+                public_key_hex: k.public_key_hex,
+                legacy_public_key_hex: k.legacy_public_key_hex,
+                platform_node_id: k.platform_node_id,
+                used_by: k
+                    .used_by
+                    .into_iter()
+                    .map(|u| MasternodeKeyUsage {
+                        pro_tx_hash: u.pro_tx_hash,
+                        service: u.service,
+                        revoked: u.revoked,
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 
     /// Finds masternodes in the list by IP, `IP:port`, proTxHash, owner /
@@ -129,14 +166,15 @@ impl NetworkSession {
         &self,
         query: String,
     ) -> Result<Vec<MasternodeRow>, MasternodeError> {
-        let _ = query;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.locate_masternodes")
+        let rows = self.inner.locate_masternodes(query).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     pub async fn tracked_masternodes(&self) -> Result<Vec<TrackedMasternode>, MasternodeError> {
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.tracked_masternodes")
+        let rows = self.inner.tracked_masternodes().await?;
+        Ok(rows.into_iter().map(tracked).collect())
     }
 
     pub async fn track_masternode(
@@ -144,10 +182,11 @@ impl NetworkSession {
         pro_tx_hash: String,
         label: Option<String>,
     ) -> Result<TrackedMasternode, MasternodeError> {
-        let _ = label;
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.track_masternode")
+        Ok(tracked(
+            self.inner.track_masternode(pro_tx_hash, label).await?,
+        ))
     }
 
     /// Stops tracking and deletes its attached keys from the vault.
@@ -155,7 +194,7 @@ impl NetworkSession {
     pub async fn untrack_masternode(&self, pro_tx_hash: String) -> Result<bool, MasternodeError> {
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.untrack_masternode")
+        Ok(self.inner.untrack_masternode(pro_tx_hash).await?)
     }
 
     pub async fn set_tracked_masternode_label(
@@ -163,10 +202,12 @@ impl NetworkSession {
         pro_tx_hash: String,
         label: Option<String>,
     ) -> Result<(), MasternodeError> {
-        let _ = label;
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_tracked_masternode_label")
+        Ok(self
+            .inner
+            .set_tracked_masternode_label(pro_tx_hash, label)
+            .await?)
     }
 
     /// Attaches a private key to a tracked masternode: WIF or hex for
@@ -178,14 +219,16 @@ impl NetworkSession {
         &self,
         pro_tx_hash: String,
         role: MasternodeKeyRole,
-        mut key: Vec<u8>,
+        key: Vec<u8>,
         grant_id: String,
     ) -> Result<(), MasternodeError> {
-        key.zeroize();
-        let _ = (role, grant_id);
+        let key = Zeroizing::new(key);
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.attach_masternode_key")
+        Ok(self
+            .inner
+            .attach_masternode_key(pro_tx_hash, role.into(), key, grant_id)
+            .await?)
     }
 
     pub async fn detach_masternode_key(
@@ -193,10 +236,12 @@ impl NetworkSession {
         pro_tx_hash: String,
         role: MasternodeKeyRole,
     ) -> Result<(), MasternodeError> {
-        let _ = role;
         parse_pro_tx_hash(&pro_tx_hash)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.detach_masternode_key")
+        Ok(self
+            .inner
+            .detach_masternode_key(pro_tx_hash, role.into())
+            .await?)
     }
 
     /// Evonode Platform status (IOS-080/081). Platform query: may land in
@@ -243,10 +288,7 @@ impl Vault {
         index: u32,
         grant_id: String,
     ) -> Result<RevealedMasternodeKey, MasternodeError> {
-        let _ = (role, index, grant_id);
-        if let Some(w) = &wallet_id {
-            parse_wallet_id(w)?;
-        }
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         if let Some(h) = &pro_tx_hash {
             parse_pro_tx_hash(h)?;
         }
@@ -256,6 +298,14 @@ impl Vault {
             });
         }
         ensure_open(&self.session)?;
-        not_implemented("Vault.reveal_masternode_key")
+        let revealed = self
+            .session
+            .reveal_masternode_key(wallet, pro_tx_hash, role.into(), index, grant_id)
+            .await?;
+        Ok(RevealedMasternodeKey {
+            private_key_hex: revealed.private_key_hex.to_vec(),
+            wif: revealed.wif.map(|w| w.to_vec()),
+            tenderdash_key: revealed.tenderdash_key.map(|t| t.to_vec()),
+        })
     }
 }
