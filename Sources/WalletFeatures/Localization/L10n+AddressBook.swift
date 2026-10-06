@@ -26,8 +26,5 @@ extension L10n {
         public static func alreadyInBook(_ address: String, label: String) -> String {
             "The entered address \"\(address)\" is already in the address book with label \"\(label)\"."
         }
-
-        public static func sendingWindowTitle(_ wallet: String) -> String { "Sending addresses - \(wallet)" }
-        public static func receivingWindowTitle(_ wallet: String) -> String { "Receiving addresses - \(wallet)" }
     }
 }

@@ -112,8 +112,6 @@ enum CrossStrings {
     static let close = "Close"
     static let back = "Back"
     static let cancel = "Cancel"
-    static let yes = "Yes"
-    static let no = "No"
     static let save = "Save"
     static let delete = "Delete"
     static let show = "Show"
@@ -136,7 +134,6 @@ enum CrossStrings {
     static let locked = "Locked"
     static let unlockedMixingOnly = "Unlocked for mixing only"
     static let unlocked = "Unlocked"
-    static let demoMode = "Demo mode: sample data, nothing is sent"
 
     // Send.
     static let payTo = "Pay To:"
@@ -166,7 +163,6 @@ enum CrossStrings {
     static let preparing = "Preparing transaction…"
     static let broadcasting = "Sending transaction…"
     static func sent(_ txid: String) -> String { "Transaction sent: \(txid)" }
-    static let viewTransaction = "View transaction"
     static let done = "Done"
     static let broadcastAgain = "Broadcast again"
     static func broadcastUnknown(_ txid: String) -> String {
@@ -256,5 +252,4 @@ enum CrossStrings {
     // Lock.
     static let unlock = "Unlock"
     static let unlockVaultPrompt = "This computer already has a wallet vault. Enter its passphrase to add the wallet to it."
-    static let unlockForMixingOnly = "Unlock for mixing only"
 }

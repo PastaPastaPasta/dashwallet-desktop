@@ -80,7 +80,6 @@ enum MacStrings {
         static let copy = "Copy"
         static let copyAddress = "Copy Address"
         static let copyURI = "Copy URI"
-        static let paste = "Paste"
         static let back = "Back"
         static let `continue` = "Continue"
         static let done = "Done"
@@ -88,8 +87,6 @@ enum MacStrings {
         static let delete = "Delete"
         static let edit = "Edit"
         static let export = "Export…"
-        static let yes = "Yes"
-        static let clear = "Clear"
         static let error = "Error"
         static let passphrase = "Passphrase"
         static let newPassphrase = "New passphrase"
@@ -173,13 +170,10 @@ enum MacStrings {
         static let broadcasting = "Sending…"
         static let authorizeTitle = "Unlock wallet"
         static let authorizePrompt = "Enter your wallet passphrase to authorize this payment."
-        static let sent = "Transaction sent"
-        static let review = "Send"
         static func recipient(_ number: Int) -> String { "Recipient \(number)" }
     }
 
     enum Receive {
-        static let title = "Receive"
         static let yourAddress = "Your Dash address"
         static let newAddress = "New Address"
         static let requestPayment = "Request payment"
@@ -253,7 +247,6 @@ enum MacStrings {
         static let verifyIntro =
             "Enter the receiver's address, message (ensure you copy line breaks, spaces, tabs, etc. exactly) and signature below to verify the message. Be careful not to read more into the signature than what is in the signed message itself, to avoid being tricked by a man-in-the-middle attack. Note that this only proves the signing party receives with the address, it cannot prove sendership of any transaction!"
         static let address = "Address"
-        static let message = "Message"
         static let signature = "Signature"
         static let sign = "Sign Message"
         static let verify = "Verify Message"
@@ -281,7 +274,6 @@ enum MacStrings {
         static let phraseTitle = "Recovery phrase"
         static let phraseWarning = "Anyone with these words can take your funds. Do not share them."
         static let bip39 = "BIP39 passphrase"
-        static let dataFolder = "Open data folder"
         static let english = "English"
     }
 
