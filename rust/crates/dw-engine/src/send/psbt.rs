@@ -22,6 +22,8 @@ use crate::{EngineError, NetworkSession, WalletId};
 /// dw-appdb setting (wallet scope) holding the hex BIP32 fingerprint of the
 /// wallet's master key, written when the seed is imported.
 pub(crate) const FINGERPRINT_SETTING: &str = "bip32.master_fingerprint";
+/// How long `broadcast_psbt` waits for dash-spv to have broadcast peers.
+const BROADCAST_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Why a PSBT call failed (`psbt.*` codes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +410,10 @@ impl NetworkSession {
                 return Err(PsbtFailure::NoPeers.into());
             }
             let broadcaster = SpvBroadcaster::new(manager.spv_arc());
+            // A loaded PSBT may be sent right after SPV starts: give dash-spv
+            // a bounded time to connect. Without peers the broadcast below
+            // reports `NoPeers` (nothing sent).
+            broadcaster.wait_until_ready(BROADCAST_READY_WAIT).await;
             match broadcaster.broadcast(&tx).await {
                 Ok(txid) => Ok(txid),
                 Err(BroadcastError::MaybeSent { reason }) => {

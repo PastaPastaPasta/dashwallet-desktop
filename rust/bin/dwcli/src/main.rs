@@ -437,6 +437,13 @@ fn run(cli: Cli) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
+    if let Ok(filter) = std::env::var("DWCLI_LOG") {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(std::io::stderr)
+            .init();
+    }
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
