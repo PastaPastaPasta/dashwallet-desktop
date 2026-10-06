@@ -42,13 +42,15 @@ public final class WalletLifecycleService: WalletLifecycleManaging {
     }
 
     /// Engine `WalletLoadChanged`, `WalletCreated` and `WalletRemoved` of the
-    /// open network, and `resynchronize`.
+    /// open network, and `resynchronize`. An event bus wait does not end on
+    /// cancellation, so a cancelled stream's pump ends at the next event.
     public func loadStateChanges() -> AsyncStream<Void> {
         let subscription = context.engine.events.subscribe()
         let active = context.active
         let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let pump = Task {
             for await event in subscription {
+                if Task.isCancelled { break }
                 switch event {
                 case .walletLoadChanged(let n, _, _), .walletCreated(let n, _), .walletRemoved(let n, _):
                     if active.network == n { continuation.yield() }
