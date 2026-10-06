@@ -139,7 +139,11 @@ struct DemoEngineRulesTests {
         let draft = try await env.sender.makeDraft(wallet: wallet)
         try await draft.setRecipients([PaymentRecipient(address: Self.payTo, amount: Amount(duffs: 25_000_000))])
         let estimate = try await draft.estimate()
-        let grant = try await env.auth.authorize(.spend(max: Amount(duffs: 25_000_000)), wallet: wallet, credential: .unencrypted)
+        // The cap covers the fee as well (as the engine's).
+        let tooLow = try await env.auth.authorize(.spend(max: Amount(duffs: 25_000_000)), wallet: wallet, credential: .unencrypted)
+        #expect(await Self.code { _ = try await draft.prepare(grant: tooLow) } == .sendGrantExceeded)
+        let grant = try await env.auth.authorize(
+            .spend(max: Amount(duffs: 25_000_000 + estimate.fee.duffs)), wallet: wallet, credential: .unencrypted)
         let prepared = try await draft.prepare(grant: grant)
         #expect(prepared.summary.fee == estimate.fee)
         let reserved = try await env.coinControl.utxos(wallet: wallet, filter: UtxoFilter()).filter(\.reserved)
@@ -191,7 +195,9 @@ struct DemoEngineRulesTests {
         let max = try await env.sender.maxSpendable(wallet: wallet, source: .any, fee: .recommended(targetBlocks: 6))
         let draft = try await env.sender.makeDraft(wallet: wallet)
         try await draft.setRecipients([PaymentRecipient(address: Self.payTo, amount: Amount(duffs: 10_000_000))])
-        let grant = try await env.auth.authorize(.spend(max: Amount(duffs: 10_000_000)), wallet: wallet, credential: .unencrypted)
+        let fee = try await draft.estimate().fee.duffs
+        let grant = try await env.auth.authorize(
+            .spend(max: Amount(duffs: 10_000_000 + fee)), wallet: wallet, credential: .unencrypted)
         let prepared = try await draft.prepare(grant: grant)
         let reserved = try await env.sender.maxSpendable(wallet: wallet, source: .any, fee: .recommended(targetBlocks: 6))
         #expect(reserved.duffs < max.duffs)

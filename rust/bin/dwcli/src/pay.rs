@@ -323,9 +323,10 @@ pub fn run(
                 estimate.change.map_or("none".into(), |c| c.to_string()),
                 estimate.total_sent
             );
-            // The grant caps what leaves the wallet: the recipients' amounts,
-            // plus the change when a custom change address may be foreign
-            // (the engine refuses a cap that is too low; never one too high).
+            // The grant caps what leaves the wallet: the recipients' amounts
+            // and the fee, plus the change when a custom change address may
+            // be foreign (the engine refuses a cap that is too low; never one
+            // too high).
             let custom_change_value = if custom_change {
                 estimate.change.unwrap_or(0)
             } else {
@@ -335,6 +336,7 @@ pub fn run(
                 .iter()
                 .map(|r| recipient(r, &None, &None).map(|r| r.amount))
                 .sum::<Result<u64, _>>()?
+                + estimate.fee
                 + custom_change_value;
             let grant = session
                 .vault()

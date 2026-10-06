@@ -549,16 +549,17 @@ public final class SendViewModel {
         return lines
     }
 
-    /// The spend cap requested for `recipients`: the sum of their amounts.
-    /// The engine caps `external_sent`, the value paid to scripts the wallet
-    /// does not own, fee excluded (m1-engine.md §2.7.1); with subtract-fee or
-    /// recipients the wallet owns that is at most this sum. The fee is bounded
-    /// separately (`send.absurd_fee`, QT-058). This view model never sets a
-    /// change address, so change always returns to the wallet and adds
-    /// nothing; a host that sets a change address the wallet does not own
-    /// must add the change amount.
-    public static func spendLimit(for recipients: [PaymentRecipient]) -> Amount {
-        Amount(duffs: recipients.reduce(Int64(0)) { $0 + $1.amount.duffs })
+    /// The spend cap requested for `recipients` paying `fee`: the sum of
+    /// their amounts plus the estimated fee. The engine caps what leaves the
+    /// wallet, fee included (`total_debit`, m1-engine.md §2.7.1), the same
+    /// outflow `sign_psbt` caps, so a quick-unlock spending limit means the
+    /// same in Send and PSBT (IOS-016). With subtract-fee or recipients the
+    /// wallet owns the outflow is lower. This view model never sets a change
+    /// address, so change always returns to the wallet and adds nothing; a
+    /// host that sets a change address the wallet does not own must add the
+    /// change amount.
+    public static func spendLimit(for recipients: [PaymentRecipient], fee: Amount) -> Amount {
+        Amount(duffs: recipients.reduce(fee.duffs) { $0 + $1.amount.duffs })
     }
 
     /// Errors of a first broadcast after which peers certainly do not have
@@ -672,7 +673,7 @@ public final class SendViewModel {
             let estimate = try await draft.estimate()
             guard started == generation else { return }
             self.estimate = estimate
-            let limit = Self.spendLimit(for: recipients)
+            let limit = Self.spendLimit(for: recipients, fee: estimate.fee)
             spendLimit = limit
             switch auth.requirement(for: .spend(max: limit)) {
             case .none:

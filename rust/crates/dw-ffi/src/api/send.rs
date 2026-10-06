@@ -96,10 +96,10 @@ pub struct PreparedTxSummary {
     /// Sum the recipients receive.
     pub total_sent: u64,
     /// Inputs minus outputs back to the wallet: what leaves the wallet,
-    /// fee included.
+    /// fee included; the figure a `Spend` grant caps.
     pub total_debit: u64,
     /// Paid to scripts the wallet does not own (recipients and a foreign
-    /// change address), fee excluded: the figure a `Spend` grant caps.
+    /// change address), fee excluded.
     pub external_sent: u64,
 }
 
@@ -162,8 +162,8 @@ pub enum SendError {
     /// Code `send.grant_invalid`: missing, expired, used or not a Spend grant.
     #[error("grant invalid")]
     GrantInvalid,
-    /// Code `send.grant_exceeded`: `external_sent` is above the grant's
-    /// `max_duffs`.
+    /// Code `send.grant_exceeded`: what leaves the wallet (`external_sent`
+    /// plus the fee) is above the grant's `max_duffs`.
     #[error("grant allows {max_duffs}")]
     GrantExceeded { max_duffs: u64 },
     /// Code `send.prepared_tx_spent`: the prepared transaction was already
@@ -460,7 +460,8 @@ impl TxDraft {
     }
 
     /// Selects coins, builds, signs (through the vault, with a `Spend` grant
-    /// that caps `external_sent`) and reserves the inputs. Never broadcasts.
+    /// that caps what leaves the wallet, fee included) and reserves the
+    /// inputs. Never broadcasts.
     pub async fn prepare(&self, grant_id: String) -> Result<Arc<PreparedTx>, SendError> {
         Ok(Arc::new(PreparedTx {
             inner: self.inner.prepare(grant_id).await?,

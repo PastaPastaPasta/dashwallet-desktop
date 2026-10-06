@@ -227,6 +227,10 @@ fn pay(address: &str, amount: u64) -> Recipient {
     }
 }
 
+/// Room for the fee in a grant whose test is not about the cap: a few
+/// inputs at the default rate cost well under this.
+const FEE_ROOM: u64 = 10_000;
+
 fn send_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> SendFailure {
     match r {
         Err(EngineError::Send(f)) => f,
@@ -248,7 +252,7 @@ fn prepare_signs_reserves_and_abandon_releases() {
 
     let prepared = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(30_000_000)))
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + estimate.fee)))
         .unwrap();
     let s = prepared.summary().clone();
     assert_eq!(s.fee, estimate.fee);
@@ -272,7 +276,7 @@ fn prepare_signs_reserves_and_abandon_releases() {
     let second = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let p2 = f
         .engine
-        .block_on(second.prepare(f.spend_grant(10_000_000)))
+        .block_on(second.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     assert_eq!(p2.summary().inputs[0].outpoint, small);
 
@@ -292,21 +296,28 @@ fn prepare_signs_reserves_and_abandon_releases() {
     assert!(matches!(r, Err(EngineError::InvalidArgument(_))), "{r:?}");
 }
 
+/// The grant caps what leaves the wallet, fee included (fix-review L4):
+/// the recipients' amounts alone are not enough.
 #[test]
 fn grants_cap_what_leaves_the_wallet() {
     let f = fixture(false);
     f.credit(1, COIN);
     let draft = f.draft(vec![pay(FOREIGN, 30_000_000)]);
-    let r = f.engine.block_on(draft.prepare(f.spend_grant(29_999_999)));
+    let fee = f.engine.block_on(draft.estimate()).unwrap().fee;
+    let r = f.engine.block_on(draft.prepare(f.spend_grant(30_000_000)));
     assert_eq!(
         send_failure(r),
         SendFailure::GrantExceeded {
-            max_duffs: 29_999_999,
-            external_sent: 30_000_000
+            max_duffs: 30_000_000,
+            outflow: 30_000_000 + fee
         }
     );
+    let r = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + fee - 1)));
+    assert!(matches!(send_failure(r), SendFailure::GrantExceeded { .. }));
     // The grant was single-use.
-    let grant = f.spend_grant(30_000_000);
+    let grant = f.spend_grant(30_000_000 + fee);
     f.engine.block_on(draft.prepare(grant.clone())).unwrap();
     assert_eq!(
         send_failure(f.engine.block_on(draft.prepare(grant))),
@@ -326,17 +337,19 @@ fn foreign_change_counts_against_the_cap() {
         .unwrap();
     let estimate = f.engine.block_on(draft.estimate()).unwrap();
     let change = estimate.change.unwrap();
-    let r = f.engine.block_on(draft.prepare(f.spend_grant(30_000_000)));
+    let r = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + estimate.fee)));
     assert_eq!(
         send_failure(r),
         SendFailure::GrantExceeded {
-            max_duffs: 30_000_000,
-            external_sent: 30_000_000 + change
+            max_duffs: 30_000_000 + estimate.fee,
+            outflow: COIN
         }
     );
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(30_000_000 + change)))
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + change + estimate.fee)))
         .unwrap();
     let out = p.summary().outputs.iter().find(|o| o.is_change).unwrap();
     assert!(!out.is_mine);
@@ -355,7 +368,7 @@ fn subtract_fee_and_coin_control() {
     draft.set_source(CoinSource::Outpoints(vec![b, c])).unwrap();
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     let mut spent: Vec<OutPoint> = p.summary().inputs.iter().map(|i| i.outpoint).collect();
     spent.sort();
@@ -436,7 +449,7 @@ fn locked_coins_are_skipped_and_reported() {
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     assert_eq!(p.summary().inputs[0].outpoint, b);
     f.engine.block_on(draft.abandon(p)).unwrap();
@@ -478,7 +491,7 @@ fn broadcast_needs_spv_and_drop_releases() {
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     let r = f.engine.block_on(draft.broadcast(Arc::clone(&p)));
     assert_eq!(send_failure(r), SendFailure::NoPeers);
@@ -493,7 +506,7 @@ fn broadcast_needs_spv_and_drop_releases() {
     // Dropping a pending transaction releases its inputs.
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     assert_eq!(f.reserved(), vec![a]);
     drop(p);
@@ -504,7 +517,7 @@ fn broadcast_needs_spv_and_drop_releases() {
         let d = f.draft(vec![pay(FOREIGN, 10_000_000)]);
         if f.engine.block_on(d.estimate()).is_ok()
             && f.engine
-                .block_on(d.prepare(f.spend_grant(10_000_000)))
+                .block_on(d.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
                 .is_ok()
         {
             ok = true;
@@ -559,7 +572,7 @@ fn passphrase_grant_signs_on_a_locked_vault_and_is_bound_to_its_wallet() {
     f.session.lock_vault().unwrap();
     let vault = f.session.vault();
     let spend = GrantPurpose::Spend {
-        max_duffs: 10_000_000,
+        max_duffs: 10_000_000 + FEE_ROOM,
     };
 
     let other = vault
@@ -707,9 +720,9 @@ fn close_waits_for_in_flight_prepare_and_broadcast() {
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let prepared = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
-    let grant = f.spend_grant(10_000_000);
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
     let wallet = {
         let session = Arc::clone(&f.session);
         let inner = Arc::clone(&session);
@@ -763,7 +776,7 @@ fn unknown_outcome_stays_reserved_and_rebroadcastable() {
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     // What a dispatch without an acceptance verdict leaves behind; the
     // regtest suite (test_l1_send.py) drives a real one.
@@ -816,7 +829,8 @@ fn coin_control_choice_the_builder_would_drop_fails_before_the_grant() {
         send_failure(f.engine.block_on(draft.estimate())),
         SendFailure::OutpointUnavailable(tiny)
     );
-    let grant = f.spend_grant(10_000_000);
+    // At this rate the fee can be up to the fee bound.
+    let grant = f.spend_grant(10_000_000 + MAX_TX_FEE);
     assert_eq!(
         send_failure(f.engine.block_on(draft.prepare(grant.clone()))),
         SendFailure::OutpointUnavailable(tiny)
@@ -880,7 +894,7 @@ fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
     // Never sent (SPV stopped): nothing is written.
     let p = f
         .engine
-        .block_on(draft.prepare(f.spend_grant(3_000_000)))
+        .block_on(draft.prepare(f.spend_grant(3_000_000 + FEE_ROOM)))
         .unwrap();
     assert_eq!(
         send_failure(f.engine.block_on(draft.broadcast(Arc::clone(&p)))),
@@ -1144,5 +1158,52 @@ fn psbt_quick_unlock_grant_is_capped_by_the_outflow() {
     let under = psbt_spending(&prev, &[(FOREIGN, 40_000_000), (&change, 59_900_000)]);
     let mut signed = f.sign_psbt(&under, quick()).unwrap();
     assert!(dw_psbt::finalize(&mut signed));
+    assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
+}
+
+/// Fix-review L4: the quick-unlock spending limit caps what leaves the
+/// wallet in Send as it does in `sign_psbt`, fee included: a payment of
+/// exactly the limit is refused, the limit minus the fee goes through.
+#[test]
+#[allow(non_snake_case)]
+fn test_IOS_016_send_quick_unlock_limit_includes_the_fee() {
+    let f = fixture(true);
+    f.credit(1, COIN);
+    let vault = f.session.vault();
+    let change_grant = vault
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(b"pass phrase"),
+        )
+        .unwrap();
+    let key = vault.enroll_quick_unlock(&change_grant.id).unwrap();
+    f.session.lock_vault().unwrap();
+    let limit = dw_vault::DEFAULT_QUICK_UNLOCK_SPEND_LIMIT;
+    let quick = || {
+        vault
+            .authorize(
+                GrantPurpose::Spend { max_duffs: limit },
+                Some(&f.wallet.0),
+                Credential::QuickUnlock(&key),
+            )
+            .unwrap()
+            .id
+    };
+
+    let over = f.draft(vec![pay(FOREIGN, limit)]);
+    let fee = f.engine.block_on(over.estimate()).unwrap().fee;
+    assert!(fee > 0);
+    assert_eq!(
+        send_failure(f.engine.block_on(over.prepare(quick()))),
+        SendFailure::GrantExceeded {
+            max_duffs: limit,
+            outflow: limit + fee
+        }
+    );
+    let under = f.draft(vec![pay(FOREIGN, limit - fee)]);
+    assert_eq!(f.engine.block_on(under.estimate()).unwrap().fee, fee);
+    let p = f.engine.block_on(under.prepare(quick())).unwrap();
+    assert_eq!(p.summary().total_debit, limit);
     assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
 }

@@ -11,10 +11,12 @@
 //! seeded and funding in reservation-only mode, so key-wallet reserves
 //! exactly the planned coins and the build can be released owner-guarded.
 //!
-//! Spend cap (review H-3/H-4): a `Spend{max_duffs}` grant caps
-//! [`PreparedSummary::external_sent`], the value paid to scripts the wallet
-//! does not own (recipients and a foreign change address). The fee is not
-//! part of the cap; it is bounded by [`MAX_TX_FEE`] (`send.absurd_fee`).
+//! Spend cap (review H-3/H-4, fix-review L4): a `Spend{max_duffs}` grant caps
+//! [`PreparedSummary::total_debit`], what leaves the wallet: the value paid
+//! to scripts it does not own (recipients and a foreign change address)
+//! plus the fee. `sign_psbt` caps the same outflow, so a quick-unlock
+//! spending limit means the same in both. The fee alone is also bounded by
+//! [`MAX_TX_FEE`] (`send.absurd_fee`).
 
 #[cfg(test)]
 mod flow_tests;
@@ -158,8 +160,10 @@ pub enum SendFailure {
     VaultLocked,
     #[error("grant invalid")]
     GrantInvalid,
-    #[error("payment of {external_sent} exceeds the grant's {max_duffs}")]
-    GrantExceeded { max_duffs: u64, external_sent: u64 },
+    /// `outflow` = `external_sent + fee`, what the payment takes from the
+    /// wallet.
+    #[error("outflow of {outflow} exceeds the grant's {max_duffs}")]
+    GrantExceeded { max_duffs: u64, outflow: u64 },
     #[error("prepared transaction is no longer pending")]
     PreparedTxSpent,
     #[error("no peers")]
@@ -254,10 +258,10 @@ pub struct PreparedSummary {
     pub outputs: Vec<PreparedOutput>,
     /// What the recipients receive.
     pub total_sent: u64,
-    /// Paid to scripts the wallet does not own; the figure the `Spend`
-    /// grant caps.
+    /// Paid to scripts the wallet does not own.
     pub external_sent: u64,
-    /// `external_sent + fee`: inputs minus outputs back to the wallet.
+    /// `external_sent + fee`: inputs minus outputs back to the wallet; the
+    /// figure the `Spend` grant caps.
     pub total_debit: u64,
 }
 
@@ -771,15 +775,15 @@ impl TxDraft {
                 r.plan.change.unwrap_or(0)
             };
 
+        // What the grant caps: everything that leaves the wallet, fee
+        // included (the same outflow `sign_psbt` caps).
+        let outflow = external_sent.saturating_add(r.plan.fee);
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
             let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
             let max_duffs = token.max_duffs().unwrap_or(0);
-            if external_sent > max_duffs {
-                return Ok(Err(SendFailure::GrantExceeded {
-                    max_duffs,
-                    external_sent,
-                }));
+            if outflow > max_duffs {
+                return Ok(Err(SendFailure::GrantExceeded { max_duffs, outflow }));
             }
             vault.signer(&wallet_id.0, &token).map(Ok)
         })

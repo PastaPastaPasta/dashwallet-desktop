@@ -169,9 +169,10 @@ func dismiss() async                       // leave done / failed (abandons, kee
 ```
 
 Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, M3, M6, M7, Lows):
-- The engine caps `external_sent` (value paid to scripts the wallet does not own), not the fee. The view model
-  asks for `authorize(.spend(max:))` with `max = Σ recipient amounts`, no slack: subtract-fee shares and recipients
-  the wallet owns only lower `external_sent`, and the fee is bounded separately by `send.absurd_fee`. The view
+- The engine caps `total_debit` (value paid to scripts the wallet does not own plus the fee; fix-review L4, the
+  same outflow `sign_psbt` caps, so the quick-unlock limit means the same in Send and PSBT). The view model asks for
+  `authorize(.spend(max:))` with `max = Σ recipient amounts + estimate.fee`, no other slack: subtract-fee shares and
+  recipients the wallet owns only lower the outflow; the fee alone is also bounded by `send.absurd_fee`. The view
   model never sets a change address; a host that sets one the wallet does not own must add the change amount.
 - Duplicates (QT-060): the engine refuses an address twice (`send.duplicate_address{index}`). `review()` asks
   first (`.confirmDuplicates`); "Yes" (`acknowledgeDuplicates()`) merges the entries with the same cleaned address

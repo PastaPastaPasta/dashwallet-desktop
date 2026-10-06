@@ -267,7 +267,8 @@ final class DemoDraft: TransactionDrafting {
         try world.check(grant, .spend, wallet: wallet, refuse: .send, locked: .sendVaultLocked)
         let plan = try plan()
         let issued = try world.redeem(grant, .spend, wallet: wallet, refuse: .send)
-        guard case .spend(let cap) = issued.grant.purpose, plan.externalSent <= cap.duffs else {
+        // The cap covers what leaves the wallet, fee included, as in the engine.
+        guard case .spend(let cap) = issued.grant.purpose, plan.externalSent + plan.fee <= cap.duffs else {
             throw .demo(.sendGrantExceeded)
         }
         try world.update(wallet) { (ledger: inout DemoLedger) throws(ServiceError) in

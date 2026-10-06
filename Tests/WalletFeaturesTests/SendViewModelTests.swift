@@ -305,9 +305,11 @@ struct SendViewModelTests {
 
     // MARK: Authorization (QT-061, H-4)
 
-    /// The engine caps `external_sent` (fee excluded) at the grant's
-    /// `max_duffs`, so the cap is the sum of the amounts, without slack.
-    @Test func H4_spendGrantCapsTheSumOfTheAmounts() async {
+    /// The engine caps what leaves the wallet, fee included, at the grant's
+    /// `max_duffs`, so the cap is the sum of the amounts plus the estimated
+    /// fee, without other slack (fix-review L4: the quick-unlock limit means
+    /// the same in Send and PSBT).
+    @Test func IOS016_spendGrantCapsTheAmountsPlusTheFee() async {
         let model = makeModel()
         fillValid(model, amount: "1")
         model.addRecipient()
@@ -316,7 +318,7 @@ struct SendViewModelTests {
         model.entries[1].subtractFee = true
         await model.review()
         let call = world.auth.authorizeCalls.last
-        #expect(call?.purpose == .spend(max: Amount(duffs: 300_000_000)))
+        #expect(call?.purpose == .spend(max: Amount(duffs: 300_000_226)))
         #expect(call?.passphrase == nil)
     }
 

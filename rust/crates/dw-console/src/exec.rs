@@ -855,8 +855,11 @@ impl ConsoleContext {
                     .rpc()?;
                 // Checked before a grant is asked for, so a bad address or
                 // amount does not cost an authorization.
-                draft.estimate().await.rpc()?;
-                let grant = self.take_grant(GrantPurpose::Spend { max_duffs: amount })?;
+                let fee = draft.estimate().await.rpc()?.fee;
+                // The grant caps what leaves the wallet, fee included.
+                let grant = self.take_grant(GrantPurpose::Spend {
+                    max_duffs: amount.saturating_add(fee),
+                })?;
                 let prepared = draft.prepare(grant).await.rpc()?;
                 let outcome = draft.broadcast(prepared).await.rpc()?;
                 Ok(Json::Str(outcome.txid))

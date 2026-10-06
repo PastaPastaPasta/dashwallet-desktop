@@ -4611,7 +4611,8 @@ public protocol TxDraftProtocol: AnyObject, Sendable {
     
     /**
      * Selects coins, builds, signs (through the vault, with a `Spend` grant
-     * that caps `external_sent`) and reserves the inputs. Never broadcasts.
+     * that caps what leaves the wallet, fee included) and reserves the
+     * inputs. Never broadcasts.
      */
     func prepare(grantId: String) async throws  -> PreparedTx
     
@@ -4774,7 +4775,8 @@ open func estimate()async throws  -> TxEstimate  {
     
     /**
      * Selects coins, builds, signs (through the vault, with a `Spend` grant
-     * that caps `external_sent`) and reserves the inputs. Never broadcasts.
+     * that caps what leaves the wallet, fee included) and reserves the
+     * inputs. Never broadcasts.
      */
 open func prepare(grantId: String)async throws  -> PreparedTx  {
     return
@@ -8262,12 +8264,12 @@ public struct PreparedTxSummary: Equatable, Hashable {
     public let totalSent: UInt64
     /**
      * Inputs minus outputs back to the wallet: what leaves the wallet,
-     * fee included.
+     * fee included; the figure a `Spend` grant caps.
      */
     public let totalDebit: UInt64
     /**
      * Paid to scripts the wallet does not own (recipients and a foreign
-     * change address), fee excluded: the figure a `Spend` grant caps.
+     * change address), fee excluded.
      */
     public let externalSent: UInt64
 
@@ -8279,11 +8281,11 @@ public struct PreparedTxSummary: Equatable, Hashable {
          */totalSent: UInt64, 
         /**
          * Inputs minus outputs back to the wallet: what leaves the wallet,
-         * fee included.
+         * fee included; the figure a `Spend` grant caps.
          */totalDebit: UInt64, 
         /**
          * Paid to scripts the wallet does not own (recipients and a foreign
-         * change address), fee excluded: the figure a `Spend` grant caps.
+         * change address), fee excluded.
          */externalSent: UInt64) {
         self.txid = txid
         self.fee = fee
@@ -15845,8 +15847,8 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case GrantInvalid
     /**
-     * Code `send.grant_exceeded`: `external_sent` is above the grant's
-     * `max_duffs`.
+     * Code `send.grant_exceeded`: what leaves the wallet (`external_sent`
+     * plus the fee) is above the grant's `max_duffs`.
      */
     case GrantExceeded(maxDuffs: UInt64
     )
@@ -20517,7 +20519,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_txdraft_estimate() != 55212) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_txdraft_prepare() != 57524) {
+    if (uniffi_dashwallet_core_checksum_method_txdraft_prepare() != 25310) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_txdraft_set_change() != 36375) {
