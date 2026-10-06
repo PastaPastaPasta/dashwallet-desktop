@@ -259,7 +259,7 @@ impl SessionHub {
         let before = state.balances();
         state.balance = *balance;
         for (t, b) in accounts {
-            state.accounts.insert(t.clone(), *b);
+            state.accounts.insert(*t, *b);
         }
         before != state.balances()
     }

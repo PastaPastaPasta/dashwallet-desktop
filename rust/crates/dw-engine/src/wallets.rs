@@ -107,6 +107,12 @@ impl NetworkSession {
         }
     }
 
+    /// Height up to which the wallet's compact filters have been scanned
+    /// (its filter checkpoint). In-memory read.
+    pub fn wallet_scan_height(&self, id: &WalletId) -> Option<u32> {
+        self.hub.wallet_state(id).map(|s| s.synced_height)
+    }
+
     /// Balance buckets; `None` while not known yet. In-memory read.
     pub fn balances(&self, id: &WalletId) -> Result<Option<WalletBalances>, EngineError> {
         let _op = self.try_enter()?;
@@ -191,9 +197,9 @@ impl NetworkSession {
             let live = this.live()?;
             this.require_wallet(&id)?;
             let vault = this.vault.clone();
-            let token =
-                tokio::task::spawn_blocking(move || vault.redeem_grant(&grant_id, GrantKind::Wipe))
-                    .await??;
+            // The grant is redeemed (consumed) before anything is deleted.
+            tokio::task::spawn_blocking(move || vault.redeem_grant(&grant_id, GrantKind::Wipe))
+                .await??;
 
             live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
@@ -209,7 +215,6 @@ impl NetworkSession {
                 appdb
                     .delete_wallet(&id.to_string())
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-                drop(token);
                 vault.delete_wallet_secret(&id.0)?;
                 Ok(())
             })

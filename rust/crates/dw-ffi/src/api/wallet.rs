@@ -4,7 +4,7 @@
 
 use zeroize::Zeroizing;
 
-use crate::api::common::{domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 use crate::{EngineError, NetworkSession};
 
 /// Core balance buckets in duffs.
@@ -15,6 +15,9 @@ pub struct WalletBalances {
     pub immature: u64,
     pub locked: u64,
     pub total: u64,
+    /// Spendable balance of the DIP9 CoinJoin accounts. dash-qt's "fully
+    /// mixed" rounds rule is not applied yet (CoinJoin is WS-06).
+    pub coinjoin: u64,
 }
 
 impl From<dw_engine::WalletBalances> for WalletBalances {
@@ -25,16 +28,9 @@ impl From<dw_engine::WalletBalances> for WalletBalances {
             immature: b.immature,
             locked: b.locked,
             total: b.total,
+            coinjoin: b.coinjoin,
         }
     }
-}
-
-/// M0 row of `list_wallets`; superseded by `WalletInfo`.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct WalletSummary {
-    /// 64-char lowercase hex.
-    pub wallet_id: String,
-    pub balances: WalletBalances,
 }
 
 /// BIP39 wordlists (IOS-007: restore in 10 languages).
@@ -77,8 +73,8 @@ pub struct MnemonicCheck {
 /// Options for `import_wallet`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
 pub struct ImportOptions {
-    /// Display name; `None` = engine default ("Wallet N"). Names live in
-    /// dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
+    /// Display name, 1–64 characters after trimming (`wallet.name_rejected`
+    /// otherwise); `None` = engine default ("Wallet N"). Stored in dw-appdb.
     pub name: Option<String>,
     /// First block to scan. `Some(0)` = genesis; `None` = SPV tip or latest
     /// checkpoint for a new phrase.
@@ -86,9 +82,11 @@ pub struct ImportOptions {
     /// Derive the seed with Dash Core's BIP39 quirks (weak checksum, no NFKD,
     /// salt cut at 256 bytes) via dw-compat (QT-104).
     pub core_compat: bool,
-    /// Address lookahead for the restore scan; `None` = engine default.
-    /// dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
-    /// gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
+    /// Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
+    /// for the restore scan; `None` = the default (30), or 1000 with
+    /// `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
+    /// memory only: a restart before the scan finishes continues with the
+    /// default gap beyond the addresses already derived.
     pub lookahead: Option<u32>,
 }
 
@@ -106,7 +104,24 @@ pub struct WalletInfo {
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device.
     pub created_at: Option<u64>,
-    pub balances: WalletBalances,
+    /// `None` until the scan has processed the wallet's birth block: an
+    /// unsynced wallet shows "unknown", not 0 DASH (review M-3).
+    pub balances: Option<WalletBalances>,
+}
+
+impl From<dw_engine::WalletInfo> for WalletInfo {
+    fn from(w: dw_engine::WalletInfo) -> Self {
+        Self {
+            wallet_id: w.wallet_id.to_string(),
+            name: w.name,
+            watch_only: w.watch_only,
+            has_mnemonic: w.has_mnemonic,
+            hd: w.hd,
+            birth_height: w.birth_height,
+            created_at: w.created_at,
+            balances: w.balances.map(Into::into),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -172,7 +187,8 @@ impl From<dw_engine::EngineError> for WalletError {
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
-            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            E::NameRejected(detail) => Self::NameRejected { detail },
             E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
                 Self::InvalidArgument { detail }
             }
@@ -200,6 +216,7 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::SpvNotRunning
             | E::TxNotFound(_)
             | E::GapLimit
+            | E::RequestNotFound(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }
@@ -316,9 +333,8 @@ impl NetworkSession {
     ///
     /// Over a registered wallet whose seed the vault lacks, the seed is
     /// stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
-    /// `NoVault`, `VaultLocked` (also when unlocked for mixing only).
-    /// `options.name` and `options.lookahead` are not supported yet and
-    /// return `NotImplemented`.
+    /// `NoVault`, `VaultLocked` (also when unlocked for mixing only),
+    /// `NameRejected`, `InvalidArgument` (lookahead outside 1..=1000).
     pub async fn import_wallet(
         &self,
         mnemonic: Vec<u8>,
@@ -327,12 +343,6 @@ impl NetworkSession {
     ) -> Result<String, WalletError> {
         let mnemonic = Zeroizing::new(mnemonic);
         let bip39_passphrase = Zeroizing::new(bip39_passphrase);
-        if options.name.is_some() {
-            return not_implemented("NetworkSession.import_wallet(options.name)");
-        }
-        if options.lookahead.is_some() {
-            return not_implemented("NetworkSession.import_wallet(options.lookahead)");
-        }
         let id = self
             .inner
             .import_wallet(
@@ -341,56 +351,53 @@ impl NetworkSession {
                 dw_engine::ImportOptions {
                     birth_height: options.birth_height,
                     core_compat: options.core_compat,
+                    name: options.name,
+                    lookahead: options.lookahead,
                 },
             )
             .await?;
         Ok(id.to_string())
     }
 
-    /// M0: registered wallets with balances. Superseded by `wallet_infos`.
-    pub fn list_wallets(&self) -> Result<Vec<WalletSummary>, EngineError> {
+    /// Every registered wallet on this network, in creation order. In-memory
+    /// read.
+    pub fn wallet_infos(&self) -> Result<Vec<WalletInfo>, WalletError> {
         Ok(self
             .inner
-            .list_wallets()?
+            .wallet_infos()?
             .into_iter()
-            .map(|w| WalletSummary {
-                wallet_id: w.wallet_id.to_string(),
-                balances: w.balances.into(),
-            })
+            .map(Into::into)
             .collect())
     }
 
-    /// Every registered wallet on this network, in creation order.
-    pub fn wallet_infos(&self) -> Result<Vec<WalletInfo>, WalletError> {
-        not_implemented("NetworkSession.wallet_infos")
-    }
-
     pub fn wallet_info(&self, wallet_id: String) -> Result<WalletInfo, WalletError> {
-        let _ = parse_wallet_id(&wallet_id)?;
-        not_implemented("NetworkSession.wallet_info")
-    }
-
-    /// Core balance buckets. In-memory read.
-    pub fn balances(&self, wallet_id: String) -> Result<WalletBalances, EngineError> {
         let id = parse_wallet_id(&wallet_id)?;
-        Ok(self.inner.balances(&id)?.into())
+        Ok(self.inner.wallet_info(&id)?.into())
     }
 
-    /// Unloads the wallet, deletes its wallet-state rows and its vault
-    /// records (IOS-109, QT-101 close+delete). Needs a `Wipe` grant.
+    /// Core balance buckets; `None` while not known yet (review M-3).
+    /// In-memory read.
+    pub fn balances(&self, wallet_id: String) -> Result<Option<WalletBalances>, EngineError> {
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.balances(&id)?.map(Into::into))
+    }
+
+    /// Unloads the wallet, deletes its wallet-state rows, its app metadata
+    /// and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
+    /// grant. Emits `WalletRemoved`.
     pub async fn remove_wallet(
         &self,
         wallet_id: String,
         grant_id: String,
     ) -> Result<(), WalletError> {
-        let _ = (parse_wallet_id(&wallet_id)?, grant_id);
-        not_implemented("NetworkSession.remove_wallet")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.remove_wallet(id, grant_id).await?)
     }
 
     /// Sets the display name (1–64 characters after trimming).
     pub async fn rename_wallet(&self, wallet_id: String, name: String) -> Result<(), WalletError> {
-        let _ = (parse_wallet_id(&wallet_id)?, name);
-        not_implemented("NetworkSession.rename_wallet")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.rename_wallet(id, name).await?)
     }
 }
 
@@ -471,7 +478,7 @@ mod tests {
 
         assert_eq!(vault.status().unwrap().state, VaultLockState::NoVault);
         assert!(matches!(import(genesis.clone()), Err(WalletError::NoVault)));
-        assert!(session.list_wallets().unwrap().is_empty());
+        assert!(session.wallet_infos().unwrap().is_empty());
 
         let status = rt
             .block_on(vault.create(Some(PASSPHRASE.to_vec())))
@@ -483,16 +490,42 @@ mod tests {
             state: VaultLockState::Unlocked,
         }));
 
-        let unsupported = import(ImportOptions {
-            lookahead: Some(1000),
+        let rejected = import(ImportOptions {
+            lookahead: Some(1001),
             ..genesis.clone()
         });
         assert!(
-            matches!(unsupported, Err(WalletError::NotImplemented { .. })),
-            "{unsupported:?}"
+            matches!(rejected, Err(WalletError::InvalidArgument { .. })),
+            "{rejected:?}"
+        );
+        let rejected = import(ImportOptions {
+            name: Some("".into()),
+            ..genesis.clone()
+        });
+        assert!(
+            matches!(rejected, Err(WalletError::NameRejected { .. })),
+            "{rejected:?}"
         );
 
-        let id = import(genesis.clone()).unwrap();
+        let id = import(ImportOptions {
+            name: Some("Main".into()),
+            ..genesis.clone()
+        })
+        .unwrap();
+        let infos = session.wallet_infos().unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].wallet_id, id);
+        assert_eq!(infos[0].name, "Main");
+        assert!(infos[0].has_mnemonic && !infos[0].watch_only && infos[0].hd);
+        assert_eq!(infos[0].balances, None, "not scanned yet");
+        assert_eq!(session.balances(id.clone()).unwrap(), None);
+        rt.block_on(session.rename_wallet(id.clone(), " Daily ".into()))
+            .unwrap();
+        assert_eq!(session.wallet_info(id.clone()).unwrap().name, "Daily");
+        assert!(matches!(
+            session.wallet_info(id.to_uppercase()),
+            Err(WalletError::InvalidArgument { .. })
+        ));
         assert_eq!(
             vault.status().unwrap().wallets_with_secrets,
             vec![id.clone()]
@@ -549,7 +582,7 @@ mod tests {
             .block_on(vault.authorize(GrantPurpose::RevealSecret, VaultCredential::Unencrypted))
             .unwrap();
         let signed = rt.block_on(session.sign_message(
-            id,
+            id.clone(),
             "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
             "hi".into(),
             grant.id,
@@ -558,6 +591,27 @@ mod tests {
             matches!(signed, Err(MessageError::AddressNotMine)),
             "{signed:?}"
         );
+
+        // Removal needs a Wipe grant; afterwards the wallet and its keys are gone.
+        assert!(matches!(
+            rt.block_on(session.remove_wallet(id.clone(), "no-such-grant".into())),
+            Err(WalletError::GrantInvalid)
+        ));
+        let wipe = rt
+            .block_on(vault.authorize(GrantPurpose::Wipe, VaultCredential::Unencrypted))
+            .unwrap();
+        rt.block_on(session.remove_wallet(id.clone(), wipe.id))
+            .unwrap();
+        assert!(session.wallet_infos().unwrap().is_empty());
+        assert!(vault.status().unwrap().wallets_with_secrets.is_empty());
+        assert!(rec.0.lock().unwrap().contains(&EngineEvent::WalletRemoved {
+            network: DashNetwork::Regtest,
+            wallet_id: id.clone(),
+        }));
+        assert!(matches!(
+            session.wallet_info(id),
+            Err(WalletError::WalletNotFound { .. })
+        ));
         rt.block_on(engine.shutdown()).unwrap();
         assert!(matches!(
             vault.status(),
