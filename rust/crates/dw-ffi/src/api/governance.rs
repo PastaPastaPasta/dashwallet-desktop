@@ -8,7 +8,7 @@
 //! nothing is shown as known before it synced: counts and tallies of a
 //! running sync come with its `GovernanceSyncState`.
 
-use crate::api::common::{ensure_open, not_implemented, parse_txid, parse_wallet_id};
+use crate::api::common::{parse_txid, parse_wallet_id};
 use crate::{DashNetwork, NetworkSession};
 use dw_governance::params;
 
@@ -457,21 +457,154 @@ fn parse_hash(hash: &str) -> Result<(), GovernanceError> {
     parse_txid(hash).map(|_| ()).map_err(Into::into)
 }
 
+use dw_engine::governance as g;
+
+impl From<g::GovernanceSyncPhase> for GovernanceSyncPhase {
+    fn from(p: g::GovernanceSyncPhase) -> Self {
+        match p {
+            g::GovernanceSyncPhase::Disabled => Self::Disabled,
+            g::GovernanceSyncPhase::Waiting => Self::Waiting,
+            g::GovernanceSyncPhase::SyncingObjects => Self::SyncingObjects,
+            g::GovernanceSyncPhase::SyncingVotes => Self::SyncingVotes,
+            g::GovernanceSyncPhase::Synced => Self::Synced,
+            g::GovernanceSyncPhase::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<g::GovernanceSyncState> for GovernanceSyncState {
+    fn from(s: g::GovernanceSyncState) -> Self {
+        Self {
+            phase: s.phase.into(),
+            objects: s.objects,
+            votes: s.votes,
+            peers: s.peers,
+            bytes_received: s.bytes_received,
+            last_synced_at: s.last_synced_at,
+        }
+    }
+}
+
+impl From<g::ProposalStatus> for ProposalStatus {
+    fn from(s: g::ProposalStatus) -> Self {
+        match s {
+            g::ProposalStatus::Funded => Self::Funded,
+            g::ProposalStatus::Lapsed => Self::Lapsed,
+            g::ProposalStatus::Confirming => Self::Confirming,
+            g::ProposalStatus::Pending => Self::Pending,
+            g::ProposalStatus::Passing => Self::Passing,
+            g::ProposalStatus::Failing => Self::Failing,
+            g::ProposalStatus::Voting => Self::Voting,
+            g::ProposalStatus::Unfunded => Self::Unfunded,
+        }
+    }
+}
+
+impl From<g::VoteOutcome> for VoteOutcome {
+    fn from(o: g::VoteOutcome) -> Self {
+        match o {
+            g::VoteOutcome::Yes => Self::Yes,
+            g::VoteOutcome::No => Self::No,
+            g::VoteOutcome::Abstain => Self::Abstain,
+        }
+    }
+}
+
+impl From<VoteOutcome> for g::VoteOutcome {
+    fn from(o: VoteOutcome) -> Self {
+        match o {
+            VoteOutcome::Yes => Self::Yes,
+            VoteOutcome::No => Self::No,
+            VoteOutcome::Abstain => Self::Abstain,
+        }
+    }
+}
+
+impl From<g::ProposalRow> for ProposalRow {
+    fn from(r: g::ProposalRow) -> Self {
+        Self {
+            hash: r.hash,
+            name: r.name,
+            url: r.url,
+            payment_address: r.payment_address,
+            payment_amount: r.payment_amount,
+            start_epoch: r.start_epoch,
+            end_epoch: r.end_epoch,
+            status: r.status.into(),
+            collateral_confirmations: r.collateral_confirmations,
+            yes: r.yes,
+            no: r.no,
+            abstain: r.abstain,
+            margin: r.margin,
+            my_votes: r.my_votes.map(|m| MyVotes {
+                yes: m.yes,
+                no: m.no,
+                abstain: m.abstain,
+                unvoted: m.unvoted,
+            }),
+        }
+    }
+}
+
+impl From<ProposalDraft> for g::ProposalDraft {
+    fn from(d: ProposalDraft) -> Self {
+        Self {
+            name: d.name,
+            url: d.url,
+            payment_address: d.payment_address,
+            payment_amount: d.payment_amount,
+            payment_count: d.payment_count,
+            first_superblock_height: d.first_superblock_height,
+        }
+    }
+}
+
+impl From<g::CollateralStatus> for CollateralStatus {
+    fn from(s: g::CollateralStatus) -> Self {
+        match s {
+            g::CollateralStatus::Unknown => Self::Unknown,
+            g::CollateralStatus::Pending => Self::Pending,
+            g::CollateralStatus::Ready => Self::Ready,
+        }
+    }
+}
+
+impl From<g::PendingProposal> for PendingProposal {
+    fn from(p: g::PendingProposal) -> Self {
+        Self {
+            hash: p.hash,
+            name: p.name,
+            url: p.url,
+            payment_amount: p.payment_amount,
+            payment_count: p.payment_count,
+            collateral_txid: p.collateral_txid,
+            collateral_status: p.collateral_status.into(),
+            confirmations: p.confirmations,
+            created_at: p.created_at,
+            end_epoch: p.end_epoch,
+        }
+    }
+}
+
+/// The stable code of a per-masternode vote failure (§4).
+fn vote_failure_code(f: &g::GovernanceFailure) -> String {
+    GovernanceError::from(dw_engine::EngineError::Governance(f.clone()))
+        .code_str()
+        .to_string()
+}
+
 #[uniffi::export]
 impl NetworkSession {
     /// In-memory read; re-query on `Governance` events.
     pub fn governance_sync_state(&self) -> Result<GovernanceSyncState, GovernanceError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.governance_sync_state")
+        Ok(self.inner.governance_sync_state()?.into())
     }
 
     /// Turns govsync on or off. The host turns it on while the Governance
     /// tab or the governance clock is shown (both opt-in in dash-qt), so a
     /// wallet that never shows governance never downloads it. Persisted.
     pub async fn set_governance_sync_enabled(&self, enabled: bool) -> Result<(), GovernanceError> {
-        let _ = enabled;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_governance_sync_enabled")
+        Ok(self.inner.set_governance_sync_enabled(enabled).await?)
     }
 
     /// The proposal list (QT-128/129), sorted by dash-qt's status order.
@@ -481,33 +614,60 @@ impl NetworkSession {
         &self,
         query: ProposalQuery,
     ) -> Result<Vec<ProposalRow>, GovernanceError> {
-        if let ProposalSource::Mine { wallet_id } = &query.source {
-            parse_wallet_id(wallet_id)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.proposals")
+        let source = match &query.source {
+            ProposalSource::Mine { wallet_id } => {
+                g::ProposalSource::Mine(parse_wallet_id(wallet_id)?)
+            }
+            ProposalSource::Active => g::ProposalSource::Active,
+        };
+        let rows = self
+            .inner
+            .proposals(g::ProposalQuery {
+                source,
+                title_filter: query.title_filter,
+            })
+            .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     pub async fn proposal_detail(&self, hash: String) -> Result<ProposalDetail, GovernanceError> {
         parse_hash(&hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.proposal_detail")
+        let d = self.inner.proposal_detail(hash).await?;
+        Ok(ProposalDetail {
+            row: d.row.into(),
+            parent_hash: d.parent_hash,
+            collateral_txid: d.collateral_txid,
+            created_at: d.created_at,
+            payments: d.payments,
+            raw_json: d.raw_json,
+        })
     }
 
     /// Masternodes that can vote on `hash`: those whose voting key a
-    /// wallet holds (all wallets, or `wallet_id`'s) or a tracked masternode
-    /// has attached (owner keys are never used, dash-qt §11.2).
+    /// wallet holds (all wallets, or `wallet_id`'s). Owner keys are never
+    /// used (dash-qt §11.2). Tracked masternodes with an attached voting key
+    /// are not offered: attached keys are R3's (`attach_masternode_key`).
     pub async fn voting_masternodes(
         &self,
         hash: String,
         wallet_id: Option<String>,
     ) -> Result<Vec<VotingMasternode>, GovernanceError> {
         parse_hash(&hash)?;
-        if let Some(w) = &wallet_id {
-            parse_wallet_id(w)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.voting_masternodes")
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        let mns = self.inner.voting_masternodes(hash, wallet).await?;
+        Ok(mns
+            .into_iter()
+            .map(|m| VotingMasternode {
+                pro_tx_hash: m.pro_tx_hash,
+                collateral: m.collateral,
+                voting_address: m.voting_address,
+                weight: m.weight,
+                current_vote: m.current_vote.map(Into::into),
+                vote_time: m.vote_time,
+                next_vote_at: m.next_vote_at,
+                label: m.label,
+            })
+            .collect())
     }
 
     /// Signs a funding vote for each masternode and relays it (QT-131).
@@ -521,22 +681,37 @@ impl NetworkSession {
         pro_tx_hashes: Vec<String>,
         grant_id: String,
     ) -> Result<Vec<VoteResult>, GovernanceError> {
-        let _ = (outcome, grant_id);
         parse_hash(&hash)?;
         for h in &pro_tx_hashes {
             parse_hash(h)?;
         }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.cast_votes")
+        let results = self
+            .inner
+            .cast_votes(hash, outcome.into(), pro_tx_hashes, grant_id)
+            .await?;
+        Ok(results
+            .into_iter()
+            .map(|r| VoteResult {
+                pro_tx_hash: r.pro_tx_hash,
+                error_code: r.failure.as_ref().map(vote_failure_code),
+                detail: r.detail.or_else(|| r.failure.map(|f| f.to_string())),
+            })
+            .collect())
     }
 
-    /// The next 12 superblocks with estimated times (Create Proposal
-    /// "Payment date"). Needs the chain tip (`governance.not_synced` before
-    /// headers synced).
+    /// The next superblocks with estimated times (Create Proposal
+    /// "Payment date"), `count` ≤ 12. Needs the chain tip
+    /// (`governance.not_synced` before headers synced).
     pub fn superblock_dates(&self, count: u32) -> Result<Vec<SuperblockDate>, GovernanceError> {
-        let _ = count;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.superblock_dates")
+        Ok(self
+            .inner
+            .superblock_dates(count)?
+            .into_iter()
+            .map(|d| SuperblockDate {
+                height: d.height,
+                estimated_time: d.estimated_time,
+            })
+            .collect())
     }
 
     /// Every rule of QT-132 that fails, in field order; empty = valid.
@@ -544,25 +719,24 @@ impl NetworkSession {
         &self,
         draft: ProposalDraft,
     ) -> Result<Vec<ProposalField>, GovernanceError> {
-        let _ = draft;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.validate_proposal")
+        Ok(self
+            .inner
+            .validate_proposal(&draft.into())?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// "View JSON": the data JSON with dash-qt's key order
     /// `name, payment_address, payment_amount, url, start_epoch, end_epoch,
     /// type`.
     pub fn proposal_json(&self, draft: ProposalDraft) -> Result<String, GovernanceError> {
-        let _ = draft;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.proposal_json")
+        Ok(self.inner.proposal_json(&draft.into())?)
     }
 
     /// "View Payload": the hex-encoded object data (≤ 512 bytes).
     pub fn proposal_payload_hex(&self, draft: ProposalDraft) -> Result<String, GovernanceError> {
-        let _ = draft;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.proposal_payload_hex")
+        Ok(self.inner.proposal_payload_hex(&draft.into())?)
     }
 
     /// Creates the proposal (`gobject prepare`): validates, builds and
@@ -575,10 +749,12 @@ impl NetworkSession {
         draft: ProposalDraft,
         grant_id: String,
     ) -> Result<PendingProposal, GovernanceError> {
-        let _ = (draft, grant_id);
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.create_proposal")
+        let wallet = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .create_proposal(wallet, draft.into(), grant_id)
+            .await?
+            .into())
     }
 
     /// Created, not yet submitted, unexpired proposals (Resume Proposals).
@@ -586,9 +762,14 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<Vec<PendingProposal>, GovernanceError> {
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.pending_proposals")
+        let wallet = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .pending_proposals(wallet)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// "Broadcast" (`gobject submit`): relays the object once its collateral
@@ -598,22 +779,50 @@ impl NetworkSession {
         wallet_id: String,
         hash: String,
     ) -> Result<String, GovernanceError> {
-        parse_wallet_id(&wallet_id)?;
+        let wallet = parse_wallet_id(&wallet_id)?;
         parse_hash(&hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.submit_proposal")
+        Ok(self.inner.submit_proposal(wallet, hash).await?)
     }
 
     /// The info panel (QT-134); `None` fields are not synced yet.
     pub async fn governance_info(&self) -> Result<GovernanceInfo, GovernanceError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.governance_info")
+        let i = self.inner.governance_info().await?;
+        Ok(GovernanceInfo {
+            sync: i.sync.into(),
+            superblock_cycle: i.superblock_cycle,
+            last_superblock: i.last_superblock,
+            next_superblock: i.next_superblock,
+            next_superblock_eta: i.next_superblock_eta,
+            voting_cutoff: i.voting_cutoff,
+            masternodes_voting: i.masternodes_voting,
+            masternodes_eligible: i.masternodes_eligible,
+            evonodes_voting: i.evonodes_voting,
+            evonodes_eligible: i.evonodes_eligible,
+            passing_threshold: i.passing_threshold,
+            masternodes_controlled: i.masternodes_controlled,
+            votes_controlled: i.votes_controlled,
+            proposal_count: i.proposal_count,
+            passing: i.passing,
+            failing: i.failing,
+            unfunded: i.unfunded,
+            unfunded_short: i.unfunded_short,
+            budget_available: i.budget_available,
+            budget_allocated: i.budget_allocated,
+        })
     }
 
     /// The clock (QT-026). Needs the chain tip only; `budget_committed`
     /// needs governance sync. In-memory read.
     pub fn governance_clock(&self) -> Result<GovernanceClock, GovernanceError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.governance_clock")
+        let c = self.inner.governance_clock()?;
+        Ok(GovernanceClock {
+            cycle_progress: c.cycle_progress,
+            next_superblock: c.next_superblock,
+            blocks_to_superblock: c.blocks_to_superblock,
+            superblock_eta: c.superblock_eta,
+            voting_cutoff: c.voting_cutoff,
+            voting_open: c.voting_open,
+            budget_committed: c.budget_committed,
+        })
     }
 }

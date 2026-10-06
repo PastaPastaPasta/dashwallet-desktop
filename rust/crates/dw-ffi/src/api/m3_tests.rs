@@ -200,19 +200,28 @@ fn coinjoin_stubs_check_arguments_then_report_not_implemented() {
     assert_code!(s.network_stats(), not_implemented: "NetworkSession.network_stats");
 }
 
+/// Governance answers from the session without SPV: sync off and on (the
+/// sync waits for a tip), calls that need the tip report
+/// `governance.not_synced`, unknown proposals `proposal_not_found`, and the
+/// info panel has only what needs no sync.
 #[test]
-fn governance_stubs_check_arguments_then_report_not_implemented() {
+fn test_qt_128_governance_without_a_tip_reports_what_it_lacks() {
     let f = fixture();
     let s = &f.session;
     let rt = &f.rt;
+    let phase = |s: &NetworkSession| s.governance_sync_state().unwrap().phase;
+    assert_eq!(phase(s), crate::GovernanceSyncPhase::Disabled);
+    let active = ProposalQuery {
+        source: ProposalSource::Active,
+        title_filter: None,
+    };
     assert_code!(
-        s.governance_sync_state(),
-        not_implemented: "NetworkSession.governance_sync_state"
+        rt.block_on(s.proposals(active.clone())),
+        "governance.sync_disabled"
     );
-    assert_code!(
-        rt.block_on(s.set_governance_sync_enabled(true)),
-        not_implemented: "NetworkSession.set_governance_sync_enabled"
-    );
+    rt.block_on(s.set_governance_sync_enabled(true)).unwrap();
+    assert_eq!(phase(s), crate::GovernanceSyncPhase::Waiting);
+    assert_code!(rt.block_on(s.proposals(active)), "governance.not_synced");
     let mine = |w: &str| ProposalQuery {
         source: ProposalSource::Mine {
             wallet_id: w.into(),
@@ -222,7 +231,7 @@ fn governance_stubs_check_arguments_then_report_not_implemented() {
     assert_code!(rt.block_on(s.proposals(mine("zz"))), "invalid_argument");
     assert_code!(
         rt.block_on(s.proposals(mine(WALLET))),
-        not_implemented: "NetworkSession.proposals"
+        "governance.not_synced"
     );
     assert_code!(
         rt.block_on(s.proposal_detail("zz".into())),
@@ -230,11 +239,15 @@ fn governance_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.proposal_detail(HASH.into())),
-        not_implemented: "NetworkSession.proposal_detail"
+        "governance.not_synced"
     );
     assert_code!(
         rt.block_on(s.voting_masternodes(HASH.into(), Some("zz".into()))),
         "invalid_argument"
+    );
+    assert_code!(
+        rt.block_on(s.voting_masternodes(HASH.into(), None)),
+        "governance.proposal_not_found"
     );
     assert_code!(
         rt.block_on(s.cast_votes(HASH.into(), VoteOutcome::Yes, vec!["zz".into()], "g".into())),
@@ -242,35 +255,37 @@ fn governance_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.cast_votes(HASH.into(), VoteOutcome::No, vec![HASH.into()], "g".into())),
-        not_implemented: "NetworkSession.cast_votes"
+        "governance.proposal_not_found"
     );
-    assert_code!(s.superblock_dates(12), not_implemented: "NetworkSession.superblock_dates");
-    assert_code!(
-        s.validate_proposal(draft()),
-        not_implemented: "NetworkSession.validate_proposal"
-    );
-    assert_code!(s.proposal_json(draft()), not_implemented: "NetworkSession.proposal_json");
-    assert_code!(
-        s.proposal_payload_hex(draft()),
-        not_implemented: "NetworkSession.proposal_payload_hex"
-    );
+    assert_code!(s.superblock_dates(13), "invalid_argument");
+    assert_code!(s.superblock_dates(12), "governance.not_synced");
+    assert_code!(s.validate_proposal(draft()), "governance.not_synced");
+    assert_code!(s.proposal_json(draft()), "governance.not_synced");
+    assert_code!(s.proposal_payload_hex(draft()), "governance.not_synced");
     assert_code!(
         rt.block_on(s.create_proposal(WALLET.into(), draft(), "g".into())),
-        not_implemented: "NetworkSession.create_proposal"
+        "governance.not_synced"
     );
     assert_code!(
         rt.block_on(s.pending_proposals(WALLET.into())),
-        not_implemented: "NetworkSession.pending_proposals"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.submit_proposal(WALLET.into(), "zz".into())),
         "invalid_argument"
     );
     assert_code!(
-        rt.block_on(s.governance_info()),
-        not_implemented: "NetworkSession.governance_info"
+        rt.block_on(s.submit_proposal(WALLET.into(), HASH.into())),
+        "wallet_not_found"
     );
-    assert_code!(s.governance_clock(), not_implemented: "NetworkSession.governance_clock");
+    let info = rt.block_on(s.governance_info()).unwrap();
+    assert_eq!(info.superblock_cycle, 20);
+    assert_eq!(info.next_superblock, None);
+    assert_eq!(info.proposal_count, None);
+    assert_eq!(info.masternodes_controlled, 0);
+    assert_code!(s.governance_clock(), "governance.not_synced");
+    rt.block_on(s.set_governance_sync_enabled(false)).unwrap();
+    assert_eq!(phase(s), crate::GovernanceSyncPhase::Disabled);
 }
 
 #[test]

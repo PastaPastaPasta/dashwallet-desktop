@@ -139,7 +139,7 @@ pub struct NetworkSession {
     /// Holds every wallet's seed (`<network dir>/vault`). platform-wallet
     /// registers wallets external-signable, so this is the only key material.
     pub(crate) vault: Vault,
-    spv_peers: Vec<SocketAddr>,
+    pub(crate) spv_peers: Vec<SocketAddr>,
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
     gate: OpGate,
@@ -158,6 +158,8 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// govsync, synced governance objects and the `Governance` event (M3 R2).
+    pub(crate) governance: crate::governance::GovernanceState,
 }
 
 impl NetworkSession {
@@ -286,6 +288,7 @@ impl NetworkSession {
             return Err(e.into());
         }
 
+        let network_core = network.core_network();
         let session = Arc::new(Self {
             network,
             data_dir,
@@ -308,6 +311,7 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            governance: crate::governance::GovernanceState::new(network_core),
         });
         if let Err(e) = std::fs::write(&marker, b"") {
             tracing::warn!(error = %e, "could not write the open-session marker");
@@ -318,6 +322,7 @@ impl NetworkSession {
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);
+        session.start_governance().await;
         // dash-qt backs a wallet up when it loads (QT-116); skipped while
         // the data key is not available.
         for id in manager.list_wallet_ids_blocking() {
@@ -532,6 +537,7 @@ impl NetworkSession {
     pub(crate) async fn close(&self) {
         let _closing = self.gate.close().await;
         self.cancel_relock();
+        self.governance.shutdown().await;
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(pump) = pump {
             let _ = pump.stop.send(true);
