@@ -5,7 +5,10 @@ Reuses the G2 probe's helpers (probes/crossui-linux/scripts/atspi_smoke.py).
 For each step it waits for the page's marker text, dumps the accessibility
 tree to atspi-<step>.txt and saves a screenshot <step>.png. A step written
 NAME=select:ITEM first selects ITEM in the sidebar list through the AT-SPI
-Selection interface. Results are appended to atspi-checks.json.
+Selection interface. NAME=flow:onboarding and NAME=flow:send drive a whole
+flow through AT-SPI (EditableText to type into fields found by their
+accessible name, Action to press buttons) and record a tree and screenshot
+at each stage. Results are appended to atspi-checks.json.
 
 Usage: atspi_demo.py --pid PID --out DIR --steps 1-overview,2-send=select:Send
 """
@@ -13,6 +16,7 @@ Usage: atspi_demo.py --pid PID --out DIR --steps 1-overview,2-send=select:Send
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -31,6 +35,12 @@ MARKERS = {
     "receive": "Request payment",
     "onboarding": "Create a new wallet",
 }
+# A valid testnet address that is not one of the demo wallet's own.
+PAY_TO = "yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98"
+DEMO_PASSPHRASE = "demo"
+NEW_PASSPHRASE = "correct horse battery staple 42"
+# The demo's "new wallet" is BIP39 test vector 1: abandon x11, about.
+DEMO_WORDS = ["abandon"] * 11 + ["about"]
 SIDEBAR = ["Overview", "Send", "Receive", "Transactions"]
 
 
@@ -53,6 +63,118 @@ def screenshot(out_dir, step):
     pipeline = f"{source} | xwdtopnm 2>/dev/null | pnmtopng > '{path}'"
     ok = subprocess.run(["sh", "-c", pipeline]).returncode == 0
     print(f"== screenshot {path} ({'window ' + window if window else 'root'}): {'ok' if ok else 'FAILED'}", flush=True)
+
+
+def has_text_prefix(value):
+    def predicate(_node, info):
+        return info["name"].startswith(value) or info.get("text", "").startswith(value)
+    return predicate
+
+
+def record(app, out_dir, step, secret_phrase=False):
+    """Tree dump and screenshot of the current state. With `secret_phrase`
+    (a live wallet's recovery phrase is on screen) the words are masked in the
+    dump and no screenshot is taken."""
+    time.sleep(1.0)  # let layout settle before the screenshot
+    lines, nodes = walk(app)
+    if secret_phrase:
+        lines = [re.sub(r'"(\d+)\. \S+"', r'"\1. ****"', line) for line in lines]
+        lines = [re.sub(r'text="(\d+)\. \S+"', r'text="\1. ****"', line) for line in lines]
+    with open(os.path.join(out_dir, f"atspi-{step}.txt"), "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"== {step}: dumped {len(nodes)} nodes", flush=True)
+    if not secret_phrase:
+        screenshot(out_dir, step)
+    return nodes
+
+
+def press(report, app, title, timeout=15):
+    """Presses the first sensitive push button named `title` (AT-SPI Action)."""
+    hits = wait_for(app, lambda n, i: i["role"] in ("push button", "button") and i["name"] == title
+                    and "sensitive" in i["states"], timeout=timeout)
+    action = safe(lambda: hits[0][0].queryAction()) if hits else None
+    ok = action is not None and bool(safe(lambda: action.doAction(0), False))
+    report.check("hard", f"press '{title}' through AT-SPI Action", ok)
+    return ok
+
+
+def type_into(report, app, field, value, timeout=15):
+    """Types into the editable field whose accessible name is `field` (AT-SPI EditableText)."""
+    hits = wait_for(app, lambda n, i: i["role"] in ("text", "entry", "password text") and i["name"] == field
+                    and "editable" in i["states"], timeout=timeout)
+    editable = safe(lambda: hits[0][0].queryEditableText()) if hits else None
+    ok = editable is not None and bool(safe(lambda: editable.setTextContents(value), False))
+    report.check("hard", f"type into the field named '{field}' through AT-SPI EditableText", ok,
+                 "" if hits else "no editable field with that name")
+    return ok
+
+
+def onboarding_flow(report, app, out_dir, step):
+    """Onboarding on a network without wallets (`--demo onboarding`, or live
+    mode on an empty data directory): create, show phrase, verify, encrypt,
+    wallet ready. The words to verify are read from the phrase page."""
+    report.check("hard", "onboarding: welcome page", bool(wait_for(app, has_text("Create a new wallet"), 30)))
+    if not press(report, app, "Create a new wallet"):
+        return
+    shown = wait_for(app, has_text("I wrote it down"), 15)
+    report.check("hard", "onboarding: recovery phrase page", bool(shown))
+    nodes = record(app, out_dir, f"{step}-phrase", secret_phrase="live" in step)
+    words = {}
+    for _n, info, _d in nodes:
+        match = re.fullmatch(r"(\d+)\. (\S+)", info["name"] or info.get("text", ""))
+        if match:
+            words[int(match.group(1))] = match.group(2)
+    report.check("hard", "onboarding: the phrase page exposes 12 numbered words", len(words) == 12, str(len(words)))
+    if not press(report, app, "I wrote it down"):
+        return
+    for _ in range(8):
+        header = wait_for(app, has_text_prefix("Select word #"), 5)
+        if not header:
+            break
+        text = header[0][1]["name"] or header[0][1].get("text", "")
+        position = int(text.rsplit("#", 1)[1])
+        if not press(report, app, words.get(position, DEMO_WORDS[position - 1])):
+            return
+        time.sleep(0.5)
+    report.check("hard", "onboarding: phrase verified, passphrase page shown",
+                 bool(wait_for(app, has_text("Encrypt wallet"), 15)))
+    record(app, out_dir, f"{step}-passphrase")
+    if not (type_into(report, app, "New passphrase", NEW_PASSPHRASE)
+            and type_into(report, app, "Repeat new passphrase", NEW_PASSPHRASE)):
+        return
+    if not press(report, app, "Encrypt wallet"):
+        return
+    # Live mode creates the vault with the engine's key derivation (debug build).
+    ready = wait_for(app, has_text("Balances"), 300 if "live" in step else 60)
+    report.check("hard", "onboarding: the new wallet's Overview is shown", bool(ready))
+    record(app, out_dir, f"{step}-done")
+
+
+def send_flow(report, app, out_dir, step):
+    """`--demo --page send`: fill a payment, review it (authorize if asked), confirm, done."""
+    report.check("hard", "send: page shown", bool(wait_for(app, has_text("Pay To:"), 30)))
+    if not (type_into(report, app, "Pay To", PAY_TO) and type_into(report, app, "Amount", "0.25")):
+        return
+    record(app, out_dir, f"{step}-filled")
+    if not press(report, app, "Send"):
+        return
+    stage = wait_for(app, lambda n, i: (i["role"] == "push button" and i["name"] == "Authorize")
+                     or has_text("Confirm send coins")(n, i), 20)
+    if stage and stage[0][1]["name"] == "Authorize":
+        record(app, out_dir, f"{step}-authorize")
+        if not (type_into(report, app, "Passphrase", DEMO_PASSPHRASE) and press(report, app, "Authorize")):
+            return
+    review = wait_for(app, has_text("Confirm send coins"), 20)
+    report.check("hard", "send: review (confirm) panel shown", bool(review))
+    nodes = record(app, out_dir, f"{step}-review")
+    lines = [i.get("text") or i["name"] for _n, i, _d in nodes if i["role"] in ("label", "static")]
+    report.check("hard", "send: review lists the recipient address", any(PAY_TO in line for line in lines))
+    time.sleep(3.5)  # the confirm button counts down 3 s (QT-067)
+    if not press(report, app, "Send"):
+        return
+    done = wait_for(app, has_text_prefix("Transaction sent:"), 20)
+    report.check("hard", "send: demo broadcast reports the transaction as sent", bool(done))
+    record(app, out_dir, f"{step}-done")
 
 
 def sidebar(app):
@@ -105,6 +227,9 @@ def main():
 
     for step in args.steps.split(","):
         step_name, _, action = step.partition("=")
+        if action.startswith("flow:"):
+            {"onboarding": onboarding_flow, "send": send_flow}[action[len("flow:"):]](report, app, args.out, step_name)
+            continue
         if action.startswith("select:"):
             item = action[len("select:"):]
             listbox, texts = sidebar(app)
@@ -116,18 +241,21 @@ def main():
         marker = MARKERS[step_name.split("-", 1)[1]]
         found = wait_for(app, has_text(marker), timeout=30)
         report.check("hard", f"{step_name}: marker text '{marker}' is exposed", bool(found))
-        time.sleep(1.0)  # let layout settle before the screenshot
-        lines, nodes = walk(app)
-        with open(os.path.join(args.out, f"atspi-{step_name}.txt"), "w") as fh:
-            fh.write("\n".join(lines) + "\n")
-        print(f"== {step_name}: dumped {len(nodes)} nodes", flush=True)
-        screenshot(args.out, step_name)
+        nodes = record(app, args.out, step_name)
         stats = summarize(nodes)
         report.check("soft", f"{step_name}: control naming", True, json.dumps(stats))
         if step_name.endswith("overview") or step_name.endswith("send"):
             _listbox, texts = sidebar(app)
             report.check("hard", f"{step_name}: sidebar list items {SIDEBAR}", all(t in texts for t in SIDEBAR),
                          str(texts))
+        if step_name.endswith("send") or step_name.endswith("overview"):
+            unnamed = [i["role"] for _n, i, _d in nodes
+                       if i["role"] in ("text", "password text", "check box", "combo box") and not i["name"]]
+            report.check("hard", f"{step_name}: every entry, switch and picker has an accessible name",
+                         not unnamed, str(unnamed))
+            rows = [i["name"] for _n, i, _d in nodes if i["role"] == "list item"]
+            report.check("hard", f"{step_name}: every list row has an accessible name",
+                         bool(rows) and all(rows), str(rows[:6]))
         if step_name.endswith("send"):
             buttons = {info["name"] for _n, info, _d in nodes if info["role"] == "push button"}
             for title in ("Send", "Add Recipient", "Clear All", "Use available balance"):

@@ -53,4 +53,40 @@ session demo "1-overview,2-send=select:Send" --demo
 session transactions "3-transactions" --demo --page transactions
 session receive "4-receive" --demo --page receive
 session onboarding "5-onboarding" --demo onboarding
+# Whole flows driven through AT-SPI (typing into named fields, pressing buttons).
+session onboarding-flow "6-onboarding=flow:onboarding" --demo onboarding
+session send-flow "7-send=flow:send" --demo --page send
+
+# Live mode on the real engine: data root from XDG_DATA_HOME, regtest with no
+# reachable node. Creates a wallet through the onboarding flow, then closes
+# the window the way a window manager would and checks that the engine was
+# shut down before the process exited.
+live() {
+  export XDG_DATA_HOME=/tmp/xdg-live
+  rm -rf "$XDG_DATA_HOME"
+  "$BIN" --network regtest --dapi http://127.0.0.1:1 --connect 127.0.0.1:1 >"$OUT/app-live.log" 2>&1 &
+  local pid=$!
+  echo "== live: launched dash-wallet (pid $pid), XDG_DATA_HOME=$XDG_DATA_HOME"
+  python3 /work/ci/linux/crossui/atspi_demo.py --pid "$pid" --out "$OUT" --steps "8-live=flow:onboarding" || status=$?
+  echo "== live: data root contents"; (cd "$XDG_DATA_HOME" && find . -maxdepth 2 | sort)
+  if [[ -d "$XDG_DATA_HOME/dashwallet/regtest" ]]; then
+    echo "== live: PASS regtest data under \$XDG_DATA_HOME/dashwallet"
+  else
+    echo "== live: FAIL no \$XDG_DATA_HOME/dashwallet/regtest"; status=2
+  fi
+  python3 /work/ci/linux/crossui/close_window.py "Dash Wallet" || status=2
+  local code=timeout
+  for _ in $(seq 60); do
+    if ! kill -0 "$pid" 2>/dev/null; then code=0; wait "$pid" || code=$?; break; fi
+    sleep 0.5
+  done
+  echo "== live: exit after window close: $code"
+  if [[ "$code" == timeout ]]; then kill "$pid" 2>/dev/null || true; status=2; fi
+  if grep -q "engine shut down" "$OUT/app-live.log"; then
+    echo "== live: PASS engine shut down before exit"
+  else
+    echo "== live: FAIL no engine shutdown message"; status=2
+  fi
+}
+live
 exit "$status"

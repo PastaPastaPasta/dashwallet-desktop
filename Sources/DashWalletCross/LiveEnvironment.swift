@@ -54,6 +54,7 @@ final class LiveSession {
         Task { @MainActor in
             do throws(ServiceError) {
                 try await runtime.shutdown()
+                FileHandle.standardError.write(Data("dash-wallet: engine shut down\n".utf8))
             } catch {
                 FileHandle.standardError.write(Data("dash-wallet: engine shutdown failed: \(error.code)\n".utf8))
             }
