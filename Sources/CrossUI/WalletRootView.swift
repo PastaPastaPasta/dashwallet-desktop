@@ -118,7 +118,7 @@ struct MainSplitView: View {
             case .send:
                 if let send = main.send { SendScreen(model: send, state: state) }
             case .receive:
-                if let receive = main.receive { ReceiveScreen(model: receive) }
+                if let receive = main.receive { ReceiveScreen(model: receive, state: state) }
             case .transactions:
                 if let transactions = state.transactions() { TransactionsScreen(model: transactions, state: state) }
             case .coinJoin, .masternodes, .governance, .contacts, .explore:

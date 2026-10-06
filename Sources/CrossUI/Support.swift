@@ -451,6 +451,16 @@ enum CrossStrings {
     static let advancedOptions = "Advanced options"
     static let hideAdvancedOptions = "Hide advanced options"
     static let welcomeSubtitle = "A wallet for Dash on your desktop."
+    static let balanceLabel = "Balance:"  // dash-qt
+    static let listMode = "List"
+    static let tableMode = "Table"
+    static let resendUnavailable = "Only an unconfirmed transaction this wallet sent can be resent."
+    static let abandonUnavailable = "Only a transaction that is not in the memory pool or a block can be abandoned."
+    static let transactionFeeTitle = "Transaction Fee"  // dash-qt
+    static let transactionSent = "Transaction sent"
+    static let recipient = "Recipient"
+    static let receivingAddress = "Your receiving address"
+    static let walletLocked = "Your wallet is locked"
     static func syncPercent(_ value: Double) -> String { String(format: "Syncing %.1f%%", value * 100) }
     static func transactionCount(_ count: Int) -> String { count == 1 ? "1 transaction" : "\(count) transactions" }
 

@@ -410,6 +410,49 @@ public struct WizardHeader: View {
     }
 }
 
+/// The outcome of an operation (C24): a large status icon, the title, an
+/// optional detail (a txid is technical text: `monospacedDetail`) and one
+/// button.
+public struct ResultCard: View {
+    let icon: DashIconToken
+    let title: String
+    let detail: String?
+    let monospacedDetail: Bool
+    let buttonTitle: String
+    let action: @MainActor @Sendable () -> Void
+
+    public init(
+        icon: DashIconToken, title: String, detail: String?, monospacedDetail: Bool = false, buttonTitle: String,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        self.icon = icon
+        self.title = title
+        self.detail = detail
+        self.monospacedDetail = monospacedDetail
+        self.buttonTitle = buttonTitle
+        self.action = action
+    }
+
+    public var body: some View {
+        DashCard(padding: points(DashSpacing.xxl)) {
+            VStack(spacing: points(DashSpacing.m)) {
+                DashIcon(icon, size: 60, width: 60)
+                Text(title)
+                    .dashFont(.title3)
+                    .dashForeground(CrossRole.textPrimary)
+                if let detail {
+                    Text(detail)
+                        .font(monospacedDetail ? DashTextStyle.footnote.font.monospaced() : DashTextStyle.footnote.font)
+                        .dashForeground(CrossRole.textSecondary)
+                        .textSelectionEnabled()
+                }
+                DashButton(buttonTitle, style: .filledBlue, size: .large, action: action)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
 /// A hairline between rows or sections.
 public struct Hairline: View {
     public init() {}

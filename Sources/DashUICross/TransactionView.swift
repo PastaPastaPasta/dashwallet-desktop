@@ -9,7 +9,7 @@ import SwiftCrossUI
 public enum TransactionDirection: Sendable, Hashable {
     case incoming, outgoing, internalTransfer, mixing, mined, failed
 
-    var icon: DashIconToken {
+    public var icon: DashIconToken {
         switch self {
         case .incoming: .txReceived
         case .outgoing: .txSent
