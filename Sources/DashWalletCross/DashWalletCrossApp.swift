@@ -95,11 +95,15 @@ enum CrossDemoText {
 
 /// Runs `LiveSession.shutdownBeforeExit()` on the way out:
 /// - macOS (AppKitBackend): on `NSApplication.willTerminateNotification`.
-/// - Linux (GtkBackend): when the window is destroyed, and on the
-///   GApplication's "shutdown" signal, which GLib emits when the main loop
-///   ends. The Xvfb run of 2026-10-05 showed the window hook alone did not
-///   run before the process exited (RESULTS.md); the signal hook was added
-///   after that run and has not run on Linux yet.
+/// - Linux (GtkBackend): on the GApplication's "shutdown" signal, which
+///   `g_application_run` emits after the main loop ends (the last window
+///   was closed or the application quit), before it returns.
+///   The window's "destroy" signal is not used: in GTK 4 it is emitted only
+///   when the window is disposed, and SwiftCrossUI 0.10 keeps a reference to
+///   every window it created (`GtkBackend.windows`, plus the wrapper's own
+///   `g_object_ref`), so a closed window is never disposed while the app
+///   runs. That is why the Xvfb run of 2026-10-05 never printed
+///   "engine shut down" (RESULTS.md).
 /// - Windows (WinUIBackend): not hooked yet; the process exits without the
 ///   engine's orderly shutdown.
 @MainActor
@@ -118,7 +122,9 @@ final class QuitHook {
     }
 
     func appClosing() {
-        session?.shutdownBeforeExit()
+        guard let session else { return }
+        FileHandle.standardError.write(Data("dash-wallet: shutting the engine down\n".utf8))
+        session.shutdownBeforeExit()
     }
 
     #if os(Linux)
@@ -155,7 +161,7 @@ struct LiveStartView: View {
     @State var failure: String?
 
     var body: some View {
-        content.hookWindowDestroy(quitHook)
+        content.hookApplicationShutdown(quitHook)
     }
 
     @ViewBuilder
@@ -243,15 +249,12 @@ extension LiveStartView {
 }
 
 extension View {
-    /// Tells `hook` when the GTK window is destroyed or the GTK application
+    /// Tells `hook` when the GTK application that owns this view's window
     /// shuts down (Linux only).
     @ViewBuilder
-    func hookWindowDestroy(_ hook: QuitHook) -> some View {
+    func hookApplicationShutdown(_ hook: QuitHook) -> some View {
         #if os(Linux)
             inspectWindow { window in
-                window.onDestroy = { [weak hook] _ in
-                    MainActor.assumeIsolated { hook?.appClosing() }
-                }
                 hook.connectApplicationShutdown(of: window)
             }
         #else

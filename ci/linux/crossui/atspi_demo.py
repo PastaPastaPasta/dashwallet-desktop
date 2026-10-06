@@ -5,8 +5,9 @@ Reuses the G2 probe's helpers (probes/crossui-linux/scripts/atspi_smoke.py).
 For each step it waits for the page's marker text, dumps the accessibility
 tree to atspi-<step>.txt and saves a screenshot <step>.png. A step written
 NAME=select:ITEM first selects ITEM in the sidebar list through the AT-SPI
-Selection interface. NAME=flow:onboarding and NAME=flow:send drive a whole
-flow through AT-SPI (EditableText to type into fields found by their
+Selection interface. NAME=flow:onboarding, flow:send, flow:tools (peers page,
+unit selector, address-book QR code) and flow:overlay (sync overlay, Hide)
+drive a whole flow through AT-SPI (EditableText to type into fields found by their
 accessible name, Action to press buttons) and record a tree and screenshot
 at each stage. Results are appended to atspi-checks.json.
 
@@ -39,8 +40,9 @@ MARKERS = {
 PAY_TO = "yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98"
 DEMO_PASSPHRASE = "demo"
 NEW_PASSPHRASE = "correct horse battery staple 42"
-# The demo's "new wallet" is BIP39 test vector 1: abandon x11, about.
-DEMO_WORDS = ["abandon"] * 11 + ["about"]
+# The demo's "new wallet" phrase (WalletDemo DemoEnvironment.phrase, first 12).
+DEMO_WORDS = ["galaxy", "rocket", "velvet", "harbor", "tiny", "maple", "oyster", "crane", "sunset", "ribbon",
+              "empty", "above"]
 SIDEBAR = ["Overview", "Send", "Receive", "Transactions"]
 
 
@@ -181,6 +183,56 @@ def send_flow(report, app, out_dir, step):
     record(app, out_dir, f"{step}-done")
 
 
+def tools_flow(report, app, out_dir, step):
+    """`--demo`: the status row's unit selector, the peers page from its peer
+    count (QT-147), then Show QR in the address book (QT-095)."""
+    report.check("hard", "tools: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    unit = wait_for(app, lambda n, i: i["role"] == "combo box" and i["name"] == "Unit to show amounts in", 15)
+    report.check("hard", "tools: status-row unit selector is a combo box named 'Unit to show amounts in'", bool(unit))
+    peers_button = wait_for(app, lambda n, i: i["role"] == "push button" and re.fullmatch(r"\d+ peers", i["name"] or ""), 15)
+    report.check("hard", "tools: status-row peers button", bool(peers_button),
+                 peers_button[0][1]["name"] if peers_button else "")
+    if not peers_button or not press(report, app, peers_button[0][1]["name"]):
+        return
+    shown = wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Change Peers", 15)
+    report.check("hard", "tools: peers page with 'Change Peers'", bool(shown))
+    rows = wait_for(app, lambda n, i: i["role"] == "list item" and (i["name"] or "").startswith("203.0.113."), 15)
+    report.check("hard", "tools: peer rows are named after their address", bool(rows), rows[0][1]["name"] if rows else "")
+    record(app, out_dir, f"{step}-peers")
+    if not press(report, app, "Close"):
+        return
+    if not press(report, app, "Address Book"):
+        return
+    qr_button = wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Show QR", 15)
+    report.check("hard", "tools: address book lists entries with 'Show QR'", bool(qr_button))
+    if not qr_button or not press(report, app, "Show QR"):
+        return
+    uri = wait_for(app, has_text_prefix("dash:y"), 15)
+    report.check("hard", "tools: the entry's QR code and dash: URI are shown", bool(uri)
+                 and bool(wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Hide QR", 5)),
+                 (uri[0][1].get("text") or uri[0][1]["name"]) if uri else "")
+    _lines, nodes = walk(app)
+    names = [i["name"] for _n, i, _d in nodes if i["role"] == "combo box"]
+    report.check("hard", "tools: the address-list picker is named 'Address list'", "Address list" in names, str(names))
+    record(app, out_dir, f"{step}-qr")
+
+
+def overlay_flow(report, app, out_dir, step):
+    """`--demo offline`: SPV has no peers and is three days behind, so the
+    sync overlay (QT-027) shows by itself; Hide returns to the wallet."""
+    shown = wait_for(app, has_text("Recent transactions may not yet be visible"), 30)
+    report.check("hard", "overlay: shown by itself while the tip is old", bool(shown))
+    for label in ("Number of blocks left", "Last block time", "Progress increase per hour"):
+        report.check("hard", f"overlay: row '{label}'", bool(wait_for(app, has_text(label), 5)))
+    record(app, out_dir, f"{step}-shown")
+    if not press(report, app, "Hide"):
+        return
+    report.check("hard", "overlay: Hide returns to the wallet", bool(wait_for(app, has_text("Balances"), 15)))
+    report.check("hard", "overlay: status row offers 'Sync details'",
+                 bool(wait_for(app, lambda n, i: i["role"] == "push button" and i["name"] == "Sync details", 10)))
+    record(app, out_dir, f"{step}-hidden")
+
+
 def sidebar(app):
     for node, _info in find_all(app, lambda n, i: is_list_container(i)):
         items = list_items(node)
@@ -232,7 +284,8 @@ def main():
     for step in args.steps.split(","):
         step_name, _, action = step.partition("=")
         if action.startswith("flow:"):
-            {"onboarding": onboarding_flow, "send": send_flow}[action[len("flow:"):]](report, app, args.out, step_name)
+            flows = {"onboarding": onboarding_flow, "send": send_flow, "tools": tools_flow, "overlay": overlay_flow}
+            flows[action[len("flow:"):]](report, app, args.out, step_name)
             continue
         if action.startswith("select:"):
             item = action[len("select:"):]

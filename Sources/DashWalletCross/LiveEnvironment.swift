@@ -44,7 +44,9 @@ final class LiveSession {
     /// Stops SPV, closes the session and releases the engine, waiting for it
     /// on the main thread (at most `timeout`). For quit paths that must not
     /// return before the engine is down: AppKit's `willTerminate` and the
-    /// GTK window's `destroy`. Runs once; later calls return at once.
+    /// GApplication's `shutdown` signal. The main actor's jobs run on the
+    /// main dispatch queue, which `RunLoop.main` drains here (the GLib main
+    /// loop has already ended on Linux). Runs once; later calls return at once.
     func shutdownBeforeExit(timeout: TimeInterval = 15) {
         guard !shutdownStarted else { return }
         shutdownStarted = true

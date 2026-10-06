@@ -56,6 +56,9 @@ session onboarding "5-onboarding" --demo onboarding
 # Whole flows driven through AT-SPI (typing into named fields, pressing buttons).
 session onboarding-flow "6-onboarding=flow:onboarding" --demo onboarding
 session send-flow "7-send=flow:send" --demo --page send
+# Status-row unit selector, peers page and address-book QR code; the sync overlay.
+session tools-flow "9-tools=flow:tools" --demo
+session overlay-flow "10-overlay=flow:overlay" --demo offline
 
 # Live mode on the real engine: data root from XDG_DATA_HOME, regtest with no
 # reachable node. Creates a wallet through the onboarding flow, then closes
