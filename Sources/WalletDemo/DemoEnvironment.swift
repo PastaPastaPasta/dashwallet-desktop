@@ -54,7 +54,41 @@ public enum DemoEnvironment {
         scenario: DemoScenario, network: DashNetwork = .testnet, screenCapture: (any ScreenCaptureGuard)? = nil,
         timing: Timing = Timing()
     ) -> AppEnvironment {
+        environment(world: DemoWorld(network: network, scenario: scenario, now: timing.now), screenCapture: screenCapture, timing: timing)
+    }
+
+    /// The M1 environment and the M2 services over one shared world. OS
+    /// services default to inert demo ones (no autostart, notifications,
+    /// files); the apps pass their real clipboard and the rest as needed.
+    @MainActor
+    public static func makeWithM2(
+        scenario: DemoScenario, network: DashNetwork = .testnet, screenCapture: (any ScreenCaptureGuard)? = nil,
+        timing: Timing = Timing(), launchOptions: LaunchOptions = LaunchOptions(),
+        platform: DemoPlatformServices = DemoPlatformServices(), desktopPlatform: DesktopPlatform = .current
+    ) -> (env: AppEnvironment, m2: M2Services) {
         let world = DemoWorld(network: network, scenario: scenario, now: timing.now)
+        let env = environment(world: world, screenCapture: screenCapture, timing: timing)
+        let m2 = DemoM2World(world: world)
+        let services = M2Services(
+            walletLifecycle: DemoWalletLifecycle(m2: m2), transactionActions: DemoTransactionActions(m2: m2),
+            fees: DemoFees(world: world), fileImporter: DemoFileImporter(), coreExporter: DemoCoreExporter(world: world),
+            backups: DemoBackups(m2: m2), psbt: DemoPSBT(), nodeInformation: DemoNodeInformation(m2: m2),
+            peerModeration: DemoPeerModeration(m2: m2, sync: DemoSync(world: world)), repair: DemoRepair(m2: m2),
+            console: DemoConsole(m2: m2), logs: DemoLogs(), quickUnlock: DemoQuickUnlock(),
+            autoLock: DemoAutoLock(m2: m2), vaultRecovery: DemoVaultRecovery(m2: m2), startup: DemoStartup(),
+            shutdown: DemoShutdown(), shellSettings: DemoShellSettings(m2: m2), launchArguments: DemoLaunchArguments(),
+            launchOptions: launchOptions, desktopPreferences: DemoDesktopPreferences(m2: m2),
+            dustProtection: DemoDustProtection(m2: m2), optionsReset: DemoOptionsReset(m2: m2),
+            paymentAuthentication: DemoPaymentAuthentication(m2: m2), launchAtLogin: platform.launchAtLogin,
+            notifications: platform.notifications, clipboard: platform.clipboard, fileRevealer: platform.fileRevealer,
+            dataDirectories: platform.dataDirectories, platform: desktopPlatform)
+        return (env, services)
+    }
+
+    @MainActor
+    private static func environment(
+        world: DemoWorld, screenCapture: (any ScreenCaptureGuard)?, timing: Timing
+    ) -> AppEnvironment {
         let active = world.activeNetwork
         let uri = EngineFunctions.uriHandler(network: { active.current })
         let settings = DemoSettings(world: world)

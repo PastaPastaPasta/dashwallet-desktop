@@ -57,6 +57,9 @@ struct DemoLedger: Sendable {
     /// Receive addresses handed out by `nextAddress` or a payment request.
     private var issued: Set<Int> = []
     var txLabels: [String: String] = [:]
+    /// Transactions abandoned with dash-qt's Abandon (M2): shown as
+    /// Abandoned, not counted toward the balance.
+    var abandoned: Set<String> = []
     var addressBook: [AddressBookEntry] = []
     var requests: [ReceiveRequest] = []
     private var nextRequestID: UInt64 = 1
@@ -287,7 +290,9 @@ struct DemoLedger: Sendable {
     }
 
     private func record(of tx: DemoTransaction) -> TxRecord {
-        let kind: TxStatusKind = tx.confirmations == 0 ? .unconfirmed : (tx.confirmations < 6 ? .confirming : .confirmed)
+        let isAbandoned = abandoned.contains(tx.txid)
+        let kind: TxStatusKind = isAbandoned
+            ? .abandoned : tx.confirmations == 0 ? .unconfirmed : (tx.confirmations < 6 ? .confirming : .confirmed)
         let status = TxStatus(
             kind: kind, confirmations: tx.confirmations, instantLocked: tx.instantLocked,
             chainLocked: kind == .confirmed, maturesIn: nil)
@@ -304,7 +309,7 @@ struct DemoLedger: Sendable {
             id: TxRecord.ID(txid: tx.txid, recordIndex: 0), type: tx.type, category: category, status: status,
             date: tx.date, blockHeight: Self.height(confirmations: tx.confirmations), amount: Amount(duffs: tx.net),
             fee: tx.fee.map { Amount(duffs: $0) }, address: tx.address, label: label?.isEmpty == true ? nil : label,
-            countsTowardBalance: true, involvesWatchOnly: false)
+            countsTowardBalance: !isAbandoned, involvesWatchOnly: false)
     }
 
     static func height(confirmations: UInt32) -> UInt32? {
