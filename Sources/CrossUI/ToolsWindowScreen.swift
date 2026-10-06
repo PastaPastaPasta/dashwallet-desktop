@@ -19,7 +19,7 @@ struct ToolsWindowScreen: View {
             HStack(spacing: Int(DashSpacing.xs)) {
                 ForEach(ToolsTab.allCases, id: \.self) { item in
                     DashButton(
-                        Self.title(item), style: item == tab ? .tintedBlue : .plainBlue, size: .small,
+                        item.title, style: item == tab ? .tintedBlue : .plainBlue, size: .small,
                         isEnabled: item != .networkTraffic,
                         help: item == .networkTraffic ? L10n.Shell.networkTrafficUnavailable : nil
                     ) { state.open(.tools(item)) }
@@ -34,16 +34,6 @@ struct ToolsWindowScreen: View {
             case .peers: PeersTab(model: state.peers)
             case .repair: RepairTab(model: state.repair)
             }
-        }
-    }
-
-    static func title(_ tab: ToolsTab) -> String {
-        switch tab {
-        case .information: L10n.Shell.information
-        case .console: L10n.Shell.console
-        case .networkTraffic: L10n.Shell.networkTraffic
-        case .peers: L10n.Shell.peers
-        case .repair: L10n.Shell.repair
         }
     }
 }
@@ -308,7 +298,7 @@ struct RepairTab: View {
             switch model.state {
             case .confirming(let confirmation):
                 ConfirmationCard(
-                    title: Self.title(confirmation), message: confirmation.message, confirmTitle: CrossStrings.yes,
+                    title: confirmation.title, message: confirmation.message, confirmTitle: CrossStrings.yes,
                     destructive: true, onConfirm: { Task { await model.confirm() } },
                     onCancel: { model.cancelConfirmation() })
             case .working:
@@ -367,13 +357,6 @@ struct RepairTab: View {
         .task {
             model.start()
             await model.refresh()
-        }
-    }
-
-    static func title(_ confirmation: RepairConfirmation) -> String {
-        switch confirmation {
-        case .resetChainData: L10n.Tools.resetChainData
-        case .dropUnconfirmed: L10n.Tools.dropUnconfirmed
         }
     }
 }

@@ -25,7 +25,7 @@ struct OptionsScreen: View {
         Page(CrossStrings.optionsPage) {
             HStack(spacing: Int(DashSpacing.xs)) {
                 ForEach(tabs, id: \.self) { item in
-                    DashButton(Self.title(item), style: item == current ? .tintedBlue : .plainBlue, size: .small) {
+                    DashButton(item.title, style: item == current ? .tintedBlue : .plainBlue, size: .small) {
                         tab = item
                     }
                 }
@@ -79,17 +79,6 @@ struct OptionsScreen: View {
         .task {
             await model.load()
             dustText = String(model.wallet.dustThreshold)
-        }
-    }
-
-    static func title(_ tab: OptionsTab) -> String {
-        switch tab {
-        case .main: L10n.Options.mainTab
-        case .wallet: L10n.Options.walletTab
-        case .network: L10n.Options.networkTab
-        case .display: L10n.Options.displayTab
-        case .appearance: L10n.Options.appearanceTab
-        case .notifications: L10n.Options.notificationsTab
         }
     }
 

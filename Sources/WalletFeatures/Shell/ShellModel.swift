@@ -9,6 +9,16 @@ import WalletRuntime
 /// The Tools window tabs (research 02 §14).
 public enum ToolsTab: String, Sendable, Hashable, CaseIterable {
     case information, console, networkTraffic, peers, repair
+
+    public var title: String {
+        switch self {
+        case .information: L10n.Shell.information
+        case .console: L10n.Shell.console
+        case .networkTraffic: L10n.Shell.networkTraffic
+        case .peers: L10n.Shell.peers
+        case .repair: L10n.Shell.repair
+        }
+    }
 }
 
 /// Windows whose geometry the shell remembers (QT-011).

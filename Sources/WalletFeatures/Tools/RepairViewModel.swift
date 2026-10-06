@@ -11,6 +11,13 @@ public enum RepairConfirmation: Sendable, Hashable {
     case resetChainData
     case dropUnconfirmed
 
+    public var title: String {
+        switch self {
+        case .resetChainData: L10n.Tools.resetChainData
+        case .dropUnconfirmed: L10n.Tools.dropUnconfirmed
+        }
+    }
+
     public var message: String {
         switch self {
         case .resetChainData: L10n.Tools.resetChainDataQuestion

@@ -8,6 +8,17 @@ import WalletRuntime
 
 public enum OptionsTab: String, Sendable, Hashable, CaseIterable {
     case main, wallet, network, display, appearance, notifications
+
+    public var title: String {
+        switch self {
+        case .main: L10n.Options.mainTab
+        case .wallet: L10n.Options.walletTab
+        case .network: L10n.Options.networkTab
+        case .display: L10n.Options.displayTab
+        case .appearance: L10n.Options.appearanceTab
+        case .notifications: L10n.Options.notificationsTab
+        }
+    }
 }
 
 /// Options ▸ Main (QT-136). dash-qt hides all four on macOS.

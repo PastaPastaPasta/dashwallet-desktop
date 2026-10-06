@@ -182,6 +182,9 @@ public final class MacAppModel {
     public var dockMenuItems: [MacDockMenuItem] {
         guard main != nil else { return [] }
         let hasWallet = !(main?.needsOnboarding ?? true)
+        let tools: [MacDockMenuItem] = [ToolsTab.information, .console, .peers, .repair].map { tab in
+            MacDockMenuItem(title: tab.title, isEnabled: features != nil) { [weak self] in self?.perform(.tools(tab)) }
+        }
         return [
             MacDockMenuItem(title: MacStrings.Dock.showHide) { [weak self] in self?.perform(.showHideWindow) },
             .separator,
@@ -202,19 +205,7 @@ public final class MacAppModel {
             MacDockMenuItem(title: L10n.Shell.options, isEnabled: features != nil) { [weak self] in
                 self?.perform(.options)
             },
-            MacDockMenuItem(title: L10n.Shell.information, isEnabled: features != nil) { [weak self] in
-                self?.perform(.tools(.information))
-            },
-            MacDockMenuItem(title: L10n.Shell.console, isEnabled: features != nil) { [weak self] in
-                self?.perform(.tools(.console))
-            },
-            MacDockMenuItem(title: L10n.Shell.peers, isEnabled: features != nil) { [weak self] in
-                self?.perform(.tools(.peers))
-            },
-            MacDockMenuItem(title: L10n.Shell.repair, isEnabled: features != nil) { [weak self] in
-                self?.perform(.tools(.repair))
-            },
-        ]
+        ] + tools
     }
 
     /// The chooser's OK: builds the live services for the directory, stores

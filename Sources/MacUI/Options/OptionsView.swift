@@ -49,7 +49,7 @@ struct OptionsView: View {
             Picker("", selection: $tab) {
                 Text(MacStrings.Options.general).tag(MacOptionsTab.general)
                 ForEach(options.tabs, id: \.self) { item in
-                    Text(Self.title(item)).tag(MacOptionsTab.options(item))
+                    Text(item.title).tag(MacOptionsTab.options(item))
                 }
                 Text(MacStrings.Options.security).tag(MacOptionsTab.security)
             }
@@ -95,17 +95,6 @@ struct OptionsView: View {
         case .display: DisplayOptionsTab(model: model, options: options)
         case .appearance: AppearanceOptionsTab(options: options)
         case .notifications: NotificationOptionsTab(options: options)
-        }
-    }
-
-    static func title(_ tab: OptionsTab) -> String {
-        switch tab {
-        case .main: L10n.Options.mainTab
-        case .wallet: L10n.Options.walletTab
-        case .network: L10n.Options.networkTab
-        case .display: L10n.Options.displayTab
-        case .appearance: L10n.Options.appearanceTab
-        case .notifications: L10n.Options.notificationsTab
         }
     }
 

@@ -31,7 +31,7 @@ struct ToolsView: View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
                 ForEach(ToolsTab.allCases, id: \.self) { item in
-                    Text(Self.title(item)).tag(item)
+                    Text(item.title).tag(item)
                 }
             }
             .pickerStyle(.segmented)
@@ -52,18 +52,6 @@ struct ToolsView: View {
         .padding(DashSpacing.s)
         .frame(minWidth: 700, minHeight: 480)
         .accessibilityIdentifier("tools")
-    }
-}
-
-extension ToolsView {
-    static func title(_ tab: ToolsTab) -> String {
-        switch tab {
-        case .information: L10n.Shell.information
-        case .console: L10n.Shell.console
-        case .networkTraffic: L10n.Shell.networkTraffic
-        case .peers: L10n.Shell.peers
-        case .repair: L10n.Shell.repair
-        }
     }
 }
 
