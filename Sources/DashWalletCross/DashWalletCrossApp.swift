@@ -50,7 +50,7 @@ struct DashWalletCrossApp: App {
                 scenario: scenario, network: network, launchOptions: options.shell,
                 platform: DemoPlatformServices(clipboard: clipboard.service))
             let state = CrossAppState(
-                env: env, m2: m2, main: MainViewModel(env: env),
+                env: env, m2: m2, main: MainViewModel(env: env, m2: m2),
                 capabilities: CrossPlatformCapabilities(clipboard: clipboard.available, tray: false),
                 notice: CrossDemoText.notice)
             state.appUsage = AppLaunchOptions.usage

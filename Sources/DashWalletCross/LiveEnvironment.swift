@@ -42,7 +42,7 @@ final class LiveSession {
         self.dataRoot = dataRoot
         requestedNetwork = network
         state = CrossAppState(
-            env: env, m2: m2, main: MainViewModel(env: env), capabilities: AppOSServices.capabilities())
+            env: env, m2: m2, main: MainViewModel(env: env, m2: m2), capabilities: AppOSServices.capabilities())
         state.appUsage = AppLaunchOptions.usage
         startup = StartupViewModel(m2: m2)
         startup.start()
