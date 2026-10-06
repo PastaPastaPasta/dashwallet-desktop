@@ -142,6 +142,19 @@ DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwc
     .venv/bin/python -m pytest -v tests/test_restore.py
 ```
 
+**protx** (`tests/test_protx.py`, M3 R3) mines past DIP3 enforcement (height 500) and drives `dwcli mn-*`:
+regular masternodes registered with a collateral the ProRegTx creates and with an existing 1000 DASH coin, an
+EvoNode, the operator-secret gate, Update Service (typed secret, and a tracked masternode's attached operator
+key), Update Registrar, Revoke, the owned list, the keychain, and the v24 shared payload codecs checked with
+`decoderawtransaction`. dashd's `protx info` is the reference for every payload. A single node has no quorums,
+so dash-spv's masternode list never becomes available and the list shows status `unknown`; v24 (shared
+masternodes) never activates. 11 tests, about 30 s.
+
+```sh
+DWD_COMPOSE_PROJECT=dwd-r3-protx DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_protx.py
+```
+
 The node helpers `node_path`, `read_file` and `write_file` move files in and out of the node's
 datadir (through `docker compose exec` for the tmpfs datadir of the Docker backend).
 

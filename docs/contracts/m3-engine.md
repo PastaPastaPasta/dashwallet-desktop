@@ -225,6 +225,20 @@ registration also needs the grant's spend allowance to cover the collateral.
 | `start_dissolve_together(wallet, hash)` | async | Unanimous dissolution session (all principals returned). | — | QT-127 |
 | `create_standby_dissolution(wallet, hash, grant)` / `broadcast_standby_dissolution(txs)` | async | The two raw transactions to save as `.txt` (the engine records that one exists, `MasternodeDetail.has_standby_dissolution`) / broadcast them later in order. | `no_peers`, `broadcast_rejected` | QT-127 |
 
+**R3 status (m3/r3-protx).** Implemented: §2.3 list calls, `collateral_candidates`, `fee_source_candidates`,
+`prepare_registration` (`FundNew` and `ExistingUtxo`, regular and EvoNode, version-2 payloads),
+`PreparedRegistration.*`, `prepare_update_service`, `prepare_update_registrar`, `prepare_revoke`,
+`PreparedProviderTx.*` and every §2.5 call except the two `.platform` ones; all checked against dashd v24.0.0-rc.2
+(`regtest/harness/tests/test_protx.py`). Still `NotImplemented`: `External` collateral
+(`NetworkSession.prepare_registration.external`), every shared-session call, `prepare_share_reward_update`,
+`prepare_dissolve_now`, standby dissolutions (the payload codecs exist in `dw-protx::shared`; the session protocol and
+the version-3 ProRegTx with extended network info do not), and the evonode Platform calls (M4). Notes: a `FundNew`
+registration needs a `MasternodeOp` grant like the others (the collateral stays in the wallet, so there is no spend
+cap to check); the fee rate of provider transactions is 1250 duff/kB because key-wallet underestimates ProRegTx sizes;
+the list uses the wallets' persisted provider transactions (platform-wallet keeps only recent ones in memory); a
+registration locks its collateral once broadcast (`AutoLockMasternodeCollaterals`); unchanged operator keys are kept
+as the list stores them, so an Update Registrar on a masternode still on a legacy-scheme key is not supported yet.
+
 ProDissolveTx, ProUpShareTx, ProUpSharedRegTx and the share fields of ProRegTx are not in rust-dashcore at the
 pin (verified: `special_transaction/` has the four classic ProTx payloads only). R3 writes their codecs in
 `dw-protx::shared::payloads` from Core `src/evo/providertx.h` (no upstream patch), with payload-equality tests
