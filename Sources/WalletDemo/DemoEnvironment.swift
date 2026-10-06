@@ -17,8 +17,8 @@ public enum DemoScenario: String, Sendable, CaseIterable {
     case locked
     /// No vault and no wallet: the app opens onboarding.
     case fresh
-    /// The funded wallet, locked, while SPV has no peers and is three days
-    /// behind: the sync overlay shows and a payment ends in `send.no_peers`.
+    /// The funded wallet (unencrypted) while SPV has no peers and is three
+    /// days behind: the sync overlay shows and a payment ends in `send.no_peers`.
     case offline
 
     /// Parses a scenario name; `onboarding` is accepted for `fresh`.
@@ -34,7 +34,7 @@ public enum DemoScenario: String, Sendable, CaseIterable {
 }
 
 public enum DemoEnvironment {
-    /// The passphrase of the `locked` and `offline` vaults.
+    /// The passphrase of the `locked` vault.
     public static let passphrase = "demo"
     /// The phrase `generateMnemonic` returns (12 or 24 of these words). Both
     /// lengths pass the engine's BIP39 checksum, so the create and restore

@@ -179,7 +179,13 @@ struct ScreenTests {
 
     @Test(arguments: [ColorScheme.light, .dark])
     func syncOverlay(_ scheme: ColorScheme) async throws {
-        let model = try await Self.model(.funded, scheme)
+        // The offline demo is three days behind: the overlay shows by itself
+        // until hidden.
+        let offline = try await Self.model(.offline, scheme)
+        try await Self.settle { offline.showsSyncOverlay }
+        #expect(offline.showsSyncOverlay)
+        offline.hideSyncOverlay()
+        #expect(!offline.showsSyncOverlay)
         let tip = Date().addingTimeInterval(-3 * 86_400)
         let status = SyncStatus(
             running: true,

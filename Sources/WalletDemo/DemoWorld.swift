@@ -97,9 +97,9 @@ final class DemoWorld {
         case .fresh:
             break
         case .funded, .locked, .offline:
-            state.vault = scenario == .funded
-                ? DemoVaultState(state: .unencrypted)
-                : DemoVaultState(state: .locked, passphrase: DemoEnvironment.passphrase)
+            state.vault = scenario == .locked
+                ? DemoVaultState(state: .locked, passphrase: DemoEnvironment.passphrase)
+                : DemoVaultState(state: .unencrypted)
             Self.add(
                 to: &state, name: "Demo wallet", phrase: DemoEnvironment.sampleWalletPhrase, network: network,
                 funded: true, now: now())

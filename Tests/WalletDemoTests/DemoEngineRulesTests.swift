@@ -188,13 +188,10 @@ struct DemoEngineRulesTests {
     @Test func noPeersReleasesTheCoinsAndSpendsThePreparedTransaction() async throws {
         let env = Self.environment(.offline)
         let wallet = try Self.wallet(env)
-        try await env.auth.unlock(passphrase: env.vault.makeSecret(utf8: DemoEnvironment.passphrase), scope: .full)
         let max = try await env.sender.maxSpendable(wallet: wallet, source: .any, fee: .recommended(targetBlocks: 6))
         let draft = try await env.sender.makeDraft(wallet: wallet)
         try await draft.setRecipients([PaymentRecipient(address: Self.payTo, amount: Amount(duffs: 10_000_000))])
-        let grant = try await env.auth.authorize(
-            .spend(max: Amount(duffs: 10_000_000)), wallet: wallet,
-            credential: .passphrase(env.vault.makeSecret(utf8: DemoEnvironment.passphrase)))
+        let grant = try await env.auth.authorize(.spend(max: Amount(duffs: 10_000_000)), wallet: wallet, credential: .unencrypted)
         let prepared = try await draft.prepare(grant: grant)
         let reserved = try await env.sender.maxSpendable(wallet: wallet, source: .any, fee: .recommended(targetBlocks: 6))
         #expect(reserved.duffs < max.duffs)

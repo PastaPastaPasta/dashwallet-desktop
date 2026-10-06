@@ -192,7 +192,7 @@ Demo mode runs the real screens and view models on in-memory services. Both apps
   dust, network); payments that spend coins and reserve them while prepared; `send.no_peers`
   releasing the coins in the `offline` scenario. `Tests/WalletDemoTests` checks this.
 - Scenarios: `funded` (unencrypted), `locked`, `fresh`/`onboarding` (no vault) and `offline`
-  (locked, no peers, three days behind, so the sync overlay shows).
+  (unencrypted, no peers, three days behind, so the sync overlay shows).
 - The sample wallets' addresses are valid but nobody holds their keys, so signing a message ends in
   `message.address_no_key`; verification works.
 - Nothing touches the network, and nothing is sent.
