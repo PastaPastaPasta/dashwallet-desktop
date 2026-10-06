@@ -31,6 +31,9 @@ for _ in $(seq 50); do
   sleep 0.1
 done
 
+# atspi_demo.py appends to atspi-checks.json; start each run with a fresh file.
+rm -f "$OUT/atspi-checks.json"
+
 status=0
 # session NAME SCRIPT-STEPS APP-ARGS...: launch, drive/dump, quit.
 session() {
