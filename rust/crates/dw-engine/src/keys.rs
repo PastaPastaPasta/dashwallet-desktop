@@ -92,6 +92,23 @@ pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
     }
 }
 
+/// Raises the receive/change lookahead of BIP44 account 0 and of the DIP9
+/// CoinJoin account 0 to `gap` (DESIGN.md R2: Core-mixed funds sit on the
+/// BIP44 chains, dashj-mixed funds on the CoinJoin account; both need the
+/// restore gap).
+pub(crate) async fn apply_lookahead(
+    wallet: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+    gap: u32,
+) -> Result<(), EngineError> {
+    for account in [
+        AccountTypePreference::BIP44,
+        AccountTypePreference::CoinJoin,
+    ] {
+        wallet.core().set_gap_limit(account, 0, gap).await?;
+    }
+    Ok(())
+}
+
 impl NetworkSession {
     /// The vault of this session's network.
     pub fn vault(&self) -> &Vault {
@@ -371,11 +388,7 @@ impl NetworkSession {
                 }
             };
             if let Some(gap) = lookahead {
-                if let Err(e) = wallet
-                    .core()
-                    .set_gap_limit(AccountTypePreference::BIP44, 0, gap)
-                    .await
-                {
+                if let Err(e) = apply_lookahead(&wallet, gap).await {
                     tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
                 }
                 this.store_lookahead(wallet_id, gap).await;
@@ -401,7 +414,7 @@ impl NetworkSession {
         .await
     }
 
-    async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
+    pub(crate) async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
         let Ok(live) = self.live() else { return };
         let key = wallet_id.to_string();
         let stored = tokio::task::spawn_blocking(move || {
@@ -432,11 +445,7 @@ impl NetworkSession {
             let (Some(gap), Some(wallet)) = (stored, manager.get_wallet(&id).await) else {
                 continue;
             };
-            if let Err(e) = wallet
-                .core()
-                .set_gap_limit(AccountTypePreference::BIP44, 0, gap)
-                .await
-            {
+            if let Err(e) = apply_lookahead(&wallet, gap).await {
                 tracing::warn!(wallet_id = %hex::encode(id), error = %e, "could not apply the stored lookahead");
             }
         }

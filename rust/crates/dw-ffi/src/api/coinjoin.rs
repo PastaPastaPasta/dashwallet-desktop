@@ -10,7 +10,7 @@
 //! (M1).
 
 use crate::NetworkSession;
-use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{ensure_open, parse_wallet_id};
 use dw_coinjoin::{denoms, settings};
 
 /// The CoinJoin options (Options → CoinJoin, QT-046). Global for the
@@ -450,13 +450,154 @@ fn parse_salt(salt_hex: &str) -> Result<(), CoinJoinError> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Engine → FFI conversions
+// ---------------------------------------------------------------------------
+
+impl From<dw_engine::coinjoin::PoolState> for CoinJoinPoolState {
+    fn from(s: dw_engine::coinjoin::PoolState) -> Self {
+        use dw_engine::coinjoin::PoolState as S;
+        match s {
+            S::Idle => Self::Idle,
+            S::Queue => Self::Queue,
+            S::AcceptingEntries => Self::AcceptingEntries,
+            S::Signing => Self::Signing,
+            S::Error => Self::Error,
+        }
+    }
+}
+
+impl From<dw_engine::coinjoin::PoolMessage> for CoinJoinPoolMessage {
+    fn from(m: dw_engine::coinjoin::PoolMessage) -> Self {
+        use dw_engine::coinjoin::PoolMessage as M;
+        match m {
+            M::AlreadyHave => Self::AlreadyHave,
+            M::Denom => Self::Denom,
+            M::EntriesFull => Self::EntriesFull,
+            M::ExistingTx => Self::ExistingTx,
+            M::Fees => Self::Fees,
+            M::InvalidCollateral => Self::InvalidCollateral,
+            M::InvalidInput => Self::InvalidInput,
+            M::InvalidScript => Self::InvalidScript,
+            M::InvalidTx => Self::InvalidTx,
+            M::Maximum => Self::Maximum,
+            M::MnList => Self::MnList,
+            M::Mode => Self::Mode,
+            M::NonStandardPubkey => Self::NonStandardPubkey,
+            M::NotAMasternode => Self::NotAMasternode,
+            M::QueueFull => Self::QueueFull,
+            M::Recent => Self::Recent,
+            M::Session => Self::Session,
+            M::MissingTx => Self::MissingTx,
+            M::Version => Self::Version,
+            M::NoError => Self::NoError,
+            M::Success => Self::Success,
+            M::EntriesAdded => Self::EntriesAdded,
+            M::SizeMismatch => Self::SizeMismatch,
+        }
+    }
+}
+
+impl From<dw_engine::coinjoin::StatusCode> for CoinJoinStatusCode {
+    fn from(c: dw_engine::coinjoin::StatusCode) -> Self {
+        use dw_engine::coinjoin::StatusCode as C;
+        match c {
+            C::Idle => Self::Idle,
+            C::SyncInProgress => Self::SyncInProgress,
+            C::WalletLocked => Self::WalletLocked,
+            C::MixingInProgress => Self::MixingInProgress,
+            C::NoMasternodes => Self::NoMasternodes,
+            C::NotEnoughFunds => Self::NotEnoughFunds,
+            C::UnconfirmedDenominated => Self::UnconfirmedDenominated,
+            C::NoCompatibleMasternode => Self::NoCompatibleMasternode,
+            C::NoCompatibleInputs => Self::NoCompatibleInputs,
+            C::TryingToConnect => Self::TryingToConnect,
+            C::NoQueueToJoin => Self::NoQueueToJoin,
+            C::NoRandomMasternode => Self::NoRandomMasternode,
+            C::FailedToStartQueue => Self::FailedToStartQueue,
+            C::WaitingInQueue => Self::WaitingInQueue,
+            C::Signing => Self::Signing,
+            C::Masternode(m) => Self::Masternode { message: m.into() },
+        }
+    }
+}
+
+impl From<dw_engine::coinjoin::CoinJoinStatus> for CoinJoinStatus {
+    fn from(s: dw_engine::coinjoin::CoinJoinStatus) -> Self {
+        use dw_engine::coinjoin::{MixingState, StopReason, Unavailable};
+        Self {
+            wallet_id: s.wallet_id.to_string(),
+            state: match s.state {
+                MixingState::Idle => CoinJoinState::Idle,
+                MixingState::Mixing => CoinJoinState::Mixing,
+                MixingState::Stopping => CoinJoinState::Stopping,
+            },
+            stop_reason: s.stop_reason.map(|r| match r {
+                StopReason::UserRequested => CoinJoinStopReason::UserRequested,
+                StopReason::VaultLocked => CoinJoinStopReason::VaultLocked,
+                StopReason::WalletUnloaded => CoinJoinStopReason::WalletUnloaded,
+                StopReason::SessionClosed => CoinJoinStopReason::SessionClosed,
+                StopReason::Disabled => CoinJoinStopReason::Disabled,
+            }),
+            unavailable: s.unavailable.map(|u| match u {
+                Unavailable::Disabled => CoinJoinUnavailable::Disabled,
+                Unavailable::WatchOnly => CoinJoinUnavailable::WatchOnly,
+                Unavailable::InsufficientFunds { min_duffs } => {
+                    CoinJoinUnavailable::InsufficientFunds { min_duffs }
+                }
+            }),
+            balances: CoinJoinBalances {
+                anonymizable: s.balances.anonymizable,
+                denominated: s.balances.denominated,
+                normalized_anonymized: s.balances.normalized_anonymized,
+                fully_mixed: s.balances.fully_mixed,
+            },
+            progress: CoinJoinProgress {
+                overall_percent: s.progress.overall_percent,
+                denominated_percent: s.progress.denominated_percent,
+                partially_mixed_percent: s.progress.partially_mixed_percent,
+                mixed_percent: s.progress.mixed_percent,
+                average_rounds: s.progress.average_rounds,
+            },
+            amount_and_rounds: CoinJoinAmountAndRounds {
+                amount: s.amount_and_rounds.amount,
+                rounds: s.amount_and_rounds.rounds,
+                insufficient_inputs: s.amount_and_rounds.insufficient_inputs,
+            },
+            submitted_denominations: s.submitted_denominations,
+            sessions: s
+                .sessions
+                .into_iter()
+                .map(|x| CoinJoinSession {
+                    pro_tx_hash: x.pro_tx_hash,
+                    service: x.service,
+                    denomination: x.denomination,
+                    state: x.state.into(),
+                    entries: x.entries,
+                    last_message: x.last_message.map(Into::into),
+                })
+                .collect(),
+            status: s.status.into(),
+            queue_size: s.queue_size,
+            keys_left: s.keys_left,
+        }
+    }
+}
+
+fn sweep_destination(d: MixedCoinsDestination) -> dw_engine::coinjoin::SweepDestination {
+    match d {
+        MixedCoinsDestination::Wallet => dw_engine::coinjoin::SweepDestination::Wallet,
+        MixedCoinsDestination::Shielded => dw_engine::coinjoin::SweepDestination::Shielded,
+    }
+}
+
 #[uniffi::export]
 impl NetworkSession {
     /// The network's CoinJoin options (defaults until changed). In-memory
     /// read.
     pub fn coinjoin_settings(&self) -> Result<CoinJoinSettings, CoinJoinError> {
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.coinjoin_settings")
+        Ok(self.inner.coinjoin_settings()?.into())
     }
 
     /// Applies the options live (dash-qt applies without restart) and
@@ -467,46 +608,47 @@ impl NetworkSession {
         &self,
         settings: CoinJoinSettings,
     ) -> Result<(), CoinJoinError> {
-        settings::CoinJoinSettings::from(settings)
+        let settings = settings::CoinJoinSettings::from(settings);
+        settings
             .validate()
             .map_err(|e| CoinJoinError::InvalidArgument {
                 detail: e.to_string(),
             })?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_coinjoin_settings")
+        Ok(self.inner.set_coinjoin_settings(settings).await?)
     }
 
-    /// The wallet's mixing status (QT-041…050). In-memory read; re-query on
-    /// `CoinJoin` events.
+    /// The wallet's mixing status (QT-041…050). In-memory read of the status
+    /// the engine refreshes once a second; re-query on `CoinJoin` events.
     pub fn coinjoin_status(&self, wallet_id: String) -> Result<CoinJoinStatus, CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.coinjoin_status")
+        Ok(self.inner.coinjoin_status(id)?.into())
     }
 
     /// "Start CoinJoin" for one wallet. Needs the vault unencrypted,
     /// unlocked or unlocked for mixing only (`coinjoin.vault_locked`
     /// otherwise: the host offers "Unlock wallet for mixing only"). Idempotent.
     pub async fn start_mixing(&self, wallet_id: String) -> Result<(), CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.start_mixing")
+        Ok(self.inner.start_mixing(id).await?)
     }
 
     /// "Stop CoinJoin": resets the open sessions (`resetPool`), releases
     /// their reserved coins, then stops. Idempotent.
     pub async fn stop_mixing(&self, wallet_id: String) -> Result<(), CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.stop_mixing")
+        Ok(self.inner.stop_mixing(id).await?)
     }
 
     /// The wallet's CoinJoin salt (`coinjoinsalt get`), 64 hex characters.
     /// Created on first use; imported from `cj_salt` with a Dash Core wallet.
     pub async fn coinjoin_salt(&self, wallet_id: String) -> Result<String, CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.coinjoin_salt")
+        Ok(self.inner.coinjoin_salt(id).await?)
     }
 
     /// `coinjoinsalt set`: replaces the salt, which changes which coins
@@ -516,17 +658,18 @@ impl NetworkSession {
         wallet_id: String,
         salt_hex: String,
     ) -> Result<(), CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         parse_salt(&salt_hex)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_coinjoin_salt")
+        Ok(self.inner.set_coinjoin_salt(id, salt_hex).await?)
     }
 
-    /// `coinjoinsalt generate`: a new random salt; returns it.
+    /// `coinjoinsalt generate`: a new random salt; returns it. Refused while
+    /// mixing (`invalid_argument`).
     pub async fn generate_coinjoin_salt(&self, wallet_id: String) -> Result<String, CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.generate_coinjoin_salt")
+        Ok(self.inner.generate_coinjoin_salt(id).await?)
     }
 
     /// IOS-057 recovery scan: raises the CoinJoin account's lookahead and
@@ -537,9 +680,15 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<CoinJoinRecoveryReport, CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.coinjoin_recovery_scan")
+        let r = self.inner.coinjoin_recovery_scan(id).await?;
+        Ok(CoinJoinRecoveryReport {
+            coinjoin_addresses_scanned: r.coinjoin_addresses_scanned,
+            bip44_addresses_scanned: r.bip44_addresses_scanned,
+            coinjoin_balance: r.coinjoin_balance,
+            new_transactions: r.new_transactions,
+        })
     }
 
     /// The chunks "Move mixed coins" would broadcast. Reads coins only.
@@ -548,16 +697,25 @@ impl NetworkSession {
         wallet_id: String,
         destination: MixedCoinsDestination,
     ) -> Result<MixedCoinsSweepPlan, CoinJoinError> {
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        match destination {
-            MixedCoinsDestination::Wallet => {
-                not_implemented("NetworkSession.mixed_coins_sweep_plan")
-            }
-            MixedCoinsDestination::Shielded => {
-                not_implemented("NetworkSession.mixed_coins_sweep_plan.shielded")
-            }
-        }
+        let p = self
+            .inner
+            .mixed_coins_sweep_plan(id, sweep_destination(destination))
+            .await?;
+        Ok(MixedCoinsSweepPlan {
+            destination,
+            total: p.total,
+            chunks: p
+                .chunks
+                .into_iter()
+                .map(|c| MixedCoinsChunk {
+                    inputs: c.inputs,
+                    amount: c.amount,
+                    fee: c.fee,
+                })
+                .collect(),
+        })
     }
 
     /// "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
@@ -570,14 +728,17 @@ impl NetworkSession {
         destination: MixedCoinsDestination,
         grant_id: String,
     ) -> Result<MixedCoinsSweepResult, CoinJoinError> {
-        let _ = grant_id;
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
-        match destination {
-            MixedCoinsDestination::Wallet => not_implemented("NetworkSession.move_mixed_coins"),
-            MixedCoinsDestination::Shielded => {
-                not_implemented("NetworkSession.move_mixed_coins.shielded")
-            }
-        }
+        let r = self
+            .inner
+            .move_mixed_coins(id, sweep_destination(destination), grant_id)
+            .await?;
+        Ok(MixedCoinsSweepResult {
+            txids: r.txids,
+            moved: r.moved,
+            remaining: r.remaining,
+            failure_code: r.failure_code,
+        })
     }
 }

@@ -10,6 +10,14 @@ publish.workspace = true
 # Owner: R1 (docs/contracts/m3-engine.md §0).
 
 [dependencies]
-dashcore = { workspace = true }
+# `bls`: operator signatures on dsq/dstx (blsful, already in the graph
+# through platform-wallet's `bls` feature).
+dashcore = { workspace = true, features = ["bls"] }
 dw-p2p = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }

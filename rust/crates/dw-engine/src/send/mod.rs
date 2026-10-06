@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use dashcore::address::Payload;
 use dashcore::hashes::Hash;
-use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction};
+use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction, TxOut};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
 use dw_vault::{GrantKind, VaultError};
 use key_wallet::Utxo;
@@ -62,8 +62,11 @@ pub enum CoinSource {
     /// receiving), except user-locked, reserved, immature and untrusted
     /// unconfirmed ones. CoinJoin coins are never pooled with them.
     Any,
-    /// Only fully mixed CoinJoin coins (QT-051). Needs per-coin mixing
-    /// rounds, which nothing tracks yet: returns `NotImplemented`.
+    /// Only fully mixed CoinJoin coins, confirmed or InstantSend-locked
+    /// (QT-051, the CoinJoin send page). The transaction has no change
+    /// output: what the inputs hold beyond the recipients goes to the fee,
+    /// as dash-qt's CoinJoin page does (still capped by `absurd_fee`). Only
+    /// `ChangePolicy::Auto` is accepted with this source.
     FullyMixedOnly,
     /// Exactly these coins, all of them (coin control, QT-068).
     Outpoints(Vec<OutPoint>),
@@ -299,7 +302,7 @@ impl PendingSpends {
         self.map().get(wallet).cloned().unwrap_or_default()
     }
 
-    fn add(&self, wallet: WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
+    pub(crate) fn add(&self, wallet: WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
         self.map().entry(wallet).or_default().extend(outpoints);
     }
 
@@ -451,6 +454,9 @@ struct Resolved {
     /// The wallet's processed height the plan was made at (coinbase
     /// maturity in key-wallet's selector).
     height: u32,
+    /// Funded by fully mixed CoinJoin coins (no change; signed by the
+    /// engine, not key-wallet's builder, which would add change).
+    coinjoin: bool,
 }
 
 impl Resolved {
@@ -482,6 +488,9 @@ impl Resolved {
     /// change address, or for `Auto` the first input's P2PKH address, which
     /// has the length of the fresh change address `prepare` derives.
     fn dry_run(&self) -> Result<(), EngineError> {
+        if self.coinjoin {
+            return Ok(());
+        }
         let change = match (&self.change, self.plan.inputs.first()) {
             (ChangeTarget::Address(a), _) => a.clone(),
             (ChangeTarget::Auto, Some(first)) => first.address.clone(),
@@ -536,12 +545,25 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let wallet = this.wallet(&wallet_id).await?;
-            let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
-            let coins = candidates(&snapshot, &source)?;
+            let (coins, _) = this.source_coins(wallet_id, &source).await?;
             Ok(coins.iter().map(Utxo::value).sum())
         })
         .await
+    }
+
+    /// The coins `source` offers and the wallet height they were read at.
+    async fn source_coins(
+        &self,
+        wallet_id: WalletId,
+        source: &CoinSource,
+    ) -> Result<(Vec<Utxo>, u32), EngineError> {
+        if *source == CoinSource::FullyMixedOnly {
+            let view = self.mix_view(wallet_id).await?;
+            return Ok((crate::coinjoin::fully_mixed_candidates(&view), view.height));
+        }
+        let wallet = self.wallet(&wallet_id).await?;
+        let snapshot = self.coin_snapshot(&wallet, wallet_id).await?;
+        Ok((candidates(&snapshot, source)?, snapshot.height))
     }
 
     pub(crate) async fn wallet(
@@ -564,9 +586,8 @@ fn candidates(snapshot: &CoinSnapshot, source: &CoinSource) -> Result<Vec<Utxo>,
             .filter(|c| c.send_account && c.auto_selectable(snapshot.height))
             .map(|c| c.utxo.clone())
             .collect()),
-        CoinSource::FullyMixedOnly => Err(EngineError::NotImplemented(
-            "TxDraft source FullyMixedOnly (CoinJoin rounds are not tracked yet)".into(),
-        )),
+        // Read from the mixing view by `NetworkSession::source_coins`.
+        CoinSource::FullyMixedOnly => Ok(Vec::new()),
         CoinSource::Outpoints(outpoints) => outpoints
             .iter()
             .map(|o| {
@@ -607,12 +628,7 @@ impl TxDraft {
     /// spendable is checked by `estimate` and `prepare`.
     pub fn set_source(&self, source: CoinSource) -> Result<(), EngineError> {
         match &source {
-            CoinSource::FullyMixedOnly => {
-                return Err(EngineError::NotImplemented(
-                    "TxDraft.set_source(FullyMixedOnly): CoinJoin rounds are not tracked yet"
-                        .into(),
-                ));
-            }
+            CoinSource::FullyMixedOnly => {}
             CoinSource::Outpoints(list) => {
                 if list.is_empty() {
                     return Err(EngineError::InvalidArgument("no outpoints selected".into()));
@@ -653,9 +669,17 @@ impl TxDraft {
         if state.recipients.is_empty() {
             return Err(SendFailure::NoRecipients.into());
         }
-        let wallet = self.session.wallet(&self.wallet_id).await?;
-        let snapshot = self.session.coin_snapshot(&wallet, self.wallet_id).await?;
-        let coins = candidates(&snapshot, &state.source)?;
+        let coinjoin = state.source == CoinSource::FullyMixedOnly;
+        if coinjoin && !matches!(state.change, ChangeTarget::Auto) {
+            return Err(EngineError::InvalidArgument(
+                "the CoinJoin source pays its change as fee; only the automatic change policy applies"
+                    .into(),
+            ));
+        }
+        let (coins, height) = self
+            .session
+            .source_coins(self.wallet_id, &state.source)
+            .await?;
         let outputs: Vec<PlanOutput> = state
             .recipients
             .iter()
@@ -674,8 +698,24 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let plan = plan::plan(choice, &outputs, state.fee, change_len, snapshot.height)
-            .map_err(SendFailure::from)?;
+        let mut plan =
+            plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
+                // The CoinJoin page's own message (dash-qt "Insufficient
+                // mixed funds").
+                PlanError::AmountExceedsBalance { available }
+                | PlanError::AmountWithFeeExceedsBalance { available, .. }
+                    if coinjoin =>
+                {
+                    SendFailure::InsufficientMixedFunds { available }
+                }
+                e => SendFailure::from(e),
+            })?;
+        if coinjoin && let Some(change) = plan.change.take() {
+            // dash-qt's CoinJoin page: no change output, the rest is fee
+            // (`CoinType::ONLY_FULLY_MIXED`, wallet/spend.cpp:980-995).
+            plan.fee += change;
+            plan.estimated_size -= plan::output_size(change_len);
+        }
         if plan.fee > MAX_TX_FEE {
             return Err(SendFailure::AbsurdFee { fee: plan.fee }.into());
         }
@@ -684,7 +724,8 @@ impl TxDraft {
             recipients: state.recipients,
             change: state.change,
             fee_rate: state.fee,
-            height: snapshot.height,
+            height,
+            coinjoin,
         };
         resolved.dry_run()?;
         Ok(resolved)
@@ -790,6 +831,48 @@ impl TxDraft {
         .await?
         .map_err(vault_failure)??;
 
+        if r.coinjoin {
+            let outputs: Vec<TxOut> = r
+                .recipients
+                .iter()
+                .zip(&r.plan.amounts)
+                .map(|(rc, amount)| TxOut {
+                    value: *amount,
+                    script_pubkey: rc.address.script_pubkey(),
+                })
+                .collect();
+            let tx = session
+                .sign_coinjoin_payment(wallet_id, &r.plan.inputs, outputs, &signer)
+                .await?;
+            let first_input = r.plan.inputs[0].address.script_pubkey();
+            let summary = summarize(
+                &tx,
+                &r,
+                &recipient_mine,
+                change_mine,
+                first_input,
+                external_sent,
+                network,
+            );
+            let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+            session.spends.add(wallet_id, inputs.iter().copied());
+            return Ok(Arc::new(PreparedTx {
+                session: Arc::clone(session),
+                wallet_id,
+                draft_id: self.id,
+                summary,
+                records: r
+                    .recipients
+                    .iter()
+                    .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
+                    .collect(),
+                inputs,
+                signed: Mutex::new(None),
+                mixed: Some(tx),
+                phase: Mutex::new(Phase::Pending),
+            }));
+        }
+
         // The change address: fresh only when the plan has change. The
         // builder always budgets one; without change any P2PKH of the same
         // length (the first input's) keeps its estimate equal to the plan's.
@@ -845,6 +928,7 @@ impl TxDraft {
                 .collect(),
             inputs,
             signed: Mutex::new(Some(Arc::new(signed))),
+            mixed: None,
             phase: Mutex::new(Phase::Pending),
         }))
     }
@@ -983,16 +1067,20 @@ impl TxDraft {
         }
         // `Phase::Broadcasting` keeps abandon and drop away while the
         // broadcast awaits the network (up to about a minute).
-        let Some(signed) = prepared.signed().clone() else {
-            return Err(SendFailure::PreparedTxSpent.into());
-        };
-        let sent = if first {
-            wallet.core().broadcast_finalized_transaction(&signed).await
+        let signed = prepared.signed().clone();
+        let sent = if let Some(tx) = &prepared.mixed {
+            wallet.core().broadcast_transaction(tx).await
+        } else if let Some(signed) = signed {
+            if first {
+                wallet.core().broadcast_finalized_transaction(&signed).await
+            } else {
+                wallet
+                    .core()
+                    .broadcast_transaction(signed.transaction())
+                    .await
+            }
         } else {
-            wallet
-                .core()
-                .broadcast_transaction(signed.transaction())
-                .await
+            return Err(SendFailure::PreparedTxSpent.into());
         };
         match sent {
             Ok(txid) => Ok(BroadcastOutcome {
@@ -1243,6 +1331,9 @@ pub struct PreparedTx {
     records: Vec<(String, Option<String>, Option<String>)>,
     inputs: Vec<OutPoint>,
     signed: Mutex<Option<Arc<SignedCoreTransaction>>>,
+    /// A CoinJoin-page payment (QT-051), signed by the engine: no
+    /// key-wallet reservation, only the engine's pending spends.
+    mixed: Option<Transaction>,
     phase: Mutex<Phase>,
 }
 
@@ -1265,6 +1356,7 @@ impl PreparedTx {
         self.signed()
             .as_ref()
             .map(|s| dashcore::consensus::serialize(s.transaction()))
+            .or_else(|| self.mixed.as_ref().map(dashcore::consensus::serialize))
     }
 
     fn phase(&self) -> std::sync::MutexGuard<'_, Phase> {

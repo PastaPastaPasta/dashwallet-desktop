@@ -546,9 +546,31 @@ fn locked_vault_and_validation_errors() {
         send_failure(f.engine.block_on(empty.estimate())),
         SendFailure::NoRecipients
     );
+    // QT-051: the CoinJoin source is accepted; the wallet holds no fully
+    // mixed coins, so nothing can be paid from it.
+    let mixed = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    mixed.set_source(CoinSource::FullyMixedOnly).unwrap();
     assert!(matches!(
-        empty.set_source(CoinSource::FullyMixedOnly),
-        Err(EngineError::NotImplemented(_))
+        send_failure(f.engine.block_on(mixed.estimate())),
+        SendFailure::InsufficientMixedFunds { available: 0 }
+    ));
+    assert_eq!(
+        f.engine
+            .block_on(f.session.max_spendable(
+                f.wallet,
+                CoinSource::FullyMixedOnly,
+                FeeMode::PerKb(1_000)
+            ))
+            .unwrap(),
+        0
+    );
+    // Only the automatic change policy goes with it (change is paid as fee).
+    mixed
+        .set_change(ChangePolicy::Address(FOREIGN.into()))
+        .unwrap();
+    assert!(matches!(
+        f.engine.block_on(mixed.estimate()),
+        Err(EngineError::InvalidArgument(_))
     ));
     assert!(matches!(
         empty.set_change(ChangePolicy::Address("bogus".into())),

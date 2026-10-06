@@ -59,6 +59,10 @@ pub enum PayCommand {
         /// Coin control: spend exactly these outpoints (repeatable).
         #[arg(long = "coin")]
         coins: Vec<String>,
+        /// Pay from fully mixed CoinJoin coins only (QT-051, the CoinJoin
+        /// send page): no change, the rest is fee.
+        #[arg(long)]
+        coinjoin: bool,
         /// Custom change address.
         #[arg(long)]
         change: Option<String>,
@@ -281,6 +285,7 @@ pub fn run(
             to,
             fee_per_kb,
             coins,
+            coinjoin,
             change,
             label,
             message,
@@ -309,6 +314,9 @@ pub fn run(
                     .map(|o| outpoint(o))
                     .collect::<Result<_, _>>()?;
                 draft.set_source(CoinSource::Outpoints(list)).map_err(e)?;
+            }
+            if coinjoin {
+                draft.set_source(CoinSource::FullyMixedOnly).map_err(e)?;
             }
             let custom_change = change.is_some();
             if let Some(addr) = change {

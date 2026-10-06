@@ -27,6 +27,13 @@ pub enum SignerScope {
     Full,
     /// Only the DIP9 CoinJoin account `m/9'/coin'/4'/account'/…` (QT-112).
     CoinJoinOnly,
+    /// The CoinJoin account plus the BIP44 accounts `m/44'/coin'/…`: what
+    /// mixing needs to turn ordinary coins into denominations and
+    /// collaterals of the same wallet (Dash Core lets a mixing-only unlock
+    /// create those, `CCoinJoinClientSession::CreateDenominated`,
+    /// `src/coinjoin/client.cpp:2194`). The engine uses it only for
+    /// transactions whose outputs all pay the wallet itself.
+    CoinJoinFunding,
 }
 
 /// The signer contract for transaction and message signing.
@@ -86,6 +93,17 @@ pub fn is_coinjoin_path(path: &DerivationPath, network: Network) -> bool {
         && Some(p[2]) == hardened(4)
 }
 
+/// Whether `path` lies inside a BIP44 account of `network`
+/// (`m/44'/coin'/account'/…`).
+pub fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    let hardened = |i| ChildNumber::from_hardened_idx(i).ok();
+    p.len() >= 4
+        && Some(p[0]) == hardened(44)
+        && Some(p[1]) == hardened(coin_type(network))
+        && p[2].is_hardened()
+}
+
 impl VaultSigner {
     pub(crate) fn new(
         vault: Vault,
@@ -110,7 +128,14 @@ impl VaultSigner {
     /// Derives the extended private key at `path`. The caller erases it.
     fn derive(&self, path: &DerivationPath) -> Result<ExtendedPrivKey, SignerError> {
         let network = self.vault.network();
-        if self.scope == SignerScope::CoinJoinOnly && !is_coinjoin_path(path, network) {
+        let allowed = match self.scope {
+            SignerScope::Full => true,
+            SignerScope::CoinJoinOnly => is_coinjoin_path(path, network),
+            SignerScope::CoinJoinFunding => {
+                is_coinjoin_path(path, network) || is_bip44_path(path, network)
+            }
+        };
+        if !allowed {
             return Err(SignerError::PathNotAllowed(path.to_string()));
         }
         let seed = self
@@ -220,6 +245,22 @@ mod tests {
         ] {
             let p = DerivationPath::from_str(bad).unwrap();
             assert!(!is_coinjoin_path(&p, Network::Testnet), "{bad}");
+        }
+    }
+
+    #[test]
+    fn bip44_path_check() {
+        let ok = DerivationPath::from_str("m/44'/1'/0'/1/7").unwrap();
+        assert!(is_bip44_path(&ok, Network::Testnet));
+        assert!(!is_bip44_path(&ok, Network::Mainnet));
+        for bad in [
+            "m/44'/1'/0",
+            "m/44'/1'",
+            "m/9'/1'/4'/0'/0/1",
+            "m/45'/1'/0'/0/0",
+        ] {
+            let p = DerivationPath::from_str(bad).unwrap();
+            assert!(!is_bip44_path(&p, Network::Testnet), "{bad}");
         }
     }
 }

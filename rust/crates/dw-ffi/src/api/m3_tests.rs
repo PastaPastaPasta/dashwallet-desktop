@@ -138,11 +138,15 @@ fn constants_answer_without_a_session() {
 }
 
 #[test]
-fn coinjoin_stubs_check_arguments_then_report_not_implemented() {
+fn test_qt_046_coinjoin_calls_answer_and_check_their_wallet() {
     let f = fixture();
     let s = &f.session;
     let rt = &f.rt;
-    assert_code!(s.coinjoin_settings(), not_implemented: "NetworkSession.coinjoin_settings");
+    // Options: dash-qt defaults until changed, validated, applied live.
+    assert_eq!(
+        s.coinjoin_settings().unwrap(),
+        crate::coinjoin_limits().defaults
+    );
     let bad = CoinJoinSettings {
         rounds: 1,
         ..crate::coinjoin_limits().defaults
@@ -151,22 +155,24 @@ fn coinjoin_stubs_check_arguments_then_report_not_implemented() {
         rt.block_on(s.set_coinjoin_settings(bad)),
         "invalid_argument"
     );
-    assert_code!(
-        rt.block_on(s.set_coinjoin_settings(crate::coinjoin_limits().defaults)),
-        not_implemented: "NetworkSession.set_coinjoin_settings"
-    );
+    let changed = CoinJoinSettings {
+        rounds: 8,
+        multi_session: true,
+        ..crate::coinjoin_limits().defaults
+    };
+    rt.block_on(s.set_coinjoin_settings(changed)).unwrap();
+    assert_eq!(s.coinjoin_settings().unwrap(), changed);
+
+    // Per-wallet calls parse the id, then need the wallet.
     assert_code!(s.coinjoin_status("zz".into()), "invalid_argument");
-    assert_code!(
-        s.coinjoin_status(WALLET.into()),
-        not_implemented: "NetworkSession.coinjoin_status"
-    );
+    assert_code!(s.coinjoin_status(WALLET.into()), "wallet_not_found");
     assert_code!(
         rt.block_on(s.start_mixing(WALLET.into())),
-        not_implemented: "NetworkSession.start_mixing"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.stop_mixing(WALLET.into())),
-        not_implemented: "NetworkSession.stop_mixing"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.set_coinjoin_salt(WALLET.into(), "AB".repeat(32))),
@@ -174,30 +180,39 @@ fn coinjoin_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.set_coinjoin_salt(WALLET.into(), HASH.into())),
-        not_implemented: "NetworkSession.set_coinjoin_salt"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.coinjoin_salt(WALLET.into())),
-        not_implemented: "NetworkSession.coinjoin_salt"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.generate_coinjoin_salt(WALLET.into())),
-        not_implemented: "NetworkSession.generate_coinjoin_salt"
+        "wallet_not_found"
     );
+    // The recovery scan needs a running SPV client.
     assert_code!(
         rt.block_on(s.coinjoin_recovery_scan(WALLET.into())),
-        not_implemented: "NetworkSession.coinjoin_recovery_scan"
+        "coinjoin.spv_not_running"
     );
     assert_code!(
         rt.block_on(s.mixed_coins_sweep_plan(WALLET.into(), MixedCoinsDestination::Wallet)),
-        not_implemented: "NetworkSession.mixed_coins_sweep_plan"
+        "wallet_not_found"
     );
     // The shielded destination is M4 work: its own call name.
+    assert_code!(
+        rt.block_on(s.mixed_coins_sweep_plan(WALLET.into(), MixedCoinsDestination::Shielded)),
+        not_implemented: "NetworkSession.mixed_coins_sweep_plan.shielded"
+    );
     assert_code!(
         rt.block_on(s.move_mixed_coins(WALLET.into(), MixedCoinsDestination::Shielded, "g".into())),
         not_implemented: "NetworkSession.move_mixed_coins.shielded"
     );
-    assert_code!(s.network_stats(), not_implemented: "NetworkSession.network_stats");
+
+    // QT-144 Network sub-tab: full-node values are absent, never zero.
+    let stats = s.network_stats().unwrap();
+    assert!(stats.credit_pool.is_none() && stats.instantsend.is_none());
+    assert!(stats.masternodes.is_none() && stats.best_chainlock.is_none());
 }
 
 #[test]

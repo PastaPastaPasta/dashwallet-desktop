@@ -13,6 +13,20 @@ pub enum PoolState {
     Error,
 }
 
+impl PoolState {
+    /// The state for a wire value (`POOL_STATE_MIN..=POOL_STATE_MAX`).
+    pub fn from_wire(value: i32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Idle,
+            1 => Self::Queue,
+            2 => Self::AcceptingEntries,
+            3 => Self::Signing,
+            4 => Self::Error,
+            _ => return None,
+        })
+    }
+}
+
 /// Core `PoolMessage`, the masternode's reply codes, in wire order. The two
 /// values Core marks "not used" (`ERR_NON_STANDARD_PUBKEY`, `ERR_NOT_A_MN`)
 /// are kept so wire values map one to one.

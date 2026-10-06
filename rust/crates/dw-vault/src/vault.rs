@@ -1289,6 +1289,21 @@ impl Vault {
     /// every state with the data key available, including mixing-only
     /// unlock; needs no grant (mixing runs unattended).
     pub fn mixing_signer(&self, wallet: &WalletId) -> Result<VaultSigner, VaultError> {
+        self.unattended_signer(wallet, SignerScope::CoinJoinOnly)
+    }
+
+    /// As [`Self::mixing_signer`], with the BIP44 accounts added
+    /// ([`SignerScope::CoinJoinFunding`]): for the denomination and
+    /// collateral transactions mixing makes from the wallet's own coins.
+    pub fn mixing_funding_signer(&self, wallet: &WalletId) -> Result<VaultSigner, VaultError> {
+        self.unattended_signer(wallet, SignerScope::CoinJoinFunding)
+    }
+
+    fn unattended_signer(
+        &self,
+        wallet: &WalletId,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
         match self.lock_state() {
             LockState::NoVault => return Err(VaultError::NoVault),
             LockState::Locked => return Err(VaultError::Locked),
@@ -1301,7 +1316,7 @@ impl Vault {
         if inner.dek.is_none() {
             return Err(VaultError::Locked);
         }
-        self.signer_locked(&inner, wallet, SignerScope::CoinJoinOnly, None)
+        self.signer_locked(&inner, wallet, scope, None)
     }
 
     fn signer_locked(

@@ -92,8 +92,10 @@ fn send_coins_and_labels_map_engine_results() {
         matches!(e, SendError::AmountExceedsBalance { available: 0 }),
         "{e:?}"
     );
-    let e = draft.set_source(CoinSource::FullyMixedOnly).unwrap_err();
-    assert_eq!(e.code(), "not_implemented");
+    // QT-051: the CoinJoin source is accepted; nothing is fully mixed yet.
+    draft.set_source(CoinSource::FullyMixedOnly).unwrap();
+    let e = rt.block_on(draft.estimate()).unwrap_err();
+    assert_eq!(e.code(), "send.insufficient_mixed_funds", "{e:?}");
     let e = draft
         .set_source(CoinSource::Outpoints {
             outpoints: vec![OutPoint {
@@ -140,7 +142,8 @@ fn send_coins_and_labels_map_engine_results() {
             ..filter
         },
     ));
-    assert!(matches!(r, Err(CoinsError::NotImplemented { .. })), "{r:?}");
+    // QT-071: the CoinJoin page's coins (fully mixed only): none yet.
+    assert!(r.unwrap().is_empty());
     let unknown = OutPoint {
         txid: "ab".repeat(32),
         vout: 3,

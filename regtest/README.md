@@ -276,6 +276,27 @@ wallets and got InstantSend- and ChainLocked (RESULTS.md §5). A CoinJoin intero
 client can therefore use one `DashTestFramework` network: 4 MNs, our client, and at least one dashd
 wallet as the counterparty.
 
+### Suite `coinjoin` (our client, M3 R1)
+
+`functional/dwd_coinjoin_client.py` runs `dwcli` (set `DWCLI`) against 4 masternodes, two dashd
+mixing wallets and a second `dwcli` wallet, in real time (`disable_mocktime`: our client checks
+`dsq` timestamps against the wall clock). It checks that stopping releases a session's coins, one
+round, that a restarted process resumes to 2 rounds with a fully mixed balance, and that fully mixed
+coins pay only through `send --coinjoin` (no change output, `CoinJoinSend` in history). The `dwcli`
+nodes connect to the framework's ports on the host, so it runs on the host with the darwin release
+(the Docker image would need a Linux `dwcli` inside the container):
+
+```sh
+DWCLI=$CARGO_TARGET_DIR/debug/dwcli DWD_PYTHON=/path/to/func-venv/bin/python \
+    DASHCORE_DIR=/path/to/dashcore regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
+```
+
+dashd counterparties alone are not enough on this network: after their first sessions they keep the
+masternode connections they opened (`CMasternodeUtils::DoMaintenance` keeps them while the node has
+fewer than its maximum outbound peers) and skip every connected masternode
+(`IsMasternodeOrDisconnectRequested`), so most queues expire. The second `dwcli` wallet keeps
+sessions going. One pass takes 8–15 minutes (quorums about 2, mixing 5–12).
+
 ## Layout
 
 ```
