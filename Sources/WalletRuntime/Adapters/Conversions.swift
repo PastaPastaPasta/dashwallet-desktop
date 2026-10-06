@@ -176,14 +176,6 @@ extension GrantPurpose {
         case .platformOperation: .platformOperation
         }
     }
-
-    /// Same purpose kind, ignoring the spend cap.
-    func sameKind(as other: GrantPurpose) -> Bool {
-        switch (self, other) {
-        case (.spend, .spend): true
-        default: self == other
-        }
-    }
 }
 
 extension AuthGrant {

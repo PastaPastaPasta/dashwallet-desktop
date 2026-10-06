@@ -126,12 +126,6 @@ public final class SignVerifyViewModel {
         }
     }
 
-    /// The status line clears when a field gets focus (dash-qt).
-    public func clearStatus() {
-        signResult = nil
-        verifyResult = nil
-    }
-
     public func clearSign() {
         address = ""
         message = ""
