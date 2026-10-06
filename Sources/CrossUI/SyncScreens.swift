@@ -1,7 +1,7 @@
-// dash-qt's sync overlay (QT-027) and the connected peers with "Change
-// Peers" (QT-024 "Show Peers", QT-147), as pages over the window content.
+// dash-qt's sync overlay (QT-027) as a page over the window content.
 // SwiftCrossUI has no modal overlay that AT-SPI sees inside the window, so
-// both replace the content until hidden or closed.
+// it replaces the content until hidden. The peers list moved to Tools ▸
+// Peers (ToolsWindowScreen.swift).
 import DashUICross
 import DesignTokens
 import Foundation
@@ -54,74 +54,4 @@ struct SyncOverlayScreen: View {
         if hours > 0 { return "\(hours) h \(rest) min" }
         return "\(rest) min"
     }
-}
-
-/// The connected peers and "Change Peers".
-struct PeersScreen: View {
-    let state: CrossAppState
-
-    @State var model: PeersViewModel
-
-    init(state: CrossAppState) {
-        self.state = state
-        _model = State(wrappedValue: PeersViewModel(sync: state.env.sync))
-    }
-
-    var body: some View {
-        let state = state
-        let model = model
-        Page(L10n.Peers.title) {
-            HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(
-                    L10n.Peers.changePeers, style: .tintedBlue, size: .small, isEnabled: !model.rotating,
-                    help: L10n.Peers.changePeersHelp
-                ) { Task { await model.rotate() } }
-                DashButton(CrossStrings.close, style: .strokeGray, size: .small) { state.showsPeers = false }
-            }
-            if let error = model.error {
-                Toast(error, kind: .error)
-            }
-            if let peers = model.peers {
-                if peers.isEmpty {
-                    Text(L10n.Peers.none).dashFont(.footnote).dashForeground(.secondaryText)
-                } else {
-                    let names = peers.map(Self.rowName)
-                    // ADR 0002: the list scrolls inside a fixed-height ScrollView.
-                    ScrollView {
-                        List(peers.map(PeerRow.init), selection: bind({ nil as String? }, { _ in })) { row in
-                            MenuItem(title: row.peer.address, subtitle: Self.details(row.peer))
-                        }
-                        .accessibleRowNames(names)
-                    }
-                    .frame(height: 320)
-                }
-            } else if model.error == nil {
-                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
-            }
-        }
-        .task { await model.load() }
-    }
-
-    /// User agent, best height, ping and direction; unknown fields say so
-    /// (dash-spv reports only addresses today).
-    static func details(_ peer: PeerInfo) -> String {
-        [
-            "\(L10n.Peers.userAgent): \(peer.userAgent ?? L10n.Common.unknown)",
-            "\(L10n.Peers.height): \(peer.bestHeight.map(String.init) ?? L10n.Common.unknown)",
-            "\(L10n.Peers.ping): \(peer.pingMilliseconds.map { "\($0) ms" } ?? L10n.Common.unknown)",
-            peer.inbound ? L10n.Peers.inbound : L10n.Peers.outbound,
-        ].joined(separator: "  ")
-    }
-
-    static func rowName(_ peer: PeerInfo) -> String {
-        "\(peer.address), \(details(peer))"
-    }
-}
-
-struct PeerRow: Identifiable, Hashable {
-    let peer: PeerInfo
-    var id: String { peer.address }
-
-    static func == (lhs: PeerRow, rhs: PeerRow) -> Bool { lhs.peer.address == rhs.peer.address }
-    func hash(into hasher: inout Hasher) { hasher.combine(peer.address) }
 }

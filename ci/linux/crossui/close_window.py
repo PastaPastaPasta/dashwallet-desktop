@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Asks the X11 window titled TITLE to close, as a window manager's close
+"""Asks the X11 window whose title starts with TITLE to close, as a window manager's close
 button does: a WM_PROTOCOLS / WM_DELETE_WINDOW client message. Xvfb runs no
 window manager, so this is how the harness closes the app's window.
 
@@ -12,7 +12,8 @@ import sys
 
 title = sys.argv[1] if len(sys.argv) > 1 else "Dash Wallet"
 tree = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True, text=True).stdout
-ids = [line.split()[0] for line in tree.splitlines() if f'"{title}"' in line]
+# Prefix match: the title grows to "Dash Wallet - <wallet> - [network]" (QT-011).
+ids = [line.split()[0] for line in tree.splitlines() if f'"{title}' in line]
 if not ids:
     print(f"close_window: no window titled {title!r}", file=sys.stderr)
     sys.exit(1)

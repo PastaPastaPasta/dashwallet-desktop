@@ -8,6 +8,7 @@ import WalletRuntime
 
 struct AddressBookScreen: View {
     let model: AddressBookViewModel
+    let state: CrossAppState
 
     @Environment(\.chooseFileSaveDestination) var chooseFileSaveDestination
     @State var newAddress = ""
@@ -44,6 +45,9 @@ struct AddressBookScreen: View {
                 ForEach(model.entries) { entry in
                     HStack(spacing: Int(DashSpacing.s)) {
                         MenuItem(title: model.labelText(for: entry), subtitle: entry.address)
+                        DashButton(CrossStrings.copyAddress, style: .plainBlue, size: .small) {
+                            state.copy(entry.address, what: CrossStrings.addressWord)
+                        }
                         DashButton(CrossStrings.showQR, style: .plainBlue, size: .small) { model.showQR(for: entry) }
                         if model.canDelete {
                             DashButton(CrossStrings.delete, style: .plainRed, size: .small) {

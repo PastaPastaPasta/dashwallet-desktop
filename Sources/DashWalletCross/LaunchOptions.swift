@@ -1,9 +1,16 @@
 // Command-line options of `dash-wallet` (SwiftCrossUI app). GTK does not
 // parse argv here (SwiftCrossUI runs the GApplication with no arguments).
+// The app's own options are read first; everything else goes to WalletRuntime's
+// LaunchArgumentsParser, which applies dash-qt's rules (QT-006): `-testnet`,
+// `-datadir=<dir>`, `-choosedatadir`, `-windowtitle=<name>`, `-splash`,
+// `-resetguisettings`, `-min`, `-lang`, trailing `dash:` URIs.
+import CrossUI
 import Foundation
 import WalletDemo
+import WalletFeatures
+import WalletRuntime
 
-struct LaunchOptions: Sendable, Equatable {
+struct AppLaunchOptions: Sendable, Equatable {
     enum Mode: Sendable, Equatable {
         /// The engine-backed wallet.
         case live
@@ -14,24 +21,28 @@ struct LaunchOptions: Sendable, Equatable {
     }
 
     var mode: Mode = .live
-    /// `--network <mainnet|testnet|regtest|devnet-NAME>`. Unset: the live app
+    /// `--network <mainnet|testnet|regtest|devnet-NAME>`, or dash-qt's
+    /// `-testnet`/`-regtest`/`-devnet=`/`-chain=`. Unset: the live app
     /// reopens the last network (first run: mainnet); the demo uses testnet.
     var networkName: String?
     /// `--connect HOST:PORT` (repeatable): SPV peers instead of DNS seeds.
     var spvPeers: [String] = []
     /// `--dapi URL` (repeatable): DAPI endpoints; regtest and devnets have no defaults.
     var dapiAddresses: [String] = []
-    /// `--datadir <path>` overrides the per-OS data root.
+    /// `--datadir <path>` (or dash-qt's `-datadir=<path>`) overrides the per-OS data root.
     var dataDirectory: String?
     /// `--page <name>`: the page shown first (screenshots, smoke tests).
     var page: String?
     var showHelp = false
     var problems: [String] = []
+    /// dash-qt's options, as WalletRuntime parsed them.
+    var shell = LaunchOptions()
 
     static let usage = """
         Usage: dash-wallet [--demo [funded|locked|onboarding|offline]] [--gallery]
                            [--network mainnet|testnet|regtest|devnet-NAME] [--datadir PATH]
                            [--connect HOST:PORT]... [--dapi URL]... [--page NAME]
+                           [dash-qt options] [URI]
           --demo       run on in-memory sample data (DWD_DEMO=1 does the same);
                        locked asks for the passphrase "demo", onboarding starts
                        with no wallet, offline has no peers and is syncing
@@ -42,18 +53,21 @@ struct LaunchOptions: Sendable, Equatable {
                        Linux, %APPDATA%\\Dash\\DashWallet on Windows)
           --connect    SPV peer to use instead of DNS seeds (repeatable)
           --dapi       DAPI endpoint (repeatable; needed for regtest and devnets)
-          --page       first page: overview, send, receive, transactions,
-                       address-book, sign-verify, settings
+          --page       first page: \(pages.joined(separator: ", "))
+          dash-qt options: -testnet -regtest -devnet=NAME -chain=CHAIN -datadir=DIR
+                       -choosedatadir -windowtitle=NAME -splash=0 -resetguisettings
+                       -min -lang=LANG (see Help ▸ Command-line options)
         """
 
-    static let pages = ["overview", "send", "receive", "transactions", "address-book", "sign-verify", "settings"]
+    static let pages = SidebarItem.allCases.prefix(4).map(\.rawValue) + ToolPage.pageNames
 
     init() {}
 
-    init(arguments: [String], environment: [String: String]) {
+    init(arguments: [String], environment: [String: String], parser: any LaunchArgumentsParsing = LaunchArgumentsParser()) {
         if environment["DWD_DEMO"] == "1" { mode = .demo(.funded) }
         var iterator = arguments.dropFirst().makeIterator()
         var pending: String?
+        var forwarded: [String] = []
         func next() -> String? {
             if let value = pending {
                 pending = nil
@@ -87,13 +101,40 @@ struct LaunchOptions: Sendable, Equatable {
             case "--help", "-h":
                 showHelp = true
             default:
-                // macOS adds "-NSDocumentRevisionsDebugMode YES" etc. when launched from Xcode.
-                if argument.hasPrefix("-NS") {
-                    _ = next()
-                } else {
-                    problems.append("unknown option \(argument)")
-                }
+                forwarded.append(argument)
             }
+        }
+        do {
+            shell = try parser.parse(forwarded)
+        } catch {
+            problems.append("\(error.detail): \(Self.text(for: error.code))")
+            return
+        }
+        if shell.showHelp { showHelp = true }
+        if shell.showVersion {
+            // The version comes from the engine, which is not open while the
+            // arguments are read; Help ▸ About shows it.
+            problems.append("-version is not supported; Help ▸ About shows the version")
+        }
+        if networkName == nil, let network = shell.network { networkName = Self.name(of: network) }
+        if dataDirectory == nil, let directory = shell.dataDirectory { dataDirectory = directory.path }
+    }
+
+    static func text(for code: ServiceErrorCode) -> String {
+        switch code {
+        case .launchUnknownOption: "unknown option"
+        case .launchInvalidValue: "invalid value"
+        case .launchOptionAfterURI: "options may not follow a URI"
+        default: code.rawValue
+        }
+    }
+
+    static func name(of network: DashNetwork) -> String {
+        switch network {
+        case .mainnet: "mainnet"
+        case .testnet: "testnet"
+        case .regtest: "regtest"
+        case .devnet(let name): "devnet-\(name)"
         }
     }
 }

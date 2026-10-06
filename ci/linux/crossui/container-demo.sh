@@ -49,16 +49,29 @@ session() {
 
 # Steps: NAME (wait, dump tree, screenshot) or NAME=select:ITEM (pick a sidebar
 # item through the AT-SPI Selection interface first).
-session demo "1-overview,2-send=select:Send" --demo
-session transactions "3-transactions" --demo --page transactions
-session receive "4-receive" --demo --page receive
-session onboarding "5-onboarding" --demo onboarding
-# Whole flows driven through AT-SPI (typing into named fields, pressing buttons).
-session onboarding-flow "6-onboarding=flow:onboarding" --demo onboarding
-session send-flow "7-send=flow:send" --demo --page send
-# Status-row unit selector, peers page and address-book QR code; the sync overlay.
-session tools-flow "9-tools=flow:tools" --demo
-session overlay-flow "10-overlay=flow:overlay" --demo offline
+m1_sessions() {
+  session demo "1-overview,2-send=select:Send" --demo
+  session transactions "3-transactions" --demo --page transactions
+  session receive "4-receive" --demo --page receive
+  session onboarding "5-onboarding" --demo onboarding
+  # Whole flows driven through AT-SPI (typing into named fields, pressing buttons).
+  session onboarding-flow "6-onboarding=flow:onboarding" --demo onboarding
+  session send-flow "7-send=flow:send" --demo --page send
+  # Status-row unit selector, peers page and address-book QR code; the sync overlay.
+  session tools-flow "9-tools=flow:tools" --demo
+  session overlay-flow "10-overlay=flow:overlay" --demo offline
+}
+
+# M2 screens (DWD_CROSSUI_SUITE=m2): menu bar and window title, Options and
+# coin selection, the Tools window, PSBT loading, Wallets / Security / About
+# and transaction details.
+m2_sessions() {
+  session m2-menus "m2-1-menus=flow:m2-menus" --demo
+  session m2-options "m2-2-options=flow:m2-options" --demo --page options
+  session m2-tools "m2-3-tools=flow:m2-tools" --demo --page tools-console
+  session m2-psbt "m2-4-psbt=flow:m2-psbt" --demo --page psbt
+  session m2-pages "m2-5-pages=flow:m2-pages" --demo
+}
 
 # Live mode on the real engine: data root from XDG_DATA_HOME, regtest with no
 # reachable node. Creates a wallet through the onboarding flow, then closes
@@ -91,5 +104,43 @@ live() {
     echo "== live: FAIL no engine shutdown message"; status=2
   fi
 }
-live
+
+# Live mode with dash-qt's -choosedatadir (QT-004): the Intro page, OK with
+# the default directory, then the wallet opens on it.
+live_chooser() {
+  export XDG_DATA_HOME=/tmp/xdg-chooser
+  rm -rf "$XDG_DATA_HOME"
+  "$BIN" -choosedatadir --network regtest --dapi http://127.0.0.1:1 --connect 127.0.0.1:1 \
+    >"$OUT/app-live-chooser.log" 2>&1 &
+  local pid=$!
+  echo "== live-chooser: launched dash-wallet -choosedatadir (pid $pid)"
+  python3 /work/ci/linux/crossui/atspi_demo.py --pid "$pid" --out "$OUT" --steps "m2-6-live=flow:m2-chooser" || status=$?
+  if [[ -d "$XDG_DATA_HOME/dashwallet/regtest" ]]; then
+    echo "== live-chooser: PASS regtest data under the chosen (default) directory"
+  else
+    echo "== live-chooser: FAIL no \$XDG_DATA_HOME/dashwallet/regtest"; status=2
+  fi
+  python3 /work/ci/linux/crossui/close_window.py "Dash Wallet" || status=2
+  for _ in $(seq 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  if kill -0 "$pid" 2>/dev/null; then kill "$pid"; status=2; echo "== live-chooser: did not exit after close"; fi
+  grep -q "engine shut down" "$OUT/app-live-chooser.log" && echo "== live-chooser: PASS engine shut down" \
+    || { echo "== live-chooser: FAIL no engine shutdown message"; status=2; }
+}
+
+if [[ "${DWD_CROSSUI_SUITE:-m1}" == m2 ]]; then
+  # The M1 flows run first as a regression check; their screenshots stay in
+  # the container and only their checks are kept.
+  m2_out=$OUT
+  OUT=/tmp/m1-regression
+  mkdir -p "$OUT"
+  m1_sessions
+  live
+  cp "$OUT/atspi-checks.json" "$m2_out/m1-regression-checks.json"
+  OUT=$m2_out
+  m2_sessions
+  live_chooser
+else
+  m1_sessions
+  live
+fi
 exit "$status"

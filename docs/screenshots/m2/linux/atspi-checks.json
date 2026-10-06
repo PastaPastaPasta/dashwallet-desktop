@@ -1,0 +1,368 @@
+[
+ {
+  "kind": "hard",
+  "name": "app pid 4399 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "menus: overview shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "menus: window title is 'Dash Wallet - \u2026 - [testnet]' (QT-011)",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "menus: the window has a menu bar",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "menus: top-level menu 'File'",
+  "ok": true,
+  "detail": "['File', 'Settings', 'Window', 'Help']"
+ },
+ {
+  "kind": "hard",
+  "name": "menus: top-level menu 'Settings'",
+  "ok": true,
+  "detail": "['File', 'Settings', 'Window', 'Help']"
+ },
+ {
+  "kind": "hard",
+  "name": "menus: top-level menu 'Window'",
+  "ok": true,
+  "detail": "['File', 'Settings', 'Window', 'Help']"
+ },
+ {
+  "kind": "hard",
+  "name": "menus: top-level menu 'Help'",
+  "ok": true,
+  "detail": "['File', 'Settings', 'Window', 'Help']"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 4453 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "options: page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "options: Wallet tab shows the coin control switch",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "toggle 'Enable coin control features' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'OK' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "options: OK saves ('Options saved.')",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Network' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "options: Network tab says proxy needs an engine update",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Display' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "options: Display tab has the third-party URL field",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Send' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "coin control: Send shows 'Coin Control Features'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Inputs\u2026' through AT-SPI Action",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 4524 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "console: welcome text",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "console: anti-scam warning",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'Console command' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Run' through AT-SPI Action",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 4572 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "psbt: page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Load PSBT from clipboard\u2026' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "psbt: an empty clipboard is refused with dash-qt's text",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "type into the field named 'PSBT (base64)' through AT-SPI EditableText",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Load' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "psbt: the demo answers 'not available yet' (no fake analysis)",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 4631 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "pages: overview shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Wallets' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "wallets: import, restore and watch-only controls",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Security' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "security: auto-lock picker",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "security: says there is no biometric unlock on this system",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'About' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "about: Export Logs",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Command-line options' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "command-line options: dash-qt options listed",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Transactions' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "transactions: rows listed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "transactions: select the first row through AT-SPI Selection",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "transactions: details show dash-qt's Abandon / Resend actions",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "transactions: details list 'Net amount'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 4727 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "chooser: welcome page",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "chooser: status line for the default directory",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'OK' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "chooser: OK opens the wallet (onboarding on the new root)",
+  "ok": true,
+  "detail": ""
+ }
+]

@@ -23,16 +23,18 @@ import WalletRuntime
 
 @main
 struct DashWalletCrossApp: App {
-    let options: LaunchOptions
-    let demoState: CrossAppState?
+    let options: AppLaunchOptions
+    /// The window state for the menu bar and window title (QT-011, QT-015…018).
+    let host = CrossAppHost()
     /// Shuts the live engine down when the app quits.
     let quitHook = QuitHook()
 
     init() {
-        let options = LaunchOptions(arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
+        let options = AppLaunchOptions(
+            arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
         if options.showHelp || !options.problems.isEmpty {
             for problem in options.problems { FileHandle.standardError.write(Data("dash-wallet: \(problem)\n".utf8)) }
-            FileHandle.standardError.write(Data((LaunchOptions.usage + "\n").utf8))
+            FileHandle.standardError.write(Data((AppLaunchOptions.usage + "\n").utf8))
             exit(options.showHelp && options.problems.isEmpty ? 0 : 64)
         }
         self.options = options
@@ -43,39 +45,48 @@ struct DashWalletCrossApp: App {
         #endif
         if case .demo(let scenario) = options.mode {
             let network = options.networkName.flatMap(Self.runtimeNetwork) ?? .testnet
-            let env = DemoEnvironment.make(scenario: scenario, network: network)
-            let main = MainViewModel(env: env)
-            Self.open(page: options.page, in: main)
-            demoState = CrossAppState(env: env, main: main, notice: CrossDemoText.notice)
-        } else {
-            demoState = nil
+            let clipboard = AppOSServices.clipboard
+            let (env, m2) = DemoEnvironment.makeWithM2(
+                scenario: scenario, network: network, launchOptions: options.shell,
+                platform: DemoPlatformServices(clipboard: clipboard.service))
+            let state = CrossAppState(
+                env: env, m2: m2, main: MainViewModel(env: env),
+                capabilities: CrossPlatformCapabilities(clipboard: clipboard.available, tray: false),
+                notice: CrossDemoText.notice)
+            state.appUsage = AppLaunchOptions.usage
+            Self.open(page: options.page, in: state)
+            host.state = state
         }
         quitHook.install()
     }
 
     var body: some Scene {
-        WindowGroup(L10n.Navigation.appName) {
+        let host = host
+        // A closure value, not a literal: SwiftCrossUI's CommandsBuilder only
+        // takes CommandMenu literals, and the menus are built from the model.
+        let menus: () -> Commands = { ShellMenus.commands(for: host.state, quit: { exit(0) }) }
+        return WindowGroup(host.state?.shell.windowTitle ?? L10n.Navigation.appName) {
             switch options.mode {
             case .gallery:
                 DashUICrossGallery()
             case .demo:
-                if let demoState { WalletRootView(state: demoState) }
+                if let state = host.state { WalletRootView(state: state) }
             case .live:
-                LiveStartView(options: options, quitHook: quitHook)
+                LiveStartView(options: options, quitHook: quitHook, host: host)
             }
         }
         .defaultSize(width: 1100, height: 760)
+        .commands(menus)
     }
 
-    /// Applies `--page`.
-    static func open(page: String?, in main: MainViewModel) {
-        switch page {
-        case nil: break
-        case "address-book": main.sheet = .sendingAddresses
-        case "sign-verify": main.sheet = .signMessage
-        case "settings": main.sheet = .settings
-        case let name?:
-            if let item = SidebarItem(rawValue: name) { main.selection = item }
+    /// Applies `--page`: a sidebar section or one of the tool pages.
+    @MainActor
+    static func open(page: String?, in state: CrossAppState) {
+        guard let page else { return }
+        if let item = SidebarItem(rawValue: page) {
+            state.main.selection = item
+        } else if let tool = ToolPage(pageName: page) {
+            state.open(tool)
         }
     }
 
@@ -106,6 +117,8 @@ enum CrossDemoText {
 ///   "engine shut down" (RESULTS.md).
 /// - Windows (WinUIBackend): not hooked yet; the process exits without the
 ///   engine's orderly shutdown.
+/// File ▸ Exit stops the engine through the shutdown page (QT-008) first;
+/// the hook then has nothing left to do.
 @MainActor
 final class QuitHook {
     var session: LiveSession?
@@ -148,15 +161,19 @@ final class QuitHook {
     #endif
 }
 
-/// Live start: resolves the data directory, opens the engine and builds the
-/// runtime, then shows the wallet while the last (or requested) network
-/// opens. Failures are shown on this page.
+/// Live start: the data-directory chooser when asked for (`-choosedatadir`,
+/// `-resetguisettings`), then the engine and the runtime, the unreadable-
+/// settings question (QT-007) and the splash (QT-005) while the last (or
+/// requested) network opens, then the wallet. Failures are shown here.
 struct LiveStartView: View {
-    let options: LaunchOptions
+    let options: AppLaunchOptions
     let quitHook: QuitHook
+    let host: CrossAppHost
 
-    @State var state: CrossAppState?
+    @State var session: LiveSession?
+    @State var chooser: DataDirectoryChooserViewModel?
     @State var dataRoot: URL?
+    @State var launching = false
     @State var launchFailure: String?
     @State var failure: String?
 
@@ -166,12 +183,28 @@ struct LiveStartView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let state {
-            VStack(spacing: 0) {
-                if let launchFailure {
-                    Toast(launchFailure, kind: .error).padding(Int(DashSpacing.s))
+        if let session {
+            if case .settingsUnreadable(let files) = session.startup.stage {
+                // The network opens only after Reset; Abort quits without writing.
+                SettingsUnreadableScreen(
+                    model: session.startup, files: files, onReset: { launch(session) }, onAbort: { exit(1) })
+            } else if launching, session.startup.showsSplash {
+                SplashScreen(model: session.startup)
+            } else {
+                VStack(spacing: 0) {
+                    if let launchFailure {
+                        Toast(launchFailure, kind: .error).padding(Int(DashSpacing.s))
+                    }
+                    WalletRootView(state: session.state)
                 }
-                WalletRootView(state: state)
+            }
+        } else if let chooser {
+            DataDirectoryChooserScreen(model: chooser) { outcome in
+                switch outcome {
+                case .accepted(let url): Task { await open(root: url) }
+                case .cancelled: exit(0)
+                case .choosing: break
+                }
             }
         } else {
             VStack(alignment: .leading, spacing: Int(DashSpacing.m)) {
@@ -193,50 +226,88 @@ struct LiveStartView: View {
     }
 
     private func start() async {
-        guard state == nil, failure == nil else { return }
+        guard session == nil, chooser == nil, failure == nil else { return }
+        if let directory = options.dataDirectory {
+            await open(root: URL(fileURLWithPath: directory, isDirectory: true), fixed: true)
+            return
+        }
+        if options.shell.chooseDataDirectory || options.shell.resetGUISettings {
+            // QT-004: the default is offered as it is (not created yet); the
+            // choice applies to this run, pass --datadir to reuse it.
+            chooser = DataDirectoryChooserViewModel(
+                defaultDirectory: DesktopDataDirectory.root(), inspector: FileSystemDataDirectoryInspector())
+            return
+        }
+        let root: URL
+        do {
+            root = try DesktopDataLocation().defaultDataRoot()
+        } catch {
+            failure = "Could not create the data directory: \(error.localizedDescription)"
+            return
+        }
+        await open(root: root, fixed: false)
+    }
+
+    /// Opens the engine on `root` (a `--datadir` or chooser directory is
+    /// prepared first), then launches the network.
+    private func open(root chosen: URL, fixed: Bool = true) async {
         var network: DashNetwork?
         if let name = options.networkName {
             guard let named = DashWalletCrossApp.runtimeNetwork(name) else {
                 failure = "Unknown network \(name)."
+                chooser = nil
                 return
             }
             network = named
         }
         let root: URL
         do {
-            if let directory = options.dataDirectory {
-                root = try FixedDataLocation(root: URL(fileURLWithPath: directory, isDirectory: true)).defaultDataRoot()
+            if fixed {
+                root = try FixedDataLocation(root: chosen).defaultDataRoot()
                 try DesktopDataDirectory.prepare(root)
             } else {
-                root = try DesktopDataLocation().defaultDataRoot()
+                root = chosen
             }
         } catch {
             failure = "Could not create the data directory: \(error.localizedDescription)"
+            chooser = nil
             return
         }
         dataRoot = root
+        chooser = nil
         let session: LiveSession
         do {
             session = try LiveSession(
                 dataRoot: root, network: network,
-                options: NetworkOptions(dapiAddresses: options.dapiAddresses, spvPeers: options.spvPeers))
+                options: NetworkOptions(dapiAddresses: options.dapiAddresses, spvPeers: options.spvPeers),
+                launch: options)
         } catch {
             Self.log(error)
             failure = "The wallet engine could not open \(root.path) (\(error.code.rawValue))."
             return
         }
         quitHook.session = session
-        DashWalletCrossApp.open(page: options.page, in: session.state.main)
-        state = session.state
-        // Not awaited here: setting `state` replaces the view that owns this
-        // `.task`, and the network must keep opening after that.
+        DashWalletCrossApp.open(page: options.page, in: session.state)
+        self.session = session
+        host.state = session.state
+        if case .settingsUnreadable = session.startup.stage { return }
+        launch(session)
+    }
+
+    /// Opens the network, then hides the splash. Not awaited by the caller:
+    /// setting `session` replaces the view that owns the `.task`, and the
+    /// network must keep opening after that.
+    private func launch(_ session: LiveSession) {
+        launching = true
+        let uris = options.shell.uris
         Task { @MainActor in
             do throws(ServiceError) {
-                try await session.launch()
+                try await session.launch(uris: uris)
             } catch {
                 Self.log(error)
                 launchFailure = "The network could not be opened (\(error.code.rawValue))."
             }
+            launching = false
         }
     }
 }
