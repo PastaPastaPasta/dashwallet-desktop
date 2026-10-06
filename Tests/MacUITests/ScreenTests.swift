@@ -181,7 +181,8 @@ struct ScreenTests {
     func syncOverlay(_ scheme: ColorScheme) async throws {
         // The offline demo is three days behind: the overlay shows by itself
         // until hidden.
-        let offline = try await Self.model(.offline, scheme)
+        let model = try await Self.model(.offline, scheme)
+        let offline = try #require(model.main)
         try await Self.settle { offline.showsSyncOverlay }
         #expect(offline.showsSyncOverlay)
         offline.hideSyncOverlay()

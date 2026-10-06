@@ -88,7 +88,7 @@ struct WalletStatusBar: View {
                 accessibilityLabel: sync.isDone ? MacStrings.Status.synced : MacStrings.Status.syncing,
                 help: sync.isDone ? main.home?.syncText : "\(main.home?.syncText ?? ""). \(MacStrings.SyncOverlay.show)",
                 tone: sync.isDone ? .success : .info,
-                action: sync.isDone ? nil : { model.syncOverlayRequested = true }))
+                action: sync.isDone ? nil : { main.syncOverlayRequested = true }))
         }
         return items
     }

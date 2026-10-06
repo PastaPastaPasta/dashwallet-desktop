@@ -36,6 +36,26 @@ public final class MainViewModel {
     public var showsLockScreen: Bool { lockState == .locked }
     public var showsTransitionOverlay: Bool { transition != .idle }
 
+    /// Sync rates for the sync overlay; the window records each sync status.
+    public let syncRates = SyncRateTracker()
+    /// The user asked for the sync overlay (status bar).
+    public var syncOverlayRequested = false
+    /// The user hid the sync overlay; it stays hidden until asked for again.
+    public private(set) var syncOverlayHidden = false
+
+    /// The sync overlay (QT-027): over the wallet while it catches up, when
+    /// asked for, or by itself while the tip is more than 25 minutes old
+    /// unless hidden.
+    public var showsSyncOverlay: Bool {
+        guard !needsOnboarding, !showsLockScreen else { return false }
+        return SyncRateTracker.showsOverlay(home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
+    }
+
+    public func hideSyncOverlay() {
+        syncOverlayHidden = true
+        syncOverlayRequested = false
+    }
+
     /// "Dash Wallet - <wallet> - [testnet]"; the network tag appears on
     /// every non-mainnet network (QT-011, dash-qt quirk #1 fixed).
     public var windowTitle: String {

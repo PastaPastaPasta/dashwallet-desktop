@@ -38,12 +38,6 @@ public final class CrossAppState {
     public let main: MainViewModel
     /// Shown in the status row (for example the demo-mode notice).
     public let notice: String?
-    /// Sync rates for the overlay, fed from the sync status (QT-027).
-    let syncRates = SyncRateTracker()
-    /// The user hid the sync overlay; it stays hidden until asked for again.
-    var syncOverlayHidden = false
-    /// The user asked for the sync overlay (status row).
-    var syncOverlayRequested = false
     /// The peers page is open (status row, QT-147).
     var showsPeers = false
 
@@ -73,18 +67,6 @@ public final class CrossAppState {
         let model = SignVerifyViewModel(env: env, network: network)
         signVerifyModel = (network, model)
         return model
-    }
-
-    /// The sync overlay (QT-027): as on macOS, over the wallet while it
-    /// catches up, when asked for, or by itself while the tip is old.
-    var showsSyncOverlay: Bool {
-        guard !main.needsOnboarding, !main.showsLockScreen else { return false }
-        return SyncRateTracker.showsOverlay(main.home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
-    }
-
-    func hideSyncOverlay() {
-        syncOverlayHidden = true
-        syncOverlayRequested = false
     }
 
     /// An amount in the display unit, with the unit name (detail panes).

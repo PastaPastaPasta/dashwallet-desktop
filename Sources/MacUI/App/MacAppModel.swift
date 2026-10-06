@@ -50,12 +50,6 @@ public final class MacAppModel {
     public var uriError: String?
     /// The Peers sheet (status bar connections item, QT-024).
     public var isPeersPresented = false
-    /// The user hid the sync overlay; it stays hidden until asked for again.
-    public var syncOverlayHidden = false
-    /// The user asked for the sync overlay (status bar sync item).
-    public var syncOverlayRequested = false
-    /// Sync rates for the overlay, fed from the sync status.
-    let syncRates = SyncRateTracker()
     /// Why opening the network at launch failed (`nil` while it works).
     public private(set) var launchError: ServiceError?
 
@@ -145,18 +139,6 @@ public final class MacAppModel {
         guard let main else { return }
         await main.open(uri: text)
         uriError = main.errorMessage
-    }
-
-    /// The sync overlay (QT-027): while catching up, when asked for, or by
-    /// itself while the tip is more than 25 minutes old unless hidden.
-    public var showsSyncOverlay: Bool {
-        guard let main, !main.needsOnboarding, !main.showsLockScreen else { return false }
-        return SyncRateTracker.showsOverlay(main.home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
-    }
-
-    public func hideSyncOverlay() {
-        syncOverlayHidden = true
-        syncOverlayRequested = false
     }
 
     /// Light/dark override for every window: the launch switch wins over the setting.

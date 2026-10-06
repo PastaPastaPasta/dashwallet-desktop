@@ -16,7 +16,7 @@ struct SyncOverlayScreen: View {
 
     var body: some View {
         let state = state
-        let rates = state.syncRates
+        let rates = state.main.syncRates
         VStack(alignment: .leading, spacing: Int(DashSpacing.m)) {
             Spacer()
             DashCard {
@@ -30,7 +30,7 @@ struct SyncOverlayScreen: View {
                 KeyValueRow(L10n.SyncOverlay.timeLeft, rates.remaining(for: status).map(Self.duration) ?? L10n.Common.unknown)
                 HStack {
                     Spacer()
-                    DashButton(L10n.SyncOverlay.hide, style: .tintedBlue) { state.hideSyncOverlay() }
+                    DashButton(L10n.SyncOverlay.hide, style: .tintedBlue) { state.main.hideSyncOverlay() }
                 }
             }
             .frame(maxWidth: 560)

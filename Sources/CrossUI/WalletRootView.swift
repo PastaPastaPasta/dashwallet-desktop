@@ -25,7 +25,7 @@ public struct WalletRootView: View {
         .background(DashColor.primaryBackground.color)
         .preferredColorScheme(colorScheme(main.settings.theme))
         .onChange(of: main.home?.sync, initial: true) {
-            if let status = main.home?.sync { state.syncRates.record(status) }
+            if let status = main.home?.sync { main.syncRates.record(status) }
         }
         .task { await main.start() }
     }
@@ -40,7 +40,7 @@ public struct WalletRootView: View {
             OnboardingScreen(model: onboarding)
         } else if main.showsLockScreen {
             LockScreen(model: main.lock)
-        } else if state.showsSyncOverlay, let status = main.home?.sync {
+        } else if main.showsSyncOverlay, let status = main.home?.sync {
             SyncOverlayScreen(state: state, status: status)
         } else {
             MainSplitView(state: state)
@@ -187,7 +187,7 @@ struct StatusRow: View {
             if let sync = home?.sync {
                 if !sync.isDone {
                     DashButton(CrossStrings.syncDetails, style: .plainBlue, size: .small, help: L10n.SyncOverlay.show) {
-                        state.syncOverlayRequested = true
+                        main.syncOverlayRequested = true
                     }
                 }
                 DashButton(

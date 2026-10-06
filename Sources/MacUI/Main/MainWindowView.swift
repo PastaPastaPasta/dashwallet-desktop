@@ -19,10 +19,10 @@ struct MainWindowView: View {
             } else {
                 walletView
             }
-            if model.showsSyncOverlay, let status = main.home?.sync {
+            if main.showsSyncOverlay, let status = main.home?.sync {
                 SyncOverlayView(
-                    status: status, rates: model.syncRates, syncText: main.home?.syncText ?? "",
-                    hide: { model.hideSyncOverlay() })
+                    status: status, rates: main.syncRates, syncText: main.home?.syncText ?? "",
+                    hide: { main.hideSyncOverlay() })
                 .transition(.opacity)
             }
             if main.showsLockScreen {
@@ -52,7 +52,7 @@ struct MainWindowView: View {
             if let sync = model.env?.sync { PeersSheet(sync: sync) }
         }
         .onChange(of: main.home?.sync) { _, status in
-            if let status { model.syncRates.record(status) }
+            if let status { main.syncRates.record(status) }
         }
         .alert(
             MacStrings.Common.error,
