@@ -107,6 +107,30 @@ DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwc
     .venv/bin/python -m pytest -v tests/test_l1_send.py
 ```
 
+**restore** (`tests/test_restore.py`, DESIGN-opus §4.3 `restore` and §4.4 items 1-2) checks dash-qt
+compatibility both ways with a host-built `dwcli`:
+
+* dashd v24 descriptor wallets (a plain one, an encrypted one with a non-ASCII BIP39 and wallet
+  passphrase, a weak-checksum phrase with a 300-byte passphrase), funded including an address 25
+  past the last used one and change, are restored through the phrase, the `wallet.dat`, the
+  `dumpwallet` of a legacy wallet with the same phrase and `listdescriptors true`; every path gives
+  the same wallet id, dashd's first 1000 receive and change addresses, its balance and labels;
+* a dwcli wallet is rebuilt in dashd from its phrase (`upgradetohd`), its `dumpwallet` export
+  (`importwallet`) and its `importdescriptors` export; addresses and balance match;
+* PSBT: dwcli "Create Unsigned" → dashd `walletprocesspsbt` → dwcli broadcast; dashd
+  `walletcreatefundedpsbt` → dwcli sign (same signatures as dashd) → dashd `finalizepsbt`.
+
+Legacy BIP39 passphrases are limited to 256 characters by dashd (`SetMnemonic`), so the 300-byte
+case has no `dumpwallet` path. Not covered yet: BDB `wallet.dat` (M6), Core-mixed CoinJoin funds.
+
+```sh
+DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_restore.py
+```
+
+The node helpers `node_path`, `read_file` and `write_file` move files in and out of the node's
+datadir (through `docker compose exec` for the tmpfs datadir of the Docker backend).
+
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 

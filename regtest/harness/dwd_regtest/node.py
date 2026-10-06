@@ -90,6 +90,20 @@ class RegtestNode:
     def check_alive(self) -> None:
         """Raise if the node process is known to have exited. Backends without a process handle do nothing."""
 
+    # --- files in the node's datadir ------------------------------------------------------
+
+    def node_path(self, rel: str) -> str:
+        """Path of `rel` under the node's regtest datadir, as dashd sees it (for RPC arguments)."""
+        raise NotImplementedError
+
+    def read_file(self, node_path: str) -> bytes:
+        """Bytes of a file dashd wrote (dumpwallet output, wallet.dat)."""
+        raise NotImplementedError
+
+    def write_file(self, node_path: str, data: bytes) -> None:
+        """Puts a file where dashd can read it (importwallet input)."""
+        raise NotImplementedError
+
     def wait_for_rpc(self, timeout: float = 60.0) -> None:
         def ready() -> bool:
             self.check_alive()
@@ -190,6 +204,27 @@ class DockerComposeNode(RegtestNode):
     def logs(self) -> str:
         return self._compose("logs", "--no-color", "dashd", check=False, capture=True).stdout
 
+    def _exec(self, *args: str, data: bytes | None = None) -> bytes:
+        # The datadir is a tmpfs, which `docker cp` cannot read; go through the container.
+        env = dict(os.environ, DWD_COMPOSE_PROJECT=self.project)
+        proc = subprocess.run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", self.project, "exec", "-T", "dashd", *args],
+            env=env,
+            input=data,
+            capture_output=True,
+            check=True,
+        )
+        return proc.stdout
+
+    def node_path(self, rel: str) -> str:
+        return f"/home/dash/.dashcore/regtest/{rel}"
+
+    def read_file(self, node_path: str) -> bytes:
+        return self._exec("cat", node_path)
+
+    def write_file(self, node_path: str, data: bytes) -> None:
+        self._exec("sh", "-c", 'cat > "$0"', node_path, data=data)
+
 
 @dataclass
 class LocalBinaryNode(RegtestNode):
@@ -261,6 +296,16 @@ class LocalBinaryNode(RegtestNode):
             self._log.close()
         if self._owns_datadir and self.datadir is not None and not os.environ.get("DWD_KEEP_DATADIR"):
             shutil.rmtree(self.datadir, ignore_errors=True)
+
+    def node_path(self, rel: str) -> str:
+        assert self.datadir is not None
+        return str(self.datadir / "regtest" / rel)
+
+    def read_file(self, node_path: str) -> bytes:
+        return Path(node_path).read_bytes()
+
+    def write_file(self, node_path: str, data: bytes) -> None:
+        Path(node_path).write_bytes(data)
 
     def logs(self) -> str:
         if self.datadir is None:
