@@ -155,7 +155,14 @@ records are the vault records as stored (under the source DEK, AAD
 itself (`wrapped_dek`; `vault_passphrase` is a copy of slot P, `backup_passphrase` uses AAD
 `dw-vault/backup-slot/v1 ‖ …`), there is no `vault_wrapped_key`, and the payload key is derived from
 the DEK. They are never written again. Such a file hands out its vault's DEK to whoever knows its
-passphrase; delete old ones once a new backup exists.
+passphrase; delete old ones once a new backup exists. The fixture
+`testdata/dwbackup/v1_bundles_wrapped_dek.json` holds such bundles as written (field `wrapped_dek`).
+
+A bundle `version` other than 1 or 2 is refused with `backup.unsupported_version{version}`. The
+reader checks it on the raw JSON before parsing the bundle, so a newer bundle whose fields changed
+is still reported as a newer version, not as corrupt; a bundle without a `version` is
+`backup.corrupt`. (The M2 build from before review H2 reads version 1 only and reports a version 2
+bundle as `backup.corrupt`.)
 
 File-supplied Argon2id parameters above m = 4 GiB (4 194 304 KiB), t = 64 or p = 16 are refused
 as corrupt before any memory is reserved: the production floor and calibration stay far below

@@ -40,6 +40,13 @@ pub const BUNDLE_VERSION: u32 = 2;
 /// The legacy version still read: slot and records under the data key.
 const LEGACY_BUNDLE_VERSION: u32 = 1;
 
+/// Whether this build reads bundles of `version` (1 and 2). A reader checks
+/// this on the raw JSON before parsing a bundle, so a newer bundle is
+/// reported as an unsupported version rather than as corrupt.
+pub fn reads_bundle_version(version: u64) -> bool {
+    version == u64::from(BUNDLE_VERSION) || version == u64::from(LEGACY_BUNDLE_VERSION)
+}
+
 /// How a bundle's key is recovered. In a version 2 bundle `wrapped_key` is
 /// the bundle's own backup key; in a version 1 bundle it is the source
 /// vault's data key (field name `wrapped_dek` on disk then).
@@ -99,6 +106,11 @@ pub struct WalletBackupBundle {
 }
 
 impl WalletBackupBundle {
+    /// The bundle's format version.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     /// The wallet the bundle holds.
     pub fn wallet_id(&self) -> Option<WalletId> {
         self.wallet_id.as_slice().try_into().ok()
@@ -427,7 +439,8 @@ impl Vault {
     /// Opens a bundle: recovers its key (through this vault's own data key
     /// when the bundle came from this vault and the key is available,
     /// otherwise the slot with `passphrase`), then the wallet's secrets and
-    /// the payload. Stores nothing. Reads versions 1 and 2.
+    /// the payload. Stores nothing. Reads versions 1 and 2; any other is
+    /// `Corrupt` here, so callers check [`reads_bundle_version`] first.
     ///
     /// Errors: `NotEncrypted` (a passphrase slot and no passphrase given —
     /// the caller's "passphrase required"), `WrongPassphrase`, `Corrupt`.
@@ -1023,6 +1036,63 @@ mod tests {
         assert!(matches!(
             dst.open_backup_bundle(&crafted, Some(b"pw"), b"h"),
             Err(VaultError::Corrupt(d)) if d.contains("above the limits")
+        ));
+    }
+
+    /// Fix-review L5: a version 1 bundle as the M2 writer put it on disk
+    /// (slot field `wrapped_dek`, internally tagged `kind`) parses through
+    /// the `wrapped_key` alias and opens in another vault with its
+    /// passphrase. Fixture: testdata/dwbackup/v1_bundles_wrapped_dek.json
+    /// (wallet 11…11, seed [9; 64], mnemonic "phrase").
+    #[test]
+    fn v1_fixture_with_wrapped_dek_opens() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../testdata/dwbackup/v1_bundles_wrapped_dek.json"
+        ))
+        .unwrap();
+        let header = fixture["header"].as_str().unwrap().as_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let dst = open(dir.path());
+        dst.create(None).unwrap();
+        for (name, pw) in [
+            ("backup_passphrase", &b"fixture pw"[..]),
+            ("vault_passphrase", &b"vault pw"[..]),
+        ] {
+            let raw = &fixture[name];
+            assert!(raw["slot"].get("wrapped_dek").is_some(), "{name}");
+            assert!(raw["slot"].get("wrapped_key").is_none(), "{name}");
+            let bundle: WalletBackupBundle = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(bundle.version, LEGACY_BUNDLE_VERSION);
+            let (s, payload) = dst.open_backup_bundle(&bundle, Some(pw), header).unwrap();
+            assert_eq!(&payload[..], b"fixture payload", "{name}");
+            assert_eq!(*s.seed, [9; 64]);
+            assert_eq!(&s.mnemonic[..], b"phrase");
+            assert!(matches!(
+                dst.open_backup_bundle(&bundle, Some(b"wrong"), header),
+                Err(VaultError::WrongPassphrase { .. })
+            ));
+        }
+    }
+
+    /// Fix-review L5: callers can tell a bundle version this build does not
+    /// read (the engine reports `backup.unsupported_version`) before
+    /// opening; `open_backup_bundle` itself refuses it.
+    #[test]
+    fn unknown_bundle_versions_are_unsupported() {
+        assert!(reads_bundle_version(1) && reads_bundle_version(2));
+        assert!(!reads_bundle_version(0) && !reads_bundle_version(3));
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path());
+        v.create(None).unwrap();
+        let w = [0x12u8; 32];
+        v.store_wallet_secret(&w, &secret(SeedDerivation::Bip39))
+            .unwrap();
+        let mut bundle = v.backup_bundle(&w, Some(b"bk"), b"p", b"h").unwrap();
+        bundle.version = 3;
+        assert_eq!(bundle.version(), 3);
+        assert!(matches!(
+            v.open_backup_bundle(&bundle, Some(b"bk"), b"h"),
+            Err(VaultError::Corrupt(_))
         ));
     }
 }

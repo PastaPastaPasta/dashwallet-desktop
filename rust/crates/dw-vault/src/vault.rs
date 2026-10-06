@@ -43,7 +43,7 @@ use crate::{SignerError, VaultError};
 
 mod compat;
 use compat::BackupKek;
-pub use compat::{CoreMnemonicCheck, WalletBackupBundle};
+pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;

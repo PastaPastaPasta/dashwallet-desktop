@@ -31,6 +31,7 @@ use zeroize::Zeroizing;
 
 use crate::compat::write_new_private;
 use crate::events::unix_now;
+use crate::keys::AutoBackup;
 use crate::{
     DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
 };
@@ -136,6 +137,34 @@ impl BackupHeader {
 #[derive(Serialize, Deserialize)]
 struct Body {
     bundles: Vec<WalletBackupBundle>,
+}
+
+/// Parses a body, checking each bundle's version on the raw JSON first: a
+/// bundle version this build does not read is `UnsupportedVersion` (a newer
+/// bundle may not even parse as this build's bundle), anything unparsable
+/// `Corrupt`.
+fn parse_body(json: &[u8]) -> Result<Body, EngineError> {
+    #[derive(Deserialize)]
+    struct RawBody {
+        bundles: Vec<serde_json::Value>,
+    }
+    let corrupt = |e: serde_json::Error| BackupFailure::Corrupt(format!("body: {e}"));
+    let raw: RawBody = serde_json::from_slice(json).map_err(corrupt)?;
+    let mut bundles = Vec::with_capacity(raw.bundles.len());
+    for bundle in raw.bundles {
+        let version = bundle
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| BackupFailure::Corrupt("bundle version".into()))?;
+        if !dw_vault::reads_bundle_version(version) {
+            return Err(BackupFailure::UnsupportedVersion(
+                u32::try_from(version).unwrap_or(u32::MAX),
+            )
+            .into());
+        }
+        bundles.push(serde_json::from_value(bundle).map_err(corrupt)?);
+    }
+    Ok(Body { bundles })
 }
 
 /// Plaintext of a bundle's payload.
@@ -455,8 +484,7 @@ impl NetworkSession {
                     }
                     let body_start =
                         MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
-                    let body: Body = serde_json::from_slice(&bytes[body_start..])
-                        .map_err(|e| BackupFailure::Corrupt(format!("body: {e}")))?;
+                    let body: Body = parse_body(&bytes[body_start..])?;
                     if body.bundles.len() != header.wallet_ids.len() {
                         return Err(BackupFailure::Corrupt("bundle count".into()).into());
                     }
@@ -505,6 +533,12 @@ impl NetworkSession {
                 return Err(e);
             }
         }
+        // Only now, with every bundle restored and its app rows inserted:
+        // a failed restore must leave no automatic backup of a wallet it
+        // rolled back.
+        for &(id, _) in &done {
+            self.schedule_automatic_backup(id);
+        }
         Ok(done.into_iter().map(|(id, _)| id).collect())
     }
 
@@ -546,7 +580,10 @@ impl NetworkSession {
             name: payload.name.clone(),
             lookahead: None,
         };
-        match self.import_secret_with(options, move || Ok(secret)).await {
+        match self
+            .import_secret_inner(options, move || Ok(secret), AutoBackup::Caller)
+            .await
+        {
             Ok(_) => done.push((id, !existed)),
             Err(EngineError::WalletAlreadyExists(_)) => {
                 return Err(BackupFailure::AlreadyExists(id).into());

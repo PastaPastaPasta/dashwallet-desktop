@@ -827,3 +827,104 @@ fn a_failed_restore_rolls_back_the_wallets_it_registered() {
     );
     assert_eq!(s2.wallet_info(&b).unwrap().name, "B");
 }
+
+/// Fix-review L1: a restore schedules the automatic backups only after
+/// every bundle succeeded, so a failed (rolled back) restore leaves no
+/// automatic backup behind, and a good one backs up every restored wallet.
+#[test]
+fn test_qt_116_failed_restore_leaves_no_automatic_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(&dir.path().join("src"));
+    let s = open(&e, None);
+    let a = import(&e, &s, PHRASE_A, "A");
+    let b = import(&e, &s, PHRASE_B, "B");
+    let good = |name: &str| serde_json::json!({"name": name, "birth_height": 0, "created_at": null, "app_rows": []});
+
+    let e2 = engine(&dir.path().join("dst"));
+    let s2 = open(&e2, None);
+    let pw = || Some(Zeroizing::new(b"bk".to_vec()));
+
+    // A registers, then the second copy of A fails: everything rolls back.
+    let multi = dir.path().join("multi.dwbackup");
+    craft_backup(&s, &multi, &[(a, good("A")), (a, good("A"))]);
+    let r = e2.block_on(s2.restore_backup(multi, pw()));
+    assert!(
+        matches!(r, Err(EngineError::Backup(BackupFailure::AlreadyExists(_)))),
+        "{r:?}"
+    );
+    // Any wrongly scheduled backup would run within this window.
+    let until = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < until {
+        let list = e2.block_on(s2.automatic_backups(None)).unwrap();
+        assert!(list.is_empty(), "a failed restore left {list:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let ok = dir.path().join("ok.dwbackup");
+    craft_backup(&s, &ok, &[(a, good("A")), (b, good("B"))]);
+    assert_eq!(
+        e2.block_on(s2.restore_backup(ok, pw())).unwrap(),
+        vec![a, b]
+    );
+    let list = wait_for(|| {
+        let l = e2.block_on(s2.automatic_backups(None)).unwrap();
+        (l.len() == 2).then_some(l)
+    });
+    let mut ids: Vec<_> = list.iter().map(|i| i.wallet_id).collect();
+    ids.sort_by_key(|id| id.to_string());
+    let mut want = vec![a, b];
+    want.sort_by_key(|id| id.to_string());
+    assert_eq!(ids, want);
+}
+
+/// Fix-review L5: a bundle version this build does not read is
+/// `backup.unsupported_version`, not `backup.corrupt`, even when the newer
+/// bundle no longer parses as this build's bundle; nothing is registered.
+#[test]
+fn test_qt_110_unknown_bundle_version_is_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(&dir.path().join("src"));
+    let s = open(&e, None);
+    let a = import(&e, &s, PHRASE_A, "A");
+    let good =
+        serde_json::json!({"name": "A", "birth_height": 0, "created_at": null, "app_rows": []});
+    let path = dir.path().join("a.dwbackup");
+    craft_backup(&s, &path, &[(a, good)]);
+    let (header, body) = backup_lines(&path);
+    let write = |bundle: serde_json::Value| {
+        let mut out = b"DWBACKUP 1\n".to_vec();
+        out.extend_from_slice(&header);
+        out.push(b'\n');
+        out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": [bundle] })).unwrap());
+        out.push(b'\n');
+        let p = dir.path().join("v3.dwbackup");
+        std::fs::write(&p, out).unwrap();
+        p
+    };
+
+    let e2 = engine(&dir.path().join("dst"));
+    let s2 = open(&e2, None);
+    let pw = || Some(Zeroizing::new(b"bk".to_vec()));
+    let mut same_shape = body["bundles"][0].clone();
+    same_shape["version"] = 3.into();
+    let new_shape = serde_json::json!({"version": 3, "wallet_id": a.to_string(), "sealed": "00"});
+    for bundle in [same_shape, new_shape] {
+        let r = e2.block_on(s2.restore_backup(write(bundle), pw()));
+        assert!(
+            matches!(
+                r,
+                Err(EngineError::Backup(BackupFailure::UnsupportedVersion(3)))
+            ),
+            "{r:?}"
+        );
+        assert!(s2.wallet_info(&a).is_err());
+    }
+    // A bundle without a version is corrupt.
+    let mut unversioned = body["bundles"][0].clone();
+    unversioned.as_object_mut().unwrap().remove("version");
+    let r = e2.block_on(s2.restore_backup(write(unversioned), pw()));
+    assert!(
+        matches!(r, Err(EngineError::Backup(BackupFailure::Corrupt(_)))),
+        "{r:?}"
+    );
+}

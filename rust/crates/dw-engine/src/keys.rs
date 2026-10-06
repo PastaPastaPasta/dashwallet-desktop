@@ -34,6 +34,15 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
+/// Who schedules the automatic backup of an imported wallet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AutoBackup {
+    /// The import schedules it once the wallet is registered.
+    Schedule,
+    /// The caller schedules it (or not) when its whole operation succeeded.
+    Caller,
+}
+
 /// Options of [`NetworkSession::import_wallet`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportOptions {
@@ -248,6 +257,22 @@ impl NetworkSession {
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
     {
+        self.import_secret_inner(options, make_secret, AutoBackup::Schedule)
+            .await
+    }
+
+    /// [`Self::import_secret_with`] with the automatic backup left to the
+    /// caller when `auto_backup` is [`AutoBackup::Caller`] (a restore
+    /// schedules it only once every bundle has succeeded).
+    pub(crate) async fn import_secret_inner<F>(
+        self: &Arc<Self>,
+        options: ImportOptions,
+        make_secret: F,
+        auto_backup: AutoBackup,
+    ) -> Result<WalletId, EngineError>
+    where
+        F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
+    {
         let name = options.name.as_deref().map(validate_name).transpose()?;
         let lookahead = options.effective_lookahead();
         if let Some(n) = lookahead
@@ -311,7 +336,9 @@ impl NetworkSession {
                     network: this.network.clone(),
                     wallet_id,
                 });
-                this.schedule_automatic_backup(wallet_id);
+                if auto_backup == AutoBackup::Schedule {
+                    this.schedule_automatic_backup(wallet_id);
+                }
                 return Ok(wallet_id);
             }
 
@@ -366,7 +393,9 @@ impl NetworkSession {
                 network: this.network.clone(),
                 wallet_id,
             });
-            this.schedule_automatic_backup(wallet_id);
+            if auto_backup == AutoBackup::Schedule {
+                this.schedule_automatic_backup(wallet_id);
+            }
             Ok(wallet_id)
         })
         .await
