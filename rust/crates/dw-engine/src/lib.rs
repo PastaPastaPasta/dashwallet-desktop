@@ -20,6 +20,7 @@ mod context;
 mod engine;
 mod error;
 mod events;
+mod fees;
 mod fsutil;
 mod gate;
 pub mod history;
@@ -39,6 +40,10 @@ pub use dw_appdb::BookPurpose;
 pub use engine::{Engine, EngineConfig};
 pub use error::EngineError;
 pub use events::{EngineEvent, EventSink, NoticeCode};
+pub use fees::{
+    CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,
+    fee_policy,
+};
 pub use history::{
     AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
     TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,

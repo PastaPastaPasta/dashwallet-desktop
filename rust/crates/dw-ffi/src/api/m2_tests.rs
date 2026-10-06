@@ -165,7 +165,7 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
 
     // Fees, tools, console (R1).
-    assert_code!(s.fee_policy(), not_implemented: "NetworkSession.fee_policy");
+    assert_eq!(s.fee_policy().unwrap().source, crate::FeeSource::MinimumRelay);
     let bad_outpoint = OutPoint {
         txid: "nothex".into(),
         vout: 0,
