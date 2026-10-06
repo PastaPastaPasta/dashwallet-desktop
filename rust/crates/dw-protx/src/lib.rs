@@ -13,20 +13,24 @@
 //! and evonode withdrawal; this crate adds what it lacks.
 //!
 //! Module layout:
-//! - [`params`]: collateral amounts, default ports, share limits (works).
-//! - `register`: ProRegTx (fund new / existing UTXO / external collateral
-//!   with the `payout|operatorReward|ownerAddr|votingAddr|payloadHash`
-//!   message), v24 network-info lists and Platform fields.
-//! - `update_service`, `update_registrar`, `revoke`: ProUpServTx,
-//!   ProUpRegTx (only changed fields), ProUpRevTx (reason 0–3).
-//! - `bls`: operator key generation and checks (basic scheme).
-//! - `keychain`: provider key derivation per role and index, WIF, legacy
-//!   BLS form, Tenderdash node id.
-//! - `shared`: v24 shared masternodes — `payloads` (ProDissolveTx type 10,
-//!   ProUpShareTx type 11, ProUpSharedRegTx type 12 and the share fields of
-//!   ProRegTx; absent from rust-dashcore at the pin), `envelope`
-//!   (`dash-shared-mn-session` v1 JSON, fingerprint, session code, 2 MiB
-//!   cap, network check), `session` (coordinator and participant state
-//!   machines), `dissolve` (now / together / standby).
+//! - [`params`]: collateral amounts, default ports, share limits.
+//! - [`service`]: Core P2P service and Platform port rules of version-2
+//!   payloads (`MnNetInfo`, `CheckProviderNetworkFields`).
+//! - [`bls`]: operator key generation, parsing, both serializations, and
+//!   basic-scheme payload signatures.
+//! - [`payloads`]: placeholders and finalizers of ProRegTx (fund new /
+//!   existing collateral with the `payout|reward|owner|voting|payloadHash`
+//!   message), ProUpServTx, ProUpRegTx and ProUpRevTx.
+//! - [`keychain`]: DIP3 provider key paths, Tenderdash key form.
+//! - [`shared`]: v24 shared masternodes — codecs of ProDisTx (type 10),
+//!   ProUpShareTx (11), ProUpSharedRegTx (12) and the share table; absent
+//!   from rust-dashcore at the pin. The shared session protocol (envelope,
+//!   coordinator/participant state machines, the version-3 ProRegTx with
+//!   extended network info) is not written yet.
 
+pub mod bls;
+pub mod keychain;
 pub mod params;
+pub mod payloads;
+pub mod service;
+pub mod shared;

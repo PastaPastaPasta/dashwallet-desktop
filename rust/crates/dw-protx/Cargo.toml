@@ -10,5 +10,10 @@ publish.workspace = true
 # Owner: R3 (docs/contracts/m3-engine.md §0).
 
 [dependencies]
-dashcore = { workspace = true }
+# `bls` (blsful) for operator keys and payload signatures, `eddsa` for the
+# platform node id. Both are already enabled in the graph by platform-wallet.
+dashcore = { workspace = true, features = ["bls", "eddsa"] }
+getrandom = "=0.2.17"
+hex = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
