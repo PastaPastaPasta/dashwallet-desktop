@@ -124,7 +124,7 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         return try with { $0.walletInfos }.get()
     }
 
-    func balances(on network: DashNetwork, wallet: WalletID) async throws(DashKitError) -> WalletBalances {
+    func balances(on network: DashNetwork, wallet: WalletID) async throws(DashKitError) -> WalletBalances? {
         try requireOpen(network, "balances")
         guard let balances = with({ $0.balances[wallet] }) else { throw .walletNotFound(detail: wallet.hex) }
         return balances

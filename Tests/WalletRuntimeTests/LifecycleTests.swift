@@ -161,7 +161,7 @@ import Testing
 
         h.engine.events.publish(.balancesChanged(.regtest, Fixtures.walletA))
         #expect(await eventually { state.balances?.confirmed.duffs == 150 })
-        #expect(state.wallets?.first?.balances.confirmed.duffs == 150)
+        #expect(state.wallets?.first?.balances?.confirmed.duffs == 150)
 
         state.select(WalletRuntime.WalletID(Fixtures.walletB))
         #expect(state.balances?.confirmed.duffs == 200)
