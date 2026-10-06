@@ -178,7 +178,7 @@ fn superblock_part(network: Network, prev_bits: u32, prev_height: u32, v20: bool
 /// `height` may pay out, duffs; 0 when `height` is not a superblock.
 pub fn superblock_budget(network: Network, height: u32) -> u64 {
     let p = governance_params(network);
-    if height < p.superblock_start_height || height % p.superblock_cycle != 0 {
+    if height < p.superblock_start_height || !height.is_multiple_of(p.superblock_cycle) {
         return 0;
     }
     let sp = subsidy_params(network);
@@ -213,7 +213,10 @@ mod tests {
     fn test_qt_026_clock_voting_cutoff_and_progress() {
         let r = governance_params(Network::Regtest);
         let c = clock(&r, 1505, 1_000);
-        assert_eq!((c.next_superblock, c.voting_cutoff, c.blocks_to_superblock), (1520, 1510, 15));
+        assert_eq!(
+            (c.next_superblock, c.voting_cutoff, c.blocks_to_superblock),
+            (1520, 1510, 15)
+        );
         assert!(c.voting_open);
         assert!((c.cycle_progress - 0.25).abs() < 1e-9);
         assert_eq!(c.superblock_eta, 1_000 + 15 * 150);
@@ -231,7 +234,7 @@ mod tests {
         assert_eq!(h % 16_616, 0);
         let mut subsidy: u64 = 5 * COIN;
         let mut i = 210_240;
-        while i <= h - 1 {
+        while i < h {
             subsidy -= subsidy / 14;
             i += 210_240;
         }

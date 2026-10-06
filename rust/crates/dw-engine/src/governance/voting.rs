@@ -21,9 +21,9 @@ use dw_governance::params::{EVONODE_VOTE_WEIGHT, VOTE_UPDATE_MIN_SECS};
 use dw_governance::sync::relay;
 use dw_governance::vote::{GovernanceVote, VoteOutcome, to_recoverable_compact};
 use dw_vault::{GrantKind, VaultError};
+use key_wallet::Signer;
 use key_wallet::bip32::DerivationPath;
 use key_wallet::managed_account::managed_account_type::ManagedAccountType;
-use key_wallet::Signer;
 use platform_wallet::masternode::MasternodeListSummary;
 
 use super::{GovernanceFailure, VoteResult, VotingMasternode};
@@ -99,7 +99,11 @@ impl NetworkSession {
         match only {
             Some(w) => vec![w],
             None => match self.manager() {
-                Ok(m) => m.list_wallet_ids_blocking().into_iter().map(WalletId).collect(),
+                Ok(m) => m
+                    .list_wallet_ids_blocking()
+                    .into_iter()
+                    .map(WalletId)
+                    .collect(),
                 Err(_) => Vec::new(),
             },
         }
@@ -148,7 +152,9 @@ impl NetworkSession {
             for id in &wallets {
                 for entry in self.hub.history.snapshot(id).into_values() {
                     if let Some(
-                        dashcore::transaction::TransactionPayload::ProviderRegistrationPayloadType(p),
+                        dashcore::transaction::TransactionPayload::ProviderRegistrationPayloadType(
+                            p,
+                        ),
                     ) = &entry.tx.special_transaction_payload
                     {
                         found.push((
@@ -192,7 +198,10 @@ impl NetworkSession {
             wallets = wallets.len(),
             voting_keys = keys.len(),
             list = list.len(),
-            in_list = list.iter().filter(|m| by_key.contains_key(&m.voting_key_id)).count(),
+            in_list = list
+                .iter()
+                .filter(|m| by_key.contains_key(&m.voting_key_id))
+                .count(),
             wallet_collaterals = collaterals.len(),
             vote_collaterals = from_votes.len(),
             "governance: masternodes the wallets vote for"
@@ -235,8 +244,9 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let key = parse_display_hex(&hash)
-                .ok_or_else(|| EngineError::InvalidArgument("hash must be 64 hex characters".into()))?;
+            let key = parse_display_hex(&hash).ok_or_else(|| {
+                EngineError::InvalidArgument("hash must be 64 hex characters".into())
+            })?;
             if !this.proposal_known(&hash, &key).await? {
                 return Err(GovernanceFailure::ProposalNotFound(hash).into());
             }
@@ -266,8 +276,7 @@ impl NetworkSession {
                         weight: m.weight,
                         current_vote: current.map(|v| v.outcome),
                         vote_time: current.map(|v| v.time.max(0) as u64),
-                        next_vote_at: current
-                            .map(|v| v.time.max(0) as u64 + VOTE_UPDATE_MIN_SECS),
+                        next_vote_at: current.map(|v| v.time.max(0) as u64 + VOTE_UPDATE_MIN_SECS),
                         label: None,
                     })
                 })
@@ -290,7 +299,8 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            this.cast_votes_inner(hash, outcome, pro_tx_hashes, grant_id).await
+            this.cast_votes_inner(hash, outcome, pro_tx_hashes, grant_id)
+                .await
         })
         .await
     }
@@ -320,8 +330,10 @@ impl NetworkSession {
             .filter(|m| m.collateral.is_some())
             .map(|m| (pro_tx_display(&m.pro_tx_hash), m))
             .collect();
-        let chosen: Vec<Option<&Controlled>> =
-            pro_tx_hashes.iter().map(|h| by_hash.get(h).copied()).collect();
+        let chosen: Vec<Option<&Controlled>> = pro_tx_hashes
+            .iter()
+            .map(|h| by_hash.get(h).copied())
+            .collect();
         if chosen.iter().all(Option::is_none) {
             return Err(GovernanceFailure::NoVotingKeys.into());
         }
@@ -336,7 +348,10 @@ impl NetworkSession {
         let mut grant_wallet = None;
         let mut last_err = VaultError::GrantInvalid;
         for w in &wallets {
-            match self.vault.check_grant(&grant_id, GrantKind::Governance, Some(&w.0)) {
+            match self
+                .vault
+                .check_grant(&grant_id, GrantKind::Governance, Some(&w.0))
+            {
                 Ok(()) => {
                     grant_wallet = Some(*w);
                     break;
@@ -381,7 +396,12 @@ impl NetworkSession {
                 continue;
             }
             let collateral = m.collateral.expect("filtered above");
-            let previous = self.governance.shared.store().current_vote(&key, &collateral).cloned();
+            let previous = self
+                .governance
+                .shared
+                .store()
+                .current_vote(&key, &collateral)
+                .cloned();
             if let Some(prev) = previous {
                 let next = prev.time + VOTE_UPDATE_MIN_SECS as i64;
                 if next > now {
@@ -436,7 +456,10 @@ impl NetworkSession {
         }
         for (i, vote, key_id) in &signed {
             if report.fetched.contains(&vote.hash()) {
-                self.governance.shared.store().record_own_vote(vote, *key_id);
+                self.governance
+                    .shared
+                    .store()
+                    .record_own_vote(vote, *key_id);
                 results[*i].detail = Some(format!(
                     "relayed to {} peer(s), vote {}",
                     report.announced_to,

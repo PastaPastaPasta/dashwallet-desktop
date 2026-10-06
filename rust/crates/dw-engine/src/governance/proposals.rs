@@ -91,7 +91,10 @@ fn collateral_script(hash: &[u8; 32]) -> ScriptBuf {
 
 impl NetworkSession {
     /// The wallet's stored proposals with their collateral state.
-    pub(crate) async fn own_proposals(&self, wallet: WalletId) -> Result<Vec<OwnProposal>, EngineError> {
+    pub(crate) async fn own_proposals(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<OwnProposal>, EngineError> {
         let scope = wallet.to_string();
         let rows = self
             .appdb_op(move |db| db.settings_with_prefix(&scope, RECORD_PREFIX))
@@ -116,9 +119,8 @@ impl NetworkSession {
                 None => (CollateralStatus::Unknown, 0),
                 Some(e) => {
                     let height = match &e.context {
-                        TransactionContext::InBlock(i) | TransactionContext::InChainLockedBlock(i) => {
-                            Some(i.height())
-                        }
+                        TransactionContext::InBlock(i)
+                        | TransactionContext::InChainLockedBlock(i) => Some(i.height()),
                         _ => None,
                     };
                     let c = match (height, tip) {
@@ -147,7 +149,10 @@ impl NetworkSession {
     }
 
     /// The wallets' own proposal with display hash `hash`, if any.
-    pub(crate) async fn find_own_proposal(&self, hash: &str) -> Result<Option<OwnProposal>, EngineError> {
+    pub(crate) async fn find_own_proposal(
+        &self,
+        hash: &str,
+    ) -> Result<Option<OwnProposal>, EngineError> {
         let wallets = match self.manager() {
             Ok(m) => m.list_wallet_ids_blocking(),
             Err(_) => Vec::new(),
@@ -165,7 +170,12 @@ impl NetworkSession {
         Ok(None)
     }
 
-    async fn store_record(&self, wallet: WalletId, hash: &str, r: &StoredRecord) -> Result<(), EngineError> {
+    async fn store_record(
+        &self,
+        wallet: WalletId,
+        hash: &str,
+        r: &StoredRecord,
+    ) -> Result<(), EngineError> {
         let scope = wallet.to_string();
         let key = format!("{RECORD_PREFIX}{hash}");
         let value = serde_json::to_string(r).map_err(|e| EngineError::Internal(e.to_string()))?;
@@ -176,11 +186,15 @@ impl NetworkSession {
     async fn delete_record(&self, wallet: WalletId, hash: &str) -> Result<(), EngineError> {
         let scope = wallet.to_string();
         let key = format!("{RECORD_PREFIX}{hash}");
-        self.appdb_op(move |db| db.set_setting(&scope, &key, None)).await
+        self.appdb_op(move |db| db.set_setting(&scope, &key, None))
+            .await
     }
 
     /// Created, not yet submitted, unexpired proposals (Resume Proposals).
-    pub async fn pending_proposals(self: &Arc<Self>, wallet: WalletId) -> Result<Vec<PendingProposal>, EngineError> {
+    pub async fn pending_proposals(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Vec<PendingProposal>, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
@@ -236,11 +250,13 @@ impl NetworkSession {
         if !self.vault.has_wallet_secret(&wallet_id.0) {
             return Err(GovernanceFailure::WatchOnly.into());
         }
-        if let Err(e @ (dw_vault::VaultError::NoVault
-        | dw_vault::VaultError::Locked
-        | dw_vault::VaultError::MixingOnly)) =
-            self.vault
-                .check_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))
+        if let Err(
+            e @ (dw_vault::VaultError::NoVault
+            | dw_vault::VaultError::Locked
+            | dw_vault::VaultError::MixingOnly),
+        ) = self
+            .vault
+            .check_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))
         {
             return Err(vault_error(e));
         }
@@ -265,22 +281,32 @@ impl NetworkSession {
             subtract_fee: false,
         };
         let rate = FeeMode::Recommended { target_blocks: 6 }.rate()?;
-        let planned = plan::plan(InputChoice::Select(&coins), &[output], rate, 25, snapshot.height)
-            .map_err(|e| match e {
-                PlanError::AmountExceedsBalance { available } => GovernanceFailure::InsufficientFunds {
-                    needed: p.proposal_fee,
+        let planned = plan::plan(
+            InputChoice::Select(&coins),
+            &[output],
+            rate,
+            25,
+            snapshot.height,
+        )
+        .map_err(|e| match e {
+            PlanError::AmountExceedsBalance { available } => GovernanceFailure::InsufficientFunds {
+                needed: p.proposal_fee,
+                available,
+            },
+            PlanError::AmountWithFeeExceedsBalance { fee, available } => {
+                GovernanceFailure::InsufficientFunds {
+                    needed: p.proposal_fee + fee,
                     available,
-                },
-                PlanError::AmountWithFeeExceedsBalance { fee, available } => {
-                    GovernanceFailure::InsufficientFunds {
-                        needed: p.proposal_fee + fee,
-                        available,
-                    }
                 }
-                other => GovernanceFailure::BroadcastRejected(other.to_string()),
-            })?;
+            }
+            other => GovernanceFailure::BroadcastRejected(other.to_string()),
+        })?;
         if planned.fee > crate::send::MAX_TX_FEE {
-            return Err(GovernanceFailure::BroadcastRejected(format!("fee {} is absurd", planned.fee)).into());
+            return Err(GovernanceFailure::BroadcastRejected(format!(
+                "fee {} is absurd",
+                planned.fee
+            ))
+            .into());
         }
         let outflow = p.proposal_fee + planned.fee;
 
@@ -346,7 +372,9 @@ impl NetworkSession {
                     .into_iter()
                     .find_map(|a| a.get_address_info(&u.address))
                     .map(|a| a.path)
-                    .ok_or_else(|| EngineError::Internal(format!("no key path for {}", u.address)))?;
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!("no key path for {}", u.address))
+                    })?;
                 paths.insert(i, path);
                 inputs.push(InputData {
                     prev_tx: prev,
@@ -363,7 +391,9 @@ impl NetworkSession {
             .map_err(|e| EngineError::Internal(format!("signing the collateral: {e}")))?;
         drop(signer);
         if !dw_psbt::finalize(&mut psbt) {
-            return Err(EngineError::Internal("the collateral is not fully signed".into()));
+            return Err(EngineError::Internal(
+                "the collateral is not fully signed".into(),
+            ));
         }
         let signed = dw_psbt::extract(&psbt).map_err(|e| EngineError::Internal(e.to_string()))?;
         let txid = signed.txid();
@@ -437,13 +467,18 @@ impl NetworkSession {
 
     /// `gobject submit`: relays the wallet's proposal once its collateral
     /// has a confirmation. Returns the object hash.
-    pub async fn submit_proposal(self: &Arc<Self>, wallet: WalletId, hash: String) -> Result<String, EngineError> {
+    pub async fn submit_proposal(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        hash: String,
+    ) -> Result<String, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.wallet(&wallet).await?;
-            let key = parse_display_hex(&hash)
-                .ok_or_else(|| EngineError::InvalidArgument("hash must be 64 hex characters".into()))?;
+            let key = parse_display_hex(&hash).ok_or_else(|| {
+                EngineError::InvalidArgument("hash must be 64 hex characters".into())
+            })?;
             let own = this
                 .own_proposals(wallet)
                 .await?

@@ -185,10 +185,14 @@ impl GovernanceVote {
         let time = i64::consensus_decode(&mut r)?;
         let len = VarInt::consensus_decode(&mut r)?.0 as usize;
         if len != COMPACT_SIG_SIZE && len != BLS_SIG_SIZE {
-            return Err(encode::Error::ParseFailed("bad governance vote signature size"));
+            return Err(encode::Error::ParseFailed(
+                "bad governance vote signature size",
+            ));
         }
         if r.len() != len {
-            return Err(encode::Error::ParseFailed("governance vote length mismatch"));
+            return Err(encode::Error::ParseFailed(
+                "governance vote length mismatch",
+            ));
         }
         Ok(Self {
             masternode_outpoint,
@@ -253,7 +257,10 @@ pub fn to_recoverable_compact(
 /// The vote's object signal and outcome as Core's
 /// `gobject getcurrentvotes` prints them (`outpoint:time:outcome:signal`).
 pub fn current_vote_string(vote: &GovernanceVote) -> String {
-    let outcome = vote.vote_outcome().map(VoteOutcome::as_str).unwrap_or("none");
+    let outcome = vote
+        .vote_outcome()
+        .map(VoteOutcome::as_str)
+        .unwrap_or("none");
     let signal = match vote.signal {
         1 => "funding",
         2 => "valid",
@@ -279,7 +286,12 @@ mod tests {
         let txid = "f3d0bbd2e2c0e21a6a3a44a0f4b4c2fb4a2a6f1d1b4b9f6cfc2e3e2d1c0b0a09"
             .parse()
             .unwrap();
-        GovernanceVote::funding(OutPoint::new(txid, 1), [3; 32], VoteOutcome::Yes, 1_700_000_000)
+        GovernanceVote::funding(
+            OutPoint::new(txid, 1),
+            [3; 32],
+            VoteOutcome::Yes,
+            1_700_000_000,
+        )
     }
 
     fn sign(vote: &mut GovernanceVote, network: Network, sk: &SecretKey) {
@@ -333,9 +345,9 @@ mod tests {
     fn signature_string_matches_core_layout() {
         let v = sample();
         let s = v.signature_string();
-        assert!(s.starts_with(
-            "f3d0bbd2e2c0e21a6a3a44a0f4b4c2fb4a2a6f1d1b4b9f6cfc2e3e2d1c0b0a09-1|"
-        ));
+        assert!(
+            s.starts_with("f3d0bbd2e2c0e21a6a3a44a0f4b4c2fb4a2a6f1d1b4b9f6cfc2e3e2d1c0b0a09-1|")
+        );
         assert!(s.ends_with("|1|1|1700000000"));
     }
 }

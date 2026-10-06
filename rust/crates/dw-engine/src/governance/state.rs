@@ -70,7 +70,11 @@ impl GovernanceState {
     pub(crate) fn sync_state(&self) -> GovernanceSyncState {
         let p = self.shared.progress().clone();
         GovernanceSyncState {
-            phase: if self.enabled() { p.phase } else { Phase::Disabled },
+            phase: if self.enabled() {
+                p.phase
+            } else {
+                Phase::Disabled
+            },
             objects: p.objects,
             votes: p.votes,
             peers: p.peers,
@@ -111,7 +115,9 @@ impl NetworkSession {
         let events = self.rt.spawn(async move {
             loop {
                 notify.notified().await;
-                let Some(session) = weak.upgrade() else { return };
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
                 session.refresh_budget_committed().await;
                 session.sink.emit(EngineEvent::Governance {
                     network: session.network.clone(),
@@ -120,7 +126,11 @@ impl NetworkSession {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
-        *self.governance.events.lock().unwrap_or_else(|p| p.into_inner()) = Some(events);
+        *self
+            .governance
+            .events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(events);
         let on = self
             .appdb_op(|db| db.setting(GLOBAL_SCOPE, SYNC_ENABLED_KEY))
             .await
@@ -133,7 +143,11 @@ impl NetworkSession {
     }
 
     fn spawn_governance_sync(self: &Arc<Self>) {
-        let mut task = self.governance.task.lock().unwrap_or_else(|p| p.into_inner());
+        let mut task = self
+            .governance
+            .task
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if task.is_some() {
             return;
         }
@@ -145,13 +159,18 @@ impl NetworkSession {
     }
 
     /// Turns govsync on or off and stores the choice.
-    pub async fn set_governance_sync_enabled(self: &Arc<Self>, enabled: bool) -> Result<(), EngineError> {
+    pub async fn set_governance_sync_enabled(
+        self: &Arc<Self>,
+        enabled: bool,
+    ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let value = enabled.then_some("1".to_string());
-            this.appdb_op(move |db| db.set_setting(GLOBAL_SCOPE, SYNC_ENABLED_KEY, value.as_deref()))
-                .await?;
+            this.appdb_op(move |db| {
+                db.set_setting(GLOBAL_SCOPE, SYNC_ENABLED_KEY, value.as_deref())
+            })
+            .await?;
             if enabled {
                 this.spawn_governance_sync();
             } else {

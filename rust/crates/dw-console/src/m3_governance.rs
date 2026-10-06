@@ -23,7 +23,10 @@ const COIN: u64 = 100_000_000;
 
 /// The commands this module answers.
 pub(crate) fn handles(method: &str) -> bool {
-    matches!(method, "gobject" | "getgovernanceinfo" | "getsuperblockbudget")
+    matches!(
+        method,
+        "gobject" | "getgovernanceinfo" | "getsuperblockbudget"
+    )
 }
 
 fn rpc(code: i32, message: impl Into<String>) -> ConsoleFailure {
@@ -75,22 +78,30 @@ impl ConsoleContext {
                 }
                 let p = dw_governance_params(&s);
                 let info = s.governance_info().await.map_err(engine)?;
-                let (Some(last), Some(next), Some(budget)) =
-                    (info.last_superblock, info.next_superblock, info.budget_available)
-                else {
+                let (Some(last), Some(next), Some(budget)) = (
+                    info.last_superblock,
+                    info.next_superblock,
+                    info.budget_available,
+                ) else {
                     return Err(rpc(MISC_ERROR, "Block height is not known yet"));
                 };
                 let mut f = vec![
                     ("governanceminquorum".to_string(), Json::int(p.0)),
                     ("proposalfee".to_string(), amount(COIN)),
-                    ("superblockcycle".to_string(), Json::int(info.superblock_cycle)),
+                    (
+                        "superblockcycle".to_string(),
+                        Json::int(info.superblock_cycle),
+                    ),
                     ("superblockmaturitywindow".to_string(), Json::int(p.1)),
                     ("lastsuperblock".to_string(), Json::int(last)),
                     ("nextsuperblock".to_string(), Json::int(next)),
                 ];
                 // Core: valid weighted masternodes / 10 (the list, not a guess).
                 if let (Some(mn), Some(evo)) = (info.masternodes_eligible, info.evonodes_eligible) {
-                    f.push(("fundingthreshold".to_string(), Json::int((mn + 4 * evo) / 10)));
+                    f.push((
+                        "fundingthreshold".to_string(),
+                        Json::int((mn + 4 * evo) / 10),
+                    ));
                 }
                 f.push(("governancebudget".to_string(), amount(budget)));
                 Ok(Json::Obj(f))
@@ -161,7 +172,11 @@ impl ConsoleContext {
                 if args.len() != 4 {
                     return Err(usage("gobject"));
                 }
-                let (hash, signal, outcome) = (arg(args, 1).unwrap(), arg(args, 2).unwrap(), arg(args, 3).unwrap());
+                let (hash, signal, outcome) = (
+                    arg(args, 1).unwrap(),
+                    arg(args, 2).unwrap(),
+                    arg(args, 3).unwrap(),
+                );
                 if signal != "funding" {
                     return Err(rpc(
                         INVALID_PARAMETER,
@@ -206,7 +221,11 @@ impl ConsoleContext {
                     .map(|r| {
                         let mut f = vec![(
                             "result".to_string(),
-                            Json::str(if r.failure.is_none() { "success" } else { "failed" }),
+                            Json::str(if r.failure.is_none() {
+                                "success"
+                            } else {
+                                "failed"
+                            }),
                         )];
                         if let Some(e) = &r.failure {
                             f.push(("errorMessage".into(), Json::str(e.to_string())));
@@ -246,7 +265,10 @@ fn object_json(d: &dw_engine::governance::ProposalDetail) -> Json {
         ("CollateralHash", Json::str(d.collateral_txid.clone())),
         ("ObjectType", Json::int(1u32)),
         ("CreationTime", Json::int(d.created_at)),
-        ("AbsoluteYesCount", Json::int(i64::from(d.row.yes) - i64::from(d.row.no))),
+        (
+            "AbsoluteYesCount",
+            Json::int(i64::from(d.row.yes) - i64::from(d.row.no)),
+        ),
         ("YesCount", Json::int(d.row.yes)),
         ("NoCount", Json::int(d.row.no)),
         ("AbstainCount", Json::int(d.row.abstain)),

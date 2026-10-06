@@ -36,7 +36,10 @@ fn test_qt_132_object_hashes_equal_dashd() {
             .push_opcode(OP_RETURN)
             .push_slice(hash)
             .into_script();
-        assert_eq!(hex::encode(script.as_bytes()), c["collateral_script"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(script.as_bytes()),
+            c["collateral_script"].as_str().unwrap()
+        );
         assert_eq!(c["check"]["Object status"], "OK");
     }
 }

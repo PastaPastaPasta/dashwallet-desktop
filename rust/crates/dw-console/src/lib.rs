@@ -8,8 +8,8 @@
 //! of an invented result.
 
 pub mod exec;
-mod m3_governance;
 pub mod json;
+mod m3_governance;
 pub mod parse;
 
 pub use exec::{ConsoleContext, help_console_text};

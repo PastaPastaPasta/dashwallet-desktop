@@ -236,13 +236,7 @@ struct Requests {
 impl Requests {
     /// Asks `peer` for the items of `items` the store lacks and nobody was
     /// asked for yet.
-    fn request(
-        &mut self,
-        peer: &Peer,
-        items: &[InvItem],
-        store: &GovernanceStore,
-        batch: usize,
-    ) {
+    fn request(&mut self, peer: &Peer, items: &[InvItem], store: &GovernanceStore, batch: usize) {
         let wanted: Vec<InvItem> = items
             .iter()
             .filter(|i| match i.kind {
@@ -351,18 +345,32 @@ pub async fn run(
             .insert(p.addr.clone(), Instant::now());
         let mut expected: Option<i32> = None;
         let mut announced = 0i32;
-        let outcome = drain(&shared, &mut peers, &mut rx, &mut requests, &cfg, &mut stop, base_bytes, |from, ev| {
-            match ev {
-                PeerEvent::SyncCount { item, count } if *item == SSC_GOVOBJ && from == primary => {
-                    expected = Some(*count);
+        let outcome = drain(
+            &shared,
+            &mut peers,
+            &mut rx,
+            &mut requests,
+            &cfg,
+            &mut stop,
+            base_bytes,
+            |from, ev| {
+                match ev {
+                    PeerEvent::SyncCount { item, count }
+                        if *item == SSC_GOVOBJ && from == primary =>
+                    {
+                        expected = Some(*count);
+                    }
+                    PeerEvent::Inv(items) if from == primary => {
+                        announced += items
+                            .iter()
+                            .filter(|i| i.kind == INV_GOVERNANCE_OBJECT)
+                            .count() as i32;
+                    }
+                    _ => {}
                 }
-                PeerEvent::Inv(items) if from == primary => {
-                    announced += items.iter().filter(|i| i.kind == INV_GOVERNANCE_OBJECT).count() as i32;
-                }
-                _ => {}
-            }
-            expected.is_some_and(|n| announced >= n)
-        })
+                expected.is_some_and(|n| announced >= n)
+            },
+        )
         .await;
         if let Drained::Stopped = outcome {
             return Ok(());
@@ -388,21 +396,32 @@ pub async fn run(
         let outcome = if total == 0 {
             Drained::Done
         } else {
-            drain(&shared, &mut peers, &mut rx, &mut requests, &cfg, &mut stop, base_bytes, |_, ev| {
-            match ev {
-                PeerEvent::SyncCount { item, count } if *item == SSC_GOVOBJ_VOTE => {
-                    answers += 1;
-                    expected_votes += i64::from(*count);
-                }
-                PeerEvent::Inv(items) => {
-                    announced_votes +=
-                        items.iter().filter(|i| i.kind == INV_GOVERNANCE_VOTE).count() as i64;
-                }
-                _ => {}
-            }
-            answers >= total && announced_votes >= expected_votes
-        })
-        .await
+            drain(
+                &shared,
+                &mut peers,
+                &mut rx,
+                &mut requests,
+                &cfg,
+                &mut stop,
+                base_bytes,
+                |_, ev| {
+                    match ev {
+                        PeerEvent::SyncCount { item, count } if *item == SSC_GOVOBJ_VOTE => {
+                            answers += 1;
+                            expected_votes += i64::from(*count);
+                        }
+                        PeerEvent::Inv(items) => {
+                            announced_votes += items
+                                .iter()
+                                .filter(|i| i.kind == INV_GOVERNANCE_VOTE)
+                                .count() as i64;
+                        }
+                        _ => {}
+                    }
+                    answers >= total && announced_votes >= expected_votes
+                },
+            )
+            .await
         };
         if let Drained::Stopped = outcome {
             return Ok(());
@@ -527,7 +546,10 @@ pub async fn relay(
     }
     let invs: Vec<InvItem> = items
         .iter()
-        .map(|(kind, hash, _)| InvItem { kind: *kind, hash: *hash })
+        .map(|(kind, hash, _)| InvItem {
+            kind: *kind,
+            hash: *hash,
+        })
         .collect();
     for p in &peers {
         p.send_inv(&invs);
@@ -575,7 +597,11 @@ mod tests {
         let obj = GovernanceObject::new_proposal(
             1,
             1,
-            format!(r#"{{"name":"p","end_epoch":{},"type":1}}"#, unix_now() + 10_000).into_bytes(),
+            format!(
+                r#"{{"name":"p","end_epoch":{},"type":1}}"#,
+                unix_now() + 10_000
+            )
+            .into_bytes(),
         );
         let obj_hash = obj.hash();
         let server = tokio::spawn(async move {
@@ -614,7 +640,13 @@ mod tests {
         cfg.idle_timeout = Duration::from_secs(5);
         let (stop_tx, stop_rx) = watch::channel(false);
         let history = Arc::new(Mutex::new(SyncHistory::default()));
-        let task = tokio::spawn(run(Arc::clone(&shared), cfg, vec![addr], Arc::clone(&history), stop_rx));
+        let task = tokio::spawn(run(
+            Arc::clone(&shared),
+            cfg,
+            vec![addr],
+            Arc::clone(&history),
+            stop_rx,
+        ));
         for _ in 0..100 {
             if shared.progress().phase == Phase::Synced {
                 break;

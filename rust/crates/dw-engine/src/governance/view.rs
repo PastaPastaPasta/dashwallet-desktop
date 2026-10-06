@@ -186,7 +186,10 @@ impl NetworkSession {
     }
 
     /// The proposal list (QT-128/129), in dash-qt's order.
-    pub async fn proposals(self: &Arc<Self>, query: ProposalQuery) -> Result<Vec<ProposalRow>, EngineError> {
+    pub async fn proposals(
+        self: &Arc<Self>,
+        query: ProposalQuery,
+    ) -> Result<Vec<ProposalRow>, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
@@ -212,7 +215,12 @@ impl NetworkSession {
                     .iter()
                     .filter_map(|r| {
                         let data = proposal::parse_proposal(&r.object.data)?;
-                        Some(ctx.row(&store, &r.object, &data, Some((r.confirmations, r.submitted))))
+                        Some(ctx.row(
+                            &store,
+                            &r.object,
+                            &data,
+                            Some((r.confirmations, r.submitted)),
+                        ))
                     })
                     .collect(),
                 None => store
@@ -229,12 +237,16 @@ impl NetworkSession {
     }
 
     /// The details view (QT-130) of a synced or own proposal.
-    pub async fn proposal_detail(self: &Arc<Self>, hash: String) -> Result<ProposalDetail, EngineError> {
+    pub async fn proposal_detail(
+        self: &Arc<Self>,
+        hash: String,
+    ) -> Result<ProposalDetail, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let key = parse_display_hex(&hash)
-                .ok_or_else(|| EngineError::InvalidArgument("hash must be 64 hex characters".into()))?;
+            let key = parse_display_hex(&hash).ok_or_else(|| {
+                EngineError::InvalidArgument("hash must be 64 hex characters".into())
+            })?;
             let tip = this.require_tip()?;
             let own = this.find_own_proposal(&hash).await?;
             let list = this.governance_masternode_list().await;
@@ -243,7 +255,10 @@ impl NetworkSession {
             let p = this.governance_params();
             let store = this.governance.shared.store();
             let (object, own_state) = match (store.object(&key), &own) {
-                (Some(o), _) => (o.object.clone(), own.as_ref().map(|r| (r.confirmations, r.submitted))),
+                (Some(o), _) => (
+                    o.object.clone(),
+                    own.as_ref().map(|r| (r.confirmations, r.submitted)),
+                ),
                 (None, Some(r)) => (r.object.clone(), Some((r.confirmations, r.submitted))),
                 (None, None) => return Err(GovernanceFailure::ProposalNotFound(hash).into()),
             };
@@ -285,7 +300,10 @@ impl NetworkSession {
     }
 
     /// Every failing field of `draft` in wizard order; empty = valid.
-    pub fn validate_proposal(&self, draft: &ProposalDraft) -> Result<Vec<ProposalField>, EngineError> {
+    pub fn validate_proposal(
+        &self,
+        draft: &ProposalDraft,
+    ) -> Result<Vec<ProposalField>, EngineError> {
         let _op = self.try_enter()?;
         let tip = self.require_tip()?;
         Ok(proposal::validate(self.network.core_network(), draft, tip)
@@ -295,7 +313,11 @@ impl NetworkSession {
     }
 
     /// The first failing field as `governance.invalid_proposal`.
-    pub(super) fn check_draft(&self, draft: &ProposalDraft, tip: ChainPoint) -> Result<(), EngineError> {
+    pub(super) fn check_draft(
+        &self,
+        draft: &ProposalDraft,
+        tip: ChainPoint,
+    ) -> Result<(), EngineError> {
         match proposal::validate(self.network.core_network(), draft, tip).first() {
             Some(f) => Err(GovernanceFailure::InvalidProposal((*f).into()).into()),
             None => Ok(()),
@@ -307,7 +329,11 @@ impl NetworkSession {
         let _op = self.try_enter()?;
         let tip = self.require_tip()?;
         self.check_draft(draft, tip)?;
-        Ok(proposal::proposal_json(self.network.core_network(), draft, tip))
+        Ok(proposal::proposal_json(
+            self.network.core_network(),
+            draft,
+            tip,
+        ))
     }
 
     /// "View Payload": the hex of the data JSON.
@@ -351,7 +377,10 @@ impl NetworkSession {
 
     /// Core `gobject getcurrentvotes`: each synced current funding vote on
     /// `hash` as (vote hash, `txid-n:time:outcome:funding`). In-memory read.
-    pub fn governance_current_votes(&self, hash: &str) -> Result<Vec<(String, String)>, EngineError> {
+    pub fn governance_current_votes(
+        &self,
+        hash: &str,
+    ) -> Result<Vec<(String, String)>, EngineError> {
         let _op = self.try_enter()?;
         let key = parse_display_hex(hash)
             .ok_or_else(|| EngineError::InvalidArgument("hash must be 64 hex characters".into()))?;

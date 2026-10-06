@@ -143,7 +143,9 @@ fn decode_inv(payload: &[u8]) -> Option<Vec<InvItem>> {
         return None;
     }
     Some(
-        r.chunks_exact(36)
+        r.as_chunks::<36>()
+            .0
+            .iter()
             .map(|c| InvItem {
                 kind: u32::from_le_bytes(c[..4].try_into().expect("4 bytes")),
                 hash: c[4..].try_into().expect("32 bytes"),
@@ -168,7 +170,9 @@ pub fn empty_vote_filter() -> Vec<u8> {
 /// vector.
 pub fn object_fetch_filter() -> Vec<u8> {
     let mut buf = Vec::with_capacity(10);
-    Vec::<u8>::new().consensus_encode(&mut buf).expect("Vec write");
+    Vec::<u8>::new()
+        .consensus_encode(&mut buf)
+        .expect("Vec write");
     buf.extend_from_slice(&0u32.to_le_bytes());
     buf.extend_from_slice(&0u32.to_le_bytes());
     buf.push(0);
@@ -193,10 +197,11 @@ impl Peer {
         cfg: &PeerConfig,
         events: mpsc::UnboundedSender<(usize, PeerEvent)>,
     ) -> Result<Peer, NetError> {
-        let stream = tokio::time::timeout(cfg.connect_timeout, tokio::net::TcpStream::connect(addr))
-            .await
-            .map_err(|_| NetError::Connect(addr, "timed out".into()))?
-            .map_err(|e| NetError::Connect(addr, e.to_string()))?;
+        let stream =
+            tokio::time::timeout(cfg.connect_timeout, tokio::net::TcpStream::connect(addr))
+                .await
+                .map_err(|_| NetError::Connect(addr, "timed out".into()))?
+                .map_err(|e| NetError::Connect(addr, e.to_string()))?;
         let _ = stream.set_nodelay(true);
         Self::handshake(id, addr.to_string(), Some(addr), stream, cfg, events).await
     }
@@ -407,10 +412,12 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 .map(PeerEvent::GetData),
             c if c == commands::MNGOVERNANCEOBJECT => Some(PeerEvent::Object(payload)),
             c if c == commands::MNGOVERNANCEOBJECTVOTE => Some(PeerEvent::Vote(payload)),
-            c if c == commands::SYNCSTATUSCOUNT && payload.len() == 8 => Some(PeerEvent::SyncCount {
-                item: i32::from_le_bytes(payload[..4].try_into().expect("4 bytes")),
-                count: i32::from_le_bytes(payload[4..].try_into().expect("4 bytes")),
-            }),
+            c if c == commands::SYNCSTATUSCOUNT && payload.len() == 8 => {
+                Some(PeerEvent::SyncCount {
+                    item: i32::from_le_bytes(payload[..4].try_into().expect("4 bytes")),
+                    count: i32::from_le_bytes(payload[4..].try_into().expect("4 bytes")),
+                })
+            }
             _ => None,
         };
         if got_version
@@ -513,15 +520,22 @@ mod tests {
         let mut fake = test_peer::spawn(b, Network::Regtest);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cfg = PeerConfig::new(Network::Regtest, "/dwd-test/", 7);
-        let peer = Peer::handshake(3, "fake".into(), None, a, &cfg, tx).await.unwrap();
+        let peer = Peer::handshake(3, "fake".into(), None, a, &cfg, tx)
+            .await
+            .unwrap();
         let (cmd, _) = fake.received.recv().await.unwrap();
         assert_eq!(cmd, "version");
         let (cmd, _) = fake.received.recv().await.unwrap();
         assert_eq!(cmd, "verack");
 
-        fake.send.send(("ping".into(), 42u64.to_le_bytes().to_vec())).unwrap();
+        fake.send
+            .send(("ping".into(), 42u64.to_le_bytes().to_vec()))
+            .unwrap();
         let (cmd, payload) = fake.received.recv().await.unwrap();
-        assert_eq!((cmd.as_str(), payload), ("pong", 42u64.to_le_bytes().to_vec()));
+        assert_eq!(
+            (cmd.as_str(), payload),
+            ("pong", 42u64.to_le_bytes().to_vec())
+        );
 
         peer.send_govsync([0; 32], &object_fetch_filter());
         let (cmd, payload) = fake.received.recv().await.unwrap();
@@ -529,14 +543,25 @@ mod tests {
         assert_eq!(payload.len(), 32 + 10);
 
         let items = [
-            InvItem { kind: INV_GOVERNANCE_OBJECT, hash: [1; 32] },
-            InvItem { kind: 1, hash: [2; 32] },
+            InvItem {
+                kind: INV_GOVERNANCE_OBJECT,
+                hash: [1; 32],
+            },
+            InvItem {
+                kind: 1,
+                hash: [2; 32],
+            },
         ];
-        fake.send.send(("inv".into(), test_peer::inv_payload(&items))).unwrap();
+        fake.send
+            .send(("inv".into(), test_peer::inv_payload(&items)))
+            .unwrap();
         let mut ssc = 10i32.to_le_bytes().to_vec();
         ssc.extend_from_slice(&5i32.to_le_bytes());
         fake.send.send(("ssc".into(), ssc)).unwrap();
-        assert_eq!(rx.recv().await.unwrap(), (3, PeerEvent::Inv(vec![items[0]])));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            (3, PeerEvent::Inv(vec![items[0]]))
+        );
         assert_eq!(
             rx.recv().await.unwrap(),
             (3, PeerEvent::SyncCount { item: 10, count: 5 })

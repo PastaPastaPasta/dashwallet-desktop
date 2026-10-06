@@ -50,7 +50,10 @@ fn test_qt_145_governance_console_commands_offline() {
     // blocks a cycle (budget > 0); 1501 is no superblock.
     let budget = run("getsuperblockbudget 1500").unwrap().result;
     assert!(budget.parse::<f64>().unwrap() > 0.0, "{budget}");
-    assert_eq!(run("getsuperblockbudget 1501").unwrap().result, "0.00000000");
+    assert_eq!(
+        run("getsuperblockbudget 1501").unwrap().result,
+        "0.00000000"
+    );
     assert!(matches!(
         run("getsuperblockbudget"),
         Err(ConsoleFailure::Rpc { code: -1, .. })
@@ -62,7 +65,9 @@ fn test_qt_145_governance_console_commands_offline() {
     ));
     // Governance sync is off.
     match run("gobject list") {
-        Err(ConsoleFailure::Rpc { message, .. }) => assert!(message.contains("sync is off"), "{message}"),
+        Err(ConsoleFailure::Rpc { message, .. }) => {
+            assert!(message.contains("sync is off"), "{message}")
+        }
         other => panic!("{other:?}"),
     }
     assert!(matches!(
@@ -70,7 +75,9 @@ fn test_qt_145_governance_console_commands_offline() {
         Err(ConsoleFailure::NotAvailable(_))
     ));
     assert!(matches!(
-        run("gobject vote-many 0101010101010101010101010101010101010101010101010101010101010101 delete yes"),
+        run(
+            "gobject vote-many 0101010101010101010101010101010101010101010101010101010101010101 delete yes"
+        ),
         Err(ConsoleFailure::Rpc { code: -8, .. })
     ));
     engine.block_on(engine.shutdown()).unwrap();

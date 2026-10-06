@@ -155,7 +155,11 @@ fn prepare_session(
                 .wallet_infos()
                 .map_err(|e| e.to_string())?
                 .iter()
-                .all(|w| session.wallet_scan_height(&w.wallet_id).is_some_and(|s| s >= h));
+                .all(|w| {
+                    session
+                        .wallet_scan_height(&w.wallet_id)
+                        .is_some_and(|s| s >= h)
+                });
             if tip >= h && scanned {
                 break;
             }
@@ -379,7 +383,12 @@ pub fn run(
             for p in engine.block_on(session.pending_proposals(id)).map_err(e)? {
                 println!(
                     "pending {} name={} status={:?} confirmations={} collateral={} payments={}",
-                    p.hash, p.name, p.collateral_status, p.confirmations, p.collateral_txid, p.payment_count
+                    p.hash,
+                    p.name,
+                    p.collateral_status,
+                    p.confirmations,
+                    p.collateral_txid,
+                    p.payment_count
                 );
             }
         }
@@ -423,7 +432,11 @@ pub fn run(
             };
             let grant = session
                 .vault()
-                .authorize(GrantPurpose::Governance, Some(&id.0), credential(session, passphrase))
+                .authorize(
+                    GrantPurpose::Governance,
+                    Some(&id.0),
+                    credential(session, passphrase),
+                )
                 .map_err(|e| e.to_string())?;
             let results = engine
                 .block_on(session.cast_votes(hash, outcome, chosen, grant.id))

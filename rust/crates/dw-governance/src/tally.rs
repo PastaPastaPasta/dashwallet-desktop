@@ -147,7 +147,10 @@ pub fn counted_votes<'a>(
 }
 
 /// The tally of one proposal's current funding votes.
-pub fn tally<'a>(votes: impl IntoIterator<Item = &'a CurrentVote>, index: &MasternodeIndex) -> Tally {
+pub fn tally<'a>(
+    votes: impl IntoIterator<Item = &'a CurrentVote>,
+    index: &MasternodeIndex,
+) -> Tally {
     let mut t = Tally::default();
     for (v, weight, evonode) in counted_votes(votes, index) {
         match v.outcome {
@@ -311,9 +314,17 @@ mod tests {
 
     #[test]
     fn test_qt_129_weights_threshold_and_key_caps() {
-        let list = [mn(1, false, true), mn(2, true, true), mn(3, false, false), mn(4, false, true)];
+        let list = [
+            mn(1, false, true),
+            mn(2, true, true),
+            mn(3, false, false),
+            mn(4, false, true),
+        ];
         let idx = MasternodeIndex::new(&list);
-        assert_eq!((idx.valid_regular, idx.valid_evonodes, idx.valid_weighted), (2, 1, 6));
+        assert_eq!(
+            (idx.valid_regular, idx.valid_evonodes, idx.valid_weighted),
+            (2, 1, 6)
+        );
         assert_eq!(idx.threshold(1), 1);
         assert_eq!(idx.threshold(10), 10);
         let votes = [
@@ -338,7 +349,10 @@ mod tests {
     fn test_qt_129_mixed_key_counts_one_each() {
         let list = [mn(1, false, true), mn(1, true, true)];
         let idx = MasternodeIndex::new(&list);
-        let votes = [vote(1, 1, VoteOutcome::Yes, 1), vote(2, 1, VoteOutcome::Yes, 2)];
+        let votes = [
+            vote(1, 1, VoteOutcome::Yes, 1),
+            vote(2, 1, VoteOutcome::Yes, 2),
+        ];
         assert_eq!(tally(&votes, &idx).yes, 2);
     }
 
@@ -349,7 +363,12 @@ mod tests {
             payment_amount: amt,
             absolute_yes: yes,
         };
-        let cands = [c("aa", 60, 10), c("bb", 50, 10), c("cc", 30, 5), c("dd", 10, 0)];
+        let cands = [
+            c("aa", 60, 10),
+            c("bb", 50, 10),
+            c("cc", 30, 5),
+            c("dd", 10, 0),
+        ];
         let f = fundable(&cands, 1, 100);
         // bb before aa (same yes, larger hash); aa does not fit after bb;
         // cc fits; dd is below the threshold.
@@ -371,20 +390,57 @@ mod tests {
             fundable: true,
         };
         assert_eq!(status(&base), Status::Passing);
-        assert_eq!(status(&StatusInput { fundable: false, ..base }), Status::Unfunded);
-        assert_eq!(status(&StatusInput { absolute_yes: 2, ..base }), Status::Voting);
         assert_eq!(
-            status(&StatusInput { in_maturity_window: true, fundable: false, absolute_yes: 0, ..base }),
+            status(&StatusInput {
+                fundable: false,
+                ..base
+            }),
+            Status::Unfunded
+        );
+        assert_eq!(
+            status(&StatusInput {
+                absolute_yes: 2,
+                ..base
+            }),
+            Status::Voting
+        );
+        assert_eq!(
+            status(&StatusInput {
+                in_maturity_window: true,
+                fundable: false,
+                absolute_yes: 0,
+                ..base
+            }),
             Status::Failing
         );
-        assert_eq!(status(&StatusInput { broadcast: false, ..base }), Status::Pending);
         assert_eq!(
-            status(&StatusInput { collateral_confirmations: 2, broadcast: false, ..base }),
+            status(&StatusInput {
+                broadcast: false,
+                ..base
+            }),
+            Status::Pending
+        );
+        assert_eq!(
+            status(&StatusInput {
+                collateral_confirmations: 2,
+                broadcast: false,
+                ..base
+            }),
             Status::Confirming
         );
-        assert_eq!(status(&StatusInput { lapsed: true, ..base }), Status::Lapsed);
         assert_eq!(
-            status(&StatusInput { funded_height: Some(1), lapsed: true, ..base }),
+            status(&StatusInput {
+                lapsed: true,
+                ..base
+            }),
+            Status::Lapsed
+        );
+        assert_eq!(
+            status(&StatusInput {
+                funded_height: Some(1),
+                lapsed: true,
+                ..base
+            }),
             Status::Funded
         );
         assert!(sort_key(Status::Funded, 0, 0) < sort_key(Status::Passing, 100, 0));

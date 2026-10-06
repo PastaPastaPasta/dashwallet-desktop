@@ -132,7 +132,11 @@ impl GovernanceStore {
     }
 
     /// Stores `vote` as its masternode's current funding vote on its object.
-    pub fn add_vote(&mut self, vote: GovernanceVote, network: Network) -> Result<(), VoteRejection> {
+    pub fn add_vote(
+        &mut self,
+        vote: GovernanceVote,
+        network: Network,
+    ) -> Result<(), VoteRejection> {
         let hash = vote.hash();
         if self.seen_votes.contains(&hash) {
             return Err(VoteRejection::Duplicate);
@@ -261,7 +265,12 @@ mod tests {
     use dashcore::hashes::{Hash, hash160};
     use dashcore::secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
-    fn signed_vote(parent: [u8; 32], n: u8, outcome: VoteOutcome, time: i64) -> (GovernanceVote, [u8; 20]) {
+    fn signed_vote(
+        parent: [u8; 32],
+        n: u8,
+        outcome: VoteOutcome,
+        time: i64,
+    ) -> (GovernanceVote, [u8; 20]) {
         let sk = SecretKey::from_slice(&[n; 32]).unwrap();
         let secp = Secp256k1::new();
         let pk = PublicKey::from_secret_key(&secp, &sk);
@@ -273,27 +282,48 @@ mod tests {
         );
         let d = v.signing_digest(Network::Regtest);
         let s = secp.sign_ecdsa(&Message::from_digest(d), &sk);
-        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d).unwrap().to_vec();
+        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+            .unwrap()
+            .to_vec();
         (v, hash160::Hash::hash(&pk.serialize()).to_byte_array())
     }
 
     #[test]
     fn test_qt_128_orphans_wait_for_their_object_and_latest_vote_wins() {
-        let obj = GovernanceObject::new_proposal(1, 1, br#"{"name":"a","end_epoch":100,"type":1}"#.to_vec());
+        let obj = GovernanceObject::new_proposal(
+            1,
+            1,
+            br#"{"name":"a","end_epoch":100,"type":1}"#.to_vec(),
+        );
         let h = obj.hash();
         let mut s = GovernanceStore::new();
         let (v1, key) = signed_vote(h, 1, VoteOutcome::Yes, 10);
-        assert_eq!(s.add_vote(v1.clone(), Network::Regtest), Err(VoteRejection::Orphan));
+        assert_eq!(
+            s.add_vote(v1.clone(), Network::Regtest),
+            Err(VoteRejection::Orphan)
+        );
         assert!(s.add_object(obj.clone(), Network::Regtest));
         assert!(!s.add_object(obj, Network::Regtest));
         assert_eq!(s.vote_count(), 1);
-        assert_eq!(s.current_vote(&h, &v1.masternode_outpoint).unwrap().key_id, key);
+        assert_eq!(
+            s.current_vote(&h, &v1.masternode_outpoint).unwrap().key_id,
+            key
+        );
         let (v2, _) = signed_vote(h, 1, VoteOutcome::No, 20);
         assert_eq!(s.add_vote(v2.clone(), Network::Regtest), Ok(()));
-        assert_eq!(s.outcome_of(&h, &v2.masternode_outpoint), Some(VoteOutcome::No));
+        assert_eq!(
+            s.outcome_of(&h, &v2.masternode_outpoint),
+            Some(VoteOutcome::No)
+        );
         let (v0, _) = signed_vote(h, 1, VoteOutcome::Abstain, 5);
-        assert_eq!(s.add_vote(v0, Network::Regtest), Err(VoteRejection::Obsolete));
-        assert_eq!(s.add_vote(v2, Network::Regtest), Err(VoteRejection::Duplicate));
+        assert_eq!(
+            s.add_vote(v0, Network::Regtest),
+            Err(VoteRejection::Obsolete)
+        );
+        assert_eq!(
+            s.add_vote(v2, Network::Regtest),
+            Err(VoteRejection::Duplicate)
+        );
         assert_eq!(s.vote_count(), 1);
         assert_eq!(s.current_proposals(50), vec![h]);
         assert!(s.current_proposals(100).is_empty());
@@ -305,7 +335,8 @@ mod tests {
         let hex = display_hex(&p.hash());
         let mut t = GovernanceObject::new_proposal(1, 2, Vec::new());
         t.object_type = OBJECT_TYPE_TRIGGER;
-        t.data = format!(r#"{{"event_block_height":1520,"proposal_hashes":"{hex}","type":2}}"#).into_bytes();
+        t.data = format!(r#"{{"event_block_height":1520,"proposal_hashes":"{hex}","type":2}}"#)
+            .into_bytes();
         let mut s = GovernanceStore::new();
         s.add_object(p, Network::Regtest);
         s.add_object(t, Network::Regtest);

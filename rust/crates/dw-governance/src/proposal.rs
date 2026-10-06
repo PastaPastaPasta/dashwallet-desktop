@@ -147,7 +147,10 @@ pub fn proposal_json(network: Network, draft: &Draft, at: ChainPoint) -> String 
     let mut out = String::with_capacity(256);
     out.push('{');
     out.push_str(&format!("\"name\":{},", s(&draft.name)));
-    out.push_str(&format!("\"payment_address\":{},", s(&draft.payment_address)));
+    out.push_str(&format!(
+        "\"payment_address\":{},",
+        s(&draft.payment_address)
+    ));
     out.push_str(&format!(
         "\"payment_amount\":{},",
         format_money(draft.payment_amount)
@@ -195,7 +198,12 @@ pub fn validate(network: Network, draft: &Draft, at: ChainPoint) -> Vec<Field> {
 }
 
 /// The unsigned proposal object for `draft` created at `time`.
-pub fn proposal_object(network: Network, draft: &Draft, at: ChainPoint, time: i64) -> GovernanceObject {
+pub fn proposal_object(
+    network: Network,
+    draft: &Draft,
+    at: ChainPoint,
+    time: i64,
+) -> GovernanceObject {
     GovernanceObject::new_proposal(1, time, proposal_json(network, draft, at).into_bytes())
 }
 
@@ -216,7 +224,11 @@ pub fn parse_amount(text: &str) -> Option<u64> {
     if !frac.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let w: u64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let w: u64 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
     let f: u64 = format!("{frac:0<8}").parse().ok()?;
     let v = w.checked_mul(COIN)?.checked_add(f)?;
     (v <= MAX_MONEY).then_some(v)
