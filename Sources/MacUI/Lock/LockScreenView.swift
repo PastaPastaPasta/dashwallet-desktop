@@ -10,58 +10,90 @@ import WalletRuntime
 struct LockScreenView: View {
     let lock: LockViewModel
     let receive: ReceiveViewModel?
+    /// Names the network in a capsule off mainnet.
+    var network: DashNetwork?
     @State private var passphrase = ""
     @State private var mixingOnly = false
     @State private var showsQuickReceive = false
     @FocusState private var focused: Bool
 
+    /// The iOS lock screen on the hero blue (UX-SPEC §4.4): white wordmark,
+    /// dash-qt's passphrase copy, a white field and white actions.
     var body: some View {
         ZStack {
-            Color.dash.primaryBackground.ignoresSafeArea()
-            VStack(spacing: DashSpacing.xl) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(Color.dash.blue)
-                    .accessibilityHidden(true)
-                Text(L10n.Lock.title)
-                    .dashFont(.title2)
-                    .foregroundStyle(Color.dash.primaryText)
-                Text(L10n.Lock.prompt)
-                    .dashFont(.subhead)
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .multilineTextAlignment(.center)
+            Color.role.hero.ignoresSafeArea()
+            VStack(spacing: DashSpacing.l) {
+                DashIconImage(.token(.dashLogo), template: true)
+                    .scaledToFit()
+                    .frame(height: 32)
+                    .foregroundStyle(Color.role.textOnHero)
+                    .accessibilityLabel(L10n.Navigation.appName)
+                if let network, network != .mainnet {
+                    NetworkCapsule(L10n.Settings.networkName(network))
+                }
+                VStack(spacing: DashSpacing.xs) {
+                    Text(L10n.Lock.title)
+                        .dashFont(.title2)
+                        .foregroundStyle(Color.role.textOnHero)
+                    Text(L10n.Lock.prompt)
+                        .dashFont(.subhead)
+                        .foregroundStyle(Color.role.textOnHero.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, DashSpacing.s)
                 VStack(alignment: .leading, spacing: DashSpacing.s) {
                     SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(DesignTokens.DashTextStyle.callout.font)
+                        .foregroundStyle(Color.role.textPrimary)
+                        .padding(.horizontal, DashSpacing.l)
+                        .frame(height: 48)
+                        .background(RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous).fill(Color.white))
+                        .environment(\.colorScheme, .light)
                         .focused($focused)
                         .disabled(lock.isDisabled || lock.retryAfter != nil)
                         .onSubmit(unlock)
                         .accessibilityIdentifier("lock.passphrase")
-                    Toggle(MacStrings.Lock.mixingOnly, isOn: $mixingOnly)
-                        .toggleStyle(.checkbox)
+                    Toggle(isOn: $mixingOnly) {
+                        Text(MacStrings.Lock.mixingOnly)
+                            .dashFont(.footnote)
+                            .foregroundStyle(Color.role.textOnHero)
+                    }
+                    .toggleStyle(.checkbox)
                     if let message = lock.message {
                         Text(message)
-                            .dashFont(.footnote)
-                            .foregroundStyle(Color.dash.errorText)
+                            .dashFont(.footnoteMedium)
+                            .foregroundStyle(Color.role.textOnHero)
+                            .padding(.horizontal, DashSpacing.m)
+                            .padding(.vertical, DashSpacing.xs)
+                            .background(RoundedRectangle(cornerRadius: DashRadius.standard).fill(Color.role.danger))
+                            .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("lock.message")
                     }
                 }
-                .frame(width: 320)
-                HStack(spacing: DashSpacing.m) {
-                    if receive?.qr != nil {
-                        DashButton(
-                            text: MacStrings.Lock.quickReceive, size: .medium, style: .strokeGray,
-                            action: { showsQuickReceive = true })
+                .frame(width: 360)
+                Button(action: unlock) {
+                    if lock.isWorking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(MacStrings.Lock.unlock)
                     }
-                    DashButton(
-                        text: MacStrings.Lock.unlock, isEnabled: !passphrase.isEmpty && !lock.isDisabled,
-                        isLoading: lock.isWorking, size: .medium, style: .filledBlue, action: unlock)
-                    .accessibilityIdentifier("lock.unlock")
                 }
+                .buttonStyle(.dash(.filledWhiteBlue, .large, fillsWidth: true))
+                .frame(width: 360)
+                .disabled(passphrase.isEmpty || lock.isDisabled || lock.isWorking)
+                .accessibilityIdentifier("lock.unlock")
                 if lock.isDisabled {
                     Text(L10n.Lock.restoreWithPhrase)
                         .dashFont(.footnoteMedium)
-                        .foregroundStyle(Color.dash.blueText)
+                        .foregroundStyle(Color.role.textOnHero)
+                }
+                if receive?.qr != nil {
+                    Button(MacStrings.Lock.quickReceive, systemImage: "arrow.down.left") { showsQuickReceive = true }
+                        .buttonStyle(.dash(.tintedWhite, .medium))
+                        .padding(.top, DashSpacing.xl)
+                        .accessibilityIdentifier("lock.quickReceive")
                 }
             }
             .padding(DashSpacing.xxxl)
@@ -99,15 +131,17 @@ struct QuickReceiveView: View {
             }
             if let address = receive.copyAddress() {
                 Text(address)
-                    .font(.system(.footnote, design: .monospaced))
+                    .dashFont(.footnote)
+                    .foregroundStyle(Color.role.textPrimary)
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(address)
                     .frame(maxWidth: 220)
             } else {
                 Text(MacStrings.MenuBar.noAddress)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
             }
         }
     }

@@ -63,6 +63,11 @@ enum MacStrings {
     }
 
     typealias SyncOverlay = L10n.SyncOverlay
+
+    enum SyncPhases {
+        /// iOS sync screen: one progress row per phase.
+        static let title = "Sync phases"
+    }
     typealias Peers = L10n.Peers
 
     enum Transition {
@@ -97,6 +102,8 @@ enum MacStrings {
 
     enum Onboarding {
         static let subtitle = "A wallet for Dash on your desktop."
+        /// new: discloses the network and phrase-length choices.
+        static let advancedOptions = "Advanced options"
         static let network = "Network"
         static let wordCount = "Recovery phrase length"
         static func words(_ count: Int) -> String { "\(count) words" }
@@ -238,6 +245,9 @@ enum MacStrings {
     }
 
     enum AddressBook {
+        /// dash-qt address-book context menu.
+        static let copyAddress = "Copy Address"
+        static let copyLabel = "Copy Label"
         static let sending = "Sending"
         static let receiving = "Receiving"
         static let label = "Label"

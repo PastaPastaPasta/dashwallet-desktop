@@ -44,32 +44,38 @@ struct OptionsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // dash-qt's tab strip as a segmented control (it also renders
-            // offscreen for the screenshots and is reachable in UI tests).
-            Picker("", selection: $tab) {
-                Text(MacStrings.Options.general).tag(MacOptionsTab.general)
+            // The macOS settings toolbar: icon over label per tab (UX-SPEC
+            // §4.12). Each tab is a button named by its title.
+            HStack(spacing: DashSpacing.xxs) {
+                tabButton(.general, MacStrings.Options.general, "gearshape")
                 ForEach(options.tabs, id: \.self) { item in
-                    Text(item.title).tag(MacOptionsTab.options(item))
+                    tabButton(.options(item), item.title, Self.symbol(item))
                 }
-                Text(MacStrings.Options.security).tag(MacOptionsTab.security)
+                tabButton(.security, MacStrings.Options.security, "lock.shield")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(DashSpacing.m)
+            .padding(.horizontal, DashSpacing.m)
+            .padding(.vertical, DashSpacing.s)
+            .frame(maxWidth: .infinity)
+            .background(Color.role.card)
+            .overlay(alignment: .bottom) { Rectangle().fill(Color.role.separator).frame(height: 0.5) }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("options.tabs")
-            Group {
-                switch tab {
-                case .general: GeneralOptionsTab(model: model, settings: settings)
-                case .options(let item): content(item)
-                case .security:
-                    SecurityOptionsTab(security: security, settings: settings, screenCapture: model.env?.screenCapture)
+            ScrollView {
+                Group {
+                    switch tab {
+                    case .general: GeneralOptionsTab(model: model, settings: settings)
+                    case .options(let item): content(item)
+                    case .security:
+                        SecurityOptionsTab(security: security, settings: settings, screenCapture: model.env?.screenCapture)
+                    }
                 }
+                .padding(DashLayout.pagePaddingH)
             }
-            .frame(height: 430)
-            Divider()
+            .frame(height: 470)
             footer
         }
-        .frame(width: 600)
+        .frame(width: 640)
+        .dashCanvas()
         .task { await options.load() }
         .alert(L10n.Options.resetTitle, isPresented: Binding(
             get: { options.resetFlow == .confirming }, set: { if !$0 { options.cancelReset() } }
@@ -98,28 +104,68 @@ struct OptionsView: View {
         }
     }
 
+    private func tabButton(_ value: MacOptionsTab, _ title: String, _ symbol: String) -> some View {
+        let selected = tab == value
+        return Button {
+            tab = value
+        } label: {
+            VStack(spacing: DashSpacing.xxs) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(height: 20)
+                Text(title)
+                    .dashFont(.caption1Medium)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? Color.role.accent : Color.role.textSecondary)
+            .padding(.horizontal, DashSpacing.s)
+            .padding(.vertical, DashSpacing.xs)
+            .frame(minWidth: 72)
+            .background(
+                RoundedRectangle(cornerRadius: DashRadius.small + 2, style: .continuous)
+                    .fill(selected ? Color.role.accentTint : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(title))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    static func symbol(_ tab: OptionsTab) -> String {
+        switch tab {
+        case .main: "slider.horizontal.3"
+        case .wallet: "wallet.pass"
+        case .network: "network"
+        case .display: "textformat"
+        case .appearance: "circle.lefthalf.filled"
+        case .notifications: "bell"
+        }
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: DashSpacing.s) {
             if options.restartRequired {
                 Text(L10n.Options.restartRequired)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.orange)
+                    .foregroundStyle(Color.role.warning)
             }
             if let error = options.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
                     .accessibilityIdentifier("options.error")
             }
             if case .failed(let reason) = options.resetFlow {
-                Text(reason).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(reason).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
-            HStack {
+            HStack(spacing: DashSpacing.s) {
                 Button(L10n.Options.resetOptions) { options.requestReset() }
+                    .buttonStyle(.dash(.plainRed, .medium))
                     .accessibilityIdentifier("options.reset")
                 Spacer()
                 Button(MacStrings.Common.cancel) {
                     options.discard()
                     close()
                 }
+                .buttonStyle(.dash(.tintedGray, .medium))
                 .keyboardShortcut(.cancelAction)
                 .accessibilityIdentifier("options.cancel")
                 Button(MacStrings.Common.ok) {
@@ -133,12 +179,16 @@ struct OptionsView: View {
                         }
                     }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(options.proxyError != nil)
                 .accessibilityIdentifier("options.ok")
             }
         }
-        .padding(DashSpacing.l)
+        .padding(.horizontal, DashLayout.pagePaddingH)
+        .padding(.vertical, DashSpacing.m)
+        .background(Color.role.card)
+        .overlay(alignment: .top) { Rectangle().fill(Color.role.separator).frame(height: 0.5) }
     }
 
     private func close() {
@@ -148,40 +198,97 @@ struct OptionsView: View {
 
 // MARK: Tabs
 
+/// A toggle on a menu row; the toggle keeps the row title as its name.
+private struct ToggleRow: View {
+    var icon: DashIconSource?
+    let title: String
+    var help: String?
+    @Binding var isOn: Bool
+
+    var body: some View {
+        MenuRow(icon: icon, title: title, help: help) {
+            Toggle(title, isOn: $isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+        }
+    }
+}
+
+/// A picker on a menu row: the value and a pop-up menu.
+private struct PickerRow<Value: Hashable, Options: View>: View {
+    var icon: DashIconSource?
+    let title: String
+    var help: String?
+    @Binding var selection: Value
+    @ViewBuilder let options: () -> Options
+
+    var body: some View {
+        MenuRow(icon: icon, title: title, help: help) {
+            Picker(title, selection: $selection) { options() }
+                .labelsHidden()
+                .fixedSize()
+        }
+    }
+}
+
+/// A stepper on a menu row: the value then − / +.
+private struct StepperRow: View {
+    var icon: DashIconSource?
+    let title: String
+    var help: String?
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+
+    var body: some View {
+        MenuRow(icon: icon, title: title, help: help) {
+            HStack(spacing: DashSpacing.s) {
+                Text("\(value)")
+                    .dashFont(.subhead)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.role.textPrimary)
+                Stepper(title, value: $value, in: range).labelsHidden()
+            }
+        }
+    }
+}
+
 /// macOS: the network (applies at once, as in M1) and the menu bar companion.
 private struct GeneralOptionsTab: View {
     let model: MacAppModel
     let settings: SettingsViewModel
 
     var body: some View {
-        Form {
-            Picker(MacStrings.Settings.network, selection: Binding(
-                get: { settings.network ?? .mainnet },
-                set: { network in Task { await settings.switchNetwork(to: network) } }
-            )) {
-                ForEach(settings.availableNetworks, id: \.self) { network in
-                    Text(L10n.Settings.networkName(network)).tag(network)
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+            MenuCard {
+                MenuRow(icon: .token(.connections), title: MacStrings.Settings.network, help: MacStrings.Settings.networkHelp) {
+                    HStack(spacing: DashSpacing.s) {
+                        if settings.isSwitchingNetwork { ProgressView().controlSize(.small) }
+                        Picker(MacStrings.Settings.network, selection: Binding(
+                            get: { settings.network ?? .mainnet },
+                            set: { network in Task { await settings.switchNetwork(to: network) } }
+                        )) {
+                            ForEach(settings.availableNetworks, id: \.self) { network in
+                                Text(L10n.Settings.networkName(network)).tag(network)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .disabled(settings.isSwitchingNetwork)
+                        .accessibilityIdentifier("settings.network")
+                    }
                 }
+                ToggleRow(
+                    icon: .token(.settings), title: MacStrings.Settings.menuBar,
+                    isOn: Binding(get: { model.showsMenuBarExtra }, set: { model.showsMenuBarExtra = $0 }))
+                .accessibilityIdentifier("settings.menuBar")
             }
-            .disabled(settings.isSwitchingNetwork)
-            .accessibilityIdentifier("settings.network")
-            Text(MacStrings.Settings.networkHelp)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if settings.isSwitchingNetwork {
-                ProgressView().controlSize(.small)
-            }
-            Toggle(MacStrings.Settings.menuBar, isOn: Binding(
-                get: { model.showsMenuBarExtra }, set: { model.showsMenuBarExtra = $0 }))
-            .accessibilityIdentifier("settings.menuBar")
             if let error = model.preferencesError {
-                Text(error).foregroundStyle(Color.dash.errorText)
+                SystemNotice(text: error, tone: .error)
             }
             if let error = settings.errorMessage {
-                Text(error).foregroundStyle(Color.dash.errorText)
+                SystemNotice(text: error, tone: .error)
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -190,19 +297,22 @@ private struct MainOptionsTab: View {
     @Bindable var options: OptionsViewModel
 
     var body: some View {
-        Form {
-            if options.showsStartOnLogin {
-                Toggle(L10n.Options.startOnLogin, isOn: $options.main.startOnLogin)
-            }
-            if options.showsTrayOptions {
-                Toggle(L10n.Options.showTrayIcon, isOn: $options.main.showTrayIcon)
-                Toggle(L10n.Options.minimizeToTray, isOn: $options.main.minimizeToTray)
-                    .disabled(!options.main.showTrayIcon)
-                Toggle(L10n.Options.minimizeOnClose, isOn: $options.main.minimizeOnClose)
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+            if options.showsStartOnLogin || options.showsTrayOptions {
+                MenuCard {
+                    if options.showsStartOnLogin {
+                        ToggleRow(icon: .token(.settings), title: L10n.Options.startOnLogin, isOn: $options.main.startOnLogin)
+                    }
+                    if options.showsTrayOptions {
+                        ToggleRow(title: L10n.Options.showTrayIcon, isOn: $options.main.showTrayIcon)
+                        ToggleRow(title: L10n.Options.minimizeToTray, isOn: $options.main.minimizeToTray)
+                            .disabled(!options.main.showTrayIcon)
+                        ToggleRow(title: L10n.Options.minimizeOnClose, isOn: $options.main.minimizeOnClose)
+                    }
+                }
             }
             SPVFootnote()
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -210,38 +320,52 @@ private struct WalletOptionsTab: View {
     @Bindable var options: OptionsViewModel
 
     var body: some View {
-        Form {
-            Toggle(L10n.Options.subtractFeeByDefault, isOn: $options.wallet.subtractFeeByDefault)
-                .accessibilityIdentifier("options.subtractFee")
-            Toggle(L10n.Options.coinControl, isOn: $options.wallet.coinControl)
-                .accessibilityIdentifier("options.coinControl")
-            Toggle(L10n.Options.psbtControls, isOn: $options.wallet.psbtControls)
-                .accessibilityIdentifier("options.psbtControls")
-            Toggle(L10n.Options.keepCustomChangeAddress, isOn: $options.wallet.keepCustomChangeAddress)
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+            MenuCard {
+                ToggleRow(icon: .token(.send), title: L10n.Options.subtractFeeByDefault, isOn: $options.wallet.subtractFeeByDefault)
+                    .accessibilityIdentifier("options.subtractFee")
+                ToggleRow(icon: .token(.tools), title: L10n.Options.coinControl, isOn: $options.wallet.coinControl)
+                    .accessibilityIdentifier("options.coinControl")
+                ToggleRow(icon: .token(.file), title: L10n.Options.psbtControls, isOn: $options.wallet.psbtControls)
+                    .accessibilityIdentifier("options.psbtControls")
+                ToggleRow(
+                    icon: .token(.transfer), title: L10n.Options.keepCustomChangeAddress,
+                    isOn: $options.wallet.keepCustomChangeAddress)
                 .disabled(!options.wallet.coinControl)
-            Section {
-                Toggle(L10n.Options.dustProtection, isOn: $options.wallet.dustProtectionEnabled)
+            }
+            MenuCard {
+                ToggleRow(icon: .token(.shield), title: L10n.Options.dustProtection, isOn: $options.wallet.dustProtectionEnabled)
                     .disabled(!options.dustProtectionAvailable)
-                TextField(L10n.Options.dustThreshold, value: $options.wallet.dustThreshold, format: .number)
-                    .disabled(!options.dustProtectionAvailable || !options.wallet.dustProtectionEnabled)
-                    .accessibilityIdentifier("options.dustThreshold")
-                if !options.dustProtectionAvailable {
-                    Text(L10n.Options.unavailable).dashFont(.footnote).foregroundStyle(Color.dash.secondaryText)
-                } else if !OptionsViewModel.dustThresholdRange.contains(options.wallet.dustThreshold) {
-                    Text(L10n.Options.dustThresholdInvalid).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                MenuRow(
+                    title: L10n.Options.dustThreshold,
+                    help: !options.dustProtectionAvailable ? L10n.Options.unavailable : nil
+                ) {
+                    TextField(L10n.Options.dustThreshold, value: $options.wallet.dustThreshold, format: .number)
+                        .textFieldStyle(.dash(isError: options.dustProtectionAvailable
+                            && !OptionsViewModel.dustThresholdRange.contains(options.wallet.dustThreshold)))
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: 130)
+                        .accessibilityIdentifier("options.dustThreshold")
+                }
+                .disabled(!options.dustProtectionAvailable || !options.wallet.dustProtectionEnabled)
+                if options.dustProtectionAvailable,
+                    !OptionsViewModel.dustThresholdRange.contains(options.wallet.dustThreshold)
+                {
+                    Text(L10n.Options.dustThresholdInvalid)
+                        .dashFont(.footnote)
+                        .foregroundStyle(Color.role.danger)
+                        .padding(.horizontal, DashSpacing.sm)
                 }
             }
-            Section {
-                Stepper(value: $options.wallet.automaticBackups, in: OptionsViewModel.automaticBackupsRange) {
-                    LabeledContent(L10n.Options.automaticBackups, value: "\(options.wallet.automaticBackups)")
-                }
+            MenuCard {
+                StepperRow(
+                    icon: .token(.backup), title: L10n.Options.automaticBackups,
+                    help: options.automaticBackupsAvailable ? nil : L10n.Options.unavailable,
+                    value: $options.wallet.automaticBackups, range: OptionsViewModel.automaticBackupsRange)
                 .disabled(!options.automaticBackupsAvailable)
-                if !options.automaticBackupsAvailable {
-                    Text(L10n.Options.unavailable).dashFont(.footnote).foregroundStyle(Color.dash.secondaryText)
-                }
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -251,71 +375,78 @@ private struct NetworkOptionsTab: View {
     @Bindable var options: OptionsViewModel
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(L10n.Options.proxy, isOn: $options.network.proxyEnabled)
-                HStack {
-                    TextField(L10n.Options.proxyIP, text: $options.network.proxyIP)
-                    TextField(L10n.Options.proxyPort, text: $options.network.proxyPort).frame(width: 140)
-                }
-                Toggle(L10n.Options.onionProxy, isOn: $options.network.onionEnabled)
-                HStack {
-                    TextField(L10n.Options.proxyIP, text: $options.network.onionIP)
-                    TextField(L10n.Options.proxyPort, text: $options.network.onionPort).frame(width: 140)
-                }
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+            MenuCard {
+                ToggleRow(icon: .token(.connections), title: L10n.Options.proxy, isOn: $options.network.proxyEnabled)
+                proxyFields(ip: $options.network.proxyIP, port: $options.network.proxyPort)
+                ToggleRow(icon: .token(.shield), title: L10n.Options.onionProxy, isOn: $options.network.onionEnabled)
+                proxyFields(ip: $options.network.onionIP, port: $options.network.onionPort)
                 if let error = options.proxyError {
-                    Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                    Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger).padding(.horizontal, DashSpacing.sm)
                 }
             }
             .disabled(!options.network.isEditable)
-            Text(options.network.disabledReason)
-                .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+            SystemNotice(text: options.network.disabledReason, tone: .info)
                 .accessibilityIdentifier("options.proxyUnavailable")
             SPVFootnote()
         }
-        .formStyle(.grouped)
+    }
+
+    private func proxyFields(ip: Binding<String>, port: Binding<String>) -> some View {
+        HStack(spacing: DashSpacing.s) {
+            TextField(L10n.Options.proxyIP, text: ip).textFieldStyle(.dash)
+            TextField(L10n.Options.proxyPort, text: port).textFieldStyle(.dash).frame(width: 120)
+        }
+        .padding(.horizontal, DashSpacing.sm)
+        .padding(.bottom, DashSpacing.s)
     }
 }
 
 private struct DisplayOptionsTab: View {
     let model: MacAppModel
     @Bindable var options: OptionsViewModel
-    @State private var currencySearch = ""
 
     var body: some View {
-        Form {
-            Picker(L10n.Options.language, selection: $options.display.languageCode) {
-                ForEach(options.availableLanguages, id: \.self) { code in
-                    Text(L10n.Options.languageName(code)).tag(code)
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+            MenuCard {
+                PickerRow(icon: .token(.localCurrency), title: L10n.Options.language, selection: $options.display.languageCode) {
+                    ForEach(options.availableLanguages, id: \.self) { code in
+                        Text(L10n.Options.languageName(code)).tag(code)
+                    }
+                }
+                PickerRow(icon: .token(.dashCurrency), title: L10n.Options.unit, selection: $options.display.unit) {
+                    ForEach(DisplayUnit.allCases, id: \.self) { unit in
+                        Text(model.env?.amounts.unitName(unit) ?? "").tag(unit)
+                    }
+                }
+                .accessibilityIdentifier("options.unit")
+                StepperRow(
+                    title: L10n.Options.decimalDigits, value: $options.display.decimalDigits,
+                    range: OptionsViewModel.decimalDigitsRange)
+                PickerRow(
+                    title: L10n.Options.localCurrency,
+                    selection: Binding(
+                        get: { options.display.localCurrency ?? options.defaultCurrency },
+                        set: { options.display.localCurrency = $0 })
+                ) {
+                    ForEach(options.currencies(), id: \.self) { code in
+                        Text(L10n.Options.currencyName(code)).tag(code)
+                    }
                 }
             }
-            Picker(L10n.Options.unit, selection: $options.display.unit) {
-                ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                    Text(model.env?.amounts.unitName(unit) ?? "").tag(unit)
-                }
+            MenuCard {
+                ToggleRow(icon: .token(.masternodeKeys), title: L10n.Options.showMasternodesTab, isOn: $options.display.showMasternodesTab)
+                ToggleRow(icon: .token(.voting), title: L10n.Options.showGovernanceTab, isOn: $options.display.showGovernanceTab)
+                ToggleRow(title: L10n.Options.showGovernanceClock, isOn: $options.display.showGovernanceClock)
+                    .disabled(!options.display.showGovernanceTab)
             }
-            .accessibilityIdentifier("options.unit")
-            Stepper(value: $options.display.decimalDigits, in: OptionsViewModel.decimalDigitsRange) {
-                LabeledContent(L10n.Options.decimalDigits, value: "\(options.display.decimalDigits)")
-            }
-            Toggle(L10n.Options.showMasternodesTab, isOn: $options.display.showMasternodesTab)
-            Toggle(L10n.Options.showGovernanceTab, isOn: $options.display.showGovernanceTab)
-            Toggle(L10n.Options.showGovernanceClock, isOn: $options.display.showGovernanceClock)
-                .disabled(!options.display.showGovernanceTab)
-            TextField(L10n.Options.thirdPartyTxURLs, text: $options.display.thirdPartyTxURLs)
-                .help(MacStrings.Options.thirdPartyHelp)
-                .accessibilityIdentifier("options.thirdPartyURLs")
-            Picker(L10n.Options.localCurrency, selection: Binding(
-                get: { options.display.localCurrency ?? options.defaultCurrency },
-                set: { options.display.localCurrency = $0 }
-            )) {
-                ForEach(options.currencies(), id: \.self) { code in
-                    Text(L10n.Options.currencyName(code)).tag(code)
-                }
+            MenuCard(title: L10n.Options.thirdPartyTxURLs, footer: MacStrings.Options.thirdPartyHelp) {
+                TextField(L10n.Options.thirdPartyTxURLs, text: $options.display.thirdPartyTxURLs)
+                    .textFieldStyle(.dash)
+                    .padding(DashSpacing.xs)
+                    .accessibilityIdentifier("options.thirdPartyURLs")
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -323,16 +454,15 @@ private struct AppearanceOptionsTab: View {
     @Bindable var options: OptionsViewModel
 
     var body: some View {
-        Form {
-            Picker(MacStrings.Settings.theme, selection: $options.appearance) {
-                Text(L10n.Settings.themeSystem).tag(AppTheme.system)
-                Text(L10n.Settings.themeLight).tag(AppTheme.light)
-                Text(L10n.Settings.themeDark).tag(AppTheme.dark)
+        MenuCard {
+            MenuRow(icon: .token(.appearance), title: MacStrings.Settings.theme) {
+                DashSegmentedControl(
+                    [(AppTheme.system, L10n.Settings.themeSystem), (AppTheme.light, L10n.Settings.themeLight),
+                     (AppTheme.dark, L10n.Settings.themeDark)],
+                    selection: $options.appearance)
             }
-            .pickerStyle(.radioGroup)
             .accessibilityIdentifier("options.theme")
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -340,28 +470,26 @@ private struct NotificationOptionsTab: View {
     @Bindable var options: OptionsViewModel
 
     var body: some View {
-        Form {
-            Toggle(L10n.Options.notificationsEnabled, isOn: $options.notifications.enabled)
-                .accessibilityIdentifier("options.notifications")
-            if let status = options.notificationStatusText {
-                Text(status).dashFont(.footnote).foregroundStyle(Color.dash.secondaryText)
-            }
-            Toggle(L10n.Options.showCoinJoinNotifications, isOn: $options.notifications.showCoinJoinNotifications)
-                .disabled(!options.notifications.enabled)
+        MenuCard {
+            ToggleRow(
+                icon: .token(.notifications), title: L10n.Options.notificationsEnabled,
+                help: options.notificationStatusText, isOn: $options.notifications.enabled)
+            .accessibilityIdentifier("options.notifications")
+            ToggleRow(
+                icon: .token(.coinjoinMixing), title: L10n.Options.showCoinJoinNotifications,
+                isOn: $options.notifications.showCoinJoinNotifications)
+            .disabled(!options.notifications.enabled)
         }
-        .formStyle(.grouped)
     }
 }
 
 /// dash-qt node options this SPV wallet does not have (DESIGN-opus §1.14).
 private struct SPVFootnote: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-            Text(L10n.Options.spvFootnote).dashFont(.footnoteMedium)
-            Text(L10n.Options.spvOnlyOptions.joined(separator: ", "))
-                .dashFont(.footnote)
-        }
-        .foregroundStyle(Color.dash.secondaryText)
+        SystemMessageView(
+            title: L10n.Options.spvFootnote, subtitle: L10n.Options.spvOnlyOptions.joined(separator: ", "),
+            icon: .token(.messageInfo), backgroundColor: Color.role.accentTint)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("options.spvFootnote")
     }
 }

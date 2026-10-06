@@ -38,52 +38,56 @@ struct PSBTView: View {
                 HStack {
                     Text(L10n.Lock.prompt).dashFont(.footnote)
                     SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.dash)
                         .onSubmit(sign)
                         .accessibilityIdentifier("psbt.passphrase")
                     Button(MacStrings.Common.cancel) {
                         passphrase = ""
                         psbt.cancelPassphrase()
                     }
-                    Button(MacStrings.Common.ok, action: sign).disabled(passphrase.isEmpty)
+                    .buttonStyle(.dash(.tintedGray, .small))
+                    Button(MacStrings.Common.ok, action: sign)
+                        .buttonStyle(.dash(.filledBlue, .small))
+                        .disabled(passphrase.isEmpty)
                 }
             }
             if let message = psbt.message {
-                Text(message)
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.successText)
+                SystemNotice(text: message, tone: .success)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("psbt.message")
             }
             if let error = psbt.errorMessage {
-                Text(error)
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                SystemNotice(text: error, tone: .error)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("psbt.error")
             }
-            Divider()
-            HStack {
+            HStack(spacing: DashSpacing.s) {
                 Button(L10n.PSBT.signTx) { sign() }
+                    .buttonStyle(.dash(.filledBlue, .medium))
                     .disabled(!psbt.canSign)
                     .accessibilityIdentifier("psbt.sign")
                 Button(L10n.PSBT.broadcastTx) { Task { await psbt.broadcast() } }
+                    .buttonStyle(.dash(.tintedBlue, .medium))
                     .disabled(!psbt.canBroadcast)
                     .accessibilityIdentifier("psbt.broadcast")
                 Spacer()
                 Button(L10n.PSBT.copyToClipboard) { psbt.copy() }
+                    .buttonStyle(.dash(.plainBlue, .small))
                     .disabled(psbt.reference == nil)
                     .accessibilityIdentifier("psbt.copy")
                 Button(L10n.PSBT.save) { Task { await save() } }
+                    .buttonStyle(.dash(.plainBlue, .small))
                     .disabled(psbt.reference == nil)
                     .accessibilityIdentifier("psbt.save")
                 Button(L10n.PSBT.close, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("psbt.close")
             }
         }
         .padding(DashSpacing.xl)
         .frame(minWidth: 580, minHeight: 380)
+        .dashCanvas()
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             Task { await psbt.load(file: url) }
@@ -96,16 +100,9 @@ struct PSBTView: View {
     private var content: some View {
         switch psbt.step {
         case .empty:
-            VStack(spacing: DashSpacing.s) {
-                Image(systemName: "doc.badge.arrow.up")
-                    .font(.system(size: 36))
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .accessibilityHidden(true)
-                Text(MacStrings.PSBT.empty)
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyState(icon: .system("doc.badge.arrow.up"), title: MacStrings.PSBT.empty)
+                .dashCard(padding: nil)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loading, .signing, .broadcasting:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready, .needsPassphrase, .broadcast:
@@ -118,12 +115,16 @@ struct PSBTView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(Color.role.textPrimary)
                 .padding(DashSpacing.m)
             }
-            .background(RoundedRectangle(cornerRadius: DashRadius.standard).fill(Color.dash.secondaryBackground))
+            .dashCard(radius: DashRadius.standard, padding: nil)
             .accessibilityIdentifier("psbt.description")
             if let status = psbt.statusLine {
-                Text(status).dashFont(.footnoteMedium).accessibilityIdentifier("psbt.status")
+                Text(status)
+                    .dashFont(.footnoteMedium)
+                    .foregroundStyle(Color.role.textPrimary)
+                    .accessibilityIdentifier("psbt.status")
             }
         }
     }

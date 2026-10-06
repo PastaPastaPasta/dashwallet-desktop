@@ -19,7 +19,7 @@ struct OnboardingView: View {
             .padding(DashSpacing.xxxl)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.dash.primaryBackground)
+        .dashCanvas()
         .accessibilityIdentifier("onboarding")
     }
 
@@ -42,15 +42,15 @@ struct OnboardingView: View {
             .accessibilityIdentifier("onboarding.working")
         case .failed(let failure):
             VStack(spacing: DashSpacing.m) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(Color.dash.orange)
+                ErrorIllustration()
+                    .accessibilityHidden(true)
                 Text(MacStrings.Onboarding.failedTitle).dashFont(.title3)
                 Text(failure.message)
                     .dashFont(.subhead)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("onboarding.failure")
-                DashButton(text: MacStrings.Common.back, size: .medium, style: .strokeGray, action: { model.back() })
+                Button(MacStrings.Common.back) { model.back() }
+                    .buttonStyle(.dash(.tintedGray, .medium))
             }
             .padding(.top, 80)
         }
@@ -66,12 +66,12 @@ private struct StepHeader: View {
         VStack(spacing: DashSpacing.s) {
             Text(title)
                 .dashFont(.title2)
-                .foregroundStyle(Color.dash.primaryText)
+                .foregroundStyle(Color.role.textPrimary)
                 .multilineTextAlignment(.center)
             if let message {
                 Text(message)
                     .dashFont(.subhead)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .multilineTextAlignment(.center)
             }
         }
@@ -88,7 +88,7 @@ private struct BackButton: View {
             } label: {
                 Label(MacStrings.Common.back, systemImage: "chevron.left")
             }
-            .buttonStyle(.link)
+            .buttonStyle(.dash(.plainBlue, .small))
             .accessibilityIdentifier("onboarding.back")
             Spacer()
         }
@@ -99,48 +99,67 @@ private struct BackButton: View {
 
 private struct WelcomeStep: View {
     let model: OnboardingViewModel
+    @State private var showsAdvanced = false
 
+    /// iOS welcome: the wordmark, two full-width buttons; the network and
+    /// phrase length move under "Advanced options" (UX-SPEC §4.3).
     var body: some View {
         VStack(spacing: DashSpacing.xxl) {
-            Image(systemName: "d.circle.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(Color.dash.blue)
+            DashIconImage(.token(.dashLogo))
+                .scaledToFit()
+                .frame(height: 40)
                 .padding(.top, DashSpacing.xxxl)
-                .accessibilityHidden(true)
-            StepHeader(title: L10n.Onboarding.welcomeTitle, message: MacStrings.Onboarding.subtitle)
-            // A plain card, not a grouped Form: a Form is a scroll view and
-            // does not size inside the onboarding ScrollView.
-            OptionsCard {
-                Picker(MacStrings.Onboarding.network, selection: Binding(
-                    get: { model.network ?? .mainnet },
-                    set: { network in Task { await model.chooseNetwork(network) } }
-                )) {
-                    ForEach(model.availableNetworks, id: \.self) { network in
-                        Text(L10n.Settings.networkName(network)).tag(network)
-                    }
-                }
-                .accessibilityIdentifier("onboarding.network")
-                Picker(MacStrings.Onboarding.wordCount, selection: Binding(
-                    get: { model.wordCount }, set: { model.setWordCount($0) }
-                )) {
-                    ForEach(MnemonicWords.createCounts, id: \.self) { count in
-                        Text(MacStrings.Onboarding.words(count)).tag(count)
-                    }
-                }
-                .pickerStyle(.segmented)
+                .accessibilityLabel(L10n.Navigation.appName)
+            VStack(spacing: DashSpacing.s) {
+                Text(L10n.Onboarding.welcomeTitle)
+                    .dashFont(.title1)
+                    .foregroundStyle(Color.role.textPrimary)
+                    .multilineTextAlignment(.center)
+                Text(MacStrings.Onboarding.subtitle)
+                    .dashFont(.subhead)
+                    .foregroundStyle(Color.role.textSecondary)
+                    .multilineTextAlignment(.center)
             }
-            .frame(width: 420)
             VStack(spacing: DashSpacing.m) {
-                DashButton(
-                    text: L10n.Onboarding.createWallet, fillsWidth: true, size: .large, style: .filledBlue,
-                    action: { Task { await model.startCreate() } })
-                .accessibilityIdentifier("onboarding.create")
-                DashButton(
-                    text: L10n.Onboarding.restoreWallet, fillsWidth: true, size: .large, style: .strokeGray,
-                    action: { model.startRestore() })
-                .accessibilityIdentifier("onboarding.restore")
+                Button(L10n.Onboarding.createWallet) { Task { await model.startCreate() } }
+                    .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("onboarding.create")
+                Button(L10n.Onboarding.restoreWallet) { model.startRestore() }
+                    .buttonStyle(.dash(.tintedGray, .large, fillsWidth: true))
+                    .accessibilityIdentifier("onboarding.restore")
+                Button {
+                    withAnimation(.easeInOut(duration: DashMotion.overlay)) { showsAdvanced.toggle() }
+                } label: {
+                    Label(MacStrings.Onboarding.advancedOptions, systemImage: showsAdvanced ? "chevron.down" : "chevron.right")
+                }
+                .buttonStyle(.dash(.plainBlue, .small))
+                .accessibilityIdentifier("onboarding.advanced")
             }
-            .frame(width: 320)
+            .frame(width: 360)
+            if showsAdvanced {
+                OptionsCard {
+                    MenuRow(icon: .token(.connections), title: MacStrings.Onboarding.network) {
+                        Picker(MacStrings.Onboarding.network, selection: Binding(
+                            get: { model.network ?? .mainnet },
+                            set: { network in Task { await model.chooseNetwork(network) } }
+                        )) {
+                            ForEach(model.availableNetworks, id: \.self) { network in
+                                Text(L10n.Settings.networkName(network)).tag(network)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityIdentifier("onboarding.network")
+                    }
+                    MenuRow(icon: .token(.recoveryPhrase), title: MacStrings.Onboarding.wordCount) {
+                        DashSegmentedControl(
+                            MnemonicWords.createCounts.map { ($0, MacStrings.Onboarding.words($0)) },
+                            selection: Binding(get: { model.wordCount }, set: { model.setWordCount($0) }))
+                    }
+                }
+                .frame(width: 460)
+            }
         }
     }
 }
@@ -159,30 +178,11 @@ private struct ShowPhraseStep: View {
             } else if model.captureProtected {
                 SystemNotice(text: MacStrings.Onboarding.captureProtected, tone: .info)
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DashSpacing.m), count: 3),
-                      spacing: DashSpacing.m) {
-                ForEach(Array(model.phraseWords.enumerated()), id: \.offset) { index, word in
-                    HStack(spacing: DashSpacing.s) {
-                        Text("\(index + 1)")
-                            .dashFont(.footnote)
-                            .foregroundStyle(Color.dash.secondaryText)
-                            .frame(width: 22, alignment: .trailing)
-                        Text(word)
-                            .dashFont(.calloutMedium)
-                            .foregroundStyle(Color.dash.primaryText)
-                            .accessibilityIdentifier("onboarding.word.\(index)")
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, DashSpacing.s)
-                    .padding(.horizontal, DashSpacing.m)
-                    .background(RoundedRectangle(cornerRadius: DashRadius.standard).fill(Color.dash.secondaryBackground))
-                }
-            }
-            DashButton(
-                text: MacStrings.Onboarding.writtenDown, fillsWidth: true, size: .large, style: .filledBlue,
-                action: { model.confirmWrittenDown() })
-            .frame(width: 320)
-            .accessibilityIdentifier("onboarding.writtenDown")
+            PhraseGrid(words: model.phraseWords, wordIdentifier: { "onboarding.word.\($0)" })
+            Button(MacStrings.Onboarding.writtenDown) { model.confirmWrittenDown() }
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .frame(width: 360)
+                .accessibilityIdentifier("onboarding.writtenDown")
         }
     }
 }
@@ -200,12 +200,15 @@ private struct VerifyPhraseStep: View {
                     let current = offset == model.verifiedCount
                     Text(MacStrings.Onboarding.wordNumber(position))
                         .dashFont(.footnoteMedium)
-                        .foregroundStyle(done ? Color.dash.successText : Color.dash.primaryText)
+                        .foregroundStyle(done ? Color.role.success : Color.role.textPrimary)
                         .padding(.vertical, DashSpacing.s)
                         .padding(.horizontal, DashSpacing.m)
                         .background(
-                            RoundedRectangle(cornerRadius: DashRadius.small)
-                                .stroke(current ? Color.dash.blue : Color.dash.gray300Alpha40, lineWidth: current ? 2 : 1))
+                            RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous)
+                                .fill(done ? Color.role.successTint : Color.role.card))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous)
+                                .strokeBorder(current ? Color.role.accent : Color.role.separator, lineWidth: current ? 2 : 0.5))
                         .accessibilityIdentifier(current ? "onboarding.challenge.current" : "onboarding.challenge.\(offset)")
                         .accessibilityValue(Text("\(position)"))
                 }
@@ -213,11 +216,11 @@ private struct VerifyPhraseStep: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DashSpacing.m), count: 3),
                       spacing: DashSpacing.m) {
                 ForEach(model.verifyChips) { chip in
+                    // iOS verify chips: blue to click in order, grey once used.
                     Button(chip.word) {
                         Task { await model.select(chip: chip.id) }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
+                    .buttonStyle(.dash(.filledBlue, .medium, fillsWidth: true))
                     .disabled(chip.used)
                     .accessibilityIdentifier("onboarding.chip.\(chip.word)")
                 }
@@ -226,11 +229,11 @@ private struct VerifyPhraseStep: View {
             if model.verifyMistake {
                 Text(L10n.Onboarding.verifyWrongWord)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
             } else if model.isVerified {
                 Text(L10n.Onboarding.verifiedSuccessfully)
                     .dashFont(.footnoteMedium)
-                    .foregroundStyle(Color.dash.successText)
+                    .foregroundStyle(Color.role.success)
             }
         }
     }
@@ -260,17 +263,16 @@ private struct ChoosePassphraseStep: View {
             .frame(width: 420)
             .onChange(of: passphrase) { _, text in model.updatePassphraseDraft(text) }
             VStack(spacing: DashSpacing.m) {
-                DashButton(
-                    text: MacStrings.Onboarding.encrypt, isEnabled: !passphrase.isEmpty, fillsWidth: true,
-                    size: .large, style: .filledBlue, action: finishEncrypted)
-                .accessibilityIdentifier("onboarding.encrypt")
-                DashButton(
-                    text: MacStrings.Onboarding.skipEncryption, fillsWidth: true, size: .medium, style: .plainBlue,
-                    action: finishUnencrypted)
-                .help(MacStrings.Onboarding.skipHelp)
-                .accessibilityIdentifier("onboarding.skipEncryption")
+                Button(MacStrings.Onboarding.encrypt, action: finishEncrypted)
+                    .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                    .disabled(passphrase.isEmpty)
+                    .accessibilityIdentifier("onboarding.encrypt")
+                Button(MacStrings.Onboarding.skipEncryption, action: finishUnencrypted)
+                    .buttonStyle(.dash(.plainBlue, .medium))
+                    .help(MacStrings.Onboarding.skipHelp)
+                    .accessibilityIdentifier("onboarding.skipEncryption")
             }
-            .frame(width: 320)
+            .frame(width: 360)
         }
     }
 
@@ -314,11 +316,11 @@ private struct UnlockVaultStep: View {
             .frame(width: 420)
             .accessibilityIdentifier("onboarding.unlockPassphrase")
             .onSubmit(unlock)
-            DashButton(
-                text: MacStrings.Lock.unlock, isEnabled: !passphrase.isEmpty, fillsWidth: true, size: .large,
-                style: .filledBlue, action: unlock)
-            .frame(width: 320)
-            .accessibilityIdentifier("onboarding.unlock")
+            Button(MacStrings.Lock.unlock, action: unlock)
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .disabled(passphrase.isEmpty)
+                .frame(width: 360)
+                .accessibilityIdentifier("onboarding.unlock")
         }
     }
 
@@ -340,40 +342,39 @@ private struct RestorePhraseStep: View {
             BackButton(model: model)
             StepHeader(title: MacStrings.Onboarding.restoreTitle, message: MacStrings.Onboarding.restoreBody)
             TextEditor(text: $text)
-                .font(.system(.body, design: .monospaced))
+                .font(DesignTokens.DashTextStyle.callout.font)
                 .autocorrectionDisabled()
                 .frame(width: 460, height: 120)
                 .scrollContentBackground(.hidden)
-                .padding(DashSpacing.s)
-                .background(RoundedRectangle(cornerRadius: DashRadius.textField).fill(Color.dash.gray300Alpha10))
+                .padding(DashSpacing.m)
+                .background(RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous).fill(Color.role.fieldFill))
                 .accessibilityIdentifier("onboarding.restoreText")
                 .onChange(of: text) { _, value in Task { await model.updateRestoreText(value) } }
             if !model.wordSuggestions.isEmpty {
                 HStack(spacing: DashSpacing.s) {
                     Text(MacStrings.Onboarding.suggestions)
                         .dashFont(.footnote)
-                        .foregroundStyle(Color.dash.secondaryText)
+                        .foregroundStyle(Color.role.textSecondary)
                     ForEach(model.wordSuggestions, id: \.self) { word in
                         Button(word) { complete(with: word) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .buttonStyle(.dash(.tintedBlue, .small))
                     }
                 }
             }
             if let problem = model.restoreProblem {
                 Text(problem)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
                     .accessibilityIdentifier("onboarding.restoreProblem")
             }
             if model.coreOnlyWarning {
                 SystemNotice(text: L10n.Onboarding.coreOnlyChecksumWarning, tone: .warning)
             }
-            DashButton(
-                text: MacStrings.Common.continue, isEnabled: model.canContinueRestore, fillsWidth: true,
-                size: .large, style: .filledBlue, action: { model.continueRestore() })
-            .frame(width: 320)
-            .accessibilityIdentifier("onboarding.restoreContinue")
+            Button(MacStrings.Common.continue) { model.continueRestore() }
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .disabled(!model.canContinueRestore)
+                .frame(width: 360)
+                .accessibilityIdentifier("onboarding.restoreContinue")
         }
     }
 
@@ -398,7 +399,7 @@ private struct RestoreOptionsStep: View {
             StepHeader(title: MacStrings.Onboarding.optionsTitle)
             OptionsCard {
                 SecureField(MacStrings.Onboarding.bip39Passphrase, text: $bip39)
-                    .textFieldStyle(.roundedBorder)
+                    .modifier(DashFieldModifier())
                     .onChange(of: bip39) { _, value in model.setBIP39Passphrase(value) }
                 Toggle(MacStrings.Onboarding.coreCompatible, isOn: Binding(
                     get: { model.options.coreCompatible }, set: { model.setCoreCompatible($0) }))
@@ -411,23 +412,22 @@ private struct RestoreOptionsStep: View {
                         .onChange(of: date) { _, value in model.setBirthDate(value) }
                 }
                 if let error = model.birthDateError {
-                    Text(error).foregroundStyle(Color.dash.errorText)
+                    Text(error).foregroundStyle(Color.role.danger)
                 }
                 Text(model.options.birthHeight.map { $0 == 0 ? MacStrings.Onboarding.scanFromGenesis : MacStrings.Onboarding.birthHeight($0) }
                      ?? MacStrings.Onboarding.scanFromGenesis)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
             }
             .frame(width: 460)
-            DashButton(
-                text: MacStrings.Onboarding.restore, fillsWidth: true, size: .large, style: .filledBlue,
-                action: { Task { await model.finishRestore() } })
-            .frame(width: 320)
-            .accessibilityIdentifier("onboarding.restoreFinish")
+            Button(MacStrings.Onboarding.restore) { Task { await model.finishRestore() } }
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .frame(width: 360)
+                .accessibilityIdentifier("onboarding.restoreFinish")
         }
     }
 }
 
-/// Settings rows on a rounded card.
+/// Settings rows on a white card.
 private struct OptionsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -435,13 +435,11 @@ private struct OptionsCard<Content: View>: View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
             content
         }
-        .padding(DashSpacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DashRadius.standard).fill(Color.dash.secondaryBackground))
+        .dashCard(padding: DashSpacing.l)
     }
 }
 
-/// A tinted notice box (DashUIKit `SystemMessageView` look).
 /// A persistent condition on a page (UX-SPEC C22): DashUIKit's system message
 /// with the tone's icon and tint.
 struct SystemNotice: View {

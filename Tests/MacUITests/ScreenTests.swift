@@ -188,7 +188,7 @@ struct ScreenTests {
         try await Self.capture(
             OptionsView(
                 model: model, options: features.options, settings: main.settings, security: features.security),
-            CGSize(width: 600, height: 520), scheme, "settings")
+            CGSize(width: 640, height: 620), scheme, "settings")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])

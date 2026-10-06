@@ -26,7 +26,7 @@ struct MainWindowView: View {
                 .transition(.opacity)
             }
             if main.showsLockScreen {
-                LockScreenView(lock: main.lock, receive: main.receive)
+                LockScreenView(lock: main.lock, receive: main.receive, network: main.network)
                     .transition(.opacity)
             }
             if main.showsTransitionOverlay {
@@ -392,18 +392,20 @@ struct OpenURISheet: View {
             Text(MacStrings.Menu.openURIPrompt)
                 .dashFont(.headline)
             TextField("dash:", text: $text)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.dash)
                 .frame(width: 420)
                 .accessibilityIdentifier("openURI.field")
             HStack {
                 Spacer()
                 Button(MacStrings.Common.cancel) { dismiss() }
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.ok) {
                     let uri = text
                     dismiss()
                     Task { await model.open(uri: uri) }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
             }

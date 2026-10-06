@@ -383,9 +383,12 @@ public struct WizardHeader: View {
 /// `caption1` tertiary and the word in `calloutMedium` blue.
 public struct PhraseGrid: View {
     public let words: [String]
+    /// Accessibility identifier of each word by index (UI tests).
+    public let wordIdentifier: ((Int) -> String)?
 
-    public init(words: [String]) {
+    public init(words: [String], wordIdentifier: ((Int) -> String)? = nil) {
         self.words = words
+        self.wordIdentifier = wordIdentifier
     }
 
     public var body: some View {
@@ -402,8 +405,8 @@ public struct PhraseGrid: View {
                     Text(word)
                         .dashFont(.calloutMedium)
                         .foregroundStyle(Color.role.textLink)
+                        .accessibilityIdentifier(wordIdentifier?(index) ?? "")
                 }
-                .accessibilityElement(children: .combine)
             }
         }
         .padding(DashSpacing.xl)

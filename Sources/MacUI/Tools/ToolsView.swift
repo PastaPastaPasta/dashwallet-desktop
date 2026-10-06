@@ -29,15 +29,9 @@ struct ToolsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(ToolsTab.allCases, id: \.self) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(DashSpacing.s)
-            .accessibilityIdentifier("tools.tabs")
+            DashSegmentedControl(ToolsTab.allCases.map { ($0, $0.title) }, selection: $tab)
+                .padding(DashSpacing.m)
+                .accessibilityIdentifier("tools.tabs")
             Group {
                 switch tab {
                 case .information: InformationView(information: features.information)
@@ -49,8 +43,8 @@ struct ToolsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(DashSpacing.s)
         .frame(minWidth: 700, minHeight: 480)
+        .dashCanvas()
         .accessibilityIdentifier("tools")
     }
 }
@@ -69,24 +63,33 @@ struct InformationView: View {
                 if let error = information.errorMessage {
                     SystemNotice(text: error, tone: .error)
                 }
+                // Sections as cards (UX-SPEC §4.16); hashes in the technical face.
                 ForEach(information.sections) { section in
-                    VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                        Text(section.title).dashFont(.headline)
-                        Grid(alignment: .leading, horizontalSpacing: DashSpacing.l, verticalSpacing: DashSpacing.xs) {
+                    VStack(alignment: .leading, spacing: DashSpacing.s) {
+                        Text(section.title)
+                            .dashFont(.headline)
+                            .foregroundStyle(Color.role.textPrimary)
+                        Grid(alignment: .leading, horizontalSpacing: DashSpacing.l, verticalSpacing: DashSpacing.s) {
                             ForEach(section.rows) { row in
                                 GridRow(alignment: .firstTextBaseline) {
                                     Text(row.title)
-                                        .foregroundStyle(Color.dash.secondaryText)
+                                        .foregroundStyle(Color.role.textSecondary)
                                         .frame(width: 200, alignment: .leading)
                                     VStack(alignment: .leading, spacing: 0) {
                                         Text(row.value)
+                                            .font(Self.isHash(row.value)
+                                                ? .system(size: DesignTokens.DashTextStyle.footnote.size, design: .monospaced)
+                                                : DesignTokens.DashTextStyle.footnote.font)
+                                            .monospacedDigit()
+                                            .foregroundStyle(Color.role.textPrimary)
                                             .textSelection(.enabled)
                                             .lineLimit(2)
                                             .truncationMode(.middle)
+                                            .help(row.note ?? row.value)
                                         if let note = row.note {
                                             Text(note)
                                                 .dashFont(.caption1)
-                                                .foregroundStyle(Color.dash.secondaryText)
+                                                .foregroundStyle(Color.role.textTertiary)
                                         }
                                     }
                                 }
@@ -96,6 +99,8 @@ struct InformationView: View {
                         }
                         .dashFont(.footnote)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .dashCard(padding: DashLayout.cardPadding)
                 }
                 if information.sections.isEmpty, information.errorMessage == nil {
                     ProgressView().frame(maxWidth: .infinity)
@@ -110,6 +115,11 @@ struct InformationView: View {
         }
         .onDisappear { information.stop() }
         .accessibilityIdentifier("tools.information")
+    }
+
+    /// A block or transaction hash: 64 hexadecimal characters.
+    static func isHash(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy(\.isHexDigit)
     }
 }
 
@@ -136,14 +146,20 @@ struct ConsoleView: View {
                 }
                 Spacer()
                 Button { console.decreaseFontSize() } label: { Image(systemName: "textformat.size.smaller") }
+                    .buttonStyle(.dash(.tintedGray, .small))
                     .keyboardShortcut("-", modifiers: .command)
                     .help(MacStrings.Console.smaller)
+                    .accessibilityLabel(MacStrings.Console.smaller)
                 Button { console.increaseFontSize() } label: { Image(systemName: "textformat.size.larger") }
+                    .buttonStyle(.dash(.tintedGray, .small))
                     .keyboardShortcut("+", modifiers: .command)
                     .help(MacStrings.Console.bigger)
+                    .accessibilityLabel(MacStrings.Console.bigger)
                 Button { console.clear() } label: { Image(systemName: "trash") }
+                    .buttonStyle(.dash(.tintedGray, .small))
                     .keyboardShortcut("l", modifiers: .command)
                     .help(MacStrings.Console.clear)
+                    .accessibilityLabel(MacStrings.Console.clear)
                     .accessibilityIdentifier("console.clear")
             }
             ScrollViewReader { proxy in
@@ -157,14 +173,14 @@ struct ConsoleView: View {
                     .padding(DashSpacing.s)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .background(Color.dash.secondaryBackground)
+                .dashCard(radius: DashRadius.standard, padding: nil)
                 .onChange(of: console.entries.count) { _, _ in
                     if let last = console.entries.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
             .accessibilityIdentifier("console.output")
             if let error = console.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("console.error")
             }
@@ -172,18 +188,26 @@ struct ConsoleView: View {
                 HStack {
                     Text(L10n.Lock.prompt).dashFont(.footnote)
                     SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.dash)
                         .onSubmit(authorize)
                         .accessibilityIdentifier("console.passphrase")
                     Button(MacStrings.Common.cancel) { console.cancelAuthorization() }
-                    Button(MacStrings.Common.ok, action: authorize).disabled(passphrase.isEmpty)
+                        .buttonStyle(.dash(.tintedGray, .small))
+                    Button(MacStrings.Common.ok, action: authorize)
+                        .buttonStyle(.dash(.filledBlue, .small))
+                        .disabled(passphrase.isEmpty)
                 }
             }
             HStack {
-                Text(">").font(.system(size: CGFloat(console.fontSize), design: .monospaced))
-                TextField(MacStrings.Console.placeholder, text: $line)
-                    .textFieldStyle(.roundedBorder)
+                Text(">")
                     .font(.system(size: CGFloat(console.fontSize), design: .monospaced))
+                    .foregroundStyle(Color.role.textLink)
+                TextField(MacStrings.Console.placeholder, text: $line)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: CGFloat(console.fontSize), design: .monospaced))
+                    .padding(.horizontal, DashSpacing.m)
+                    .frame(height: 34)
+                    .background(RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous).fill(Color.role.fieldFill))
                     .focused($inputFocused)
                     .onSubmit(run)
                     .onKeyPress(.upArrow) {
@@ -204,7 +228,7 @@ struct ConsoleView: View {
                 if console.state == .executing { ProgressView().controlSize(.small) }
             }
         }
-        .padding(DashSpacing.m)
+        .padding(DashLayout.pagePaddingH)
         .task {
             if console.entries.isEmpty { console.clear() }
             await console.load()
@@ -239,7 +263,8 @@ private struct ConsoleEntryRow: View {
             Text(entry.text)
                 .font(entry.kind == .welcome || entry.kind == .warning
                     ? .system(size: fontSize) : .system(size: fontSize, design: .monospaced))
-                .foregroundStyle(entry.kind == .warning || entry.kind == .error ? color : Color.dash.primaryText)
+                .foregroundStyle(
+                    entry.kind == .warning || entry.kind == .error || entry.kind == .command ? color : Color.role.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -259,10 +284,11 @@ private struct ConsoleEntryRow: View {
 
     private var color: Color {
         switch entry.kind {
-        case .welcome, .info, .command: Color.dash.secondaryText
-        case .warning: Color.dash.orange
-        case .reply: Color.dash.successText
-        case .error: Color.dash.errorText
+        case .welcome, .info: Color.role.textSecondary
+        case .command: Color.role.textLink
+        case .warning: Color.role.warning
+        case .reply: Color.role.success
+        case .error: Color.role.danger
         }
     }
 }
@@ -273,15 +299,10 @@ private struct ConsoleEntryRow: View {
 /// not expose yet; the tab says so instead of drawing an empty graph.
 private struct NetworkTrafficUnavailableView: View {
     var body: some View {
-        VStack(spacing: DashSpacing.s) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 36))
-                .foregroundStyle(Color.dash.secondaryText)
-                .accessibilityHidden(true)
-            Text(L10n.Shell.networkTrafficUnavailable)
-                .foregroundStyle(Color.dash.secondaryText)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyState(icon: .system("chart.xyaxis.line"), title: L10n.Shell.networkTrafficUnavailable)
+            .dashCard(padding: nil)
+            .padding(DashLayout.pagePaddingH)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -295,7 +316,7 @@ struct PeersToolView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.s) {
             Table(peerRows, selection: $selection) {
-                TableColumn(MacStrings.Peers.address) { Text($0.peer.address).monospaced() }
+                TableColumn(MacStrings.Peers.address) { Text($0.peer.address).monospacedDigit() }
                 TableColumn(MacStrings.Peers.userAgent) { Text($0.peer.userAgent ?? L10n.Common.unknown) }
                 TableColumn(MacStrings.Peers.height) { row in
                     Text(row.peer.bestHeight.map { "\($0)" } ?? L10n.Common.unknown)
@@ -323,11 +344,13 @@ struct PeersToolView: View {
                 }
             }
             .frame(minHeight: 200)
+            .clipShape(RoundedRectangle(cornerRadius: DashRadius.group, style: .continuous))
+            .dashCard(radius: DashRadius.group, padding: nil)
             .accessibilityIdentifier("peers.table")
             if peers.showsBannedList {
                 Text(L10n.Tools.bannedPeers).dashFont(.headline)
                 Table(bannedRows, selection: $bannedSelection) {
-                    TableColumn(L10n.Tools.bannedSubnet) { Text($0.peer.subnet).monospaced() }
+                    TableColumn(L10n.Tools.bannedSubnet) { Text($0.peer.subnet).monospacedDigit() }
                     TableColumn(L10n.Tools.bannedUntil) { Text($0.peer.bannedUntil.formatted()) }
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
@@ -339,15 +362,17 @@ struct PeersToolView: View {
                 .frame(minHeight: 90)
             }
             if let error = peers.error {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
                     .accessibilityIdentifier("peers.error")
             }
             HStack {
                 Button(MacStrings.Peers.changePeers) { Task { await peers.rotate() } }
+                    .buttonStyle(.dash(.tintedBlue, .small))
                     .disabled(peers.rotating)
                     .help(MacStrings.Peers.changePeersHelp)
                 if let selection, peers.canModerate {
                     Button(L10n.Tools.disconnect) { Task { await peers.disconnect(selection) } }
+                        .buttonStyle(.dash(.tintedGray, .small))
                     Menu(MacStrings.PeerTools.ban) {
                         ForEach(BanDuration.allCases, id: \.self) { duration in
                             Button(duration.title) { Task { await peers.ban(selection, for: duration) } }
@@ -357,9 +382,10 @@ struct PeersToolView: View {
                 }
                 Spacer()
                 Button(MacStrings.Common.refresh) { Task { await peers.load() } }
+                    .buttonStyle(.dash(.plainBlue, .small))
             }
         }
-        .padding(DashSpacing.m)
+        .padding(DashLayout.pagePaddingH)
         .task { await peers.load() }
         .accessibilityIdentifier("tools.peers")
     }
@@ -384,59 +410,76 @@ struct RepairView: View {
     let repair: RepairViewModel
     @State private var birthHeight = ""
 
+    /// Menu-card rows with the dash-qt actions (UX-SPEC §4.16).
     var body: some View {
-        Form {
-            Section {
-                HStack {
-                    Button(L10n.Tools.rescan) { Task { await repair.rescan(.walletBirth) } }
-                        .accessibilityIdentifier("repair.rescan")
-                    Button(L10n.Tools.rescanFull) { Task { await repair.rescan(.genesis) } }
-                        .accessibilityIdentifier("repair.rescanFull")
+        ScrollView {
+            VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+                MenuCard {
+                    MenuRow(icon: .token(.rescanBlockchain), title: L10n.Tools.rescan) {
+                        Button(L10n.Tools.rescan) { Task { await repair.rescan(.walletBirth) } }
+                            .buttonStyle(.dash(.tintedBlue, .small))
+                            .accessibilityIdentifier("repair.rescan")
+                    }
+                    MenuRow(icon: .token(.rescanBlockchain), title: L10n.Tools.rescanFull) {
+                        Button(L10n.Tools.rescanFull) { Task { await repair.rescan(.genesis) } }
+                            .buttonStyle(.dash(.tintedBlue, .small))
+                            .accessibilityIdentifier("repair.rescanFull")
+                    }
                     if repair.isRescanning {
-                        Button(L10n.Tools.cancelRescan) { Task { await repair.cancelRescan() } }
+                        VStack(alignment: .leading, spacing: DashSpacing.xs) {
+                            DashProgressBar(value: repair.progressFraction)
+                            HStack {
+                                if let text = repair.progressText {
+                                    Text(text).dashFont(.footnote).foregroundStyle(Color.role.textSecondary)
+                                }
+                                Spacer()
+                                Button(L10n.Tools.cancelRescan) { Task { await repair.cancelRescan() } }
+                                    .buttonStyle(.dash(.plainRed, .small))
+                            }
+                        }
+                        .padding(DashSpacing.sm)
                     }
                 }
                 .disabled(repair.state == .working)
-                if repair.isRescanning {
-                    if let fraction = repair.progressFraction {
-                        ProgressView(value: fraction)
-                    } else {
-                        ProgressView().controlSize(.small)
+                MenuCard {
+                    MenuActionRow(icon: .token(.resetWallet), title: L10n.Tools.resetChainData, isDestructive: true) {
+                        repair.requestResetChainData()
                     }
-                    if let text = repair.progressText { Text(text).dashFont(.footnote) }
-                }
-            }
-            Section {
-                Button(L10n.Tools.resetChainData) { repair.requestResetChainData() }
                     .accessibilityIdentifier("repair.reset")
-                Button(L10n.Tools.dropUnconfirmed) { repair.requestDropUnconfirmed() }
-                    .accessibilityIdentifier("repair.dropUnconfirmed")
-            }
-            .disabled(repair.state == .working)
-            Section(L10n.Tools.birthHeight) {
-                HStack {
-                    TextField(L10n.Tools.birthHeight, text: $birthHeight)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("repair.birthHeight")
-                    Button(MacStrings.Common.apply) {
-                        let text = birthHeight
-                        Task { await repair.setBirthHeight(text) }
+                    MenuActionRow(icon: .token(.txError), title: L10n.Tools.dropUnconfirmed) {
+                        repair.requestDropUnconfirmed()
                     }
-                    .disabled(birthHeight.isEmpty)
+                    .accessibilityIdentifier("repair.dropUnconfirmed")
+                }
+                .disabled(repair.state == .working)
+                MenuCard(title: L10n.Tools.birthHeight) {
+                    HStack(spacing: DashSpacing.s) {
+                        TextField(L10n.Tools.birthHeight, text: $birthHeight)
+                            .textFieldStyle(.dash)
+                            .monospacedDigit()
+                            .accessibilityIdentifier("repair.birthHeight")
+                        Button(MacStrings.Common.apply) {
+                            let text = birthHeight
+                            Task { await repair.setBirthHeight(text) }
+                        }
+                        .buttonStyle(.dash(.tintedBlue, .medium))
+                        .disabled(birthHeight.isEmpty)
+                    }
+                    .padding(DashSpacing.xs)
+                }
+                switch repair.state {
+                case .working:
+                    LoadingState(MacStrings.Wallets.working)
+                case .done(let text):
+                    resultRow(SystemNotice(text: text, tone: .info))
+                case .failed(let text):
+                    resultRow(SystemNotice(text: text, tone: .error))
+                case .idle, .confirming:
+                    EmptyView()
                 }
             }
-            switch repair.state {
-            case .working:
-                ProgressView().controlSize(.small)
-            case .done(let text):
-                resultRow(SystemNotice(text: text, tone: .info))
-            case .failed(let text):
-                resultRow(SystemNotice(text: text, tone: .error))
-            case .idle, .confirming:
-                EmptyView()
-            }
+            .padding(DashLayout.pagePaddingH)
         }
-        .formStyle(.grouped)
         .task {
             await repair.refresh()
             repair.start()
@@ -459,6 +502,7 @@ struct RepairView: View {
         HStack(alignment: .top) {
             notice
             Button(MacStrings.Common.ok) { repair.dismissResult() }
+                .buttonStyle(.dash(.tintedGray, .small))
         }
     }
 }

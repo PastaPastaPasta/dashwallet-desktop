@@ -18,68 +18,85 @@ struct SecurityOptionsTab: View {
     @State private var showsForgot = false
     @State private var showsWipe = false
 
+    /// iOS `SecurityMenuScreen` order (UX-SPEC §4.13): wallet encryption,
+    /// quick unlock and locking rules, then forgot passphrase and wipe.
     var body: some View {
-        Form {
+        VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
             VaultSettingsSection(settings: settings, screenCapture: screenCapture)
-            Section {
+            MenuCard {
                 if security.showsQuickUnlock, let name = security.providerName {
-                    Toggle(name, isOn: Binding(
-                        get: { security.policy?.enrolled ?? false },
-                        set: { on in Task { on ? await security.enableQuickUnlock() : await security.disableQuickUnlock() } }
-                    ))
-                    .disabled(security.quickUnlockFlow == .working)
-                    .accessibilityIdentifier("security.quickUnlock")
-                    Picker(L10n.Security.spendingLimit, selection: Binding(
-                        get: { security.policy?.spendLimit ?? QuickUnlockPolicy.defaultSpendLimit },
-                        set: { limit in Task { await security.setSpendLimit(limit) } }
-                    )) {
-                        ForEach(security.spendLimitOptions, id: \.self) { limit in
-                            Text(security.spendLimitText(limit)).tag(limit)
+                    MenuRow(icon: .token(.biometrics), title: name) {
+                        Toggle(name, isOn: Binding(
+                            get: { security.policy?.enrolled ?? false },
+                            set: { on in Task { on ? await security.enableQuickUnlock() : await security.disableQuickUnlock() } }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .disabled(security.quickUnlockFlow == .working)
+                        .accessibilityIdentifier("security.quickUnlock")
+                    }
+                    MenuRow(icon: .token(.spendingConfirmation), title: L10n.Security.spendingLimit) {
+                        Picker(L10n.Security.spendingLimit, selection: Binding(
+                            get: { security.policy?.spendLimit ?? QuickUnlockPolicy.defaultSpendLimit },
+                            set: { limit in Task { await security.setSpendLimit(limit) } }
+                        )) {
+                            ForEach(security.spendLimitOptions, id: \.self) { limit in
+                                Text(security.spendLimitText(limit)).tag(limit)
+                            }
                         }
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityIdentifier("security.spendLimit")
                     }
                     .disabled(!(security.policy?.enrolled ?? false))
-                    .accessibilityIdentifier("security.spendLimit")
                 } else {
-                    LabeledContent(L10n.Security.touchID, value: MacStrings.Security.quickUnlockUnavailable)
+                    MenuRow(icon: .token(.biometrics), title: L10n.Security.touchID, help: MacStrings.Security.quickUnlockUnavailable)
+                        .disabled(true)
                         .accessibilityIdentifier("security.quickUnlockUnavailable")
                 }
                 quickUnlockFlow
-            }
-            Section {
-                Picker(L10n.Security.autoLock, selection: Binding(
-                    get: { security.autoLockInterval }, set: { security.setAutoLock($0) }
-                )) {
-                    ForEach(security.autoLockOptions, id: \.self) { interval in
-                        Text(L10n.Security.autoLockName(interval)).tag(interval)
+                MenuRow(icon: .token(.pin), title: L10n.Security.autoLock) {
+                    Picker(L10n.Security.autoLock, selection: Binding(
+                        get: { security.autoLockInterval }, set: { security.setAutoLock($0) }
+                    )) {
+                        ForEach(security.autoLockOptions, id: \.self) { interval in
+                            Text(L10n.Security.autoLockName(interval)).tag(interval)
+                        }
                     }
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityIdentifier("security.autoLock")
                 }
-                .accessibilityIdentifier("security.autoLock")
-                Toggle(L10n.Security.requireAuthentication, isOn: Binding(
-                    get: { security.requireAuthenticationForEveryPayment },
-                    set: { security.setRequireAuthenticationForEveryPayment($0) }))
-                Toggle(L10n.Security.autohideBalance, isOn: Binding(
-                    get: { security.autohideBalance }, set: { security.setAutohideBalance($0) }))
-            }
-            Section {
-                HStack {
-                    Button(L10n.Security.forgotPassphrase) {
-                        security.startForgotPassphrase()
-                        showsForgot = true
-                    }
-                    .disabled(!(security.vaultStatus?.encrypted ?? false))
-                    Spacer()
-                    Button(L10n.Security.wipeTitle, role: .destructive) {
-                        security.requestWipe()
-                        showsWipe = true
-                    }
-                    .accessibilityIdentifier("security.wipe")
+                MenuRow(icon: .token(.advancedSecurity), title: L10n.Security.requireAuthentication) {
+                    Toggle(L10n.Security.requireAuthentication, isOn: Binding(
+                        get: { security.requireAuthenticationForEveryPayment },
+                        set: { security.setRequireAuthenticationForEveryPayment($0) }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
                 }
+                MenuRow(icon: .token(.autohideBalance), title: L10n.Security.autohideBalance) {
+                    Toggle(L10n.Security.autohideBalance, isOn: Binding(
+                        get: { security.autohideBalance }, set: { security.setAutohideBalance($0) }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                }
+            }
+            MenuCard {
+                MenuActionRow(icon: .token(.security), title: L10n.Security.forgotPassphrase) {
+                    security.startForgotPassphrase()
+                    showsForgot = true
+                }
+                .disabled(!(security.vaultStatus?.encrypted ?? false))
+                MenuActionRow(icon: .token(.resetWallet), title: L10n.Security.wipeTitle, isDestructive: true) {
+                    security.requestWipe()
+                    showsWipe = true
+                }
+                .accessibilityIdentifier("security.wipe")
             }
             if let error = security.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                SystemNotice(text: error, tone: .error)
             }
         }
-        .formStyle(.grouped)
         .task { await security.load() }
         .sheet(isPresented: $showsForgot) {
             ForgotPassphraseSheet(security: security, onClose: {
@@ -99,25 +116,28 @@ struct SecurityOptionsTab: View {
     private var quickUnlockFlow: some View {
         switch security.quickUnlockFlow {
         case .needsPassphrase:
-            HStack {
+            HStack(spacing: DashSpacing.s) {
                 SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.dash)
                     .accessibilityIdentifier("security.passphrase")
                 Button(MacStrings.Common.cancel) {
                     passphrase = ""
                     security.cancelQuickUnlockChange()
                 }
+                .buttonStyle(.dash(.tintedGray, .small))
                 Button(MacStrings.Common.ok) {
                     let text = passphrase
                     passphrase = ""
                     Task { await security.provideQuickUnlockPassphrase(text) }
                 }
+                .buttonStyle(.dash(.filledBlue, .small))
                 .disabled(passphrase.isEmpty)
             }
+            .padding(DashSpacing.sm)
         case .working:
-            ProgressView().controlSize(.small)
+            ProgressView().controlSize(.small).padding(DashSpacing.sm)
         case .failed(let reason):
-            Text(reason).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+            Text(reason).dashFont(.footnote).foregroundStyle(Color.role.danger).padding(DashSpacing.sm)
         case .idle:
             EmptyView()
         }
@@ -135,7 +155,7 @@ private struct ForgotPassphraseSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(L10n.Security.recoverTitle).dashFont(.title3)
+            Text(L10n.Security.recoverTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             switch security.forgotPassphrase {
             case .idle, .enteringPhrase:
                 Text(L10n.Security.recoverPrompt).dashFont(.subhead)
@@ -143,9 +163,11 @@ private struct ForgotPassphraseSheet: View {
                     ForEach(security.wallets) { info in Text(info.name).tag(Optional(info.id)) }
                 }
                 TextEditor(text: $phrase)
-                    .font(.system(.body, design: .monospaced))
+                    .font(DesignTokens.DashTextStyle.callout.font)
+                    .scrollContentBackground(.hidden)
                     .frame(height: 80)
-                    .border(Color.dash.gray300Alpha40)
+                    .padding(DashSpacing.s)
+                    .background(RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous).fill(Color.role.fieldFill))
                 buttons(next: MacStrings.Common.next, enabled: wallet != nil && !phrase.isEmpty) {
                     guard let wallet else { return }
                     let text = phrase
@@ -174,19 +196,25 @@ private struct ForgotPassphraseSheet: View {
                 buttons(next: MacStrings.Common.close, enabled: true, action: onClose)
             }
             if let error = security.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
         }
         .padding(DashSpacing.xl)
         .frame(width: 480)
+        .dashCanvas()
         .onAppear { wallet = security.wallets.first?.id }
     }
 
     private func buttons(next: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         HStack {
             Spacer()
-            Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
-            Button(next, action: action).keyboardShortcut(.defaultAction).disabled(!enabled)
+            Button(MacStrings.Common.cancel, action: onClose)
+                .buttonStyle(.dash(.tintedGray, .medium))
+                .keyboardShortcut(.cancelAction)
+            Button(next, action: action)
+                .buttonStyle(.dash(.filledBlue, .medium))
+                .keyboardShortcut(.defaultAction)
+                .disabled(!enabled)
         }
     }
 }
@@ -201,16 +229,16 @@ private struct WipeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(L10n.Wallets.deleteAllTitle).dashFont(.title3)
+            Text(L10n.Wallets.deleteAllTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             Text(L10n.Wallets.deleteAllMessage).dashFont(.subhead)
             Text("“\(L10n.Wallets.wipeAcceptPhrase)”")
                 .dashFont(.footnoteMedium)
                 .textSelection(.enabled)
             TextField(L10n.Wallets.typeSentence, text: $sentence, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.dash)
                 .accessibilityIdentifier("wipe.sentence")
             if security.vaultStatus?.encrypted == true {
-                SecureField(MacStrings.Common.passphrase, text: $passphrase).textFieldStyle(.roundedBorder)
+                SecureField(MacStrings.Common.passphrase, text: $passphrase).textFieldStyle(.dash)
             }
             switch security.wipeStep {
             case .wiping: ProgressView()
@@ -219,11 +247,12 @@ private struct WipeSheet: View {
             case .idle, .confirming: EmptyView()
             }
             if let error = security.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
             HStack {
                 Spacer()
                 Button(security.wipeStep == .done ? MacStrings.Common.done : MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
                 if security.wipeStep == .confirming {
                     Button(L10n.Wallets.deleteAll, role: .destructive) {
@@ -233,12 +262,14 @@ private struct WipeSheet: View {
                             await security.wipe(confirmation: text, passphrase: secret.isEmpty ? nil : secret)
                         }
                     }
+                    .buttonStyle(.dash(.filledRed, .medium))
                     .disabled(sentence.isEmpty)
                 }
             }
         }
         .padding(DashSpacing.xl)
         .frame(width: 520)
+        .dashCanvas()
     }
 }
 #endif
