@@ -288,6 +288,7 @@ impl NetworkSession {
         }
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let wallet = this.wallet(&wallet_id).await?;
             let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
             let has_keys = this.vault.has_wallet_secret(&wallet_id.0);
@@ -364,6 +365,7 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.require_unspent(wallet_id, &outpoints).await?;
             let id = wallet_id.to_string();
             this.appdb_op(move |db| {
@@ -389,6 +391,7 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let id = wallet_id.to_string();
             let keys: Vec<(String, u32)> = outpoints.iter().map(lock_key).collect();
             let active: HashSet<(String, u32)> = this
@@ -430,6 +433,7 @@ impl NetworkSession {
     ) -> Result<Vec<OutPoint>, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
             let id = wallet_id.to_string();
             let rows = this.appdb_op(move |db| db.locks(&id)).await?;
@@ -447,9 +451,14 @@ impl NetworkSession {
 
     /// Dust attack protection threshold in duffs (`None` = off; QT-075).
     pub async fn dust_protection(self: &Arc<Self>) -> Result<Option<u64>, EngineError> {
-        self.manager()?;
-        self.appdb_op(|db| parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?))
-            .await
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.manager()?;
+            this.appdb_op(|db| parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?))
+                .await
+        })
+        .await
     }
 
     /// Turns dust protection on (1…1,000,000 duffs) or off. Coins are locked
@@ -458,7 +467,6 @@ impl NetworkSession {
         self: &Arc<Self>,
         threshold: Option<u64>,
     ) -> Result<(), EngineError> {
-        self.manager()?;
         if let Some(t) = threshold
             && !(1..=DUST_PROTECTION_MAX).contains(&t)
         {
@@ -466,12 +474,18 @@ impl NetworkSession {
                 "dust threshold {t} is outside 1..={DUST_PROTECTION_MAX}"
             )));
         }
-        self.appdb_op(move |db| {
-            db.set_setting(
-                GLOBAL_SCOPE,
-                DUST_PROTECTION_KEY,
-                threshold.map(|t| t.to_string()).as_deref(),
-            )
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.manager()?;
+            this.appdb_op(move |db| {
+                db.set_setting(
+                    GLOBAL_SCOPE,
+                    DUST_PROTECTION_KEY,
+                    threshold.map(|t| t.to_string()).as_deref(),
+                )
+            })
+            .await
         })
         .await
     }

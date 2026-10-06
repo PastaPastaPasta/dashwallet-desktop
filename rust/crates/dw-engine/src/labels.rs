@@ -104,6 +104,7 @@ impl NetworkSession {
     ) -> Result<Vec<BookEntryInfo>, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
             let id = wallet_id.to_string();
             let rows = this
@@ -139,6 +140,7 @@ impl NetworkSession {
     ) -> Result<BookEntryInfo, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let parsed = l1_address(&address, this.network.core_network())
                 .map_err(|_| LabelsFailure::InvalidAddress)?;
             // Store the canonical form.
@@ -185,6 +187,7 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
             let id = wallet_id.to_string();
             let address = l1_address(&address, this.network.core_network())
@@ -216,6 +219,7 @@ impl NetworkSession {
         check_txid(&txid)?;
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
             let id = wallet_id.to_string();
             this.appdb_op(move |db| {
@@ -234,8 +238,13 @@ impl NetworkSession {
     ) -> Result<Option<String>, EngineError> {
         check_txid(&txid)?;
         let id = wallet_id.to_string();
-        self.appdb_op(move |db| db.label(&id, LabelKind::Tx, &txid))
-            .await
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| db.label(&id, LabelKind::Tx, &txid))
+                .await
+        })
+        .await
     }
 
     /// The message stored with a sent transaction (QT-054).
@@ -246,7 +255,12 @@ impl NetworkSession {
     ) -> Result<Option<String>, EngineError> {
         check_txid(&txid)?;
         let id = wallet_id.to_string();
-        self.appdb_op(move |db| db.tx_message(&id, &txid)).await
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| db.tx_message(&id, &txid)).await
+        })
+        .await
     }
 }
 
