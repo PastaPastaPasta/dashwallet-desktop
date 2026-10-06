@@ -157,6 +157,28 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
         "walletpassphrase(…)"
     );
 
+    // Review L1: one relock timer per session. A later walletpassphrase
+    // replaces a shorter earlier one, walletlock cancels it, and the timer
+    // does not keep the session alive.
+    let strong = Arc::strong_count(&s);
+    run(&mut ctx, "walletpassphrase \"console pass\" 1").unwrap();
+    run(&mut ctx, "walletpassphrase \"console pass\" 600").unwrap();
+    assert_eq!(Arc::strong_count(&s), strong, "the timer holds the session");
+    std::thread::sleep(std::time::Duration::from_millis(1600));
+    assert_eq!(
+        s.vault().lock_state(),
+        dw_vault::LockState::Unlocked,
+        "the replaced 1 s timer locked the vault"
+    );
+    assert!(s.relock_pending());
+    run(&mut ctx, "walletlock").unwrap();
+    assert!(!s.relock_pending());
+    run(&mut ctx, "walletpassphrase \"console pass\" 1").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1600));
+    assert_eq!(s.vault().lock_state(), dw_vault::LockState::Locked);
+    assert!(!s.relock_pending());
+    run(&mut ctx, "walletpassphrase \"console pass\" 600").unwrap();
+
     // Errors with Core codes.
     match run(
         &mut ctx,

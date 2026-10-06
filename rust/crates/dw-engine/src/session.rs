@@ -154,6 +154,10 @@ pub struct NetworkSession {
     pub(crate) unclean_previous: bool,
     /// dash-qt's load-on-startup wallet list; `None` = load every wallet.
     pub(crate) startup_list: Mutex<Option<std::collections::BTreeSet<WalletId>>>,
+    /// The console `walletpassphrase` relock timer (review L1): one per
+    /// session, replaced by a later one, cancelled by `lock_vault` and
+    /// `close`. (generation, task).
+    pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
 }
 
 impl NetworkSession {
@@ -303,6 +307,7 @@ impl NetworkSession {
             opened_at: crate::events::unix_now(),
             unclean_previous,
             startup_list: Mutex::new(startup_list),
+            relock: Mutex::new(None),
         });
         if let Err(e) = std::fs::write(&marker, b"") {
             tracing::warn!(error = %e, "could not write the open-session marker");
@@ -526,6 +531,7 @@ impl NetworkSession {
     /// the engine runtime.
     pub(crate) async fn close(&self) {
         let _closing = self.gate.close().await;
+        self.cancel_relock();
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(pump) = pump {
             let _ = pump.stop.send(true);

@@ -887,14 +887,9 @@ impl ConsoleContext {
                     _ => UnlockScope::Full,
                 };
                 s.vault_op(move |v| v.unlock(&pass, scope)).await.rpc()?;
-                // The Qt RPC timer relocks after the timeout.
-                let relock = Arc::clone(&s);
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(timeout)).await;
-                    if let Err(e) = relock.lock_vault() {
-                        tracing::debug!(error = %e, "walletpassphrase relock skipped");
-                    }
-                });
+                // Core's RPC timer relocks after the timeout; a later
+                // walletpassphrase replaces it, walletlock cancels it.
+                s.relock_after(Duration::from_secs(timeout));
                 Ok(Json::Null)
             }
             other => Err(ConsoleFailure::NotAvailable(other.to_string())),

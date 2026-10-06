@@ -111,14 +111,64 @@ impl NetworkSession {
     }
 
     /// Drops the vault's data key and revokes every grant. In-memory; never
-    /// blocks.
+    /// blocks. Cancels a pending [`Self::relock_after`] timer.
     pub fn lock_vault(&self) -> Result<VaultStatus, EngineError> {
         let _op = self.try_enter()?;
         self.manager()?;
+        self.cancel_relock();
+        Ok(self.lock_now())
+    }
+
+    fn lock_now(&self) -> VaultStatus {
         let before = self.vault.lock_state();
         let status = self.vault.lock();
         self.emit_lock_state_change(before);
-        Ok(status)
+        status
+    }
+
+    /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the
+    /// vault `after` from now. One timer per session: a later call replaces
+    /// the pending one (as Core's named RPC timer), `lock_vault` and closing
+    /// the session cancel it. The timer holds only a weak reference to the
+    /// session (review L1).
+    pub fn relock_after(self: &Arc<Self>, after: std::time::Duration) {
+        static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let session = Arc::downgrade(self);
+        let mut slot = self.relock.lock().unwrap_or_else(|p| p.into_inner());
+        let task = self.rt.spawn(async move {
+            tokio::time::sleep(after).await;
+            let Some(s) = session.upgrade() else { return };
+            let mine = {
+                let mut slot = s.relock.lock().unwrap_or_else(|p| p.into_inner());
+                match &*slot {
+                    Some((g, _)) if *g == generation => slot.take().is_some(),
+                    _ => false,
+                }
+            };
+            if mine && let Ok(_op) = s.try_enter() {
+                s.lock_now();
+            }
+        });
+        if let Some((_, old)) = slot.replace((generation, task.abort_handle())) {
+            old.abort();
+        }
+    }
+
+    /// Cancels a pending [`Self::relock_after`] timer.
+    pub(crate) fn cancel_relock(&self) {
+        let pending = self.relock.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some((_, task)) = pending {
+            task.abort();
+        }
+    }
+
+    /// Whether a [`Self::relock_after`] timer is pending.
+    pub fn relock_pending(&self) -> bool {
+        self.relock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
     }
 
     fn emit_lock_state_change(&self, before: LockState) {
