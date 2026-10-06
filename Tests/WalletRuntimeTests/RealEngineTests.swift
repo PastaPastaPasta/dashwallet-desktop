@@ -232,7 +232,9 @@ import Testing
             try await services.launch(defaultNetwork: .regtest)
             let desktop = DesktopRuntimeServices(runtime: services, platform: .fake(), onQuit: {})
             let vault = services.vault
-            _ = try await vault.create(passphrase: nil)
+            // A passphrase vault: an unencrypted one keeps its key in the OS
+            // secret store, which a Linux container does not have.
+            _ = try await vault.create(passphrase: vault.makeSecret(utf8: "runtime test passphrase"))
             let phrase = try await vault.generateMnemonic(wordCount: 12, language: .english)
             let id = try await services.lifecycle.importWallet(
                 mnemonic: phrase, bip39Passphrase: vault.makeSecret(utf8: ""), options: WalletImportOptions(birthHeight: 0))

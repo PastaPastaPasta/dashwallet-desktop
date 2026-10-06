@@ -76,10 +76,17 @@ import Testing
         await #expect(throws: VaultError.NoVault) {
             try await session.vault().unlock(passphrase: Data("pw".utf8), scope: .full)
         }
-        // Quick unlock (M2) needs a vault first.
+        // Quick unlock (M2) needs a vault first on macOS; elsewhere there is
+        // no biometric store, so the engine answers quick_unlock_unavailable.
+        #if os(macOS)
         await #expect(throws: VaultError.NoVault) {
             try await session.vault().enrollQuickUnlock(grantId: "none")
         }
+        #else
+        await #expect(throws: VaultError.QuickUnlockUnavailable) {
+            try await session.vault().enrollQuickUnlock(grantId: "none")
+        }
+        #endif
         // E1 calls answer offline: no SPV yet, nothing synced.
         let snapshot = try session.syncSnapshot()
         #expect(!snapshot.running && !snapshot.caughtUp)
