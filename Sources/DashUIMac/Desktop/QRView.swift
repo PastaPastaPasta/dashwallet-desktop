@@ -65,11 +65,11 @@ public struct QRView: View {
 
     private var unavailable: some View {
         RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous)
-            .fill(Color.dash.gray300Alpha10)
+            .fill(Color.role.neutralTint)
             .overlay(
                 Text(NSLocalizedString("QR code unavailable", bundle: .module, comment: "QRView"))
                     .font(DashTextStyle.footnote.font)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(DashSpacing.s)
             )

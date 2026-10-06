@@ -16,7 +16,7 @@ struct SendView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
+            DashPage(title: L10n.Navigation.send, subtitle: MacStrings.Send.subtitle, maxWidth: DashLayout.formMaxWidth) {
                 VStack(alignment: .leading, spacing: DashSpacing.l) {
                     ForEach($send.entries) { $entry in
                         RecipientCard(
@@ -39,9 +39,7 @@ struct SendView: View {
                 // Read-only while broadcasting and while the outcome is
                 // unknown: "Broadcast again" sends what was reviewed (L6).
                 .disabled(!send.isEditable)
-                .padding(DashSpacing.xxl)
             }
-            Divider()
             actionBar
         }
         .accessibilityIdentifier("send")
@@ -53,7 +51,7 @@ struct SendView: View {
             else { return }
             await coinControl.updatePayment(amounts: send.coinControlAmounts, fee: send.fee)
         }
-        .sheet(isPresented: confirmBinding) { SendConfirmSheet(send: send) }
+        .sheet(isPresented: confirmBinding) { SendConfirmSheet(send: send, formatAmount: model.formatAmount) }
         .sheet(isPresented: authorizeBinding) { SendAuthorizeSheet(send: send) }
         .sheet(item: Binding(get: { choosingFor.map(ChooserItem.init) }, set: { choosingFor = $0?.id })) { item in
             if let book = model.makeAddressBook(purpose: .send, selectionMode: true) {
@@ -101,12 +99,16 @@ struct SendView: View {
         }
     }
 
+    /// The sticky footer bar (UX-SPEC §4.7): secondary actions on the left,
+    /// the estimate and the one primary button on the right.
     private var actionBar: some View {
-        HStack(spacing: DashSpacing.m) {
+        HStack(spacing: DashSpacing.s) {
             Button(MacStrings.Send.addRecipient, systemImage: "plus") { send.addRecipient() }
+                .buttonStyle(.dash(.tintedBlue, .medium))
                 .disabled(!send.isEditable)
                 .accessibilityIdentifier("send.addRecipient")
             Button(MacStrings.Send.clearAll) { send.clearAll() }
+                .buttonStyle(.dash(.tintedGray, .medium))
                 .disabled(!send.isEditable)
                 .accessibilityIdentifier("send.clearAll")
             if let features = model.features, features.options.wallet.psbtControls {
@@ -119,25 +121,34 @@ struct SendView: View {
                         model.windowOpener?(id: SceneID.psbt)
                     }
                 }
+                .buttonStyle(.dash(.tintedBlue, .medium))
                 .disabled(send.phase != .editing)
                 .accessibilityIdentifier("send.createUnsigned")
             }
             Spacer()
             if let estimate = send.estimate {
-                Text("\(MacStrings.Send.estimate): \(model.formatAmount(estimate.fee))")
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(MacStrings.Send.estimate)
+                        .dashFont(.caption1)
+                        .foregroundStyle(Color.role.textSecondary)
+                    AmountText(formatted: model.formatAmount(estimate.fee))
+                        .foregroundStyle(Color.role.textPrimary)
+                }
             }
-            DashButton(
-                text: send.sendButtonTitle, leadingIcon: .system("paperplane.fill"),
-                isEnabled: send.phase == .editing, size: .medium, style: .filledBlue,
-                action: { Task { await send.review() } })
+            Button {
+                Task { await send.review() }
+            } label: {
+                Label(send.sendButtonTitle, systemImage: "paperplane.fill")
+            }
+            .buttonStyle(.dash(.filledBlue, .large))
+            .disabled(send.phase != .editing)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityIdentifier("send.review")
         }
-        .padding(.horizontal, DashSpacing.xxl)
+        .padding(.horizontal, DashLayout.pagePaddingH)
         .padding(.vertical, DashSpacing.m)
-        .background(Color.dash.secondaryBackground)
+        .background(Color.role.card)
+        .overlay(alignment: .top) { Rectangle().fill(Color.role.separator).frame(height: 0.5) }
     }
 
     @ViewBuilder
@@ -145,14 +156,14 @@ struct SendView: View {
         switch send.phase {
         case .preparing, .broadcasting:
             ZStack {
-                Color.dash.backgroundOverlay
+                Color.role.overlay
                 VStack(spacing: DashSpacing.m) {
                     ProgressView()
                     Text(send.phase == .preparing ? MacStrings.Send.preparing : MacStrings.Send.broadcasting)
                         .dashFont(.subheadMedium)
+                        .foregroundStyle(Color.role.textPrimary)
                 }
-                .padding(DashSpacing.xxl)
-                .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+                .dashCard(padding: DashSpacing.xxl, elevation: .floating)
             }
         default:
             EmptyView()
@@ -220,41 +231,42 @@ private struct RecipientCard: View {
             HStack {
                 Text(MacStrings.Send.recipient(number))
                     .dashFont(.headline)
-                    .foregroundStyle(Color.dash.primaryText)
+                    .foregroundStyle(Color.role.textPrimary)
                 Spacer()
                 if canRemove {
-                    Button(action: onRemove) { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.dash.secondaryText)
+                    Button(action: onRemove) { Image(systemName: "xmark") }
+                        .buttonStyle(.dash(.tintedGray, .extraSmall))
                         .help(MacStrings.Send.removeRecipient)
                         .accessibilityLabel(MacStrings.Send.removeRecipient)
                 }
             }
             VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                Text(MacStrings.Send.payTo).dashFont(.footnote).foregroundStyle(Color.dash.gray500)
+                FieldCaption(MacStrings.Send.payTo)
                 HStack(spacing: DashSpacing.s) {
+                    // Addresses use the proportional face (UX-SPEC §5.5).
                     TextField(MacStrings.Send.payTo, text: $entry.address, prompt: Text(MacStrings.Send.payToPlaceholder))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.dash(isError: entry.addressError != nil))
                         .accessibilityIdentifier("send.address.\(number - 1)")
                     Button(action: onChoose) { Image(systemName: "book.closed") }
+                        .buttonStyle(.dash(.tintedBlue, .small))
                         .help(MacStrings.Send.chooseAddress)
                         .accessibilityLabel(MacStrings.Send.chooseAddress)
                     Button(action: onPaste) { Image(systemName: "doc.on.clipboard") }
+                        .buttonStyle(.dash(.tintedBlue, .small))
                         .help(MacStrings.Send.pasteAddress)
                         .accessibilityLabel(MacStrings.Send.pasteAddress)
                 }
                 if let error = entry.addressError {
                     Text(error)
                         .dashFont(.footnote)
-                        .foregroundStyle(Color.dash.errorText)
+                        .foregroundStyle(Color.role.danger)
                         .accessibilityIdentifier("send.addressError.\(number - 1)")
                 }
             }
             VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                Text(MacStrings.Send.label).dashFont(.footnote).foregroundStyle(Color.dash.gray500)
+                FieldCaption(MacStrings.Send.label)
                 TextField(MacStrings.Send.label, text: $entry.label, prompt: Text(MacStrings.Send.labelPlaceholder))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.dash)
             }
             HStack(alignment: .top, spacing: DashSpacing.l) {
                 AmountField(
@@ -263,15 +275,14 @@ private struct RecipientCard: View {
                 .accessibilityIdentifier("send.amount.\(number - 1)")
                 Toggle(MacStrings.Send.subtractFee, isOn: $entry.subtractFee)
                     .toggleStyle(.checkbox)
+                    .dashFont(.footnote)
                     .padding(.top, 34)
             }
             if let message = entry.message {
-                LabeledContent(MacStrings.Send.message) { Text(message).textSelection(.enabled) }
-                    .dashFont(.footnote)
+                DetailRow(MacStrings.Send.message, value: message, stacked: true)
             }
         }
-        .padding(DashSpacing.xl)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .dashCard(padding: DashSpacing.xl)
     }
 }
 
@@ -288,42 +299,49 @@ private struct FeeSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Send.transactionFee)
-                .dashFont(.headline)
-                .foregroundStyle(Color.dash.primaryText)
-            Picker(MacStrings.Send.transactionFee, selection: Binding(
-                get: { isCustom },
-                set: { custom in
-                    if custom {
-                        send.setFee(.perKilobyte(SendViewModel.minimumFeePerKilobyte))
-                    } else {
-                        send.setFee(.recommended(targetBlocks: ConfirmationTarget.defaultBlocks))
-                    }
-                }
-            )) {
-                Text(MacStrings.Send.recommended).tag(false)
-                Text(MacStrings.Send.custom).tag(true)
+            HStack {
+                Text(MacStrings.Send.transactionFee)
+                    .dashFont(.headline)
+                    .foregroundStyle(Color.role.textPrimary)
+                Spacer()
+                DashSegmentedControl(
+                    [(false, MacStrings.Send.recommended), (true, MacStrings.Send.custom)],
+                    selection: Binding(
+                        get: { isCustom },
+                        set: { custom in
+                            if custom {
+                                send.setFee(.perKilobyte(SendViewModel.minimumFeePerKilobyte))
+                            } else {
+                                send.setFee(.recommended(targetBlocks: ConfirmationTarget.defaultBlocks))
+                            }
+                        }))
+                .accessibilityLabel(MacStrings.Send.transactionFee)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 260)
             switch send.fee {
             case .recommended(let blocks):
-                Picker(MacStrings.Send.confirmationTime, selection: Binding(
-                    get: { blocks }, set: { send.setFee(.recommended(targetBlocks: $0)) }
-                )) {
-                    ForEach(ConfirmationTarget.all, id: \.blocks) { target in
-                        Text("\(target.label) (\(target.blocks) blocks)").tag(target.blocks)
+                HStack {
+                    FieldCaption(MacStrings.Send.confirmationTime)
+                    Spacer()
+                    Picker(MacStrings.Send.confirmationTime, selection: Binding(
+                        get: { blocks }, set: { send.setFee(.recommended(targetBlocks: $0)) }
+                    )) {
+                        ForEach(ConfirmationTarget.all, id: \.blocks) { target in
+                            Text("\(target.label) (\(target.blocks) blocks)").tag(target.blocks)
+                        }
                     }
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .frame(width: 360)
             case .perKilobyte(let rate):
                 HStack {
                     TextField(MacStrings.Send.perKilobyte, text: $customText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
+                        .textFieldStyle(.dash)
+                        .monospacedDigit()
+                        .frame(width: 180)
                         .onSubmit(applyCustom)
-                    Text("\(unitName) / kB").foregroundStyle(Color.dash.secondaryText)
+                    Text("\(unitName) / kB")
+                        .dashFont(.subhead)
+                        .foregroundStyle(Color.role.textSecondary)
                 }
                 .onAppear {
                     customText = amounts?.format(rate, unit: send.unit, style: .plain(plusSign: false, separators: .never)) ?? ""
@@ -331,13 +349,12 @@ private struct FeeSection: View {
                 if send.customFeeWarning {
                     Text(L10n.Send.customFeeTooLow)
                         .dashFont(.footnote)
-                        .foregroundStyle(Color.dash.orange)
+                        .foregroundStyle(Color.role.warning)
                 }
             }
         }
-        .padding(DashSpacing.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .dashCard(padding: DashSpacing.xl)
     }
 
     private func applyCustom() {
@@ -347,37 +364,117 @@ private struct FeeSection: View {
     }
 }
 
-/// "Confirm send coins" (QT-059) with the 3 s countdown before Send is enabled.
+/// "Confirm send coins" (QT-059) after iOS's confirm sheet: the total at full
+/// precision, dash-qt's question, one row per recipient (at most ten, then
+/// dash-qt's "(n of m entries displayed)"), funds used, fee, size and total;
+/// Cancel is the default and Send is enabled after the 3 s countdown.
 struct SendConfirmSheet: View {
     let send: SendViewModel
+    var formatAmount: (Amount) -> String = { _ in "" }
+
+    private var summary: PreparedTxSummary? {
+        if case .confirm(let summary) = send.phase { summary } else { nil }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(L10n.Send.confirmTitle)
-                .dashFont(.title3)
-            VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                ForEach(Array(send.confirmLines.enumerated()), id: \.offset) { index, line in
-                    Text(line)
-                        .dashFont(index < 2 ? .subheadMedium : .subhead)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+        SheetScaffold(title: L10n.Send.confirmTitle, onClose: { Task { await send.cancel() } }) {
+            VStack(spacing: DashSpacing.l) {
+                if let summary {
+                    VStack(spacing: DashSpacing.xs) {
+                        AmountText(
+                            formatted: formatAmount(summary.totalDebit), size: DesignTokens.DashTextStyle.title1.size,
+                            weight: .bold)
+                            .foregroundStyle(Color.role.textPrimary)
+                        Text(L10n.Send.confirmQuestion)
+                            .dashFont(.subhead)
+                            .foregroundStyle(Color.role.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    MenuCard {
+                        ForEach(Array(recipients(summary).enumerated()), id: \.offset) { _, output in
+                            confirmRow(MacStrings.Send.confirmPayTo) {
+                                VStack(alignment: .trailing, spacing: 1) {
+                                    AmountText(formatted: formatAmount(output.amount))
+                                    Text(payee(output))
+                                        .dashFont(.footnote)
+                                        .foregroundStyle(Color.role.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(output.address ?? "")
+                                }
+                            }
+                        }
+                        if summary.outputs.filter({ !$0.isChange }).count > SendViewModel.maxConfirmLines {
+                            Text(L10n.Send.entriesDisplayed(
+                                SendViewModel.maxConfirmLines, of: summary.outputs.filter { !$0.isChange }.count))
+                                .dashFont(.footnote)
+                                .foregroundStyle(Color.role.textTertiary)
+                                .padding(.horizontal, DashSpacing.sm)
+                        }
+                        confirmRow(MacStrings.Send.confirmUsing) {
+                            Text(send.page == .coinJoin ? L10n.Send.usingCoinJoinFunds : L10n.Send.usingAnyFunds)
+                                .dashFont(.footnote)
+                                .foregroundStyle(Color.role.textPrimary)
+                        }
+                        confirmRow(MacStrings.Send.confirmFee) {
+                            AmountText(formatted: formatAmount(summary.fee))
+                        }
+                        confirmRow(MacStrings.Send.confirmSize) {
+                            Text(String(format: "%.3f kB", Double(summary.sizeBytes) / 1000)
+                                + " · " + formatAmount(summary.feeRatePerKilobyte) + "/kB")
+                                .dashFont(.footnote)
+                                .monospacedDigit()
+                                .foregroundStyle(Color.role.textPrimary)
+                        }
+                        confirmRow(MacStrings.Send.confirmTotal) {
+                            AmountText(formatted: formatAmount(summary.totalDebit), weight: .semibold)
+                        }
+                    }
+                    if send.page == .coinJoin {
+                        Text("\(L10n.Send.coinJoinFeeNote) \(L10n.Send.inputCount(summary.inputCount))")
+                            .dashFont(.footnote)
+                            .foregroundStyle(Color.role.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("send.confirm.text")
-            HStack {
-                Spacer()
-                Button(MacStrings.Common.cancel) { Task { await send.cancel() } }
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("send.confirm.cancel")
-                Button(send.sendButtonTitle) { Task { await send.confirm() } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!send.canConfirm)
-                    .accessibilityIdentifier("send.confirm.send")
-            }
+            .foregroundStyle(Color.role.textPrimary)
+        } footer: {
+            Button(MacStrings.Common.cancel) { Task { await send.cancel() } }
+                .buttonStyle(.dash(.tintedGray, .large, fillsWidth: true))
+                // Return cancels (dash-qt's default button); Escape closes the sheet.
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("send.confirm.cancel")
+            Button(send.sendButtonTitle) { Task { await send.confirm() } }
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .disabled(!send.canConfirm)
+                .accessibilityIdentifier("send.confirm.send")
         }
-        .padding(DashSpacing.xl)
-        .frame(width: 520)
         .accessibilityIdentifier("send.confirm.sheet")
+    }
+
+    private func recipients(_ summary: PreparedTxSummary) -> [PreparedOutput] {
+        Array(summary.outputs.filter { !$0.isChange }.prefix(SendViewModel.maxConfirmLines))
+    }
+
+    private func payee(_ output: PreparedOutput) -> String {
+        let address = AddressText.shortened(output.address ?? "")
+        guard let label = output.label, !label.isEmpty else { return address }
+        return "\(label) · \(address)"
+    }
+
+    private func confirmRow<Value: View>(_ title: String, @ViewBuilder value: () -> Value) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .dashFont(.footnote)
+                .foregroundStyle(Color.role.textSecondary)
+            Spacer(minLength: DashSpacing.m)
+            value()
+        }
+        .padding(.horizontal, DashSpacing.sm)
+        .padding(.vertical, DashSpacing.s)
     }
 }
 
@@ -387,24 +484,26 @@ struct SendAuthorizeSheet: View {
     @State private var passphrase = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Send.authorizeTitle).dashFont(.title3)
-            Text(MacStrings.Send.authorizePrompt).dashFont(.subhead)
-            SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(authorize)
-                .accessibilityIdentifier("send.authorize.passphrase")
-            HStack {
-                Spacer()
-                Button(MacStrings.Common.cancel) { Task { await send.cancel() } }
-                    .keyboardShortcut(.cancelAction)
-                Button(MacStrings.Common.ok, action: authorize)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(passphrase.isEmpty)
+        SheetScaffold(title: MacStrings.Send.authorizeTitle, onClose: { Task { await send.cancel() } }) {
+            VStack(alignment: .leading, spacing: DashSpacing.m) {
+                Text(MacStrings.Send.authorizePrompt)
+                    .dashFont(.subhead)
+                    .foregroundStyle(Color.role.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                SecureField(MacStrings.Common.passphrase, text: $passphrase)
+                    .modifier(DashFieldModifier())
+                    .onSubmit(authorize)
+                    .accessibilityIdentifier("send.authorize.passphrase")
             }
+        } footer: {
+            Button(MacStrings.Common.cancel) { Task { await send.cancel() } }
+                .buttonStyle(.dash(.tintedGray, .large, fillsWidth: true))
+                .keyboardShortcut(.cancelAction)
+            Button(MacStrings.Common.ok, action: authorize)
+                .buttonStyle(.dash(.filledBlue, .large, fillsWidth: true))
+                .keyboardShortcut(.defaultAction)
+                .disabled(passphrase.isEmpty)
         }
-        .padding(DashSpacing.xl)
-        .frame(width: 420)
     }
 
     private func authorize() {

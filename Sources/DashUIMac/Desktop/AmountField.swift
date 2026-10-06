@@ -44,24 +44,25 @@ public struct AmountField: View {
         VStack(alignment: .leading, spacing: DashSpacing.sm) {
             Text(label)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.gray500)
+                .foregroundStyle(Color.role.textSecondary)
 
             HStack(spacing: DashSpacing.s) {
                 TextField(
                     label,
                     text: $text,
-                    prompt: Text(placeholder).foregroundStyle(Color.dash.black1000Alpha30)
+                    prompt: Text(placeholder).foregroundStyle(Color.role.textTertiary)
                 )
                 .textFieldStyle(.plain)
                 .font(DashTextStyle.callout.font)
-                .foregroundStyle(Color.dash.primaryText)
+                .monospacedDigit()
+                .foregroundStyle(Color.role.textPrimary)
                 .multilineTextAlignment(.leading)
                 .focused($isFocused)
                 .disabled(isDisabled)
 
                 Text(unit)
                     .font(DashTextStyle.calloutMedium.font)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .accessibilityHidden(true)
 
                 if let onMax, !isDisabled {
@@ -81,17 +82,17 @@ public struct AmountField: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous)
-                    .stroke(isFocused && !isDisabled ? Color.dash.gray300Alpha40 : .clear, lineWidth: 1)
+                    .strokeBorder(isFocused && !isDisabled ? Color.role.accent : .clear, lineWidth: 1)
             )
 
             if let errorText {
                 Text(errorText)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
             } else if let secondaryText {
                 Text(secondaryText)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
             }
         }
         .accessibilityElement(children: .contain)
@@ -99,9 +100,8 @@ public struct AmountField: View {
     }
 
     private var backgroundColor: Color {
-        if isFocused && !isDisabled { return .clear }
-        if errorText != nil { return Color.dash.redAlpha5 }
-        return Color.dash.gray300Alpha10
+        if errorText != nil { return Color.role.dangerTint }
+        return Color.role.fieldFill
     }
 }
 #endif

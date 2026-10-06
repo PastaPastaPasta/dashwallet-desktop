@@ -142,7 +142,9 @@ struct MainWindowView: View {
             if let receive = main.receive { ReceiveView(receive: receive, unitName: model.unitName) } else { LoadingPage() }
         case .transactions:
             if let transactions = main.transactions {
-                TransactionsView(transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount)
+                TransactionsView(
+                    transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount,
+                    unit: main.settings.display.unit)
             } else {
                 LoadingPage()
             }

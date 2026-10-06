@@ -16,21 +16,24 @@ struct TransactionsView: View {
     let unitName: String
     /// Amount with unit in the display unit (selected total).
     let formatAmount: (Amount) -> String
+    var unit: DisplayUnit = .dash
     @State private var selection: Set<TxRecord.ID> = []
     @State private var sortOrder: DataTableSortOrder?
     @State private var showsDetail = false
     @State private var editingLabel: String?
     @State private var exportMessage: String?
-    /// dash-qt's table or the iOS day-grouped history (IOS-027).
-    @State var layout: TransactionsLayout = .table
+    /// The iOS day-grouped list (the default, IOS-027) or dash-qt's table.
+    @State var layout: TransactionsLayout = .history
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(spacing: 0) {
-            TransactionFilterBar(transactions: transactions, layout: $layout)
-            Divider()
+            header
+            TransactionFilterBar(transactions: transactions, layout: layout)
             if let error = transactions.errorMessage {
-                SystemNotice(text: error, tone: .error).padding(DashSpacing.m)
+                SystemNotice(text: error, tone: .error)
+                    .padding(.horizontal, DashLayout.pagePaddingH)
+                    .padding(.bottom, DashSpacing.m)
             }
             switch layout {
             case .table:
@@ -39,15 +42,19 @@ struct TransactionsView: View {
                     emptyText: MacStrings.Transactions.empty,
                     onActivate: { id in showDetail(id) },
                     contextMenu: contextMenu)
+                .clipShape(RoundedRectangle(cornerRadius: DashRadius.group, style: .continuous))
+                .dashCard(radius: DashRadius.group, padding: nil)
+                .padding(.horizontal, DashLayout.pagePaddingH)
+                .padding(.bottom, DashSpacing.m)
                 .accessibilityIdentifier("transactions.table")
             case .history:
                 HistoryList(
-                    transactions: transactions, formatAmount: formatAmount, onOpen: { id in showDetail(id) },
-                    contextMenu: contextMenu)
+                    transactions: transactions, unit: unit, unitName: unitName, formatAmount: formatAmount,
+                    selection: selection, onOpen: { id in showDetail(id) }, contextMenu: contextMenu)
             }
-            Divider()
             footer
         }
+        .dashCanvas()
         .accessibilityIdentifier("transactions")
         .task { await transactions.refreshChips() }
         .modifier(TransactionActionAlerts(transactions: transactions))
@@ -76,6 +83,26 @@ struct TransactionsView: View {
         }
     }
 
+    /// Title, the List | Table switch and Export (UX-SPEC §4.9).
+    private var header: some View {
+        HStack(alignment: .center, spacing: DashSpacing.m) {
+            PageTitle(title: L10n.Navigation.transactions)
+            Spacer()
+            DashSegmentedControl(
+                [(TransactionsLayout.history, MacStrings.Transactions.listLayout),
+                 (TransactionsLayout.table, MacStrings.Transactions.tableLayoutShort)],
+                selection: $layout, segmentIdentifier: { "transactions.layout.\($0.rawValue)" })
+            .help("\(MacStrings.Transactions.historyLayout) / \(MacStrings.Transactions.tableLayout)")
+            .accessibilityIdentifier("transactions.layout")
+            Button(MacStrings.Common.export, systemImage: "square.and.arrow.up") { Task { await export() } }
+                .buttonStyle(.dash(.tintedBlue, .small))
+                .accessibilityIdentifier("transactions.export")
+        }
+        .padding(.horizontal, DashLayout.pagePaddingH)
+        .padding(.top, DashLayout.pagePaddingTop)
+        .padding(.bottom, DashSpacing.m)
+    }
+
     private var columns: [DataTableColumn<TxRecord>] {
         [
             DataTableColumn("", id: "status", width: .fixed(28), alignment: .center) { record in
@@ -88,6 +115,7 @@ struct TransactionsView: View {
             ) { record in
                 Text(record.date?.formatted(date: .numeric, time: .shortened) ?? "")
                     .dashFont(.footnote)
+                    .monospacedDigit()
             },
             DataTableColumn(
                 MacStrings.Transactions.type, id: "type", width: .fixed(150),
@@ -104,9 +132,11 @@ struct TransactionsView: View {
                 "\(MacStrings.Transactions.amount) (\(unitName))", id: "amount", width: .fixed(190),
                 alignment: .trailing, sortBy: { $0.amount < $1.amount }
             ) { record in
+                // Tabular digits, full precision, never coloured by direction (UX-SPEC §5).
                 Text(transactions.amountText(for: record))
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(record.amount.duffs < 0 ? Color.dash.primaryText : Color.dash.successText)
+                    .dashFont(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.role.textPrimary)
                     .accessibilityIdentifier("transactions.amount")
             },
         ]
@@ -185,22 +215,24 @@ struct TransactionsView: View {
             }
             if let selected = transactions.selectedTotal, transactions.selection.count > 1 {
                 Text("\(L10n.Transactions.selectedAmount) \(formatAmount(selected))")
+                    .monospacedDigit()
                     .accessibilityIdentifier("transactions.selectedAmount")
             }
             Spacer()
             if let exportMessage {
-                Text(exportMessage).foregroundStyle(Color.dash.secondaryText)
+                Text(exportMessage)
             }
             if transactions.hasMore {
                 Button(MacStrings.Transactions.loadMore) { Task { await transactions.loadMore() } }
+                    .buttonStyle(.dash(.plainBlue, .small))
             }
-            Button(MacStrings.Common.export, systemImage: "square.and.arrow.up") { Task { await export() } }
-                .accessibilityIdentifier("transactions.export")
         }
         .dashFont(.footnote)
-        .padding(.horizontal, DashSpacing.l)
-        .padding(.vertical, DashSpacing.s)
-        .background(Color.dash.secondaryBackground)
+        .foregroundStyle(Color.role.textSecondary)
+        .padding(.horizontal, DashLayout.pagePaddingH)
+        .frame(height: 32)
+        .background(Color.role.card)
+        .overlay(alignment: .top) { Rectangle().fill(Color.role.separator).frame(height: 0.5) }
     }
 
     /// Keeps the view model's selection (selected total, detail) in step with the table.
@@ -234,7 +266,7 @@ struct TransactionsView: View {
 /// in the history layout, iOS's category chips (IOS-028).
 private struct TransactionFilterBar: View {
     let transactions: TransactionsViewModel
-    @Binding var layout: TransactionsLayout
+    let layout: TransactionsLayout
     @State private var search = ""
     @State private var minimum = ""
     @State private var from = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
@@ -259,7 +291,9 @@ private struct TransactionFilterBar: View {
                         Text(L10n.Transactions.dateFilterName(preset)).tag(preset)
                     }
                 }
-                .frame(width: 170)
+                .labelsHidden()
+                .fixedSize()
+                .help(MacStrings.Transactions.date)
                 .accessibilityIdentifier("transactions.dateFilter")
                 Picker(MacStrings.Transactions.type, selection: Binding(
                     get: { transactions.typePreset },
@@ -269,15 +303,30 @@ private struct TransactionFilterBar: View {
                         Text(L10n.Transactions.typeFilterName(preset)).tag(preset)
                     }
                 }
-                .frame(width: 230)
+                .labelsHidden()
+                .fixedSize()
+                .help(MacStrings.Transactions.type)
                 .accessibilityIdentifier("transactions.typeFilter")
-                TextField(L10n.Transactions.searchPlaceholder, text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: search) { _, text in transactions.setSearchText(text) }
-                    .accessibilityIdentifier("transactions.search")
+                HStack(spacing: DashSpacing.xs) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(Color.role.textTertiary)
+                        .accessibilityHidden(true)
+                    TextField(L10n.Transactions.searchPlaceholder, text: $search)
+                        .textFieldStyle(.plain)
+                        .onChange(of: search) { _, text in transactions.setSearchText(text) }
+                        .accessibilityIdentifier("transactions.search")
+                }
+                .dashFont(.footnote)
+                .padding(.horizontal, DashSpacing.m)
+                .frame(height: 30)
+                .background(RoundedRectangle(cornerRadius: DashRadius.searchField, style: .continuous).fill(Color.role.fieldFill))
                 TextField(L10n.Transactions.minAmountPlaceholder, text: $minimum)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 110)
+                    .textFieldStyle(.plain)
+                    .dashFont(.footnote)
+                    .monospacedDigit()
+                    .padding(.horizontal, DashSpacing.m)
+                    .frame(width: 120, height: 30)
+                    .background(RoundedRectangle(cornerRadius: DashRadius.searchField, style: .continuous).fill(Color.role.fieldFill))
                     .onSubmit { Task { await transactions.setMinimumAmountText(minimum) } }
                     .accessibilityIdentifier("transactions.minAmount")
                 if transactions.showsWatchOnly {
@@ -289,17 +338,10 @@ private struct TransactionFilterBar: View {
                         Text(MacStrings.Transactions.watchOnlyYes).tag(WatchOnlyFilter.yes)
                         Text(MacStrings.Transactions.watchOnlyNo).tag(WatchOnlyFilter.no)
                     }
-                    .frame(width: 140)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help(MacStrings.Transactions.watchOnly)
                 }
-                Picker("", selection: $layout) {
-                    Image(systemName: "tablecells").help(MacStrings.Transactions.tableLayout).tag(TransactionsLayout.table)
-                    Image(systemName: "calendar.day.timeline.left").help(MacStrings.Transactions.historyLayout)
-                        .tag(TransactionsLayout.history)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 90)
-                .accessibilityIdentifier("transactions.layout")
             }
             if layout == .history {
                 HistoryChips(transactions: transactions)
@@ -316,12 +358,12 @@ private struct TransactionFilterBar: View {
             if let error = transactions.minimumAmountError {
                 Text(error)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, DashSpacing.l)
-        .padding(.vertical, DashSpacing.m)
+        .padding(.horizontal, DashLayout.pagePaddingH)
+        .padding(.bottom, DashSpacing.m)
         .onAppear {
             search = transactions.searchText
             minimum = transactions.minimumAmountText
@@ -353,10 +395,10 @@ struct TransactionStatusIcon: View {
 
     private var color: Color {
         switch status.kind {
-        case .confirmed: Color.dash.successText
-        case .confirming, .unconfirmed: status.instantLocked ? Color.dash.blueText : Color.dash.secondaryText
-        case .conflicted, .notAccepted, .abandoned: Color.dash.errorText
-        case .immature: Color.dash.orange
+        case .confirmed: status.chainLocked ? Color.role.success : Color.role.textSecondary
+        case .confirming, .unconfirmed: status.instantLocked ? Color.role.textLink : Color.role.textSecondary
+        case .conflicted, .notAccepted, .abandoned: Color.role.danger
+        case .immature: Color.role.warning
         }
     }
 }

@@ -442,24 +442,17 @@ private struct OptionsCard<Content: View>: View {
 }
 
 /// A tinted notice box (DashUIKit `SystemMessageView` look).
+/// A persistent condition on a page (UX-SPEC C22): DashUIKit's system message
+/// with the tone's icon and tint.
 struct SystemNotice: View {
     let text: String
     let tone: DashTone
 
     var body: some View {
-        HStack(alignment: .top, spacing: DashSpacing.s) {
-            Image(systemName: tone == .error || tone == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .accessibilityHidden(true)
-            Text(text)
-                .dashFont(.footnote)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(tone == .error ? Color.dash.errorText : (tone == .warning ? Color.dash.orange : Color.dash.blueText))
-        .padding(DashSpacing.m)
-        .background(
-            RoundedRectangle(cornerRadius: DashRadius.standard)
-                .fill(tone == .error ? Color.dash.redAlpha10 : (tone == .warning ? Color.dash.orangeAlpha10 : Color.dash.blueAlpha10)))
+        SystemMessageView(
+            title: text,
+            icon: .token(tone == .error || tone == .warning ? .messageWarning : .messageInfo),
+            backgroundColor: tone.background)
     }
 }
 #endif

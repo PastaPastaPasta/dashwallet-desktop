@@ -146,6 +146,10 @@ final class DashWalletUITests: XCTestCase {
         let sidebar = element(app, "sidebar.transactions")
         XCTAssertTrue(sidebar.waitForExistence(timeout: Self.timeout))
         sidebar.click()
+        // The page opens in the iOS list; the dash-qt types are in the table.
+        let table = element(app, "transactions.layout.table")
+        XCTAssertTrue(table.waitForExistence(timeout: Self.timeout))
+        table.click()
 
         let count = app.staticTexts["transactions.count"]
         XCTAssertTrue(count.waitForExistence(timeout: Self.timeout))

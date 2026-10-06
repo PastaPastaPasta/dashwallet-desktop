@@ -56,7 +56,9 @@ struct ScreenTests {
         }
         #expect(!send.canConfirm, "Send stays disabled during the countdown")
         #expect(send.confirmLines.contains { $0.contains(Self.payTo) })
-        try await Self.capture(SendConfirmSheet(send: send), CGSize(width: 520, height: 300), scheme, "send-confirm")
+        try await Self.capture(
+            SendConfirmSheet(send: send, formatAmount: model.formatAmount), CGSize(width: 480, height: 420), scheme,
+            "send-confirm")
         await send.cancel()
         #expect(send.phase == .editing)
     }
@@ -90,6 +92,13 @@ struct ScreenTests {
                 model,
                 TransactionsView(transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount)),
             Self.mainSize, scheme, "transactions")
+        try await Self.capture(
+            Self.chrome(
+                model,
+                TransactionsView(
+                    transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount,
+                    layout: .table)),
+            Self.mainSize, scheme, "transactions-table")
 
         await transactions.setTypePreset(.sentTo)
         #expect(!transactions.rows.isEmpty)
@@ -103,7 +112,7 @@ struct ScreenTests {
         try await Self.capture(
             TransactionDetailView(detail: detail, transactions: transactions, formatAmount: model.formatAmount,
                                   onClose: {}),
-            CGSize(width: 620, height: 600), scheme, "transaction-detail")
+            CGSize(width: 640, height: 760), scheme, "transaction-detail")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])

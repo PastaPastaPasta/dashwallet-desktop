@@ -15,10 +15,10 @@ public enum PassphraseStrength: Int, Sendable, Hashable, CaseIterable, Comparabl
 
     var color: Color {
         switch self {
-        case .veryWeak, .weak: .dash.red
-        case .fair: .dash.orange
-        case .good: .dash.yellow
-        case .strong: .dash.green
+        case .veryWeak, .weak: .role.danger
+        case .fair: .role.warning
+        case .good: .role.caution
+        case .strong: .role.success
         }
     }
 
@@ -51,13 +51,13 @@ public struct PassphraseStrengthMeter: View {
             HStack(spacing: DashSpacing.xxs) {
                 ForEach(0..<Self.segmentCount, id: \.self) { index in
                     Capsule()
-                        .fill(index < strength.filledSegments ? strength.color : Color.dash.gray300Alpha20)
+                        .fill(index < strength.filledSegments ? strength.color : Color.role.neutralTint)
                         .frame(height: 4)
                 }
             }
             Text(text ?? strength.defaultLabel)
                 .font(DashTextStyle.caption1Medium.font)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .fixedSize()
         }
         .accessibilityElement(children: .ignore)
@@ -105,7 +105,7 @@ public struct PassphraseField: View {
         VStack(alignment: .leading, spacing: DashSpacing.sm) {
             Text(label)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.gray500)
+                .foregroundStyle(Color.role.textSecondary)
 
             HStack(spacing: DashSpacing.s) {
                 Group {
@@ -117,7 +117,7 @@ public struct PassphraseField: View {
                 }
                 .textFieldStyle(.plain)
                 .font(DashTextStyle.callout.font)
-                .foregroundStyle(Color.dash.primaryText)
+                .foregroundStyle(Color.role.textPrimary)
                 .autocorrectionDisabled(true)
                 .focused($isFocused)
 
@@ -141,7 +141,7 @@ public struct PassphraseField: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous)
-                    .stroke(isFocused ? Color.dash.gray300Alpha40 : .clear, lineWidth: 1)
+                    .strokeBorder(isFocused ? Color.role.accent : .clear, lineWidth: 1)
             )
 
             if let strength {
@@ -151,19 +151,18 @@ public struct PassphraseField: View {
             if let errorText {
                 Text(errorText)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
             }
         }
     }
 
     private var prompt: Text {
-        Text(placeholder).foregroundStyle(Color.dash.black1000Alpha30)
+        Text(placeholder).foregroundStyle(Color.role.textTertiary)
     }
 
     private var backgroundColor: Color {
-        if isFocused { return .clear }
-        if errorText != nil { return Color.dash.redAlpha5 }
-        return Color.dash.gray300Alpha10
+        if errorText != nil { return Color.role.dangerTint }
+        return Color.role.fieldFill
     }
 }
 #endif

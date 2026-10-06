@@ -81,7 +81,7 @@ struct CoinControlView: View {
                 .accessibilityIdentifier("coinControl.lockAll")
             Text(coinControl.lockedText)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .accessibilityIdentifier("coinControl.locked")
             Spacer()
             if !coinControl.coinJoinPage {
@@ -173,7 +173,7 @@ struct CoinControlView: View {
                                 .frame(width: 150, alignment: .trailing)
                             Text("\(coin.outpoint.txid.prefix(16))…:\(coin.outpoint.vout)")
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(Color.dash.secondaryText)
+                                .foregroundStyle(Color.role.textSecondary)
                             Spacer()
                             Text(coin.date?.formatted(date: .numeric, time: .shortened) ?? "").dashFont(.footnote)
                             Text("\(coin.confirmations)").dashFont(.footnote).frame(width: 60, alignment: .trailing)
@@ -185,7 +185,7 @@ struct CoinControlView: View {
                         Text(group.label).dashFont(.subheadMedium)
                         Text(group.address)
                             .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Color.dash.secondaryText)
+                            .foregroundStyle(Color.role.textSecondary)
                         Spacer()
                         Text(formatAmount(group.total))
                             .font(.system(.footnote, design: .monospaced))
@@ -242,7 +242,7 @@ private struct CoinCheckbox: View {
             .accessibilityIdentifier("coinControl.check.\(coin.outpoint.vout).\(coin.outpoint.txid.prefix(8))")
         } else {
             Image(systemName: "lock.fill")
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .help(coin.reserved ? MacStrings.CoinControl.reserved : L10n.CoinControl.unlockUnspent)
                 .accessibilityLabel(MacStrings.CoinControl.locked)
         }
@@ -274,22 +274,22 @@ struct CoinSummaryGrid: View {
             if coinControl.insufficientFunds {
                 Text(L10n.CoinControl.insufficientFunds)
                     .dashFont(.footnoteMedium)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
             }
         } else if coinControl.summaryUnavailable {
             Text(L10n.CoinControl.summaryUnavailable)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         } else {
             Text(L10n.CoinControl.automaticallySelected)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         }
     }
 
     @ViewBuilder
     private func cell(_ title: String, _ value: String, _ field: CoinSummaryField) -> some View {
-        Text(title).foregroundStyle(Color.dash.secondaryText)
+        Text(title).foregroundStyle(Color.role.textSecondary)
         Text(value)
             .monospacedDigit()
             .contextMenu {
@@ -317,7 +317,7 @@ struct SendCoinControlPanel: View {
             if coinControl.isAutomatic {
                 Text(L10n.CoinControl.automaticallySelected)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .accessibilityIdentifier("send.coinControl.automatic")
             } else {
                 CoinSummaryGrid(coinControl: coinControl)
@@ -329,10 +329,10 @@ struct SendCoinControlPanel: View {
                 .help(MacStrings.CoinControl.customChangeUnavailable)
             Text(MacStrings.CoinControl.customChangeUnavailable)
                 .dashFont(.caption1)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         }
         .padding(DashSpacing.l)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .dashCard(padding: nil)
         .accessibilityIdentifier("send.coinControl")
     }
 }

@@ -60,17 +60,19 @@ public struct DashCardModifier: ViewModifier {
 
     public func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        // The shadow belongs to the card shape only, never to the text on it.
         content
             .padding(padding ?? 0)
-            .background(shape.fill(fill))
+            .background(
+                shape.fill(fill)
+                    .shadow(
+                        color: elevation.map { Color(dash: $0.color) } ?? .clear,
+                        radius: elevation?.radius ?? 0, x: 0, y: elevation?.y ?? 0))
             .overlay {
                 if colorScheme == .dark, elevation?.borderInDark == true {
                     shape.strokeBorder(Color.role.separator, lineWidth: 0.5)
                 }
             }
-            .shadow(
-                color: elevation.map { Color(dash: $0.color) } ?? .clear,
-                radius: elevation?.radius ?? 0, x: 0, y: elevation?.y ?? 0)
     }
 }
 
@@ -198,6 +200,77 @@ public struct DashRowHighlight: ViewModifier {
 public extension View {
     func dashRowHighlight(isSelected: Bool = false, radius: Double = DashRadius.standard) -> some View {
         modifier(DashRowHighlight(isSelected: isSelected, radius: radius))
+    }
+}
+#endif
+
+#if os(macOS)
+// MARK: Text fields
+
+/// The iOS field look (`AddressFieldView`, C16): `fieldFill` on a radius-16 rounded rectangle, a
+/// `fieldStroke` border while focused, `callout` text. `isError` tints the fill red.
+public struct DashTextFieldStyle: TextFieldStyle {
+    let isError: Bool
+    let isTechnical: Bool
+
+    public init(isError: Bool = false, isTechnical: Bool = false) {
+        self.isError = isError
+        self.isTechnical = isTechnical
+    }
+
+    public func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration.modifier(DashFieldModifier(isError: isError, isTechnical: isTechnical))
+    }
+}
+
+/// The Dash field look for any text control (also `TextEditor` and `SecureField`).
+public struct DashFieldModifier: ViewModifier {
+    let isError: Bool
+    let isTechnical: Bool
+    @FocusState private var isFocused: Bool
+
+    public init(isError: Bool = false, isTechnical: Bool = false) {
+        self.isError = isError
+        self.isTechnical = isTechnical
+    }
+
+    public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous)
+        content
+            .textFieldStyle(.plain)
+            .font(isTechnical
+                ? .system(size: DesignTokens.DashTextStyle.footnote.size, design: .monospaced)
+                : DesignTokens.DashTextStyle.callout.font)
+            .foregroundStyle(Color.role.textPrimary)
+            .focused($isFocused)
+            .padding(.horizontal, DashSpacing.m)
+            .padding(.vertical, DashSpacing.sm)
+            .frame(minHeight: 40)
+            .background(shape.fill(isError ? Color.role.dangerTint : Color.role.fieldFill))
+            .overlay(shape.strokeBorder(isFocused ? Color.role.accent : (isError ? Color.role.danger : .clear), lineWidth: 1))
+    }
+}
+
+public extension TextFieldStyle where Self == DashTextFieldStyle {
+    /// The Dash field look: `.textFieldStyle(.dash)`.
+    static var dash: DashTextFieldStyle { DashTextFieldStyle() }
+    static func dash(isError: Bool = false, isTechnical: Bool = false) -> DashTextFieldStyle {
+        DashTextFieldStyle(isError: isError, isTechnical: isTechnical)
+    }
+}
+
+/// A `footnote` secondary caption over a form control.
+public struct FieldCaption: View {
+    public let text: String
+
+    public init(_ text: String) {
+        self.text = text
+    }
+
+    public var body: some View {
+        Text(text)
+            .dashFont(.footnote)
+            .foregroundStyle(Color.role.textSecondary)
     }
 }
 #endif

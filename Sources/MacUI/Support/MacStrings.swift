@@ -175,6 +175,14 @@ enum MacStrings {
         static let authorizeTitle = "Unlock wallet"
         static let authorizePrompt = "Enter your wallet passphrase to authorize this payment."
         static func recipient(_ number: Int) -> String { "Recipient \(number)" }
+        /// new
+        static let subtitle = "Send Dash to a Dash address"
+        /// Confirm sheet row titles (dash-qt's confirmation text, as rows).
+        static let confirmPayTo = "Pay to"
+        static let confirmUsing = "Using"
+        static let confirmFee = "Transaction fee"
+        static let confirmSize = "Transaction size"
+        static let confirmTotal = "Total Amount"
     }
 
     enum Receive {

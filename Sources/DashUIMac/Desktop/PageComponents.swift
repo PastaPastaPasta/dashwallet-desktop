@@ -102,10 +102,16 @@ public struct PageTitle: View {
 public struct DashSegmentedControl<Value: Hashable>: View {
     public let options: [(value: Value, title: String)]
     @Binding public var selection: Value
+    /// Accessibility identifier of each segment (UI tests).
+    public let segmentIdentifier: ((Value) -> String)?
 
-    public init(_ options: [(value: Value, title: String)], selection: Binding<Value>) {
+    public init(
+        _ options: [(value: Value, title: String)], selection: Binding<Value>,
+        segmentIdentifier: ((Value) -> String)? = nil
+    ) {
         self.options = options
         self._selection = selection
+        self.segmentIdentifier = segmentIdentifier
     }
 
     public var body: some View {
@@ -128,6 +134,7 @@ public struct DashSegmentedControl<Value: Hashable>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier(segmentIdentifier?(option.value) ?? "")
             }
         }
         .padding(2)
