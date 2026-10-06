@@ -113,7 +113,7 @@ extension WalletBalances {
     init(_ kit: DashKit.WalletBalances) {
         self.init(
             confirmed: Amount(kit.confirmed), unconfirmed: Amount(kit.unconfirmed), immature: Amount(kit.immature),
-            locked: Amount(kit.locked), total: Amount(kit.total))
+            locked: Amount(kit.locked), total: Amount(kit.total), coinjoin: Amount(kit.coinjoin))
     }
 }
 
@@ -121,7 +121,8 @@ extension WalletInfo {
     init(_ kit: DashKit.WalletInfo) {
         self.init(
             id: WalletID(kit.walletID), name: kit.name, watchOnly: kit.watchOnly, hasMnemonic: kit.hasMnemonic,
-            hd: kit.hd, birthHeight: kit.birthHeight, createdAt: kit.createdAt, balances: WalletBalances(kit.balances))
+            hd: kit.hd, birthHeight: kit.birthHeight, createdAt: kit.createdAt,
+            balances: kit.balances.map(WalletBalances.init))
     }
 }
 

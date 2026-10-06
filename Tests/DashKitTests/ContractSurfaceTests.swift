@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 /// Calls the M1 contract surface (docs/contracts/m1-engine.md) through the
-/// generated bindings: pure calls that already work, and typed
+/// generated bindings: pure calls, offline session calls, and typed
 /// `NotImplemented` errors from calls whose engine side has not landed.
 @Suite struct ContractSurfaceTests {
     @Test func unitsFormatAndParseThroughTheFFI() throws {
@@ -80,9 +80,14 @@ import Testing
         await #expect(throws: VaultError.NotImplemented(call: "Vault.enroll_quick_unlock")) {
             try await session.vault().enrollQuickUnlock(grantId: "none")
         }
-        #expect(throws: SyncError.NotImplemented(call: "NetworkSession.sync_snapshot")) {
-            try session.syncSnapshot()
+        // E1 calls answer offline: no SPV yet, nothing synced.
+        let snapshot = try session.syncSnapshot()
+        #expect(!snapshot.running && !snapshot.caughtUp)
+        #expect(snapshot.phases.count == 4)
+        await #expect(throws: SyncError.SpvNotRunning) {
+            try await session.rescan(from: .genesis)
         }
+        #expect(try session.walletInfos().isEmpty)
         #expect(throws: SendError.NotImplemented(call: "NetworkSession.new_tx_draft")) {
             try session.newTxDraft(walletId: wallet)
         }

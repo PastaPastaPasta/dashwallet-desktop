@@ -34,7 +34,8 @@ public protocol EngineProtocol: AnyObject, Sendable {
         on network: DashNetwork, mnemonic: SecretBytes, bip39Passphrase: SecretBytes, options: ImportOptions
     ) async throws(DashKitError) -> WalletID
     func walletInfos(on network: DashNetwork) async throws(DashKitError) -> [WalletInfo]
-    func balances(on network: DashNetwork, wallet: WalletID) async throws(DashKitError) -> WalletBalances
+    /// `nil` until the wallet's scan has passed its birth height (unknown, not zero).
+    func balances(on network: DashNetwork, wallet: WalletID) async throws(DashKitError) -> WalletBalances?
     func renameWallet(on network: DashNetwork, wallet: WalletID, name: String) async throws(DashKitError)
     func removeWallet(on network: DashNetwork, wallet: WalletID, grantID: String) async throws(DashKitError)
     func generateMnemonic(wordCount: Int, language: MnemonicLanguage) throws(DashKitError) -> SecretBytes

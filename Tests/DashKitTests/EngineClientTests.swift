@@ -61,16 +61,19 @@ import Testing
         } catch {
             #expect(error.code == "wallet.no_vault")
         }
-        #expect(try await client.wallets(on: .regtest).isEmpty)
+        #expect(try await client.walletInfos(on: .regtest).isEmpty)
 
         let status = try await client.createVault(on: .regtest, passphrase: SecretBytes(utf8: Self.vaultPassphrase))
         #expect(status.state == .unlocked)
         let walletID = try await client.importWallet(on: .regtest, mnemonic: phrase, birthHeight: 0)
 
-        let wallets = try await client.wallets(on: .regtest)
+        let wallets = try await client.walletInfos(on: .regtest)
         #expect(wallets.map(\.walletID) == [walletID])
-        #expect(wallets.first?.balances == .zero)
-        #expect(try await client.balances(on: .regtest, wallet: walletID) == .zero)
+        #expect(wallets.first?.name == "Wallet 1")
+        #expect(wallets.first?.hasMnemonic == true)
+        // Not scanned yet: unknown, not zero (review M-3).
+        #expect(wallets.first?.balances == nil)
+        #expect(try await client.balances(on: .regtest, wallet: walletID) == nil)
         #expect(try await client.vaultStatus(on: .regtest).walletsWithSecrets == [walletID])
         #expect(FileManager.default.fileExists(
             atPath: client.directory(for: .regtest).appendingPathComponent("wallet.sqlite").path))
@@ -87,7 +90,7 @@ import Testing
         // passphrase, reveals the same phrase.
         let reopened = try EngineClient(dataRoot: dir.url, workerThreads: 2)
         try await reopened.open(.regtest, options: Self.regtestOptions)
-        #expect(try await reopened.wallets(on: .regtest).map(\.walletID) == [walletID])
+        #expect(try await reopened.walletInfos(on: .regtest).map(\.walletID) == [walletID])
         let locked = try await reopened.vaultStatus(on: .regtest)
         #expect(locked.state == .locked)
         #expect(locked.walletsWithSecrets == [walletID])
@@ -160,14 +163,14 @@ import Testing
             on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "x"),
             birthHeight: 0)
         #expect(try await client.vaultStatus(on: .regtest).walletsWithSecrets.contains(withPassphrase))
-        // Per-wallet lookahead needs upstream support (U12); typed, not ignored.
+        // Lookahead is 1..=1000 (key-wallet's gap-limit ceiling).
         do {
             _ = try await client.importWallet(
                 on: .regtest, mnemonic: SecretBytes(utf8: Self.abandon12), bip39Passphrase: SecretBytes(utf8: "y"),
-                options: ImportOptions(birthHeight: 0, lookahead: 1000))
-            Issue.record("lookahead should be not implemented")
+                options: ImportOptions(birthHeight: 0, lookahead: 1001))
+            Issue.record("lookahead above 1000 should be rejected")
         } catch {
-            #expect(error.code == "not_implemented")
+            #expect(error.code == "invalid_argument")
         }
         do {
             _ = try await client.balances(on: .regtest, wallet: WalletID(hex: String(repeating: "0", count: 64))!)

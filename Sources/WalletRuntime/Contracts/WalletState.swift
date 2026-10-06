@@ -8,13 +8,19 @@ public struct WalletBalances: Sendable, Hashable {
     public let immature: Amount
     public let locked: Amount
     public let total: Amount
+    /// Spendable balance of the CoinJoin accounts.
+    public let coinjoin: Amount
 
-    public init(confirmed: Amount, unconfirmed: Amount, immature: Amount, locked: Amount, total: Amount) {
+    public init(
+        confirmed: Amount, unconfirmed: Amount, immature: Amount, locked: Amount, total: Amount,
+        coinjoin: Amount = .zero
+    ) {
         self.confirmed = confirmed
         self.unconfirmed = unconfirmed
         self.immature = immature
         self.locked = locked
         self.total = total
+        self.coinjoin = coinjoin
     }
 }
 
@@ -27,11 +33,13 @@ public struct WalletInfo: Sendable, Hashable, Identifiable {
     public let hd: Bool
     public let birthHeight: UInt32?
     public let createdAt: Date?
-    public let balances: WalletBalances
+    /// `nil` until the wallet's scan has passed its birth height: show
+    /// "unknown", never zero.
+    public let balances: WalletBalances?
 
     public init(
         id: WalletID, name: String, watchOnly: Bool, hasMnemonic: Bool, hd: Bool,
-        birthHeight: UInt32?, createdAt: Date?, balances: WalletBalances
+        birthHeight: UInt32?, createdAt: Date?, balances: WalletBalances?
     ) {
         self.id = id
         self.name = name

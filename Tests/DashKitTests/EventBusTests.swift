@@ -65,7 +65,7 @@ import Testing
         let sub = bus.subscribe(signalLimit: 4)
         bus.publish(.sessionOpened(.regtest))
         for height in 0..<50 {
-            bus.publish(.syncProgress(.regtest, headerTipHeight: UInt32(height), synced: false))
+            bus.publish(.historyChanged(.regtest, Self.wallet, txids: [String(height)]))
             if height == 25 { bus.publish(.walletCreated(.regtest, Self.wallet)) }
         }
         bus.publish(.lockStateChanged(.regtest))

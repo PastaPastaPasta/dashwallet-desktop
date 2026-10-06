@@ -61,16 +61,22 @@ public struct WalletBalances: Hashable, Sendable {
     public let immature: Amount
     public let locked: Amount
     public let total: Amount
+    /// Spendable balance of the CoinJoin accounts (no "fully mixed" rule yet).
+    public let coinjoin: Amount
 
     public static let zero = WalletBalances(
-        confirmed: .zero, unconfirmed: .zero, immature: .zero, locked: .zero, total: .zero)
+        confirmed: .zero, unconfirmed: .zero, immature: .zero, locked: .zero, total: .zero, coinjoin: .zero)
 
-    public init(confirmed: Amount, unconfirmed: Amount, immature: Amount, locked: Amount, total: Amount) {
+    public init(
+        confirmed: Amount, unconfirmed: Amount, immature: Amount, locked: Amount, total: Amount,
+        coinjoin: Amount = .zero
+    ) {
         self.confirmed = confirmed
         self.unconfirmed = unconfirmed
         self.immature = immature
         self.locked = locked
         self.total = total
+        self.coinjoin = coinjoin
     }
 
     init(_ ffi: DashWalletCore.WalletBalances) throws(DashKitError) {
@@ -85,14 +91,9 @@ public struct WalletBalances: Hashable, Sendable {
             unconfirmed: try amount(ffi.unconfirmed),
             immature: try amount(ffi.immature),
             locked: try amount(ffi.locked),
-            total: try amount(ffi.total))
+            total: try amount(ffi.total),
+            coinjoin: try amount(ffi.coinjoin))
     }
-}
-
-/// M0 wallet list row (superseded by `WalletInfo`).
-public struct WalletSummary: Equatable, Sendable {
-    public let walletID: WalletID
-    public let balances: WalletBalances
 }
 
 /// How a session reaches the network. Empty lists mean network defaults
@@ -138,10 +139,7 @@ public enum EngineEvent: Sendable, Hashable {
     case sessionOpened(DashNetwork)
     case sessionClosed(DashNetwork)
     case walletCreated(DashNetwork, WalletID)
-    case walletChanged(DashNetwork, WalletID)
     case spvStateChanged(DashNetwork, running: Bool)
-    case syncProgress(DashNetwork, headerTipHeight: UInt32?, synced: Bool)
-    case peersChanged(DashNetwork, connected: UInt32)
     case notice(DashNetwork?, NoticeCode, detail: String)
     case syncChanged(DashNetwork)
     case balancesChanged(DashNetwork, WalletID)
@@ -158,11 +156,7 @@ public enum EngineEvent: Sendable, Hashable {
         case .sessionOpened(let n): self = .sessionOpened(DashNetwork(n))
         case .sessionClosed(let n): self = .sessionClosed(DashNetwork(n))
         case .walletCreated(let n, let id): self = .walletCreated(DashNetwork(n), WalletID(engine: id))
-        case .walletChanged(let n, let id): self = .walletChanged(DashNetwork(n), WalletID(engine: id))
         case .spvStateChanged(let n, let running): self = .spvStateChanged(DashNetwork(n), running: running)
-        case .syncProgress(let n, let tip, let synced):
-            self = .syncProgress(DashNetwork(n), headerTipHeight: tip, synced: synced)
-        case .peersChanged(let n, let connected): self = .peersChanged(DashNetwork(n), connected: connected)
         case .notice(let n, let code, let detail):
             self = .notice(n.map(DashNetwork.init), NoticeCode(code), detail: detail)
         case .sync(let n, _): self = .syncChanged(DashNetwork(n))
@@ -177,9 +171,8 @@ public enum EngineEvent: Sendable, Hashable {
     /// The network the event concerns, if any.
     public var network: DashNetwork? {
         switch self {
-        case .sessionOpened(let n), .sessionClosed(let n), .walletCreated(let n, _), .walletChanged(let n, _),
-             .spvStateChanged(let n, _), .syncProgress(let n, _, _), .peersChanged(let n, _),
-             .syncChanged(let n), .balancesChanged(let n, _), .historyChanged(let n, _, _),
+        case .sessionOpened(let n), .sessionClosed(let n), .walletCreated(let n, _),
+             .spvStateChanged(let n, _), .syncChanged(let n), .balancesChanged(let n, _), .historyChanged(let n, _, _),
              .walletRemoved(let n, _), .lockStateChanged(let n):
             n
         case .notice(let n, _, _):
@@ -196,8 +189,7 @@ public enum EngineEvent: Sendable, Hashable {
         case .sessionOpened, .sessionClosed, .walletCreated, .walletRemoved, .spvStateChanged, .lockStateChanged,
              .notice:
             true
-        case .walletChanged, .syncProgress, .peersChanged, .syncChanged, .balancesChanged, .historyChanged,
-             .resynchronize:
+        case .syncChanged, .balancesChanged, .historyChanged, .resynchronize:
             false
         }
     }
