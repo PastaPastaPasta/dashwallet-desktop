@@ -174,6 +174,13 @@ public final class MainViewModel {
         selection = items[number - 1]
     }
 
+    /// Options ▸ "Enable coin control features" was applied
+    /// (`OptionsViewModel.onCoinControlFeatureChanged`): turning it off
+    /// empties the Send page's coin selection.
+    public func coinControlFeatureChanged() {
+        coinControl?.coinControlFeatureChanged()
+    }
+
     public func selectWallet(_ id: WalletID) async {
         env.walletState.select(id)
         await reloadWallets()
@@ -209,8 +216,9 @@ public final class MainViewModel {
         } else if case .done = onboarding?.step {
             onboarding = nil
         }
-        // Coins of another wallet cannot pay from this one.
-        if previous != selectedWalletID { coinControl?.clearSelection() }
+        // Coins of another wallet cannot pay from this one, and a review
+        // prepared from the old wallet ends.
+        if previous != selectedWalletID { send?.walletChanged() }
         if forceRefresh || previous != selectedWalletID { await refreshPages() }
     }
 

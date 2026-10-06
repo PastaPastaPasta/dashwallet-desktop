@@ -290,6 +290,16 @@ public final class SendViewModel {
         coinControl.send = self
     }
 
+    /// The selected wallet changed: the coin selection (coins of the old
+    /// wallet) is emptied and a review prepared from the old wallet ends as
+    /// an edit would (its grant revoked, its prepared transaction
+    /// abandoned). The recipients stay. A payment broadcasting or of unknown
+    /// outcome is left to finish.
+    public func walletChanged() {
+        withInternalEdits { clearCoinSelection() }
+        userEdited()
+    }
+
     /// Clear All: entries, coin selection, fee warning (QT-052).
     public func clearAll() {
         guard isEditable else { return }

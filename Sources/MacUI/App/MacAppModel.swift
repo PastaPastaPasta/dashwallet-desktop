@@ -134,6 +134,7 @@ public final class MacAppModel {
         lifecycle = services.lifecycle
         main = MainViewModel(env: services.environment, m2: services.m2)
         features = services.m2.map { MacFeatureModels(env: services.environment, m2: $0) }
+        features?.options.onCoinControlFeatureChanged = { [weak self] in self?.main?.coinControlFeatureChanged() }
         unavailableReason = nil
     }
 

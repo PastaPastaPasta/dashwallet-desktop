@@ -110,6 +110,10 @@ public final class OptionsViewModel {
     public private(set) var automaticBackupsAvailable = true
     public let availableLanguages: [String?] = [nil, "en"]
     public let platform: DesktopPlatform
+    /// Called after an apply turned "Enable coin control features" on or off
+    /// (dash-qt's `coinControlFeatureChanged` signal); the composition root
+    /// routes it to `MainViewModel.coinControlFeatureChanged()`.
+    @ObservationIgnored public var onCoinControlFeatureChanged: (@MainActor () -> Void)?
 
     public var tabs: [OptionsTab] {
         OptionsTab.allCases.filter { $0 != .main || showsStartOnLogin || showsTrayOptions }
@@ -298,7 +302,9 @@ public final class OptionsViewModel {
         desktop.options.showGovernanceClock = next.display.showGovernanceClock
         desktop.options.thirdPartyTxURLs = next.display.thirdPartyTxURLs
         desktop.options.localCurrency = next.display.localCurrency
+        let coinControlChanged = desktop.options.coinControl != desktopPreferences.desktop.options.coinControl
         if desktop != desktopPreferences.desktop { try desktopPreferences.update(desktop) }
+        if coinControlChanged { onCoinControlFeatureChanged?() }
 
         if dustProtectionAvailable,
             next.wallet.dustProtectionEnabled != stored.wallet.dustProtectionEnabled

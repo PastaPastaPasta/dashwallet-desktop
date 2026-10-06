@@ -184,4 +184,82 @@ struct SendCoinControlTests {
         #expect(main.send?.source == .any)
         main.stop()
     }
+
+    /// Fix-review L2: turning "Enable coin control features" off through
+    /// Options empties the selection (dash-qt `coinControlFeatureChanged`),
+    /// so turning it on again does not bring it back, and a review that
+    /// spent it ends.
+    @Test func QT068_turningCoinControlOffEmptiesTheSelection() async throws {
+        let (send, coinControl) = await make()
+        let options = OptionsViewModel(env: world.environment(), m2: m2.services)
+        options.onCoinControlFeatureChanged = { coinControl.coinControlFeatureChanged() }
+        await options.load()
+        await coinControl.toggle(first)
+        fillValid(send)
+        await reviewToConfirm(send)
+        options.wallet.coinControl = false
+        try await options.apply()
+        #expect(coinControl.selected.isEmpty && coinControl.summary == nil)
+        #expect(send.phase == .editing)
+        await eventually { world.sender.lastDraft?.state.current.abandoned.count == 1 }
+        options.wallet.coinControl = true
+        try await options.apply()
+        #expect(send.source == .any)
+        #expect(coinControl.isAutomatic)
+        // An apply that leaves the option as it was does not touch the selection.
+        await coinControl.toggle(second)
+        options.display.unit = .milliDash
+        try await options.apply()
+        #expect(coinControl.selected == [second])
+    }
+
+    /// Fix-review L3: a wallet switch empties the selection and also ends a
+    /// review prepared from the old wallet: back to editing, the prepared
+    /// transaction abandoned, the recipients kept.
+    @Test func M3_aWalletChangeEndsTheReview() async throws {
+        world.walletState.wallets = [walletInfo(walletA), walletInfo(walletB, name: "Savings")]
+        world.coinControl.coins.withLock { $0 = [utxo(1, amount: 300_000_000)] }
+        m2.fees.coins.withLock { $0 = [first: Amount(duffs: 300_000_000)] }
+        m2.desktopPreferences.desktop.options.coinControl = true
+        let main = MainViewModel(env: world.environment(), m2: m2.services)
+        await main.start()
+        let send = try #require(main.send)
+        let coinControl = try #require(main.coinControl)
+        await coinControl.load()
+        await coinControl.toggle(first)
+        fillValid(send)
+        // The main view model's own timers share the sleeper, so the review
+        // is checked at `.confirm` without running the countdown.
+        await send.review()
+        guard case .confirm = send.phase else {
+            Issue.record("expected confirm, got \(send.phase)")
+            return
+        }
+        world.walletState.selectedWalletID = walletB
+        world.walletState.notify()
+        await eventually { main.selectedWalletID == walletB }
+        #expect(coinControl.selected.isEmpty)
+        #expect(send.phase == .editing)
+        #expect(send.entries[0].address == testnetAddress1)
+        await eventually { world.sender.lastDraft?.state.current.abandoned.count == 1 }
+        main.stop()
+    }
+
+    /// The main view model forwards the Options callback to its dialog.
+    @Test func QT068_mainForwardsTheCoinControlOption() async throws {
+        m2.desktopPreferences.desktop.options.coinControl = true
+        world.coinControl.coins.withLock { $0 = [utxo(1, amount: 300_000_000)] }
+        m2.fees.coins.withLock { $0 = [first: Amount(duffs: 300_000_000)] }
+        let main = MainViewModel(env: world.environment(), m2: m2.services)
+        await main.start()
+        let coinControl = try #require(main.coinControl)
+        await coinControl.load()
+        await coinControl.toggle(first)
+        main.coinControlFeatureChanged()
+        #expect(coinControl.selected == [first], "still on: kept")
+        m2.desktopPreferences.desktop.options.coinControl = false
+        main.coinControlFeatureChanged()
+        #expect(coinControl.selected.isEmpty)
+        main.stop()
+    }
 }

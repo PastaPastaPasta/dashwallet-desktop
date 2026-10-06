@@ -388,6 +388,18 @@ public final class CoinControlViewModel {
     /// control features" (dash-qt ignores the selection while it is off).
     public var isEnabled: Bool { desktopPreferences.desktop.options.coinControl }
 
+    /// The option was applied (dash-qt `coinControlFeatureChanged`): turning
+    /// it off empties the selection, so it cannot come back into effect when
+    /// the option is turned on again, and ends a review that spent it, as a
+    /// selection edit does. A payment already broadcasting keeps its built
+    /// transaction; only the selection is emptied.
+    public func coinControlFeatureChanged() {
+        guard !isEnabled else { return }
+        let hadSelection = !selected.isEmpty
+        clearSelection()
+        if hadSelection { send?.coinSelectionEdited() }
+    }
+
     /// What the draft spends: the picked coins, or any coins (fully mixed
     /// ones on the CoinJoin page) while nothing is picked or coin control
     /// features are off.

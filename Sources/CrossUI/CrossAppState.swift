@@ -103,7 +103,11 @@ public final class CrossAppState {
     @ObservationIgnored private var signVerifyModel: (network: DashNetwork, model: SignVerifyViewModel)?
     @ObservationIgnored private var transactionsModel: (network: DashNetwork, model: TransactionsViewModel)?
     @ObservationIgnored private var onboardingModel: OnboardingViewModel?
-    @ObservationIgnored private(set) lazy var options = OptionsViewModel(env: env, m2: m2)
+    @ObservationIgnored private(set) lazy var options: OptionsViewModel = {
+        let model = OptionsViewModel(env: env, m2: m2)
+        model.onCoinControlFeatureChanged = { [weak main = self.main] in main?.coinControlFeatureChanged() }
+        return model
+    }()
     @ObservationIgnored private(set) lazy var psbt = PSBTViewModel(env: env, m2: m2)
     @ObservationIgnored private(set) lazy var information = InformationViewModel(env: env, m2: m2)
     @ObservationIgnored private(set) lazy var console = ConsoleViewModel(env: env, m2: m2)
