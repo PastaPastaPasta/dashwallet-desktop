@@ -185,7 +185,9 @@ struct LiveStartView: View {
     private var content: some View {
         if let session {
             if case .settingsUnreadable(let files) = session.startup.stage {
-                SettingsUnreadableScreen(model: session.startup, files: files, onAbort: { exit(1) })
+                // The network opens only after Reset; Abort quits without writing.
+                SettingsUnreadableScreen(
+                    model: session.startup, files: files, onReset: { launch(session) }, onAbort: { exit(1) })
             } else if launching, session.startup.showsSplash {
                 SplashScreen(model: session.startup)
             } else {
@@ -286,11 +288,17 @@ struct LiveStartView: View {
         }
         quitHook.session = session
         DashWalletCrossApp.open(page: options.page, in: session.state)
-        launching = true
         self.session = session
         host.state = session.state
-        // Not awaited here: setting `session` replaces the view that owns this
-        // `.task`, and the network must keep opening after that.
+        if case .settingsUnreadable = session.startup.stage { return }
+        launch(session)
+    }
+
+    /// Opens the network, then hides the splash. Not awaited by the caller:
+    /// setting `session` replaces the view that owns the `.task`, and the
+    /// network must keep opening after that.
+    private func launch(_ session: LiveSession) {
+        launching = true
         let uris = options.shell.uris
         Task { @MainActor in
             do throws(ServiceError) {

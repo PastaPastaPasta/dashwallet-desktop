@@ -114,16 +114,22 @@ public struct SplashScreen: View {
 public struct SettingsUnreadableScreen: View {
     let model: StartupViewModel
     let files: [URL]
+    let onReset: @MainActor () -> Void
     let onAbort: @MainActor () -> Void
 
-    public init(model: StartupViewModel, files: [URL], onAbort: @escaping @MainActor () -> Void) {
+    public init(
+        model: StartupViewModel, files: [URL], onReset: @escaping @MainActor () -> Void,
+        onAbort: @escaping @MainActor () -> Void
+    ) {
         self.model = model
         self.files = files
+        self.onReset = onReset
         self.onAbort = onAbort
     }
 
     public var body: some View {
         let model = model
+        let onReset = onReset
         let onAbort = onAbort
         Page(L10n.Shell.settingsUnreadable) {
             Text(L10n.Shell.settingsResetQuestion).dashFont(.footnote)
@@ -131,7 +137,10 @@ public struct SettingsUnreadableScreen: View {
                 Text(url.path).dashFont(.caption1).textSelectionEnabled()
             }
             HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(CrossStrings.reset, style: .filledBlue, size: .small) { model.resetSettings() }
+                DashButton(CrossStrings.reset, style: .filledBlue, size: .small) {
+                    model.resetSettings()
+                    onReset()
+                }
                 DashButton(CrossStrings.abort, style: .strokeGray, size: .small) {
                     model.abortSettings()
                     onAbort()
