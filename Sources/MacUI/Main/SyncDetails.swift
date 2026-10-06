@@ -14,49 +14,95 @@ struct SyncOverlayView: View {
     let syncText: String
     let hide: () -> Void
 
+    /// A card on the dimmed window (UX-SPEC §4.6): dash-qt's text and facts,
+    /// the progress bar, and iOS's per-phase progress.
     var body: some View {
         ZStack {
-            Color.dash.backgroundOverlay.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: DashSpacing.m) {
-                Text(MacStrings.SyncOverlay.title).dashFont(.title3)
-                Text(MacStrings.SyncOverlay.body)
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Grid(alignment: .leading, horizontalSpacing: DashSpacing.l, verticalSpacing: DashSpacing.s) {
-                    row(MacStrings.SyncOverlay.status, syncText)
-                    row(MacStrings.SyncOverlay.blocksLeft, SyncRateTracker.blocksLeft(status).map { "\($0)" })
-                    row(MacStrings.SyncOverlay.lastBlockTime, status.tipDate.map {
-                        $0.formatted(date: .abbreviated, time: .shortened)
-                    })
-                    row(MacStrings.SyncOverlay.progress, status.progress.map { Self.percent($0) })
-                    row(MacStrings.SyncOverlay.progressPerHour, rates.progressPerHour.map { Self.percent($0) })
-                    row(MacStrings.SyncOverlay.timeLeft, rates.remaining(for: status).flatMap(Self.duration))
+            Color.role.overlay.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: DashSpacing.l) {
+                VStack(alignment: .leading, spacing: DashSpacing.xs) {
+                    Text(MacStrings.SyncOverlay.title)
+                        .dashFont(.title2)
+                        .foregroundStyle(Color.role.textPrimary)
+                    Text(MacStrings.SyncOverlay.body)
+                        .dashFont(.footnote)
+                        .foregroundStyle(Color.role.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                VStack(spacing: 0) {
+                    DetailRow(MacStrings.SyncOverlay.status, value: syncText)
+                    DetailRow(MacStrings.SyncOverlay.blocksLeft, value: value(SyncRateTracker.blocksLeft(status).map { "\($0)" }))
+                    DetailRow(MacStrings.SyncOverlay.lastBlockTime, value: value(status.tipDate.map {
+                        $0.formatted(date: .abbreviated, time: .shortened)
+                    }))
+                    DetailRow(MacStrings.SyncOverlay.progress, value: value(status.progress.map { Self.percent($0) })) {
+                        DashProgressBar(value: status.progress).frame(width: 120)
+                    }
+                    DetailRow(MacStrings.SyncOverlay.progressPerHour, value: value(rates.progressPerHour.map { Self.percent($0) }))
+                    DetailRow(MacStrings.SyncOverlay.timeLeft, value: value(rates.remaining(for: status).flatMap(Self.duration)))
+                }
+                .dashCard(radius: DashRadius.standard, padding: DashSpacing.xs, elevation: nil, fill: Color.role.cardRaised)
                 .accessibilityIdentifier("syncOverlay.details")
+                if !status.phases.isEmpty {
+                    VStack(alignment: .leading, spacing: DashSpacing.s) {
+                        Text(MacStrings.SyncPhases.title)
+                            .dashFont(.subheadMedium)
+                            .foregroundStyle(Color.role.textSecondary)
+                        ForEach(status.phases, id: \.phase) { phase in
+                            HStack(spacing: DashSpacing.m) {
+                                Text(Self.phaseName(phase.phase))
+                                    .dashFont(.footnote)
+                                    .foregroundStyle(Color.role.textPrimary)
+                                    .frame(width: 130, alignment: .leading)
+                                DashProgressBar(value: Self.fraction(phase))
+                                Text(Self.heights(phase))
+                                    .dashFont(.caption1)
+                                    .monospacedDigit()
+                                    .foregroundStyle(phase.done ? Color.role.success : Color.role.textSecondary)
+                                    .frame(width: 140, alignment: .trailing)
+                            }
+                        }
+                        Text(MacStrings.Status.connections(status.connectedPeers))
+                            .dashFont(.caption1)
+                            .foregroundStyle(Color.role.textTertiary)
+                    }
+                }
                 HStack {
                     Spacer()
                     Button(MacStrings.SyncOverlay.hide, action: hide)
+                        .buttonStyle(.dash(.tintedGray, .medium))
                         .keyboardShortcut(.cancelAction)
                         .accessibilityIdentifier("syncOverlay.hide")
                 }
             }
-            .padding(DashSpacing.xl)
-            .frame(width: 460)
-            .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+            .padding(DashSpacing.xxl)
+            .frame(width: DashLayout.sheetWidthSmall + 40)
+            .dashCard(padding: nil, elevation: .floating)
         }
         .accessibilityIdentifier("syncOverlay")
     }
 
-    private func row(_ label: String, _ value: String?) -> some View {
-        GridRow {
-            Text(label)
-                .dashFont(.footnoteMedium)
-                .foregroundStyle(Color.dash.secondaryText)
-            Text(value ?? L10n.Common.unknown)
-                .dashFont(.footnote)
-                .foregroundStyle(Color.dash.primaryText)
-                .textSelection(.enabled)
+    /// An unknown value is "—", never a guess.
+    private func value(_ text: String?) -> String { text ?? "—" }
+
+    /// Nil while a height is unknown (the bar is then indeterminate).
+    static func fraction(_ phase: SyncPhaseProgress) -> Double? {
+        if phase.done { return 1 }
+        guard let current = phase.currentHeight, let target = phase.targetHeight, target > 0 else { return nil }
+        return Double(current) / Double(target)
+    }
+
+    static func heights(_ phase: SyncPhaseProgress) -> String {
+        if phase.done { return "✓" }
+        return "\(phase.currentHeight.map(String.init) ?? "—") / \(phase.targetHeight.map(String.init) ?? "—")"
+    }
+
+    static func phaseName(_ phase: SyncPhase) -> String {
+        switch phase {
+        case .headers: L10n.Home.headers
+        case .filterHeaders: L10n.Home.filterHeaders
+        case .filters: L10n.Home.filters
+        case .masternodes: L10n.Home.masternodes
         }
     }
 
@@ -84,11 +130,13 @@ struct PeersSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Peers.title).dashFont(.title3)
+            Text(MacStrings.Peers.title)
+                .dashFont(.title3)
+                .foregroundStyle(Color.role.textPrimary)
             Group {
                 if let peers = model.peers {
                     Table(peers.map(PeerRow.init)) {
-                        TableColumn(MacStrings.Peers.address) { Text($0.peer.address).monospaced() }
+                        TableColumn(MacStrings.Peers.address) { Text($0.peer.address).monospacedDigit() }
                         TableColumn(MacStrings.Peers.userAgent) { Text($0.peer.userAgent ?? L10n.Common.unknown) }
                         TableColumn(MacStrings.Peers.height) { row in
                             Text(row.peer.bestHeight.map { "\($0)" } ?? L10n.Common.unknown)
@@ -104,7 +152,7 @@ struct PeersSheet: View {
                         .width(80)
                     }
                     .overlay {
-                        if peers.isEmpty { Text(MacStrings.Peers.none).foregroundStyle(Color.dash.secondaryText) }
+                        if peers.isEmpty { Text(MacStrings.Peers.none).foregroundStyle(Color.role.textSecondary) }
                     }
                 } else if model.error == nil {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -112,19 +160,22 @@ struct PeersSheet: View {
             }
             .frame(minHeight: 220)
             if let error = model.error {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
             HStack {
                 Button(MacStrings.Peers.changePeers) { Task { await model.rotate() } }
+                    .buttonStyle(.dash(.tintedBlue, .medium))
                     .disabled(model.rotating)
                     .help(MacStrings.Peers.changePeersHelp)
                 Spacer()
                 Button(MacStrings.Common.close) { dismiss() }
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
             }
         }
         .padding(DashSpacing.xl)
         .frame(width: 680, height: 380)
+        .dashCanvas()
         .task { await model.load() }
         .accessibilityIdentifier("peers")
     }

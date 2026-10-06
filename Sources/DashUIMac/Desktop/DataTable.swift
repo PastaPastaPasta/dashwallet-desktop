@@ -80,7 +80,8 @@ public struct DataTableColumn<Row>: Identifiable {
             cell: { row in
                 Text(value(row))
                     .font(DashTextStyle.footnote.font)
-                    .foregroundStyle(Color.dash.primaryText)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.role.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -176,7 +177,7 @@ public struct DataTable<Row: Identifiable>: View {
                 }
             }
         }
-        .background(Color.dash.secondaryBackground)
+        .background(Color.role.card)
         .focusable()
         .focused($isFocused)
         .focusEffectDisabled()
@@ -193,7 +194,7 @@ public struct DataTable<Row: Identifiable>: View {
         if displayed.isEmpty, let emptyText {
             Text(emptyText)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .frame(maxWidth: .infinity)
                 .padding(DashSpacing.xxl)
         }
@@ -213,9 +214,9 @@ public struct DataTable<Row: Identifiable>: View {
         }
         .padding(.horizontal, DashSpacing.m)
         .frame(height: 28)
-        .background(Color.dash.secondaryBackground)
+        .background(Color.role.cardRaised)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.dash.gray300Alpha20).frame(height: 1)
+            Rectangle().fill(Color.role.separator).frame(height: 0.5)
         }
     }
 
@@ -224,13 +225,13 @@ public struct DataTable<Row: Identifiable>: View {
         let active = sortOrder?.columnID == column.id ? sortOrder : nil
         let label = HStack(spacing: DashSpacing.xxs) {
             Text(column.title)
-                .font(DashTextStyle.caption1Medium.font)
-                .foregroundStyle(active == nil ? Color.dash.secondaryText : Color.dash.primaryText)
+                .font(DashTextStyle.footnoteMedium.font)
+                .foregroundStyle(active == nil ? Color.role.textSecondary : Color.role.textPrimary)
                 .lineLimit(1)
             if let active {
                 Image(systemName: active.ascending ? "chevron.up" : "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
             }
         }
         if column.isSortable {
@@ -265,6 +266,9 @@ public struct DataTable<Row: Identifiable>: View {
         .padding(.horizontal, DashSpacing.m)
         .frame(minHeight: 30)
         .background(rowBackground(isSelected: isSelected, index: index))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.role.separator.opacity(0.5)).frame(height: 0.5)
+        }
         .contentShape(Rectangle())
         .gesture(TapGesture(count: 2).onEnded {
             selection = [row.id]
@@ -290,8 +294,9 @@ public struct DataTable<Row: Identifiable>: View {
     }
 
     private func rowBackground(isSelected: Bool, index: Int) -> Color {
-        if isSelected { return Color.dash.blueAlpha20 }
-        return index.isMultiple(of: 2) ? .clear : Color.dash.gray300Alpha5
+        // No zebra stripes (UX-SPEC C28); selection is the strong accent tint.
+        if isSelected { return Color.role.accentTintStrong }
+        return .clear
     }
 
     /// Rows a context-menu action applies to.

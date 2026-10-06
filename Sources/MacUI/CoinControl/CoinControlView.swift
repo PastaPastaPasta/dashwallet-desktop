@@ -35,22 +35,22 @@ struct CoinControlView: View {
     @State private var tableSelection: Set<OutPoint> = []
 
     var body: some View {
-        VStack(spacing: 0) {
+        // UX-SPEC §4.14: the summary on a raised strip, the toolbar, the
+        // technical table on a card, OK in the footer.
+        VStack(alignment: .leading, spacing: DashSpacing.m) {
             CoinSummaryGrid(coinControl: coinControl)
-                .padding(DashSpacing.m)
-            Divider()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .dashCard(radius: DashRadius.standard, padding: DashSpacing.m, elevation: nil, fill: Color.role.cardRaised)
             toolbar
-                .padding(.horizontal, DashSpacing.m)
-                .padding(.vertical, DashSpacing.s)
             if coinControl.unselectedNotice {
                 HStack {
                     SystemNotice(text: L10n.CoinControl.coinsUnselected, tone: .warning)
                     Button(MacStrings.Common.ok) { coinControl.dismissUnselectedNotice() }
+                        .buttonStyle(.dash(.tintedGray, .small))
                 }
-                .padding(.horizontal, DashSpacing.m)
             }
             if let error = coinControl.errorMessage {
-                SystemNotice(text: error, tone: .error).padding(.horizontal, DashSpacing.m)
+                SystemNotice(text: error, tone: .error)
             }
             Group {
                 switch coinControl.mode {
@@ -58,17 +58,20 @@ struct CoinControlView: View {
                 case .tree: treeMode
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: DashRadius.group, style: .continuous))
+            .dashCard(radius: DashRadius.group, padding: nil)
             .frame(maxHeight: .infinity)
-            Divider()
             HStack {
                 Spacer()
                 Button(MacStrings.Common.ok, action: onDone)
+                    .buttonStyle(.dash(.filledBlue, .medium))
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("coinControl.ok")
             }
-            .padding(DashSpacing.m)
         }
+        .padding(DashLayout.pagePaddingH)
         .frame(minWidth: 860, minHeight: 520)
+        .dashCanvas()
         .task { await coinControl.load() }
         .accessibilityIdentifier("coinControl")
     }
@@ -76,25 +79,24 @@ struct CoinControlView: View {
     private var toolbar: some View {
         HStack(spacing: DashSpacing.m) {
             Button(L10n.CoinControl.selectAll) { Task { await coinControl.selectAll() } }
+                .buttonStyle(.dash(.tintedGray, .small))
                 .accessibilityIdentifier("coinControl.selectAll")
             Button(L10n.CoinControl.lockAll) { Task { await coinControl.lockAll() } }
+                .buttonStyle(.dash(.tintedGray, .small))
                 .accessibilityIdentifier("coinControl.lockAll")
             Text(coinControl.lockedText)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .accessibilityIdentifier("coinControl.locked")
             Spacer()
             if !coinControl.coinJoinPage {
                 Button(coinControl.coinJoinToggleTitle) {
                     Task { await coinControl.setShowCoinJoinCoins(!coinControl.showCoinJoinCoins) }
                 }
-                Picker("", selection: Binding(get: { coinControl.mode }, set: { coinControl.setMode($0) })) {
-                    Text(L10n.CoinControl.treeMode).tag(CoinControlMode.tree)
-                    Text(L10n.CoinControl.listMode).tag(CoinControlMode.list)
-                }
-                .pickerStyle(.radioGroup)
-                .horizontalRadioGroupLayout()
-                .labelsHidden()
+                .buttonStyle(.dash(.plainBlue, .small))
+                DashSegmentedControl(
+                    [(CoinControlMode.tree, L10n.CoinControl.treeMode), (CoinControlMode.list, L10n.CoinControl.listMode)],
+                    selection: Binding(get: { coinControl.mode }, set: { coinControl.setMode($0) }))
                 .accessibilityIdentifier("coinControl.mode")
             }
         }
@@ -125,7 +127,7 @@ struct CoinControlView: View {
                 L10n.CoinControl.columnAmount, id: CoinColumn.amount.rawValue, width: .fixed(150), alignment: .trailing,
                 sortBy: { $0.amount < $1.amount }
             ) { coin in
-                Text(coinControl.amountText(coin)).font(.system(.footnote, design: .monospaced))
+                Text(coinControl.amountText(coin)).dashFont(.footnote).monospacedDigit()
             },
             DataTableColumn(
                 L10n.CoinControl.columnLabel, id: CoinColumn.label.rawValue, width: .flexible(min: 120),
@@ -147,13 +149,13 @@ struct CoinControlView: View {
                 L10n.CoinControl.columnDate, id: CoinColumn.date.rawValue, width: .fixed(140),
                 sortBy: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
             ) { coin in
-                Text(coin.date?.formatted(date: .numeric, time: .shortened) ?? "").dashFont(.footnote)
+                Text(coin.date?.formatted(date: .numeric, time: .shortened) ?? "").dashFont(.footnote).monospacedDigit()
             },
             DataTableColumn(
                 L10n.CoinControl.columnConfirmations, id: CoinColumn.confirmations.rawValue, width: .fixed(100),
                 alignment: .trailing, sortBy: { $0.confirmations < $1.confirmations }
             ) { coin in
-                Text("\(coin.confirmations)").dashFont(.footnote)
+                Text("\(coin.confirmations)").dashFont(.footnote).monospacedDigit()
             },
         ]
         return columns
@@ -169,11 +171,13 @@ struct CoinControlView: View {
                         HStack(spacing: DashSpacing.m) {
                             CoinCheckbox(coinControl: coinControl, coin: coin)
                             Text(coinControl.amountText(coin))
-                                .font(.system(.footnote, design: .monospaced))
+                                .dashFont(.footnote)
+                                .monospacedDigit()
                                 .frame(width: 150, alignment: .trailing)
+                            // An outpoint (txid:vout) is a hash: technical text.
                             Text("\(coin.outpoint.txid.prefix(16))…:\(coin.outpoint.vout)")
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(Color.dash.secondaryText)
+                                .font(.system(size: DesignTokens.DashTextStyle.caption1.size, design: .monospaced))
+                                .foregroundStyle(Color.role.textSecondary)
                             Spacer()
                             Text(coin.date?.formatted(date: .numeric, time: .shortened) ?? "").dashFont(.footnote)
                             Text("\(coin.confirmations)").dashFont(.footnote).frame(width: 60, alignment: .trailing)
@@ -184,16 +188,20 @@ struct CoinControlView: View {
                     HStack {
                         Text(group.label).dashFont(.subheadMedium)
                         Text(group.address)
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Color.dash.secondaryText)
+                            .dashFont(.footnote)
+                            .foregroundStyle(Color.role.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         Spacer()
                         Text(formatAmount(group.total))
-                            .font(.system(.footnote, design: .monospaced))
+                            .dashFont(.footnote)
+                            .monospacedDigit()
                     }
                 }
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .accessibilityIdentifier("coinControl.tree")
     }
 
@@ -242,7 +250,7 @@ private struct CoinCheckbox: View {
             .accessibilityIdentifier("coinControl.check.\(coin.outpoint.vout).\(coin.outpoint.txid.prefix(8))")
         } else {
             Image(systemName: "lock.fill")
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .help(coin.reserved ? MacStrings.CoinControl.reserved : L10n.CoinControl.unlockUnspent)
                 .accessibilityLabel(MacStrings.CoinControl.locked)
         }
@@ -274,22 +282,22 @@ struct CoinSummaryGrid: View {
             if coinControl.insufficientFunds {
                 Text(L10n.CoinControl.insufficientFunds)
                     .dashFont(.footnoteMedium)
-                    .foregroundStyle(Color.dash.errorText)
+                    .foregroundStyle(Color.role.danger)
             }
         } else if coinControl.summaryUnavailable {
             Text(L10n.CoinControl.summaryUnavailable)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         } else {
             Text(L10n.CoinControl.automaticallySelected)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         }
     }
 
     @ViewBuilder
     private func cell(_ title: String, _ value: String, _ field: CoinSummaryField) -> some View {
-        Text(title).foregroundStyle(Color.dash.secondaryText)
+        Text(title).foregroundStyle(Color.role.textSecondary)
         Text(value)
             .monospacedDigit()
             .contextMenu {
@@ -317,7 +325,7 @@ struct SendCoinControlPanel: View {
             if coinControl.isAutomatic {
                 Text(L10n.CoinControl.automaticallySelected)
                     .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .accessibilityIdentifier("send.coinControl.automatic")
             } else {
                 CoinSummaryGrid(coinControl: coinControl)
@@ -329,10 +337,10 @@ struct SendCoinControlPanel: View {
                 .help(MacStrings.CoinControl.customChangeUnavailable)
             Text(MacStrings.CoinControl.customChangeUnavailable)
                 .dashFont(.caption1)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
         }
         .padding(DashSpacing.l)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .dashCard(padding: nil)
         .accessibilityIdentifier("send.coinControl")
     }
 }

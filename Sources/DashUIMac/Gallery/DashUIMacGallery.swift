@@ -223,6 +223,120 @@ extension DashUIMacGallery {
             // Not scrollable: ImageRenderer draws scroll views blank.
             GalleryDataTable()
         },
+        DashUIMacGallerySample("amount-text", title: "AmountText, NetworkCapsule", width: 360) {
+            VStack(alignment: .leading, spacing: DashSpacing.s) {
+                AmountText("30.39698287", unit: .glyph(spoken: "DASH"), size: 34, weight: .bold, glyphFactor: 0.7)
+                AmountText("+0.20", unit: .glyph(spoken: "tDASH"))
+                AmountText("250.00374", unit: .name("mDASH"), weight: .regular)
+                NetworkCapsule("Testnet")
+            }
+            .foregroundStyle(Color.role.textPrimary)
+        },
+        DashUIMacGallerySample("balance-hero", title: "BalanceHero, ShortcutCard", width: 720) {
+            BalanceHero(
+                network: "Testnet", caption: BalanceHeroCaption(text: "Syncing Balance"), amount: "30.39698287",
+                unit: .glyph(spoken: "tDASH"), isHidden: false, unavailableText: "Balance unavailable",
+                breakdown: [
+                    BalanceBreakdownCell(
+                        id: "available", title: "Available", subtitle: "Spendable now", amount: "30.19698287",
+                        unit: .glyph(spoken: "tDASH"), help: nil),
+                    BalanceBreakdownCell(
+                        id: "pending", title: "Pending", subtitle: "Awaiting confirmation", amount: nil,
+                        unit: .none, help: "Not available until sync completes"),
+                ],
+                onToggleHidden: {}, toggleLabel: "Hide balance"
+            ) {
+                ShortcutCard {
+                    ShortcutItem(title: "Receive", icon: .token(.shortcutReceive)) {}
+                    ShortcutItem(title: "Send", icon: .token(.shortcutSend)) {}
+                    ShortcutItem(title: "Scan QR", icon: .token(.shortcutScanQR)) {}
+                    ShortcutItem(title: "Back up", icon: .token(.shortcutBackup)) {}
+                }
+            }
+            .background(Color.role.canvas)
+        },
+        DashUIMacGallerySample("history", title: "HistoryHeader, TransactionGroupCard, DashTransactionRow", width: 560) {
+            VStack(spacing: DashSpacing.m) {
+                HistoryHeader(title: "History", syncText: "Syncing 47.0%", onSync: {}, filterTitle: "Filter", onFilter: {})
+                TransactionGroupCard(day: "Today", weekday: "Tuesday") {
+                    DashTransactionRow(
+                        icon: .token(.txReceived), title: "Received", subtitle: "01:40",
+                        chip: .init(text: "Pending"), amount: "+0.20", unit: .glyph(spoken: "DASH"))
+                    DashTransactionRow(
+                        icon: .token(.txSent), title: "Alice", subtitle: "00:12", amount: "-0.50000226",
+                        unit: .glyph(spoken: "DASH"), isSelected: true)
+                    DashTransactionRow(
+                        icon: .token(.txError), title: "Sent", subtitle: "00:02",
+                        chip: .init(text: "Conflicted", isProblem: true), amount: "[-1.00]",
+                        unit: .glyph(spoken: "DASH"), isDimmed: true)
+                    DashTransactionRow(
+                        icon: .token(.txMining), title: "Mined", subtitle: "23:59", amount: "+2.25",
+                        unit: .name("mDASH"), trailingStatus: "Locked")
+                }
+            }
+            .padding(DashSpacing.m)
+            .background(Color.role.canvas)
+        },
+        DashUIMacGallerySample("menu-card", title: "MenuCard, MenuRow, DetailRow, CopyRow", width: 520) {
+            VStack(spacing: DashSpacing.m) {
+                MenuCard(title: "Security", footer: "Rows are 56 pt high with 30 pt icons.") {
+                    MenuRow(icon: .token(.security), title: "Wallet encryption") {
+                        Text("Encrypted").dashFont(.subhead).foregroundStyle(Color.role.textSecondary)
+                    }
+                    MenuRow(icon: .token(.autohideBalance), title: "Autohide balance", help: "Hide amounts on start") {
+                        Toggle("Autohide balance", isOn: .constant(true)).toggleStyle(.switch).labelsHidden()
+                    }
+                    MenuActionRow(icon: .token(.resetWallet), title: "Wipe wallet", isDestructive: true) {}
+                }
+                MenuCard {
+                    DetailRow("Status", value: "0/unconfirmed, in memory pool")
+                    CopyRow(
+                        "Transaction ID", value: "57143a022c2d67ba52c6251f28b96e4834786fa5bbb0abffacab6a7a943469a4",
+                        isTechnical: true, copyLabel: "Copy transaction ID")
+                }
+            }
+            .padding(DashSpacing.m)
+            .background(Color.role.canvas)
+        },
+        DashUIMacGallerySample("states", title: "SegmentedControl, EmptyState, LoadingState, ProgressBar, WizardHeader", width: 520) {
+            VStack(alignment: .leading, spacing: DashSpacing.m) {
+                DashSegmentedControl([(0, "List"), (1, "Table")], selection: .constant(0))
+                EmptyState(icon: .token(.txAll), title: "There are no transactions to display") {
+                    Button("Receive Dash") {}.buttonStyle(.dash(.filledBlue, .medium))
+                }
+                .dashCard(padding: nil)
+                LoadingState("Loading transactions")
+                DashProgressBar(value: 0.47)
+                WizardHeader(stepText: "Step 2 of 9 · Collateral", title: "Choose the collateral", step: 2, count: 9)
+                KeyValueGrid([
+                    .init("Quantity", value: "3"),
+                    .init("PoSe score", value: nil, reason: "Requires full-node data source"),
+                ])
+            }
+            .padding(DashSpacing.m)
+            .background(Color.role.canvas)
+        },
+        DashUIMacGallerySample("phrase-grid", title: "PhraseGrid", width: 520) {
+            PhraseGrid(words: ["galaxy", "rocket", "velvet", "harbor", "tiny", "maple", "oyster", "crane", "sunset",
+                               "ribbon", "empty", "above"])
+                .padding(DashSpacing.m)
+                .background(Color.role.canvas)
+        },
+        DashUIMacGallerySample("button-styles", title: "Dash button styles on SwiftUI Button") {
+            VStack(alignment: .leading, spacing: DashSpacing.s) {
+                HStack {
+                    Button("Send") {}.buttonStyle(.dash(.filledBlue, .large))
+                    Button("Cancel") {}.buttonStyle(.dash(.tintedGray, .large))
+                }
+                HStack {
+                    Button("Add Recipient", systemImage: "plus") {}.buttonStyle(.dash(.tintedBlue, .medium))
+                    Button("Export…") {}.buttonStyle(.dash(.plainBlue, .small))
+                    Button("Wipe") {}.buttonStyle(.dash(.plainRed, .small))
+                    Button("Disabled") {}.buttonStyle(.dash(.filledBlue, .small)).disabled(true)
+                }
+                Text("Field").padding(DashSpacing.s).modifier(DashFieldModifier())
+            }
+        },
         DashUIMacGallerySample("illustrations", title: "Illustrations") {
             HStack(spacing: DashSpacing.m) {
                 SuccessIllustration()
@@ -310,7 +424,7 @@ private struct GalleryDataTable: View {
                                 sortBy: { $0.duffs < $1.duffs }) { row in
                     Text(row.amount)
                         .font(DashTextStyle.footnote.font.monospacedDigit())
-                        .foregroundStyle(row.duffs < 0 ? Color.dash.primaryText : Color.dash.successText)
+                        .foregroundStyle(Color.role.textPrimary)
                 },
             ],
             selection: $selection,

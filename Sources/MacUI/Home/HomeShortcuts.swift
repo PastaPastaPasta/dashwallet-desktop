@@ -9,31 +9,18 @@ import SwiftUI
 import WalletFeatures
 import WalletRuntime
 
+/// The iOS shortcut card (UX-SPEC C6): the view model's four slots as items
+/// with the 46 pt shortcut icons; right-click replaces a slot (iOS long-press).
 struct ShortcutBarView: View {
     let bar: ShortcutBarViewModel
     let perform: (ShortcutRoute) -> Void
 
     var body: some View {
-        HStack(spacing: DashSpacing.m) {
+        ShortcutCard {
             ForEach(bar.slots) { slot in
-                Button {
+                ShortcutItem(title: slot.action.title, icon: Self.icon(slot.action)) {
                     if let route = bar.route(for: slot) { perform(route) }
-                } label: {
-                    VStack(spacing: DashSpacing.xs) {
-                        Image(systemName: Self.symbol(slot.action))
-                            .font(.system(size: 20))
-                            .foregroundStyle(slot.isEnabled ? Color.dash.blue : Color.dash.secondaryText)
-                        Text(slot.action.title)
-                            .dashFont(.footnoteMedium)
-                            .foregroundStyle(slot.isEnabled ? Color.dash.primaryText : Color.dash.secondaryText)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, DashSpacing.m)
-                    .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .disabled(!slot.isEnabled)
                 .help(slot.helpText ?? slot.action.title)
                 .contextMenu {
@@ -52,55 +39,46 @@ struct ShortcutBarView: View {
         .accessibilityIdentifier("shortcutBar")
     }
 
-    static func symbol(_ action: ShortcutAction) -> String {
+    /// dashwallet-iOS shortcut-bar icons where they are exported; the
+    /// others draw their SF Symbol in a blue circle of the same size.
+    static func icon(_ action: ShortcutAction) -> DashIconSource {
         switch action {
-        case .backup: "lock.shield"
-        case .receive: "arrow.down.left"
-        case .send, .sendToAddress: "arrow.up.right"
-        case .scanQR: "qrcode.viewfinder"
-        case .buySell: "creditcard"
-        case .explore: "map"
-        case .spend: "cart"
-        case .atm: "banknote"
-        case .coinbase, .uphold, .topper: "building.columns"
-        case .dashDEX: "arrow.left.arrow.right"
-        case .crowdNode: "person.3"
-        case .testnetFaucet: "drop"
-        case .switchWallet: "wallet.pass"
-        case .nodes: "server.rack"
+        case .backup: .token(.shortcutBackup)
+        case .receive: .token(.shortcutReceive)
+        case .send: .token(.shortcutSend)
+        case .sendToAddress: .token(.shortcutSendToAddress)
+        case .scanQR: .token(.shortcutScanQR)
+        case .explore: .token(.shortcutExplore)
+        case .buySell: .system("creditcard")
+        case .spend: .system("cart")
+        case .atm: .system("banknote")
+        case .coinbase, .uphold, .topper: .system("building.columns")
+        case .dashDEX: .system("arrow.left.arrow.right")
+        case .crowdNode: .system("person.3")
+        case .testnetFaucet: .system("drop")
+        case .switchWallet: .system("wallet.pass")
+        case .nodes: .system("server.rack")
         }
     }
 }
 
 /// IOS-005: shown once, 24 h after a new wallet first held funds, until the
-/// phrase is backed up.
+/// phrase is backed up. A DashUIKit system message with Back up / Later.
 struct BackupReminderBanner: View {
     let reminder: BackupReminderViewModel
     let backUp: () -> Void
 
     var body: some View {
         if reminder.isDue {
-            HStack(alignment: .top, spacing: DashSpacing.m) {
-                Image(systemName: "exclamationmark.shield.fill")
-                    .foregroundStyle(Color.dash.orange)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                    Text(L10n.HomeM2.backupReminderTitle).dashFont(.subheadMedium)
-                    Text(L10n.HomeM2.backupReminderMessage)
-                        .dashFont(.footnote)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                Button(L10n.HomeM2.later) { reminder.markShown() }
-                Button(L10n.HomeM2.backupNow) {
+            SystemMessageView(
+                title: L10n.HomeM2.backupReminderTitle, subtitle: L10n.HomeM2.backupReminderMessage,
+                icon: .token(.messageShield), backgroundColor: Color.role.warningTint,
+                buttonName: L10n.HomeM2.backupNow,
+                onAction: {
                     reminder.markShown()
                     backUp()
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("backupReminder.backUp")
-            }
-            .padding(DashSpacing.l)
-            .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.orangeAlpha10))
+                },
+                secondaryButtonName: L10n.HomeM2.later, onSecondaryAction: { reminder.markShown() })
             .accessibilityIdentifier("backupReminder")
         }
     }

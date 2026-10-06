@@ -19,7 +19,7 @@ struct AddressBookWindow: View {
                 AddressBookView(book: book, onChoose: nil)
             } else {
                 Text(L10n.Common.noWallet)
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -35,62 +35,98 @@ struct AddressBookView: View {
     let book: AddressBookViewModel
     /// Selection mode: called with the chosen entry ("Choose" or double click).
     let onChoose: ((AddressBookEntry) -> Void)?
-    @State private var selection: Set<AddressBookEntry.ID> = []
-    @State private var sortOrder: DataTableSortOrder? = DataTableSortOrder(columnID: "label")
+    @State private var selection: AddressBookEntry.ID?
     @State private var editor: EditorState?
     @State private var search = ""
     @State private var exportMessage: String?
+    @State private var toast: ToastMessage?
 
     private var selected: AddressBookEntry? {
-        selection.count == 1 ? book.entries.first { selection.contains($0.id) } : nil
+        selection.flatMap { id in book.entries.first { $0.id == id } }
     }
 
+    /// UX-SPEC §4.10: the dash-qt text, Sending | Receiving, search, and the
+    /// entries as iOS contact rows in a menu card; copy / edit on hover and
+    /// dash-qt's actions in the context menu.
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            if !book.selectionMode {
-                Picker("", selection: Binding(get: { book.purpose }, set: { book.setPurpose($0) })) {
-                    Text(MacStrings.AddressBook.sending).tag(AddressPurpose.send)
-                    Text(MacStrings.AddressBook.receiving).tag(AddressPurpose.receive)
+            HStack {
+                if !book.selectionMode {
+                    DashSegmentedControl(
+                        [(AddressPurpose.send, MacStrings.AddressBook.sending),
+                         (AddressPurpose.receive, MacStrings.AddressBook.receiving)],
+                        selection: Binding(get: { book.purpose }, set: { book.setPurpose($0) }))
+                    .accessibilityIdentifier("addressBook.purpose")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 260)
-                .accessibilityIdentifier("addressBook.purpose")
+                Spacer()
+                if book.canCreate {
+                    Button(MacStrings.AddressBook.new, systemImage: "plus") { editor = EditorState(entry: nil) }
+                        .buttonStyle(.dash(.tintedBlue, .small))
+                }
+                if onChoose == nil {
+                    Button(MacStrings.Common.export) { Task { await export() } }
+                        .buttonStyle(.dash(.plainBlue, .small))
+                }
             }
             Text(book.header)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField(L10n.AddressBook.searchPlaceholder, text: $search)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: search) { _, text in book.setSearch(text) }
-                .accessibilityIdentifier("addressBook.search")
-            DataTable(
-                rows: book.entries,
-                columns: [
-                    DataTableColumn(MacStrings.AddressBook.label, id: "label", width: .flexible(min: 140)) {
-                        book.labelText(for: $0)
-                    },
-                    DataTableColumn(MacStrings.AddressBook.address, id: "address", width: .flexible(min: 260)) { entry in
-                        Text(entry.address)
-                            .font(.system(.footnote, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    },
-                ],
-                selection: $selection, sortOrder: $sortOrder, emptyText: MacStrings.AddressBook.empty,
-                onActivate: { id in
-                    guard let entry = book.entries.first(where: { $0.id == id }) else { return }
-                    if let onChoose { onChoose(entry) } else { editor = EditorState(entry: entry) }
-                })
-            .clipShape(RoundedRectangle(cornerRadius: DashRadius.standard))
+            HStack(spacing: DashSpacing.xs) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Color.role.textTertiary)
+                    .accessibilityHidden(true)
+                TextField(L10n.AddressBook.searchPlaceholder, text: $search)
+                    .textFieldStyle(.plain)
+                    .onChange(of: search) { _, text in book.setSearch(text) }
+                    .accessibilityIdentifier("addressBook.search")
+            }
+            .dashFont(.subhead)
+            .padding(.horizontal, DashSpacing.m)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: DashRadius.searchField, style: .continuous).fill(Color.role.fieldFill))
+            ScrollView {
+                if book.entries.isEmpty {
+                    EmptyState(icon: .token(.addressBook), title: MacStrings.AddressBook.empty)
+                } else {
+                    VStack(spacing: DashSpacing.xxxs) {
+                        ForEach(book.entries) { entry in
+                            AddressRow(
+                                entry: entry, label: book.labelText(for: entry), isSelected: entry.id == selection,
+                                onSelect: { selection = entry.id },
+                                onActivate: {
+                                    if let onChoose { onChoose(entry) } else { editor = EditorState(entry: entry) }
+                                },
+                                onCopy: { copy(entry.address) },
+                                onEdit: book.selectionMode ? nil : { editor = EditorState(entry: entry) })
+                            .contextMenu { menu(for: entry) }
+                        }
+                    }
+                    .padding(DashSpacing.menuCardInner)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            .dashCard(padding: nil, elevation: .menuCard)
             .accessibilityIdentifier("addressBook.table")
             if let error = book.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
-            buttons
+            if let exportMessage {
+                Text(exportMessage).dashFont(.footnote).foregroundStyle(Color.role.textSecondary)
+            }
+            if onChoose != nil {
+                HStack {
+                    Spacer()
+                    Button(MacStrings.AddressBook.choose) { if let selected { onChoose?(selected) } }
+                        .buttonStyle(.dash(.filledBlue, .medium))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(selected == nil)
+                }
+            }
         }
         .padding(DashSpacing.xl)
+        .dashCanvas()
+        .dashToast($toast)
         .task { await book.load() }
         .sheet(item: $editor) { state in
             AddressEditor(book: book, state: state, onClose: { editor = nil })
@@ -100,34 +136,25 @@ struct AddressBookView: View {
         }
     }
 
-    private var buttons: some View {
-        HStack(spacing: DashSpacing.s) {
-            if book.canCreate {
-                Button(MacStrings.AddressBook.new, systemImage: "plus") { editor = EditorState(entry: nil) }
-            }
-            Button(MacStrings.Common.copy, systemImage: "doc.on.doc") {
-                if let selected { MacPasteboard.copy(selected.address) }
-            }
-            .disabled(selected == nil)
-            Button(MacStrings.Common.edit) { if let selected { editor = EditorState(entry: selected) } }
-                .disabled(selected == nil)
-            Button(MacStrings.AddressBook.showQR, systemImage: "qrcode") { if let selected { book.showQR(for: selected) } }
-                .disabled(selected == nil)
-                .accessibilityIdentifier("addressBook.showQR")
-            if book.canDelete {
-                Button(MacStrings.Common.delete, role: .destructive) {
-                    if let selected { Task { await book.delete(address: selected.address) } }
-                }
-                .disabled(selected == nil)
-            }
-            Spacer()
-            if let exportMessage { Text(exportMessage).dashFont(.footnote).foregroundStyle(Color.dash.secondaryText) }
-            if onChoose == nil {
-                Button(MacStrings.Common.export) { Task { await export() } }
-            } else {
-                Button(MacStrings.AddressBook.choose) { if let selected { onChoose?(selected) } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(selected == nil)
+    private func copy(_ text: String) {
+        MacPasteboard.copy(text)
+        toast = ToastMessage(.copied, L10n.UX.copied)
+    }
+
+    /// dash-qt's address-book context menu.
+    @ViewBuilder
+    private func menu(for entry: AddressBookEntry) -> some View {
+        Button(MacStrings.AddressBook.copyAddress) { copy(entry.address) }
+        Button(MacStrings.AddressBook.copyLabel) { copy(entry.label) }
+            .disabled(entry.label.isEmpty)
+        if !book.selectionMode {
+            Button(MacStrings.Common.edit) { editor = EditorState(entry: entry) }
+        }
+        Button(MacStrings.AddressBook.showQR) { book.showQR(for: entry) }
+        if book.canDelete {
+            Divider()
+            Button(MacStrings.Common.delete, role: .destructive) {
+                Task { await book.delete(address: entry.address) }
             }
         }
     }
@@ -143,6 +170,61 @@ struct AddressBookView: View {
     }
 }
 
+/// One entry: a blue initial avatar, the label and the middle-truncated
+/// address; copy and edit appear under the pointer.
+private struct AddressRow: View {
+    let entry: AddressBookEntry
+    let label: String
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onActivate: () -> Void
+    let onCopy: () -> Void
+    let onEdit: (() -> Void)?
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: DashSpacing.sm) {
+            Text(String(label.first ?? "#").uppercased())
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.role.textOnHero)
+                .frame(width: DashLayout.rowIconSize, height: DashLayout.rowIconSize)
+                .background(Circle().fill(Color.role.accent))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .dashFont(.subheadMedium)
+                    .foregroundStyle(Color.role.textPrimary)
+                    .lineLimit(1)
+                Text(entry.address)
+                    .dashFont(.footnote)
+                    .foregroundStyle(Color.role.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(entry.address)
+            }
+            Spacer(minLength: DashSpacing.m)
+            if isHovering || isSelected {
+                CopyButton(value: entry.address, label: MacStrings.AddressBook.copyAddress, onCopied: onCopy)
+                if let onEdit {
+                    Button(action: onEdit) { Image(systemName: "pencil") }
+                        .buttonStyle(.dash(.tintedGray, .extraSmall))
+                        .help(MacStrings.Common.edit)
+                        .accessibilityLabel(MacStrings.Common.edit)
+                }
+            }
+        }
+        .padding(.horizontal, DashSpacing.sm)
+        .frame(minHeight: DashLayout.rowMinHeight)
+        .contentShape(Rectangle())
+        .dashRowHighlight(isSelected: isSelected, radius: DashRadius.standard + 2)
+        .onHover { isHovering = $0 }
+        .gesture(TapGesture(count: 2).onEnded(onActivate))
+        .simultaneousGesture(TapGesture().onEnded(onSelect))
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+}
+
 /// dash-qt's "Show QR code" dialog: the entry's `dash:` URI with its label.
 private struct AddressQRSheet: View {
     let book: AddressBookViewModel
@@ -150,7 +232,7 @@ private struct AddressQRSheet: View {
     var body: some View {
         VStack(spacing: DashSpacing.m) {
             if let entry = book.qrEntry {
-                Text(book.labelText(for: entry)).dashFont(.headline)
+                Text(book.labelText(for: entry)).dashFont(.headline).foregroundStyle(Color.role.textPrimary)
             }
             if let qr = book.qr {
                 QRView(size: qr.size, modules: qr.modules, accessibilityLabel: MacStrings.AddressBook.qrTitle)
@@ -158,7 +240,8 @@ private struct AddressQRSheet: View {
             }
             if let uri = book.qrURI {
                 Text(uri)
-                    .font(.system(.footnote, design: .monospaced))
+                    .dashFont(.footnote)
+                    .foregroundStyle(Color.role.textSecondary)
                     .textSelection(.enabled)
                     .multilineTextAlignment(.center)
             }
@@ -166,13 +249,16 @@ private struct AddressQRSheet: View {
                 Button(MacStrings.Common.copy, systemImage: "doc.on.doc") {
                     if let uri = book.qrURI { MacPasteboard.copy(uri) }
                 }
+                .buttonStyle(.dash(.tintedBlue, .medium))
                 Spacer()
                 Button(MacStrings.Common.close) { book.hideQR() }
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
             }
         }
         .padding(DashSpacing.xl)
         .frame(width: 360)
+        .dashCanvas()
         .accessibilityIdentifier("addressBook.qr")
     }
 }
@@ -198,30 +284,35 @@ private struct AddressEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(title).dashFont(.title3)
+            Text(title).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
+            FieldCaption(MacStrings.AddressBook.label)
             TextField(MacStrings.AddressBook.label, text: $label)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.dash)
+            FieldCaption(MacStrings.AddressBook.address)
             TextField(MacStrings.AddressBook.address, text: $address)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
+                .textFieldStyle(.dash)
                 .disabled(state.entry != nil)
             if let error = book.errorMessage {
-                Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
             }
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.save) {
                     Task {
                         if await book.save(address: address, label: label, replace: state.entry != nil) { onClose() }
                     }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(address.isEmpty)
             }
         }
         .padding(DashSpacing.xl)
-        .frame(width: 480)
+        .frame(width: DashLayout.sheetWidthSmall)
+        .dashCanvas()
         .onAppear {
             label = state.entry?.label ?? ""
             address = state.entry?.address ?? ""

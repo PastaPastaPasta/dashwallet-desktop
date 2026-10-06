@@ -13,103 +13,98 @@ enum TransactionsLayout: String, Hashable, CaseIterable {
     case table, history
 }
 
-/// Sent / Received / Rewards / Masternode chips with All and Only.
+/// Sent / Received / Rewards / Masternode chips with All and Only, as iOS
+/// filter capsules: selected chips on the accent tint.
 struct HistoryChips: View {
     let transactions: TransactionsViewModel
 
     var body: some View {
         HStack(spacing: DashSpacing.s) {
-            Button(L10n.TransactionsM2.all) { Task { await transactions.selectAllChips() } }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("transactions.chip.all")
-            ForEach(transactions.offeredChips, id: \.self) { chip in
-                Toggle(chip.title, isOn: Binding(
-                    get: { transactions.selectedChips.contains(chip) },
-                    set: { _ in Task { await transactions.toggleChip(chip) } }))
-                .toggleStyle(.button)
-                .contextMenu {
-                    Button(L10n.TransactionsM2.only) { Task { await transactions.selectOnlyChip(chip) } }
+            chip(L10n.TransactionsM2.all, isOn: Set(transactions.offeredChips).isSubset(of: transactions.selectedChips)) {
+                Task { await transactions.selectAllChips() }
+            }
+            .accessibilityIdentifier("transactions.chip.all")
+            ForEach(transactions.offeredChips, id: \.self) { item in
+                chip(item.title, isOn: transactions.selectedChips.contains(item)) {
+                    Task { await transactions.toggleChip(item) }
                 }
-                .accessibilityIdentifier("transactions.chip.\(chip.rawValue)")
+                .contextMenu {
+                    Button(L10n.TransactionsM2.only) { Task { await transactions.selectOnlyChip(item) } }
+                }
+                .accessibilityIdentifier("transactions.chip.\(item.rawValue)")
             }
             Spacer()
         }
     }
+
+    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .dashFont(.footnoteMedium)
+                .foregroundStyle(isOn ? Color.role.textLink : Color.role.textSecondary)
+                .padding(.horizontal, DashSpacing.m)
+                .padding(.vertical, DashSpacing.xxs + 1)
+                .background(Capsule().fill(isOn ? Color.role.accentTint : Color.role.neutralTint))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
 }
 
-/// Day groups, newest first; a day's CoinJoin records are one row.
+/// Day cards of iOS rows, newest first; a day's CoinJoin records are one
+/// "Mixing Transactions" row (UX-SPEC §4.9 list mode).
 struct HistoryList: View {
     let transactions: TransactionsViewModel
+    let unit: DisplayUnit
+    let unitName: String
     let formatAmount: (Amount) -> String
+    let selection: Set<TxRecord.ID>
     let onOpen: (TxRecord.ID) -> Void
     let contextMenu: (Set<TxRecord.ID>) -> [DataTableMenuAction]
 
     var body: some View {
-        List {
-            ForEach(transactions.dayGroups) { group in
-                Section(group.title) {
-                    ForEach(group.items) { item in
-                        switch item {
-                        case .record(let record):
-                            Button { onOpen(record.id) } label: { recordRow(record) }
-                                .buttonStyle(.plain)
+        ScrollView {
+            VStack(alignment: .leading, spacing: DashSpacing.m) {
+                ForEach(transactions.dayGroups) { group in
+                    TransactionGroupCard(day: group.title, weekday: group.day.map { HistoryDay.weekday($0) }) {
+                        ForEach(group.items) { item in
+                            switch item {
+                            case .record(let record):
+                                DashTransactionRow(
+                                    record: record, unit: unit, unitName: unitName,
+                                    isSelected: selection.contains(record.id), action: { onOpen(record.id) })
                                 .contextMenu {
                                     ForEach(contextMenu([record.id])) { action in
                                         Button(action.title, action: action.action).disabled(!action.isEnabled)
                                     }
                                 }
-                        case .coinJoinMixing(let row):
-                            mixingRow(row)
+                                .accessibilityIdentifier("transactions.row")
+                            case .coinJoinMixing(let row):
+                                mixingRow(row)
+                            }
                         }
                     }
                 }
+                if transactions.rows.isEmpty {
+                    EmptyState(icon: .token(.txAll), title: L10n.UX.noTransactions)
+                        .dashCard(padding: nil)
+                }
             }
-            if transactions.rows.isEmpty {
-                Text(MacStrings.Transactions.empty).foregroundStyle(Color.dash.secondaryText)
-            }
+            .frame(maxWidth: DashLayout.contentMaxWidth)
+            .padding(.horizontal, DashLayout.pagePaddingH)
+            .padding(.bottom, DashSpacing.l)
+            .frame(maxWidth: .infinity)
         }
-        .listStyle(.inset)
         .accessibilityIdentifier("transactions.history")
     }
 
-    private func recordRow(_ record: TxRecord) -> some View {
-        HStack(spacing: DashSpacing.m) {
-            TransactionStatusIcon(status: record.status)
-            VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                Text(transactions.typeText(for: record)).dashFont(.subheadMedium)
-                Text(transactions.addressText(for: record))
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: DashSpacing.xxxs) {
-                Text(transactions.amountText(for: record))
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(record.amount.duffs < 0 ? Color.dash.primaryText : Color.dash.successText)
-                Text(record.date?.formatted(date: .omitted, time: .shortened) ?? "")
-                    .dashFont(.caption1)
-                    .foregroundStyle(Color.dash.secondaryText)
-            }
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, DashSpacing.xxxs)
-    }
-
     private func mixingRow(_ row: CoinJoinDayRow) -> some View {
-        HStack(spacing: DashSpacing.m) {
-            Image(systemName: "shuffle").foregroundStyle(Color.dash.blueText).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                Text(row.title).dashFont(.subheadMedium)
-                Text(L10n.TransactionsM2.mixingCount(row.records.count))
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
-            }
-            Spacer()
-            Text(formatAmount(row.total)).font(.system(.footnote, design: .monospaced))
-        }
-        .padding(.vertical, DashSpacing.xxxs)
+        DashTransactionRow(
+            icon: .token(.txMixing), title: row.title, subtitle: nil,
+            topText: L10n.TransactionsM2.mixingCount(row.records.count),
+            amount: CompactAmount.format(row.total, unit: unit, signed: false),
+            unit: AmountUnitDisplay(unit: unit, name: unitName), amountHelp: formatAmount(row.total), isInternal: true)
         .accessibilityIdentifier("transactions.mixingRow")
     }
 }

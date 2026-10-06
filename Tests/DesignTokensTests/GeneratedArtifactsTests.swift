@@ -100,10 +100,10 @@ struct GeneratedArtifactsTests {
         #expect(excluded.contains { $0["asset"] as? String == "Purple" })
     }
 
-    @Test("Icon set: at most 120 icons, every file present, no unlisted files")
+    @Test("Icon set: at most 140 icons, every file present, no unlisted files")
     func iconFiles() throws {
-        #expect(DashIconToken.allCases.count <= 120)
-        #expect(DashIconToken.allCases.count == 119)
+        #expect(DashIconToken.allCases.count <= 140)
+        #expect(DashIconToken.allCases.count == 128)
         let present = Set(try FileManager.default.contentsOfDirectory(atPath: iconsDir.path))
         var expected: Set<String> = ["NOTICE"]
         for icon in DashIconToken.allCases {

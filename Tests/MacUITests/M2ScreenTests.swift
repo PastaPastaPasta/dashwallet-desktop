@@ -42,7 +42,7 @@ struct M2ScreenTests {
             try await Self.capture(
                 OptionsView(
                     model: model, options: options, settings: main.settings, security: features.security, tab: tab),
-                CGSize(width: 600, height: 520), scheme, name)
+                CGSize(width: 640, height: 620), scheme, name)
         }
     }
 
@@ -222,7 +222,7 @@ struct M2ScreenTests {
         #expect(transactions.copyFullDetails(first).contains(first.id.txid) || first.address != nil)
         try await Self.capture(
             TransactionDetailView(detail: detail, transactions: transactions, formatAmount: model.formatAmount, onClose: {}),
-            CGSize(width: 620, height: 640), scheme, "transaction-detail")
+            CGSize(width: 640, height: 760), scheme, "transaction-detail")
     }
 
     @Test func QT091_abandonAsksFirst() async throws {
@@ -278,7 +278,8 @@ struct M2ScreenTests {
         security.setAutoLock(.fiveMinutes)
         #expect(security.autoLockInterval == .fiveMinutes)
         try await Self.capture(
-            SecurityOptionsTab(security: security, settings: main.settings), CGSize(width: 600, height: 520), scheme,
+            ScrollView { SecurityOptionsTab(security: security, settings: main.settings).padding(24) },
+            CGSize(width: 640, height: 820), scheme,
             "security")
     }
 
@@ -329,7 +330,7 @@ struct M2ScreenTests {
         let quitting = Task { await shutdown.quit() }
         try await ScreenTests.settle { shutdown.isVisible }
         #expect(!shutdown.canClose)
-        try await Self.capture(ShutdownView(shutdown: shutdown), CGSize(width: 380, height: 180), scheme, "shutdown")
+        try await Self.capture(ShutdownView(shutdown: shutdown), CGSize(width: 380, height: 240), scheme, "shutdown")
         coordinator.finish()
         await quitting.value
         #expect(shutdown.state == .finished)
@@ -342,7 +343,7 @@ struct M2ScreenTests {
         await about.load()
         #expect(about.networkName != nil)
         #expect(about.commandLineOptions.contains { $0.name.contains("windowtitle") })
-        try await Self.capture(AboutView(about: about), CGSize(width: 480, height: 420), scheme, "about")
+        try await Self.capture(AboutView(about: about), CGSize(width: 480, height: 400), scheme, "about")
         try await Self.capture(
             CommandLineOptionsView(about: about), CGSize(width: 560, height: 420), scheme, "command-line-options")
     }
@@ -368,7 +369,7 @@ struct M2ScreenTests {
         await companion.load()
         companion.setRequestAmount("0.5")
         #expect(companion.requestURI?.contains("amount=0.5") == true)
-        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 720), scheme, "menu-bar")
+        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 980), scheme, "menu-bar")
     }
 
     // MARK: Behaviour without rendering

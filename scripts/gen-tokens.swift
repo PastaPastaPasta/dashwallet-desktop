@@ -504,7 +504,7 @@ func loadManifest() -> [IconEntry] {
         }
         return IconEntry(id: id, file: file, group: group, source: source, path: path)
     }
-    if entries.count > 120 { fail("icon manifest has \(entries.count) icons; the limit is 120") }
+    if entries.count > 140 { fail("icon manifest has \(entries.count) icons; the limit is 140") }
     return entries
 }
 
@@ -949,6 +949,41 @@ write(colorsSwift, to: generatedDir.appendingPathComponent("Colors.swift"))
 write(iconsSwift, to: generatedDir.appendingPathComponent("Icons.swift"))
 write(tokensJSON.render() + "\n", to: tokensDir.appendingPathComponent("tokens.json"))
 write(notice, to: iconsDir.appendingPathComponent("NOTICE"))
+
+// The macOS app's accent colour is Dash blue, taken from dashwallet-ios `DashBlueColor`, so sidebar
+// selection, focus rings, default buttons and toggles never follow the user's system accent.
+// Written only when the output repository has the macOS app's asset catalog.
+let accentCatalog = outRoot.appendingPathComponent("Apps/macOS/DashWallet/Assets.xcassets")
+if fileManager.fileExists(atPath: accentCatalog.path) {
+    guard let blue = iosColors.tokens.first(where: { $0.asset == "DashBlueColor" }) else {
+        fail("ios-shared: DashBlueColor not found (needed for the macOS AccentColor)")
+    }
+    func component(_ v: Double) -> String { String(format: "%.3f", v) }
+    let accent = """
+    {
+      "colors" : [
+        {
+          "color" : {
+            "color-space" : "srgb",
+            "components" : {
+              "alpha" : "\(component(blue.light.a))",
+              "blue" : "\(component(blue.light.b))",
+              "green" : "\(component(blue.light.g))",
+              "red" : "\(component(blue.light.r))"
+            }
+          },
+          "idiom" : "universal"
+        }
+      ],
+      "info" : {
+        "author" : "xcode",
+        "version" : 1
+      }
+    }
+
+    """
+    write(accent, to: accentCatalog.appendingPathComponent("AccentColor.colorset/Contents.json"))
+}
 
 note("""
 wrote \(uiKitColors.tokens.count) DashColor + \(iosColors.tokens.count) DashColor.App tokens, \

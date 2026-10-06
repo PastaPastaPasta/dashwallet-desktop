@@ -106,6 +106,9 @@ extension MacStrings {
 extension MacStrings.Transactions {
     static let tableLayout = "dash-qt table"
     static let historyLayout = "History by day"
+    /// Segment titles of the layout switch (UX-SPEC §4.9).
+    static let listLayout = "List"
+    static let tableLayoutShort = "Table"
     static let actionResult = "Transaction"
 }
 

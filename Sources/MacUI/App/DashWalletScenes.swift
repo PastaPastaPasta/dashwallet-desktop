@@ -4,6 +4,8 @@
 // companion. The app's `@main` builds a `MacAppModel` and returns
 // `DashWalletScenes(model:)`.
 #if os(macOS)
+import DashUIMac
+import DesignTokens
 import SwiftUI
 import WalletFeatures
 
@@ -91,8 +93,13 @@ public struct DashWalletScenes: Scene {
         MenuBarExtra(isInserted: $model.showsMenuBarExtra) {
             MenuBarContentView(model: model)
                 .preferredColorScheme(model.colorScheme)
+                .tint(Color.role.accent)
         } label: {
-            Label(L10n.Navigation.appName, systemImage: "d.circle.fill")
+            Label {
+                Text(L10n.Navigation.appName)
+            } icon: {
+                DashIconImage(.token(.dashCurrency), template: true)
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -108,6 +115,9 @@ struct WindowChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .preferredColorScheme(model.colorScheme)
+            // Dash blue for selection, focus rings, default buttons and toggles,
+            // whatever the system accent (UX-SPEC §2.8).
+            .tint(Color.role.accent)
             .background(WindowGeometryKeeper(model: model, window: geometry))
             .onAppear {
                 if model.windowOpener == nil { model.windowOpener = openWindow }
@@ -137,6 +147,7 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(model.colorScheme)
+        .tint(Color.role.accent)
         .background(WindowGeometryKeeper(model: model, window: .main))
         .navigationTitle(model.windowTitle)
         .onOpenURL { url in
@@ -151,22 +162,28 @@ struct RuntimeUnavailableView: View {
     let reason: String
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
-                .foregroundStyle(.orange)
+        VStack(spacing: DashSpacing.m) {
+            DashIconImage(.token(.messageWarning))
+                .scaledToFit()
+                .frame(width: 48, height: 48)
+                .accessibilityHidden(true)
             Text(MacStrings.App.runtimeUnavailableTitle)
-                .font(.title2.bold())
+                .dashFont(.title2)
+                .foregroundStyle(Color.role.textPrimary)
             Text(reason)
+                .dashFont(.subhead)
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.role.textSecondary)
             Text(MacStrings.App.openDemo)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .dashFont(.footnote)
+                .foregroundStyle(Color.role.textTertiary)
         }
-        .padding(40)
+        .frame(maxWidth: DashLayout.formMaxWidth)
+        .dashCard(padding: DashSpacing.xxxl)
         .frame(minWidth: 640, minHeight: 420)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .dashCanvas()
         .accessibilityIdentifier("runtime.unavailable")
     }
 }

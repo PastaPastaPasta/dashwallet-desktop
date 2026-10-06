@@ -40,45 +40,44 @@ struct WalletsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            actions
             FlowBanner(wallets: wallets)
-            List(selection: $selection) {
-                Section(MacStrings.Wallets.walletsHeader) {
-                    ForEach(wallets.wallets) { state in
-                        WalletRow(state: state, onLoadOnStartup: { value in
-                            Task { await wallets.setLoadOnStartup(state.walletID, value) }
-                        })
-                        .tag(state.walletID)
+            ScrollView {
+                VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+                    MenuCard(title: MacStrings.Wallets.walletsHeader) {
+                        ForEach(wallets.wallets) { state in
+                            WalletRow(
+                                state: state, isSelected: state.walletID == selection,
+                                onSelect: { selection = state.walletID },
+                                onLoadOnStartup: { value in
+                                    Task { await wallets.setLoadOnStartup(state.walletID, value) }
+                                })
+                        }
+                        if wallets.wallets.isEmpty {
+                            EmptyState(icon: .token(.wallet), title: MacStrings.Wallets.none)
+                        }
                     }
-                    if wallets.wallets.isEmpty {
-                        Text(MacStrings.Wallets.none).foregroundStyle(Color.dash.secondaryText)
+                    .accessibilityIdentifier("wallets.list")
+                    if wallets.loadStatesUnavailable {
+                        SystemNotice(text: MacStrings.Wallets.loadStatesUnavailable, tone: .info)
                     }
-                }
-                if !wallets.automaticBackups.isEmpty {
-                    Section(L10n.Shell.showAutomaticBackups) {
-                        ForEach(wallets.automaticBackups, id: \.file) { backup in
-                            HStack {
-                                Text(backup.file.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                                Spacer()
-                                Text(backup.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                    .foregroundStyle(Color.dash.secondaryText)
+                    if !wallets.automaticBackups.isEmpty {
+                        MenuCard(title: L10n.Shell.showAutomaticBackups) {
+                            ForEach(wallets.automaticBackups, id: \.file) { backup in
+                                MenuRow(icon: .token(.backup), title: backup.file.lastPathComponent) {
+                                    Text(backup.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                        .dashFont(.footnote)
+                                        .foregroundStyle(Color.role.textSecondary)
+                                }
                             }
-                            .dashFont(.footnote)
                         }
                     }
                 }
+                .padding(DashLayout.pagePaddingH)
             }
-            .listStyle(.inset)
-            .accessibilityIdentifier("wallets.list")
-            if wallets.loadStatesUnavailable {
-                Text(MacStrings.Wallets.loadStatesUnavailable)
-                    .dashFont(.footnote)
-                    .foregroundStyle(Color.dash.secondaryText)
-                    .padding(.horizontal, DashSpacing.l)
-            }
-            Divider()
-            actions
         }
         .frame(minWidth: 640, minHeight: 440)
+        .dashCanvas()
         .task {
             if selection == nil { selection = selectedWalletID }
             wallets.start()
@@ -101,13 +100,19 @@ struct WalletsView: View {
         Binding(get: { if case .confirmingRemove = wallets.flow { true } else { false } }, set: { _ in })
     }
 
+    /// UX-SPEC §4.17: Add Wallet, Open/Close and the wallet menu on the left;
+    /// the backups folder and Close All on the right.
     private var actions: some View {
         HStack(spacing: DashSpacing.s) {
-            Menu(MacStrings.Wallets.add) {
+            Menu {
                 Button(MacStrings.Wallets.importFile) { Task { await importFile() } }
                 Button(MacStrings.Wallets.importKeyMaterial) { sheet = .keyMaterial }
                 Button(MacStrings.Wallets.addWatchOnly) { sheet = .watchOnly }
+            } label: {
+                Label(MacStrings.Wallets.add, systemImage: "plus")
             }
+            .menuStyle(.button)
+            .buttonStyle(.dash(.filledBlue, .medium))
             .fixedSize()
             .accessibilityIdentifier("wallets.add")
             if let selected {
@@ -116,8 +121,9 @@ struct WalletsView: View {
                         if selected.loaded { await wallets.close(selected.walletID) } else { await wallets.open(selected.walletID) }
                     }
                 }
+                .buttonStyle(.dash(.tintedGray, .medium))
                 .accessibilityIdentifier("wallets.openClose")
-                Menu(MacStrings.Wallets.more) {
+                Menu {
                     Button(MacStrings.Wallets.rename) { sheet = .rename }
                     Button(L10n.Shell.backupWallet) { sheet = .backup }
                     Button(MacStrings.Wallets.exportForCore) { sheet = .export }
@@ -127,15 +133,24 @@ struct WalletsView: View {
                     }
                     Divider()
                     Button(MacStrings.Wallets.remove, role: .destructive) { wallets.requestRemove(selected.walletID) }
+                } label: {
+                    Text(MacStrings.Wallets.more)
                 }
+                .menuStyle(.button)
+                .buttonStyle(.dash(.tintedGray, .medium))
                 .fixedSize()
             }
             Spacer()
             Button(L10n.Shell.showAutomaticBackups) { wallets.showBackupsFolder() }
+                .buttonStyle(.dash(.plainBlue, .small))
             Button(MacStrings.Wallets.closeAll) { Task { await wallets.closeAll() } }
+                .buttonStyle(.dash(.plainRed, .small))
                 .disabled(!wallets.wallets.contains(where: \.loaded))
         }
-        .padding(DashSpacing.m)
+        .padding(.horizontal, DashLayout.pagePaddingH)
+        .padding(.vertical, DashSpacing.m)
+        .background(Color.role.card)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.role.separator).frame(height: 0.5) }
     }
 
     @ViewBuilder
@@ -172,29 +187,45 @@ struct WalletsView: View {
     }
 }
 
+/// One wallet: the wallet icon, name and id (proportional, middle-truncated),
+/// status chips and the "Open at startup" switch; click selects.
 private struct WalletRow: View {
     let state: WalletLoadState
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onLoadOnStartup: @Sendable (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: DashSpacing.m) {
-            Image(systemName: state.watchOnly ? "eye" : "wallet.pass")
-                .foregroundStyle(Color.dash.secondaryText)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                Text(state.name.isEmpty ? MacStrings.Wallets.unnamed : state.name).dashFont(.subheadMedium)
-                Text(state.walletID.hex.prefix(16) + "…")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Color.dash.secondaryText)
+        MenuRow(
+            icon: state.watchOnly ? .token(.eyeOpen) : .token(.wallet),
+            title: state.name.isEmpty ? MacStrings.Wallets.unnamed : state.name
+        ) {
+            HStack(spacing: DashSpacing.s) {
+                if state.watchOnly { Badge(MacStrings.Wallets.watchOnly, tone: .info) }
+                Badge(state.loaded ? MacStrings.Wallets.loaded : MacStrings.Wallets.notLoaded,
+                      tone: state.loaded ? .success : .neutral)
+                Toggle(MacStrings.Wallets.loadOnStartup, isOn: Binding(get: { state.loadOnStartup }, set: { onLoadOnStartup($0) }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .help(MacStrings.Wallets.loadOnStartup)
             }
-            Spacer()
-            if state.watchOnly { Badge(MacStrings.Wallets.watchOnly, tone: .info) }
-            Badge(state.loaded ? MacStrings.Wallets.loaded : MacStrings.Wallets.notLoaded,
-                  tone: state.loaded ? .success : .neutral)
-            Toggle(MacStrings.Wallets.loadOnStartup, isOn: Binding(get: { state.loadOnStartup }, set: { onLoadOnStartup($0) }))
-                .toggleStyle(.checkbox)
         }
-        .padding(.vertical, DashSpacing.xxxs)
+        .overlay(alignment: .bottomLeading) {
+            Text(state.walletID.hex)
+                .dashFont(.caption1)
+                .foregroundStyle(Color.role.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 180, alignment: .leading)
+                .help(state.walletID.hex)
+                .padding(.leading, DashSpacing.sm + DashLayout.rowIconSize + DashSpacing.sm)
+                .padding(.bottom, 4)
+        }
+        .contentShape(Rectangle())
+        .dashRowHighlight(isSelected: isSelected, radius: DashRadius.standard + 2)
+        .onTapGesture(perform: onSelect)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
         .accessibilityIdentifier("wallets.row.\(state.name)")
     }
 }
@@ -214,9 +245,10 @@ private struct FlowBanner: View {
             case .needsFilePassphrase, .needsVaultPassphrase:
                 banner(HStack {
                     SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.dash)
                         .accessibilityIdentifier("wallets.passphrase")
                     Button(MacStrings.Common.cancel) { wallets.dismiss() }
+                        .buttonStyle(.dash(.tintedGray, .small))
                     Button(MacStrings.Common.ok) {
                         let text = passphrase
                         passphrase = ""
@@ -228,6 +260,7 @@ private struct FlowBanner: View {
                             }
                         }
                     }
+                    .buttonStyle(.dash(.filledBlue, .small))
                     .disabled(passphrase.isEmpty)
                 })
             case .imported:
@@ -250,13 +283,15 @@ private struct FlowBanner: View {
     }
 
     private func banner(_ content: some View) -> some View {
-        content.padding(DashSpacing.m).frame(maxWidth: .infinity, alignment: .leading)
+        content.padding(.horizontal, DashLayout.pagePaddingH).padding(.top, DashSpacing.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func result(_ text: String, tone: DashTone) -> some View {
         banner(HStack(alignment: .top) {
             SystemNotice(text: text, tone: tone)
             Button(MacStrings.Common.ok) { wallets.dismiss() }
+                .buttonStyle(.dash(.tintedGray, .small))
         })
     }
 }
@@ -273,11 +308,14 @@ struct TextPromptSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
             Text(title).dashFont(.title3)
-            TextField(label, text: $text).textFieldStyle(.roundedBorder)
+            TextField(label, text: $text).textFieldStyle(.dash)
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onCancel).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onCancel)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.save) { onSave(text) }
+                    .buttonStyle(.dash(.filledBlue, .medium))
                     .keyboardShortcut(.defaultAction)
                     .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -297,23 +335,27 @@ private struct KeyMaterialSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Wallets.importKeyMaterial).dashFont(.title3)
+            Text(MacStrings.Wallets.importKeyMaterial).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             Picker(MacStrings.Wallets.kind, selection: $kind) {
                 Text(MacStrings.Wallets.hdSeed).tag(KeyMaterialKind.hdSeed)
                 Text(MacStrings.Wallets.xprv).tag(KeyMaterialKind.xprv)
                 Text(MacStrings.Wallets.descriptors).tag(KeyMaterialKind.descriptors)
             }
             .pickerStyle(.segmented)
+            // Key material is technical text.
             TextEditor(text: $text)
-                .font(.system(.footnote, design: .monospaced))
+                .font(.system(size: DesignTokens.DashTextStyle.footnote.size, design: .monospaced))
+                .scrollContentBackground(.hidden)
                 .frame(height: 100)
-                .border(Color.dash.gray300Alpha40)
+                .padding(DashSpacing.s)
+                .background(RoundedRectangle(cornerRadius: DashRadius.textField, style: .continuous).fill(Color.role.fieldFill))
             HStack {
                 Spacer()
                 Button(MacStrings.Common.cancel) {
                     text = ""
                     onClose()
                 }
+                .buttonStyle(.dash(.tintedGray, .medium))
                 .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Wallets.importAction) {
                     let material = text
@@ -321,6 +363,7 @@ private struct KeyMaterialSheet: View {
                     onClose()
                     Task { await wallets.importKeyMaterial(kind, text: material) }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(text.isEmpty)
             }
@@ -340,20 +383,22 @@ private struct WatchOnlySheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Wallets.addWatchOnly).dashFont(.title3)
+            Text(MacStrings.Wallets.addWatchOnly).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             TextField(L10n.Wallets.xpubTitle, text: $xpub)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.footnote, design: .monospaced))
-            TextField(MacStrings.Wallets.name, text: $name).textFieldStyle(.roundedBorder)
-            TextField(L10n.Tools.birthHeight, text: $birthHeight).textFieldStyle(.roundedBorder)
+                .textFieldStyle(.dash(isTechnical: true))
+            TextField(MacStrings.Wallets.name, text: $name).textFieldStyle(.dash)
+            TextField(L10n.Tools.birthHeight, text: $birthHeight).textFieldStyle(.dash)
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Wallets.importAction) {
                     let (key, label, height) = (xpub, name, UInt32(birthHeight))
                     onClose()
                     Task { await wallets.addWatchOnly(xpub: key, name: label.isEmpty ? nil : label, birthHeight: height) }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(xpub.isEmpty)
             }
@@ -381,7 +426,9 @@ private struct CoreExportSheet: View {
             SystemNotice(text: MacStrings.Wallets.exportWarning, tone: .warning)
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.saveEllipsis) {
                     Task {
                         let name = format == .dumpWallet ? "\(wallet.name).txt" : "\(wallet.name).json"
@@ -392,6 +439,7 @@ private struct CoreExportSheet: View {
                         await wallets.exportForCore(wallet.walletID, format: format, to: url)
                     }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -407,18 +455,19 @@ private struct XpubSheet: View {
 
     var body: some View {
         VStack(spacing: DashSpacing.m) {
-            Text(L10n.Wallets.xpubTitle).dashFont(.title3)
+            Text(L10n.Wallets.xpubTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             if let xpub = wallets.xpub {
                 if let qr = wallets.xpubQR {
                     QRView(size: qr.size, modules: qr.modules, accessibilityLabel: L10n.Wallets.xpubTitle)
                         .frame(width: 220, height: 220)
                 }
-                Text(xpub.derivationPath).dashFont(.footnote).foregroundStyle(Color.dash.secondaryText)
+                Text(xpub.derivationPath).dashFont(.footnote).foregroundStyle(Color.role.textSecondary)
                 Text(xpub.xpub)
                     .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)
                     .multilineTextAlignment(.center)
                 Button(MacStrings.Common.copy) { MacPasteboard.copy(xpub.xpub) }
+                    .buttonStyle(.dash(.tintedBlue, .medium))
             } else if let error = wallets.errorMessage {
                 SystemNotice(text: error, tone: .error)
             } else if case .failed(let reason) = wallets.flow {
@@ -426,7 +475,9 @@ private struct XpubSheet: View {
             } else {
                 ProgressView()
             }
-            Button(MacStrings.Common.close, action: onClose).keyboardShortcut(.cancelAction)
+            Button(MacStrings.Common.close, action: onClose)
+                .buttonStyle(.dash(.tintedGray, .medium))
+                .keyboardShortcut(.cancelAction)
         }
         .padding(DashSpacing.xl)
         .frame(width: 460)
@@ -442,19 +493,19 @@ struct ExistingDataSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(L10n.Wallets.existingTitle).dashFont(.title3)
+            Text(L10n.Wallets.existingTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             Text(L10n.Wallets.existingMessage).dashFont(.subhead)
             ForEach(wallets.existingData, id: \.directory) { info in
                 Text("\(L10n.Settings.networkName(info.network)): \(info.directory.path)")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Color.dash.secondaryText)
+                    .foregroundStyle(Color.role.textSecondary)
             }
             if confirmingDelete {
                 Text(L10n.Wallets.deleteAllMessage).dashFont(.footnote)
                 Text("“\(L10n.Wallets.wipeAcceptPhrase)”").dashFont(.footnoteMedium)
                 TextField(L10n.Wallets.typeSentence, text: $sentence, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                SecureField(MacStrings.Common.passphrase, text: $passphrase).textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.dash)
+                SecureField(MacStrings.Common.passphrase, text: $passphrase).textFieldStyle(.dash)
             }
             if case .failed(let reason) = wallets.flow { SystemNotice(text: reason, tone: .error) }
             HStack {
@@ -470,6 +521,7 @@ struct ExistingDataSheet: View {
                 } else {
                     Button(L10n.Wallets.deleteAll, role: .destructive) { confirmingDelete = true }
                     Button(L10n.Wallets.keepWallets) { wallets.keepExistingData() }
+                        .buttonStyle(.dash(.filledBlue, .medium))
                         .keyboardShortcut(.defaultAction)
                 }
             }

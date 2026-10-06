@@ -1,6 +1,6 @@
 // Renders every main MacUI screen over the demo services in light and dark
 // and checks the demo data reached the view models. With
-// DWD_WRITE_SCREENSHOTS=1 the PNGs go to docs/screenshots/m1/.
+// DWD_WRITE_SCREENSHOTS=1 the PNGs go to docs/screenshots/ux/mac/.
 #if os(macOS)
 import AppKit
 import DashUIMac
@@ -26,13 +26,16 @@ struct ScreenTests {
 
     @Test(arguments: [ColorScheme.light, .dark])
     func overview(_ scheme: ColorScheme) async throws {
-        let model = try await Self.model(.funded, scheme)
+        // With the M2 services: the shortcut card and backup reminder need them.
+        let model = try await M2ScreenTests.model(.funded, scheme)
         let main = try #require(model.main)
         let home = try #require(main.home)
         #expect(home.formattedTotal != nil)
         #expect(home.recent.count == HomeViewModel.recentLimit(coinJoin: false))
         #expect(home.sync?.isDone == true)
-        try await Self.capture(Self.chrome(model, OverviewView(home: home, toggleDiscreet: {})), Self.mainSize, scheme, "overview")
+        try await Self.capture(
+            Self.chrome(model, OverviewView.make(model: model, main: main, home: home, perform: { _ in })),
+            Self.mainSize, scheme, "overview")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -53,7 +56,9 @@ struct ScreenTests {
         }
         #expect(!send.canConfirm, "Send stays disabled during the countdown")
         #expect(send.confirmLines.contains { $0.contains(Self.payTo) })
-        try await Self.capture(SendConfirmSheet(send: send), CGSize(width: 520, height: 300), scheme, "send-confirm")
+        try await Self.capture(
+            SendConfirmSheet(send: send, formatAmount: model.formatAmount), CGSize(width: 480, height: 400), scheme,
+            "send-confirm")
         await send.cancel()
         #expect(send.phase == .editing)
     }
@@ -87,6 +92,13 @@ struct ScreenTests {
                 model,
                 TransactionsView(transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount)),
             Self.mainSize, scheme, "transactions")
+        try await Self.capture(
+            Self.chrome(
+                model,
+                TransactionsView(
+                    transactions: transactions, unitName: model.unitName, formatAmount: model.formatAmount,
+                    layout: .table)),
+            Self.mainSize, scheme, "transactions-table")
 
         await transactions.setTypePreset(.sentTo)
         #expect(!transactions.rows.isEmpty)
@@ -100,7 +112,7 @@ struct ScreenTests {
         try await Self.capture(
             TransactionDetailView(detail: detail, transactions: transactions, formatAmount: model.formatAmount,
                                   onClose: {}),
-            CGSize(width: 620, height: 600), scheme, "transaction-detail")
+            CGSize(width: 640, height: 760), scheme, "transaction-detail")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -121,7 +133,8 @@ struct ScreenTests {
         let model = try await Self.model(.locked, scheme)
         let main = try #require(model.main)
         #expect(main.showsLockScreen)
-        try await Self.capture(LockScreenView(lock: main.lock, receive: main.receive), Self.mainSize, scheme, "lock")
+        try await Self.capture(LockScreenView(lock: main.lock, receive: main.receive, network: main.network), Self.mainSize, scheme,
+            "lock")
         await main.lock.unlock(passphrase: "wrong", mixingOnly: false)
         #expect(main.lock.message != nil)
         await main.lock.unlock(passphrase: DemoEnvironment.passphrase, mixingOnly: false)
@@ -175,13 +188,14 @@ struct ScreenTests {
         try await Self.capture(
             OptionsView(
                 model: model, options: features.options, settings: main.settings, security: features.security),
-            CGSize(width: 600, height: 520), scheme, "settings")
+            CGSize(width: 640, height: 620), scheme, "settings")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
     func menuBar(_ scheme: ColorScheme) async throws {
         let model = try await Self.model(.funded, scheme)
-        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 560), scheme, "menu-bar")
+        try await Self.capture(
+            MenuBarContentView(model: model), CGSize(width: 280, height: 700), scheme, "menu-bar-compact")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -393,8 +407,10 @@ struct ScreenTests {
     }
 
     /// Lays `view` out in an offscreen window with `scheme`'s appearance,
-    /// lets pending updates run, and returns its bitmap. Writes the PNG when
-    /// DWD_WRITE_SCREENSHOTS=1. The first renders of a test process can come
+    /// lets pending updates run, and returns its bitmap. Writes the PNG to
+    /// docs/screenshots/ux/mac when DWD_WRITE_SCREENSHOTS=1 (the m1 and m2
+    /// folders keep the screenshots from before the UX restyle; `milestone`
+    /// names the checklist the screen belongs to). The first renders of a test process can come
     /// out empty while AppKit warms up, so an empty bitmap is redrawn for up
     /// to three seconds before the test fails.
     @discardableResult
@@ -410,10 +426,11 @@ struct ScreenTests {
         // A ScrollView that fills the hosting view draws nothing through
         // cacheDisplay; a 1 pt sibling row above it makes it draw.
         let root = VStack(spacing: 0) {
-            Color(nsColor: .windowBackgroundColor).frame(height: 1)
+            Color.role.canvas.frame(height: 1)
             view
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.role.canvas)
+        .tint(Color.role.accent)
         .environment(\.colorScheme, scheme)
             .frame(width: size.width, height: size.height)
         let host = NSHostingView(rootView: root)
@@ -455,9 +472,12 @@ struct ScreenTests {
         if ProcessInfo.processInfo.environment["DWD_WRITE_SCREENSHOTS"] == "1" {
             let directory = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("docs/screenshots/\(milestone)", isDirectory: true)
+                .appendingPathComponent("docs/screenshots/ux/mac", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let data = try #require(rep.representation(using: .png, properties: [:]))
+            // Written in sRGB so the PNG's values are the tokens' values (the
+            // window draws in the display's colour space).
+            let srgb = rep.converting(to: .sRGB, renderingIntent: .default) ?? rep
+            let data = try #require(srgb.representation(using: .png, properties: [:]))
             try data.write(to: directory.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
         }
         return rep
@@ -531,32 +551,42 @@ private struct ScreenshotChrome<Page: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The title bar: dash-qt's title is the only place the network
+            // and demo tags appear in the chrome (UX-SPEC §4.1).
             HStack(spacing: DashSpacing.s) {
-                Text(model.windowTitle).font(.headline)
-                if model.isDemo { Badge(MacStrings.App.demoBadge, tone: .warning) }
-                if let network = main.network, network != .mainnet {
-                    Badge(L10n.Settings.networkName(network), tone: .info)
+                HStack(spacing: 8) {
+                    ForEach(0..<3, id: \.self) { _ in Circle().fill(Color.role.separator).frame(width: 12, height: 12) }
                 }
                 Spacer()
+                Text(model.windowTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.role.textPrimary)
+                Spacer()
+                Image(systemName: main.settings.display.hideBalances ? "eye.slash" : "eye")
+                    .foregroundStyle(Color.role.textSecondary)
             }
             .padding(.horizontal, DashSpacing.l)
             .frame(height: 38)
-            .background(Color.dash.secondaryBackground)
-            Divider()
+            .background(Color.role.card)
+            Rectangle().fill(Color.role.separator).frame(height: 0.5)
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
                     ForEach(main.visibleSidebarItems) { item in
-                        SidebarRow(title: item.title, icon: Sidebar.icon(item), isSelected: item == main.selection)
+                        SidebarRow(
+                            title: item.title, icon: Sidebar.icon(item), isSelected: item == main.selection,
+                            iconColor: Color.role.accent)
+                            .padding(.horizontal, item == main.selection ? 0 : DashSpacing.s)
+                            .padding(.vertical, item == main.selection ? 0 : DashSpacing.xs)
                     }
                     Spacer()
                 }
                 .padding(DashSpacing.s)
-                .frame(width: 210)
-                .background(Color.dash.secondaryBackground)
-                Divider()
+                .frame(width: DashLayout.sidebarIdealWidth)
+                .background(Color.role.canvas)
+                Rectangle().fill(Color.role.separator).frame(width: 0.5)
                 page
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.dash.primaryBackground)
+                    .dashCanvas()
             }
             WalletStatusBar(model: model, main: main)
         }

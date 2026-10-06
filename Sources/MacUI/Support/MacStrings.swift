@@ -63,6 +63,11 @@ enum MacStrings {
     }
 
     typealias SyncOverlay = L10n.SyncOverlay
+
+    enum SyncPhases {
+        /// iOS sync screen: one progress row per phase.
+        static let title = "Sync phases"
+    }
     typealias Peers = L10n.Peers
 
     enum Transition {
@@ -97,6 +102,8 @@ enum MacStrings {
 
     enum Onboarding {
         static let subtitle = "A wallet for Dash on your desktop."
+        /// new: discloses the network and phrase-length choices.
+        static let advancedOptions = "Advanced options"
         static let network = "Network"
         static let wordCount = "Recovery phrase length"
         static func words(_ count: Int) -> String { "\(count) words" }
@@ -138,6 +145,10 @@ enum MacStrings {
         static let recent = "Recent transactions"
         static let noTransactions = "No transactions yet."
         static let hiddenRecent = "Recent transactions are hidden in discreet mode."
+        /// dash-qt Settings ▸ Display unit menu title.
+        static let displayUnit = "Display unit"
+        /// new
+        static let copyBalance = "Copy balance"
     }
 
     enum Send {
@@ -171,6 +182,14 @@ enum MacStrings {
         static let authorizeTitle = "Unlock wallet"
         static let authorizePrompt = "Enter your wallet passphrase to authorize this payment."
         static func recipient(_ number: Int) -> String { "Recipient \(number)" }
+        /// new
+        static let subtitle = "Send Dash to a Dash address"
+        /// Confirm sheet row titles (dash-qt's confirmation text, as rows).
+        static let confirmPayTo = "Pay to"
+        static let confirmUsing = "Using"
+        static let confirmFee = "Transaction fee"
+        static let confirmSize = "Transaction size"
+        static let confirmTotal = "Total Amount"
     }
 
     enum Receive {
@@ -226,6 +245,9 @@ enum MacStrings {
     }
 
     enum AddressBook {
+        /// dash-qt address-book context menu.
+        static let copyAddress = "Copy Address"
+        static let copyLabel = "Copy Label"
         static let sending = "Sending"
         static let receiving = "Receiving"
         static let label = "Label"

@@ -18,22 +18,32 @@ struct VaultSettingsSection: View {
     @State private var sheet: SheetItem?
 
     var body: some View {
-        Section {
-            LabeledContent(MacStrings.Settings.vault) {
+        MenuCard {
+            MenuRow(icon: .token(.security), title: MacStrings.Settings.vault) {
                 Text(vaultText)
+                    .dashFont(.subhead)
+                    .foregroundStyle(Color.role.textSecondary)
             }
-            HStack {
-                if settings.vault?.encrypted == false {
-                    Button(MacStrings.Menu.encryptWallet) { sheet = SheetItem(route: .encryptWallet) }
+            if settings.vault?.encrypted == false {
+                MenuActionRow(icon: .token(.pin), title: MacStrings.Menu.encryptWallet) {
+                    sheet = SheetItem(route: .encryptWallet)
                 }
-                if settings.vault?.encrypted == true {
-                    Button(MacStrings.Menu.changePassphrase) { sheet = SheetItem(route: .changePassphrase) }
-                }
-                Button(MacStrings.Menu.showRecoveryPhrase) { sheet = SheetItem(route: .showRecoveryPhrase) }
-                    .disabled(settings.vault == nil || settings.vault?.state == .noVault)
             }
+            if settings.vault?.encrypted == true {
+                MenuActionRow(icon: .token(.pin), title: MacStrings.Menu.changePassphrase) {
+                    sheet = SheetItem(route: .changePassphrase)
+                }
+            }
+            MenuActionRow(icon: .token(.recoveryPhrase), title: MacStrings.Menu.showRecoveryPhrase) {
+                sheet = SheetItem(route: .showRecoveryPhrase)
+            }
+            .disabled(settings.vault == nil || settings.vault?.state == .noVault)
             if let info = settings.infoMessage {
-                Text(info).foregroundStyle(Color.dash.successText)
+                Text(info)
+                    .dashFont(.footnote)
+                    .foregroundStyle(Color.role.success)
+                    .padding(.horizontal, DashSpacing.sm)
+                    .padding(.bottom, DashSpacing.s)
             }
         }
         .sheet(item: $sheet) { item in
@@ -68,6 +78,7 @@ struct SecuritySheet: View {
         }
         .padding(DashSpacing.xl)
         .frame(width: 460)
+        .dashCanvas()
     }
 }
 
@@ -79,20 +90,23 @@ private struct EncryptWalletForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Menu.encryptWallet.replacingOccurrences(of: "…", with: "")).dashFont(.title3)
+            Text(MacStrings.Menu.encryptWallet.replacingOccurrences(of: "…", with: "")).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             PassphraseField(label: MacStrings.Common.newPassphrase, text: $passphrase)
             PassphraseField(label: MacStrings.Common.repeatPassphrase, text: $confirmation)
             SystemNotice(text: L10n.Onboarding.encryptWarning, tone: .warning)
             FormMessages(settings: settings)
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.ok) {
                     Task {
                         await settings.encryptWallet(passphrase: passphrase, confirmation: confirmation)
                         if settings.errorMessage == nil { onClose() }
                     }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(passphrase.isEmpty)
             }
@@ -109,20 +123,23 @@ private struct ChangePassphraseForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Menu.changePassphrase.replacingOccurrences(of: "…", with: "")).dashFont(.title3)
+            Text(MacStrings.Menu.changePassphrase.replacingOccurrences(of: "…", with: "")).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             PassphraseField(label: MacStrings.Common.oldPassphrase, text: $old)
             PassphraseField(label: MacStrings.Common.newPassphrase, text: $new)
             PassphraseField(label: MacStrings.Common.repeatPassphrase, text: $confirmation)
             FormMessages(settings: settings)
             HStack {
                 Spacer()
-                Button(MacStrings.Common.cancel, action: onClose).keyboardShortcut(.cancelAction)
+                Button(MacStrings.Common.cancel, action: onClose)
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                    .keyboardShortcut(.cancelAction)
                 Button(MacStrings.Common.ok) {
                     Task {
                         await settings.changePassphrase(old: old, new: new, confirmation: confirmation)
                         if settings.errorMessage == nil { onClose() }
                     }
                 }
+                .buttonStyle(.dash(.filledBlue, .medium))
                 .keyboardShortcut(.defaultAction)
                 .disabled(old.isEmpty || new.isEmpty)
             }
@@ -135,7 +152,7 @@ private struct FormMessages: View {
 
     var body: some View {
         if let error = settings.errorMessage {
-            Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
+            Text(error).dashFont(.footnote).foregroundStyle(Color.role.danger)
         }
     }
 }
@@ -151,34 +168,30 @@ private struct RevealPhraseView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Settings.phraseTitle).dashFont(.title3)
+            Text(MacStrings.Settings.phraseTitle).dashFont(.title3).foregroundStyle(Color.role.textPrimary)
             if words.isEmpty {
                 if settings.needsPassphrase {
                     Text(L10n.Lock.prompt).dashFont(.subhead)
                     SecureField(MacStrings.Common.passphrase, text: $passphrase)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.dash)
                         .onSubmit(reveal)
                 }
                 FormMessages(settings: settings)
             } else {
                 SystemNotice(text: MacStrings.Settings.phraseWarning, tone: .warning)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: DashSpacing.s) {
-                    ForEach(Array(words.enumerated()), id: \.offset) { index, word in
-                        Text("\(index + 1). \(word)")
-                            .font(.system(.body, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+                PhraseGrid(words: words)
                 if !bip39.isEmpty {
-                    LabeledContent(MacStrings.Settings.bip39, value: bip39)
+                    DetailRow(MacStrings.Settings.bip39, value: bip39)
                 }
             }
             HStack {
                 Spacer()
                 Button(words.isEmpty ? MacStrings.Common.cancel : MacStrings.Common.done, action: close)
+                    .buttonStyle(.dash(.tintedGray, .medium))
                     .keyboardShortcut(.cancelAction)
                 if words.isEmpty && settings.needsPassphrase {
                     Button(MacStrings.Common.ok, action: reveal)
+                        .buttonStyle(.dash(.filledBlue, .medium))
                         .keyboardShortcut(.defaultAction)
                         .disabled(passphrase.isEmpty)
                 }

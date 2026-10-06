@@ -1,5 +1,5 @@
 {
-  "comment": "Curated icon set for the desktop wallet shell, read by scripts/gen-tokens.swift. source = dashuikit (DashUIKit Media.xcassets) or ios (dashwallet-ios AppAssets.xcassets); path is the imageset directory relative to that catalog. Keep the list at or below 120 entries.",
+  "comment": "Curated icon set for the desktop wallet shell, read by scripts/gen-tokens.swift. source = dashuikit (DashUIKit Media.xcassets) or ios (dashwallet-ios AppAssets.xcassets); path is the imageset directory relative to that catalog. Keep the list at or below 140 entries.",
   "icons": [
     { "id": "tabHome", "file": "tab-home", "group": "tab", "source": "ios", "path": "TabBar/tabbar_home_icon.imageset" },
     { "id": "tabHomeSelected", "file": "tab-home-selected", "group": "tab", "source": "ios", "path": "TabBar/tabbar_home_selected.imageset" },
@@ -131,6 +131,16 @@
     { "id": "validationCheckmark", "file": "status-validation-checkmark", "group": "status", "source": "ios", "path": "validation_checkmark.imageset" },
     { "id": "validationCross", "file": "status-validation-cross", "group": "status", "source": "ios", "path": "validation_cross.imageset" },
 
+    { "id": "shortcutReceive", "file": "shortcut-receive", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-receive.imageset" },
+    { "id": "shortcutSend", "file": "shortcut-send", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-send.imageset" },
+    { "id": "shortcutScanQR", "file": "shortcut-scan-qr", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-scan-qr.imageset" },
+    { "id": "shortcutSendToAddress", "file": "shortcut-send-address", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-send-address.imageset" },
+    { "id": "shortcutBackup", "file": "shortcut-backup", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-backup.imageset" },
+    { "id": "shortcutExplore", "file": "shortcut-explore", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut-bar-explore.imageset" },
+    { "id": "shortcutSwitchNetwork", "file": "shortcut-switch-network", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut_switchNetwork.imageset" },
+    { "id": "shortcutSyncNow", "file": "shortcut-sync-now", "group": "shortcut", "source": "ios", "path": "Shortcuts/shortcut_syncNow.imageset" },
+
+    { "id": "dashLogoSquare", "file": "brand-dash-logo-square", "group": "brand", "source": "dashuikit", "path": "Icons & Illustrations/Menu/menu-dash-logo-square.imageset" },
     { "id": "dashLogo", "file": "brand-dash-logo", "group": "brand", "source": "ios", "path": "logo.imageset" },
     { "id": "dashLogoTestnet", "file": "brand-dash-logo-testnet", "group": "brand", "source": "ios", "path": "dash_logo_testnet.imageset" }
   ]

@@ -13,34 +13,52 @@ struct ReceiveView: View {
     let unitName: String
     @State private var selection: Set<ReceiveRequest.ID> = []
     @State private var sortOrder: DataTableSortOrder? = DataTableSortOrder(columnID: "date", ascending: false)
+    @State private var toast: ToastMessage?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DashSpacing.xl) {
+        DashPage(title: L10n.Navigation.receive, maxWidth: DashLayout.contentMaxWidth + 160) {
+            VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
                 if let error = receive.errorMessage {
                     SystemNotice(text: error, tone: .error)
                 }
-                HStack(alignment: .top, spacing: DashSpacing.xl) {
-                    addressCard
-                    requestForm
+                // Two columns when there is room, stacked below (UX-SPEC §4.8).
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: DashLayout.sectionGap) {
+                        addressCard
+                        requestForm
+                    }
+                    VStack(alignment: .leading, spacing: DashLayout.sectionGap) {
+                        addressCard
+                        requestForm
+                    }
                 }
                 requestsTable
             }
-            .padding(DashSpacing.xxl)
         }
+        .dashToast($toast)
         .accessibilityIdentifier("receive")
         .task { await receive.load() }
     }
 
+    private func copied(_ text: String?) {
+        guard let text else { return }
+        MacPasteboard.copy(text)
+        toast = ToastMessage(.copied, L10n.UX.copied)
+    }
+
+    /// The QR card: the code on white, the address in full (the surface the
+    /// payer checks), and the copy / new-address actions.
     private var addressCard: some View {
         VStack(spacing: DashSpacing.l) {
             if let request = receive.shownRequest {
                 Text(L10n.Receive.requestTitle(request.label ?? request.address))
                     .dashFont(.headline)
+                    .foregroundStyle(Color.role.textPrimary)
                     .multilineTextAlignment(.center)
             } else {
                 Text(MacStrings.Receive.yourAddress)
                     .dashFont(.headline)
+                    .foregroundStyle(Color.role.textPrimary)
             }
             Group {
                 if let qr = receive.qr {
@@ -49,57 +67,70 @@ struct ReceiveView: View {
                     QRView(size: 0, modules: [], accessibilityLabel: MacStrings.Receive.qrLabel)
                 }
             }
-            .frame(width: 220, height: 220)
+            .frame(width: 200, height: 200)
+            .padding(DashSpacing.sm)
+            .background(RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous).fill(Color.white))
+            .overlay(RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous)
+                .strokeBorder(Color.role.separator.opacity(0.6), lineWidth: 0.5))
             .accessibilityIdentifier("receive.qr")
-            Text(receive.copyAddress() ?? L10n.Common.unknown)
-                .font(.system(.callout, design: .monospaced))
-                .textSelection(.enabled)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .accessibilityIdentifier("receive.address")
+            HStack(alignment: .center, spacing: DashSpacing.s) {
+                Text(receive.copyAddress() ?? L10n.Common.unknown)
+                    .dashFont(.subhead)
+                    .foregroundStyle(Color.role.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("receive.address")
+                CopyButton(value: receive.copyAddress() ?? "", label: MacStrings.Common.copyAddress) {
+                    toast = ToastMessage(.copied, L10n.UX.copied)
+                }
+                .disabled(receive.copyAddress() == nil)
+                .accessibilityIdentifier("receive.copyAddress")
+            }
+            .padding(.horizontal, DashSpacing.m)
+            .padding(.vertical, DashSpacing.s)
+            .background(RoundedRectangle(cornerRadius: DashRadius.standard, style: .continuous).fill(Color.role.fieldFill))
             if let request = receive.shownRequest {
                 VStack(spacing: DashSpacing.xxs) {
-                    Text(receive.amountText(of: request))
-                    if let message = request.message, !message.isEmpty { Text(message) }
+                    AmountText(formatted: receive.amountText(of: request))
+                    if let message = request.message, !message.isEmpty { Text(message).dashFont(.footnote) }
                 }
-                .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
             }
             HStack(spacing: DashSpacing.s) {
-                Button(MacStrings.Common.copyAddress, systemImage: "doc.on.doc") {
-                    if let address = receive.copyAddress() { MacPasteboard.copy(address) }
-                }
-                .accessibilityIdentifier("receive.copyAddress")
-                Button(MacStrings.Common.copyURI, systemImage: "link") {
-                    if let uri = receive.copyURI() { MacPasteboard.copy(uri) }
-                }
-                .disabled(receive.uri == nil)
+                Button(MacStrings.Common.copyURI, systemImage: "link") { copied(receive.copyURI()) }
+                    .buttonStyle(.dash(.tintedBlue, .small))
+                    .disabled(receive.uri == nil)
                 if receive.shownRequest != nil {
                     Button(MacStrings.Receive.backToAddress) { receive.dismissRequest() }
+                        .buttonStyle(.dash(.tintedGray, .small))
                 } else {
                     Button(MacStrings.Receive.newAddress, systemImage: "arrow.clockwise") {
                         Task { await receive.newAddress() }
                     }
+                    .buttonStyle(.dash(.tintedGray, .small))
                     .accessibilityIdentifier("receive.newAddress")
                 }
             }
-            .controlSize(.small)
         }
         .padding(DashSpacing.xl)
-        .frame(width: 340)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .frame(width: 360)
+        .dashCard(padding: nil)
     }
 
     private var requestForm: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
-            Text(MacStrings.Receive.requestPayment).dashFont(.headline)
+            Text(MacStrings.Receive.requestPayment)
+                .dashFont(.headline)
+                .foregroundStyle(Color.role.textPrimary)
             Text(L10n.Receive.formHeader)
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.secondaryText)
+                .foregroundStyle(Color.role.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                Text(MacStrings.Receive.label).dashFont(.footnote).foregroundStyle(Color.dash.gray500)
+                FieldCaption(MacStrings.Receive.label)
                 TextField(MacStrings.Receive.label, text: $receive.label, prompt: Text(L10n.Receive.labelPlaceholder))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.dash)
                     .accessibilityIdentifier("receive.label")
             }
             AmountField(
@@ -107,28 +138,30 @@ struct ReceiveView: View {
                 errorText: receive.amountError)
             .accessibilityIdentifier("receive.amount")
             VStack(alignment: .leading, spacing: DashSpacing.xs) {
-                Text(MacStrings.Receive.message).dashFont(.footnote).foregroundStyle(Color.dash.gray500)
+                FieldCaption(MacStrings.Receive.message)
                 TextField(MacStrings.Receive.message, text: $receive.message)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.dash)
                     .accessibilityIdentifier("receive.message")
             }
-            HStack {
+            HStack(spacing: DashSpacing.s) {
                 Button(MacStrings.Receive.clear) { receive.clearForm() }
-                Spacer()
-                DashButton(
-                    text: MacStrings.Receive.createRequest, size: .medium, style: .filledBlue,
-                    action: { Task { await receive.createRequest() } })
-                .accessibilityIdentifier("receive.createRequest")
+                    .buttonStyle(.dash(.tintedGray, .medium))
+                Spacer(minLength: 0)
+                Button(MacStrings.Receive.createRequest) { Task { await receive.createRequest() } }
+                    .buttonStyle(.dash(.filledBlue, .medium))
+                    .accessibilityIdentifier("receive.createRequest")
             }
         }
         .padding(DashSpacing.xl)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+        .frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
+        .dashCard(padding: nil)
     }
 
     private var requestsTable: some View {
         VStack(alignment: .leading, spacing: DashSpacing.s) {
-            Text(MacStrings.Receive.requests).dashFont(.headline)
+            Text(MacStrings.Receive.requests)
+                .dashFont(.headline)
+                .foregroundStyle(Color.role.textPrimary)
             DataTable(
                 rows: receive.requests,
                 columns: [
@@ -158,7 +191,7 @@ struct ReceiveView: View {
                         },
                         DataTableMenuAction(title: MacStrings.Common.copyURI, isEnabled: ids.count == 1) {
                             if let id = ids.first, let request = receive.requests.first(where: { $0.id == id }) {
-                                MacPasteboard.copy(request.uri)
+                                copied(request.uri)
                             }
                         },
                         DataTableMenuAction(title: MacStrings.Receive.remove, isDestructive: true) {
@@ -167,7 +200,8 @@ struct ReceiveView: View {
                     ]
                 })
             .frame(minHeight: 160, maxHeight: 260)
-            .clipShape(RoundedRectangle(cornerRadius: DashRadius.standard))
+            .clipShape(RoundedRectangle(cornerRadius: DashRadius.group, style: .continuous))
+            .dashCard(radius: DashRadius.group, padding: nil)
             .accessibilityIdentifier("receive.requests")
         }
     }

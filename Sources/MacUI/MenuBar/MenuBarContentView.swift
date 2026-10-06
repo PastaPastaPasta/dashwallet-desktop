@@ -16,49 +16,43 @@ struct MenuBarContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
+            // The network once, as the capsule (UX-SPEC §4.19); the demo tag
+            // is in the window title.
             HStack {
-                Text(L10n.Navigation.appName).dashFont(.headline)
+                Text(L10n.Navigation.appName)
+                    .dashFont(.headline)
+                    .foregroundStyle(Color.role.textPrimary)
                 Spacer()
                 if let network = model.main?.network, network != .mainnet {
-                    Badge(L10n.Settings.networkName(network), tone: .info)
-                }
-                if model.isDemo {
-                    Badge(MacStrings.App.demoBadge, tone: .warning)
+                    NetworkCapsule(L10n.Settings.networkName(network))
                 }
             }
             if let home = model.main?.home {
                 VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                    Text(MacStrings.Overview.balance)
-                        .dashFont(.caption1)
-                        .foregroundStyle(Color.dash.secondaryText)
                     // HomeViewModel masks the digits in discreet mode.
-                    Text(home.formattedTotal ?? L10n.Common.unknown)
-                        .font(.system(.title3, design: .monospaced).weight(.semibold))
-                        .accessibilityIdentifier("menuBar.balance")
+                    Group {
+                        if let total = home.formattedTotal {
+                            AmountText(
+                                formatted: total, size: DesignTokens.DashTextStyle.title3.size, weight: .bold, glyphFactor: 0.8)
+                        } else {
+                            Text("—").dashFont(.title3).help(L10n.UX.balanceUnavailable)
+                        }
+                    }
+                    .foregroundStyle(Color.role.textPrimary)
+                    .accessibilityIdentifier("menuBar.balance")
                     Text(home.syncText)
-                        .dashFont(.caption1)
-                        .foregroundStyle(Color.dash.secondaryText)
+                        .dashFont(.footnote)
+                        .foregroundStyle(Color.role.textSecondary)
                 }
                 // Hidden in discreet mode, like the Overview list.
                 if home.recentVisible, let last = home.recent.first {
-                    Button {
-                        show(.transaction(txid: last.id.txid))
-                    } label: {
-                        VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
-                            Text(MacStrings.MenuBar.lastTransaction)
-                                .dashFont(.caption1)
-                                .foregroundStyle(Color.dash.secondaryText)
-                            HStack {
-                                Text(last.title).lineLimit(1).truncationMode(.middle)
-                                Spacer()
-                                Text(last.amountText)
-                                    .monospacedDigit()
-                                    .lineLimit(1)
-                                    .fixedSize()
-                                    .foregroundStyle(last.isIncoming ? Color.dash.successText : Color.dash.primaryText)
-                            }
-                            .dashFont(.footnote)
-                        }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(MacStrings.MenuBar.lastTransaction)
+                            .dashFont(.caption1)
+                            .foregroundStyle(Color.role.textSecondary)
+                        DashTransactionRow(
+                            recent: last, unit: model.main?.settings.display.unit ?? .dash, unitName: model.unitName,
+                            action: { show(.transaction(txid: last.id.txid)) })
                     }
                     .accessibilityIdentifier("menuBar.lastTransaction")
                 }
@@ -71,7 +65,7 @@ struct MenuBarContentView: View {
                 }
                 .accessibilityIdentifier("menuBar.payFromClipboard")
                 if let error = companion.errorMessage {
-                    Text(error).dashFont(.caption1).foregroundStyle(Color.dash.errorText)
+                    Text(error).dashFont(.caption1).foregroundStyle(Color.role.danger)
                 }
             } else if let receive = model.main?.receive {
                 Divider()
@@ -103,9 +97,10 @@ struct MenuBarContentView: View {
             }
             Button(MacStrings.Menu.quit) { MacApplication.terminate() }
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.dash(.plainBlack, .small))
         .padding(DashSpacing.l)
         .frame(width: 280)
+        .dashCanvas()
         .onChange(of: companionRoute) { _, route in
             guard let route else { return }
             model.features?.companion.routeHandled()
@@ -132,7 +127,7 @@ private struct CompanionRequestView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.s) {
-            Text(MacStrings.MenuBar.receive).dashFont(.subheadMedium)
+            Text(MacStrings.MenuBar.receive).dashFont(.subheadMedium).foregroundStyle(Color.role.textPrimary)
             if let qr = companion.qr {
                 HStack {
                     Spacer()
@@ -143,22 +138,25 @@ private struct CompanionRequestView: View {
             }
             if let address = companion.address {
                 Text(address)
-                    .font(.system(.caption, design: .monospaced))
+                    .dashFont(.footnote)
+                    .foregroundStyle(Color.role.textPrimary)
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(address)
                     .accessibilityIdentifier("menuBar.address")
             }
             TextField(MacStrings.MenuBar.requestAmount, text: $amount)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.dash)
                 .onChange(of: amount) { _, text in companion.setRequestAmount(text) }
                 .accessibilityIdentifier("menuBar.requestAmount")
             if let error = companion.requestAmountError {
-                Text(error).dashFont(.caption1).foregroundStyle(Color.dash.errorText)
+                Text(error).dashFont(.caption1).foregroundStyle(Color.role.danger)
             }
             Button(MacStrings.MenuBar.copyRequest, systemImage: "doc.on.doc") {
                 if let uri = companion.requestURI ?? companion.address { MacPasteboard.copy(uri) }
             }
+            .buttonStyle(.dash(.tintedBlue, .small))
             .disabled(companion.address == nil)
         }
     }

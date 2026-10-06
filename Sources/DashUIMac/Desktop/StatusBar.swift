@@ -35,7 +35,8 @@ public struct StatusBarItem: Identifiable {
     }
 }
 
-/// A thin bar for the bottom of the main window.
+/// A thin bar for the bottom of the main window (UX-SPEC C3): an optional neutral badge ("Demo"),
+/// the sync text and a thin accent progress bar on the left, the state items on the right.
 ///
 /// `progress` is the sync fraction in 0...1; nil hides the progress bar (unknown progress is
 /// not drawn as a guess).
@@ -43,41 +44,66 @@ public struct StatusBar: View {
     public let message: String?
     public let progress: Double?
     public let items: [StatusBarItem]
+    public let badge: String?
+    public let badgeHelp: String?
+    /// Click on the message or progress (dash-qt opens the sync overlay).
+    public let onMessage: (() -> Void)?
 
-    public init(message: String? = nil, progress: Double? = nil, items: [StatusBarItem] = []) {
+    public init(
+        message: String? = nil, progress: Double? = nil, items: [StatusBarItem] = [], badge: String? = nil,
+        badgeHelp: String? = nil, onMessage: (() -> Void)? = nil
+    ) {
         self.message = message
         self.progress = progress
         self.items = items
+        self.badge = badge
+        self.badgeHelp = badgeHelp
+        self.onMessage = onMessage
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Color.dash.gray300Alpha20)
-                .frame(height: 1)
+                .fill(Color.role.separator)
+                .frame(height: 0.5)
             HStack(spacing: DashSpacing.sm) {
-                if let message {
-                    Text(message)
-                        .font(DashTextStyle.caption1.font)
-                        .foregroundStyle(Color.dash.secondaryText)
-                        .lineLimit(1)
+                if let badge {
+                    Badge(badge, tone: .neutral)
+                        .help(badgeHelp ?? badge)
+                        .accessibilityIdentifier("statusBar.demo")
                 }
-                if let progress {
-                    ProgressView(value: min(max(progress, 0), 1))
-                        .progressViewStyle(.linear)
-                        .tint(Color.dash.blue)
-                        .frame(width: 160)
-                        .accessibilityLabel(Text(message ?? ""))
-                }
+                leading
                 Spacer(minLength: DashSpacing.s)
                 ForEach(items) { item in
                     StatusBarItemView(item: item)
                 }
             }
             .padding(.horizontal, DashSpacing.m)
-            .frame(height: 26)
+            .frame(height: DashLayout.statusBarHeight - 0.5)
         }
-        .background(Color.dash.secondaryBackground)
+        .background(Color.role.card)
+    }
+
+    @ViewBuilder
+    private var leading: some View {
+        let content = HStack(spacing: DashSpacing.sm) {
+            if let message {
+                Text(message)
+                    .font(DesignTokens.DashTextStyle.caption1.font)
+                    .foregroundStyle(Color.role.textSecondary)
+                    .lineLimit(1)
+            }
+            if let progress {
+                DashProgressBar(value: min(max(progress, 0), 1), height: 4)
+                    .frame(width: DashLayout.statusProgressWidth)
+                    .accessibilityLabel(Text(message ?? ""))
+            }
+        }
+        if let onMessage {
+            Button(action: onMessage) { content }.buttonStyle(.plain)
+        } else {
+            content
+        }
     }
 }
 
@@ -105,14 +131,15 @@ private struct StatusBarItemView: View {
                 DashIconImage(icon)
                     .scaledToFit()
                     .frame(width: 14, height: 14)
+                    .font(.system(size: 12, weight: .medium))
             }
             if let text = item.text {
                 Text(text)
-                    .font(DashTextStyle.caption1Medium.font)
+                    .font(DesignTokens.DashTextStyle.caption1Medium.font)
                     .lineLimit(1)
             }
         }
-        .foregroundStyle(item.tone == .neutral ? Color.dash.secondaryText : item.tone.foreground)
+        .foregroundStyle(item.tone == .neutral ? Color.role.textSecondary : item.tone.foreground)
     }
 }
 #endif
