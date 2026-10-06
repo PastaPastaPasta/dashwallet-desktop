@@ -13,7 +13,7 @@ set -euo pipefail
 root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # Apple frameworks PlatformServicesMac may use (DESIGN-opus §1.6).
-apple_frameworks="AppKit Security LocalAuthentication UserNotifications ServiceManagement ScreenCaptureKit AVFoundation CoreLocation CoreGraphics CoreImage IOKit UniformTypeIdentifiers"
+apple_frameworks="AppKit Security LocalAuthentication UserNotifications ServiceManagement ScreenCaptureKit AVFoundation CoreLocation CoreGraphics CoreImage IOKit UniformTypeIdentifiers Vision"
 
 allowed_for() {
   case "$1" in
