@@ -66,6 +66,41 @@ public enum DemoEnvironment {
         timing: Timing = Timing(), launchOptions: LaunchOptions = LaunchOptions(),
         platform: DemoPlatformServices = DemoPlatformServices(), desktopPlatform: DesktopPlatform = .current
     ) -> (env: AppEnvironment, m2: M2Services) {
+        let built = build(
+            scenario: scenario, network: network, screenCapture: screenCapture, timing: timing,
+            launchOptions: launchOptions, platform: platform, desktopPlatform: desktopPlatform)
+        return (built.env, built.m2)
+    }
+
+    /// The M1 environment and the M2 and M3 services over one shared world:
+    /// sample masternodes, proposals and CoinJoin progress for the sample
+    /// wallet (DemoM3World).
+    @MainActor
+    public static func makeWithM3(
+        scenario: DemoScenario, network: DashNetwork = .testnet, screenCapture: (any ScreenCaptureGuard)? = nil,
+        timing: Timing = Timing(), launchOptions: LaunchOptions = LaunchOptions(),
+        platform: DemoPlatformServices = DemoPlatformServices(), desktopPlatform: DesktopPlatform = .current
+    ) -> (env: AppEnvironment, m2: M2Services, m3: M3Services) {
+        let built = build(
+            scenario: scenario, network: network, screenCapture: screenCapture, timing: timing,
+            launchOptions: launchOptions, platform: platform, desktopPlatform: desktopPlatform)
+        let world = DemoM3World(world: built.world, m2: built.m2World)
+        let coinJoin = DemoCoinJoin(m3: world)
+        let governance = DemoGovernance(m3: world)
+        let masternodes = DemoMasternodes(m3: world)
+        let m3 = M3Services(
+            coinJoin: coinJoin, mixedCoins: coinJoin, networkStatistics: coinJoin, governance: governance,
+            voting: governance, proposals: governance, masternodes: masternodes, registration: masternodes,
+            maintenance: masternodes, shared: masternodes, keychain: masternodes, tracked: masternodes,
+            evonodes: masternodes)
+        return (built.env, built.m2, m3)
+    }
+
+    @MainActor
+    private static func build(
+        scenario: DemoScenario, network: DashNetwork, screenCapture: (any ScreenCaptureGuard)?, timing: Timing,
+        launchOptions: LaunchOptions, platform: DemoPlatformServices, desktopPlatform: DesktopPlatform
+    ) -> (world: DemoWorld, m2World: DemoM2World, env: AppEnvironment, m2: M2Services) {
         let world = DemoWorld(network: network, scenario: scenario, now: timing.now)
         let env = environment(world: world, screenCapture: screenCapture, timing: timing)
         let m2 = DemoM2World(world: world)
@@ -82,7 +117,7 @@ public enum DemoEnvironment {
             paymentAuthentication: DemoPaymentAuthentication(m2: m2), launchAtLogin: platform.launchAtLogin,
             notifications: platform.notifications, clipboard: platform.clipboard, fileRevealer: platform.fileRevealer,
             dataDirectories: platform.dataDirectories, platform: desktopPlatform)
-        return (env, services)
+        return (world, m2, env, services)
     }
 
     @MainActor

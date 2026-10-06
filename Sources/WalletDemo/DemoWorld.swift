@@ -41,12 +41,13 @@ struct DemoGrant: Sendable {
 
 /// The grant kinds `redeem` checks for (the engine's `GrantKind`).
 enum DemoGrantKind: Sendable {
-    case spend, revealSecret, signMessage, changeCredential, wipe
+    case spend, revealSecret, signMessage, changeCredential, wipe, masternodeOperation, governance
 
     func matches(_ purpose: GrantPurpose) -> Bool {
         switch (self, purpose) {
         case (.spend, .spend), (.revealSecret, .revealSecret), (.signMessage, .signMessage),
-            (.changeCredential, .changeCredential), (.wipe, .wipe):
+            (.changeCredential, .changeCredential), (.wipe, .wipe), (.masternodeOperation, .masternodeOperation),
+            (.governance, .governance):
             true
         default:
             false
@@ -64,6 +65,9 @@ struct DemoGrantRefusal: Sendable {
     static let send = DemoGrantRefusal(invalid: .sendGrantInvalid, mismatch: .sendGrantInvalid)
     static let message = DemoGrantRefusal(invalid: .messageGrantInvalid, mismatch: .messageGrantInvalid)
     static let wallet = DemoGrantRefusal(invalid: .walletGrantInvalid, mismatch: .walletGrantInvalid)
+    static let coinJoin = DemoGrantRefusal(invalid: .coinjoinGrantInvalid, mismatch: .coinjoinGrantInvalid)
+    static let governance = DemoGrantRefusal(invalid: .governanceGrantInvalid, mismatch: .governanceGrantInvalid)
+    static let masternode = DemoGrantRefusal(invalid: .masternodeGrantInvalid, mismatch: .masternodeGrantInvalid)
 }
 
 @MainActor
