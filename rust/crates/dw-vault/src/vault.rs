@@ -42,6 +42,7 @@ use crate::types::{
 use crate::{SignerError, VaultError};
 
 mod compat;
+use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle};
 
 /// Proof that the caller holds `Shared::writer`.
@@ -238,12 +239,17 @@ struct Inner {
     /// Last successful passphrase check in this process (UNIX seconds). The
     /// file keeps it (sealed) only while slot B is enrolled.
     last_passphrase_at: Option<u64>,
+    /// The key that wraps a backup's own key for slot P's passphrase
+    /// (`.dwbackup` bundle v2), derived from slot P's KEK whenever the
+    /// passphrase is checked or set. Held only while `dek` is; never stored.
+    backup_kek: Option<BackupKek>,
 }
 
 impl Inner {
     /// Drops the data key, revokes grants and invalidates outstanding signers.
     fn forget_key(&mut self) {
         self.dek = None;
+        self.backup_kek = None;
         self.scope = UnlockScope::Full;
         self.epoch += 1;
         self.grants.clear();
@@ -327,6 +333,7 @@ impl Vault {
                     high_water: 0,
                     grants: HashMap::new(),
                     last_passphrase_at: None,
+                    backup_kek: None,
                 }),
             }),
         })
@@ -449,6 +456,7 @@ impl Vault {
         let dek = crypto::random_key()?;
         let vault_id: [u8; 16] = crypto::random_array()?;
         let tag = &self.shared.tag;
+        let mut backup_kek = None;
         let (slot_p, slot_o) = match passphrase {
             Some(pw) => {
                 let pw = new_passphrase(pw)?;
@@ -461,6 +469,7 @@ impl Vault {
                 )?;
                 let aad = file::slot_p_aad(&vault_id, tag, &kdf, &salt);
                 let wrapped_dek = crypto::seal(&kek, &dek[..], &aad)?;
+                backup_kek = Some(BackupKek::of(kdf, &salt, &kek));
                 (
                     Some(PassphraseSlot {
                         kdf,
@@ -518,6 +527,7 @@ impl Vault {
         inner.file = Some(vault_file);
         inner.high_water = 1;
         inner.install_key(dek, UnlockScope::Full);
+        inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
         }
@@ -586,9 +596,10 @@ impl Vault {
     /// the throttle.
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
-        let dek = self.check_passphrase(&writer, passphrase)?;
+        let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
         let mut inner = self.inner();
         inner.install_key(dek, scope);
+        inner.backup_kek = Some(backup_kek);
         Ok(self.status_of(&inner))
     }
 
@@ -605,10 +616,19 @@ impl Vault {
 
     /// Re-wraps the data key under `new`; records (and the seed) are
     /// unchanged. The lock state is preserved.
+    ///
+    /// The data key is not rotated (review H2): `.dwbackup` bundles carry a
+    /// key of their own and nothing that unwraps the data key, so an old
+    /// backup and the old passphrase open only that backup. Rotating would
+    /// silently break slot B (its wrap key is only in the OS biometric
+    /// store) and every automatic `vault_key` backup, and Dash Core's
+    /// `walletpassphrasechange` keeps its master key too. What remains is
+    /// inherent to any copy: an old copy of `vault.dwv` still opens with
+    /// the old passphrase.
     pub fn change_passphrase(&self, old: &[u8], new: &[u8]) -> Result<VaultStatus, VaultError> {
         let new = new_passphrase(new)?;
         let writer = self.writer();
-        let dek = self.check_passphrase(&writer, old)?;
+        let (dek, _) = self.check_passphrase(&writer, old)?;
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
         let (kdf, kek) = crypto::derive_new_kek(
             &new,
@@ -624,19 +644,27 @@ impl Vault {
             wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
         });
         self.persist(&writer, next)?;
+        {
+            // Backups written from now on open with the new passphrase.
+            let mut inner = self.inner();
+            if inner.dek.is_some() {
+                inner.backup_kek = Some(BackupKek::of(kdf, &salt, &kek));
+            }
+        }
         Ok(self.status())
     }
 
     /// Verifies `passphrase` against slot P of the in-memory file and checks
     /// the manifest with the unwrapped key. On success resets the throttle
-    /// and returns the data key; on failure records the attempt. Runs under
+    /// and returns the data key and the backup KEK of slot P; on failure
+    /// records the attempt. Runs under
     /// `writer`, so attempts are serialized and each one sees the throttle
     /// the previous one left.
     fn check_passphrase(
         &self,
         writer: &WriteGuard<'_>,
         passphrase: &[u8],
-    ) -> Result<Key32, VaultError> {
+    ) -> Result<(Key32, BackupKek), VaultError> {
         let pw = normalize_passphrase(passphrase);
         let (slot, aad) = {
             let inner = self.inner();
@@ -702,7 +730,7 @@ impl Vault {
             }
             self.inner().file = Some(next);
         }
-        Ok(dek)
+        Ok((dek, BackupKek::of(slot.kdf, &slot.salt, &kek)))
     }
 
     /// Persists one more failed attempt and returns the error to report. The
@@ -776,7 +804,7 @@ impl Vault {
             }
             Credential::Passphrase(pw) => {
                 let writer = self.writer();
-                let dek = self.check_passphrase(&writer, pw)?;
+                let (dek, _) = self.check_passphrase(&writer, pw)?;
                 let mut inner = self.inner();
                 let full_in_memory = inner.dek.is_some() && inner.scope == UnlockScope::Full;
                 self.issue(
@@ -1495,6 +1523,7 @@ impl Vault {
             kdf,
             salt: salt.to_vec(),
         };
+        let backup_kek = BackupKek::of(kdf, &salt, &kek);
         let seed = encode_seed(&secret);
         let payloads: [(String, &[u8]); 3] = [
             (record_id(wallet, REC_MNEMONIC), &secret.mnemonic[..]),
@@ -1549,6 +1578,7 @@ impl Vault {
             inner.high_water = manifest.generation;
             inner.forget_key();
             inner.install_key(Zeroizing::new(*dek), UnlockScope::Full);
+            inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
         }
         let disk = file::read(&self.shared.dir)?

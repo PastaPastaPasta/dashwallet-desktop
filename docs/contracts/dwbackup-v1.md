@@ -40,42 +40,61 @@ header line are the AAD of every payload (§2.3), so editing the header breaks t
 
 ### 1.2 Body
 
-`{"bundles": [<bundle>, …]}`, one bundle per wallet (§2).
+`{"bundles": [<bundle>, …]}`, one bundle per wallet (§2). The container stays version 1; bundles
+are version 2 (§2), and version 1 bundles are still read (§5).
 
 ## 2. Bundle (`WalletBackupBundle`, dw-vault)
 
 ```json
-{"version":1, "vault_id":"<hex>", "network":"regtest", "wallet_id":"<hex>",
- "slot": {...}, "records": {"mnemonic": {...}, "mnemonic_passphrase": {...}, "seed": {...}},
+{"version":2, "vault_id":"<hex>", "network":"regtest", "wallet_id":"<hex>",
+ "slot": {...}, "vault_wrapped_key": {"nonce":"<hex>","ct":"<hex>"},
+ "records": {"mnemonic": {...}, "mnemonic_passphrase": {...}, "seed": {...}},
  "payload_salt":"<hex>", "payload": {"nonce":"<hex>","ct":"<hex>"}}
 ```
 
+Every bundle has a **backup key** of its own: 32 random bytes drawn when the bundle is written.
+It seals the records and the payload; the slot wraps only it. Nothing in a bundle unwraps the
+source vault's data key (DEK) (review H2): a backup's passphrase opens that backup only — not
+`vault.dwv`, not the vault's other wallets, not wallets added later, and a later passphrase change
+or `encrypt` is not undone by an old backup.
+
+The DEK is not rotated on `encrypt` or `change_passphrase`: slot B (quick unlock) wraps it under a
+key only the OS biometric store holds, automatic `vault_key` bundles and version 1 bundles are
+opened through it, and Dash Core's `walletpassphrasechange` keeps its master key too. With
+per-backup keys a backup no longer extends the DEK's exposure; an old copy of `vault.dwv` itself
+still opens with the passphrase it was written under, as any copy of an encrypted file does.
+
 ### 2.1 Records
 
-The wallet's vault records exactly as the source vault stores them: XChaCha20-Poly1305 under the
-vault's data key (DEK), AAD = `dw-vault/record/v1 ‖ vault_id ‖ network ‖ schema_ver ‖ record_id`
-(dw-vault `file.rs`). `seed` is always present; `mnemonic` and `mnemonic_passphrase` are absent for
-wallets imported from a raw seed (`SeedDerivation::RawSeed`). The seed record carries the
-derivation (BIP39, Dash Core quirks, raw seed).
+The wallet's record payloads, each XChaCha20-Poly1305 under the backup key with AAD
+`dw-vault/backup-record/v2 ‖ vault_id ‖ network ‖ wallet_id ‖ kind` (each field length-prefixed).
+`seed` is always present; `mnemonic` and `mnemonic_passphrase` are absent for wallets imported from
+a raw seed (`SeedDerivation::RawSeed`). The seed record carries the derivation (BIP39, Dash Core
+quirks, raw seed).
 
 ### 2.2 Slot
 
-How the DEK of the source vault is recovered:
+How the backup key is recovered:
 
 | `kind` | When | Unwrap |
 |---|---|---|
-| `vault_passphrase` | the source vault is encrypted | a copy of the vault's passphrase slot: Argon2id(passphrase, salt, kdf) → KEK; AAD as slot P (`dw-vault/slot-p/v1 ‖ vault_id ‖ network ‖ kdf ‖ salt`). The vault passphrase at backup time opens it. |
-| `backup_passphrase` | unencrypted vault, user backup | a new Argon2id slot (the vault's KDF policy, ≥ 256 MiB, t ≥ 3, ≥ 0.5 s) over the backup passphrase; AAD `dw-vault/backup-slot/v1 ‖ vault_id ‖ network ‖ kdf ‖ salt`. |
-| `vault_key` | unencrypted vault, automatic backup | none: only the source vault (same `vault_id`, DEK available) opens it. An unencrypted vault has no passphrase to wrap with, and storing the DEK in the file would make it plaintext. |
+| `vault_passphrase` | the source vault is encrypted | `kdf` and `salt` are the vault's slot P parameters at backup time: Argon2id(passphrase, salt, kdf) → KEK; `SHA-256("dw-vault/backup-kek/v2" ‖ KEK)` opens `wrapped_key` with AAD `dw-vault/backup-vault-slot/v2 ‖ vault_id ‖ network ‖ kdf ‖ salt`. The vault passphrase at backup time opens it. The writer holds that hash in memory while the vault is unlocked (derived whenever the passphrase is checked or set) and never stores it; without it the backup is refused as `backup.vault_locked`. |
+| `backup_passphrase` | unencrypted vault, user backup | a new Argon2id slot (the vault's KDF policy, ≥ 256 MiB, t ≥ 3, ≥ 0.5 s) over the backup passphrase; the KEK opens `wrapped_key` with AAD `dw-vault/backup-slot/v2 ‖ vault_id ‖ network ‖ kdf ‖ salt`. |
+| `vault_key` | unencrypted vault, automatic backup | none: only the source vault (same `vault_id`, DEK available) opens it, through `vault_wrapped_key`. An unencrypted vault has no passphrase to wrap with. |
 
-The vault that wrote a bundle opens it with its own DEK while that is available (unlocked or
-unencrypted), whatever the slot. Passphrase attempts on a bundle are not throttled: the file is
-the user's, not the vault's.
+`vault_wrapped_key` is the backup key sealed under `SHA-256("dw-vault/backup-vault-wrap/v2" ‖ DEK)`
+with AAD `dw-vault/backup-vault-wrap/v2 ‖ vault_id ‖ network ‖ wallet_id`: the vault that wrote a
+bundle opens it with its own DEK while that is available (unlocked or unencrypted), whatever the
+slot, also after `encrypt` and `change_passphrase`. Passphrase attempts on a bundle are not
+throttled: the file is the user's, not the vault's.
+
+A reader refuses passphrase-slot KDF parameters above m = 4 GiB, t = 64 or p = 16 as
+`backup.corrupt` (§5).
 
 ### 2.3 Payload
 
-`payload_key = SHA-256("dw-vault/backup-payload/v1" ‖ DEK ‖ payload_salt)` (the DEK is uniformly
-random, so a hash is a sufficient KDF); XChaCha20-Poly1305 with AAD
+`payload_key = SHA-256("dw-vault/backup-payload/v1" ‖ backup key ‖ payload_salt)` (the key is
+uniformly random, so a hash is a sufficient KDF); XChaCha20-Poly1305 with AAD
 `dw-vault/backup-payload/v1 ‖ wallet_id ‖ vault_id ‖ header line`, each field length-prefixed.
 The payload authenticates the whole file: records, slot and header are bound to it through the
 key and the AAD.
@@ -122,3 +141,17 @@ yet. The snapshot is carried so a later version or offline tooling can use it.
 - A failure sends `Notice{BackupFailed}` with the wallet id and cause.
 - Watch-only wallets have no vault records and are not backed up (`backup_wallet` returns
   `NotImplemented{call: "backup_wallet.watch_only"}`).
+
+## 5. Version 1 bundles and limits
+
+Bundles with `"version":1` (written by the M2 build before review H2) are still read: their
+records are the vault records as stored (under the source DEK, AAD
+`dw-vault/record/v1 ‖ vault_id ‖ network ‖ schema_ver ‖ record_id`), the slot wraps the DEK
+itself (`wrapped_dek`; `vault_passphrase` is a copy of slot P, `backup_passphrase` uses AAD
+`dw-vault/backup-slot/v1 ‖ …`), there is no `vault_wrapped_key`, and the payload key is derived from
+the DEK. They are never written again. Such a file hands out its vault's DEK to whoever knows its
+passphrase; delete old ones once a new backup exists.
+
+File-supplied Argon2id parameters above m = 4 GiB (4 194 304 KiB), t = 64 or p = 16 are refused
+as corrupt before any memory is reserved: the production floor and calibration stay far below
+them (256 MiB, t ≤ 24, p = 1), and a crafted file must not make the reader allocate or spin.
