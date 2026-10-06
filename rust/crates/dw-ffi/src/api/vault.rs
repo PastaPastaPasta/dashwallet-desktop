@@ -71,8 +71,11 @@ pub enum VaultCredential {
     Passphrase { passphrase: Vec<u8> },
     /// Key released by the OS biometric store for slot B (M2).
     QuickUnlock { wrap_key: Vec<u8> },
-    /// No credential: valid only for an unencrypted vault when the
-    /// "require authentication for every payment" setting is off.
+    /// No credential: accepted on an unencrypted vault, and on a vault
+    /// unlocked with scope Full except for `RevealSecret`, `Wipe` and
+    /// `ChangeCredential` (those need the passphrase whenever the vault is
+    /// encrypted). Whether the host sends it for spending and signing is the
+    /// "require authentication for every payment" setting.
     Unencrypted,
 }
 
@@ -166,9 +169,14 @@ pub enum VaultError {
     /// Code `vault.grant_invalid`: unknown, expired or already used grant.
     #[error("grant invalid")]
     GrantInvalid,
-    /// Code `vault.grant_purpose_mismatch`: the grant does not cover this call.
+    /// Code `vault.grant_purpose_mismatch`: the grant does not cover this
+    /// call (another purpose, or bound to another wallet).
     #[error("grant purpose mismatch")]
     GrantPurposeMismatch,
+    /// Code `vault.credential_required`: reveal, wipe and credential change
+    /// need the passphrase on an encrypted vault, even while it is unlocked.
+    #[error("this purpose needs the passphrase")]
+    CredentialRequired,
     /// Code `vault.mixing_only`: the vault is unlocked for mixing only.
     #[error("unlocked for mixing only")]
     MixingOnly,
@@ -226,6 +234,7 @@ impl From<dw_vault::VaultError> for VaultError {
             V::AlreadyEncrypted => Self::AlreadyEncrypted,
             V::GrantInvalid => Self::GrantInvalid,
             V::GrantPurposeMismatch => Self::GrantPurposeMismatch,
+            V::CredentialRequired => Self::CredentialRequired,
             V::MixingOnly => Self::MixingOnly,
             V::NoSecret => Self::NoSecret,
             V::QuickUnlockUnavailable => Self::QuickUnlockUnavailable,
@@ -380,6 +389,7 @@ impl VaultError {
             Self::AlreadyEncrypted => "vault.already_encrypted",
             Self::GrantInvalid => "vault.grant_invalid",
             Self::GrantPurposeMismatch => "vault.grant_purpose_mismatch",
+            Self::CredentialRequired => "vault.credential_required",
             Self::MixingOnly => "vault.mixing_only",
             Self::NoSecret => "vault.no_secret",
             Self::QuickUnlockUnavailable => "vault.quick_unlock_unavailable",
@@ -496,18 +506,36 @@ impl Vault {
             .map(Into::into)
     }
 
-    /// Checks `credential` and issues a single-use grant for `purpose`. A
-    /// passphrase credential also unlocks a locked vault (scope Full).
+    /// Checks `credential` and issues a single-use grant for `purpose`.
+    ///
+    /// `wallet_id` binds the grant to the wallet it is for: required for
+    /// every purpose except `ChangeCredential`, which must pass `None`
+    /// (`invalid_argument` otherwise). The grant is refused on any other
+    /// wallet (`grant_purpose_mismatch`, or the call domain's
+    /// `grant_invalid`).
+    ///
+    /// A passphrase credential does not change the lock state: on a locked
+    /// or mixing-only vault the unwrapped key serves this grant only.
+    /// Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
+    /// `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
     pub async fn authorize(
         &self,
         purpose: GrantPurpose,
+        wallet_id: Option<String>,
         credential: VaultCredential,
     ) -> Result<AuthGrant, VaultError> {
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let credential = OwnedCredential::from(credential);
         let purpose = purpose.into();
-        self.op(move |v| v.authorize(purpose, credential.as_credential()))
-            .await
-            .map(Into::into)
+        self.op(move |v| {
+            v.authorize(
+                purpose,
+                wallet.as_ref().map(|w| &w.0),
+                credential.as_credential(),
+            )
+        })
+        .await
+        .map(Into::into)
     }
 
     /// Invalidates a grant before it expires. Unknown ids are ignored.
@@ -518,7 +546,8 @@ impl Vault {
     }
 
     /// The recovery phrase and BIP39 passphrase of `wallet_id`. Needs a
-    /// `RevealSecret` grant. Errors: `NoSecret`, `GrantInvalid`, `Locked`.
+    /// `RevealSecret` grant for `wallet_id`. Errors: `NoSecret`,
+    /// `GrantInvalid`, `GrantPurposeMismatch`, `Locked`.
     pub async fn reveal_mnemonic(
         &self,
         wallet_id: String,

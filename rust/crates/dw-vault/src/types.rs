@@ -56,14 +56,16 @@ pub struct VaultStatus {
 /// Credential presented to [`crate::Vault::authorize`].
 #[derive(Clone, Copy)]
 pub enum Credential<'a> {
-    /// Vault passphrase bytes. Also unlocks a locked vault (scope Full).
+    /// Vault passphrase bytes. Does not change the lock state: on a locked or
+    /// mixing-only vault the unwrapped key serves the issued grant only.
     Passphrase(&'a [u8]),
     /// Key released by the OS biometric store (slot B, M2).
     QuickUnlock(&'a [u8]),
-    /// No credential: accepted when the vault is unencrypted or already
-    /// unlocked with scope Full. Whether the app allows this (dash-qt's
-    /// behaviour with "require authentication for every payment" off) is the
-    /// host's setting.
+    /// No credential: accepted when the vault is unencrypted, or unlocked
+    /// with scope Full for purposes other than
+    /// [`GrantPurpose::requires_credential`] ones. Whether the app allows
+    /// this (dash-qt's behaviour with "require authentication for every
+    /// payment" off) is the host's setting.
     None,
 }
 
@@ -120,6 +122,22 @@ impl GrantPurpose {
         }
     }
 
+    /// Whether a grant of this purpose acts on one wallet and is bound to it
+    /// (every purpose except `ChangeCredential`, which acts on the vault).
+    pub fn wallet_scoped(&self) -> bool {
+        !matches!(self, GrantPurpose::ChangeCredential)
+    }
+
+    /// Whether this purpose needs a credential (passphrase, or quick unlock
+    /// in M2) whenever the vault has a passphrase slot, even while it is
+    /// unlocked: revealing the phrase, wiping a wallet, changing a credential.
+    pub fn requires_credential(&self) -> bool {
+        matches!(
+            self,
+            GrantPurpose::RevealSecret | GrantPurpose::Wipe | GrantPurpose::ChangeCredential
+        )
+    }
+
     /// Whether a redeemed grant of this purpose may obtain a full signer.
     pub(crate) fn signs(&self) -> bool {
         matches!(
@@ -139,6 +157,8 @@ impl GrantPurpose {
 pub struct AuthGrant {
     pub id: String,
     pub purpose: GrantPurpose,
+    /// The wallet the grant is bound to; `None` for vault-wide purposes.
+    pub wallet: Option<WalletId>,
     /// UNIX seconds after which the grant is refused.
     pub expires_at: u64,
     /// Consumed by its first redemption.
@@ -146,16 +166,35 @@ pub struct AuthGrant {
 }
 
 /// Proof that a grant was redeemed. Not cloneable and only built by the
-/// vault, so holding one means the authorization check passed.
-#[derive(Debug)]
+/// vault, so holding one means the authorization check passed. Valid until
+/// the vault locks or changes unlock scope.
 pub struct GrantToken {
     pub(crate) purpose: GrantPurpose,
+    pub(crate) wallet: Option<WalletId>,
     pub(crate) epoch: u64,
+    /// The grant's own data key (passphrase grant on a locked or mixing-only
+    /// vault); zeroized on drop.
+    pub(crate) key: Option<crate::crypto::Key32>,
+}
+
+impl std::fmt::Debug for GrantToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrantToken")
+            .field("purpose", &self.purpose)
+            .field("wallet", &self.wallet.map(hex::encode))
+            .field("own_key", &self.key.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl GrantToken {
     pub fn purpose(&self) -> GrantPurpose {
         self.purpose
+    }
+
+    /// The wallet the grant was bound to.
+    pub fn wallet(&self) -> Option<WalletId> {
+        self.wallet
     }
 
     /// The spend cap of a `Spend` grant.

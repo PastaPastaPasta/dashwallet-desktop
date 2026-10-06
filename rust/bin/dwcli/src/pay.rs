@@ -333,6 +333,7 @@ pub fn run(
                 .vault()
                 .authorize(
                     GrantPurpose::Spend { max_duffs: cap },
+                    Some(&id.0),
                     credential(session, passphrase),
                 )
                 .map_err(|e| e.to_string())?;
@@ -409,17 +410,17 @@ pub fn run(
             if session.vault().lock_state() == LockState::Locked && passphrase.is_none() {
                 return Err("vault locked; pass --passphrase-file".into());
             }
+            let id = wallet_id(&wallet)?;
             let grant = session
                 .vault()
-                .authorize(GrantPurpose::SignMessage, credential(session, passphrase))
+                .authorize(
+                    GrantPurpose::SignMessage,
+                    Some(&id.0),
+                    credential(session, passphrase),
+                )
                 .map_err(|e| e.to_string())?;
             let sig = engine
-                .block_on(session.sign_message(
-                    wallet_id(&wallet)?,
-                    address,
-                    message.into_bytes(),
-                    grant.id,
-                ))
+                .block_on(session.sign_message(id, address, message.into_bytes(), grant.id))
                 .map_err(e)?;
             println!("signature {sig}");
         }
