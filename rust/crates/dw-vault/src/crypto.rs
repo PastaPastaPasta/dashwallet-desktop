@@ -111,6 +111,21 @@ impl KdfParams {
         p: 1,
     };
 
+    /// Highest cost accepted from a file (`vault.dwv` slot P, a `.dwbackup`
+    /// slot): m ≤ 4 GiB, t ≤ 64, p ≤ 16 (review M1). The floor and the
+    /// calibration stay far below (256 MiB, t ≤ 24, p = 1); anything above
+    /// is a crafted file that would make the reader allocate terabytes or
+    /// spin for hours, so it is `Corrupt` before any memory is reserved.
+    pub const MAX: KdfParams = KdfParams {
+        m_kib: 4 * 1024 * 1024,
+        t: 64,
+        p: 16,
+    };
+
+    pub fn within_limits(&self) -> bool {
+        self.m_kib <= Self::MAX.m_kib && self.t <= Self::MAX.t && self.p <= Self::MAX.p
+    }
+
     pub fn meets_floor(&self) -> bool {
         self.m_kib >= Self::FLOOR.m_kib && self.t >= Self::FLOOR.t && self.p >= 1
     }
@@ -151,11 +166,19 @@ pub(crate) fn weak_kdf_allowed() -> bool {
 
 /// Argon2id(passphrase, salt, params) → 32-byte key. The block matrix is
 /// owned here and wiped afterwards (argon2 0.5.3 does not wipe it itself).
+/// Parameters above [`KdfParams::MAX`] are `Corrupt` (they come from a
+/// file).
 pub(crate) fn derive_kek(
     passphrase: &[u8],
     salt: &[u8],
     params: &KdfParams,
 ) -> Result<Key32, VaultError> {
+    if !params.within_limits() {
+        return Err(VaultError::Corrupt(format!(
+            "argon2 parameters {params:?} above the limits {:?}",
+            KdfParams::MAX
+        )));
+    }
     let p = Params::new(params.m_kib, params.t, params.p, Some(32))
         .map_err(|e| VaultError::Corrupt(format!("argon2 parameters: {e}")))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, p.clone());
@@ -248,6 +271,51 @@ mod tests {
         let c = derive_kek(b"pw", &[2; 16], &p).unwrap();
         assert_eq!(*a, *b);
         assert_ne!(*a, *c);
+    }
+
+    /// Review M1: a crafted cost is refused before anything is allocated
+    /// (`m_kib = u32::MAX` would otherwise abort on a 4 TiB allocation).
+    #[test]
+    fn file_supplied_costs_above_the_limits_are_corrupt() {
+        for params in [
+            KdfParams {
+                m_kib: u32::MAX,
+                ..KdfParams::TEST
+            },
+            KdfParams {
+                m_kib: KdfParams::MAX.m_kib + 1,
+                ..KdfParams::TEST
+            },
+            KdfParams {
+                t: u32::MAX,
+                ..KdfParams::TEST
+            },
+            KdfParams {
+                t: 65,
+                ..KdfParams::TEST
+            },
+            KdfParams {
+                p: 17,
+                m_kib: 17 * 8,
+                ..KdfParams::TEST
+            },
+        ] {
+            assert!(
+                matches!(
+                    derive_kek(b"pw", &[1; 16], &params),
+                    Err(VaultError::Corrupt(_))
+                ),
+                "{params:?}"
+            );
+        }
+        assert!(KdfParams::FLOOR.within_limits());
+        assert!(
+            KdfParams {
+                t: MAX_CALIBRATED_T,
+                ..KdfParams::FLOOR
+            }
+            .within_limits()
+        );
     }
 
     #[test]

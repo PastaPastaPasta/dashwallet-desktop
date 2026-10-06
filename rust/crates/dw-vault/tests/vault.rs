@@ -828,3 +828,26 @@ async fn mixing_only_unlock_limits_keys_to_the_coinjoin_account() {
     v.lock();
     assert_eq!(v.mixing_signer(&wallet(1)).unwrap_err(), VaultError::Locked);
 }
+
+/// Review M1: a crafted `vault.dwv` with an absurd Argon2id cost is refused
+/// as corrupt (no 4 TiB allocation, no hours of hashing) and the attempt is
+/// not counted.
+#[test]
+fn crafted_kdf_cost_in_the_vault_file_is_corrupt() {
+    let fx = Fixture::new();
+    locked_vault(&fx);
+    let original = fx.raw();
+    for (field, value) in [
+        ("m_kib", u64::from(u32::MAX)),
+        ("t", u64::from(u32::MAX)),
+        ("p", 17),
+    ] {
+        fx.restore_raw(&original);
+        let err = unlock_after(&fx, |j| j["slot_p"]["kdf"][field] = value.into());
+        assert!(
+            matches!(err, VaultError::Corrupt(ref d) if d.contains("above the limits")),
+            "{field}: {err:?}"
+        );
+        assert_eq!(fx.open().status().failed_attempts, 0);
+    }
+}
