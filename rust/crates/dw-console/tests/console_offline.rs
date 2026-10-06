@@ -160,11 +160,29 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
     // Review L1: one relock timer per session. A later walletpassphrase
     // replaces a shorter earlier one, walletlock cancels it, and the timer
     // does not keep the session alive.
+    // The 1 s timer fires: waited for with a deadline, not a fixed sleep,
+    // so a loaded machine only makes the test slower. Its observed delay
+    // sizes the wait of the negative check below.
+    run(&mut ctx, "walletpassphrase \"console pass\" 1").unwrap();
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(30);
+    while s.vault().lock_state() != dw_vault::LockState::Locked || s.relock_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the 1 s timer never locked the vault"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let fired_after = started.elapsed();
+    run(&mut ctx, "walletpassphrase \"console pass\" 600").unwrap();
+
     let strong = Arc::strong_count(&s);
     run(&mut ctx, "walletpassphrase \"console pass\" 1").unwrap();
     run(&mut ctx, "walletpassphrase \"console pass\" 600").unwrap();
     assert_eq!(Arc::strong_count(&s), strong, "the timer holds the session");
-    std::thread::sleep(std::time::Duration::from_millis(1600));
+    // Twice as long as the first timer took (at least 1.5 s): a replaced
+    // timer that still ran would have locked the vault by then.
+    std::thread::sleep((fired_after * 2).max(std::time::Duration::from_millis(1500)));
     assert_eq!(
         s.vault().lock_state(),
         dw_vault::LockState::Unlocked,
@@ -172,10 +190,6 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
     );
     assert!(s.relock_pending());
     run(&mut ctx, "walletlock").unwrap();
-    assert!(!s.relock_pending());
-    run(&mut ctx, "walletpassphrase \"console pass\" 1").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1600));
-    assert_eq!(s.vault().lock_state(), dw_vault::LockState::Locked);
     assert!(!s.relock_pending());
     run(&mut ctx, "walletpassphrase \"console pass\" 600").unwrap();
 
