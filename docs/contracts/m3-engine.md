@@ -120,15 +120,15 @@ Status of every call: **stub** unless marked **works**. "In-memory read" calls a
 | Call | Kind | Semantics | Errors (besides common) | Serves |
 |---|---|---|---|---|
 | `coinjoin_limits()` | sync, free | **works**. Denominations (largest first), `min_mixing_balance` 140001, collateral 10000…40000, option ranges, dash-qt defaults. | — | QT-044, QT-046 |
-| `coinjoin_settings()` | sync | `CoinJoinSettings { enabled, multi_session, max_sessions, rounds, target_amount_dash, denoms_goal, denoms_hard_cap }`; dash-qt defaults until changed. Per network, stored in app.sqlite. | — | QT-046, QT-049 |
-| `set_coinjoin_settings(s)` | async | Validates (**works**), applies live, stores. `enabled = false` stops every wallet (`stop_reason = Disabled`). Rounds/target changes take effect at the next session. | `invalid_argument` | QT-046 |
-| `coinjoin_status(wallet)` | sync | `CoinJoinStatus` (below). In-memory read; re-query on `CoinJoin`. | — | QT-041…043, 048, 050 |
-| `start_mixing(wallet)` | async | Idempotent. Needs `enabled`, a wallet with keys, balance ≥ 0.00140001 DASH and a vault that is unencrypted, unlocked or unlocked for mixing only. Runs while SPV syncs (status `SyncInProgress`, as Core). | `coinjoin.disabled`, `coinjoin.watch_only`, `coinjoin.insufficient_funds{min_duffs}`, `coinjoin.vault_locked` | QT-044, QT-112 |
-| `stop_mixing(wallet)` | async | `resetPool` then stop: open sessions are left, reserved coins released. Idempotent. | — | QT-044 |
-| `coinjoin_salt(wallet)` / `set_coinjoin_salt(wallet, hex)` / `generate_coinjoin_salt(wallet)` | async | Core `coinjoinsalt get/set/generate`. The salt is created at first use, imported from `cj_salt` with a Dash Core wallet (R1 adds this to `import_wallet_dat`), stored in app.sqlite. `set` is refused while mixing (`invalid_argument`). Hex check **works**. | `invalid_argument` | QT-043, QT-145 |
-| `coinjoin_recovery_scan(wallet)` | async | IOS-057: raises the DIP9 CoinJoin account's lookahead and the BIP44 chains' to 1000, rescans from the birth height (a normal rescan: `rescan_progress`, `cancel_rescan`), returns `CoinJoinRecoveryReport { coinjoin_addresses_scanned, bip44_addresses_scanned, coinjoin_balance, new_transactions }`. | `coinjoin.spv_not_running`; `invalid_argument` while another rescan runs | IOS-057 |
-| `mixed_coins_sweep_plan(wallet, dest)` | async | Chunks of ≤ 500 inputs of the CoinJoin account's coins above 1000 duffs, with fees. Reads coins only. `Shielded`: M4. | `coinjoin.nothing_to_move` | IOS-057 |
-| `move_mixed_coins(wallet, dest, grant)` | async | Broadcasts the plan's chunks to a fresh BIP44 receive address of the same wallet; `Spend` grant ≥ total. Stops at the first failing chunk and returns `MixedCoinsSweepResult { txids, moved, remaining, failure_code }`. `Shielded`: M4 (`NotImplemented{…move_mixed_coins.shielded}`). | `coinjoin.nothing_to_move`, `coinjoin.vault_locked`, `coinjoin.grant_invalid`, `coinjoin.no_peers`, `coinjoin.broadcast_rejected{reason}` | IOS-057 |
+| `coinjoin_settings()` | sync | **works**. `CoinJoinSettings { enabled, multi_session, max_sessions, rounds, target_amount_dash, denoms_goal, denoms_hard_cap }`; dash-qt defaults until changed. Per network, stored in app.sqlite. | — | QT-046, QT-049 |
+| `set_coinjoin_settings(s)` | async | **works**. Validates, applies live, stores. `enabled = false` stops every wallet (`stop_reason = Disabled`). Rounds/target changes take effect at the next session. | `invalid_argument` | QT-046 |
+| `coinjoin_status(wallet)` | sync | **works**. `CoinJoinStatus` (below). In-memory read of the status the engine refreshes once a second (the first read of a wallet computes it); re-query on `CoinJoin`. | — | QT-041…043, 048, 050 |
+| `start_mixing(wallet)` | async | **works**. Idempotent. Needs `enabled`, a wallet with keys, balance ≥ 0.00140001 DASH and a vault that is unencrypted, unlocked or unlocked for mixing only. Runs while SPV syncs (status `SyncInProgress`, as Core). | `coinjoin.disabled`, `coinjoin.watch_only`, `coinjoin.insufficient_funds{min_duffs}`, `coinjoin.vault_locked` | QT-044, QT-112 |
+| `stop_mixing(wallet)` | async | **works**. `resetPool` then stop: open sessions are left, reserved coins released. Idempotent. | — | QT-044 |
+| `coinjoin_salt(wallet)` / `set_coinjoin_salt(wallet, hex)` / `generate_coinjoin_salt(wallet)` | async | Core `coinjoinsalt get/set/generate`. The salt is created at first use, imported from `cj_salt` with a Dash Core wallet (R1 adds this to `import_wallet_dat`), stored in app.sqlite. `set` is refused while mixing (`invalid_argument`). **works** (the wallet.dat import keeps `cj_salt`, or the older `ps_salt`). | `invalid_argument` | QT-043, QT-145 |
+| `coinjoin_recovery_scan(wallet)` | async | **works**. IOS-057: raises the DIP9 CoinJoin account's lookahead and the BIP44 chains' to 1000, rescans from the birth height (a normal rescan: `rescan_progress`, `cancel_rescan`), returns `CoinJoinRecoveryReport { coinjoin_addresses_scanned, bip44_addresses_scanned, coinjoin_balance, new_transactions }`. | `coinjoin.spv_not_running`; `invalid_argument` while another rescan runs | IOS-057 |
+| `mixed_coins_sweep_plan(wallet, dest)` | async | **works**. Chunks of ≤ 500 inputs of the CoinJoin account's coins above 1000 duffs, with fees. Reads coins only. `Shielded`: M4. | `coinjoin.nothing_to_move` | IOS-057 |
+| `move_mixed_coins(wallet, dest, grant)` | async | **works**. Broadcasts the plan's chunks to a fresh BIP44 receive address of the same wallet; `Spend` grant ≥ total. Stops at the first failing chunk and returns `MixedCoinsSweepResult { txids, moved, remaining, failure_code }`. `Shielded`: M4 (`NotImplemented{…move_mixed_coins.shielded}`). | `coinjoin.nothing_to_move`, `coinjoin.vault_locked`, `coinjoin.grant_invalid`, `coinjoin.no_peers`, `coinjoin.broadcast_rejected{reason}` | IOS-057 |
 
 `CoinJoinStatus`:
 
@@ -246,7 +246,7 @@ against dashd's `protx shared_*` RPCs on regtest.
 
 | Call | Kind | Semantics | Errors | Serves |
 |---|---|---|---|---|
-| `network_stats()` | sync | `NetworkStats { credit_pool: None, instantsend: None, masternodes, evonodes, best_chainlock, quorums[] { llmq_name, llmq_type, active, health_percent, rotated } }`. Credit pool and InstantSend counters need a full node (§7); quorums come from the synced list's quorum entries (empty before). In-memory read; re-query on `Sync`/`Masternodes`. | — (`SyncError` domain) | QT-144 |
+| `network_stats()` | sync | **works** (quorums: platform-wallet has no quorum-list accessor at the pin, so the list stays empty; hosts show it as unavailable). `NetworkStats { credit_pool: None, instantsend: None, masternodes, evonodes, best_chainlock, quorums[] { llmq_name, llmq_type, active, health_percent, rotated } }`. Credit pool and InstantSend counters need a full node (§7); quorums come from the synced list's quorum entries (empty before). In-memory read; re-query on `Sync`/`Masternodes`. | — (`SyncError` domain) | QT-144 |
 
 ## 3. Events (additions to `EngineEvent`)
 
@@ -289,7 +289,10 @@ test compares them with `ServiceErrorCode.m3EngineCodes`):
 - **Import (R1).** `import_wallet_dat` stores the `cj_salt` record as the wallet's CoinJoin salt.
 - **Vault (R1).** A vault that locks while a wallet mixes stops it (`stop_reason = VaultLocked`). Mixing signs with
   the mixing-only scope (`AccountType::CoinJoin` keys and collateral inputs only); a send from a mixing-only vault
-  still needs a passphrase grant and leaves the lock state as it was (M2).
+  still needs a passphrase grant and leaves the lock state as it was (M2). Denomination and collateral
+  transactions made from BIP44 coins are signed with `Vault::mixing_funding_signer` (scope
+  `CoinJoinFunding`: CoinJoin-account and BIP44 paths, no grant), as Core lets a mixing-only unlock create them;
+  the engine uses it only for transactions whose outputs all pay the wallet.
 - **Restore lookahead (R1).** Wallets imported with `core_compat` scan the DIP9 CoinJoin account and the BIP44
   chains with gap 1000 (DESIGN.md R2), as `coinjoin_recovery_scan` does for existing wallets.
 - **`NodeInfo.masternodes/evonodes`** keep their M2 meaning; `masternode_list_state` adds heights and Evo splits.

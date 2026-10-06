@@ -2066,28 +2066,32 @@ impl NetworkSession {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
                 if this.hub.rescan().is_some() {
-                    return Err(EngineError::InvalidArgument("another rescan is running".into()));
+                    return Err(EngineError::InvalidArgument(
+                        "another rescan is running".into(),
+                    ));
                 }
                 let wallet = this.wallet(&wallet_id).await?;
-                for pref in [
-                    key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference::CoinJoin,
-                    key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference::BIP44,
-                ] {
-                    wallet
-                        .core()
-                        .set_gap_limit(pref, 0, RECOVERY_LOOKAHEAD)
-                        .await
-                        .map_err(|e| EngineError::Internal(format!("lookahead: {e}")))?;
-                }
-                let birth = this.hub.wallet_state(&wallet_id).map(|s| s.birth_height).unwrap_or(0);
+                crate::keys::apply_lookahead(&wallet, RECOVERY_LOOKAHEAD).await?;
+                // Kept for later sessions, as a restore's lookahead is.
+                this.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
+                let birth = this
+                    .hub
+                    .wallet_state(&wallet_id)
+                    .map(|s| s.birth_height)
+                    .unwrap_or(0);
                 (this.hub.history.snapshot(&wallet_id).len(), birth)
             };
             this.rescan(crate::sync::RescanFrom::Height(birth)).await?;
-            // Wait for the rescan to finish (it reports through the hub).
+            // Wait for the rescan to finish (it reports through the hub); a
+            // stopped SPV client or a closed session ends it unfinished.
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if this.hub.rescan().is_none() {
                     break;
+                }
+                let running = this.manager().is_ok_and(|m| m.spv().is_started());
+                if !running {
+                    return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
             }
             let view = this.mix_view(wallet_id).await?;

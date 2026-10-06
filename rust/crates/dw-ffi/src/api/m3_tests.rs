@@ -138,7 +138,6 @@ fn constants_answer_without_a_session() {
 }
 
 #[test]
-#[test]
 fn test_qt_046_coinjoin_calls_answer_and_check_their_wallet() {
     let f = fixture();
     let s = &f.session;
