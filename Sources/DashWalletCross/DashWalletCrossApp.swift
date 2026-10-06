@@ -196,11 +196,15 @@ struct LiveStartView: View {
         quitHook.session = session
         DashWalletCrossApp.open(page: options.page, in: session.state.main)
         state = session.state
-        do {
-            try await session.launch()
-        } catch {
-            Self.log(error)
-            launchFailure = "The network could not be opened (\(error.code.rawValue))."
+        // Not awaited here: setting `state` replaces the view that owns this
+        // `.task`, and the network must keep opening after that.
+        Task { @MainActor in
+            do throws(ServiceError) {
+                try await session.launch()
+            } catch {
+                Self.log(error)
+                launchFailure = "The network could not be opened (\(error.code.rawValue))."
+            }
         }
     }
 }
