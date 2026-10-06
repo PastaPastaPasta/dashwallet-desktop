@@ -258,6 +258,21 @@ def test_subtract_fee_from_amount(dw, regtest_node, recipient):
     assert recipient.getreceivedbyaddress(address, 0) == Decimal(2 * COIN - fee) / COIN
 
 
+def test_foreign_change_address_counts_against_the_cap(dw, regtest_node, recipient):
+    height = regtest_node.rpc.getblockcount()
+    dw.sync(height)
+    address = recipient.getnewaddress()
+    change = recipient.getnewaddress()
+    lines, tx = dw.pay(regtest_node, height, "--to", f"{address}:{COIN // 10}", "--change", change)
+    estimate = fields(dw.line("estimate", lines))
+    prepared = fields(dw.line("prepared", lines))
+    assert paid_to(tx, address) == COIN // 10
+    assert paid_to(tx, change) == int(estimate["change"])
+    # The foreign change is spent from the wallet's point of view.
+    assert int(prepared["external"]) == COIN // 10 + int(estimate["change"])
+    assert int(prepared["debit"]) == int(prepared["external"]) + tx_fee(regtest_node, tx)
+
+
 def test_balance_after_payments(dw, regtest_node):
     height = regtest_node.rpc.getblockcount()
     synced = dw.sync(height)

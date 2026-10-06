@@ -301,6 +301,7 @@ pub fn run(
                     .collect::<Result<_, _>>()?;
                 draft.set_source(CoinSource::Outpoints(list)).map_err(e)?;
             }
+            let custom_change = change.is_some();
             if let Some(addr) = change {
                 draft.set_change(ChangePolicy::Address(addr)).map_err(e)?;
             }
@@ -313,13 +314,19 @@ pub fn run(
                 estimate.change.map_or("none".into(), |c| c.to_string()),
                 estimate.total_sent
             );
-            // The grant caps what leaves the wallet: the recipients' amounts
-            // plus a foreign change output.
+            // The grant caps what leaves the wallet: the recipients' amounts,
+            // plus the change when a custom change address may be foreign
+            // (the engine refuses a cap that is too low; never one too high).
+            let custom_change_value = if custom_change {
+                estimate.change.unwrap_or(0)
+            } else {
+                0
+            };
             let cap = to
                 .iter()
                 .map(|r| recipient(r, &None, &None).map(|r| r.amount))
                 .sum::<Result<u64, _>>()?
-                + estimate.change.unwrap_or(0);
+                + custom_change_value;
             let grant = session
                 .vault()
                 .authorize(

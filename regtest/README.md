@@ -78,6 +78,19 @@ Environment: `DWD_REGTEST_BACKEND` (`docker`|`local`), `DWD_REGTEST_BUILD=0` (Do
 `DASHCORE_DIR` (local), `DWD_KEEP_DATADIR=1` (local: keep the temp datadir). The Docker backend uses a
 unique compose project and free loopback ports per session, so runs do not collide.
 
+`DWD_REGTEST_PROJECT=<name>` pins the Docker compose project name (one per agent or CI job).
+
+**l1-send** (`tests/test_l1_send.py`) drives a host-built `dwcli` (`DWCLI=/path/to/dwcli`; skipped when
+absent) over SPV against the node: receive and sync, a custom-fee payment, coin control, a locked coin left
+out of selection, subtract-fee, a foreign change address, exact amounts at dashd, and sign/verify both ways.
+With one peer and no InstantSend quorum, dash-spv accepts a broadcast only once it is mined, so the suite
+mines each payment from dashd's mempool while `dwcli send` waits.
+
+```sh
+DWD_REGTEST_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_l1_send.py
+```
+
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 
