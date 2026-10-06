@@ -1,6 +1,7 @@
 // Command-line switches of the macOS app.
 #if os(macOS)
 import Foundation
+import WalletDemo
 import WalletFeatures
 import WalletRuntime
 
@@ -51,7 +52,7 @@ public struct LaunchOptions: Sendable, Equatable {
             case "--demo", "--fixture":
                 options.demoScenario = options.demoScenario ?? .funded
             case "--demo-scenario":
-                if let value, let scenario = DemoScenario(rawValue: value) {
+                if let value, let scenario = DemoScenario(name: value) {
                     options.demoScenario = scenario
                     index += 1
                 }

@@ -5,6 +5,7 @@
 import Foundation
 import PlatformServices
 import PlatformServicesMac
+import WalletDemo
 import WalletFeatures
 import WalletRuntime
 

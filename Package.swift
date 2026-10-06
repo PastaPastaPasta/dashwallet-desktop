@@ -62,6 +62,10 @@ var targets: [Target] = [
         name: "WalletFeatures",
         dependencies: ["WalletRuntime", "AppServices", "PlatformServices", "DesignTokens"]
     ),
+    // Demo mode (`--demo`) for both apps: the WalletRuntime service protocols
+    // over in-memory sample wallets, with the engine's rules and its pure
+    // functions (units, URIs, QR, message verification, mnemonics).
+    .target(name: "WalletDemo", dependencies: ["WalletRuntime", "WalletFeatures", "PlatformServices"]),
     // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see Sources/DashUIMac/VENDORED.md).
     // Sources/DashUIMac/Resources/Icons is a symlink to the repository's exported icon set
     // (Resources/Icons); `.process` copies its files flat into the resource bundle.
@@ -77,6 +81,7 @@ var targets: [Target] = [
         dependencies: [
             .target(name: "DashUIMac", condition: .when(platforms: [.macOS])),
             "DesignTokens",
+            "WalletDemo",
             "WalletFeatures",
             "WalletRuntime",
             "PlatformServices",
@@ -84,6 +89,8 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
+    // The demo services against the engine's rules (grants, sends, addresses).
+    .testTarget(name: "WalletDemoTests", dependencies: ["WalletDemo", "WalletFeatures", "WalletRuntime"]),
     .testTarget(name: "WalletRuntimeTests", dependencies: ["WalletRuntime", "DashKit"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
     // View-model flows against in-memory fakes of the WalletRuntime contracts.
@@ -103,6 +110,7 @@ var targets: [Target] = [
         dependencies: [
             .target(name: "MacUI", condition: .when(platforms: [.macOS])),
             .target(name: "PlatformServicesMac", condition: .when(platforms: [.macOS])),
+            "WalletDemo",
             "WalletFeatures",
             "WalletRuntime",
         ]
@@ -126,12 +134,12 @@ if !headless {
                 .target(name: "PlatformServicesDesktop", condition: .when(platforms: [.linux, .windows])),
             ] + crossUI
         ),
-        // Composition root: live runtime over the engine, or --demo fakes.
+        // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(
             name: "DashWalletCross",
             dependencies: [
-                "CrossUI", "DashUICross", "WalletFeatures", "WalletRuntime", "PlatformServices",
-                "PlatformServicesDesktop", "DashKit", "DashWalletCore", "DesignTokens",
+                "CrossUI", "DashUICross", "WalletDemo", "WalletFeatures", "WalletRuntime", "PlatformServices",
+                "PlatformServicesDesktop", "DesignTokens",
             ] + crossUI + nativeBackend
         ),
     ]

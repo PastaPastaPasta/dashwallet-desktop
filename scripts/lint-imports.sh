@@ -25,26 +25,26 @@ allowed_for() {
     PlatformServicesMac)     echo "Foundation Observation PlatformServices $apple_frameworks" ;;
     PlatformServicesDesktop) echo "Foundation DashKit PlatformServices" ;;
     WalletFeatures)          echo "Foundation Observation WalletRuntime AppServices PlatformServices DesignTokens" ;;
+    # Demo mode for both apps, over the WalletRuntime contracts only.
+    WalletDemo)              echo "Foundation WalletRuntime WalletFeatures PlatformServices" ;;
     DesignTokens)            echo "Foundation" ;;
     # AppKit: DashUIKit's AppKit ports and desktop components (DESIGN-opus §1.6 DashUIMac row).
     DashUIMac)               echo "Foundation SwiftUI AppKit DashUIKit DesignTokens" ;;
     # MacUI names the WalletRuntime contract value types and DesignTokens
     # spacing; AppKit stays behind PlatformServicesMac.
-    MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
+    MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
     # Native backends: accessible names set on the native widgets (ADR 0002,
     # until SwiftCrossUI fork patch P1 adds accessibility modifiers).
     DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     # CrossUI names the WalletRuntime value types the view models expose
     # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
     CrossUI)                 echo "Foundation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
-    # DashWalletCore: the --demo services call the pure Rust functions
-    # (units, URIs, QR, mnemonics) directly.
     # Native backends: the quit hook (engine shutdown) and the GTK application name.
-    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DashWalletCore DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
+    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesDesktop DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
     DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
     # Renders MacUI screens offscreen (NSHostingView) for the screenshots.
-    MacUITests)              echo "Foundation Testing AppKit SwiftUI MacUI DashUIMac DesignTokens WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
+    MacUITests)              echo "Foundation Testing AppKit SwiftUI MacUI DashUIMac DesignTokens WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
     *)                       return 1 ;;
   esac
 }

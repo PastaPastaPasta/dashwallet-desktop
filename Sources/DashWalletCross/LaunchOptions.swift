@@ -1,6 +1,7 @@
 // Command-line options of `dash-wallet` (SwiftCrossUI app). GTK does not
 // parse argv here (SwiftCrossUI runs the GApplication with no arguments).
 import Foundation
+import WalletDemo
 
 struct LaunchOptions: Sendable, Equatable {
     enum Mode: Sendable, Equatable {
@@ -28,10 +29,12 @@ struct LaunchOptions: Sendable, Equatable {
     var problems: [String] = []
 
     static let usage = """
-        Usage: dash-wallet [--demo [funded|locked|onboarding]] [--gallery]
+        Usage: dash-wallet [--demo [funded|locked|onboarding|offline]] [--gallery]
                            [--network mainnet|testnet|regtest|devnet-NAME] [--datadir PATH]
                            [--connect HOST:PORT]... [--dapi URL]... [--page NAME]
-          --demo       run on in-memory sample data (DWD_DEMO=1 does the same)
+          --demo       run on in-memory sample data (DWD_DEMO=1 does the same);
+                       locked asks for the passphrase "demo", onboarding starts
+                       with no wallet, offline has no peers and is syncing
           --gallery    show the DashUICross component gallery
           --network    network to open (default: the last one opened, first run
                        mainnet; the demo uses testnet)
@@ -63,12 +66,7 @@ struct LaunchOptions: Sendable, Equatable {
             case "--demo":
                 mode = .demo(.funded)
                 if let value = iterator.next() {
-                    switch value {
-                    case "funded": mode = .demo(.funded)
-                    case "locked": mode = .demo(.locked)
-                    case "onboarding": mode = .demo(.onboarding)
-                    default: pending = value
-                    }
+                    if let scenario = DemoScenario(name: value) { mode = .demo(scenario) } else { pending = value }
                 }
             case "--gallery":
                 mode = .gallery

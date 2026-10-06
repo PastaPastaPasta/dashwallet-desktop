@@ -9,6 +9,7 @@ import Foundation
 import PlatformServicesMac
 import SwiftUI
 import Testing
+import WalletDemo
 import WalletFeatures
 import WalletRuntime
 
@@ -18,6 +19,8 @@ import WalletRuntime
 @Suite(.serialized)
 struct ScreenTests {
     static let mainSize = CGSize(width: 1180, height: 760)
+    /// A valid testnet address that is not one of the demo wallet's own.
+    static let payTo = "yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98"
 
     // MARK: Screens
 
@@ -38,7 +41,7 @@ struct ScreenTests {
         let main = try #require(model.main)
         let send = try #require(main.send)
         main.selection = .send
-        send.entries[0].address = "yAb3Cd4Ef5Gh6Jk7Lm8Np9Qr1St2Uv3Wx4"
+        send.entries[0].address = Self.payTo
         send.entries[0].label = "Alice"
         send.entries[0].amountText = "0.25"
         try await Self.capture(Self.chrome(model, SendView(model: model, send: send)), Self.mainSize, scheme, "send")
@@ -49,7 +52,7 @@ struct ScreenTests {
             return
         }
         #expect(!send.canConfirm, "Send stays disabled during the countdown")
-        #expect(send.confirmLines.contains { $0.contains("yAb3Cd4Ef5Gh6Jk7Lm8Np9Qr1St2Uv3Wx4") })
+        #expect(send.confirmLines.contains { $0.contains(Self.payTo) })
         try await Self.capture(SendConfirmSheet(send: send), CGSize(width: 520, height: 300), scheme, "send-confirm")
         await send.cancel()
         #expect(send.phase == .editing)
@@ -121,7 +124,7 @@ struct ScreenTests {
         try await Self.capture(LockScreenView(lock: main.lock, receive: main.receive), Self.mainSize, scheme, "lock")
         await main.lock.unlock(passphrase: "wrong", mixingOnly: false)
         #expect(main.lock.message != nil)
-        await main.lock.unlock(passphrase: DemoStore.lockedPassphrase, mixingOnly: false)
+        await main.lock.unlock(passphrase: DemoEnvironment.passphrase, mixingOnly: false)
         #expect(main.lock.lockState == .unlocked)
         try await Self.settle { main.lockState == .unlocked }
         #expect(!main.showsLockScreen)
@@ -145,15 +148,20 @@ struct ScreenTests {
         signVerify.address = address
         signVerify.message = "I own this address."
         await signVerify.sign()
-        #expect(signVerify.signResult == .signed)
-        signVerify.verifyAddress = address
-        signVerify.verifyMessage = signVerify.message
-        signVerify.verifySignature = signVerify.signature
+        // The demo wallets hold no keys: signing gets as far as the engine's
+        // key lookup and stops there.
+        #expect(signVerify.signResult?.isSuccess == false)
+        // Verification is the engine's (testdata/message_cases.json).
+        signVerify.verifyAddress = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n"
+        signVerify.verifyMessage = "Trust no one"
+        signVerify.verifySignature = "IIOzMDkvw3GtLWXkeEYRRRH53MOLHM44sJ428Nu4NNacTPJTGcKesMJ+3s3OadYK34tpSQIhu922EviNNWTsiQg="
         signVerify.verify()
         #expect(signVerify.verifyResult == .verified)
-        signVerify.verifyMessage = "Something else."
+        signVerify.verifyMessage = "Trust everyone"
         signVerify.verify()
         #expect(signVerify.verifyResult?.isSuccess == false)
+        signVerify.verifyMessage = "Trust no one"
+        signVerify.verify()
         try await Self.capture(SignVerifyWindow(model: model), CGSize(width: 640, height: 520), scheme, "sign-verify")
     }
 
@@ -219,9 +227,9 @@ struct ScreenTests {
     @Test func openURIFillsSend() async throws {
         let model = try await Self.model(.funded, .light)
         let main = try #require(model.main)
-        await model.open(uri: "dash:yAb3Cd4Ef5Gh6Jk7Lm8Np9Qr1St2Uv3Wx4?amount=1.5&label=Shop")
+        await model.open(uri: "dash:\(Self.payTo)?amount=1.5&label=Shop")
         #expect(main.selection == .send)
-        #expect(main.send?.entries.first?.address == "yAb3Cd4Ef5Gh6Jk7Lm8Np9Qr1St2Uv3Wx4")
+        #expect(main.send?.entries.first?.address == Self.payTo)
         #expect(main.send?.entries.first?.label == "Shop")
         #expect(model.uriError == nil)
         await model.open(uri: "dash:notanaddress")
@@ -321,13 +329,6 @@ struct ScreenTests {
         #expect(SyncRateTracker.tipIsOld(status(10, 0.01, tip: start), now: start.addingTimeInterval(26 * 60)))
         #expect(!SyncRateTracker.tipIsOld(status(10, 0.01, tip: start), now: start.addingTimeInterval(10 * 60)))
         #expect(SyncRateTracker.tipIsOld(status(10, 0.01, tip: nil)))
-    }
-
-    @Test func demoPhraseUsesBIP39Words() {
-        #expect(DemoStore.phrase.count == 24)
-        #expect(Set(DemoStore.phrase).count == 24)
-        #expect(DemoStore.phrase.allSatisfy(DemoVault.isWord))
-        #expect(!DemoVault.isWord("notaword"))
     }
 
     // MARK: Helpers

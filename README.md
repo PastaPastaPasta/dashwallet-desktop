@@ -135,7 +135,7 @@ xcodebuild -project DashWallet.xcodeproj -scheme DashWallet -configuration Debug
 
 **Demo mode** (`--demo`) runs on in-memory sample data.
 
-- Switches: `--demo-scenario funded|fresh|locked` (the demo passphrase is `demo`),
+- Switches: `--demo-scenario funded|fresh|locked|offline` (the demo passphrase is `demo`),
   `--appearance light|dark` and `--no-menu-bar-extra`.
 
 **Tests:**
@@ -169,7 +169,7 @@ swift run dash-wallet --help
 - On Linux, closing the window shuts the engine down. The app prints
   `dash-wallet: engine shut down` when that succeeds.
 
-**Demo mode:** `--demo [funded|locked|onboarding]` (or `DWD_DEMO=1`).
+**Demo mode:** `--demo [funded|locked|onboarding|offline]` (or `DWD_DEMO=1`).
 
 - `--page overview|send|receive|transactions|address-book|sign-verify|settings` picks the first page.
 - The demo uses testnet and the passphrase `demo`.
@@ -182,10 +182,19 @@ are in `docs/screenshots/m1/linux/RESULTS.md`.
 
 ### Demo mode in both apps
 
-Demo mode runs the real screens and view models on in-memory fake services.
+Demo mode runs the real screens and view models on in-memory services. Both apps use the same ones,
+`Sources/WalletDemo`, which implement the WalletRuntime service protocols.
 
-- Units, `dash:` URIs, address checks, message verification and QR codes go through the real Rust
-  functions.
+- Units, `dash:` URIs, address checks, message verification, mnemonic checks and QR codes go
+  through the real Rust functions (`EngineFunctions` in WalletRuntime).
+- The rules are the engine's (`docs/contracts/m1-engine.md`), with its error codes: single-use,
+  wallet-bound grants with the §2.2 credential table; recipients validated offline (duplicates,
+  dust, network); payments that spend coins and reserve them while prepared; `send.no_peers`
+  releasing the coins in the `offline` scenario. `Tests/WalletDemoTests` checks this.
+- Scenarios: `funded` (unencrypted), `locked`, `fresh`/`onboarding` (no vault) and `offline`
+  (locked, no peers, three days behind, so the sync overlay shows).
+- The sample wallets' addresses are valid but nobody holds their keys, so signing a message ends in
+  `message.address_no_key`; verification works.
 - Nothing touches the network, and nothing is sent.
 - DESIGN-opus §4.2's fixture-mode engine (IOS-001, milestone M5) is not built.
 

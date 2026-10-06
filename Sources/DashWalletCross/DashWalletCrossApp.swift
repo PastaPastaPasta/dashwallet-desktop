@@ -9,6 +9,7 @@ import Foundation
 import PlatformServices
 import PlatformServicesDesktop
 import SwiftCrossUI
+import WalletDemo
 import WalletFeatures
 import WalletRuntime
 
@@ -42,7 +43,7 @@ struct DashWalletCrossApp: App {
         #endif
         if case .demo(let scenario) = options.mode {
             let network = options.networkName.flatMap(Self.runtimeNetwork) ?? .testnet
-            let env = DemoEnvironment.make(network: network, scenario: scenario)
+            let env = DemoEnvironment.make(scenario: scenario, network: network)
             let main = MainViewModel(env: env)
             Self.open(page: options.page, in: main)
             demoState = CrossAppState(env: env, main: main, notice: CrossDemoText.notice)
