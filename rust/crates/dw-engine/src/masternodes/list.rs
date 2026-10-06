@@ -239,6 +239,19 @@ pub(crate) fn wallet_unspent(
         .collect()
 }
 
+/// A ProRegTx, ProUpServTx, ProUpRegTx or ProUpRevTx.
+fn is_provider_tx(tx: &Transaction) -> bool {
+    matches!(
+        tx.special_transaction_payload,
+        Some(
+            TransactionPayload::ProviderRegistrationPayloadType(_)
+                | TransactionPayload::ProviderUpdateServicePayloadType(_)
+                | TransactionPayload::ProviderUpdateRegistrarPayloadType(_)
+                | TransactionPayload::ProviderUpdateRevocationPayloadType(_)
+        )
+    )
+}
+
 fn p2pkh(hash: &[u8; 20], network: dashcore::Network) -> Address {
     Address::new(
         network,
@@ -294,17 +307,39 @@ fn wallet_extras(
 }
 
 /// Reads every wallet's provider records (blocking manager accessors).
+///
+/// platform-wallet keeps only recent transactions in memory after a restart,
+/// so the provider transactions also come from the session's history store,
+/// which holds every persisted record (`history_ops::load_history`):
+/// `stored` per wallet, merged with the in-memory ones by txid.
 fn wallet_masternodes_blocking(
     manager: &Manager,
+    stored: &HashMap<WalletId, Vec<(u32, u32, Transaction)>>,
     membership: &dyn Fn(&[u8; 32]) -> ListMembership,
 ) -> Vec<WalletMasternode> {
     let mut out = Vec::new();
     for raw in manager.list_wallet_ids_blocking() {
-        let Some((_, txs, _, operator_index, platform_index)) =
+        let Some((_, in_memory, _, operator_index, platform_index)) =
             manager.provider_masternode_txs_blocking(&raw)
         else {
             continue;
         };
+        let mut by_txid: BTreeMap<Txid, (u32, u32, Transaction)> = BTreeMap::new();
+        for (h, p, tx) in stored
+            .get(&WalletId(raw))
+            .into_iter()
+            .flatten()
+            .chain(&in_memory)
+        {
+            let slot = by_txid
+                .entry(tx.txid())
+                .or_insert_with(|| (*h, *p, tx.clone()));
+            // A block height beats "unconfirmed" from the other source.
+            if slot.0 == 0 && *h > 0 {
+                *slot = (*h, *p, tx.clone());
+            }
+        }
+        let txs: Vec<(u32, u32, Transaction)> = by_txid.into_values().collect();
         let records = aggregate_masternodes(txs.iter().map(|(h, p, tx)| (*h, *p, tx)), membership);
         for mut record in records {
             record.operator_key_index = record
@@ -655,6 +690,28 @@ impl NetworkSession {
             .collect();
         let validity: HashMap<[u8; 32], bool> =
             list.iter().map(|(k, v)| (*k, v.is_valid)).collect();
+        let stored: HashMap<WalletId, Vec<(u32, u32, Transaction)>> = manager
+            .list_wallet_ids_blocking()
+            .into_iter()
+            .map(|raw| {
+                let txs = self
+                    .hub
+                    .history
+                    .snapshot(&WalletId(raw))
+                    .into_values()
+                    .filter(|e| !e.abandoned && is_provider_tx(&e.tx))
+                    .map(|e| {
+                        let (h, p) = e
+                            .context
+                            .block_info()
+                            .map(|b| (b.height(), b.position().unwrap_or(0)))
+                            .unwrap_or((0, 0));
+                        (h, p, e.tx)
+                    })
+                    .collect();
+                (WalletId(raw), txs)
+            })
+            .collect();
         let (wallet_mns, tracked) = {
             let manager = Arc::clone(&manager);
             tokio::task::spawn_blocking(move || {
@@ -668,7 +725,7 @@ impl NetworkSession {
                         None => ListMembership::Absent,
                     }
                 };
-                let wallet_mns = wallet_masternodes_blocking(&manager, &membership);
+                let wallet_mns = wallet_masternodes_blocking(&manager, &stored, &membership);
                 let service = manager.tracked_masternodes_service();
                 let tracked: Vec<TrackedMasternode> = service
                     .hashes()

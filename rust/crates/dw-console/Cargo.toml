@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 dashcore = { workspace = true }
 dw-engine = { workspace = true }
+dw-protx = { workspace = true }
 dw-message = { workspace = true }
 dw-vault = { workspace = true }
 hex = { workspace = true }

@@ -2,6 +2,7 @@
 //! and console host (DESIGN-opus §1.4).
 
 mod compat;
+mod mn;
 mod pay;
 mod tools;
 
@@ -122,6 +123,8 @@ enum Command {
     Tools(tools::ToolsCommand),
     #[command(flatten)]
     Compat(compat::CompatCommand),
+    #[command(flatten)]
+    Mn(mn::MnCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -457,6 +460,14 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Compat(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
+        Command::Mn(cmd) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = mn::run(&engine, &session, passphrase.as_ref(), cmd);
             engine
                 .block_on(engine.shutdown())
                 .map_err(|e| e.to_string())?;

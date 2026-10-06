@@ -210,5 +210,48 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
         ),
         "balance unknown before any scan"
     );
+
+    // M3 R3: bls, masternodelist, protx with Core's shapes.
+    let generated = run(&mut ctx, "bls generate").unwrap();
+    assert!(generated.is_json);
+    assert!(generated.result.contains("\"scheme\": \"basic\""));
+    let secret = generated
+        .result
+        .split("\"secret\": \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_string();
+    let public = generated
+        .result
+        .split("\"public\": \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_string();
+    assert_eq!((secret.len(), public.len()), (64, 96));
+    let again = run(&mut ctx, &format!("bls fromsecret {secret}")).unwrap();
+    assert!(again.result.contains(&public));
+    assert!(matches!(
+        run(&mut ctx, "bls fromsecret 00"),
+        Err(ConsoleFailure::Rpc { code: -8, .. })
+    ));
+    assert_eq!(run(&mut ctx, "masternodelist").unwrap().result, "{\n}");
+    assert_eq!(run(&mut ctx, "protx list").unwrap().result, "[\n]");
+    assert!(matches!(
+        run(&mut ctx, "masternodelist lastpaidblock"),
+        Err(ConsoleFailure::Rpc { code: -8, .. })
+    ));
+    assert!(matches!(
+        run(
+            &mut ctx,
+            "protx info 0101010101010101010101010101010101010101010101010101010101010101"
+        ),
+        Err(ConsoleFailure::Rpc { code: -8, .. })
+    ));
+    assert!(matches!(
+        run(&mut ctx, "protx register_fund x"),
+        Err(ConsoleFailure::Rpc { code: -8, .. })
+    ));
     engine.block_on(engine.shutdown()).unwrap();
 }

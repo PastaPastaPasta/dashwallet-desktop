@@ -21,6 +21,10 @@ use zeroize::Zeroizing;
 
 use crate::json::Json;
 use crate::parse::{Executor, Parsed, execute};
+
+// M3 R3: masternodelist, protx, bls (docs/contracts/m3-engine.md §0).
+#[path = "m3_masternode.rs"]
+mod m3_masternode;
 use crate::{CATEGORIES, COMMANDS, ConsoleFailure, command};
 
 /// Core RPC error codes used here (src/rpc/protocol.h).
@@ -895,6 +899,7 @@ impl ConsoleContext {
                 s.relock_after(Duration::from_secs(timeout));
                 Ok(Json::Null)
             }
+            "bls" | "masternodelist" | "protx" => self.masternode_command(method, args).await,
             other => Err(ConsoleFailure::NotAvailable(other.to_string())),
         }
     }

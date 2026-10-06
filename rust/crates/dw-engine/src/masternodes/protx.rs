@@ -364,6 +364,13 @@ impl Prepared {
     }
 }
 
+/// Fee rate of provider transactions, duffs per kB. key-wallet prices a
+/// ProRegTx payload with a 20-byte operator key (it is 48) and without an
+/// EvoNode's Platform fields, so the minimum relay rate would underpay the
+/// real size by up to about 52 bytes (dashd: "min relay fee not met"); a
+/// quarter more covers that for every transaction size.
+const PROVIDER_FEE_PER_KB: u64 = MIN_FEE_PER_KB * 5 / 4;
+
 /// Reason prefix of a broadcast without an acceptance verdict: the inputs
 /// stay reserved and `broadcast` may be called again.
 pub const UNKNOWN_PREFIX: &str = "outcome unknown:";
@@ -707,7 +714,7 @@ impl NetworkSession {
         };
         let finalizer = plan.finalizer;
         let mut builder = TransactionBuilder::new()
-            .set_fee_rate(FeeRate::new(MIN_FEE_PER_KB))
+            .set_fee_rate(FeeRate::new(PROVIDER_FEE_PER_KB))
             .set_current_height(snapshot.height)
             .set_selection_strategy(SelectionStrategy::LargestFirst)
             .set_change_address(change)
@@ -744,10 +751,12 @@ impl NetworkSession {
                 .into(),
                 other => EngineError::from(other),
             })?;
-        if signed.fee() > MAX_TX_FEE {
+        let size = dashcore::consensus::serialize(signed.transaction()).len() as u64;
+        let min_fee = size * MIN_FEE_PER_KB / 1000;
+        if signed.fee() > MAX_TX_FEE || signed.fee() < min_fee {
             wallet.core().abandon_transaction(&signed).await;
             return Err(EngineError::Internal(format!(
-                "provider transaction fee {} is above the {MAX_TX_FEE} duff ceiling",
+                "provider transaction fee {} for {size} bytes is outside {min_fee}..={MAX_TX_FEE}",
                 signed.fee()
             )));
         }
