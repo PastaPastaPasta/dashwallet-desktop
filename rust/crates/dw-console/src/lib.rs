@@ -84,6 +84,7 @@ const fn c(
     }
 }
 
+/// `c` for a command whose arguments are redacted.
 const fn s(
     name: &'static str,
     category: &'static str,
@@ -91,11 +92,8 @@ const fn s(
     usage: &'static str,
 ) -> CommandSpec {
     CommandSpec {
-        name,
-        category,
         sensitive: true,
-        available,
-        usage,
+        ..c(name, category, available, usage)
     }
 }
 

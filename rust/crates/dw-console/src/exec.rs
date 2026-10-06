@@ -93,6 +93,14 @@ fn engine_failure(e: EngineError) -> ConsoleFailure {
     }
 }
 
+/// Seconds from `start` (UNIX seconds) until now; 0 when the clock is
+/// earlier than `start` or than the epoch.
+fn seconds_since(start: u64) -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs().saturating_sub(start))
+}
+
 trait EngineResult<T> {
     fn rpc(self) -> Result<T, ConsoleFailure>;
 }
@@ -350,11 +358,7 @@ impl ConsoleContext {
             "uptime" => {
                 arity(method, args, 0, 0)?;
                 let info = s.node_info().rpc()?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(info.startup_time);
-                Ok(Json::int(now.saturating_sub(info.startup_time)))
+                Ok(Json::int(seconds_since(info.startup_time)))
             }
             "getblockcount" => {
                 arity(method, args, 0, 0)?;
@@ -501,13 +505,9 @@ impl ConsoleContext {
                 f.push(("private_keys_enabled".into(), Json::Bool(!info.watch_only)));
                 let scanning = match s.rescan_progress().rpc()? {
                     Some(p) => {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(p.started_at);
                         let mut o = vec![(
                             "duration".to_string(),
-                            Json::int(now.saturating_sub(p.started_at)),
+                            Json::int(seconds_since(p.started_at)),
                         )];
                         if let (Some(cur), Some(target)) = (p.current_height, p.target_height)
                             && target > p.from_height
