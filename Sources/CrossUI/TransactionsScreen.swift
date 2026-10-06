@@ -127,6 +127,9 @@ struct TransactionsScreen: View {
                         subtitle: "\(Format.date(record.date))  \(model.statusText(for: record))",
                         amount: model.amountText(for: record))
                 }
+                .accessibleRowNames(model.rows.map { record in
+                    "\(model.typeText(for: record)), \(model.addressText(for: record)), \(model.amountText(for: record)), \(Format.date(record.date))"
+                })
             }
             .frame(height: 360)
         }

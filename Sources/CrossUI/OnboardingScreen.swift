@@ -144,11 +144,9 @@ struct OnboardingScreen: View {
                         bip39Passphrase = text
                         model.setBIP39Passphrase(text)
                     }))
-                Toggle(
+                DashToggle(
                     CrossStrings.coreCompatible,
-                    isOn: bind({ model.options.coreCompatible }, { model.setCoreCompatible($0) })
-                )
-                .toggleStyle(.switch)
+                    isOn: bind({ model.options.coreCompatible }, { model.setCoreCompatible($0) }))
                 DashTextField(
                     CrossStrings.birthHeight,
                     text: bind({ birthHeightText }, { text in

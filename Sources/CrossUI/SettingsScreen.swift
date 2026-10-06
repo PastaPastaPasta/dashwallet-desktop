@@ -52,8 +52,7 @@ struct SettingsScreen: View {
                     CrossStrings.decimalDigits,
                     options: SettingsViewModel.decimalDigitsRange.map { PickerOption($0, "\($0)") },
                     selection: bind({ model.display.decimalDigits }, { model.setDecimalDigits($0) }))
-                Toggle(CrossStrings.hideBalances, isOn: bind({ model.display.hideBalances }, { model.setDiscreet($0) }))
-                    .toggleStyle(.switch)
+                DashToggle(CrossStrings.hideBalances, isOn: bind({ model.display.hideBalances }, { model.setDiscreet($0) }))
                 DashPicker(
                     CrossStrings.theme,
                     options: [

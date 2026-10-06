@@ -126,6 +126,7 @@ struct Sidebar: View {
                 List(items, selection: selection) { item in
                     Text(item.title).lineLimit(1)
                 }
+                .accessibleRowNames(items.map(\.title))
             }
             .frame(height: Double(44 * items.count))
             SectionHeader(CrossStrings.tools, style: .footnoteMedium)

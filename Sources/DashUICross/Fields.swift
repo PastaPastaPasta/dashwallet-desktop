@@ -1,8 +1,9 @@
 // Labelled text inputs (DashUIKit `AddressFieldView`-like caption + field).
 //
 // SwiftCrossUI cannot tie the caption to the field for assistive technology
-// yet (ADR 0002, gap A3), so the placeholder repeats the caption's meaning:
-// GTK exposes it as the entry's `placeholder-text` attribute.
+// (ADR 0002, gap A3), so each field takes the caption as its accessible name
+// through `accessibleName` (Accessibility.swift), and the placeholder repeats
+// the caption's meaning (GTK exposes it as `placeholder-text`).
 import DesignTokens
 import SwiftCrossUI
 
@@ -26,9 +27,10 @@ public struct DashTextField: View {
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             FieldCaption(caption)
             if let width {
-                TextField(placeholder, text: text).frame(width: width)
+                TextField(placeholder, text: text).accessibleName(accessibleCaption(caption)).frame(width: Double(width))
             } else {
-                TextField(placeholder, text: text).frame(minWidth: 200, maxWidth: .infinity)
+                TextField(placeholder, text: text).accessibleName(accessibleCaption(caption))
+                    .frame(minWidth: 200, maxWidth: .infinity)
             }
             FieldError(error)
         }
@@ -52,10 +54,32 @@ public struct DashSecureField: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             FieldCaption(caption)
-            SecureField(placeholder, text: text).frame(minWidth: 200, maxWidth: 420)
+            SecureField(placeholder, text: text).accessibleName(accessibleCaption(caption))
+                .frame(minWidth: 200, maxWidth: 420)
             FieldError(error)
         }
     }
+}
+
+/// A switch with its label as the switch's accessible name (ADR 0002, gap A2:
+/// SwiftCrossUI's `Toggle` shows the label as a separate text).
+public struct DashToggle: View {
+    let title: String
+    let isOn: Binding<Bool>
+
+    public init(_ title: String, isOn: Binding<Bool>) {
+        self.title = title
+        self.isOn = isOn
+    }
+
+    public var body: some View {
+        Toggle(title, isOn: isOn).toggleStyle(.switch).accessibleName(title)
+    }
+}
+
+/// A caption without the trailing colon dash-qt puts on form labels.
+func accessibleCaption(_ caption: String) -> String {
+    caption.hasSuffix(":") ? String(caption.dropLast()) : caption
 }
 
 struct FieldCaption: View {
@@ -117,8 +141,12 @@ public struct DashPicker<Value: Hashable & Sendable>: View {
             get: { options.first { $0.value == selection.wrappedValue } },
             set: { if let option = $0 { selection.wrappedValue = option.value } })
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
-            if let caption { FieldCaption(caption) }
-            Picker(of: options, selection: bridged)
+            if let caption {
+                FieldCaption(caption)
+                Picker(of: options, selection: bridged).accessibleName(accessibleCaption(caption))
+            } else {
+                Picker(of: options, selection: bridged)
+            }
         }
     }
 }

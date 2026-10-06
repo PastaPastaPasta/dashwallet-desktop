@@ -27,8 +27,7 @@ struct OverviewScreen: View {
                     DashBadge(L10n.Settings.networkName(network))
                 }
                 Spacer()
-                Toggle(CrossStrings.hideBalances, isOn: bind({ model.discreet }, { _ in Task { await model.toggleDiscreet() } }))
-                    .toggleStyle(.switch)
+                DashToggle(CrossStrings.hideBalances, isOn: bind({ model.discreet }, { _ in Task { await model.toggleDiscreet() } }))
             }
             DashCard {
                 ForEach(model.rows) { row in
@@ -73,6 +72,7 @@ struct OverviewScreen: View {
                             amount: transaction.amountText,
                             detail: lockText(transaction))
                     }
+                    .accessibleRowNames(model.recent.map { "\($0.title), \($0.amountText), \(Format.date($0.date))" })
                 }
                 .frame(height: Double(64 * model.recent.count))
             }

@@ -64,6 +64,6 @@ public struct QRCodeView: View {
             Rectangle().fill(Color.white)
             QRModulesShape(size: size, modules: modules).fill(Color.black)
         }
-        .frame(width: side, height: side)
+        .frame(width: Double(side), height: Double(side))
     }
 }

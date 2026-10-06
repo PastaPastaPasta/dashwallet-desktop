@@ -171,8 +171,7 @@ struct RecipientEditor: View {
                 DashTextField(
                     CrossStrings.amount, placeholder: CrossStrings.amountPlaceholder,
                     text: field(\.amountText), error: entry.amountError, width: 200)
-                Toggle(CrossStrings.subtractFee, isOn: field(\.subtractFee))
-                    .toggleStyle(.switch)
+                DashToggle(CrossStrings.subtractFee, isOn: field(\.subtractFee))
                 DashButton(CrossStrings.useMax, style: .plainBlue, size: .small) {
                     Task { await model.useMax(for: id) }
                 }
