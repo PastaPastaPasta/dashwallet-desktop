@@ -271,25 +271,40 @@ public final class TransactionsViewModel {
 
     // MARK: Export
 
+    /// Export restarts after `history.stale_cursor` at most this many times.
+    public static let exportAttempts = 3
+
     /// CSV of everything the current filter matches, paging through history
-    /// (QT-093). Write it as UTF-8.
+    /// (QT-093). Write it as UTF-8. History that changes mid-export (sync)
+    /// invalidates the cursor; the export then starts over from the first
+    /// page, so the file never mixes two versions of the history.
     public func exportCSV() async throws(ServiceError) -> String {
         guard let wallet = walletState.selectedWalletID else {
             throw ServiceError(code: .walletNotFound, detail: "no wallet selected")
         }
-        var records: [TxRecord] = []
-        var cursor: String?
-        repeat {
-            let page = try await history.page(wallet: wallet, query: query(cursor: cursor))
-            records += page.records
-            cursor = page.nextCursor
-        } while cursor != nil
+        let records = try await allRecords(wallet: wallet, attemptsLeft: Self.exportAttempts)
         return TransactionCSV.make(
             records: records, unit: settings.display.unit, amounts: amounts, watchOnlyColumn: showsWatchOnly,
             timeZone: timing.timeZone)
     }
 
     // MARK: Private
+
+    private func allRecords(wallet: WalletID, attemptsLeft: Int) async throws(ServiceError) -> [TxRecord] {
+        var records: [TxRecord] = []
+        var cursor: String?
+        do {
+            repeat {
+                let page = try await history.page(wallet: wallet, query: query(cursor: cursor))
+                records += page.records
+                cursor = page.nextCursor
+            } while cursor != nil
+        } catch {
+            guard error.code == .historyStaleCursor, attemptsLeft > 1 else { throw error }
+            return try await allRecords(wallet: wallet, attemptsLeft: attemptsLeft - 1)
+        }
+        return records
+    }
 
     private func query(cursor: String?) -> HistoryQuery {
         HistoryQuery(filter: filter, sort: .newestFirst, cursor: cursor, limit: Self.pageSize)

@@ -1,8 +1,21 @@
 // Send (QT-051…063, QT-067, IOS-041…052; DESIGN-opus §1.11).
 //
 // Flow: editing → [confirmDuplicates] → [authorizing] → preparing → confirm
-// (3 s countdown) → broadcasting → done. `prepare` signs and reserves inputs
-// but never broadcasts; only `confirm()` broadcasts (iOS rule 4).
+// (3 s countdown) → broadcasting → done | failed | broadcastUnknown.
+// `prepare` signs and reserves inputs but never broadcasts; only `confirm()`
+// (or `retryBroadcast()` after `send.no_peers`) broadcasts (iOS rule 4).
+//
+// Releasing reserved inputs (review M-7):
+// - Cancel, or any edit of entries, fee or source while a payment is under
+//   review (duplicates question, authorizing, preparing, confirm, failed),
+//   abandons the prepared transaction and revokes a grant `prepare` has not
+//   redeemed. A prepare that finishes after such an edit is abandoned on
+//   arrival.
+// - A broadcast the network definitely did not take ends in `.failed`;
+//   dismissing it abandons the transaction.
+// - A broadcast whose outcome is unknown (any other error) ends in
+//   `.broadcastUnknown` and is never abandoned: its inputs may already be in
+//   the mempool, and releasing them would let the next send double-spend.
 import Foundation
 import Observation
 import WalletRuntime
@@ -39,6 +52,11 @@ public struct RecipientEntry: Sendable, Hashable, Identifiable {
     }
 
     public var isBlank: Bool { address.isEmpty && amountText.isEmpty && label.isEmpty && message == nil }
+
+    /// The fields the user edits; validation results are left out.
+    var userFields: [String] {
+        [address, amountText, subtractFee ? "1" : "0", label, message ?? "\u{0}"]
+    }
 }
 
 public struct SendFailure: Sendable, Equatable {
@@ -58,6 +76,9 @@ public enum SendPhase: Sendable, Equatable {
     case broadcasting
     case done(txid: String)
     case failed(SendFailure)
+    /// The broadcast failed in a way that does not tell whether peers got the
+    /// transaction. Its inputs stay reserved; the user checks Transactions.
+    case broadcastUnknown(txid: String, failure: SendFailure)
 }
 
 /// dash-qt confirmation targets in blocks with their labels (QT-057).
@@ -86,7 +107,15 @@ public final class SendViewModel {
     /// Recipients listed in the confirm text before "(x of y entries displayed)".
     public static let maxConfirmLines = 10
 
-    public var entries: [RecipientEntry] = [RecipientEntry()]
+    /// Editable by the UI. A change of the user fields while a payment is
+    /// under review returns to `.editing` and abandons the prepared
+    /// transaction (review M-7).
+    public var entries: [RecipientEntry] = [RecipientEntry()] {
+        didSet {
+            guard internalEdits == 0, oldValue.map(\.userFields) != entries.map(\.userFields) else { return }
+            userEdited()
+        }
+    }
     public private(set) var phase: SendPhase = .editing
     public let page: SendPage
     public private(set) var source: CoinSourceChoice
@@ -101,6 +130,22 @@ public final class SendViewModel {
     public var canConfirm: Bool {
         if case .confirm = phase { return confirmCountdown == 0 }
         return false
+    }
+
+    /// The broadcast found no peers; `retryBroadcast()` sends the same
+    /// signed transaction again.
+    public var canRetryBroadcast: Bool {
+        if case .failed(let failure) = phase { return failure.code == .sendNoPeers && prepared != nil }
+        return false
+    }
+
+    /// Whether the form may change: not while broadcasting or after a
+    /// broadcast with an unknown outcome (dismiss first).
+    public var isEditable: Bool {
+        switch phase {
+        case .broadcasting, .broadcastUnknown: false
+        default: true
+        }
     }
 
     public var unit: DisplayUnit { settings.display.unit }
@@ -126,6 +171,13 @@ public final class SendViewModel {
     private var prepared: PreparedTransaction?
     private var duplicatesAcknowledged = false
     private var spendLimit: Amount?
+    /// A grant issued for this payment that `prepare` has not redeemed.
+    private var pendingGrant: AuthGrant?
+    /// Bumped by every cancel and edit; async steps that started under an
+    /// older value drop (and abandon) their result.
+    private var generation = 0
+    /// Non-zero while the view model itself changes `entries`.
+    private var internalEdits = 0
     private var countdownTask: Task<Void, Never>?
 
     public init(
@@ -159,27 +211,29 @@ public final class SendViewModel {
     // MARK: Editing
 
     public func addRecipient() {
+        guard isEditable else { return }
         entries.append(RecipientEntry())
     }
 
     /// Removing the last entry leaves one blank entry (dash-qt).
     public func removeRecipient(_ id: RecipientEntry.ID) {
+        guard isEditable else { return }
         entries.removeAll { $0.id == id }
         if entries.isEmpty { entries = [RecipientEntry()] }
     }
 
     /// Clear All: entries, coin selection, fee warning (QT-052).
     public func clearAll() {
-        entries = [RecipientEntry()]
+        guard isEditable else { return }
+        withInternalEdits { entries = [RecipientEntry()] }
         if page == .regular { source = .any }
-        estimate = nil
-        duplicatesAcknowledged = false
-        phase = .editing
+        userEdited()
     }
 
     /// Pastes an address or a `dash:` URI into an entry (QT-054). Without
     /// `id`, the first blank entry is used, or a new one is added.
     public func paste(_ text: String, into id: RecipientEntry.ID? = nil) {
+        guard isEditable else { return }
         let index = targetIndex(id)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.lowercased().hasPrefix("dash:") {
@@ -200,16 +254,20 @@ public final class SendViewModel {
 
     /// Fills an entry from an already parsed payment URI (drag and drop, OS handler).
     public func fill(from paymentURI: PaymentURI) {
+        guard isEditable else { return }
         apply(paymentURI, at: targetIndex(nil))
     }
 
     public func setSource(_ source: CoinSourceChoice) {
-        guard page == .regular else { return }
+        guard page == .regular, source != self.source, isEditable else { return }
         self.source = source
+        userEdited()
     }
 
     /// Custom fees below 1000 duff/kB are raised to it, with dash-qt's warning.
     public func setFee(_ fee: FeeChoice) {
+        guard isEditable else { return }
+        let previous = self.fee
         switch fee {
         case .perKilobyte(let rate) where rate < Self.minimumFeePerKilobyte:
             self.fee = .perKilobyte(Self.minimumFeePerKilobyte)
@@ -221,16 +279,19 @@ public final class SendViewModel {
             self.fee = fee
             customFeeWarning = false
         }
+        if self.fee != previous { userEdited() }
     }
 
-    /// "Use available balance": the maximum minus the other entries, with
-    /// subtract-fee ticked (QT-053).
+    /// "Use available balance" (QT-053, dash-qt `useAvailableBalance`): the
+    /// maximum minus the other entries' amounts, with subtract-fee ticked so
+    /// a later fee change cannot push the total over the balance (review M-4).
     public func useMax(for id: RecipientEntry.ID) async {
-        guard let index = entries.firstIndex(where: { $0.id == id }),
+        guard isEditable, entries.contains(where: { $0.id == id }),
             let wallet = walletState.selectedWalletID
         else { return }
         do {
             let maximum = try await sender.maxSpendable(wallet: wallet, source: source, fee: fee)
+            guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
             var others: Int64 = 0
             for (i, entry) in entries.enumerated() where i != index {
                 if case .success(let amount?) = AmountInput.parse(entry.amountText, unit: unit, formatter: amounts) {
@@ -277,54 +338,62 @@ public final class SendViewModel {
     public func authorize(passphrase: String) async {
         guard phase == .authorizing, let spendLimit else { return }
         let secret = vault.makeSecret(utf8: passphrase)
+        let started = generation
         do {
             let grant = try await auth.authorize(.spend(max: spendLimit), credential: .passphrase(secret))
+            guard started == generation else {
+                auth.revoke(grant)
+                return
+            }
             await prepare(grant: grant)
         } catch {
+            guard started == generation else { return }
             phase = .failed(failure(for: error))
         }
     }
 
     /// Broadcasts the prepared transaction. Refused until the countdown ends.
     public func confirm() async {
-        guard case .confirm = phase, confirmCountdown == 0, let draft, let prepared else { return }
-        phase = .broadcasting
-        do {
-            let result = try await draft.broadcast(prepared)
-            self.prepared = nil
-            self.draft = nil
-            let sent = entries
-            await rememberRecipients(sent)
-            entries = [RecipientEntry()]
-            duplicatesAcknowledged = false
-            estimate = nil
-            phase = .done(txid: result.txid)
-            route = .transaction(txid: result.txid)
-        } catch {
-            phase = .failed(failure(for: error))
-        }
+        guard case .confirm = phase, confirmCountdown == 0 else { return }
+        await broadcast()
     }
 
-    /// Cancel at any step: releases reserved inputs and returns to editing.
+    /// Sends the same signed transaction again after `send.no_peers`.
+    public func retryBroadcast() async {
+        guard canRetryBroadcast else { return }
+        await broadcast()
+    }
+
+    /// Cancel before the broadcast: abandons the prepared transaction,
+    /// revokes an unredeemed grant and returns to editing. Ignored while
+    /// broadcasting, after a send and after a broadcast whose outcome is
+    /// unknown (use `dismiss()`).
     public func cancel() async {
-        countdownTask?.cancel()
-        countdownTask = nil
-        confirmCountdown = 0
-        if let draft, let prepared {
-            try? await draft.abandon(prepared)
+        switch phase {
+        case .broadcasting, .broadcastUnknown, .done:
+            return
+        case .editing, .confirmDuplicates, .authorizing, .preparing, .confirm, .failed:
+            await releaseReview()
+            phase = .editing
         }
-        prepared = nil
-        draft = nil
-        duplicatesAcknowledged = false
-        phase = .editing
     }
 
-    /// Back to editing after a failure or a finished send.
+    /// Leaves a final phase. After a failure it abandons like `cancel()`;
+    /// after `.done` and `.broadcastUnknown` it clears the form and abandons
+    /// nothing.
     public func dismiss() async {
         switch phase {
-        case .failed, .done:
+        case .failed:
             await cancel()
-        default:
+        case .done, .broadcastUnknown:
+            generation += 1
+            prepared = nil
+            draft = nil
+            withInternalEdits { entries = [RecipientEntry()] }
+            estimate = nil
+            duplicatesAcknowledged = false
+            phase = .editing
+        case .editing, .confirmDuplicates, .authorizing, .preparing, .confirm, .broadcasting:
             break
         }
     }
@@ -357,6 +426,22 @@ public final class SendViewModel {
         return lines
     }
 
+    /// The spend cap requested for `recipients`: their amounts plus the
+    /// maximum fee (`-maxtxfee`). The final fee is only known after signing,
+    /// so a cap of amounts + estimated fee could fail whenever the signed size
+    /// differs from the estimate (review H-4); fees above the maximum are
+    /// refused as absurd anyway (QT-058).
+    public static func spendLimit(for recipients: [PaymentRecipient]) -> Amount {
+        Amount(duffs: recipients.reduce(Int64(0)) { $0 + $1.amount.duffs } + maximumFee.duffs)
+    }
+
+    /// Broadcast errors after which peers certainly do not have the
+    /// transaction, so its inputs may be released.
+    public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
+        .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendPreparedTxUnknown, .networkNotOpen,
+        .walletNotFound, .invalidArgument, .notImplemented,
+    ]
+
     // MARK: Private
 
     private func targetIndex(_ id: RecipientEntry.ID?) -> Int {
@@ -388,7 +473,7 @@ public final class SendViewModel {
             return SendFailure(code: .syncSpvNotRunning, message: L10n.Send.syncing)
         }
         if status.connectedPeers == 0 {
-            return SendFailure(code: EngineCode.sendNoPeers, message: L10n.Send.offline)
+            return SendFailure(code: .sendNoPeers, message: L10n.Send.offline)
         }
         return nil
     }
@@ -398,8 +483,9 @@ public final class SendViewModel {
     private func validateEntries() -> [PaymentRecipient]? {
         var recipients: [PaymentRecipient] = []
         var valid = true
-        for index in entries.indices {
-            var entry = entries[index]
+        var checked = entries
+        for index in checked.indices {
+            var entry = checked[index]
             entry.error = nil
             entry.addressError = nil
             entry.amountError = nil
@@ -420,12 +506,13 @@ public final class SendViewModel {
                 entry.error = entry.error ?? (problem == .dust ? .sendDustAmount : .sendInvalidAmount)
                 entry.amountError = Self.amountProblem(problem)
             }
-            entries[index] = entry
+            checked[index] = entry
             recipients.append(
                 PaymentRecipient(
                     address: entry.address, amount: amount, subtractFeeFromAmount: entry.subtractFee,
                     label: entry.label.isEmpty ? nil : entry.label, message: entry.message))
         }
+        withInternalEdits { entries = checked }
         if recipients.isEmpty { valid = false }
         return valid ? recipients : nil
     }
@@ -433,25 +520,32 @@ public final class SendViewModel {
     private func buildDraft(_ recipients: [PaymentRecipient]) async {
         guard let wallet = walletState.selectedWalletID else { return }
         phase = .preparing
+        let started = generation
         do {
             let draft = try await sender.makeDraft(wallet: wallet)
+            guard started == generation else { return }
             self.draft = draft
             try await draft.setRecipients(recipients)
             try await draft.setSource(source)
             try await draft.setFee(fee)
             let estimate = try await draft.estimate()
+            guard started == generation else { return }
             self.estimate = estimate
-            let total = recipients.reduce(Int64(0)) { $0 + $1.amount.duffs }
-            let limit = Amount(duffs: total + estimate.fee.duffs)
+            let limit = Self.spendLimit(for: recipients)
             spendLimit = limit
             switch auth.requirement(for: .spend(max: limit)) {
             case .none:
                 let grant = try await auth.authorize(.spend(max: limit), credential: .unencrypted)
+                guard started == generation else {
+                    auth.revoke(grant)
+                    return
+                }
                 await prepare(grant: grant)
             case .passphrase, .quickUnlockOrPassphrase:
                 phase = .authorizing
             }
         } catch {
+            guard started == generation else { return }
             handle(error)
         }
     }
@@ -459,14 +553,104 @@ public final class SendViewModel {
     private func prepare(grant: AuthGrant) async {
         guard let draft else { return }
         phase = .preparing
+        pendingGrant = grant
+        let started = generation
         do {
             let prepared = try await draft.prepare(grant: grant)
+            guard started == generation else {
+                // Edited or cancelled while signing: release at once.
+                try? await draft.abandon(prepared)
+                return
+            }
+            pendingGrant = nil
             self.prepared = prepared
             phase = .confirm(prepared.summary)
             startCountdown()
         } catch {
+            guard started == generation else { return }
+            revokePendingGrant()
             handle(error)
         }
+    }
+
+    private func broadcast() async {
+        guard let draft, let prepared else { return }
+        stopCountdown()
+        phase = .broadcasting
+        do {
+            let result = try await draft.broadcast(prepared)
+            self.prepared = nil
+            self.draft = nil
+            let sent = entries
+            await rememberRecipients(sent)
+            withInternalEdits { entries = [RecipientEntry()] }
+            estimate = nil
+            duplicatesAcknowledged = false
+            phase = .done(txid: result.txid)
+            route = .transaction(txid: result.txid)
+        } catch {
+            let failure = failure(for: error)
+            if Self.definiteBroadcastFailures.contains(error.code) {
+                // Not announced: keep it so dismiss abandons it or a retry sends it.
+                phase = .failed(failure)
+            } else {
+                let txid = prepared.summary.txid
+                self.prepared = nil
+                self.draft = nil
+                phase = .broadcastUnknown(txid: txid, failure: failure)
+                route = .transaction(txid: txid)
+            }
+        }
+    }
+
+    /// A user change of entries, fee or source.
+    private func userEdited() {
+        estimate = nil
+        duplicatesAcknowledged = false
+        switch phase {
+        case .confirmDuplicates, .authorizing, .preparing, .confirm, .failed:
+            let draft = draft
+            let prepared = prepared
+            generation += 1
+            stopCountdown()
+            revokePendingGrant()
+            self.draft = nil
+            self.prepared = nil
+            phase = .editing
+            if let draft, let prepared {
+                Task { try? await draft.abandon(prepared) }
+            }
+        case .done:
+            phase = .editing
+        case .editing, .broadcasting, .broadcastUnknown:
+            break
+        }
+    }
+
+    /// Abandons the prepared transaction and revokes an unredeemed grant.
+    private func releaseReview() async {
+        generation += 1
+        stopCountdown()
+        revokePendingGrant()
+        let draft = draft
+        let prepared = prepared
+        self.prepared = nil
+        self.draft = nil
+        duplicatesAcknowledged = false
+        if let draft, let prepared {
+            try? await draft.abandon(prepared)
+        }
+    }
+
+    private func revokePendingGrant() {
+        if let pendingGrant { auth.revoke(pendingGrant) }
+        pendingGrant = nil
+    }
+
+    private func withInternalEdits(_ body: () -> Void) {
+        internalEdits += 1
+        defer { internalEdits -= 1 }
+        body()
     }
 
     private func startCountdown() {
@@ -482,16 +666,24 @@ public final class SendViewModel {
         }
     }
 
+    private func stopCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        confirmCountdown = 0
+    }
+
     /// Engine errors that name a recipient go back to that entry; the rest
     /// end the flow with dash-qt / iOS copy.
     private func handle(_ error: ServiceError) {
         if let index = error.recipientIndex, entries.indices.contains(index) {
-            entries[index].error = error.code
             let text = failure(for: error).message
-            if Self.amountCodes.contains(error.code) {
-                entries[index].amountError = text
-            } else {
-                entries[index].addressError = text
+            withInternalEdits {
+                entries[index].error = error.code
+                if Self.amountCodes.contains(error.code) {
+                    entries[index].amountError = text
+                } else {
+                    entries[index].addressError = text
+                }
             }
             phase = .editing
         } else {
@@ -520,13 +712,13 @@ public final class SendViewModel {
         case .sendNoRecipients: message = L10n.Send.noRecipients
         case .sendGrantExceeded: message = L10n.Send.grantExceeded
         case .sendBroadcastRejected: message = L10n.Send.broadcastRejected
+        case .sendPreparedTxSpent: message = L10n.Send.preparedTxSpent
+        case .sendNoPeers: message = L10n.Send.noPeers
         case EngineCode.sendInsufficientMixedFunds: message = L10n.Send.insufficientMixedFunds
         case EngineCode.sendOutpointUnavailable: message = L10n.Send.preselectedCoinsInsufficient
         case EngineCode.sendTxTooLarge: message = L10n.Send.txTooLarge
         case EngineCode.sendInvalidChangeAddress: message = L10n.Send.invalidChangeAddress
         case EngineCode.sendWatchOnly: message = L10n.Send.watchOnly
-        case EngineCode.sendPreparedTxSpent: message = L10n.Send.preparedTxSpent
-        case EngineCode.sendNoPeers: message = L10n.Send.noPeers
         case EngineCode.sendGrantInvalid: message = L10n.Common.unlockCancelled
         case .uriUnparsable, .uriInvalidAddress: message = L10n.Send.invalidAddress
         default:

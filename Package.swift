@@ -53,12 +53,13 @@ var targets: [Target] = [
         name: "WalletFeatures",
         dependencies: ["WalletRuntime", "AppServices", "PlatformServices", "DesignTokens"]
     ),
-    // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see VENDORED.md there).
+    // DashUIKit is vendored into Sources/DashUIMac/DashUIKit (see Sources/DashUIMac/VENDORED.md).
     // Sources/DashUIMac/Resources/Icons is a symlink to the repository's exported icon set
     // (Resources/Icons); `.process` copies its files flat into the resource bundle.
     .target(
         name: "DashUIMac",
         dependencies: ["DesignTokens"],
+        exclude: ["VENDORED.md"],
         resources: [.process("Resources/Icons")]
     ),
     .target(
@@ -72,6 +73,9 @@ var targets: [Target] = [
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
     .testTarget(name: "WalletRuntimeTests", dependencies: ["WalletRuntime", "DashKit"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
+    // View-model flows against in-memory fakes of the WalletRuntime contracts.
+    // testdata/amount_format.json is read by path, not bundled.
+    .testTarget(name: "WalletFeaturesTests", dependencies: ["WalletFeatures", "WalletRuntime"]),
     // macOS-only: the sources compile to nothing elsewhere. Reference PNGs are read from
     // __Snapshots__ by path, not bundled.
     .testTarget(
