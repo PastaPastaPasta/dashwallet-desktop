@@ -320,7 +320,7 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
     func newTxDraft(on network: DashNetwork, wallet: WalletID) async throws(DashKitError) -> any TxDraftHandle {
         try requireOpen(network, "newTxDraft")
         let draft = with { s in
-            let d = s.nextDraft ?? FakeTxDraft(walletID: wallet)
+            let d = s.nextDraft ?? FakeTxDraft(walletID: wallet, network: network)
             s.nextDraft = nil
             s.drafts.append(d)
             return d
@@ -387,23 +387,50 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
     }
 }
 
-/// A scriptable `TxDraftHandle`.
+/// A scriptable `TxDraftHandle` that follows the engine's `TxDraft` rules
+/// (rust/crates/dw-engine/src/send/mod.rs):
+/// - `setRecipients` validates like `validate_recipients`, in its order per
+///   recipient: address on the draft's network (Platform addresses refused),
+///   amount 1…21M DASH, dust threshold (546 duffs P2PKH, 540 P2SH), no
+///   address twice; then the total. A failure leaves the recipients unchanged.
+/// - Each prepared transaction has the engine's phase. `broadcast` runs only
+///   from pending or unknown (else `send.prepared_tx_spent`);
+///   `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
+///   release the inputs; `send.broadcast_unknown` keeps them reserved; any
+///   other error leaves the transaction pending. `abandon` releases a pending
+///   one, is a no-op for a released one and fails with
+///   `send.prepared_tx_spent` while broadcasting, sent or unknown.
+/// Fees and coin selection are scripted, not computed.
 final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
+    enum Phase: Equatable {
+        case pending, broadcasting, sent, unknown, released
+    }
+
     struct State {
         var calls: [String] = []
         var recipients: [Recipient] = []
+        /// Every list handed to `setRecipients`, accepted or not.
+        var submitted: [[Recipient]] = []
         var broadcastErrors: [DashKitError] = []
+        /// Txids released by `abandon`.
         var abandoned: [String] = []
+        /// Txids whose inputs the engine released (abandon or a never-sent broadcast).
+        var released: [String] = []
+        var phases: [String: Phase] = [:]
         /// Awaited inside `broadcast` before it answers (to hold it in flight).
         var broadcastHold: (@Sendable () async -> Void)?
     }
 
+    static let maxMoney: Int64 = 21_000_000 * 100_000_000
+
     let walletID: WalletID
+    let network: DashNetwork
     private let lock = NSLock()
     private var state = State()
 
-    init(walletID: WalletID) {
+    init(walletID: WalletID, network: DashNetwork = .regtest) {
         self.walletID = walletID
+        self.network = network
     }
 
     func with<T>(_ body: (inout State) -> T) -> T {
@@ -412,10 +439,40 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
 
     var calls: [String] { with { $0.calls } }
 
+    func phase(of txid: String) -> Phase? { with { $0.phases[txid] } }
+
     func setRecipients(_ recipients: [Recipient]) async throws(DashKitError) {
         with {
             $0.calls.append("setRecipients")
-            $0.recipients = recipients
+            $0.submitted.append(recipients)
+        }
+        try validate(recipients)
+        with { $0.recipients = recipients }
+    }
+
+    private func validate(_ recipients: [Recipient]) throws(DashKitError) {
+        guard !recipients.isEmpty else { throw .domain(code: "send.no_recipients", detail: "") }
+        var seen = Set<String>()
+        var total: Int64 = 0
+        for (index, recipient) in recipients.enumerated() {
+            let scriptHash: Bool
+            switch CoreFunctions.classifyAddress(recipient.address, network: network) {
+            case .core(let p2sh): scriptHash = p2sh
+            case .platform: throw .recipient(code: "send.platform_address", index: index)
+            case .shielded, .invalid: throw .recipient(code: "send.invalid_address", index: index)
+            }
+            let amount = recipient.amount.duffs
+            guard amount > 0, amount <= Self.maxMoney else {
+                throw .recipient(code: "send.invalid_amount", index: index)
+            }
+            guard amount >= (scriptHash ? 540 : 546) else { throw .recipient(code: "send.dust_amount", index: index) }
+            guard seen.insert(recipient.address).inserted else {
+                throw .recipient(code: "send.duplicate_address", index: index)
+            }
+            total += amount
+        }
+        guard total <= Self.maxMoney else {
+            throw .recipient(code: "send.invalid_amount", index: recipients.count - 1)
         }
     }
 
@@ -432,37 +489,74 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
     }
 
     func estimate() async throws(DashKitError) -> TxEstimate {
-        with { $0.calls.append("estimate") }
+        let empty = with { s in
+            s.calls.append("estimate")
+            return s.recipients.isEmpty
+        }
+        if empty { throw .domain(code: "send.no_recipients", detail: "") }
         return TxEstimate(fee: Amount(duffs: 226), sizeBytes: 226, inputCount: 1, change: nil, totalSent: Amount(duffs: 1000))
     }
 
     func prepare(grantID: String) async throws(DashKitError) -> PreparedTxHandle {
-        let n = with { s in
+        let (n, empty) = with { s in
             s.calls.append("prepare \(grantID)")
-            return s.calls.count
+            return (s.calls.count, s.recipients.isEmpty)
         }
+        if empty { throw .domain(code: "send.no_recipients", detail: "") }
+        let txid = String(repeating: String(n % 10), count: 64)
         let summary = PreparedTxSummary(
-            txid: String(repeating: String(n % 10), count: 64), fee: Amount(duffs: 226),
-            feeRatePerKilobyte: Amount(duffs: 1000), sizeBytes: 226, inputs: [], outputs: [],
-            totalSent: Amount(duffs: 1000), totalDebit: Amount(duffs: 1226))
+            txid: txid, fee: Amount(duffs: 226), feeRatePerKilobyte: Amount(duffs: 1000), sizeBytes: 226, inputs: [],
+            outputs: [], totalSent: Amount(duffs: 1000), totalDebit: Amount(duffs: 1226))
+        with { $0.phases[txid] = .pending }
         return PreparedTxHandle(summary: summary)
     }
 
     func broadcast(_ prepared: PreparedTxHandle) async throws(DashKitError) -> BroadcastOutcome {
-        let (error, hold): (DashKitError?, (@Sendable () async -> Void)?) = with { s in
-            s.calls.append("broadcast \(prepared.summary.txid)")
-            return (s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst(), s.broadcastHold)
+        let txid = prepared.summary.txid
+        let start: Result<(DashKitError?, (@Sendable () async -> Void)?), DashKitError> = with { s in
+            s.calls.append("broadcast \(txid)")
+            guard s.phases[txid] == .pending || s.phases[txid] == .unknown else {
+                return .failure(.domain(code: "send.prepared_tx_spent", detail: txid))
+            }
+            s.phases[txid] = .broadcasting
+            return .success((s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst(), s.broadcastHold))
         }
+        let (error, hold) = try start.get()
         await hold?()
+        with { s in
+            switch error?.code {
+            case nil:
+                s.phases[txid] = .sent
+            case "send.broadcast_unknown":
+                s.phases[txid] = .unknown
+            case "send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent":
+                s.phases[txid] = .released
+                s.released.append(txid)
+            default:
+                s.phases[txid] = .pending
+            }
+        }
         if let error { throw error }
-        return BroadcastOutcome(txid: prepared.summary.txid, peersAnnounced: 3)
+        return BroadcastOutcome(txid: txid, peersAnnounced: 3)
     }
 
     func abandon(_ prepared: PreparedTxHandle) async throws(DashKitError) {
-        with {
-            $0.calls.append("abandon \(prepared.summary.txid)")
-            $0.abandoned.append(prepared.summary.txid)
+        let txid = prepared.summary.txid
+        let refused: Bool = with { s in
+            s.calls.append("abandon \(txid)")
+            switch s.phases[txid] {
+            case .pending:
+                s.phases[txid] = .released
+                s.abandoned.append(txid)
+                s.released.append(txid)
+                return false
+            case .released, nil:
+                return false
+            case .broadcasting, .sent, .unknown:
+                return true
+            }
         }
+        if refused { throw .domain(code: "send.prepared_tx_spent", detail: txid) }
     }
 }
 
