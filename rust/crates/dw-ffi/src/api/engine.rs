@@ -155,6 +155,25 @@ pub enum EngineEvent {
         wallet_id: String,
         loaded: bool,
     },
+    /// M3 (QT-041…050): the wallet's mixing status, CoinJoin balances or
+    /// progress changed; re-query `coinjoin_status`. At most once a second
+    /// per wallet (dash-qt's panel timer), trailing edge kept.
+    CoinJoin {
+        network: DashNetwork,
+        wallet_id: String,
+    },
+    /// M3 (QT-026, QT-128…134): governance sync progressed, or objects,
+    /// votes or pending proposals changed; re-query what is shown. At most
+    /// once a second, trailing edge kept.
+    Governance {
+        network: DashNetwork,
+    },
+    /// M3 (QT-118…122, IOS-080…082): the masternode list, owned detection
+    /// or tracked masternodes changed; re-query. At most every 3 s (every
+    /// 30 s while SPV is not caught up), as dash-qt refreshes its list.
+    Masternodes {
+        network: DashNetwork,
+    },
 }
 
 impl From<dw_engine::EngineEvent> for EngineEvent {
@@ -233,6 +252,16 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
                 loaded,
+            },
+            E::CoinJoin { network, wallet_id } => Self::CoinJoin {
+                network: network.into(),
+                wallet_id: wallet_id.to_string(),
+            },
+            E::Governance { network } => Self::Governance {
+                network: network.into(),
+            },
+            E::Masternodes { network } => Self::Masternodes {
+                network: network.into(),
             },
         }
     }

@@ -16,6 +16,7 @@
 //! foreign executor, `block_on`, another tokio runtime).
 
 pub mod backup;
+pub mod coinjoin;
 mod coins;
 pub mod compat;
 mod context;
@@ -26,10 +27,12 @@ mod events;
 mod fees;
 mod fsutil;
 mod gate;
+pub mod governance;
 pub mod history;
 mod history_ops;
 mod keys;
 mod labels;
+pub mod masternodes;
 mod multiwallet;
 mod network;
 mod pump;
@@ -43,6 +46,7 @@ mod tx_actions;
 mod wallets;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};
+pub use coinjoin::CoinJoinFailure;
 pub use coins::{CoinFilter, CoinInfo, DUST_PROTECTION_MAX};
 pub use compat::{
     CompatFailure, CoreExportFormat, CoreMnemonicCompatibility, ExportReport, ExportWarning,
@@ -56,12 +60,14 @@ pub use fees::{
     CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,
     fee_policy,
 };
+pub use governance::{GovernanceFailure, ProposalField};
 pub use history::{
     AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
     TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
 pub use labels::{BookEntryInfo, LabelsFailure};
+pub use masternodes::{CollateralRefusal, MasternodeFailure, MasternodeKeyRole};
 pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};

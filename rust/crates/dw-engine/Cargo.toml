@@ -18,6 +18,12 @@ dashcore = { workspace = true }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
 dw-appdb = { workspace = true }
+# M3 (docs/contracts/m3-engine.md): R1 owns dw-coinjoin/dw-p2p, R2
+# dw-governance, R3 dw-protx.
+dw-coinjoin = { workspace = true }
+dw-governance = { workspace = true }
+dw-p2p = { workspace = true }
+dw-protx = { workspace = true }
 dw-units = { workspace = true }
 dw-compat = { workspace = true }
 dw-psbt = { workspace = true }

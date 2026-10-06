@@ -1541,6 +1541,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-coinjoin"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "dw-p2p",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dw-compat"
 version = "0.1.0"
 dependencies = [
@@ -1602,8 +1611,12 @@ dependencies = [
  "dashcore",
  "dpp",
  "dw-appdb",
+ "dw-coinjoin",
  "dw-compat",
+ "dw-governance",
  "dw-message",
+ "dw-p2p",
+ "dw-protx",
  "dw-psbt",
  "dw-units",
  "dw-uri",
@@ -1628,10 +1641,13 @@ name = "dw-ffi"
 version = "0.1.0"
 dependencies = [
  "dashcore",
+ "dw-coinjoin",
  "dw-console",
  "dw-desktop",
  "dw-engine",
+ "dw-governance",
  "dw-message",
+ "dw-protx",
  "dw-psbt",
  "dw-units",
  "dw-uri",
@@ -1646,6 +1662,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-governance"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "dw-p2p",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dw-message"
 version = "0.1.0"
 dependencies = [
@@ -1654,6 +1679,22 @@ dependencies = [
  "proptest",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "dw-p2p"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "dw-protx"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
