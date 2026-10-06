@@ -166,7 +166,12 @@ impl NetworkSession {
             wallet,
             grant_id,
         };
-        let out = ctx.run(&text).await?;
+        // The console's commands spawn tasks and use tokio timers: run it
+        // on the engine runtime, not on the host's executor.
+        let out = self
+            .inner
+            .run_on_engine(async move { ctx.run(&text).await })
+            .await??;
         Ok(ConsoleOutput {
             text: out.result,
             is_json: out.is_json,

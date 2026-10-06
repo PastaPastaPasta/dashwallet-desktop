@@ -501,11 +501,10 @@ impl crate::NetworkSession {
             if !manager.spv().is_started() {
                 return Err(crate::EngineError::SpvNotRunning);
             }
-            if let RescanFrom::Height(h) = from {
-                let tip = this.hub.tracker().tip_height().unwrap_or(0);
-                if h > tip {
-                    return Err(crate::EngineError::HeightOutOfRange(h));
-                }
+            if let RescanFrom::Height(h) = from
+                && h > this.known_tip()
+            {
+                return Err(crate::EngineError::HeightOutOfRange(h));
             }
             let ids: Vec<crate::WalletId> = manager
                 .list_wallet_ids_blocking()

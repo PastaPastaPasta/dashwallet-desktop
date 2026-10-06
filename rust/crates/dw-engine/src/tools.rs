@@ -139,6 +139,22 @@ pub(crate) fn is_prerelease(version: &str) -> bool {
 }
 
 impl NetworkSession {
+    /// The best chain height this session knows: SPV's header tip, or the
+    /// highest height a wallet has processed (SPV reports its tip only after
+    /// it started).
+    pub(crate) fn known_tip(&self) -> u32 {
+        let wallets = self
+            .hub
+            .wallets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .map(|w| w.tip())
+            .max()
+            .unwrap_or(0);
+        self.hub.tracker().tip_height().unwrap_or(0).max(wallets)
+    }
+
     /// The Information tab. In-memory read.
     pub fn node_info(&self) -> Result<NodeInfo, EngineError> {
         let _op = self.try_enter()?;
@@ -373,9 +389,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let live = this.live()?;
             this.require_wallet(&wallet_id)?;
-            if let Some(tip) = this.hub.tracker().tip_height()
-                && height > tip
-            {
+            if height > this.known_tip() {
                 return Err(EngineError::HeightOutOfRange(height));
             }
             let synced = {

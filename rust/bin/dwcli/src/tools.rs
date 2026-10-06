@@ -166,7 +166,8 @@ fn sync_all(
     for id in ids {
         wait_for_height(engine, session, id, height, timeout)?;
     }
-    Ok(())
+    // Stored scan heights are known before SPV reports; wait for SPV too.
+    wait_tip(session, height, timeout)
 }
 
 /// Waits until SPV's header tip reaches `height`.

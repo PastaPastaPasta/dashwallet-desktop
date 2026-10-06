@@ -378,6 +378,16 @@ impl NetworkSession {
         &self.data_dir
     }
 
+    /// Runs `fut` on the engine runtime (for callers outside dw-engine whose
+    /// work spawns tasks or uses tokio timers, e.g. the console).
+    pub async fn run_on_engine<T, F>(&self, fut: F) -> Result<T, EngineError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Ok(self.rt.spawn(fut).await?)
+    }
+
     pub fn is_open(&self) -> bool {
         !self.gate.is_closed()
             && self
