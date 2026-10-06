@@ -77,10 +77,14 @@ public final class MainViewModel {
     }
 
     private let env: AppEnvironment
+    /// The M2 services; with them the Transactions page gains dash-qt's
+    /// actions, details extras and the engine's CSV (QT-090…093).
+    private let m2: M2Services?
     private var tasks: [Task<Void, Never>] = []
 
-    public init(env: AppEnvironment, features: FeatureFlags = .m1) {
+    public init(env: AppEnvironment, m2: M2Services? = nil, features: FeatureFlags = .m1) {
         self.env = env
+        self.m2 = m2
         self.features = features
         self.lock = LockViewModel(auth: env.auth, vault: env.vault, timing: env.timing)
         self.settings = SettingsViewModel(env: env)
@@ -217,7 +221,8 @@ public final class MainViewModel {
         home = HomeViewModel(env: env, network: network, features: features)
         send = SendViewModel(env: env, network: network)
         receive = ReceiveViewModel(env: env)
-        transactions = TransactionsViewModel(env: env, features: features)
+        transactions = m2.map { TransactionsViewModel(env: env, m2: $0, network: network, features: features) }
+            ?? TransactionsViewModel(env: env, features: features)
         home?.start()
     }
 

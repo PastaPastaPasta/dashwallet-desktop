@@ -347,6 +347,27 @@ public final class SendViewModel {
         await buildDraft(recipients)
     }
 
+    // MARK: Create Unsigned (QT-076)
+
+    /// dash-qt "Create Unsigned": a draft with the page's recipients, coins
+    /// and fee that is never signed, for `PSBTViewModel.createUnsigned`.
+    /// `nil` when the form does not validate (the entries show why) or the
+    /// engine refuses the draft (`phase` becomes `.failed`).
+    public func makeUnsignedDraft() async -> (any TransactionDrafting)? {
+        guard phase == .editing, page == .regular, let wallet = walletState.selectedWalletID else { return nil }
+        guard let recipients = validateEntries() else { return nil }
+        do {
+            let draft = try await sender.makeDraft(wallet: wallet)
+            try await draft.setRecipients(recipients)
+            try await draft.setSource(source)
+            try await draft.setFee(fee)
+            return draft
+        } catch {
+            handle(error)
+            return nil
+        }
+    }
+
     /// Yes on "Confirm duplicate recipients" (QT-060). The engine refuses an
     /// address twice (`send.duplicate_address`), so the entries that pay the
     /// same address are merged into the first of them: amounts summed,
