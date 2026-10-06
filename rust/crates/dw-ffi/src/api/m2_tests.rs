@@ -110,7 +110,10 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
         rt.block_on(s.load_wallet("AB".repeat(32))),
         "invalid_argument"
     );
-    assert_code!(rt.block_on(s.unload_wallet(WALLET.into())), "wallet_not_found");
+    assert_code!(
+        rt.block_on(s.unload_wallet(WALLET.into())),
+        "wallet_not_found"
+    );
     assert_code!(
         rt.block_on(s.import_watch_only("tpub".into(), WatchOnlyOptions::default())),
         "wallet.invalid_xpub"
@@ -159,7 +162,10 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
 
     // Fees, tools, console (R1).
-    assert_eq!(s.fee_policy().unwrap().source, crate::FeeSource::MinimumRelay);
+    assert_eq!(
+        s.fee_policy().unwrap().source,
+        crate::FeeSource::MinimumRelay
+    );
     let bad_outpoint = OutPoint {
         txid: "nothex".into(),
         vout: 0,
@@ -183,13 +189,21 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     assert_eq!(s.rescan_progress().unwrap(), None);
     rt.block_on(s.reset_chain_data()).unwrap();
     assert_code!(
-        rt.block_on(s.console_execute(None, b"getblockcount".to_vec(), None)),
-        not_implemented: "NetworkSession.console_execute"
+        rt.block_on(s.console_execute(None, b"getblockhash 0".to_vec(), None)),
+        "console.not_available"
     );
-    assert_code!(crate::console_commands(), not_implemented: "console_commands");
     assert_code!(
-        crate::console_redact(b"walletpassphrase x 60".to_vec()),
-        not_implemented: "console_redact"
+        rt.block_on(s.console_execute(None, b"getbalance".to_vec(), None)),
+        "console.wallet_required"
+    );
+    assert_code!(
+        rt.block_on(s.console_execute(None, b"help \"x".to_vec(), None)),
+        "console.parse_error"
+    );
+    assert!(crate::console_commands().unwrap().len() >= 80);
+    assert_eq!(
+        crate::console_redact(b"walletpassphrase x 60".to_vec()).unwrap(),
+        "walletpassphrase(…)"
     );
 
     // Compat, backups, PSBT (R2).

@@ -1554,6 +1554,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-console"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "dw-engine",
+ "dw-message",
+ "dw-vault",
+ "hex",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
@@ -1586,6 +1603,7 @@ name = "dw-ffi"
 version = "0.1.0"
 dependencies = [
  "dashcore",
+ "dw-console",
  "dw-engine",
  "dw-message",
  "dw-units",

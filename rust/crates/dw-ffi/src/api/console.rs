@@ -5,7 +5,7 @@
 
 use zeroize::Zeroizing;
 
-use crate::api::common::{domain_error_common, ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 use crate::{GrantPurpose, NetworkSession};
 
 /// One console command for `help` and tab completion.
@@ -74,6 +74,23 @@ pub enum ConsoleError {
 }
 
 domain_error_common!(ConsoleError);
+
+impl From<dw_console::ConsoleFailure> for ConsoleError {
+    fn from(f: dw_console::ConsoleFailure) -> Self {
+        use dw_console::ConsoleFailure as F;
+        match f {
+            F::Parse(detail) => Self::ParseError { detail },
+            F::Rpc { code, message } => Self::RpcError { code, message },
+            F::NotAvailable(command) => Self::NotAvailable { command },
+            F::AuthorizationRequired { purpose, wallet } => Self::AuthorizationRequired {
+                purpose: purpose.into(),
+                wallet_id: wallet.map(|w| w.to_string()),
+            },
+            F::WalletRequired => Self::WalletRequired,
+            F::Engine(e) => e.into(),
+        }
+    }
+}
 crate::api::common::export_error_code!(ConsoleError);
 
 impl ConsoleError {
@@ -98,7 +115,15 @@ impl ConsoleError {
 /// Every console command, sorted by name (tab completion, `help`).
 #[uniffi::export]
 pub fn console_commands() -> Result<Vec<ConsoleCommand>, ConsoleError> {
-    not_implemented("console_commands")
+    Ok(dw_console::COMMANDS
+        .iter()
+        .map(|c| ConsoleCommand {
+            name: c.name.to_string(),
+            category: c.category.to_string(),
+            sensitive: c.sensitive,
+            available: c.available,
+        })
+        .collect())
 }
 
 /// dash-qt history redaction: the arguments of a sensitive command
@@ -107,8 +132,11 @@ pub fn console_commands() -> Result<Vec<ConsoleCommand>, ConsoleError> {
 /// zeroized.
 #[uniffi::export]
 pub fn console_redact(line: Vec<u8>) -> Result<String, ConsoleError> {
-    let _line = Zeroizing::new(line);
-    not_implemented("console_redact")
+    let line = Zeroizing::new(line);
+    let text = std::str::from_utf8(&line).map_err(|_| ConsoleError::ParseError {
+        detail: "line is not UTF-8".into(),
+    })?;
+    Ok(dw_console::redact(text)?)
 }
 
 #[uniffi::export]
@@ -116,19 +144,32 @@ impl NetworkSession {
     /// Parses and runs one console line (nested calls, `[key]` indexing,
     /// quoting as dash-qt) against `wallet_id` (`None` = no wallet). `line`
     /// is UTF-8 bytes because it may hold a passphrase; it is zeroized.
-    /// `grant_id` answers an earlier `AuthorizationRequired`.
+    /// `grant_id` answers an earlier `AuthorizationRequired` and is spent by
+    /// the first command that needs one.
     pub async fn console_execute(
         &self,
         wallet_id: Option<String>,
         line: Vec<u8>,
         grant_id: Option<String>,
     ) -> Result<ConsoleOutput, ConsoleError> {
-        let _line = Zeroizing::new(line);
-        let _ = grant_id;
-        if let Some(id) = &wallet_id {
-            parse_wallet_id(id)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.console_execute")
+        let line = Zeroizing::new(line);
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        let text = Zeroizing::new(
+            std::str::from_utf8(&line)
+                .map_err(|_| ConsoleError::ParseError {
+                    detail: "line is not UTF-8".into(),
+                })?
+                .to_string(),
+        );
+        let mut ctx = dw_console::ConsoleContext {
+            session: std::sync::Arc::clone(&self.inner),
+            wallet,
+            grant_id,
+        };
+        let out = ctx.run(&text).await?;
+        Ok(ConsoleOutput {
+            text: out.result,
+            is_json: out.is_json,
+        })
     }
 }
