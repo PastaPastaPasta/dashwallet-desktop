@@ -320,8 +320,37 @@ struct CoreRoot {
     labels: Vec<(String, String, BookPurpose)>,
 }
 
+/// A BIP32 master key whose private key is erased when it goes out of
+/// scope, on every return path (review L4).
+struct MasterKey(ExtendedPrivKey);
+
+impl MasterKey {
+    fn new(network: dashcore::Network, seed: &[u8]) -> Result<Self, EngineError> {
+        ExtendedPrivKey::new_master(network, seed)
+            .map(Self)
+            .map_err(|e| EngineError::Internal(format!("master key: {e}")))
+    }
+
+    fn erase(&mut self) {
+        self.0.private_key.non_secure_erase();
+    }
+}
+
+impl std::ops::Deref for MasterKey {
+    type Target = ExtendedPrivKey;
+    fn deref(&self) -> &ExtendedPrivKey {
+        &self.0
+    }
+}
+
+impl Drop for MasterKey {
+    fn drop(&mut self) {
+        self.erase();
+    }
+}
+
 fn master_pubkey(seed: &[u8; 64]) -> Option<[u8; 33]> {
-    let master = ExtendedPrivKey::new_master(dashcore::Network::Mainnet, seed).ok()?;
+    let master = MasterKey::new(dashcore::Network::Mainnet, seed).ok()?;
     Some(master.private_key.public_key(&Secp256k1::new()).serialize())
 }
 
@@ -744,8 +773,7 @@ impl NetworkSession {
                     vault.redeem_grant(&grant_id, GrantKind::RevealSecret, Some(&wallet_id.0))?;
                 let secret = vault.export_wallet_secret(&wallet_id.0, &token)?;
                 drop(token);
-                let master = ExtendedPrivKey::new_master(network, &secret.seed[..])
-                    .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
+                let master = MasterKey::new(network, &secret.seed[..])?;
                 let mut warnings = Vec::new();
                 let (text, key_count) = match format {
                     CoreExportFormat::DumpWallet => {
@@ -993,6 +1021,15 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../testdata")
             .join(rel)
+    }
+
+    /// Review L4: what the guard's drop runs replaces the private key.
+    #[test]
+    fn master_key_guard_erases_the_private_key() {
+        let mut m = MasterKey::new(dashcore::Network::Testnet, &[7; 64]).unwrap();
+        let before = m.private_key.secret_bytes();
+        m.erase();
+        assert_ne!(m.private_key.secret_bytes(), before);
     }
 
     #[test]
