@@ -158,6 +158,8 @@ final class DemoTransactionActions: TransactionActing {
     @MainActor
     private func abandon(_ wallet: WalletID, _ txid: String) throws(ServiceError) {
         let ledger = try m2.world.ledger(wallet)
+        // As the engine: the spent coins return only through a rescan.
+        guard m2.world.sync.running else { throw .demo(.txActionSpvNotRunning) }
         guard ledger.transaction(txid) != nil else { throw .demo(.txActionTxNotFound) }
         if let refusal = ledger.abandonRefusal(txid) {
             throw .demo(.txActionRefused, parameters: ["refusal": refusal.rawValue])

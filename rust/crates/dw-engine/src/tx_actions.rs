@@ -244,6 +244,11 @@ impl NetworkSession {
     /// [`TxActionRefusal`]; the abandoned transaction and its recorded
     /// descendants show as `Abandoned`, their change leaves the balance and
     /// the coins they spent come back through a rescan.
+    ///
+    /// Needs a running SPV client (`SpvNotRunning`, checked first, review
+    /// M2): the spent coins return only through the filter rescan, which
+    /// rewinds the running client's in-memory sync height. Abandoning
+    /// offline would leave them missing from the balance.
     pub async fn abandon_transaction(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -253,6 +258,10 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let manager = this.manager()?;
+            this.require_wallet(&wallet)?;
+            if !manager.spv().is_started() {
+                return Err(EngineError::SpvNotRunning);
+            }
             let (_, f) = this.tx_facts(&manager, wallet, txid).await?;
             if let Some(r) = f.abandon_refusal() {
                 return Err(EngineError::TxActionRefused(r));

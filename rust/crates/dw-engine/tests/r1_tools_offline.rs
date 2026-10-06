@@ -359,3 +359,25 @@ fn test_ios_113_birth_height_is_stored_and_survives_a_restart() {
     assert_eq!(s.wallet_info(&a).unwrap().birth_height, Some(1234));
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// Review M2 (QT-091): abandoning needs a running SPV client, because the
+/// spent coins only come back through its filter rescan. Offline it is
+/// refused before anything changes.
+#[test]
+fn test_qt_091_abandon_needs_a_running_spv_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(
+        &dir.path().join("data"),
+        Arc::new(Recorder::default()),
+        Arc::new(MemoryOsStore::new()),
+    );
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let id = import(&engine, &s, ABANDON_12);
+    let txid = <dashcore::Txid as dashcore::hashes::Hash>::from_byte_array([1; 32]);
+    let r = engine.block_on(s.abandon_transaction(id, txid));
+    assert!(matches!(r, Err(EngineError::SpvNotRunning)), "{r:?}");
+    let other = WalletId([9; 32]);
+    let r = engine.block_on(s.abandon_transaction(other, txid));
+    assert!(matches!(r, Err(EngineError::WalletNotFound(_))), "{r:?}");
+}

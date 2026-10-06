@@ -76,7 +76,8 @@ pub enum TxActionError {
     /// Code `tx_action.refused`: the transaction's state forbids the action.
     #[error("refused: {refusal:?}")]
     Refused { refusal: TxActionRefusal },
-    /// Code `tx_action.spv_not_running`: resend needs a running SPV client.
+    /// Code `tx_action.spv_not_running`: abandon, resend and drop need a
+    /// running SPV client.
     #[error("spv not running")]
     SpvNotRunning,
     /// Code `tx_action.no_peers`: no connected peer to announce to.
