@@ -205,7 +205,8 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         -> VaultStatus
     {
         try requireOpen(network, "encryptVault")
-        return setVault(.unlocked, encrypted: true, on: network)
+        // dw-vault `encrypt` leaves the vault locked, as Core does.
+        return setVault(.locked, encrypted: true, on: network)
     }
 
     func changeVaultPassphrase(on network: DashNetwork, old: SecretBytes, new: SecretBytes) async throws(DashKitError)
