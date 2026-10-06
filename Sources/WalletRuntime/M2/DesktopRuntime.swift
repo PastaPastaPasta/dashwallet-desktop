@@ -74,7 +74,7 @@ public struct QRImageImport: Sendable {
 /// The OS services one app run uses, built by each app's `@main` for its
 /// OS (`PlatformServicesMac` or `PlatformServicesDesktop`). `nil` where the
 /// OS has none.
-public struct DesktopPlatform: Sendable {
+public struct DesktopOSServices: Sendable {
     public var singleInstance: any SingleInstanceCoordinating
     public var uriSchemes: any URISchemeRegistering
     public var launchAtLogin: any LaunchAtLoginManaging
@@ -112,7 +112,7 @@ public struct DesktopPlatform: Sendable {
 @MainActor
 public final class DesktopRuntimeServices {
     public let runtime: WalletRuntimeServices
-    public let platform: DesktopPlatform
+    public let platform: DesktopOSServices
     public let launchArguments: LaunchArgumentsParser
     public let quickUnlock: QuickUnlockService
     public let vaultRecovery: VaultRecoveryService
@@ -132,7 +132,7 @@ public final class DesktopRuntimeServices {
     ///   - appLogFiles: the Swift log files for the log export.
     ///   - notificationText: localized notification texts.
     public init(
-        runtime: WalletRuntimeServices, platform: DesktopPlatform, clock: any RuntimeClock = SystemClock(),
+        runtime: WalletRuntimeServices, platform: DesktopOSServices, clock: any RuntimeClock = SystemClock(),
         appLogFiles: @escaping @Sendable () -> [URL] = { [] },
         notificationText: TransactionNotificationText = TransactionNotificationText(),
         onQuit: @escaping @MainActor () -> Void

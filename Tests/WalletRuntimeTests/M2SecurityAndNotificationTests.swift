@@ -20,7 +20,7 @@ private func policy(enrolled: Bool, limit: Int64 = 50_000_000) -> DashKit.QuickU
 }
 
 @MainActor
-private func desktop(_ h: Harness, platform: DesktopPlatform = .fake()) -> DesktopRuntimeServices {
+private func desktop(_ h: Harness, platform: DesktopOSServices = .fake()) -> DesktopRuntimeServices {
     DesktopRuntimeServices(runtime: h.services, platform: platform, clock: h.clock, onQuit: {})
 }
 

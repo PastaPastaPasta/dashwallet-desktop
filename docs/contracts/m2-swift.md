@@ -225,7 +225,7 @@ for each wallet, then `destroy`.
 ## 4. S1 implementation status (2026-10-06, branch `m2/s1-desktop-services`)
 
 - **Composition.** `WalletRuntime/M2/DesktopRuntime.swift`: `DesktopRuntimeServices(runtime:platform:…)` builds
-  every S1 service over one `WalletRuntimeServices` and a `DesktopPlatform`. `DesktopPlatform` is the OS services
+  every S1 service over one `WalletRuntimeServices` and a `DesktopOSServices`. `DesktopOSServices` is the OS services
   the app's `@main` picks: `PlatformServicesMac` or `PlatformServicesDesktop`.
 - **Done.** `QuickUnlockService`, `VaultRecoveryService`, `AutoLockController` (setting in `settings.json`
   section `autoLock`), `ShellSettingsStore` (`global.json` section `shell`), `TransactionNotificationFeed` +

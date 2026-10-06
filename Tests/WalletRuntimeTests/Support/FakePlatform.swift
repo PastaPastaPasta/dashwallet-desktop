@@ -136,12 +136,12 @@ struct UnusedPlatformService: URISchemeRegistering, LaunchAtLoginManaging, FileR
     func reveal(_ url: URL) throws(PlatformServiceError) { throw .unsupported("test") }
 }
 
-extension DesktopPlatform {
+extension DesktopOSServices {
     static func fake(
         keys: FakeKeyStore = FakeKeyStore(), notifier: FakeNotifier = FakeNotifier(), idle: FakeIdle? = nil,
         instance: FakeSingleInstance = FakeSingleInstance()
-    ) -> DesktopPlatform {
-        DesktopPlatform(
+    ) -> DesktopOSServices {
+        DesktopOSServices(
             singleInstance: instance, uriSchemes: UnusedPlatformService(), launchAtLogin: UnusedPlatformService(),
             notifications: notifier, biometricKeys: keys, idle: idle, clipboard: FakeClipboard(),
             qrDecoder: FakeQRDecoder(), dataDirectories: FileSystemDataDirectoryInspector(),

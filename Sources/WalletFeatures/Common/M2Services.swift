@@ -86,10 +86,3 @@ public struct M2Services {
         self.platform = platform
     }
 }
-
-extension ServiceError {
-    /// A `PlatformServiceError` with the same code (m2-swift.md §2.7).
-    init(_ error: PlatformServiceError) {
-        self.init(code: ServiceErrorCode(rawValue: error.code), detail: error.detail)
-    }
-}
