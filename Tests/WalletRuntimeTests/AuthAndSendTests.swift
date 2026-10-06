@@ -122,9 +122,12 @@ private final class Latch: @unchecked Sendable {
             $0.with { $0.vault = Fixtures.vault(.unlocked) }
         }
         try await h.start()
-        let issued = try await h.services.auth.authorize(.signMessage, credential: .unencrypted)
+        let wallet = WalletRuntime.WalletID(Fixtures.walletA)
+        let issued = try await h.services.auth.authorize(.signMessage, wallet: wallet, credential: .unencrypted)
         #expect(issued.purpose == .signMessage)
         #expect(h.engine.with { $0.issuedGrants } == [issued.id])
+        // The grant is bound to the wallet it names.
+        #expect(h.engine.with { $0.grantWallets } == [Fixtures.walletA])
     }
 
     @Test func watchdogTimesOutAndRevokesTheLateGrant() async throws {
@@ -140,7 +143,8 @@ private final class Latch: @unchecked Sendable {
         let auth = h.services.auth
         let attempt = Task { @MainActor () -> ServiceErrorCode? in
             do throws(ServiceError) {
-                _ = try await auth.authorize(.revealSecret, credential: .unencrypted)
+                _ = try await auth.authorize(
+                    .revealSecret, wallet: WalletRuntime.WalletID(Fixtures.walletA), credential: .unencrypted)
                 return nil
             } catch {
                 return error.code
@@ -156,7 +160,8 @@ private final class Latch: @unchecked Sendable {
     @Test func callsNeedAnOpenNetwork() async throws {
         let h = Harness()
         do {
-            _ = try await h.services.auth.authorize(.signMessage, credential: .unencrypted)
+            _ = try await h.services.auth.authorize(
+                .signMessage, wallet: WalletRuntime.WalletID(Fixtures.walletA), credential: .unencrypted)
             Issue.record("authorize without a session must fail")
         } catch {
             #expect(error.code == .networkNotOpen)
@@ -306,7 +311,10 @@ private final class Latch: @unchecked Sendable {
     /// After an unknown outcome the engine still holds the transaction; a
     /// second broadcast that finds no peers releases it there, and the
     /// adapter forgets it too.
-    @Test func noPeersAfterAnUnknownOutcomeForgetsTheTransaction() async throws {
+    /// A repeat of an unknown outcome is never released: the engine reports
+    /// a failed repeat as `send.broadcast_unknown`, even when the network
+    /// refused it this time, because the first attempt may have reached it.
+    @Test func aFailedRepeatAfterAnUnknownOutcomeStaysUnknown() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
         let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
@@ -317,14 +325,23 @@ private final class Latch: @unchecked Sendable {
         }
         await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
         #expect(fake.phase(of: prepared.summary.txid) == .unknown)
-        await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
-        #expect(fake.phase(of: prepared.summary.txid) == .released)
         do {
             _ = try await draft.broadcast(prepared)
-            Issue.record("the forgotten transaction must not be broadcast")
+            Issue.record("the scripted refusal must fail the repeat")
         } catch {
-            #expect(error.code == .sendPreparedTxUnknown)
+            #expect(error.code == .sendBroadcastUnknown)
         }
+        #expect(fake.phase(of: prepared.summary.txid) == .unknown)
+        #expect(fake.with { $0.released }.isEmpty)
+        do {
+            try await draft.abandon(prepared)
+            Issue.record("an unknown outcome must not be abandoned")
+        } catch {
+            #expect(error.code == .sendBroadcastOutcomeUnknown)
+        }
+        let outcome = try await draft.broadcast(prepared)
+        #expect(outcome.txid == prepared.summary.txid)
+        #expect(fake.phase(of: prepared.summary.txid) == .sent)
     }
 
     @Test func sessionErrorsKeepTheTransactionPending() async throws {

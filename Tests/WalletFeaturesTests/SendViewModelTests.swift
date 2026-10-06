@@ -532,8 +532,9 @@ struct SendViewModelTests {
     }
 
     /// A failed second attempt does not settle the first one: the phase
-    /// stays `.broadcastUnknown`. When the engine released the transaction
-    /// (`send.no_peers`), nothing is left to broadcast again.
+    /// stays `.broadcastUnknown` and the same transaction can be broadcast
+    /// again. The engine never releases it; a repeat the network refused is
+    /// reported as `send.broadcast_unknown`.
     @Test func M3_failedSecondAttemptKeepsTheOutcomeUnknown() async {
         world.sender.configure.withLock {
             $0 = { draft in
@@ -561,10 +562,13 @@ struct SendViewModelTests {
             Issue.record("expected broadcastUnknown, got \(model.phase)")
             return
         }
-        #expect(second.code == .sendNoPeers)
-        #expect(!model.canBroadcastAgain)
+        #expect(second.code == .sendBroadcastUnknown)
+        #expect(model.canBroadcastAgain)
+        let draft = world.sender.lastDraft!.state.current
+        #expect(draft.broadcasts.count == 3)
+        #expect(draft.released.isEmpty)
         await model.broadcastAgain()
-        #expect(world.sender.lastDraft?.state.current.broadcasts.count == 3)
+        #expect(model.phase == .done(txid: String(repeating: "f", count: 64)))
     }
 
     @Test func M7_rejectedBroadcastIsReleasedByTheEngine() async {

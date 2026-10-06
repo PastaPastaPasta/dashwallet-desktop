@@ -327,6 +327,7 @@ final class FakeVault: VaultProviding, @unchecked Sendable {
 
 struct AuthorizeCall {
     let purpose: GrantPurpose
+    let wallet: WalletID?
     let passphrase: String?
 }
 
@@ -375,13 +376,19 @@ final class FakeAuth: AuthenticationGating {
         requirements[Self.key(purpose)] ?? defaultRequirement
     }
 
-    func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant {
+    func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
+        -> AuthGrant
+    {
         let passphrase: String?
         switch credential {
         case .passphrase(let secret): passphrase = secret.testString
         case .unencrypted: passphrase = nil
         }
-        authorizeCalls.append(AuthorizeCall(purpose: purpose, passphrase: passphrase))
+        authorizeCalls.append(AuthorizeCall(purpose: purpose, wallet: wallet, passphrase: passphrase))
+        // The engine's wallet binding rule (m1-engine.md §2.2).
+        guard (purpose == .changeCredential) == (wallet == nil) else {
+            throw ServiceError(code: .invalidArgument, detail: "wallet binding")
+        }
         if let authorizeGate { await authorizeGate.wait() }
         if !authorizeErrors.isEmpty { throw authorizeErrors.removeFirst() }
         grantCounter += 1
@@ -425,7 +432,9 @@ final class FakeAuth: AuthenticationGating {
 ///   `send.broadcast_rejected` and `send.prepared_tx_spent` release its inputs
 ///   and forget it. Argument and session errors leave it as it was. Any other
 ///   error marks the outcome unknown: it may be broadcast again but not
-///   abandoned (`send.broadcast_outcome_unknown`).
+///   abandoned (`send.broadcast_outcome_unknown`). A repeat of an unknown
+///   outcome is never released: the engine reports any `send.*` failure of a
+///   repeat as `send.broadcast_unknown` (dw-engine `dispatch`).
 /// - `abandon` releases a ready transaction and is a no-op for one the draft
 ///   does not hold.
 final class FakeDraft: TransactionDrafting, @unchecked Sendable {
@@ -559,7 +568,11 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
         }
         if let gate = broadcastGate.current { await gate.wait() }
         return try state.withLock { (s) throws(ServiceError) -> BroadcastResult in
-            let error = s.broadcastErrors.isEmpty ? s.broadcastError : s.broadcastErrors.removeFirst()
+            var error = s.broadcastErrors.isEmpty ? s.broadcastError : s.broadcastErrors.removeFirst()
+            if previous == .outcomeUnknown, let failure = error, failure.code.rawValue.hasPrefix("send.") {
+                // A repeat may follow a first dispatch that reached the network.
+                error = ServiceError(code: .sendBroadcastUnknown, detail: "not sent this time: \(failure.code.rawValue)")
+            }
             guard let error else {
                 s.held[prepared.id] = nil
                 return BroadcastResult(txid: prepared.summary.txid, peersAnnounced: 3)

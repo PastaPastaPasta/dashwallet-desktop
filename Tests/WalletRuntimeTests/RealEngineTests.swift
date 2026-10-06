@@ -119,7 +119,7 @@ import Testing
             #expect(services.auth.lockState == .unlocked)
 
             let grant = try await services.auth.authorize(
-                .revealSecret, credential: .passphrase(vault.makeSecret(utf8: "runtime test passphrase")))
+                .revealSecret, wallet: id, credential: .passphrase(vault.makeSecret(utf8: "runtime test passphrase")))
             let revealed = try await vault.revealMnemonic(wallet: id, grant: grant)
             #expect(revealed.phrase.count == phrase.count)
 

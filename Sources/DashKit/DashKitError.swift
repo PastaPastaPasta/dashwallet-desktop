@@ -156,6 +156,7 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .GrantInvalid: self = .domain(code: "vault.grant_invalid", detail: "")
         case .GrantPurposeMismatch: self = .domain(code: "vault.grant_purpose_mismatch", detail: "")
         case .MixingOnly: self = .domain(code: "vault.mixing_only", detail: "")
+        case .CredentialRequired: self = .domain(code: "vault.credential_required", detail: "")
         case .NoSecret: self = .domain(code: "vault.no_secret", detail: "")
         case .QuickUnlockUnavailable: self = .domain(code: "vault.quick_unlock_unavailable", detail: "")
         case .OsStoreUnavailable(let d): self = .domain(code: "vault.os_store_unavailable", detail: d)

@@ -139,7 +139,12 @@ public protocol AuthenticationGating: AnyObject {
     /// Current lock state followed by every change.
     func lockStateChanges() -> AsyncStream<VaultLockState>
     func requirement(for purpose: GrantPurpose) -> CredentialRequirement
-    func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant
+    /// Issues a grant for `purpose` on `wallet`. `wallet` is required for
+    /// every purpose except `.changeCredential`, which is vault-wide and takes
+    /// `nil`; the engine refuses other combinations with `invalid_argument`
+    /// and refuses the grant for any other wallet (m1-engine.md §2.2).
+    func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
+        -> AuthGrant
     /// Withdraws a grant that will not be used (engine `Vault.revoke_grant`;
     /// unknown or already redeemed ids are ignored). Send calls it when the
     /// user cancels between authorizing and preparing (review M-7).

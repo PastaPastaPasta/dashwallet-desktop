@@ -160,7 +160,7 @@ public final class SettingsViewModel {
     public func encryptWallet(passphrase: String, confirmation: String) async {
         guard validateNew(passphrase, confirmation: confirmation) else { return }
         do {
-            let grant = try await auth.authorize(.changeCredential, credential: .unencrypted)
+            let grant = try await auth.authorize(.changeCredential, wallet: nil, credential: .unencrypted)
             vault = try await vaultService.encrypt(newPassphrase: vaultService.makeSecret(utf8: passphrase), grant: grant)
             infoMessage = L10n.Settings.walletEncrypted
         } catch {
@@ -201,7 +201,7 @@ public final class SettingsViewModel {
         }
         needsPassphrase = false
         do {
-            let grant = try await auth.authorize(.revealSecret, credential: credential)
+            let grant = try await auth.authorize(.revealSecret, wallet: wallet, credential: credential)
             return try await vaultService.revealMnemonic(wallet: wallet, grant: grant)
         } catch {
             errorMessage = securityText(error.code)

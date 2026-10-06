@@ -19,6 +19,7 @@ extension L10n {
         public static let passphraseRequired = "Enter your wallet passphrase."
         public static let vaultLocked = "The wallet is locked. Unlock it first."
         public static let mixingOnly = "The wallet is unlocked for mixing only. Unlock it fully first."
+        public static let credentialRequired = "Enter your passphrase."
         public static let throttled = "Too many incorrect passphrase attempts. Please wait and try again."
     }
 

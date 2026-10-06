@@ -176,6 +176,8 @@ public final class SendViewModel {
     private let network: DashNetwork
     private let timing: Timing
     private var draft: (any TransactionDrafting)?
+    /// The wallet `draft` spends from; spend grants are bound to it.
+    private var draftWallet: WalletID?
     private var prepared: PreparedTransaction?
     private var spendLimit: Amount?
     /// A grant issued for this payment that `prepare` has not redeemed.
@@ -353,12 +355,13 @@ public final class SendViewModel {
     /// phase moves to `.preparing` before the vault is asked, so a second call
     /// while the passphrase is being checked does nothing.
     public func authorize(passphrase: String) async {
-        guard phase == .authorizing, let spendLimit else { return }
+        guard phase == .authorizing, let spendLimit, let draftWallet else { return }
         phase = .preparing
         let secret = vault.makeSecret(utf8: passphrase)
         let started = generation
         do {
-            let grant = try await auth.authorize(.spend(max: spendLimit), credential: .passphrase(secret))
+            let grant = try await auth.authorize(
+                .spend(max: spendLimit), wallet: draftWallet, credential: .passphrase(secret))
             guard started == generation else {
                 auth.revoke(grant)
                 return
@@ -560,6 +563,7 @@ public final class SendViewModel {
             let draft = try await sender.makeDraft(wallet: wallet)
             guard started == generation else { return }
             self.draft = draft
+            draftWallet = wallet
             try await draft.setRecipients(recipients)
             try await draft.setSource(source)
             try await draft.setFee(fee)
@@ -570,7 +574,7 @@ public final class SendViewModel {
             spendLimit = limit
             switch auth.requirement(for: .spend(max: limit)) {
             case .none:
-                let grant = try await auth.authorize(.spend(max: limit), credential: .unencrypted)
+                let grant = try await auth.authorize(.spend(max: limit), wallet: wallet, credential: .unencrypted)
                 guard started == generation else {
                     auth.revoke(grant)
                     return

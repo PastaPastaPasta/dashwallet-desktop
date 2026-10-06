@@ -94,12 +94,15 @@ import Testing
         let locked = try await reopened.vaultStatus(on: .regtest)
         #expect(locked.state == .locked)
         #expect(locked.walletsWithSecrets == [walletID])
+        // A passphrase grant on the locked vault reveals with its own key and
+        // leaves the vault locked (m1-engine.md §2.2).
         let grant = try await reopened.authorize(
-            on: .regtest, purpose: .revealSecret,
+            on: .regtest, purpose: .revealSecret, wallet: walletID,
             credential: .passphrase(SecretBytes(utf8: Self.vaultPassphrase)))
         let revealed = try await reopened.revealMnemonic(on: .regtest, wallet: walletID, grantID: grant.id)
         #expect(revealed.phrase.utf8String() == phrase.utf8String())
         #expect(revealed.bip39Passphrase.utf8String() == "")
+        #expect(try await reopened.vaultStatus(on: .regtest).state == .locked)
         try await reopened.shutdown()
     }
 

@@ -81,16 +81,20 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
         }
     }
 
-    public func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant {
+    public func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
+        -> AuthGrant
+    {
         let network = try requireNetwork()
         let engine = engine
         let kitPurpose = purpose.kit
+        let kitWallet = try wallet?.kit
         let kitCredential = credential.kit
         let result = await withWatchdog(
             timeout: authorizeTimeout, clock: clock,
             operation: { () async -> Result<DashKit.AuthGrant, DashKitError> in
                 do throws(DashKitError) {
-                    return .success(try await engine.authorize(on: network, purpose: kitPurpose, credential: kitCredential))
+                    return .success(try await engine.authorize(
+                        on: network, purpose: kitPurpose, wallet: kitWallet, credential: kitCredential))
                 } catch {
                     return .failure(error)
                 }
@@ -100,8 +104,8 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
                     try? await engine.revokeGrant(on: network, grantID: grant.id)
                 }
             })
-        // A passphrase may have unlocked the vault, or a failed attempt
-        // changed the throttle; re-read either way.
+        // A passphrase grant leaves the lock state as it was (m1-engine.md
+        // §2.2), but a failed attempt changes the throttle; re-read.
         coalescer.request()
         switch result {
         case nil:

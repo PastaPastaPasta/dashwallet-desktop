@@ -17,6 +17,8 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         var balances: [WalletID: WalletBalances] = [:]
         var vault: VaultStatus?
         var issuedGrants: [String] = []
+        /// The wallet each `authorize` call named, in order.
+        var grantWallets: [WalletID?] = []
         var revokedGrants: [String] = []
         var snapshot: Result<SyncSnapshot, DashKitError> = .failure(.notImplemented(detail: "sync_snapshot"))
         var imported: [WalletID] = []
@@ -206,10 +208,15 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         return setVault(.locked, encrypted: true, on: network)
     }
 
-    func authorize(on network: DashNetwork, purpose: GrantPurpose, credential: VaultCredential)
+    func authorize(on network: DashNetwork, purpose: GrantPurpose, wallet: WalletID?, credential: VaultCredential)
         async throws(DashKitError) -> AuthGrant
     {
         try requireOpen(network, "authorize")
+        // The engine's wallet binding rule (m1-engine.md §2.2).
+        guard (purpose == .changeCredential) == (wallet == nil) else {
+            throw .invalidArgument(detail: "wallet_id must be given for every purpose except ChangeCredential")
+        }
+        with { $0.grantWallets.append(wallet) }
         let result: Result<AuthGrant, DashKitError>
         if let handler = authorizeHandler {
             result = await handler(purpose)
@@ -394,10 +401,14 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
 ///   amount 1…21M DASH, dust threshold (546 duffs P2PKH, 540 P2SH), no
 ///   address twice; then the total. A failure leaves the recipients unchanged.
 /// - Each prepared transaction has the engine's phase. `broadcast` runs only
-///   from pending or unknown (else `send.prepared_tx_spent`);
-///   `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
-///   release the inputs; `send.broadcast_unknown` keeps them reserved; any
-///   other error leaves the transaction pending. `abandon` releases a pending
+///   from pending or unknown (else `send.prepared_tx_spent`). A first
+///   attempt (from pending) follows `settle(first: true)`: `send.no_peers`,
+///   `send.broadcast_rejected` and `send.prepared_tx_spent` release the
+///   inputs; `send.broadcast_unknown` keeps them reserved; any other error
+///   leaves the transaction pending. A repeat (from unknown) follows
+///   `settle(first: false)` and `dispatch`: it is never released, a scripted
+///   domain error is reported as `send.broadcast_unknown`, and a session
+///   error (`network_not_open`, `wallet_not_found`) is returned as is. `abandon` releases a pending
 ///   one, is a no-op for a released one and fails with
 ///   `send.prepared_tx_spent` while broadcasting, sent or unknown.
 /// Fees and coin selection are scripted, not computed.
@@ -513,16 +524,22 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
 
     func broadcast(_ prepared: PreparedTxHandle) async throws(DashKitError) -> BroadcastOutcome {
         let txid = prepared.summary.txid
-        let start: Result<(DashKitError?, (@Sendable () async -> Void)?), DashKitError> = with { s in
+        let start: Result<(Bool, DashKitError?, (@Sendable () async -> Void)?), DashKitError> = with { s in
             s.calls.append("broadcast \(txid)")
             guard s.phases[txid] == .pending || s.phases[txid] == .unknown else {
                 return .failure(.domain(code: "send.prepared_tx_spent", detail: txid))
             }
+            let first = s.phases[txid] == .pending
             s.phases[txid] = .broadcasting
-            return .success((s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst(), s.broadcastHold))
+            return .success((first, s.broadcastErrors.isEmpty ? nil : s.broadcastErrors.removeFirst(), s.broadcastHold))
         }
-        let (error, hold) = try start.get()
+        let (first, scripted, hold) = try start.get()
         await hold?()
+        var error = scripted
+        if !first, let failure = scripted, failure.code.hasPrefix("send.") {
+            // A repeat may follow a first dispatch that reached the network.
+            error = .domain(code: "send.broadcast_unknown", detail: "not sent this time: \(failure.code)")
+        }
         with { s in
             switch error?.code {
             case nil:
@@ -533,7 +550,7 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
                 s.phases[txid] = .released
                 s.released.append(txid)
             default:
-                s.phases[txid] = .pending
+                s.phases[txid] = first ? .pending : .unknown
             }
         }
         if let error { throw error }

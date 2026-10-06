@@ -42,6 +42,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let vaultGrantInvalid = Self(rawValue: "vault.grant_invalid")
     public static let vaultGrantPurposeMismatch = Self(rawValue: "vault.grant_purpose_mismatch")
     public static let vaultMixingOnly = Self(rawValue: "vault.mixing_only")
+    public static let vaultCredentialRequired = Self(rawValue: "vault.credential_required")
     public static let vaultNoSecret = Self(rawValue: "vault.no_secret")
     public static let vaultQuickUnlockUnavailable = Self(rawValue: "vault.quick_unlock_unavailable")
     public static let vaultOSStoreUnavailable = Self(rawValue: "vault.os_store_unavailable")
@@ -151,7 +152,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
         .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io,
         .vaultNoVault, .vaultAlreadyExists, .vaultLocked, .vaultWrongPassphrase, .vaultThrottled,
         .vaultPassphraseRejected, .vaultNotEncrypted, .vaultAlreadyEncrypted, .vaultGrantInvalid,
-        .vaultGrantPurposeMismatch, .vaultMixingOnly, .vaultNoSecret, .vaultQuickUnlockUnavailable,
+        .vaultGrantPurposeMismatch, .vaultMixingOnly, .vaultCredentialRequired, .vaultNoSecret, .vaultQuickUnlockUnavailable,
         .vaultOSStoreUnavailable, .vaultCorrupt,
         .walletInvalidMnemonic, .walletUnsupportedWordCount, .walletAlreadyExists, .walletWatchOnlyExists,
         .walletNoVault, .walletVaultLocked, .walletGrantInvalid, .walletNameRejected,

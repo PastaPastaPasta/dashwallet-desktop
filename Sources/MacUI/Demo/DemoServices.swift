@@ -139,7 +139,11 @@ final class DemoAuthentication: AuthenticationGating {
         store.vaultEncrypted ? .passphrase : .none
     }
 
-    func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant {
+    func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
+        -> AuthGrant
+    {
+        // The engine's wallet binding rule (m1-engine.md §2.2).
+        guard (purpose == .changeCredential) == (wallet == nil) else { throw .demo(.invalidArgument) }
         switch credential {
         case .unencrypted:
             if store.vaultEncrypted { throw .demo(.vaultLocked) }
@@ -330,7 +334,9 @@ actor DemoDraft: TransactionDrafting {
         guard case .spend(let limit) = grant.purpose else { throw .demo(.vaultGrantInvalid) }
         let estimate = try await estimate()
         let debit = estimate.totalSent.duffs + estimate.fee.duffs
-        if debit > limit.duffs { throw .demo(.sendGrantExceeded) }
+        // Like the engine, the grant caps what leaves the wallet: the
+        // recipients' amounts, not the fee (m1-engine.md §2.7.1).
+        if estimate.totalSent.duffs > limit.duffs { throw .demo(.sendGrantExceeded) }
         var rng = DemoRandom(text: recipients.map(\.address).joined() + String(debit))
         let outputs = recipients.map {
             PreparedOutput(address: $0.address, amount: $0.amount, isChange: false, label: $0.label)

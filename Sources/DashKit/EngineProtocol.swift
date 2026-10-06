@@ -52,7 +52,9 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func unlockVault(on network: DashNetwork, passphrase: SecretBytes, scope: UnlockScope) async throws(DashKitError)
         -> VaultStatus
     func lockVault(on network: DashNetwork) async throws(DashKitError) -> VaultStatus
-    func authorize(on network: DashNetwork, purpose: GrantPurpose, credential: VaultCredential)
+    /// `wallet` is the wallet the grant is for: required for every purpose
+    /// except `.changeCredential`, which takes `nil` (else `invalid_argument`).
+    func authorize(on network: DashNetwork, purpose: GrantPurpose, wallet: WalletID?, credential: VaultCredential)
         async throws(DashKitError) -> AuthGrant
     func revokeGrant(on network: DashNetwork, grantID: String) async throws(DashKitError)
     func revealMnemonic(on network: DashNetwork, wallet: WalletID, grantID: String) async throws(DashKitError)

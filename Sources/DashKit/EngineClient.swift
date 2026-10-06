@@ -237,23 +237,26 @@ public actor EngineClient: EngineProtocol {
         return try VaultStatus(try mapped { try vault.lock() })
     }
 
-    public func authorize(on network: DashNetwork, purpose: GrantPurpose, credential: VaultCredential)
+    public func authorize(on network: DashNetwork, purpose: GrantPurpose, wallet: WalletID?, credential: VaultCredential)
         async throws(DashKitError) -> AuthGrant
     {
         let vault = try session(network).vault()
         let ffiPurpose = try purpose.ffi()
+        let walletID = wallet?.hex
         let grant = try await mapped {
             switch credential {
             case .passphrase(let secret):
                 try await secret.withTemporaryData {
-                    try await vault.authorize(purpose: ffiPurpose, credential: .passphrase(passphrase: $0))
+                    try await vault.authorize(
+                        purpose: ffiPurpose, walletId: walletID, credential: .passphrase(passphrase: $0))
                 }
             case .quickUnlock(let key):
                 try await key.withTemporaryData {
-                    try await vault.authorize(purpose: ffiPurpose, credential: .quickUnlock(wrapKey: $0))
+                    try await vault.authorize(
+                        purpose: ffiPurpose, walletId: walletID, credential: .quickUnlock(wrapKey: $0))
                 }
             case .unencrypted:
-                try await vault.authorize(purpose: ffiPurpose, credential: .unencrypted)
+                try await vault.authorize(purpose: ffiPurpose, walletId: walletID, credential: .unencrypted)
             }
         }
         return try AuthGrant(grant)

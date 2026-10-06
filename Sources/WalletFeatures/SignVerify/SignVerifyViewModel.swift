@@ -96,7 +96,7 @@ public final class SignVerifyViewModel {
         }
         needsPassphrase = false
         do {
-            let grant = try await auth.authorize(.signMessage, credential: credential)
+            let grant = try await auth.authorize(.signMessage, wallet: wallet, credential: credential)
             signature = try await messages.sign(wallet: wallet, address: cleaned, message: message, grant: grant)
             signResult = .signed
         } catch {

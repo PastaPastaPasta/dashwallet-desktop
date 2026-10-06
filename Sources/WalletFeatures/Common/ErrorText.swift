@@ -13,6 +13,7 @@ public enum ErrorText {
         case .vaultLocked, EngineCode.walletVaultLocked, EngineCode.sendVaultLocked, EngineCode.messageVaultLocked:
             L10n.Common.vaultLocked
         case .vaultMixingOnly: L10n.Common.mixingOnly
+        case .vaultCredentialRequired: L10n.Common.credentialRequired
         case .vaultThrottled: L10n.Common.throttled
         default: L10n.Common.unexpected
         }

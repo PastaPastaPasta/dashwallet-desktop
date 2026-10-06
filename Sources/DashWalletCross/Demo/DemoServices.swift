@@ -239,7 +239,13 @@ final class DemoAuth: AuthenticationGating {
         world.vault.encrypted ? .passphrase : .none
     }
 
-    func authorize(_ purpose: GrantPurpose, credential: Credential) async throws(ServiceError) -> AuthGrant {
+    func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
+        -> AuthGrant
+    {
+        // The engine's wallet binding rule (m1-engine.md §2.2).
+        guard (purpose == .changeCredential) == (wallet == nil) else {
+            throw ServiceError(code: .invalidArgument, detail: "demo")
+        }
         switch credential {
         case .unencrypted:
             guard !world.vault.encrypted else { throw ServiceError(code: .vaultWrongPassphrase, detail: "demo") }
