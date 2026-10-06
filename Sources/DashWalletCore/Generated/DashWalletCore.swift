@@ -1041,14 +1041,33 @@ public func FfiConverterTypeEngineObserver_lower(_ value: EngineObserver) -> UIn
 public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
-     * Locks outpoints against automatic coin selection. Persisted.
+     * Dust attack protection threshold in duffs; `None` = off (QT-075).
+     */
+    func dustProtection() async throws  -> UInt64?
+    
+    /**
+     * Locks outpoints against coin selection ("Lock unspent"). Persisted.
      */
     func lockOutpoints(walletId: String, outpoints: [OutPoint]) async throws 
     
     func lockedOutpoints(walletId: String) async throws  -> [OutPoint]
     
+    /**
+     * Turns dust protection on (1..=1,000,000 duffs) or off. Small foreign
+     * incoming coins are locked the next time the wallet's coins are read.
+     */
+    func setDustProtection(threshold: UInt64?) async throws 
+    
+    /**
+     * Deletes user locks and releases dust locks.
+     */
     func unlockOutpoints(walletId: String, outpoints: [OutPoint]) async throws 
     
+    /**
+     * Coin control list, largest first. `fully_mixed_only` returns
+     * `NotImplemented` until CoinJoin rounds are tracked; `coinjoin_rounds`
+     * is always `None` (unknown).
+     */
     func utxos(walletId: String, filter: UtxoFilter) async throws  -> [Utxo]
     
     /**
@@ -1063,8 +1082,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func txDetail(walletId: String, txid: String) async throws  -> TxDetail
     
     /**
-     * Address-book entries of `wallet_id`. `search` matches label or
-     * address, case-insensitively (dash-qt wildcard search).
+     * Address-book entries of `wallet_id`, sorted by label then address.
+     * `search` is dash-qt's case-insensitive wildcard match (`*`, `?`) on
+     * label or address.
      */
     func addressBook(walletId: String, purpose: AddressPurpose?, search: String?) async throws  -> [AddressBookEntry]
     
@@ -1074,14 +1094,15 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func deleteAddressBookEntry(walletId: String, address: String) async throws 
     
     /**
-     * Adds or relabels an entry. Adding an existing Send address returns
-     * `DuplicateAddress`; relabel by passing the same address and purpose
-     * with `replace = true`.
+     * Adds or relabels an entry. A Send entry for one of the wallet's own
+     * addresses is `OwnAddress`; a Receive entry must be one of them
+     * (`invalid_argument` otherwise). An address already in the book is
+     * `DuplicateAddress` unless `replace` is set with the same purpose.
      */
     func saveAddressBookEntry(walletId: String, address: String, label: String, purpose: AddressPurpose, replace: Bool) async throws  -> AddressBookEntry
     
     /**
-     * Sets or clears (`None`) the label of a transaction.
+     * Sets or clears (`None` or empty) the label of a transaction.
      */
     func setTxLabel(walletId: String, txid: String, label: String?) async throws 
     
@@ -1124,8 +1145,11 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func receiveRequests(walletId: String) async throws  -> [ReceiveRequest]
     
     /**
-     * The largest single-recipient amount `source` can pay at `fee`, with
-     * the fee subtracted (iOS "Max", dash-qt "Use available balance").
+     * The spendable amount of `source` for dash-qt's "Use available
+     * balance" (review M-4): put this minus the other recipients' amounts
+     * in the entry and set `subtract_fee_from_amount`. Excludes user-locked,
+     * reserved, immature and untrusted unconfirmed coins. `fee` is
+     * validated only; with subtract-fee the fee comes out of the amount.
      */
     func maxSpendable(walletId: String, source: CoinSource, fee: FeeMode) async throws  -> UInt64
     
@@ -1281,7 +1305,26 @@ open class NetworkSession: NetworkSessionProtocol, @unchecked Sendable {
 
     
     /**
-     * Locks outpoints against automatic coin selection. Persisted.
+     * Dust attack protection threshold in duffs; `None` = off (QT-075).
+     */
+open func dustProtection()async throws  -> UInt64?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_dust_protection(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionUInt64.lift,
+            errorHandler: FfiConverterTypeCoinsError_lift
+        )
+}
+    
+    /**
+     * Locks outpoints against coin selection ("Lock unspent"). Persisted.
      */
 open func lockOutpoints(walletId: String, outpoints: [OutPoint])async throws   {
     return
@@ -1315,6 +1358,29 @@ open func lockedOutpoints(walletId: String)async throws  -> [OutPoint]  {
         )
 }
     
+    /**
+     * Turns dust protection on (1..=1,000,000 duffs) or off. Small foreign
+     * incoming coins are locked the next time the wallet's coins are read.
+     */
+open func setDustProtection(threshold: UInt64?)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_dust_protection(
+                        self.uniffiCloneHandle(),FfiConverterOptionUInt64.lower(threshold)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoinsError_lift
+        )
+}
+    
+    /**
+     * Deletes user locks and releases dust locks.
+     */
 open func unlockOutpoints(walletId: String, outpoints: [OutPoint])async throws   {
     return
         try  await uniffiRustCallAsync(
@@ -1331,6 +1397,11 @@ open func unlockOutpoints(walletId: String, outpoints: [OutPoint])async throws  
         )
 }
     
+    /**
+     * Coin control list, largest first. `fully_mixed_only` returns
+     * `NotImplemented` until CoinJoin rounds are tracked; `coinjoin_rounds`
+     * is always `None` (unknown).
+     */
 open func utxos(walletId: String, filter: UtxoFilter)async throws  -> [Utxo]  {
     return
         try  await uniffiRustCallAsync(
@@ -1387,8 +1458,9 @@ open func txDetail(walletId: String, txid: String)async throws  -> TxDetail  {
 }
     
     /**
-     * Address-book entries of `wallet_id`. `search` matches label or
-     * address, case-insensitively (dash-qt wildcard search).
+     * Address-book entries of `wallet_id`, sorted by label then address.
+     * `search` is dash-qt's case-insensitive wildcard match (`*`, `?`) on
+     * label or address.
      */
 open func addressBook(walletId: String, purpose: AddressPurpose?, search: String?)async throws  -> [AddressBookEntry]  {
     return
@@ -1426,9 +1498,10 @@ open func deleteAddressBookEntry(walletId: String, address: String)async throws 
 }
     
     /**
-     * Adds or relabels an entry. Adding an existing Send address returns
-     * `DuplicateAddress`; relabel by passing the same address and purpose
-     * with `replace = true`.
+     * Adds or relabels an entry. A Send entry for one of the wallet's own
+     * addresses is `OwnAddress`; a Receive entry must be one of them
+     * (`invalid_argument` otherwise). An address already in the book is
+     * `DuplicateAddress` unless `replace` is set with the same purpose.
      */
 open func saveAddressBookEntry(walletId: String, address: String, label: String, purpose: AddressPurpose, replace: Bool)async throws  -> AddressBookEntry  {
     return
@@ -1447,7 +1520,7 @@ open func saveAddressBookEntry(walletId: String, address: String, label: String,
 }
     
     /**
-     * Sets or clears (`None`) the label of a transaction.
+     * Sets or clears (`None` or empty) the label of a transaction.
      */
 open func setTxLabel(walletId: String, txid: String, label: String?)async throws   {
     return
@@ -1602,8 +1675,11 @@ open func receiveRequests(walletId: String)async throws  -> [ReceiveRequest]  {
 }
     
     /**
-     * The largest single-recipient amount `source` can pay at `fee`, with
-     * the fee subtracted (iOS "Max", dash-qt "Use available balance").
+     * The spendable amount of `source` for dash-qt's "Use available
+     * balance" (review M-4): put this minus the other recipients' amounts
+     * in the entry and set `subtract_fee_from_amount`. Excludes user-locked,
+     * reserved, immature and untrusted unconfirmed coins. `fee` is
+     * validated only; with subtract-fee the fee comes out of the amount.
      */
 open func maxSpendable(walletId: String, source: CoinSource, fee: FeeMode)async throws  -> UInt64  {
     return
@@ -1945,7 +2021,8 @@ public func FfiConverterTypeNetworkSession_lower(_ value: NetworkSession) -> UIn
 
 /**
  * A signed transaction held by the engine with its inputs reserved. Only
- * `TxDraft::broadcast` sends it; `TxDraft::abandon` releases the inputs.
+ * `TxDraft::broadcast` sends it; `TxDraft::abandon`, or releasing the last
+ * reference while it is pending, releases the inputs.
  */
 public protocol PreparedTxProtocol: AnyObject, Sendable {
     
@@ -1954,7 +2031,8 @@ public protocol PreparedTxProtocol: AnyObject, Sendable {
 }
 /**
  * A signed transaction held by the engine with its inputs reserved. Only
- * `TxDraft::broadcast` sends it; `TxDraft::abandon` releases the inputs.
+ * `TxDraft::broadcast` sends it; `TxDraft::abandon`, or releasing the last
+ * reference while it is pending, releases the inputs.
  */
 open class PreparedTx: PreparedTxProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -2070,17 +2148,19 @@ public func FfiConverterTypePreparedTx_lower(_ value: PreparedTx) -> UInt64 {
 
 /**
  * An editable payment for one wallet. Setters validate what they can
- * without the network; `prepare` does the rest.
+ * without the network; `estimate` and `prepare` read the wallet.
  */
 public protocol TxDraftProtocol: AnyObject, Sendable {
     
     /**
-     * Discards `prepared` and releases its reserved inputs. Idempotent.
+     * Discards `prepared` and releases its reserved inputs. Idempotent;
+     * `send.prepared_tx_spent` once it was handed to the network.
      */
     func abandon(prepared: PreparedTx) async throws 
     
     /**
-     * Announces `prepared` to the network and records it in history.
+     * Announces `prepared` and waits for the network's acceptance (up to
+     * about a minute on SPV). See `send.broadcast_unknown`.
      */
     func broadcast(prepared: PreparedTx) async throws  -> BroadcastOutcome
     
@@ -2090,8 +2170,8 @@ public protocol TxDraftProtocol: AnyObject, Sendable {
     func estimate() async throws  -> TxEstimate
     
     /**
-     * Selects coins, builds, signs (through the vault, with a `Spend` grant)
-     * and reserves the inputs. Never broadcasts.
+     * Selects coins, builds, signs (through the vault, with a `Spend` grant
+     * that caps `external_sent`) and reserves the inputs. Never broadcasts.
      */
     func prepare(grantId: String) async throws  -> PreparedTx
     
@@ -2105,6 +2185,10 @@ public protocol TxDraftProtocol: AnyObject, Sendable {
      */
     func setRecipients(recipients: [Recipient]) throws 
     
+    /**
+     * Coin source. Outpoints must be distinct; whether they are spendable
+     * is checked by `estimate`/`prepare` (`send.outpoint_unavailable`).
+     */
     func setSource(source: CoinSource) throws 
     
     func walletId()  -> String
@@ -2112,7 +2196,7 @@ public protocol TxDraftProtocol: AnyObject, Sendable {
 }
 /**
  * An editable payment for one wallet. Setters validate what they can
- * without the network; `prepare` does the rest.
+ * without the network; `estimate` and `prepare` read the wallet.
  */
 open class TxDraft: TxDraftProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -2168,7 +2252,8 @@ open class TxDraft: TxDraftProtocol, @unchecked Sendable {
 
     
     /**
-     * Discards `prepared` and releases its reserved inputs. Idempotent.
+     * Discards `prepared` and releases its reserved inputs. Idempotent;
+     * `send.prepared_tx_spent` once it was handed to the network.
      */
 open func abandon(prepared: PreparedTx)async throws   {
     return
@@ -2187,7 +2272,8 @@ open func abandon(prepared: PreparedTx)async throws   {
 }
     
     /**
-     * Announces `prepared` to the network and records it in history.
+     * Announces `prepared` and waits for the network's acceptance (up to
+     * about a minute on SPV). See `send.broadcast_unknown`.
      */
 open func broadcast(prepared: PreparedTx)async throws  -> BroadcastOutcome  {
     return
@@ -2225,8 +2311,8 @@ open func estimate()async throws  -> TxEstimate  {
 }
     
     /**
-     * Selects coins, builds, signs (through the vault, with a `Spend` grant)
-     * and reserves the inputs. Never broadcasts.
+     * Selects coins, builds, signs (through the vault, with a `Spend` grant
+     * that caps `external_sent`) and reserves the inputs. Never broadcasts.
      */
 open func prepare(grantId: String)async throws  -> PreparedTx  {
     return
@@ -2275,6 +2361,10 @@ open func setRecipients(recipients: [Recipient])throws   {try rustCallWithError(
 }
 }
     
+    /**
+     * Coin source. Outpoints must be distinct; whether they are spendable
+     * is checked by `estimate`/`prepare` (`send.outpoint_unavailable`).
+     */
 open func setSource(source: CoinSource)throws   {try rustCallWithError(FfiConverterTypeSendError_lift) {
         uniffiCallStatus in
     uniffi_dashwallet_core_fn_method_txdraft_set_source(
@@ -3019,16 +3109,18 @@ public func FfiConverterTypeAuthGrant_lower(_ value: AuthGrant) -> RustBuffer {
 public struct BroadcastOutcome: Equatable, Hashable {
     public let txid: String
     /**
-     * Peers the transaction was announced to.
+     * Peers the transaction was announced to; `None`: dash-spv does not
+     * report it.
      */
-    public let peersAnnounced: UInt32
+    public let peersAnnounced: UInt32?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(txid: String, 
         /**
-         * Peers the transaction was announced to.
-         */peersAnnounced: UInt32) {
+         * Peers the transaction was announced to; `None`: dash-spv does not
+         * report it.
+         */peersAnnounced: UInt32?) {
         self.txid = txid
         self.peersAnnounced = peersAnnounced
     }
@@ -3050,13 +3142,13 @@ public struct FfiConverterTypeBroadcastOutcome: FfiConverterRustBuffer {
         return
             try BroadcastOutcome(
                 txid: FfiConverterString.read(from: &buf), 
-                peersAnnounced: FfiConverterUInt32.read(from: &buf)
+                peersAnnounced: FfiConverterOptionUInt32.read(from: &buf)
         )
     }
 
     public static func write(_ value: BroadcastOutcome, into buf: inout [UInt8]) {
         FfiConverterString.write(value.txid, into: &buf)
-        FfiConverterUInt32.write(value.peersAnnounced, into: &buf)
+        FfiConverterOptionUInt32.write(value.peersAnnounced, into: &buf)
     }
 }
 
@@ -3871,14 +3963,24 @@ public struct PreparedOutput: Equatable, Hashable {
     public let amount: UInt64
     public let isChange: Bool
     public let label: String?
+    /**
+     * Pays one of this wallet's addresses (review H-3: a change output
+     * with `is_mine == false` is a foreign custom change address).
+     */
+    public let isMine: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(address: String?, amount: UInt64, isChange: Bool, label: String?) {
+    public init(address: String?, amount: UInt64, isChange: Bool, label: String?, 
+        /**
+         * Pays one of this wallet's addresses (review H-3: a change output
+         * with `is_mine == false` is a foreign custom change address).
+         */isMine: Bool) {
         self.address = address
         self.amount = amount
         self.isChange = isChange
         self.label = label
+        self.isMine = isMine
     }
 
     
@@ -3900,7 +4002,8 @@ public struct FfiConverterTypePreparedOutput: FfiConverterRustBuffer {
                 address: FfiConverterOptionString.read(from: &buf), 
                 amount: FfiConverterUInt64.read(from: &buf), 
                 isChange: FfiConverterBool.read(from: &buf), 
-                label: FfiConverterOptionString.read(from: &buf)
+                label: FfiConverterOptionString.read(from: &buf), 
+                isMine: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -3909,6 +4012,7 @@ public struct FfiConverterTypePreparedOutput: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.amount, into: &buf)
         FfiConverterBool.write(value.isChange, into: &buf)
         FfiConverterOptionString.write(value.label, into: &buf)
+        FfiConverterBool.write(value.isMine, into: &buf)
     }
 }
 
@@ -3943,9 +4047,15 @@ public struct PreparedTxSummary: Equatable, Hashable {
      */
     public let totalSent: UInt64
     /**
-     * `total_sent + fee`: what leaves the wallet.
+     * Inputs minus outputs back to the wallet: what leaves the wallet,
+     * fee included.
      */
     public let totalDebit: UInt64
+    /**
+     * Paid to scripts the wallet does not own (recipients and a foreign
+     * change address), fee excluded: the figure a `Spend` grant caps.
+     */
+    public let externalSent: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3954,8 +4064,13 @@ public struct PreparedTxSummary: Equatable, Hashable {
          * Sum the recipients receive.
          */totalSent: UInt64, 
         /**
-         * `total_sent + fee`: what leaves the wallet.
-         */totalDebit: UInt64) {
+         * Inputs minus outputs back to the wallet: what leaves the wallet,
+         * fee included.
+         */totalDebit: UInt64, 
+        /**
+         * Paid to scripts the wallet does not own (recipients and a foreign
+         * change address), fee excluded: the figure a `Spend` grant caps.
+         */externalSent: UInt64) {
         self.txid = txid
         self.fee = fee
         self.feeRatePerKb = feeRatePerKb
@@ -3964,6 +4079,7 @@ public struct PreparedTxSummary: Equatable, Hashable {
         self.outputs = outputs
         self.totalSent = totalSent
         self.totalDebit = totalDebit
+        self.externalSent = externalSent
     }
 
     
@@ -3989,7 +4105,8 @@ public struct FfiConverterTypePreparedTxSummary: FfiConverterRustBuffer {
                 inputs: FfiConverterSequenceTypePreparedInput.read(from: &buf), 
                 outputs: FfiConverterSequenceTypePreparedOutput.read(from: &buf), 
                 totalSent: FfiConverterUInt64.read(from: &buf), 
-                totalDebit: FfiConverterUInt64.read(from: &buf)
+                totalDebit: FfiConverterUInt64.read(from: &buf), 
+                externalSent: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -4002,6 +4119,7 @@ public struct FfiConverterTypePreparedTxSummary: FfiConverterRustBuffer {
         FfiConverterSequenceTypePreparedOutput.write(value.outputs, into: &buf)
         FfiConverterUInt64.write(value.totalSent, into: &buf)
         FfiConverterUInt64.write(value.totalDebit, into: &buf)
+        FfiConverterUInt64.write(value.externalSent, into: &buf)
     }
 }
 
@@ -4180,7 +4298,7 @@ public func FfiConverterTypeReceiveRequest_lower(_ value: ReceiveRequest) -> Rus
 public struct Recipient: Equatable, Hashable {
     public let address: String
     /**
-     * Duffs; must be above the dust threshold.
+     * Duffs; must be at least the output's dust threshold (546 for P2PKH).
      */
     public let amount: UInt64
     /**
@@ -4188,7 +4306,7 @@ public struct Recipient: Equatable, Hashable {
      */
     public let subtractFeeFromAmount: Bool
     /**
-     * Saved to the address book when set (QT-053 "Add to address book").
+     * Saved to the address book after a broadcast (QT-063).
      */
     public let label: String?
     /**
@@ -4200,13 +4318,13 @@ public struct Recipient: Equatable, Hashable {
     // declare one manually.
     public init(address: String, 
         /**
-         * Duffs; must be above the dust threshold.
+         * Duffs; must be at least the output's dust threshold (546 for P2PKH).
          */amount: UInt64, 
         /**
          * dash-qt "Subtract fee from amount".
          */subtractFeeFromAmount: Bool, 
         /**
-         * Saved to the address book when set (QT-053 "Add to address book").
+         * Saved to the address book after a broadcast (QT-063).
          */label: String?, 
         /**
          * `message` from a `dash:` URI; stored with the transaction.
@@ -4730,7 +4848,7 @@ public struct TxEstimate: Equatable, Hashable {
      */
     public let change: UInt64?
     /**
-     * Sum the recipients receive.
+     * Sum the recipients receive (after any subtract-fee share).
      */
     public let totalSent: UInt64
 
@@ -4744,7 +4862,7 @@ public struct TxEstimate: Equatable, Hashable {
          * Change output value; `None` when the change is dropped into the fee.
          */change: UInt64?, 
         /**
-         * Sum the recipients receive.
+         * Sum the recipients receive (after any subtract-fee share).
          */totalSent: UInt64) {
         self.fee = fee
         self.sizeBytes = sizeBytes
@@ -6165,7 +6283,8 @@ public enum ChangePolicy: Equatable, Hashable {
      */
     case auto
     /**
-     * Custom change address (QT-073).
+     * Custom change address (QT-073). A foreign address counts against the
+     * spend cap.
      */
     case address(address: String
     )
@@ -6239,15 +6358,17 @@ public func FfiConverterTypeChangePolicy_lower(_ value: ChangePolicy) -> RustBuf
 public enum CoinSource: Equatable, Hashable {
     
     /**
-     * Any spendable coin of the standard account.
+     * Any spendable coin of the standard accounts, except user-locked,
+     * reserved, immature and untrusted unconfirmed coins.
      */
     case any
     /**
      * Only fully mixed CoinJoin coins (CoinJoin send page, QT-051).
+     * `NotImplemented` until CoinJoin rounds are tracked.
      */
     case fullyMixedOnly
     /**
-     * Exactly these outpoints (coin control, QT-068..074).
+     * Exactly these outpoints, all of them (coin control, QT-068..074).
      */
     case outpoints(outpoints: [OutPoint]
     )
@@ -7046,12 +7167,12 @@ public enum FeeMode: Equatable, Hashable {
     
     /**
      * Engine-recommended rate for a confirmation target (QT-057; on SPV this
-     * is the minimum relay fee for every target, DESIGN-opus §1.14).
+     * is the minimum relay fee, 1000 duff/kB, for every target 1..=1008).
      */
     case recommended(targetBlocks: UInt32
     )
     /**
-     * Custom rate in duffs per 1000 bytes.
+     * Custom rate in duffs per 1000 bytes, 1000..=10,000,000.
      */
     case perKb(duffsPerKb: UInt64
     )
@@ -8533,12 +8654,13 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case InsufficientMixedFunds(available: UInt64
     )
     /**
-     * Code `send.outpoint_unavailable`: spent, locked or not the wallet's.
+     * Code `send.outpoint_unavailable`: spent, locked, reserved, immature or
+     * not the wallet's.
      */
     case OutpointUnavailable(outpoint: OutPoint
     )
     /**
-     * Code `send.absurd_fee` (QT-058 fee cap).
+     * Code `send.absurd_fee` (QT-058: above 0.1 DASH).
      */
     case AbsurdFee(fee: UInt64
     )
@@ -8555,29 +8677,31 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case WatchOnly
     /**
-     * Code `send.vault_locked`.
+     * Code `send.vault_locked` (also a mixing-only unlock).
      */
     case VaultLocked
     /**
-     * Code `send.grant_invalid`: missing, expired or not a Spend grant.
+     * Code `send.grant_invalid`: missing, expired, used or not a Spend grant.
      */
     case GrantInvalid
     /**
-     * Code `send.grant_exceeded`: the debit is above the grant's `max_duffs`.
+     * Code `send.grant_exceeded`: `external_sent` is above the grant's
+     * `max_duffs`.
      */
     case GrantExceeded(maxDuffs: UInt64
     )
     /**
      * Code `send.prepared_tx_spent`: the prepared transaction was already
-     * broadcast or abandoned.
+     * broadcast, abandoned or released after a failed broadcast.
      */
     case PreparedTxSpent
     /**
-     * Code `send.no_peers`: nothing to broadcast to.
+     * Code `send.no_peers`: SPV is not running or has no peer; nothing was
+     * sent and the inputs were released.
      */
     case NoPeers
     /**
-     * Code `send.broadcast_rejected`: a peer rejected the transaction.
+     * Code `send.broadcast_rejected`: provably not sent; inputs released.
      */
     case BroadcastRejected(reason: String
     )
@@ -8610,6 +8734,19 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      * Code `internal`.
      */
     case Internal(detail: String
+    )
+    /**
+     * Code `send.amount_too_small_after_fee` (review M-5): a subtract-fee
+     * recipient would be left with dust.
+     */
+    case AmountTooSmallAfterFee(index: UInt32
+    )
+    /**
+     * Code `send.broadcast_unknown` (review M-7): handed to the network
+     * without an acceptance verdict. The inputs stay reserved; `broadcast`
+     * may be retried, `abandon` is refused.
+     */
+    case BroadcastUnknown(reason: String
     )
 
     
@@ -8702,6 +8839,12 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
             )
         case 26: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
+            )
+        case 27: return .AmountTooSmallAfterFee(
+            index: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 28: return .BroadcastUnknown(
+            reason: try FfiConverterString.read(from: &buf)
             )
 
          default: throw UniffiInternalError.unexpectedEnumCase
@@ -8836,6 +8979,16 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
         case let .Internal(detail):
             writeInt(&buf, Int32(26))
             FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .AmountTooSmallAfterFee(index):
+            writeInt(&buf, Int32(27))
+            FfiConverterUInt32.write(index, into: &buf)
+            
+        
+        case let .BroadcastUnknown(reason):
+            writeInt(&buf, Int32(28))
+            FfiConverterString.write(reason, into: &buf)
             
         }
     }
@@ -11827,16 +11980,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_preparedtx_summary() != 31536) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_txdraft_abandon() != 46344) {
+    if (uniffi_dashwallet_core_checksum_method_txdraft_abandon() != 22246) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_txdraft_broadcast() != 51620) {
+    if (uniffi_dashwallet_core_checksum_method_txdraft_broadcast() != 29250) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_txdraft_estimate() != 55212) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_txdraft_prepare() != 43303) {
+    if (uniffi_dashwallet_core_checksum_method_txdraft_prepare() != 57524) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_txdraft_set_change() != 36375) {
@@ -11848,22 +12001,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_txdraft_set_recipients() != 25167) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_txdraft_set_source() != 53732) {
+    if (uniffi_dashwallet_core_checksum_method_txdraft_set_source() != 64024) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_txdraft_wallet_id() != 10075) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_lock_outpoints() != 51831) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_dust_protection() != 9690) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_lock_outpoints() != 47592) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_locked_outpoints() != 50254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_unlock_outpoints() != 55478) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_dust_protection() != 33064) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_utxos() != 8589) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_unlock_outpoints() != 7594) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_utxos() != 23422) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_history_page() != 62490) {
@@ -11872,16 +12031,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_tx_detail() != 14157) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_address_book() != 44643) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_address_book() != 22395) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_delete_address_book_entry() != 2366) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_save_address_book_entry() != 24093) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_save_address_book_entry() != 20139) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_set_tx_label() != 49035) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_tx_label() != 39083) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_sign_message() != 58632) {
@@ -11905,7 +12064,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_receive_requests() != 404) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_max_spendable() != 49696) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_max_spendable() != 30542) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_new_tx_draft() != 31214) {

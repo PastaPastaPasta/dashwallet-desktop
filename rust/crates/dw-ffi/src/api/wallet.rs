@@ -217,6 +217,9 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::TxNotFound(_)
             | E::GapLimit
             | E::RequestNotFound(_)
+            | E::Send(_)
+            | E::Labels(_)
+            | E::OutpointNotFound(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

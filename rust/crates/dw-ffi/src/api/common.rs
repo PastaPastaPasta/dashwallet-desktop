@@ -15,15 +15,48 @@ pub struct OutPoint {
     pub vout: u32,
 }
 
+impl OutPoint {
+    /// The engine outpoint; the txid must be 64 lowercase hex characters.
+    pub(crate) fn to_core(&self) -> Result<dashcore::OutPoint, dw_engine::EngineError> {
+        let lower_hex = self.txid.len() == 64
+            && self
+                .txid
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        let txid = lower_hex
+            .then(|| self.txid.parse::<dashcore::Txid>().ok())
+            .flatten()
+            .ok_or_else(|| {
+                dw_engine::EngineError::InvalidArgument(format!(
+                    "txid {:?} is not 64 lowercase hex",
+                    self.txid
+                ))
+            })?;
+        Ok(dashcore::OutPoint::new(txid, self.vout))
+    }
+}
+
+impl From<dashcore::OutPoint> for OutPoint {
+    fn from(o: dashcore::OutPoint) -> Self {
+        Self {
+            txid: o.txid.to_string(),
+            vout: o.vout,
+        }
+    }
+}
+
 /// Builds the typed "not implemented" case of a domain error. Every domain
 /// error implements it, so a contract call that has no engine behaviour yet
 /// fails with a value the UI can recognise instead of pretending to succeed.
+/// No M1 call needs it after E1 and E2; it stays for later stub calls.
+#[allow(dead_code)]
 pub(crate) trait NotImplementedError: Sized {
     fn not_implemented(call: &'static str) -> Self;
 }
 
 /// `Err(E::NotImplemented { call })` for a contract call with no engine
 /// behaviour yet. `call` is `"<Object>.<method>"` or the free function name.
+#[allow(dead_code)]
 pub(crate) fn not_implemented<T, E: NotImplementedError>(call: &'static str) -> Result<T, E> {
     Err(E::not_implemented(call))
 }

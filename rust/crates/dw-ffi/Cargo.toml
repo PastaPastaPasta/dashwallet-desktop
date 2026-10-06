@@ -12,6 +12,7 @@ name = "dashwallet_core"
 crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
+dashcore = { workspace = true }
 dw-engine = { workspace = true }
 dw-message = { workspace = true }
 dw-units = { workspace = true }

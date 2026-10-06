@@ -2,7 +2,7 @@
 //! Locks are persisted in dw-appdb. Contract: docs/contracts/m1-engine.md §coins.
 
 use crate::NetworkSession;
-use crate::api::common::{OutPoint, domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{OutPoint, parse_wallet_id};
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Utxo {
@@ -63,7 +63,29 @@ pub enum CoinsError {
     Internal { detail: String },
 }
 
-domain_error_common!(CoinsError);
+impl crate::api::common::NotImplementedError for CoinsError {
+    fn not_implemented(call: &'static str) -> Self {
+        Self::NotImplemented {
+            call: call.to_string(),
+        }
+    }
+}
+
+impl From<dw_engine::EngineError> for CoinsError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::OutpointNotFound(o) => Self::OutpointNotFound { outpoint: o.into() },
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(_) => Self::NotImplemented { call: detail },
+            _ => Self::Internal { detail },
+        }
+    }
+}
 
 impl CoinsError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -80,38 +102,103 @@ impl CoinsError {
     }
 }
 
+fn outpoints_of(list: Vec<OutPoint>) -> Result<Vec<dashcore::OutPoint>, CoinsError> {
+    Ok(list
+        .iter()
+        .map(OutPoint::to_core)
+        .collect::<Result<_, _>>()?)
+}
+
 #[uniffi::export]
 impl NetworkSession {
+    /// Coin control list, largest first. `fully_mixed_only` returns
+    /// `NotImplemented` until CoinJoin rounds are tracked; `coinjoin_rounds`
+    /// is always `None` (unknown).
     pub async fn utxos(
         &self,
         wallet_id: String,
         filter: UtxoFilter,
     ) -> Result<Vec<Utxo>, CoinsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, filter);
-        not_implemented("NetworkSession.utxos")
+        let id = parse_wallet_id(&wallet_id)?;
+        let rows = self
+            .inner
+            .utxos(
+                id,
+                dw_engine::CoinFilter {
+                    include_locked: filter.include_locked,
+                    fully_mixed_only: filter.fully_mixed_only,
+                    min_confirmations: filter.min_confirmations,
+                },
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|c| Utxo {
+                outpoint: c.outpoint.into(),
+                address: c.address,
+                amount: c.amount,
+                confirmations: c.confirmations,
+                block_height: c.block_height,
+                timestamp: c.timestamp,
+                instant_locked: c.instant_locked,
+                chain_locked: c.chain_locked,
+                user_locked: c.user_locked,
+                reserved: c.reserved,
+                label: c.label,
+                is_change: c.is_change,
+                is_coinbase: c.is_coinbase,
+                coinjoin_denominated: c.coinjoin_denominated,
+                coinjoin_rounds: c.coinjoin_rounds,
+                spendable: c.spendable,
+            })
+            .collect())
     }
 
-    /// Locks outpoints against automatic coin selection. Persisted.
+    /// Locks outpoints against coin selection ("Lock unspent"). Persisted.
     pub async fn lock_outpoints(
         &self,
         wallet_id: String,
         outpoints: Vec<OutPoint>,
     ) -> Result<(), CoinsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, outpoints);
-        not_implemented("NetworkSession.lock_outpoints")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .lock_outpoints(id, outpoints_of(outpoints)?)
+            .await?)
     }
 
+    /// Deletes user locks and releases dust locks.
     pub async fn unlock_outpoints(
         &self,
         wallet_id: String,
         outpoints: Vec<OutPoint>,
     ) -> Result<(), CoinsError> {
-        let _ = (parse_wallet_id(&wallet_id)?, outpoints);
-        not_implemented("NetworkSession.unlock_outpoints")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .unlock_outpoints(id, outpoints_of(outpoints)?)
+            .await?)
     }
 
     pub async fn locked_outpoints(&self, wallet_id: String) -> Result<Vec<OutPoint>, CoinsError> {
-        let _ = parse_wallet_id(&wallet_id)?;
-        not_implemented("NetworkSession.locked_outpoints")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .locked_outpoints(id)
+            .await?
+            .into_iter()
+            .map(OutPoint::from)
+            .collect())
+    }
+
+    /// Dust attack protection threshold in duffs; `None` = off (QT-075).
+    pub async fn dust_protection(&self) -> Result<Option<u64>, CoinsError> {
+        Ok(self.inner.dust_protection().await?)
+    }
+
+    /// Turns dust protection on (1..=1,000,000 duffs) or off. Small foreign
+    /// incoming coins are locked the next time the wallet's coins are read.
+    pub async fn set_dust_protection(&self, threshold: Option<u64>) -> Result<(), CoinsError> {
+        Ok(self.inner.set_dust_protection(threshold).await?)
     }
 }

@@ -15,6 +15,7 @@
 //! join handle, so callers may poll these futures from any executor (UniFFI's
 //! foreign executor, `block_on`, another tokio runtime).
 
+mod coins;
 mod context;
 mod engine;
 mod error;
@@ -24,13 +25,17 @@ mod gate;
 pub mod history;
 mod history_ops;
 mod keys;
+mod labels;
 mod network;
 mod pump;
 mod receive;
+pub(crate) mod send;
 mod session;
 pub mod sync;
 mod wallets;
 
+pub use coins::{CoinFilter, CoinInfo, DUST_PROTECTION_MAX};
+pub use dw_appdb::BookPurpose;
 pub use engine::{Engine, EngineConfig};
 pub use error::EngineError;
 pub use events::{EngineEvent, EventSink, NoticeCode};
@@ -39,8 +44,13 @@ pub use history::{
     TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
+pub use labels::{BookEntryInfo, LabelsFailure};
 pub use network::DashNetwork;
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
+pub use send::{
+    BroadcastOutcome, ChangePolicy, CoinSource, FeeMode, MAX_TX_FEE, PreparedInput, PreparedOutput,
+    PreparedSummary, PreparedTx, Recipient, SendFailure, TxDraft, TxEstimate,
+};
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};

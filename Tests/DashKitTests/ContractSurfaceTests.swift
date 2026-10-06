@@ -88,8 +88,12 @@ import Testing
             try await session.rescan(from: .genesis)
         }
         #expect(try session.walletInfos().isEmpty)
-        #expect(throws: SendError.NotImplemented(call: "NetworkSession.new_tx_draft")) {
-            try session.newTxDraft(walletId: wallet)
+        // Send is implemented (E2): an unregistered wallet is reported as such.
+        do {
+            _ = try session.newTxDraft(walletId: wallet)
+            Issue.record("newTxDraft succeeded for an unknown wallet")
+        } catch let SendError.WalletNotFound(detail) {
+            #expect(detail.contains(wallet))
         }
         // Arguments are still validated before the stub answers.
         await #expect(throws: HistoryError.self) {

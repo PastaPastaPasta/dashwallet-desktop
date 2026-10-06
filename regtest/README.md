@@ -94,6 +94,17 @@ On a single node dash-spv never reports `caught_up`: there are no quorums, so it
 stalls on `getqrinfo` ("Cannot find quorum snapshot"). The suite waits on scanned heights and txids
 instead (`dwcli sync --min-height` / `--txid`).
 
+**l1-send** (`tests/test_l1_send.py`) drives a host-built `dwcli` (`DWCLI=/path/to/dwcli`; skipped when
+absent) over SPV against the node: receive and sync, a custom-fee payment, coin control, a locked coin left
+out of selection, subtract-fee, a foreign change address, exact amounts at dashd, and sign/verify both ways.
+With one peer and no InstantSend quorum, dash-spv accepts a broadcast only once it is mined, so the suite
+mines each payment from dashd's mempool while `dwcli send` waits.
+
+```sh
+DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_l1_send.py
+```
+
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 

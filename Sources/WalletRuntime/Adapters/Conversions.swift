@@ -360,9 +360,12 @@ extension PreparedTxSummary {
             txid: kit.txid, fee: Amount(kit.fee), feeRatePerKilobyte: Amount(kit.feeRatePerKilobyte),
             sizeBytes: kit.sizeBytes, inputCount: kit.inputs.count,
             outputs: kit.outputs.map {
-                PreparedOutput(address: $0.address, amount: Amount($0.amount), isChange: $0.isChange, label: $0.label)
+                PreparedOutput(
+                    address: $0.address, amount: Amount($0.amount), isChange: $0.isChange, label: $0.label,
+                    isMine: $0.isMine)
             },
-            totalSent: Amount(kit.totalSent), totalDebit: Amount(kit.totalDebit))
+            totalSent: Amount(kit.totalSent), totalDebit: Amount(kit.totalDebit),
+            externalSent: kit.externalSent.map(Amount.init))
     }
 }
 

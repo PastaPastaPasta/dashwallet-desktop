@@ -143,6 +143,8 @@ pub struct NetworkSession {
     gate: OpGate,
     live: RwLock<Option<Live>>,
     pump: Mutex<Option<PumpTask>>,
+    /// Inputs of prepared, not yet settled transactions (E2 send).
+    pub(crate) spends: crate::send::PendingSpends,
 }
 
 impl NetworkSession {
@@ -259,6 +261,7 @@ impl NetworkSession {
                 appdb: Arc::clone(&appdb),
             })),
             pump: Mutex::new(None),
+            spends: Default::default(),
         });
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
