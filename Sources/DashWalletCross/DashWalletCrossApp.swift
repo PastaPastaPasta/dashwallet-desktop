@@ -16,6 +16,7 @@ import WalletRuntime
     import AppKit
 #elseif os(Linux)
     import CGtk
+    import Gtk
     import GtkBackend
 #endif
 
@@ -93,13 +94,17 @@ enum CrossDemoText {
 
 /// Runs `LiveSession.shutdownBeforeExit()` on the way out:
 /// - macOS (AppKitBackend): on `NSApplication.willTerminateNotification`.
-/// - Linux (GtkBackend): when the window is destroyed. Closing the last
-///   window ends the GTK application right after that.
+/// - Linux (GtkBackend): when the window is destroyed, and on the
+///   GApplication's "shutdown" signal, which GLib emits when the main loop
+///   ends. The Xvfb run of 2026-10-05 showed the window hook alone did not
+///   run before the process exited (RESULTS.md); the signal hook was added
+///   after that run and has not run on Linux yet.
 /// - Windows (WinUIBackend): not hooked yet; the process exits without the
 ///   engine's orderly shutdown.
 @MainActor
 final class QuitHook {
     var session: LiveSession?
+    private var shutdownSignalConnected = false
 
     func install() {
         #if os(macOS)
@@ -111,9 +116,29 @@ final class QuitHook {
         #endif
     }
 
-    func windowDestroyed() {
+    func appClosing() {
         session?.shutdownBeforeExit()
     }
+
+    #if os(Linux)
+        /// Connects `appClosing()` to the "shutdown" signal of the
+        /// GtkApplication that owns `window` (once). The hook stays retained
+        /// by the connection for the rest of the process.
+        func connectApplicationShutdown(of window: Gtk.ApplicationWindow) {
+            guard !shutdownSignalConnected else { return }
+            let windowPointer = UnsafeMutableRawPointer(window.widgetPointer).assumingMemoryBound(to: GtkWindow.self)
+            guard let application = gtk_window_get_application(windowPointer) else { return }
+            shutdownSignalConnected = true
+            let handler: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { _, data in
+                guard let data else { return }
+                let hook = Unmanaged<QuitHook>.fromOpaque(data).takeUnretainedValue()
+                MainActor.assumeIsolated { hook.appClosing() }
+            }
+            g_signal_connect_data(
+                application, "shutdown", unsafeBitCast(handler, to: GCallback.self),
+                Unmanaged.passRetained(self).toOpaque(), nil, GConnectFlags(rawValue: 0))
+        }
+    #endif
 }
 
 /// Live start: resolves the data directory, opens the engine and builds the
@@ -217,14 +242,16 @@ extension LiveStartView {
 }
 
 extension View {
-    /// Tells `hook` when the GTK window is destroyed (Linux only).
+    /// Tells `hook` when the GTK window is destroyed or the GTK application
+    /// shuts down (Linux only).
     @ViewBuilder
     func hookWindowDestroy(_ hook: QuitHook) -> some View {
         #if os(Linux)
             inspectWindow { window in
                 window.onDestroy = { [weak hook] _ in
-                    MainActor.assumeIsolated { hook?.windowDestroyed() }
+                    MainActor.assumeIsolated { hook?.appClosing() }
                 }
+                hook.connectApplicationShutdown(of: window)
             }
         #else
             self

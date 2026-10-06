@@ -73,7 +73,7 @@ public struct DashToggle: View {
     }
 
     public var body: some View {
-        Toggle(title, isOn: isOn).toggleStyle(.switch).accessibleName(title)
+        Toggle(title, isOn: isOn).toggleStyle(.switch).accessibleName(title, afterUpdates: true)
     }
 }
 
@@ -143,7 +143,9 @@ public struct DashPicker<Value: Hashable & Sendable>: View {
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             if let caption {
                 FieldCaption(caption)
-                Picker(of: options, selection: bridged).accessibleName(accessibleCaption(caption))
+                // After updates too: the run of 2026-10-05 showed the drop-down
+                // still named after its selected option.
+                Picker(of: options, selection: bridged).accessibleName(accessibleCaption(caption), afterUpdates: true)
             } else {
                 Picker(of: options, selection: bridged)
             }

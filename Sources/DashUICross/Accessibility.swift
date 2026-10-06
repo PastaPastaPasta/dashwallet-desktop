@@ -24,16 +24,23 @@ import SwiftCrossUI
 extension View {
     /// Names the control inside this view (a text field, secure field,
     /// toggle or picker) for assistive technology and UI tests.
+    ///
+    /// `afterUpdates` also sets it after every update of the view. Toggles
+    /// and pickers need it: in the Xvfb run of 2026-10-05, named only on
+    /// creation, a switch stayed unnamed and a drop-down kept its selected
+    /// option as its name (their native widgets are presumably not in place
+    /// yet when the view is created). Text fields are named on creation.
     @ViewBuilder
-    public func accessibleName(_ name: String) -> some View {
+    public func accessibleName(_ name: String, afterUpdates: Bool = false) -> some View {
+        let points: InspectionPoints = afterUpdates ? [.onCreate, .afterUpdate] : .onCreate
         #if os(Linux)
-            inspect(.onCreate) { widget in
+            inspect(points) { widget in
                 if let control = GtkAccessibleNames.firstControl(in: widget.widgetPointer) {
                     GtkAccessibleNames.setLabel(name, on: control)
                 }
             }
         #elseif os(macOS)
-            inspect(.onCreate) { view in
+            inspect(points) { view in
                 AppKitAccessibleNames.firstControl(in: view)?.setAccessibilityLabel(name)
             }
         #else

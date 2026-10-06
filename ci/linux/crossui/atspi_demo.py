@@ -88,13 +88,14 @@ def record(app, out_dir, step, secret_phrase=False):
     return nodes
 
 
-def press(report, app, title, timeout=15):
-    """Presses the first sensitive push button named `title` (AT-SPI Action)."""
+def press(report, app, title, timeout=15, shown=None):
+    """Presses the first sensitive push button named `title` (AT-SPI Action).
+    `shown` replaces the title in the report (for recovery-phrase words)."""
     hits = wait_for(app, lambda n, i: i["role"] in ("push button", "button") and i["name"] == title
                     and "sensitive" in i["states"], timeout=timeout)
     action = safe(lambda: hits[0][0].queryAction()) if hits else None
     ok = action is not None and bool(safe(lambda: action.doAction(0), False))
-    report.check("hard", f"press '{title}' through AT-SPI Action", ok)
+    report.check("hard", f"press '{shown or title}' through AT-SPI Action", ok)
     return ok
 
 
@@ -133,7 +134,8 @@ def onboarding_flow(report, app, out_dir, step):
             break
         text = header[0][1]["name"] or header[0][1].get("text", "")
         position = int(text.rsplit("#", 1)[1])
-        if not press(report, app, words.get(position, DEMO_WORDS[position - 1])):
+        word = words.get(position, DEMO_WORDS[position - 1])
+        if not press(report, app, word, shown=f"word #{position}" if "live" in step else None):
             return
         time.sleep(0.5)
     report.check("hard", "onboarding: phrase verified, passphrase page shown",
@@ -172,8 +174,10 @@ def send_flow(report, app, out_dir, step):
     time.sleep(3.5)  # the confirm button counts down 3 s (QT-067)
     if not press(report, app, "Send"):
         return
-    done = wait_for(app, has_text_prefix("Transaction sent:"), 20)
-    report.check("hard", "send: demo broadcast reports the transaction as sent", bool(done))
+    # After the broadcast the app opens the new transaction on the Transactions page.
+    done = wait_for(app, lambda n, i: i["role"] == "list item" and PAY_TO in i["name"] and "-0.25" in i["name"], 20)
+    report.check("hard", "send: the sent payment is listed on the Transactions page", bool(done),
+                 done[0][1]["name"] if done else "")
     record(app, out_dir, f"{step}-done")
 
 
@@ -260,6 +264,10 @@ def main():
             buttons = {info["name"] for _n, info, _d in nodes if info["role"] == "push button"}
             for title in ("Send", "Add Recipient", "Clear All", "Use available balance"):
                 report.check("hard", f"send: push button named '{title}'", title in buttons)
+            names = {(info["role"], info["name"]) for _n, info, _d in nodes}
+            for expected in (("text", "Pay To"), ("text", "Amount"), ("check box", "Subtract fee from amount"),
+                             ("combo box", "Confirmation time target")):
+                report.check("hard", f"send: {expected[0]} named '{expected[1]}'", expected in names)
             placeholders = {a for _n, info, _d in nodes if info["role"] == "text" for a in info["attributes"]}
             report.check("hard", "send: address entry exposes placeholder 'Pay to: Dash address'",
                          "placeholder-text:Pay to: Dash address" in placeholders)
