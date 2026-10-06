@@ -78,7 +78,7 @@
                                                                         [panel] "" {sensitive,showing,visible}
                                                                           [panel] "" {sensitive,showing,visible}
                                                                             [panel] "" {sensitive,showing,visible}
-                                                                              [label] "9 GB of space available" text="9 GB of space available" {sensitive,showing,visible}
+                                                                              [label] "12 GB of space available" text="12 GB of space available" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
@@ -96,9 +96,10 @@
                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                        [push button] "OK" actions=click {focusable,sensitive,showing,visible} @(32,340 16x17)
-                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                            [label] "OK" text="OK" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [push button] "OK" actions=click {focusable,sensitive,showing,visible} @(32,340 21x17)
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [label] "OK" text="OK" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
@@ -114,9 +115,10 @@
                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                        [push button] "Cancel" actions=click {focusable,sensitive,showing,visible} @(80,340 49x17)
-                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                            [label] "Cancel" text="Cancel" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [push button] "Cancel" actions=click {focusable,sensitive,showing,visible} @(85,340 49x17)
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [label] "Cancel" text="Cancel" {sensitive,showing,visible}
                                                         [panel] "" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}

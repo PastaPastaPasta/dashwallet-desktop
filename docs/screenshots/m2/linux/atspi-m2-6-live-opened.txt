@@ -30,6 +30,7 @@
                                                         [panel] "" {sensitive,showing,visible}
                                                         [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
@@ -122,9 +123,10 @@
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [push button] "Create a new wallet" actions=click {focusable,sensitive,showing,visible} @(56,244 182x19)
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "Create a new wallet" text="Create a new wallet" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [push button] "Create a new wallet" actions=click {focusable,sensitive,showing,visible} @(56,244 182x19)
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Create a new wallet" text="Create a new wallet" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -140,9 +142,10 @@
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [push button] "Restore wallet" actions=click {focusable,sensitive,showing,visible} @(286,244 126x19)
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [label] "Restore wallet" text="Restore wallet" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [push button] "Restore wallet" actions=click {focusable,sensitive,showing,visible} @(286,244 132x19)
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [label] "Restore wallet" text="Restore wallet" {sensitive,showing,visible}
                                                                                         [panel] "" {sensitive,showing,visible}
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
@@ -198,9 +201,10 @@
                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                        [push button] "Sync details" actions=click {focusable,sensitive,showing,visible} @(801,754 88x17)
-                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                            [label] "Sync details" text="Sync details" {sensitive,showing,visible}
+                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                          [push button] "Sync details" actions=click {focusable,sensitive,showing,visible} @(801,754 88x17)
+                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                              [label] "Sync details" text="Sync details" {sensitive,showing,visible}
                                                                           [panel] "" {sensitive,showing,visible}
                                                                             [panel] "" {sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
@@ -214,9 +218,10 @@
                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                    [push button] "0 peers" actions=click {focusable,sensitive,showing,visible} @(925,754 55x17)
-                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                        [label] "0 peers" text="0 peers" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [push button] "0 peers" actions=click {focusable,sensitive,showing,visible} @(925,754 55x17)
+                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                          [label] "0 peers" text="0 peers" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
                                                                         [panel] "" {sensitive,showing,visible}
                                                                           [panel] "" {sensitive,showing,visible}

@@ -1,7 +1,7 @@
 [
  {
   "kind": "hard",
-  "name": "app pid 4399 on the AT-SPI bus",
+  "name": "app pid 2263 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -55,7 +55,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4453 on the AT-SPI bus",
+  "name": "app pid 2317 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -63,7 +63,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+  "detail": "['Dash Wallet - Demo wallet']"
  },
  {
   "kind": "hard",
@@ -140,12 +140,42 @@
  {
   "kind": "hard",
   "name": "press 'Inputs\u2026' through AT-SPI Action",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "app pid 4524 on the AT-SPI bus",
+  "name": "coin selection: page shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "coin selection: 'automatically selected' before a pick",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "coin selection: coins are switches named 'Select <amount> at <address>'",
+  "ok": true,
+  "detail": "Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P"
+ },
+ {
+  "kind": "hard",
+  "name": "toggle 'Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "coin selection: the summary shows Quantity after a pick",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2399 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -176,12 +206,60 @@
  {
   "kind": "hard",
   "name": "press 'Run' through AT-SPI Action",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "app pid 4572 on the AT-SPI bus",
+  "name": "console: the command is echoed and answered with a block count",
+  "ok": true,
+  "detail": "1234567"
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Information' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "information: client version row",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "information: full-node rows say so",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Peers' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "peers tab: 'Change Peers'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Repair' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "repair tab: rescan and reset buttons",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2468 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -229,7 +307,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4631 on the AT-SPI bus",
+  "name": "app pid 2527 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -237,7 +315,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+  "detail": "['Dash Wallet - Demo wallet']"
  },
  {
   "kind": "hard",
@@ -254,7 +332,7 @@
  {
   "kind": "hard",
   "name": "wallets: import, restore and watch-only controls",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -284,7 +362,7 @@
  {
   "kind": "hard",
   "name": "about: Export Logs",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -296,7 +374,7 @@
  {
   "kind": "hard",
   "name": "command-line options: dash-qt options listed",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -320,7 +398,7 @@
  {
   "kind": "hard",
   "name": "transactions: details show dash-qt's Abandon / Resend actions",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -331,7 +409,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4727 on the AT-SPI bus",
+  "name": "app pid 2611 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },

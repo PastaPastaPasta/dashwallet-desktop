@@ -1,7 +1,7 @@
 [
  {
   "kind": "hard",
-  "name": "app pid 3795 on the AT-SPI bus",
+  "name": "app pid 1646 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -39,7 +39,7 @@
   "kind": "hard",
   "name": "1-overview: every list row has an accessible name",
   "ok": true,
-  "detail": "['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 06:54', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 06:24']"
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 07:42', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 07:12']"
  },
  {
   "kind": "hard",
@@ -133,7 +133,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 3867 on the AT-SPI bus",
+  "name": "app pid 1717 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -141,7 +141,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - Demo wallet']"
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
  },
  {
   "kind": "hard",
@@ -157,7 +157,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 3921 on the AT-SPI bus",
+  "name": "app pid 1771 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -170,18 +170,18 @@
  {
   "kind": "hard",
   "name": "4-receive: marker text 'Request payment' is exposed",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
   "kind": "soft",
   "name": "4-receive: control naming",
   "ok": true,
-  "detail": "{\"list item\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"push button\": {\"total\": 10, \"named\": 10, \"examples_unnamed\": []}, \"text\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"combo box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}}"
+  "detail": "{\"list item\": {\"total\": 4, \"named\": 4, \"examples_unnamed\": []}, \"push button\": {\"total\": 15, \"named\": 15, \"examples_unnamed\": []}, \"text\": {\"total\": 3, \"named\": 3, \"examples_unnamed\": []}, \"combo box\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}, \"toggle button\": {\"total\": 1, \"named\": 1, \"examples_unnamed\": []}}"
  },
  {
   "kind": "hard",
-  "name": "app pid 3977 on the AT-SPI bus",
+  "name": "app pid 1824 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -189,7 +189,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - [testnet]']"
+  "detail": "['Dash Wallet']"
  },
  {
   "kind": "hard",
@@ -205,7 +205,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4030 on the AT-SPI bus",
+  "name": "app pid 1877 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -213,7 +213,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - [testnet]']"
+  "detail": "['Dash Wallet']"
  },
  {
   "kind": "hard",
@@ -247,25 +247,25 @@
  },
  {
   "kind": "hard",
-  "name": "press 'harbor' through AT-SPI Action",
+  "name": "press 'galaxy' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'maple' through AT-SPI Action",
+  "name": "press 'rocket' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'oyster' through AT-SPI Action",
+  "name": "press 'tiny' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'above' through AT-SPI Action",
+  "name": "press 'ribbon' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
@@ -301,7 +301,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4104 on the AT-SPI bus",
+  "name": "app pid 1951 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -350,12 +350,18 @@
  {
   "kind": "hard",
   "name": "press 'Send' through AT-SPI Action",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "app pid 4166 on the AT-SPI bus",
+  "name": "send: the sent payment is listed on the Transactions page",
+  "ok": true,
+  "detail": "Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 07:49"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2029 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -392,7 +398,7 @@
  {
   "kind": "hard",
   "name": "tools: peers page with 'Change Peers'",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -416,12 +422,30 @@
  {
   "kind": "hard",
   "name": "tools: address book lists entries with 'Show QR'",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "app pid 4229 on the AT-SPI bus",
+  "name": "press 'Show QR' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "tools: the entry's QR code and dash: URI are shown",
+  "ok": true,
+  "detail": "dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice"
+ },
+ {
+  "kind": "hard",
+  "name": "tools: the address-list picker is named 'Address list'",
+  "ok": false,
+  "detail": "['Sending addresses', 'tDASH']"
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2096 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -475,7 +499,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 4289 on the AT-SPI bus",
+  "name": "app pid 2157 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -517,25 +541,25 @@
  },
  {
   "kind": "hard",
+  "name": "press 'word #1' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
   "name": "press 'word #3' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'word #4' through AT-SPI Action",
+  "name": "press 'word #9' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'word #10' through AT-SPI Action",
-  "ok": true,
-  "detail": ""
- },
- {
-  "kind": "hard",
-  "name": "press 'word #11' through AT-SPI Action",
+  "name": "press 'word #12' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
