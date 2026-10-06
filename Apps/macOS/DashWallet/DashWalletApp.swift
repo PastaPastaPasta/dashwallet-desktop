@@ -31,12 +31,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await model.start() }
     }
 
+    /// How long quitting waits for the engine before exiting anyway.
+    static let shutdownTimeout: Duration = .seconds(15)
+    private var terminationReplied = false
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
             await model.shutdown()
-            sender.reply(toApplicationShouldTerminate: true)
+            replyTermination(sender)
+        }
+        // A shutdown that never finishes must not keep the app from quitting.
+        Task {
+            try? await Task.sleep(for: Self.shutdownTimeout)
+            replyTermination(sender)
         }
         return .terminateLater
+    }
+
+    private func replyTermination(_ sender: NSApplication) {
+        guard !terminationReplied else { return }
+        terminationReplied = true
+        sender.reply(toApplicationShouldTerminate: true)
     }
 
     /// With the menu bar companion on, closing the window keeps the app
