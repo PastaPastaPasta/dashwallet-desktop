@@ -86,7 +86,7 @@ extension View {
         #if os(Linux)
             let appearance: DashAppearance = colorScheme == .dark ? .dark : .light
             inspect([.onCreate, .afterUpdate]) { _ in
-                GtkTheme.apply(appearance)
+                DashGtkTheme.apply(appearance)
             }
         #else
             self
@@ -143,7 +143,7 @@ struct ToolkitThemed<Content: View>: View {
     }
 
     @MainActor
-    enum GtkTheme {
+    enum DashGtkTheme {
         private static var provider: Gtk.CSSProvider?
         private static var applied: DashAppearance?
 
@@ -159,9 +159,9 @@ struct ToolkitThemed<Content: View>: View {
             setPreferDark(appearance == .dark)
         }
 
-        private static func settingsObject() -> UnsafeMutablePointer<GObject>? {
+        private static func settingsObject() -> UnsafeMutablePointer<CGtk.GObject>? {
             guard let settings = gtk_settings_get_default() else { return nil }
-            return UnsafeMutableRawPointer(settings).assumingMemoryBound(to: GObject.self)
+            return UnsafeMutableRawPointer(settings).assumingMemoryBound(to: CGtk.GObject.self)
         }
 
         private static func setFontName(_ name: String) {
