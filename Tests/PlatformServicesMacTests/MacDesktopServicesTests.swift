@@ -76,6 +76,12 @@ struct MacDesktopServicesTests {
     /// Store, prompt, read and delete a key. Needs a person at the machine
     /// for the Touch ID prompt, so it also needs `DWD_BIOMETRIC_TEST=1`.
     @Test func IOS011_keychainRoundTripWhenTouchIDExists() async throws {
+        // Keychain writes can raise a system dialog on the developer's Mac,
+        // so the whole test is opt-in.
+        guard ProcessInfo.processInfo.environment["DWD_BIOMETRIC_TEST"] == "1" else {
+            print("skipped: set DWD_BIOMETRIC_TEST=1 to run the Keychain and Touch ID round trip")
+            return
+        }
         let store = MacBiometricKeyStore(service: "org.dashfoundation.DashWallet.tests.\(UUID().uuidString)")
         guard store.kind == .touchID else {
             print("skipped: no Touch ID on this machine")
@@ -92,10 +98,6 @@ struct MacDesktopServicesTests {
             return
         }
         defer { try? store.delete(network: "regtest") }
-        guard ProcessInfo.processInfo.environment["DWD_BIOMETRIC_TEST"] == "1" else {
-            print("stored; prompt skipped (set DWD_BIOMETRIC_TEST=1 to read it back with Touch ID)")
-            return
-        }
         let read = try await store.retrieve(network: "regtest", reason: "dashwallet-desktop test")
         #expect(read.withUnsafeBytes { Array($0) } == [UInt8](repeating: 0x5a, count: 32))
         try store.delete(network: "regtest")

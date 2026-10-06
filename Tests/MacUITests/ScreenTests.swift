@@ -133,7 +133,8 @@ struct ScreenTests {
         let model = try await Self.model(.locked, scheme)
         let main = try #require(model.main)
         #expect(main.showsLockScreen)
-        try await Self.capture(LockScreenView(lock: main.lock, receive: main.receive), Self.mainSize, scheme, "lock")
+        try await Self.capture(LockScreenView(lock: main.lock, receive: main.receive, network: main.network), Self.mainSize, scheme,
+            "lock")
         await main.lock.unlock(passphrase: "wrong", mixingOnly: false)
         #expect(main.lock.message != nil)
         await main.lock.unlock(passphrase: DemoEnvironment.passphrase, mixingOnly: false)
@@ -435,9 +436,13 @@ struct ScreenTests {
         let host = NSHostingView(rootView: root)
         host.frame = CGRect(origin: .zero, size: size)
         host.wantsLayer = true
+        // Borderless, because AppKit moves a titled window back onto a screen
+        // when it is ordered front; a borderless one stays off screen.
         let window = NSWindow(
             contentRect: CGRect(origin: CGPoint(x: -20_000, y: -20_000), size: size),
-            styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
         window.appearance = appearance
         window.isReleasedWhenClosed = false
         window.contentView = host
