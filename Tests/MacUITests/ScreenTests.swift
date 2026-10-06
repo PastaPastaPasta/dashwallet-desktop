@@ -419,9 +419,13 @@ struct ScreenTests {
         let host = NSHostingView(rootView: root)
         host.frame = CGRect(origin: .zero, size: size)
         host.wantsLayer = true
+        // Borderless, because AppKit moves a titled window back onto a screen
+        // when it is ordered front; a borderless one stays off screen.
         let window = NSWindow(
             contentRect: CGRect(origin: CGPoint(x: -20_000, y: -20_000), size: size),
-            styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
         window.appearance = appearance
         window.isReleasedWhenClosed = false
         window.contentView = host
