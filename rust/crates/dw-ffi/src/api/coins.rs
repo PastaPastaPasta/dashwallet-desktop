@@ -161,7 +161,10 @@ impl NetworkSession {
         outpoints: Vec<OutPoint>,
     ) -> Result<(), CoinsError> {
         let id = parse_wallet_id(&wallet_id)?;
-        Ok(self.inner.lock_outpoints(id, outpoints_of(outpoints)?).await?)
+        Ok(self
+            .inner
+            .lock_outpoints(id, outpoints_of(outpoints)?)
+            .await?)
     }
 
     /// Deletes user locks and releases dust locks.
@@ -171,7 +174,10 @@ impl NetworkSession {
         outpoints: Vec<OutPoint>,
     ) -> Result<(), CoinsError> {
         let id = parse_wallet_id(&wallet_id)?;
-        Ok(self.inner.unlock_outpoints(id, outpoints_of(outpoints)?).await?)
+        Ok(self
+            .inner
+            .unlock_outpoints(id, outpoints_of(outpoints)?)
+            .await?)
     }
 
     pub async fn locked_outpoints(&self, wallet_id: String) -> Result<Vec<OutPoint>, CoinsError> {
