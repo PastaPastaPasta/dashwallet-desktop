@@ -60,24 +60,28 @@ struct SyncOverlayScreen: View {
 struct PeersScreen: View {
     let state: CrossAppState
 
-    @State var peers: [PeerInfo]?
-    @State var error: String?
-    @State var rotating = false
+    @State var model: PeersViewModel
+
+    init(state: CrossAppState) {
+        self.state = state
+        _model = State(wrappedValue: PeersViewModel(sync: state.env.sync))
+    }
 
     var body: some View {
         let state = state
+        let model = model
         Page(L10n.Peers.title) {
             HStack(spacing: Int(DashSpacing.s)) {
                 DashButton(
-                    L10n.Peers.changePeers, style: .tintedBlue, size: .small, isEnabled: !rotating,
+                    L10n.Peers.changePeers, style: .tintedBlue, size: .small, isEnabled: !model.rotating,
                     help: L10n.Peers.changePeersHelp
-                ) { Task { await rotate() } }
+                ) { Task { await model.rotate() } }
                 DashButton(CrossStrings.close, style: .strokeGray, size: .small) { state.showsPeers = false }
             }
-            if let error {
+            if let error = model.error {
                 Toast(error, kind: .error)
             }
-            if let peers {
+            if let peers = model.peers {
                 if peers.isEmpty {
                     Text(L10n.Peers.none).dashFont(.footnote).dashForeground(.secondaryText)
                 } else {
@@ -91,11 +95,11 @@ struct PeersScreen: View {
                     }
                     .frame(height: 320)
                 }
-            } else if error == nil {
+            } else if model.error == nil {
                 Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
             }
         }
-        .task { await load() }
+        .task { await model.load() }
     }
 
     /// User agent, best height, ping and direction; unknown fields say so
@@ -111,26 +115,6 @@ struct PeersScreen: View {
 
     static func rowName(_ peer: PeerInfo) -> String {
         "\(peer.address), \(details(peer))"
-    }
-
-    private func load() async {
-        do {
-            peers = try await state.env.sync.peers()
-            error = nil
-        } catch {
-            self.error = ErrorText.common(error.code)
-        }
-    }
-
-    private func rotate() async {
-        rotating = true
-        defer { rotating = false }
-        do {
-            try await state.env.sync.rotatePeers()
-            await load()
-        } catch {
-            self.error = ErrorText.common(error.code)
-        }
     }
 }
 

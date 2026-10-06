@@ -75,17 +75,18 @@ struct SyncOverlayView: View {
 
 /// Connected peers with "Change peers" (QT-024 "Show Peers", QT-147).
 struct PeersSheet: View {
-    let sync: any SyncStatusProviding
-    @State private var peers: [PeerInfo]?
-    @State private var error: String?
-    @State private var rotating = false
+    @State private var model: PeersViewModel
     @Environment(\.dismiss) private var dismiss
+
+    init(sync: any SyncStatusProviding) {
+        _model = State(initialValue: PeersViewModel(sync: sync))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DashSpacing.m) {
             Text(MacStrings.Peers.title).dashFont(.title3)
             Group {
-                if let peers {
+                if let peers = model.peers {
                     Table(peers.map(PeerRow.init)) {
                         TableColumn(MacStrings.Peers.address) { Text($0.peer.address).monospaced() }
                         TableColumn(MacStrings.Peers.userAgent) { Text($0.peer.userAgent ?? L10n.Common.unknown) }
@@ -105,17 +106,17 @@ struct PeersSheet: View {
                     .overlay {
                         if peers.isEmpty { Text(MacStrings.Peers.none).foregroundStyle(Color.dash.secondaryText) }
                     }
-                } else if error == nil {
+                } else if model.error == nil {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(minHeight: 220)
-            if let error {
+            if let error = model.error {
                 Text(error).dashFont(.footnote).foregroundStyle(Color.dash.errorText)
             }
             HStack {
-                Button(MacStrings.Peers.changePeers) { Task { await rotate() } }
-                    .disabled(rotating)
+                Button(MacStrings.Peers.changePeers) { Task { await model.rotate() } }
+                    .disabled(model.rotating)
                     .help(MacStrings.Peers.changePeersHelp)
                 Spacer()
                 Button(MacStrings.Common.close) { dismiss() }
@@ -124,28 +125,8 @@ struct PeersSheet: View {
         }
         .padding(DashSpacing.xl)
         .frame(width: 680, height: 380)
-        .task { await load() }
+        .task { await model.load() }
         .accessibilityIdentifier("peers")
-    }
-
-    private func load() async {
-        do {
-            peers = try await sync.peers()
-            error = nil
-        } catch {
-            self.error = ErrorText.common(error.code)
-        }
-    }
-
-    private func rotate() async {
-        rotating = true
-        defer { rotating = false }
-        do {
-            try await sync.rotatePeers()
-            await load()
-        } catch {
-            self.error = ErrorText.common(error.code)
-        }
     }
 }
 

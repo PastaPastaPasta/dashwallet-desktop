@@ -139,3 +139,23 @@ struct HomeViewModelTests {
         model.stop()
     }
 }
+
+@MainActor
+@Suite("Peers view model")
+struct PeersViewModelTests {
+    let world = FakeWorld()
+
+    @Test func QT024_QT147_loadAndChangePeers() async {
+        let model = PeersViewModel(sync: world.sync)
+        #expect(model.peers == nil)
+        await model.load()
+        #expect(model.peers == [])
+        #expect(model.error == nil)
+
+        world.sync.rotateError = ServiceError(code: .networkNotOpen, detail: "closed")
+        await model.rotate()
+        #expect(world.sync.rotateCount == 1)
+        #expect(model.error == L10n.Common.networkNotOpen)
+        #expect(!model.rotating)
+    }
+}
