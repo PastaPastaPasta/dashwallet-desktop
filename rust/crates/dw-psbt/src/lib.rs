@@ -323,13 +323,18 @@ pub async fn sign<S: Signer>(
         if !script.is_p2pkh() {
             continue;
         }
-        let hash_ty = match psbt.inputs[index].sighash_type {
-            None => EcdsaSighashType::All,
-            Some(t) => t.ecdsa_hash_ty().map_err(|e| PsbtError::Signing {
+        // dash-qt and `walletprocesspsbt` sign SIGHASH_ALL only. Another type
+        // asked for by the PSBT (NONE, SINGLE, ANYONECANPAY) would let whoever
+        // made it change outputs after signing, past the grant's cap.
+        let hash_ty = EcdsaSighashType::All;
+        if let Some(t) = psbt.inputs[index].sighash_type
+            && t.ecdsa_hash_ty().ok() != Some(hash_ty)
+        {
+            return Err(PsbtError::Signing {
                 index,
-                detail: e.to_string(),
-            })?,
-        };
+                detail: format!("sighash type {t} is not SIGHASH_ALL"),
+            });
+        }
         let sighash = cache
             .legacy_signature_hash(index, &script, hash_ty.to_u32())
             .map_err(|e| PsbtError::Signing {

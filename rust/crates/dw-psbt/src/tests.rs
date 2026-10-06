@@ -184,3 +184,20 @@ fn create_unsigned_round_trips_dashd_inputs() {
     let ours = create_unsigned(dashd.unsigned_tx.clone(), inputs, outputs).unwrap();
     assert_eq!(to_base64(&ours), vector("psbt/unsigned.b64").trim());
 }
+
+#[tokio::test]
+async fn sighash_types_other_than_all_are_refused() {
+    let mut psbt = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    psbt.inputs[1].sighash_type = Some(key_wallet::psbt::PsbtSighashType::from(
+        EcdsaSighashType::NonePlusAnyoneCanPay,
+    ));
+    let p = paths(&psbt);
+    let err = sign(&mut psbt, &p, &signer()).await.unwrap_err();
+    assert!(matches!(err, PsbtError::Signing { index: 1, .. }), "{err}");
+    let mut all = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    all.inputs[0].sighash_type = Some(key_wallet::psbt::PsbtSighashType::from(
+        EcdsaSighashType::All,
+    ));
+    let p = paths(&all);
+    assert_eq!(sign(&mut all, &p, &signer()).await.unwrap(), 2);
+}
