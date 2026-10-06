@@ -148,8 +148,17 @@ def onboarding_flow(report, app, out_dir, step):
         return
     if not press(report, app, "Encrypt wallet"):
         return
-    # Live mode creates the vault with the engine's key derivation (debug build).
-    ready = wait_for(app, has_text("Balances"), 300 if "live" in step else 60)
+    # Live mode creates the vault with the engine's key derivation (debug
+    # build). Without a node the wallet is not synced, so the sync overlay
+    # (QT-027) covers the Overview until hidden.
+    ready = wait_for(app, lambda n, i: has_text("Balances")(n, i)
+                     or has_text("Recent transactions may not yet be visible")(n, i),
+                     300 if "live" in step else 60)
+    if ready and (ready[0][1].get("text") or ready[0][1]["name"]).startswith("Recent transactions"):
+        record(app, out_dir, f"{step}-overlay")
+        if not press(report, app, "Hide"):
+            return
+        ready = wait_for(app, has_text("Balances"), 15)
     report.check("hard", "onboarding: the new wallet's Overview is shown", bool(ready))
     record(app, out_dir, f"{step}-done")
 

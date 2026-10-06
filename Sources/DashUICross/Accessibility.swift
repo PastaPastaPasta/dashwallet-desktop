@@ -30,18 +30,20 @@ extension View {
     /// creation, a switch stayed unnamed and a drop-down kept its selected
     /// option as its name (their native widgets are presumably not in place
     /// yet when the view is created). Text fields are named on creation.
+    ///
+    /// `enabled: false` leaves the view as it is (a control without a name).
     @ViewBuilder
-    public func accessibleName(_ name: String, afterUpdates: Bool = false) -> some View {
+    public func accessibleName(_ name: String, afterUpdates: Bool = false, enabled: Bool = true) -> some View {
         let points: InspectionPoints = afterUpdates ? [.onCreate, .afterUpdate] : .onCreate
         #if os(Linux)
             inspect(points) { widget in
-                if let control = GtkAccessibleNames.firstControl(in: widget.widgetPointer) {
+                if enabled, let control = GtkAccessibleNames.firstControl(in: widget.widgetPointer) {
                     GtkAccessibleNames.setLabel(name, on: control)
                 }
             }
         #elseif os(macOS)
             inspect(points) { view in
-                AppKitAccessibleNames.firstControl(in: view)?.setAccessibilityLabel(name)
+                if enabled { AppKitAccessibleNames.firstControl(in: view)?.setAccessibilityLabel(name) }
             }
         #else
             self
@@ -113,8 +115,10 @@ extension View {
     @MainActor
     enum AppKitAccessibleNames {
         /// `view` or its first descendant (depth first) that is a control.
+        /// Text labels (non-editable NSTextFields, such as a picker's
+        /// caption) are skipped.
         static func firstControl(in view: NSView) -> NSView? {
-            if view is NSControl { return view }
+            if view is NSControl, (view as? NSTextField)?.isEditable ?? true { return view }
             for subview in view.subviews {
                 if let found = firstControl(in: subview) { return found }
             }

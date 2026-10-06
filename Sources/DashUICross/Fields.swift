@@ -146,17 +146,20 @@ public struct DashPicker<Value: Hashable & Sendable>: View {
         let bridged = Binding<PickerOption<Value>?>(
             get: { options.first { $0.value == selection.wrappedValue } },
             set: { if let option = $0 { selection.wrappedValue = option.value } })
+        let name = caption.map(accessibleCaption) ?? accessibleName
+        // The name is set from the stack around the picker, after every
+        // update. Set on the Picker itself (onCreate, then also after
+        // updates) it never reached the GtkDropDown: both Xvfb runs of
+        // 2026-10-05 showed the drop-down named after its selected option.
+        // SwiftCrossUI 0.10's GtkBackend notes that Picker inspection is
+        // broken since its PickerStyle refactor, so the widget the Picker's
+        // own inspection gets is presumably not the drop-down.
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             if let caption {
                 FieldCaption(caption)
-                // After updates too: the run of 2026-10-05 showed the drop-down
-                // still named after its selected option.
-                Picker(of: options, selection: bridged).accessibleName(accessibleCaption(caption), afterUpdates: true)
-            } else if let accessibleName {
-                Picker(of: options, selection: bridged).accessibleName(accessibleName, afterUpdates: true)
-            } else {
-                Picker(of: options, selection: bridged)
             }
+            Picker(of: options, selection: bridged)
         }
+        .accessibleName(name ?? "", afterUpdates: true, enabled: name != nil)
     }
 }
