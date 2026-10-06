@@ -2,7 +2,8 @@
 
 Status: **contract**, 2026-10-05. Code: `rust/crates/dw-ffi/src/api/*.rs`; generated Swift:
 `Sources/DashWalletCore/Generated/DashWalletCore.swift`. Design background: DESIGN-opus §1.5 (FFI rules),
-§1.8 (vault), §1.12 (runtime). The Swift side of the contract is [`m1-swift.md`](m1-swift.md).
+§1.8 (vault), §1.12 (runtime). The Swift side of the contract is [`m1-swift.md`](m1-swift.md). M2 adds calls,
+events and error codes and changes some M1 behaviour: see [`m2-engine.md`](m2-engine.md) §5.
 
 Every M1 call exists in the FFI now. A call whose engine side has not landed returns its domain's
 `NotImplemented { call }` error, where `call` is `"<Object>.<method>"` or the free-function name. No call

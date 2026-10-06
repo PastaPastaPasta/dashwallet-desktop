@@ -2,7 +2,7 @@
 
 Status: **contract**, 2026-10-05. Code: `Sources/WalletRuntime/Contracts/*.swift` (protocols and value types
 only). Engine side: [`m1-engine.md`](m1-engine.md). Design: DESIGN-opus §1.6 (targets and imports),
-§1.11 (view models), §1.12 (runtime adapters).
+§1.11 (view models), §1.12 (runtime adapters). M2 protocols and view models: [`m2-swift.md`](m2-swift.md).
 
 ## 1. Layering
 

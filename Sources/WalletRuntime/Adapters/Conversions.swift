@@ -188,6 +188,7 @@ extension Credential {
     var kit: DashKit.VaultCredential {
         switch self {
         case .passphrase(let secret): .passphrase(secretBytes(secret))
+        case .quickUnlock(let key): .quickUnlock(secretBytes(key))
         case .unencrypted: .unencrypted
         }
     }

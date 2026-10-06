@@ -221,6 +221,8 @@ final class DemoAuth: AuthenticationGating {
         switch credential {
         case .unencrypted: try world.authorize(purpose, wallet: wallet, passphrase: nil)
         case .passphrase(let secret): try world.authorize(purpose, wallet: wallet, passphrase: DemoSecret.text(secret))
+        // The demo vault has no quick-unlock slot, as an engine vault before enrolment.
+        case .quickUnlock: throw ServiceError(code: .vaultQuickUnlockUnavailable)
         }
     }
 

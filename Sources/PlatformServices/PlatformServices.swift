@@ -1,6 +1,6 @@
-// OS-service protocols (QuickUnlockStore, Clipboard, Notifier, …) live here;
-// implementations are in PlatformServicesMac / PlatformServicesDesktop.
-// Placeholder until WS-08 lands the protocols.
+// OS-service protocols live here (DataLocation.swift, ScreenCaptureGuard.swift,
+// and the M2 desktop services in DesktopServices.swift); implementations are in
+// PlatformServicesMac / PlatformServicesDesktop.
 import Foundation
 
 public enum PlatformServicesModule {

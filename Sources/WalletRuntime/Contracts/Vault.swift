@@ -74,6 +74,9 @@ public enum CredentialRequirement: Sendable, Hashable {
 
 public enum Credential: Sendable {
     case passphrase(any SecretBuffer)
+    /// The slot B wrap key the OS released after a biometric prompt (M2,
+    /// `QuickUnlockManaging.credential(reason:)`).
+    case quickUnlock(wrapKey: any SecretBuffer)
     /// Unencrypted vault, no prompt (see `CredentialRequirement.none`).
     case unencrypted
 }

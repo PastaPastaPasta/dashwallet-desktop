@@ -120,4 +120,35 @@ import Testing
         #expect(swift.subtracting(contract).isEmpty, "not in the contract: \(swift.subtracting(contract).sorted())")
         #expect(swift.count == ServiceErrorCode.engineCodes.count, "duplicates in engineCodes")
     }
+
+    /// The domain codes of the m2-engine.md §4 table.
+    static func m2ContractCodes() throws -> Set<String> {
+        let doc = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/contracts/m2-engine.md")
+        let text = try String(contentsOf: doc, encoding: .utf8)
+        let start = try #require(text.range(of: "## 4. Error codes"))
+        let end = try #require(text.range(of: "## 5.", range: start.upperBound..<text.endIndex))
+        var codes = Set<String>()
+        let regex = /`([a-z_]+\.[a-z0-9_]+)`/
+        for line in text[start.upperBound..<end.lowerBound].split(separator: "\n")
+        where line.hasPrefix("| `") {
+            // The first cell names the enum; the second lists its codes.
+            let body = line.split(separator: "|", omittingEmptySubsequences: true).dropFirst().joined()
+            for match in body.matches(of: regex) {
+                codes.insert(String(match.1))
+            }
+        }
+        return codes
+    }
+
+    @Test func m2EngineCodesMatchTheContractTable() throws {
+        let contract = try Self.m2ContractCodes()
+        let swift = Set(ServiceErrorCode.m2EngineCodes.map(\.rawValue))
+        #expect(!contract.isEmpty)
+        #expect(contract.subtracting(swift).isEmpty, "missing in Swift: \(contract.subtracting(swift).sorted())")
+        #expect(swift.subtracting(contract).isEmpty, "not in the contract: \(swift.subtracting(contract).sorted())")
+        #expect(swift.count == ServiceErrorCode.m2EngineCodes.count, "duplicates in m2EngineCodes")
+        #expect(Set(ServiceErrorCode.engineCodes).isDisjoint(with: ServiceErrorCode.m2EngineCodes))
+    }
 }

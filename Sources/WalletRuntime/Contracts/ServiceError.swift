@@ -130,6 +130,77 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     // Units.
     public static let unitsUnparsable = Self(rawValue: "units.unparsable")
 
+    // M2 additions to M1 domains (docs/contracts/m2-engine.md §4).
+    public static let vaultQuickUnlockLimitExceeded = Self(rawValue: "vault.quick_unlock_limit_exceeded")
+    public static let vaultPassphraseStale = Self(rawValue: "vault.passphrase_stale")
+    public static let vaultNotEmpty = Self(rawValue: "vault.not_empty")
+    public static let vaultRecoveryMismatch = Self(rawValue: "vault.recovery_mismatch")
+    public static let walletInvalidXpub = Self(rawValue: "wallet.invalid_xpub")
+    public static let syncSpvRunning = Self(rawValue: "sync.spv_running")
+    public static let syncRescanInProgress = Self(rawValue: "sync.rescan_in_progress")
+    public static let syncPeerNotFound = Self(rawValue: "sync.peer_not_found")
+
+    // Transaction actions (M2).
+    public static let txActionTxNotFound = Self(rawValue: "tx_action.tx_not_found")
+    /// `parameters["refusal"]` is a `TransactionActionRefusal.rawValue`.
+    public static let txActionRefused = Self(rawValue: "tx_action.refused")
+    public static let txActionSpvNotRunning = Self(rawValue: "tx_action.spv_not_running")
+    public static let txActionNoPeers = Self(rawValue: "tx_action.no_peers")
+
+    // Console (M2).
+    public static let consoleParseError = Self(rawValue: "console.parse_error")
+    /// `detail` is Core's "message (code N)" line, printed as RPC output.
+    public static let consoleRPCError = Self(rawValue: "console.rpc_error")
+    public static let consoleNotAvailable = Self(rawValue: "console.not_available")
+    public static let consoleAuthorizationRequired = Self(rawValue: "console.authorization_required")
+    public static let consoleWalletRequired = Self(rawValue: "console.wallet_required")
+
+    // dash-qt compatibility (M2).
+    public static let compatFileUnreadable = Self(rawValue: "compat.file_unreadable")
+    public static let compatUnsupportedFormat = Self(rawValue: "compat.unsupported_format")
+    public static let compatCorrupt = Self(rawValue: "compat.corrupt")
+    public static let compatPassphraseRequired = Self(rawValue: "compat.passphrase_required")
+    public static let compatWrongPassphrase = Self(rawValue: "compat.wrong_passphrase")
+    public static let compatNoHDChain = Self(rawValue: "compat.no_hd_chain")
+    public static let compatNetworkMismatch = Self(rawValue: "compat.network_mismatch")
+    public static let compatInvalidKeyMaterial = Self(rawValue: "compat.invalid_key_material")
+    public static let compatAlreadyExists = Self(rawValue: "compat.already_exists")
+    public static let compatNoVault = Self(rawValue: "compat.no_vault")
+    public static let compatVaultLocked = Self(rawValue: "compat.vault_locked")
+    public static let compatGrantInvalid = Self(rawValue: "compat.grant_invalid")
+    public static let compatWatchOnly = Self(rawValue: "compat.watch_only")
+    public static let compatDestinationUnwritable = Self(rawValue: "compat.destination_unwritable")
+
+    // Backups (M2).
+    public static let backupVaultLocked = Self(rawValue: "backup.vault_locked")
+    public static let backupPassphraseRequired = Self(rawValue: "backup.passphrase_required")
+    public static let backupWrongPassphrase = Self(rawValue: "backup.wrong_passphrase")
+    public static let backupCorrupt = Self(rawValue: "backup.corrupt")
+    public static let backupUnsupportedVersion = Self(rawValue: "backup.unsupported_version")
+    public static let backupNetworkMismatch = Self(rawValue: "backup.network_mismatch")
+    public static let backupAlreadyExists = Self(rawValue: "backup.already_exists")
+    public static let backupDestinationUnwritable = Self(rawValue: "backup.destination_unwritable")
+
+    // PSBT (M2).
+    public static let psbtInvalid = Self(rawValue: "psbt.invalid")
+    public static let psbtTooLarge = Self(rawValue: "psbt.too_large")
+    public static let psbtNetworkMismatch = Self(rawValue: "psbt.network_mismatch")
+    public static let psbtNotComplete = Self(rawValue: "psbt.not_complete")
+    public static let psbtFeeRateTooHigh = Self(rawValue: "psbt.fee_rate_too_high")
+    public static let psbtWatchOnly = Self(rawValue: "psbt.watch_only")
+    public static let psbtVaultLocked = Self(rawValue: "psbt.vault_locked")
+    public static let psbtGrantInvalid = Self(rawValue: "psbt.grant_invalid")
+    public static let psbtGrantExceeded = Self(rawValue: "psbt.grant_exceeded")
+    public static let psbtNoPeers = Self(rawValue: "psbt.no_peers")
+    public static let psbtBroadcastRejected = Self(rawValue: "psbt.broadcast_rejected")
+    public static let psbtBroadcastUnknown = Self(rawValue: "psbt.broadcast_unknown")
+
+    // Desktop OS services (M2; also `PlatformServiceError.code`).
+    public static let desktopUnsupported = Self(rawValue: "desktop.unsupported")
+    public static let desktopOSError = Self(rawValue: "desktop.os_error")
+    public static let desktopNoQRCode = Self(rawValue: "desktop.no_qr_code")
+    public static let desktopImageUnreadable = Self(rawValue: "desktop.image_unreadable")
+
     // Swift-side codes (not from the engine).
     /// The authentication gate's watchdog fired before the vault answered.
     public static let authTimedOut = Self(rawValue: "auth.timed_out")
@@ -142,6 +213,14 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sendBroadcastOutcomeUnknown = Self(rawValue: "send.broadcast_outcome_unknown")
     /// The settings file could not be written.
     public static let settingsWriteFailed = Self(rawValue: "settings.write_failed")
+    /// M2 command line (`LaunchArgumentsParsing`, QT-006).
+    public static let launchUnknownOption = Self(rawValue: "launch.unknown_option")
+    public static let launchInvalidValue = Self(rawValue: "launch.invalid_value")
+    public static let launchOptionAfterURI = Self(rawValue: "launch.option_after_uri")
+    /// M2 OS services: the user or the OS refused (permission), or the user
+    /// dismissed a prompt (`PlatformServiceError`).
+    public static let platformDenied = Self(rawValue: "platform.denied")
+    public static let platformCancelled = Self(rawValue: "platform.cancelled")
 
     /// Every engine code of docs/contracts/m1-engine.md §4, common codes
     /// first. The legacy `EngineError` codes `invalid_mnemonic` and
@@ -173,6 +252,27 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
         .uriInvalidAmount, .uriTooLongForQR,
         .unitsUnparsable,
     ]
+
+    /// Every domain code of docs/contracts/m2-engine.md §4 (the M2 domains and
+    /// the M2 additions to M1 domains); a test compares it with the table.
+    public static let m2EngineCodes: [ServiceErrorCode] = [
+        .txActionTxNotFound, .txActionRefused, .txActionSpvNotRunning, .txActionNoPeers,
+        .consoleParseError, .consoleRPCError, .consoleNotAvailable, .consoleAuthorizationRequired,
+        .consoleWalletRequired,
+        .compatFileUnreadable, .compatUnsupportedFormat, .compatCorrupt, .compatPassphraseRequired,
+        .compatWrongPassphrase, .compatNoHDChain, .compatNetworkMismatch, .compatInvalidKeyMaterial,
+        .compatAlreadyExists, .compatNoVault, .compatVaultLocked, .compatGrantInvalid, .compatWatchOnly,
+        .compatDestinationUnwritable,
+        .backupVaultLocked, .backupPassphraseRequired, .backupWrongPassphrase, .backupCorrupt,
+        .backupUnsupportedVersion, .backupNetworkMismatch, .backupAlreadyExists, .backupDestinationUnwritable,
+        .psbtInvalid, .psbtTooLarge, .psbtNetworkMismatch, .psbtNotComplete, .psbtFeeRateTooHigh, .psbtWatchOnly,
+        .psbtVaultLocked, .psbtGrantInvalid, .psbtGrantExceeded, .psbtNoPeers, .psbtBroadcastRejected,
+        .psbtBroadcastUnknown,
+        .desktopUnsupported, .desktopOSError, .desktopNoQRCode, .desktopImageUnreadable,
+        .vaultQuickUnlockLimitExceeded, .vaultPassphraseStale, .vaultNotEmpty, .vaultRecoveryMismatch,
+        .walletInvalidXpub,
+        .syncSpvRunning, .syncRescanInProgress, .syncPeerNotFound,
+    ]
 }
 
 /// An error from any M1 service.
@@ -187,7 +287,8 @@ public struct ServiceError: Error, Sendable, Equatable {
     /// Numbers the UI copy needs, keyed by the engine's field names (review
     /// M-5): `fee` and `available` (duffs) for the balance errors, `max_duffs`
     /// for `send.grant_exceeded`, `failed_attempts` for vault attempts,
-    /// `height` for `sync.height_out_of_range`, `index` for recipient errors.
+    /// `height` for `sync.height_out_of_range`, `index` for recipient errors;
+    /// M2: `limit_duffs`, `size_bytes`, `duffs_per_kb`, `version`, `refusal`.
     public let parameters: [String: Int64]
 
     public init(

@@ -382,6 +382,8 @@ final class FakeAuth: AuthenticationGating {
         let passphrase: String?
         switch credential {
         case .passphrase(let secret): passphrase = secret.testString
+        // No M1 view model offers quick unlock; the engine refuses it until slot B lands.
+        case .quickUnlock: throw ServiceError(code: .vaultQuickUnlockUnavailable)
         case .unencrypted: passphrase = nil
         }
         authorizeCalls.append(AuthorizeCall(purpose: purpose, wallet: wallet, passphrase: passphrase))
