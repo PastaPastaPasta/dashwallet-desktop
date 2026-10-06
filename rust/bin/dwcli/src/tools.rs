@@ -305,9 +305,25 @@ pub fn run(
                     .map_or("none".to_string(), |p| p.from_height.to_string())
             );
             let start = Instant::now();
-            while session.rescan_progress().map_err(e)?.is_some() {
+            let mut last = String::new();
+            while let Some(p) = session.rescan_progress().map_err(e)? {
+                let line = format!(
+                    "rescan at={:?} target={:?} scan={:?}",
+                    p.current_height,
+                    p.target_height,
+                    session
+                        .wallet_infos()
+                        .map_err(e)?
+                        .iter()
+                        .map(|w| session.wallet_scan_height(&w.wallet_id))
+                        .collect::<Vec<_>>()
+                );
+                if line != last {
+                    eprintln!("{line}");
+                    last = line;
+                }
                 if start.elapsed() > timeout {
-                    return Err("rescan did not finish in time".into());
+                    return Err(format!("rescan did not finish in time: {last}"));
                 }
                 std::thread::sleep(Duration::from_millis(250));
             }

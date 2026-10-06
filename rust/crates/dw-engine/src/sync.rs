@@ -502,7 +502,7 @@ impl crate::NetworkSession {
                 return Err(crate::EngineError::SpvNotRunning);
             }
             if let RescanFrom::Height(h) = from
-                && h > this.known_tip()
+                && this.known_tip().is_some_and(|tip| h > tip)
             {
                 return Err(crate::EngineError::HeightOutOfRange(h));
             }

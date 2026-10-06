@@ -141,8 +141,8 @@ pub(crate) fn is_prerelease(version: &str) -> bool {
 impl NetworkSession {
     /// The best chain height this session knows: SPV's header tip, or the
     /// highest height a wallet has processed (SPV reports its tip only after
-    /// it started).
-    pub(crate) fn known_tip(&self) -> u32 {
+    /// it started). `None` when neither is known.
+    pub(crate) fn known_tip(&self) -> Option<u32> {
         let wallets = self
             .hub
             .wallets
@@ -152,7 +152,8 @@ impl NetworkSession {
             .map(|w| w.tip())
             .max()
             .unwrap_or(0);
-        self.hub.tracker().tip_height().unwrap_or(0).max(wallets)
+        let tip = self.hub.tracker().tip_height().unwrap_or(0).max(wallets);
+        (tip > 0).then_some(tip)
     }
 
     /// The Information tab. In-memory read.
@@ -284,9 +285,51 @@ impl NetworkSession {
         .await
     }
 
+    /// Sets the wallet's birth height in memory and in wallet.sqlite.
+    /// Returns its filter checkpoint.
+    async fn store_birth_height(
+        &self,
+        wallet_id: WalletId,
+        height: u32,
+    ) -> Result<u32, EngineError> {
+        let live = self.live()?;
+        let synced = {
+            let wm = live.manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let info = wm
+                .get_wallet_info_mut(&wallet_id.0)
+                .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+            info.core_wallet.metadata.birth_height = height;
+            info.core_wallet.synced_height()
+        };
+        let persister = Arc::clone(&live.persister);
+        let network = self.network.core_network();
+        tokio::task::spawn_blocking(move || {
+            let changeset = PlatformWalletChangeSet {
+                wallet_metadata: Some(platform_wallet::changeset::WalletMetadataEntry {
+                    network,
+                    // Not stored by the SQLite persister (it keys rows by the
+                    // wallet id); the wallet's own id is the documented
+                    // fallback.
+                    wallet_group_id: wallet_id.0,
+                    birth_height: height,
+                }),
+                ..Default::default()
+            };
+            persister.store(wallet_id.0, changeset)?;
+            persister.flush(wallet_id.0)
+        })
+        .await?
+        .map_err(|e| EngineError::Storage(format!("birth height: {e}")))?;
+        Ok(synced)
+    }
+
     /// Rewinds the filter checkpoint of `wallets` to just below `start(id)`
-    /// and records the rescan for `rescan_progress`. `RescanInProgress` when
-    /// one already runs. Caller holds the operation guard.
+    /// and records the rescan for `rescan_progress`. dash-spv never scans
+    /// below a wallet's birth height, so a rescan from below it lowers the
+    /// birth height to the rescan start (stored), as dash-qt's
+    /// `rescanblockchain` scans from any height. `RescanInProgress` when one
+    /// already runs. Caller holds the operation guard.
     pub(crate) async fn start_rescan(
         &self,
         wallets: Vec<WalletId>,
@@ -323,7 +366,13 @@ impl NetworkSession {
             }
         }
         for id in wallets {
-            let checkpoint = start(&id).saturating_sub(1);
+            let from = start(&id);
+            let birth = self.hub.wallet_state(&id).map_or(0, |w| w.birth_height);
+            if from < birth {
+                self.store_birth_height(id, from).await?;
+                self.refresh_wallet_state(&manager, id).await;
+            }
+            let checkpoint = from.saturating_sub(1);
             let m = Arc::clone(&manager);
             tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id.0, checkpoint))
                 .await?;
@@ -389,37 +438,11 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let live = this.live()?;
             this.require_wallet(&wallet_id)?;
-            if height > this.known_tip() {
+            // Without a known tip the height cannot be checked.
+            if this.known_tip().is_some_and(|tip| height > tip) {
                 return Err(EngineError::HeightOutOfRange(height));
             }
-            let synced = {
-                let wm = live.manager.wallet_manager_arc();
-                let mut wm = wm.write().await;
-                let info = wm
-                    .get_wallet_info_mut(&wallet_id.0)
-                    .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-                info.core_wallet.metadata.birth_height = height;
-                info.core_wallet.synced_height()
-            };
-            let persister = Arc::clone(&live.persister);
-            let network = this.network.core_network();
-            tokio::task::spawn_blocking(move || {
-                let changeset = PlatformWalletChangeSet {
-                    wallet_metadata: Some(platform_wallet::changeset::WalletMetadataEntry {
-                        network,
-                        // Not stored by the SQLite persister (it keys rows by
-                        // the wallet id); the wallet's own id is the
-                        // documented fallback.
-                        wallet_group_id: wallet_id.0,
-                        birth_height: height,
-                    }),
-                    ..Default::default()
-                };
-                persister.store(wallet_id.0, changeset)?;
-                persister.flush(wallet_id.0)
-            })
-            .await?
-            .map_err(|e| EngineError::Storage(format!("birth height: {e}")))?;
+            let synced = this.store_birth_height(wallet_id, height).await?;
             this.refresh_wallet_state(&live.manager, wallet_id).await;
             if height.saturating_sub(1) < synced {
                 this.start_rescan(vec![wallet_id], height, |_| height)
