@@ -191,7 +191,10 @@ pub(crate) fn plan(
             // A subtract-fee payment needs only the amounts: the fee comes
             // out of them.
             let selection_rate = if subtract { FeeRate::new(0) } else { rate };
-            let base = base_without_budget(&lens) + change_len;
+            // As key-wallet's builder calls the selector: the base budgets
+            // the change output at its serialized size.
+            let change_size = output_size(change_len);
+            let base = base_without_budget(&lens) + change_size;
             let selected = CoinSelector::new(SelectionStrategy::BranchAndBound)
                 .select_coins_with_size(
                     spendable.iter().copied(),
@@ -199,7 +202,7 @@ pub(crate) fn plan(
                     selection_rate,
                     height,
                     base,
-                    change_len,
+                    change_size,
                 );
             match selected {
                 Ok(selection) => selection.selected,
@@ -439,6 +442,48 @@ mod tests {
         assert_eq!(p.fee, 226);
         assert_eq!(p.change, Some(50_000_000 - 30_000_000 - 226));
         assert_builder_reproduces(&p, &outputs);
+    }
+
+    /// Automatic selection picks what key-wallet's builder picks from the
+    /// same candidates (the builder in its plain mode, change address set).
+    #[test]
+    fn automatic_selection_matches_the_builders_own_selection() {
+        let values = [
+            7_000_000, 1_234_567, 99_999, 50_000_000, 3_000_000, 2_999_810, 640, 12_345_678,
+            800_000,
+        ];
+        let coins: Vec<Utxo> = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| coin(i as u8 + 1, *v))
+            .collect();
+        // Fixed targets, plus every target in the last 800 duffs below two
+        // coin values, where the fee estimate decides change and inputs.
+        let mut targets = vec![
+            600_000, 1_000_000, 2_999_000, 9_000_000, 20_000_000, 60_000_000,
+        ];
+        targets.extend((3_000_000 - 800..3_000_000).step_by(3));
+        targets.extend((7_000_000 - 800..7_000_000).step_by(7));
+        for target in targets {
+            for rate in [FeeRate::new(1000), FeeRate::new(3333)] {
+                let outputs = [out(0xEE, target, false)];
+                let p = plan(InputChoice::Select(&coins), &outputs, rate, P2PKH, 1000).unwrap();
+                let (tx, fee, _) = TransactionBuilder::new()
+                    .set_current_height(1000)
+                    .set_fee_rate(rate)
+                    .set_change_address(p2pkh(0xCC))
+                    .add_inputs(coins.clone())
+                    .add_output(&p2pkh(0xEE), target)
+                    .build_unsigned_reserved()
+                    .unwrap();
+                let mut want: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+                let mut got: Vec<OutPoint> = p.inputs.iter().map(|u| u.outpoint).collect();
+                want.sort();
+                got.sort();
+                assert_eq!(got, want, "target {target} rate {rate:?}");
+                assert_eq!(p.fee, fee, "target {target} rate {rate:?}");
+            }
+        }
     }
 
     #[test]
