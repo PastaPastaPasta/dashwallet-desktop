@@ -154,7 +154,7 @@ impl NetworkSession {
     /// When the wallet is already registered:
     /// - and the vault holds its seed: `WalletAlreadyExists`;
     /// - without a seed (keys lost or never stored): the seed is stored,
-    ///   which attaches the keys, and the call succeeds (`WalletChanged`).
+    ///   which attaches the keys, and the call succeeds (`WalletCreated`).
     ///
     /// Errors: `InvalidMnemonic`, `InvalidArgument` (passphrase not UTF-8 in
     /// strict mode), `Vault(NoVault | Locked | MixingOnly | …)`.
