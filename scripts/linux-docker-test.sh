@@ -19,7 +19,9 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f "$ROOT/ci/linux/Dockerfile.swift" -t "$IMAGE" "$ROOT/ci/linux"
 fi
 
-filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|DesignTokensTests|RepoChecksTests}"
+# Every headless test target that has tests on Linux (MacUITests and
+# DashUIMacSnapshotTests compile to nothing there).
+filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests}"
 
 # Separate target volume from the Rust-only image (dwd-linux-target): this
 # image is Ubuntu noble (glibc 2.39), that one Debian bookworm (glibc 2.36),
@@ -41,7 +43,7 @@ docker run --rm \
   -e DWD_SWIFT_TEST_FILTER="$filter" \
   "$IMAGE" bash -euo pipefail -c '
     mkdir -p /work
-    tar -C /src --exclude=./.build --exclude=./Artifacts --exclude=./.build-logs --exclude=./.swiftpm -cf - . \
+    tar -C /src --exclude=./.build --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=./.swiftpm -cf - . \
       | tar -C /work -xf -
     cd /work
     start=$(date +%s)
