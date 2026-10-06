@@ -1,0 +1,15 @@
+[package]
+name = "dw-governance"
+description = "Dash governance over SPV for dashwallet-desktop: govsync, tallies, votes, proposals, superblock clock (QT-026, QT-128..134)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Owner: R2 (docs/contracts/m3-engine.md §0).
+
+[dependencies]
+dashcore = { workspace = true }
+dw-p2p = { workspace = true }
+thiserror = { workspace = true }

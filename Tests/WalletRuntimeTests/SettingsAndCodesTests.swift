@@ -123,9 +123,14 @@ import Testing
 
     /// The domain codes of the m2-engine.md §4 table.
     static func m2ContractCodes() throws -> Set<String> {
+        try domainCodes(of: "m2-engine.md")
+    }
+
+    /// The domain codes of the §4 table of a contract document.
+    static func domainCodes(of file: String) throws -> Set<String> {
         let doc = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("docs/contracts/m2-engine.md")
+            .appendingPathComponent("docs/contracts/\(file)")
         let text = try String(contentsOf: doc, encoding: .utf8)
         let start = try #require(text.range(of: "## 4. Error codes"))
         let end = try #require(text.range(of: "## 5.", range: start.upperBound..<text.endIndex))
@@ -150,5 +155,15 @@ import Testing
         #expect(swift.subtracting(contract).isEmpty, "not in the contract: \(swift.subtracting(contract).sorted())")
         #expect(swift.count == ServiceErrorCode.m2EngineCodes.count, "duplicates in m2EngineCodes")
         #expect(Set(ServiceErrorCode.engineCodes).isDisjoint(with: ServiceErrorCode.m2EngineCodes))
+    }
+
+    @Test func m3EngineCodesMatchTheContractTable() throws {
+        let contract = try Self.domainCodes(of: "m3-engine.md")
+        let swift = Set(ServiceErrorCode.m3EngineCodes.map(\.rawValue))
+        #expect(!contract.isEmpty)
+        #expect(contract.subtracting(swift).isEmpty, "missing in Swift: \(contract.subtracting(swift).sorted())")
+        #expect(swift.subtracting(contract).isEmpty, "not in the contract: \(swift.subtracting(contract).sorted())")
+        #expect(swift.count == ServiceErrorCode.m3EngineCodes.count, "duplicates in m3EngineCodes")
+        #expect(Set(ServiceErrorCode.engineCodes + ServiceErrorCode.m2EngineCodes).isDisjoint(with: ServiceErrorCode.m3EngineCodes))
     }
 }

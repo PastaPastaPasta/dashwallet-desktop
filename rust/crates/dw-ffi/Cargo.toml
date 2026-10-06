@@ -13,6 +13,10 @@ crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
 dashcore = { workspace = true }
+# M3 constants and types (docs/contracts/m3-engine.md).
+dw-coinjoin = { workspace = true }
+dw-governance = { workspace = true }
+dw-protx = { workspace = true }
 dw-console = { workspace = true }
 dw-desktop = { workspace = true }
 dw-engine = { workspace = true }

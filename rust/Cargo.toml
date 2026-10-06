@@ -38,11 +38,15 @@ dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c
 
 # ---- our crates ----
 dw-appdb = { path = "crates/dw-appdb" }
+dw-coinjoin = { path = "crates/dw-coinjoin" }
 dw-compat = { path = "crates/dw-compat" }
 dw-console = { path = "crates/dw-console" }
 dw-desktop = { path = "crates/dw-desktop" }
 dw-engine = { path = "crates/dw-engine" }
+dw-governance = { path = "crates/dw-governance" }
 dw-message = { path = "crates/dw-message" }
+dw-p2p = { path = "crates/dw-p2p" }
+dw-protx = { path = "crates/dw-protx" }
 dw-psbt = { path = "crates/dw-psbt" }
 dw-units = { path = "crates/dw-units" }
 dw-uri = { path = "crates/dw-uri" }

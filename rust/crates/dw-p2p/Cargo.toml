@@ -1,0 +1,15 @@
+[package]
+name = "dw-p2p"
+description = "Outbound Dash P2P sessions to masternodes and full-node peers for CoinJoin and governance (DESIGN.md R2: own dw-p2p, no upstream patch)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Owner: R1 (docs/contracts/m3-engine.md §0). R2 consumes the public API for
+# govsync; changes to it are agreed with R1.
+
+[dependencies]
+dashcore = { workspace = true }
+thiserror = { workspace = true }

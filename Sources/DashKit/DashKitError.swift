@@ -357,6 +357,9 @@ public enum DashKitError: Error, Sendable, Equatable {
         case let e as DashWalletCore.BackupError: DashKitError(e)
         case let e as DashWalletCore.PsbtError: DashKitError(e)
         case let e as DashWalletCore.DesktopError: DashKitError(e)
+        case let e as DashWalletCore.CoinJoinError: DashKitError(e)
+        case let e as DashWalletCore.GovernanceError: DashKitError(e)
+        case let e as DashWalletCore.MasternodeError: DashKitError(e)
         default: .internal(detail: String(describing: error))
         }
     }

@@ -114,6 +114,15 @@ pub enum EngineError {
     /// A PSBT could not be read, signed or sent (`psbt.*` codes).
     #[error("psbt: {0}")]
     Psbt(crate::send::psbt::PsbtFailure),
+    /// A CoinJoin call failed (`coinjoin.*` codes, M3).
+    #[error("coinjoin: {0}")]
+    CoinJoin(crate::coinjoin::CoinJoinFailure),
+    /// A governance call failed (`governance.*` codes, M3).
+    #[error("governance: {0}")]
+    Governance(crate::governance::GovernanceFailure),
+    /// A masternode or ProTx call failed (`masternode.*` codes, M3).
+    #[error("masternode: {0}")]
+    Masternode(crate::masternodes::MasternodeFailure),
 }
 
 impl EngineError {
@@ -158,6 +167,9 @@ impl EngineError {
             EngineError::Compat(_) => "compat",
             EngineError::Backup(_) => "backup",
             EngineError::Psbt(_) => "psbt",
+            EngineError::CoinJoin(_) => "coinjoin",
+            EngineError::Governance(_) => "governance",
+            EngineError::Masternode(_) => "masternode",
         }
     }
 }
