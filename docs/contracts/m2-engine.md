@@ -160,7 +160,11 @@ where noted.
 | `set_birth_height(id, height)` | async | Stores a new birth height. If it is lower than the old one, a rescan from it is scheduled. | `sync.height_out_of_range` | IOS-113 |
 
 Changed M1 behaviour: `rescan` returns `sync.rescan_in_progress` while a rescan runs ("Wallet is currently
-rescanning"); `peers()` fills more `PeerInfo` fields once U2 lands (until then only addresses, as in M1).
+rescanning"); `peers()` fills more `PeerInfo` fields once U2 lands (until then only addresses, as in M1). A
+rescan from below a wallet's birth height lowers (and stores) the birth height to the rescan start, because
+dash-spv never scans below it; dash-qt's `rescanblockchain` scans from any height. The height checks of `rescan`
+and `set_birth_height` use the best known height (SPV tip or the wallets' processed heights) and are skipped
+when none is known.
 
 ### 2.5 Console (`console.rs`) — owner R1 (`dw-console`)
 
