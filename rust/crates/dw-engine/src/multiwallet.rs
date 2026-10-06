@@ -19,8 +19,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE};
-use key_wallet::account::{Account, AccountType, StandardAccountType};
 use key_wallet::account::account_collection::AccountCollection;
+use key_wallet::account::{Account, AccountType, StandardAccountType};
 use key_wallet::bip32::{ChildNumber, ExtendedPubKey};
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -219,7 +219,11 @@ impl NetworkSession {
     pub fn wallet_load_states(&self) -> Result<Vec<WalletLoadState>, EngineError> {
         let _op = self.try_enter()?;
         let live = self.live()?;
-        let loaded: BTreeSet<[u8; 32]> = live.manager.list_wallet_ids_blocking().into_iter().collect();
+        let loaded: BTreeSet<[u8; 32]> = live
+            .manager
+            .list_wallet_ids_blocking()
+            .into_iter()
+            .collect();
         let startup = self
             .startup_list
             .lock()
@@ -348,7 +352,8 @@ impl NetworkSession {
                 list.remove(&id);
             }
             let stored = list.clone();
-            this.appdb_op(move |db| write_startup_list(db, &stored)).await?;
+            this.appdb_op(move |db| write_startup_list(db, &stored))
+                .await?;
             *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) =
                 (!list.is_empty()).then_some(list);
             Ok(())
@@ -506,15 +511,18 @@ fn watch_only_registration(
     for managed in info.all_managed_accounts() {
         let account_type = managed.managed_account_type().to_account_type();
         for pool in managed.managed_account_type().address_pools() {
-            let addresses: Vec<key_wallet::AddressInfo> = pool.addresses.values().cloned().collect();
+            let addresses: Vec<key_wallet::AddressInfo> =
+                pool.addresses.values().cloned().collect();
             if addresses.is_empty() {
                 continue;
             }
-            changeset.account_address_pools.push(AccountAddressPoolEntry {
-                account_type,
-                pool_type: pool.pool_type,
-                addresses,
-            });
+            changeset
+                .account_address_pools
+                .push(AccountAddressPoolEntry {
+                    account_type,
+                    pool_type: pool.pool_type,
+                    addresses,
+                });
         }
     }
     Ok(changeset)

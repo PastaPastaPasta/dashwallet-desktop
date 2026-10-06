@@ -974,10 +974,7 @@ pub(crate) fn validate_filter(filter: &HistoryFilter) -> Result<(), EngineError>
 /// transactions arriving between pages never invalidate them; a page simply
 /// continues after that record. A cursor from a different filter or sort is
 /// `StaleCursor`.
-pub(crate) fn page(
-    records: Vec<TxRecord>,
-    q: &HistoryQuery,
-) -> Result<HistoryPage, EngineError> {
+pub(crate) fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, EngineError> {
     validate_query(q)?;
     let tag = query_tag(&q.filter, q.sort);
     let after = q

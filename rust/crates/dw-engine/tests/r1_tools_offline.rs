@@ -124,7 +124,10 @@ fn test_qt_101_close_open_and_load_on_startup() {
     assert!(states[0].loaded && !states[1].loaded);
     assert_eq!(states[1].wallet_id, b);
     assert_eq!(states[1].name, "Wallet 2");
-    assert!(states.iter().all(|w| w.load_on_startup), "no list yet = all");
+    assert!(
+        states.iter().all(|w| w.load_on_startup),
+        "no list yet = all"
+    );
     assert!(rec.events().contains(&EngineEvent::WalletLoadChanged {
         network: DashNetwork::Regtest,
         wallet_id: b,
@@ -253,17 +256,28 @@ fn test_ios_009_existing_networks_reads_the_data_root() {
     let rec = Arc::new(Recorder::default());
     let os = Arc::new(MemoryOsStore::new());
     let engine = new_engine(&root, rec, Arc::clone(&os));
-    assert!(engine.block_on(engine.existing_networks()).unwrap().is_empty());
+    assert!(
+        engine
+            .block_on(engine.existing_networks())
+            .unwrap()
+            .is_empty()
+    );
     let s = open(&engine);
     engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
     let nets = engine.block_on(engine.existing_networks()).unwrap();
     assert_eq!(nets.len(), 1);
     assert_eq!(nets[0].network, DashNetwork::Regtest);
     assert!(nets[0].has_wallet_state && nets[0].has_vault);
-    assert!(nets[0].has_os_store_key, "an unencrypted vault keeps its key in slot O");
+    assert!(
+        nets[0].has_os_store_key,
+        "an unencrypted vault keeps its key in slot O"
+    );
     // A stray directory that is not a network is ignored.
     std::fs::create_dir_all(root.join("not-a-network")).unwrap();
-    assert_eq!(engine.block_on(engine.existing_networks()).unwrap().len(), 1);
+    assert_eq!(
+        engine.block_on(engine.existing_networks()).unwrap().len(),
+        1
+    );
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -279,7 +293,10 @@ fn test_qt_143_qt_148_information_warnings_and_repair() {
     assert!(info.user_agent.starts_with("/dashwallet-desktop:"));
     assert_eq!(info.connections_in, 0);
     assert!(info.local_addresses.is_empty());
-    assert_eq!(info.mempool_tx_count, None, "SPV never reports mempool data");
+    assert_eq!(
+        info.mempool_tx_count, None,
+        "SPV never reports mempool data"
+    );
     assert_eq!(info.mempool_usage_bytes, None);
     assert_eq!(info.masternodes, None, "no masternode list synced");
     assert!(info.startup_time > 0);

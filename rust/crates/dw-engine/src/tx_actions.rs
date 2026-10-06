@@ -396,7 +396,9 @@ impl NetworkSession {
             tokio::spawn(async move {
                 match handle.core().broadcast_transaction(&entry.tx).await {
                     Ok(_) => tracing::info!(%txid, "resent transaction accepted"),
-                    Err(e) => tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen"),
+                    Err(e) => {
+                        tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
+                    }
                 }
             });
             Ok(())
@@ -559,7 +561,10 @@ mod tests {
         assert_eq!(f().abandon_refusal(), None);
         assert_eq!(f().resend_refusal(), None);
         let confirmed = Facts { depth: 1, ..f() };
-        assert_eq!(confirmed.abandon_refusal(), Some(TxActionRefusal::Confirmed));
+        assert_eq!(
+            confirmed.abandon_refusal(),
+            Some(TxActionRefusal::Confirmed)
+        );
         assert_eq!(confirmed.resend_refusal(), Some(TxActionRefusal::Confirmed));
         let is = Facts {
             instant_locked: true,
@@ -571,10 +576,20 @@ mod tests {
             abandoned: true,
             ..f()
         };
-        assert_eq!(gone.abandon_refusal(), Some(TxActionRefusal::AlreadyAbandoned));
-        assert_eq!(gone.resend_refusal(), Some(TxActionRefusal::AlreadyAbandoned));
+        assert_eq!(
+            gone.abandon_refusal(),
+            Some(TxActionRefusal::AlreadyAbandoned)
+        );
+        assert_eq!(
+            gone.resend_refusal(),
+            Some(TxActionRefusal::AlreadyAbandoned)
+        );
         let incoming = Facts { from_me: 0, ..f() };
-        assert_eq!(incoming.abandon_refusal(), None, "dash-qt abandons any unconfirmed");
+        assert_eq!(
+            incoming.abandon_refusal(),
+            None,
+            "dash-qt abandons any unconfirmed"
+        );
         assert_eq!(
             incoming.resend_refusal(),
             Some(TxActionRefusal::NotSentByWallet)

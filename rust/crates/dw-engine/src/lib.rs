@@ -55,6 +55,7 @@ pub use history::{
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
 pub use labels::{BookEntryInfo, LabelsFailure};
+pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
 pub use send::{
@@ -63,7 +64,6 @@ pub use send::{
 };
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
-pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use tools::{
     ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
     USER_AGENT, WarningCode,

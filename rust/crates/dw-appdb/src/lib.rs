@@ -639,10 +639,9 @@ impl AppDb {
             "SELECT key, value FROM settings_kv WHERE scope = ?1 AND substr(key, 1, ?3) = ?2
              ORDER BY key",
         )?;
-        let rows = stmt.query_map(
-            params![scope, prefix, prefix.chars().count() as i64],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let rows = stmt.query_map(params![scope, prefix, prefix.chars().count() as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 }

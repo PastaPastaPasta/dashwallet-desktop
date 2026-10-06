@@ -144,11 +144,7 @@ pub(crate) fn summarize(
     s.fee = fee;
     s.change = u64::try_from(change.max(0)).unwrap_or(u64::MAX);
     s.after_fee = amount.saturating_sub(fee);
-    s.fee_tolerance_per_input = if bytes == 0 {
-        0
-    } else {
-        (fee + bytes / 2) / bytes
-    };
+    s.fee_tolerance_per_input = (fee + bytes / 2).checked_div(bytes).unwrap_or(0);
     s
 }
 
@@ -204,7 +200,10 @@ mod tests {
         let p = fee_policy();
         assert_eq!(p.source, FeeSource::MinimumRelay);
         assert_eq!(
-            p.targets.iter().map(|t| t.target_blocks).collect::<Vec<_>>(),
+            p.targets
+                .iter()
+                .map(|t| t.target_blocks)
+                .collect::<Vec<_>>(),
             FEE_TARGETS
         );
         assert!(p.targets.iter().all(|t| t.duffs_per_kb == 1000));

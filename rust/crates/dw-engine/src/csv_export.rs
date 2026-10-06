@@ -121,7 +121,14 @@ pub fn write_csv(
     if watch_only {
         header.push("Watch-only");
     }
-    header.extend(["Date", "Type", "Label", "Address", amount_title.as_str(), "ID"]);
+    header.extend([
+        "Date",
+        "Type",
+        "Label",
+        "Address",
+        amount_title.as_str(),
+        "ID",
+    ]);
     let mut out = String::new();
     push_row(&mut out, &header);
     for r in records {
@@ -219,8 +226,12 @@ mod tests {
         assert!(cases.len() >= 4);
         for case in cases {
             let name = case["name"].as_str().unwrap();
-            let records: Vec<TxRecord> =
-                case["records"].as_array().unwrap().iter().map(record).collect();
+            let records: Vec<TxRecord> = case["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(record)
+                .collect();
             let type_names: Vec<String> = case["type_names"]
                 .as_array()
                 .map(|a| a.iter().map(|n| n.as_str().unwrap().to_string()).collect())

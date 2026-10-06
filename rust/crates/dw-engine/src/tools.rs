@@ -160,11 +160,14 @@ impl NetworkSession {
             tip_height: snapshot.tip_height,
             tip_time: snapshot.tip_time,
             tip_hash: None,
-            best_chainlock: self.hub.best_chainlock().map(|(height, hash)| ChainLockInfo {
-                height,
-                block_hash: hash.to_string(),
-                block_time: None,
-            }),
+            best_chainlock: self
+                .hub
+                .best_chainlock()
+                .map(|(height, hash)| ChainLockInfo {
+                    height,
+                    block_hash: hash.to_string(),
+                    block_time: None,
+                }),
             masternodes,
             evonodes,
             mempool_tx_count: None,

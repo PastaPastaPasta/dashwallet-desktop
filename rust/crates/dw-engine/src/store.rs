@@ -113,7 +113,9 @@ impl PlatformWalletPersistence for WalletStore {
         let mut state = self.inner.load()?;
         let unloaded = self.unloaded.read().unwrap_or_else(|p| p.into_inner());
         state.wallets.retain(|id, _| !unloaded.contains(id));
-        state.platform_addresses.retain(|id, _| !unloaded.contains(id));
+        state
+            .platform_addresses
+            .retain(|id, _| !unloaded.contains(id));
         Ok(state)
     }
 

@@ -238,10 +238,11 @@ impl NetworkSession {
         let unloaded = match &startup_list {
             Some(list) => {
                 let db_path = data_dir.join(WALLET_DB_FILE);
-                let registered =
-                    tokio::task::spawn_blocking(move || crate::store::registered_wallet_ids(&db_path))
-                        .await?
-                        .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
+                let registered = tokio::task::spawn_blocking(move || {
+                    crate::store::registered_wallet_ids(&db_path)
+                })
+                .await?
+                .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
                 registered
                     .into_iter()
                     .filter(|id| !list.contains(&WalletId(*id)))

@@ -340,7 +340,11 @@ mod tests {
         settle().await;
         tokio::time::advance(Duration::from_millis(40)).await;
         settle().await;
-        assert!(rec.log().is_empty(), "nothing before 100 ms: {:?}", rec.log());
+        assert!(
+            rec.log().is_empty(),
+            "nothing before 100 ms: {:?}",
+            rec.log()
+        );
         tokio::time::advance(Duration::from_millis(30)).await;
         settle().await;
         let log = rec.log();
