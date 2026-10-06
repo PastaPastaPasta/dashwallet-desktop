@@ -369,7 +369,7 @@ fn masternode_stubs_check_arguments_then_report_not_implemented() {
         rt.block_on(s.attach_masternode_key(
             HASH.into(),
             MasternodeKeyRole::Voting,
-            b"cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy".to_vec(),
+            b"not a real key".to_vec(),
             "g".into()
         )),
         not_implemented: "NetworkSession.attach_masternode_key"
