@@ -261,9 +261,11 @@ impl From<dw_engine::EngineError> for SendError {
     }
 }
 
+crate::api::common::export_error_code!(SendError);
+
 impl SendError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::NoRecipients => "send.no_recipients",
             Self::InvalidAddress { .. } => "send.invalid_address",

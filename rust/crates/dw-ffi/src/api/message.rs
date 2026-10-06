@@ -84,9 +84,11 @@ impl From<dw_engine::EngineError> for MessageError {
     }
 }
 
+crate::api::common::export_error_code!(MessageError);
+
 impl MessageError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::InvalidAddress => "message.invalid_address",
             Self::AddressNoKey => "message.address_no_key",

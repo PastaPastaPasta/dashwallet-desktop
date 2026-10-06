@@ -112,9 +112,11 @@ impl From<dw_engine::BookEntryInfo> for AddressBookEntry {
     }
 }
 
+crate::api::common::export_error_code!(LabelsError);
+
 impl LabelsError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::InvalidAddress => "labels.invalid_address",
             Self::DuplicateAddress => "labels.duplicate_address",

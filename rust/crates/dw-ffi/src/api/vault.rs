@@ -366,9 +366,11 @@ impl OwnedCredential {
     }
 }
 
+crate::api::common::export_error_code!(VaultError);
+
 impl VaultError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::NoVault => "vault.no_vault",
             Self::AlreadyExists => "vault.already_exists",

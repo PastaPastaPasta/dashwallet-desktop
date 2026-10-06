@@ -274,9 +274,11 @@ impl From<dw_vault::mnemonic::Language> for MnemonicLanguage {
     }
 }
 
+crate::api::common::export_error_code!(WalletError);
+
 impl WalletError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::InvalidMnemonic { .. } => "wallet.invalid_mnemonic",
             Self::UnsupportedWordCount { .. } => "wallet.unsupported_word_count",

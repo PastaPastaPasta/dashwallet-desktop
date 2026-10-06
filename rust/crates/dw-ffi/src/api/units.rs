@@ -92,9 +92,11 @@ pub enum UnitsError {
 
 domain_error_common!(@not_implemented UnitsError);
 
+crate::api::common::export_error_code!(UnitsError);
+
 impl UnitsError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::Unparsable => "units.unparsable",
             Self::InvalidArgument { .. } => "invalid_argument",

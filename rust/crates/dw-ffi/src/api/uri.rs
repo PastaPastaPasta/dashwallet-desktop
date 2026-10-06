@@ -107,9 +107,11 @@ pub enum UriError {
 
 domain_error_common!(@not_implemented UriError);
 
+crate::api::common::export_error_code!(UriError);
+
 impl UriError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
-    pub fn code(&self) -> &'static str {
+    fn code_str(&self) -> &'static str {
         match self {
             Self::DoubleSlash => "uri.double_slash",
             Self::NotDashUri => "uri.not_dash_uri",
@@ -234,11 +236,8 @@ mod tests {
             Err(UriError::InvalidAmount)
         ));
         // At most the maximum supply, 21 million DASH, both ways.
-        let max = parse_payment_uri(
-            DashNetwork::Mainnet,
-            format!("dash:{ADDR}?amount=21000000"),
-        )
-        .unwrap();
+        let max = parse_payment_uri(DashNetwork::Mainnet, format!("dash:{ADDR}?amount=21000000"))
+            .unwrap();
         assert_eq!(max.amount, Some(MAX_MONEY));
         assert!(matches!(
             parse_payment_uri(
