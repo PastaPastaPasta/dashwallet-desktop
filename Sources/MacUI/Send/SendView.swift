@@ -46,10 +46,8 @@ struct SendView: View {
         .overlay { progressOverlay }
         .task(id: CoinControlInputs(send: send)) {
             // The coin-control labels follow the recipients and the fee (QT-072).
-            guard let features = model.features, features.options.wallet.coinControl, let amounts = model.env?.amounts
-            else { return }
-            let parsed = send.entries.compactMap { try? amounts.parse($0.amountText, unit: send.unit) }
-            await features.coinControl.updatePayment(amounts: parsed, fee: send.fee)
+            guard let features = model.features, features.options.wallet.coinControl else { return }
+            await features.coinControl.updatePayment(amounts: send.coinControlAmounts, fee: send.fee)
         }
         .sheet(isPresented: confirmBinding) { SendConfirmSheet(send: send) }
         .sheet(isPresented: authorizeBinding) { SendAuthorizeSheet(send: send) }

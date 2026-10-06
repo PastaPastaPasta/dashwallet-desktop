@@ -172,6 +172,14 @@ public final class SendViewModel {
 
     public var unit: DisplayUnit { settings.display.unit }
 
+    /// The recipients' amounts in the display unit, for the coin-control
+    /// summary (QT-072); empty and unparsable amounts are left out.
+    public var coinControlAmounts: [Amount] {
+        entries.compactMap { entry in
+            entry.amountText.isEmpty ? nil : try? amounts.parse(entry.amountText, unit: unit)
+        }
+    }
+
     public var sendButtonTitle: String {
         let base = page == .coinJoin ? L10n.Send.sendMixedFunds : L10n.Send.send
         if case .confirm = phase, confirmCountdown > 0 { return L10n.Send.sendCountdown(confirmCountdown) }

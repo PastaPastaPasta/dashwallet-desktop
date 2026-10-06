@@ -89,7 +89,9 @@ struct CoinSelectionScreen: View {
         }
         .task {
             await model.load()
-            await model.updatePayment(amounts: payAmounts(), fee: state.main.send?.fee ?? .recommended(targetBlocks: 6))
+            let send = state.main.send
+            await model.updatePayment(
+                amounts: send?.coinControlAmounts ?? [], fee: send?.fee ?? .recommended(targetBlocks: 6))
         }
     }
 
@@ -117,15 +119,6 @@ struct CoinSelectionScreen: View {
                     .disabled(true)
                 Text(CrossStrings.customChangeUnavailable).dashFont(.caption1).dashForeground(.secondaryText)
             }
-        }
-    }
-
-    /// The Send page's amounts in the display unit; unparsable ones count as 0.
-    private func payAmounts() -> [Amount] {
-        guard let send = state.main.send else { return [] }
-        let unit = state.env.settings.display.unit
-        return send.entries.compactMap { entry in
-            entry.amountText.isEmpty ? nil : try? state.env.amounts.parse(entry.amountText, unit: unit)
         }
     }
 }
