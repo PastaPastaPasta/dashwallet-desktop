@@ -280,10 +280,11 @@ impl NetworkSession {
     /// `address`, a P2PKH address of `wallet_id` on this network, and returns
     /// the base64 compact signature.
     ///
-    /// Needs a `SignMessage` grant. The grant is redeemed only after the
-    /// address checks pass, so a mistyped address does not consume it. The
-    /// key is derived from the vault seed by `VaultSigner` and erased after
-    /// signing.
+    /// Needs a `SignMessage` grant bound to `wallet_id`. The grant is
+    /// redeemed only after the address checks pass, so a mistyped address
+    /// does not consume it. The key is derived from the vault seed by
+    /// `VaultSigner` and erased after signing; a passphrase grant on a locked
+    /// vault signs with its own key and leaves the vault locked.
     pub async fn sign_message(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -322,7 +323,8 @@ impl NetworkSession {
 
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
-                let token = vault.redeem_grant(&grant_id, GrantKind::SignMessage)?;
+                let token =
+                    vault.redeem_grant(&grant_id, GrantKind::SignMessage, Some(&wallet_id.0))?;
                 vault.signer(&wallet_id.0, &token)
             })
             .await??;

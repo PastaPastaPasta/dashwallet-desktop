@@ -127,7 +127,11 @@ impl Fixture {
     fn spend_grant(&self, max_duffs: u64) -> String {
         self.session
             .vault()
-            .authorize(GrantPurpose::Spend { max_duffs }, Credential::None)
+            .authorize(
+                GrantPurpose::Spend { max_duffs },
+                Some(&self.wallet.0),
+                Credential::None,
+            )
             .unwrap()
             .id
     }
@@ -496,6 +500,50 @@ fn locked_vault_and_validation_errors() {
     ));
     let r = f.session.new_tx_draft(WalletId([7; 32]));
     assert!(matches!(r, Err(EngineError::WalletNotFound(_))), "{r:?}");
+}
+
+/// Review M4 and M-6 through the send path: a passphrase grant signs on a
+/// locked vault and leaves it locked; a grant for another wallet is refused
+/// and stays usable for its own wallet.
+#[test]
+fn passphrase_grant_signs_on_a_locked_vault_and_is_bound_to_its_wallet() {
+    let f = fixture(true);
+    f.credit(1, COIN);
+    f.session.lock_vault().unwrap();
+    let vault = f.session.vault();
+    let spend = GrantPurpose::Spend {
+        max_duffs: 10_000_000,
+    };
+
+    let other = vault
+        .authorize(
+            spend,
+            Some(&[7; 32]),
+            Credential::Passphrase(b"pass phrase"),
+        )
+        .unwrap();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.prepare(other.id.clone()))),
+        SendFailure::GrantInvalid
+    );
+
+    let grant = vault
+        .authorize(
+            spend,
+            Some(&f.wallet.0),
+            Credential::Passphrase(b"pass phrase"),
+        )
+        .unwrap();
+    assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
+    let prepared = f.engine.block_on(draft.prepare(grant.id)).unwrap();
+    let tx: Transaction = dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+    assert!(tx.input.iter().all(|i| i.script_sig.len() > 100));
+    assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
+    // The refused grant was not consumed.
+    vault
+        .check_grant(&other.id, dw_vault::GrantKind::Spend, Some(&[7; 32]))
+        .unwrap();
 }
 
 #[test]

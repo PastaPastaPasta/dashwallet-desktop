@@ -37,5 +37,7 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# The integration tests in tests/ use Argon2id parameters below the floor.
+dw-vault = { path = ".", features = ["insecure-test-kdf"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }

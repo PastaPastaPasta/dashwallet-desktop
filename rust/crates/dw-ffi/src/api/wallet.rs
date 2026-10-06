@@ -555,17 +555,21 @@ mod tests {
             "{wrong:?}"
         );
 
-        // A passphrase credential unlocks the vault and issues the grant.
+        let passphrase = || VaultCredential::Passphrase {
+            passphrase: PASSPHRASE.to_vec(),
+        };
+        // Wallet-scoped grants name their wallet.
+        assert!(matches!(
+            rt.block_on(vault.authorize(GrantPurpose::RevealSecret, None, passphrase())),
+            Err(VaultError::InvalidArgument { .. })
+        ));
+        // A passphrase credential issues the grant and leaves the vault
+        // locked (dash-qt re-lock parity); the grant carries the key.
         let grant = rt
-            .block_on(vault.authorize(
-                GrantPurpose::RevealSecret,
-                VaultCredential::Passphrase {
-                    passphrase: PASSPHRASE.to_vec(),
-                },
-            ))
+            .block_on(vault.authorize(GrantPurpose::RevealSecret, Some(id.clone()), passphrase()))
             .unwrap();
         assert!(grant.single_use);
-        assert_eq!(vault.status().unwrap().state, VaultLockState::Unlocked);
+        assert_eq!(vault.status().unwrap().state, VaultLockState::Locked);
         assert!(matches!(
             rt.block_on(vault.reveal_mnemonic("XYZ".into(), grant.id.clone())),
             Err(VaultError::InvalidArgument { .. })
@@ -580,9 +584,25 @@ mod tests {
             Err(VaultError::GrantInvalid)
         ));
 
+        // Unlocked, reveal still needs the passphrase.
+        rt.block_on(vault.unlock(PASSPHRASE.to_vec(), UnlockScope::Full))
+            .unwrap();
+        assert!(matches!(
+            rt.block_on(vault.authorize(
+                GrantPurpose::RevealSecret,
+                Some(id.clone()),
+                VaultCredential::Unencrypted
+            )),
+            Err(VaultError::CredentialRequired)
+        ));
+
         // An address outside the wallet is refused before the grant is used.
         let grant = rt
-            .block_on(vault.authorize(GrantPurpose::RevealSecret, VaultCredential::Unencrypted))
+            .block_on(vault.authorize(
+                GrantPurpose::SignMessage,
+                Some(id.clone()),
+                VaultCredential::Unencrypted,
+            ))
             .unwrap();
         let signed = rt.block_on(session.sign_message(
             id.clone(),
@@ -601,7 +621,7 @@ mod tests {
             Err(WalletError::GrantInvalid)
         ));
         let wipe = rt
-            .block_on(vault.authorize(GrantPurpose::Wipe, VaultCredential::Unencrypted))
+            .block_on(vault.authorize(GrantPurpose::Wipe, Some(id.clone()), passphrase()))
             .unwrap();
         rt.block_on(session.remove_wallet(id.clone(), wipe.id))
             .unwrap();

@@ -7,6 +7,8 @@
 //! Each call decrypts the seed record, derives the key for `path`, signs and
 //! erases the derived key; nothing secret is cached in the signer.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use dashcore::secp256k1::{Message, PublicKey, Secp256k1, ecdsa};
 use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey};
@@ -14,6 +16,7 @@ use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
 
 use crate::SignerError;
+use crate::crypto::Key32;
 use crate::types::WalletId;
 use crate::vault::Vault;
 
@@ -53,6 +56,10 @@ pub struct VaultSigner {
     wallet_id: WalletId,
     scope: SignerScope,
     epoch: u64,
+    /// The data key of the grant that issued this signer, when a passphrase
+    /// authorized it on a locked or mixing-only vault; otherwise the vault's
+    /// key is used. Zeroized when the last clone drops.
+    own_key: Option<Arc<Key32>>,
 }
 
 impl std::fmt::Debug for VaultSigner {
@@ -80,12 +87,19 @@ pub fn is_coinjoin_path(path: &DerivationPath, network: Network) -> bool {
 }
 
 impl VaultSigner {
-    pub(crate) fn new(vault: Vault, wallet_id: WalletId, scope: SignerScope, epoch: u64) -> Self {
+    pub(crate) fn new(
+        vault: Vault,
+        wallet_id: WalletId,
+        scope: SignerScope,
+        epoch: u64,
+        own_key: Option<Arc<Key32>>,
+    ) -> Self {
         Self {
             vault,
             wallet_id,
             scope,
             epoch,
+            own_key,
         }
     }
 
@@ -99,7 +113,9 @@ impl VaultSigner {
         if self.scope == SignerScope::CoinJoinOnly && !is_coinjoin_path(path, network) {
             return Err(SignerError::PathNotAllowed(path.to_string()));
         }
-        let seed = self.vault.signing_seed(&self.wallet_id, self.epoch)?;
+        let seed = self
+            .vault
+            .signing_seed(&self.wallet_id, self.epoch, self.own_key.as_deref())?;
         let secp = Secp256k1::new();
         let mut master = ExtendedPrivKey::new_master(network, &seed[..])
             .map_err(|e| SignerError::Derivation(e.to_string()))?;

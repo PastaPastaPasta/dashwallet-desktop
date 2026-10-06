@@ -198,9 +198,12 @@ impl NetworkSession {
             let live = this.live()?;
             this.require_wallet(&id)?;
             let vault = this.vault.clone();
-            // The grant is redeemed (consumed) before anything is deleted.
-            tokio::task::spawn_blocking(move || vault.redeem_grant(&grant_id, GrantKind::Wipe))
-                .await??;
+            // The grant is redeemed (consumed) before anything is deleted. Its
+            // token carries the key of a passphrase grant on a locked vault.
+            let token = tokio::task::spawn_blocking(move || {
+                vault.redeem_grant(&grant_id, GrantKind::Wipe, Some(&id.0))
+            })
+            .await??;
 
             live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
@@ -216,7 +219,7 @@ impl NetworkSession {
                 appdb
                     .delete_wallet(&id.to_string())
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-                vault.delete_wallet_secret(&id.0)?;
+                vault.wipe_wallet_secret(&id.0, &token)?;
                 Ok(())
             })
             .await??;

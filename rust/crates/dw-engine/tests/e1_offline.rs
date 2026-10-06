@@ -173,7 +173,9 @@ fn names_rename_and_remove() {
 
     // Remove needs a Wipe grant.
     let wrong = engine
-        .block_on(s.vault_op(|v| v.authorize(GrantPurpose::SignMessage, Credential::None)))
+        .block_on(s.vault_op(move |v| {
+            v.authorize(GrantPurpose::SignMessage, Some(&b.0), Credential::None)
+        }))
         .unwrap();
     assert!(matches!(
         engine.block_on(s.remove_wallet(b, wrong.id)),
@@ -186,7 +188,9 @@ fn names_rename_and_remove() {
         Err(EngineError::Vault(dw_vault::VaultError::GrantInvalid))
     ));
     let wipe = engine
-        .block_on(s.vault_op(|v| v.authorize(GrantPurpose::Wipe, Credential::None)))
+        .block_on(
+            s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&b.0), Credential::None)),
+        )
         .unwrap();
     engine.block_on(s.remove_wallet(b, wipe.id)).unwrap();
     assert!(!s.vault().has_wallet_secret(&b.0));

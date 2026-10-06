@@ -1,9 +1,18 @@
 //! The vault of one network: data key, wrap slots, records, lock state and
 //! grants (DESIGN-opus §1.8).
 //!
-//! Locking: `inner` is a short-held std mutex. Argon2id derivations and OS
-//! store calls run outside it; file writes run inside it so read-modify-write
-//! of the vault file is serialized.
+//! Locking:
+//! - `writer` serializes every change of the vault file and every passphrase
+//!   check. It is held for the whole read-modify-write (`create`, `encrypt`,
+//!   `change_passphrase`, record commits, throttle updates) and across the
+//!   Argon2id derivation of a passphrase attempt, so two attempts never pass
+//!   the throttle check together. `inner.file` changes only under `writer`,
+//!   and each write starts from `inner.file` and changes only its own part.
+//!   The file on disk is read only at open and for the post-write check.
+//! - `inner` is a short-held mutex over the in-memory state. Argon2id, OS
+//!   store calls and file writes run outside it.
+//!
+//! Lock order: `writer`, then `inner`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,6 +32,9 @@ use crate::types::{
     SeedDerivation, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 use crate::{SignerError, VaultError};
+
+/// Proof that the caller holds `Shared::writer`.
+type WriteGuard<'a> = MutexGuard<'a, ()>;
 
 /// Longest accepted vault passphrase, in bytes.
 pub const MAX_PASSPHRASE_BYTES: usize = 1024;
@@ -47,8 +59,9 @@ fn seed_record_wallet(id: &str) -> Option<WalletId> {
 }
 
 /// Seconds a caller waits after `failed` consecutive failures: iOS's
-/// `6^(n−3)·60 s` from the third failure on (IOS-012). UX throttling only;
-/// Argon2id cost is the real protection.
+/// `6^(n−3)·60 s` from the third failure on (IOS-012). UX throttling only:
+/// the counter is stored in the vault file outside the AEAD, so whoever can
+/// edit the file can reset it. Argon2id cost is the real protection.
 pub fn throttle_wait_secs(failed: u32) -> u64 {
     if failed < 3 {
         return 0;
@@ -129,16 +142,27 @@ fn decode_seed(payload: &[u8]) -> Result<(Zeroizing<[u8; 64]>, SeedDerivation), 
     Ok((seed, derivation))
 }
 
+/// A grant held in vault memory.
+struct IssuedGrant {
+    grant: AuthGrant,
+    /// The data key, when a passphrase authorized this grant on a vault that
+    /// held no full-scope key (locked or mixing-only). Only this grant uses
+    /// it; the vault's lock state is unchanged (dash-qt re-lock parity).
+    key: Option<Key32>,
+}
+
 struct Inner {
+    /// The vault file as last written (or read at open). Changes only under
+    /// `Shared::writer`.
     file: Option<VaultFile>,
     dek: Option<Key32>,
     scope: UnlockScope,
-    /// Bumped whenever the data key leaves memory or the unlock scope
-    /// changes. Grant tokens and signers from an older epoch are refused.
+    /// Bumped whenever the vault locks or the unlock scope changes. Grants,
+    /// grant tokens and signers from an older epoch are refused.
     epoch: u64,
     /// Highest manifest generation seen by this process (rollback check).
     high_water: u64,
-    grants: HashMap<String, AuthGrant>,
+    grants: HashMap<String, IssuedGrant>,
 }
 
 impl Inner {
@@ -168,6 +192,8 @@ pub(crate) struct Shared {
     /// Network tag bound into every AAD (`regtest`, `devnet-<name>`, …).
     tag: String,
     config: VaultConfig,
+    /// Serializes file changes and passphrase checks (see the module doc).
+    writer: Mutex<()>,
     inner: Mutex<Inner>,
 }
 
@@ -211,6 +237,7 @@ impl Vault {
                 network,
                 tag: network_tag.to_owned(),
                 config,
+                writer: Mutex::new(()),
                 inner: Mutex::new(Inner {
                     file,
                     dek: None,
@@ -236,6 +263,26 @@ impl Vault {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn writer(&self) -> WriteGuard<'_> {
+        self.shared
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A copy of the in-memory file to change under `writer`.
+    fn file_copy(&self, _writer: &WriteGuard<'_>) -> Result<VaultFile, VaultError> {
+        self.inner().file.clone().ok_or(VaultError::NoVault)
+    }
+
+    /// Writes `next` to disk, then makes it the in-memory file. `next` was
+    /// built from [`Self::file_copy`] under the same `writer` guard.
+    fn persist(&self, _writer: &WriteGuard<'_>, next: VaultFile) -> Result<(), VaultError> {
+        file::write(&self.shared.dir, &next)?;
+        self.inner().file = Some(next);
+        Ok(())
     }
 
     fn now(&self) -> u64 {
@@ -297,6 +344,7 @@ impl Vault {
     /// `None` = unencrypted (data key in the OS store, slot O). Leaves the
     /// vault unlocked.
     pub fn create(&self, passphrase: Option<&[u8]>) -> Result<VaultStatus, VaultError> {
+        let writer = self.writer();
         if self.inner().file.is_some() || file::read(&self.shared.dir)?.is_some() {
             return Err(VaultError::AlreadyExists);
         }
@@ -355,13 +403,7 @@ impl Vault {
             records: BTreeMap::new(),
         };
 
-        let mut inner = self.inner();
-        let written = if inner.file.is_some() {
-            Err(VaultError::AlreadyExists)
-        } else {
-            file::write(&self.shared.dir, &vault_file)
-        };
-        if let Err(e) = written {
+        if let Err(e) = file::write(&self.shared.dir, &vault_file) {
             if let Some(o) = &vault_file.slot_o
                 && let Ok(service) = <[u8; 32]>::try_from(o.service.as_slice())
                 && let Err(cleanup) = self.shared.config.os_store.delete(&service, &o.label)
@@ -370,9 +412,11 @@ impl Vault {
             }
             return Err(e);
         }
+        let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
         inner.install_key(dek, UnlockScope::Full);
+        drop(writer);
         Ok(self.status_of(&inner))
     }
 
@@ -385,15 +429,13 @@ impl Vault {
         grant_id: &str,
     ) -> Result<VaultStatus, VaultError> {
         let pw = new_passphrase(new_passphrase_bytes)?;
-        {
-            let inner = self.inner();
-            let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
-            if f.slot_p.is_some() {
-                return Err(VaultError::AlreadyEncrypted);
-            }
+        let writer = self.writer();
+        let mut next = self.file_copy(&writer)?;
+        if next.slot_p.is_some() {
+            return Err(VaultError::AlreadyEncrypted);
         }
-        self.redeem_grant(grant_id, GrantKind::ChangeCredential)?;
-        let dek = self.full_dek()?;
+        let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
+        let dek = self.key_for(&token)?;
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
         let (kdf, kek) = crypto::derive_new_kek(
             &pw,
@@ -401,12 +443,6 @@ impl Vault {
             self.shared.config.kdf,
             self.production_network(),
         )?;
-
-        let mut inner = self.inner();
-        let mut next = inner.file.clone().ok_or(VaultError::NoVault)?;
-        if next.slot_p.is_some() {
-            return Err(VaultError::AlreadyEncrypted);
-        }
         let aad = file::slot_p_aad(&next.vault_id, &next.network, &kdf, &salt);
         next.slot_p = Some(PassphraseSlot {
             kdf,
@@ -414,11 +450,13 @@ impl Vault {
             wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
         });
         let old_slot = next.slot_o.take();
-        file::write(&self.shared.dir, &next)?;
-        inner.file = Some(next);
-        inner.forget_key();
-        let status = self.status_of(&inner);
-        drop(inner);
+        self.persist(&writer, next)?;
+        let status = {
+            let mut inner = self.inner();
+            inner.forget_key();
+            self.status_of(&inner)
+        };
+        drop(writer);
 
         if let Some(o) = old_slot {
             let service: [u8; 32] = o
@@ -442,21 +480,21 @@ impl Vault {
     /// Unwraps the data key with `passphrase`. Failed attempts count toward
     /// the throttle.
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
-        let (dek, disk) = self.check_passphrase(passphrase)?;
+        let writer = self.writer();
+        let dek = self.check_passphrase(&writer, passphrase)?;
         let mut inner = self.inner();
-        inner.file = Some(disk);
         inner.install_key(dek, scope);
         Ok(self.status_of(&inner))
     }
 
-    /// Drops the data key and revokes every grant. Idempotent. On an
-    /// unencrypted vault this drops the cached key (it is re-read from the
-    /// OS store on demand) and revokes grants; the state stays `Unencrypted`.
+    /// Drops the data key, revokes every grant and invalidates every
+    /// outstanding grant token and signer, including those that carry a
+    /// grant's own key. Idempotent. On an unencrypted vault this drops the
+    /// cached key (it is re-read from the OS store on demand); the state
+    /// stays `Unencrypted`.
     pub fn lock(&self) -> VaultStatus {
         let mut inner = self.inner();
-        if inner.dek.is_some() || !inner.grants.is_empty() {
-            inner.forget_key();
-        }
+        inner.forget_key();
         self.status_of(&inner)
     }
 
@@ -464,7 +502,8 @@ impl Vault {
     /// unchanged. The lock state is preserved.
     pub fn change_passphrase(&self, old: &[u8], new: &[u8]) -> Result<VaultStatus, VaultError> {
         let new = new_passphrase(new)?;
-        let (dek, disk) = self.check_passphrase(old)?;
+        let writer = self.writer();
+        let dek = self.check_passphrase(&writer, old)?;
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
         let (kdf, kek) = crypto::derive_new_kek(
             &new,
@@ -472,44 +511,44 @@ impl Vault {
             self.shared.config.kdf,
             self.production_network(),
         )?;
-        let mut inner = self.inner();
-        let mut next = disk;
+        let mut next = self.file_copy(&writer)?;
         let aad = file::slot_p_aad(&next.vault_id, &next.network, &kdf, &salt);
         next.slot_p = Some(PassphraseSlot {
             kdf,
             salt: salt.to_vec(),
             wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
         });
-        file::write(&self.shared.dir, &next)?;
-        inner.file = Some(next);
-        Ok(self.status_of(&inner))
+        self.persist(&writer, next)?;
+        Ok(self.status())
     }
 
-    /// Verifies `passphrase` against slot P of the file on disk. On success
-    /// returns the data key and the disk file (throttle reset); on failure
-    /// records the attempt.
-    fn check_passphrase(&self, passphrase: &[u8]) -> Result<(Key32, VaultFile), VaultError> {
+    /// Verifies `passphrase` against slot P of the in-memory file and checks
+    /// the manifest with the unwrapped key. On success resets the throttle
+    /// and returns the data key; on failure records the attempt. Runs under
+    /// `writer`, so attempts are serialized and each one sees the throttle
+    /// the previous one left.
+    fn check_passphrase(
+        &self,
+        writer: &WriteGuard<'_>,
+        passphrase: &[u8],
+    ) -> Result<Key32, VaultError> {
         let pw = normalize_passphrase(passphrase);
-        let disk = file::read(&self.shared.dir)?.ok_or(VaultError::NoVault)?;
-        let slot = disk.slot_p.clone().ok_or(VaultError::NotEncrypted)?;
-        {
+        let (slot, aad) = {
             let inner = self.inner();
-            let throttle = inner
-                .file
-                .as_ref()
-                .map(|f| &f.throttle)
-                .unwrap_or(&disk.throttle);
-            if let Some(secs) = retry_after(throttle, self.now()) {
+            let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+            let slot = f.slot_p.clone().ok_or(VaultError::NotEncrypted)?;
+            if let Some(secs) = retry_after(&f.throttle, self.now()) {
                 return Err(VaultError::Throttled {
                     retry_after_secs: secs,
                 });
             }
-        }
+            let aad = file::slot_p_aad(&f.vault_id, &f.network, &slot.kdf, &slot.salt);
+            (slot, aad)
+        };
 
         let kek = crypto::derive_kek(&pw, &slot.salt, &slot.kdf)?;
-        let aad = file::slot_p_aad(&disk.vault_id, &disk.network, &slot.kdf, &slot.salt);
         let Some(opened) = crypto::open(&kek, &slot.wrapped_dek, &aad) else {
-            return Err(self.record_failure());
+            return Err(self.record_failure(writer));
         };
         let dek: Key32 = Zeroizing::new(
             opened[..]
@@ -517,38 +556,39 @@ impl Vault {
                 .map_err(|_| VaultError::Corrupt("data key length".into()))?,
         );
 
-        let mut inner = self.inner();
-        let manifest = verify_manifest(&disk, &dek, inner.high_water)?;
-        inner.high_water = inner.high_water.max(manifest.generation);
-        let mut disk = disk;
-        let had_failures = inner
-            .file
-            .as_ref()
-            .is_some_and(|f| f.throttle != Throttle::default())
-            || disk.throttle != Throttle::default();
+        let had_failures = {
+            let mut inner = self.inner();
+            let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+            let manifest = verify_manifest(f, &dek, inner.high_water)?;
+            let had_failures = f.throttle != Throttle::default();
+            inner.high_water = inner.high_water.max(manifest.generation);
+            had_failures
+        };
         if had_failures {
-            disk.throttle = Throttle::default();
-            file::write(&self.shared.dir, &disk)?;
-            inner.file = Some(disk.clone());
+            let mut next = self.file_copy(writer)?;
+            next.throttle = Throttle::default();
+            self.persist(writer, next)?;
         }
-        Ok((dek, disk))
+        Ok(dek)
     }
 
-    /// Persists one more failed attempt and returns the error to report.
-    fn record_failure(&self) -> VaultError {
+    /// Persists one more failed attempt and returns the error to report. The
+    /// in-memory counter counts the attempt even when the write fails.
+    fn record_failure(&self, writer: &WriteGuard<'_>) -> VaultError {
         let now = self.now();
-        let mut inner = self.inner();
-        let Some(f) = inner.file.as_mut() else {
-            return VaultError::NoVault;
+        let mut next = match self.file_copy(writer) {
+            Ok(f) => f,
+            Err(e) => return e,
         };
-        f.throttle.failed_attempts = f.throttle.failed_attempts.saturating_add(1);
-        f.throttle.last_failure_at = Some(now.max(f.throttle.last_failure_at.unwrap_or(0)));
-        let failed_attempts = f.throttle.failed_attempts;
-        let retry_after_secs = retry_after(&f.throttle, now);
-        let snapshot = f.clone();
-        if let Err(e) = file::write(&self.shared.dir, &snapshot) {
+        let t = &mut next.throttle;
+        t.failed_attempts = t.failed_attempts.saturating_add(1);
+        t.last_failure_at = Some(now.max(t.last_failure_at.unwrap_or(0)));
+        let failed_attempts = t.failed_attempts;
+        let retry_after_secs = retry_after(t, now);
+        if let Err(e) = file::write(&self.shared.dir, &next) {
             tracing::warn!(error = %e, "could not persist the failed-attempt counter");
         }
+        self.inner().file = Some(next);
         VaultError::WrongPassphrase {
             failed_attempts,
             retry_after_secs,
@@ -556,48 +596,106 @@ impl Vault {
     }
 
     /// Checks `credential` and issues a single-use grant for `purpose`.
+    ///
+    /// `wallet` binds the grant: wallet-scoped purposes
+    /// ([`GrantPurpose::wallet_scoped`]) need the wallet the grant is for and
+    /// are refused for any other; `ChangeCredential` takes `None`.
+    ///
+    /// Credentials:
+    /// - `Passphrase`: checked against slot P (throttled). The lock state does
+    ///   not change: on a locked or mixing-only vault the unwrapped key is
+    ///   kept for this grant only and dropped when it is used, expires, is
+    ///   revoked or the vault locks.
+    /// - `None`: accepted on an unencrypted vault, and on a vault unlocked
+    ///   with scope Full except for [`GrantPurpose::requires_credential`]
+    ///   purposes, which need the passphrase whenever slot P exists.
+    /// - `QuickUnlock`: not available until slot B (M2).
     pub fn authorize(
         &self,
         purpose: GrantPurpose,
+        wallet: Option<&WalletId>,
         credential: Credential<'_>,
     ) -> Result<AuthGrant, VaultError> {
+        match (purpose.wallet_scoped(), wallet) {
+            (true, None) => {
+                return Err(VaultError::InvalidArgument(format!(
+                    "a {:?} grant needs a wallet id",
+                    purpose.kind()
+                )));
+            }
+            (false, Some(_)) => {
+                return Err(VaultError::InvalidArgument(format!(
+                    "a {:?} grant is not bound to a wallet",
+                    purpose.kind()
+                )));
+            }
+            _ => {}
+        }
         match credential {
             // TODO(biometric): slot B (Touch ID / Windows Hello) lands in M2.
-            Credential::QuickUnlock(_) => return Err(VaultError::QuickUnlockUnavailable),
+            Credential::QuickUnlock(_) => Err(VaultError::QuickUnlockUnavailable),
             Credential::Passphrase(pw) => {
-                {
-                    let inner = self.inner();
-                    let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
-                    if f.slot_p.is_none() {
-                        return Err(VaultError::NotEncrypted);
-                    }
-                }
-                let (dek, disk) = self.check_passphrase(pw)?;
+                let writer = self.writer();
+                let dek = self.check_passphrase(&writer, pw)?;
                 let mut inner = self.inner();
-                inner.file = Some(disk);
-                inner.install_key(dek, UnlockScope::Full);
+                let full_in_memory = inner.dek.is_some() && inner.scope == UnlockScope::Full;
+                self.issue(
+                    &mut inner,
+                    purpose,
+                    wallet,
+                    (!full_in_memory).then_some(dek),
+                )
             }
-            Credential::None => match self.lock_state() {
-                LockState::NoVault => return Err(VaultError::NoVault),
-                LockState::Locked => return Err(VaultError::Locked),
-                LockState::UnlockedMixingOnly => return Err(VaultError::MixingOnly),
-                LockState::NoKeys | LockState::Unencrypted => {
+            Credential::None => {
+                if matches!(
+                    self.lock_state(),
+                    LockState::NoKeys | LockState::Unencrypted
+                ) {
+                    // Fails when the OS store cannot produce the data key.
                     self.full_dek()?;
                 }
-                LockState::Unlocked => {}
-            },
+                let mut inner = self.inner();
+                match Self::state_of(&inner) {
+                    LockState::NoVault => return Err(VaultError::NoVault),
+                    LockState::Locked | LockState::UnlockedMixingOnly | LockState::Unlocked
+                        if purpose.requires_credential() =>
+                    {
+                        return Err(VaultError::CredentialRequired);
+                    }
+                    LockState::Locked => return Err(VaultError::Locked),
+                    LockState::UnlockedMixingOnly => return Err(VaultError::MixingOnly),
+                    LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked => {}
+                }
+                self.issue(&mut inner, purpose, wallet, None)
+            }
         }
+    }
+
+    /// Stores a new grant, dropping expired ones.
+    fn issue(
+        &self,
+        inner: &mut Inner,
+        purpose: GrantPurpose,
+        wallet: Option<&WalletId>,
+        key: Option<Key32>,
+    ) -> Result<AuthGrant, VaultError> {
         let id = hex::encode(crypto::random_array::<16>()?);
         let now = self.now();
         let grant = AuthGrant {
             id: id.clone(),
             purpose,
+            wallet: wallet.copied(),
             expires_at: now.saturating_add(self.shared.config.grant_ttl_secs),
             single_use: true,
         };
-        let mut inner = self.inner();
-        inner.grants.retain(|_, g| g.expires_at >= now);
-        inner.grants.insert(id, grant.clone());
+        inner.grants.retain(|_, g| g.grant.expires_at >= now);
+        inner.grants.insert(
+            id,
+            IssuedGrant {
+                grant: grant.clone(),
+                key,
+            },
+        );
         Ok(grant)
     }
 
@@ -606,33 +704,98 @@ impl Vault {
         self.inner().grants.remove(grant_id);
     }
 
-    /// Checks and consumes a grant. A purpose mismatch leaves it in place.
+    /// Checks that `grant_id` is live, of kind `expected` and bound to
+    /// `wallet` (`None` for vault-wide purposes).
+    fn valid_grant<'a>(
+        inner: &'a mut Inner,
+        grant_id: &str,
+        expected: GrantKind,
+        wallet: Option<&WalletId>,
+        now: u64,
+    ) -> Result<&'a IssuedGrant, VaultError> {
+        let expired = inner
+            .grants
+            .get(grant_id)
+            .ok_or(VaultError::GrantInvalid)?
+            .grant
+            .expires_at
+            < now;
+        if expired {
+            inner.grants.remove(grant_id);
+            return Err(VaultError::GrantInvalid);
+        }
+        let issued = &inner.grants[grant_id];
+        if issued.grant.purpose.kind() != expected || issued.grant.wallet.as_ref() != wallet {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        Ok(issued)
+    }
+
+    /// Checks a grant without consuming it: it exists, has not expired, is of
+    /// kind `expected`, is bound to `wallet`, and a key is available to use it
+    /// (its own key, or the vault's). Lets a caller refuse early, before work
+    /// that only the grant's redemption would otherwise reject.
+    pub fn check_grant(
+        &self,
+        grant_id: &str,
+        expected: GrantKind,
+        wallet: Option<&WalletId>,
+    ) -> Result<(), VaultError> {
+        let now = self.now();
+        let mut inner = self.inner();
+        let state = Self::state_of(&inner);
+        let own_key = Self::valid_grant(&mut inner, grant_id, expected, wallet, now)
+            .map(|issued| issued.key.is_some());
+        match own_key {
+            Ok(true) => return Ok(()),
+            // A missing grant on a locked vault was most likely revoked by
+            // the lock, so the lock is reported first.
+            Ok(false) | Err(VaultError::GrantInvalid) => match state {
+                LockState::NoVault => return Err(VaultError::NoVault),
+                LockState::Locked => return Err(VaultError::Locked),
+                LockState::UnlockedMixingOnly => return Err(VaultError::MixingOnly),
+                _ => {}
+            },
+            Err(_) => {}
+        }
+        own_key.map(|_| ())
+    }
+
+    /// Checks and consumes a grant. `wallet` is the wallet the call acts on
+    /// (`None` for vault-wide purposes); a grant bound to another wallet, or
+    /// issued for another purpose, is refused with `GrantPurposeMismatch` and
+    /// left in place.
     pub fn redeem_grant(
         &self,
         grant_id: &str,
         expected: GrantKind,
+        wallet: Option<&WalletId>,
     ) -> Result<GrantToken, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
-        let grant = inner
+        Self::valid_grant(&mut inner, grant_id, expected, wallet, now)?;
+        let issued = inner
             .grants
-            .get(grant_id)
-            .cloned()
+            .remove(grant_id)
             .ok_or(VaultError::GrantInvalid)?;
-        if now > grant.expires_at {
-            inner.grants.remove(grant_id);
-            return Err(VaultError::GrantInvalid);
-        }
-        if grant.purpose.kind() != expected {
-            return Err(VaultError::GrantPurposeMismatch);
-        }
-        if grant.single_use {
-            inner.grants.remove(grant_id);
-        }
         Ok(GrantToken {
-            purpose: grant.purpose,
+            purpose: issued.grant.purpose,
+            wallet: issued.grant.wallet,
             epoch: inner.epoch,
+            key: issued.key,
         })
+    }
+
+    /// The full-scope data key a redeemed grant acts with: the grant's own
+    /// key, or the vault's. Refused once the vault locked after redemption.
+    fn key_for(&self, token: &GrantToken) -> Result<Key32, VaultError> {
+        if self.inner().epoch != token.epoch {
+            return Err(VaultError::Locked);
+        }
+        match &token.key {
+            Some(key) => Ok(Zeroizing::new(**key)),
+            None => self.full_dek(),
+        }
     }
 
     /// The data key with full scope: in memory after unlock, or read from
@@ -687,15 +850,15 @@ impl Vault {
     /// Applies record changes (`None` deletes), bumps the manifest
     /// generation, writes the file, then reads it back from disk and checks
     /// every change landed byte for byte (seed-safety ordering, iOS rule 3).
+    /// Holds `writer` throughout, so no other change of the file interleaves.
     fn commit_records(
         &self,
         dek: &Key32,
         changes: &[(String, Option<&[u8]>)],
     ) -> Result<(), VaultError> {
-        let mut inner = self.inner();
-        let current = inner.file.clone().ok_or(VaultError::NoVault)?;
-        let mut manifest = verify_manifest(&current, dek, inner.high_water)?;
-        let mut next = current;
+        let writer = self.writer();
+        let mut next = self.file_copy(&writer)?;
+        let mut manifest = verify_manifest(&next, dek, self.inner().high_water)?;
         for (id, value) in changes {
             match value {
                 Some(v) => {
@@ -714,13 +877,16 @@ impl Vault {
         }
         manifest.generation += 1;
         next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
-        file::write(&self.shared.dir, &next)?;
-        inner.high_water = manifest.generation;
-        inner.file = Some(next);
+        self.persist(&writer, next)?;
+        let high_water = {
+            let mut inner = self.inner();
+            inner.high_water = inner.high_water.max(manifest.generation);
+            inner.high_water
+        };
 
         let disk = file::read(&self.shared.dir)?
             .ok_or_else(|| VaultError::Corrupt("vault file vanished after write".into()))?;
-        verify_manifest(&disk, dek, inner.high_water)?;
+        verify_manifest(&disk, dek, high_water)?;
         for (id, value) in changes {
             let stored = disk.records.get(id);
             let matches = match (value, stored) {
@@ -777,24 +943,58 @@ impl Vault {
         )
     }
 
-    /// Deletes every record of `wallet`. `Ok(false)` when it had none.
+    /// Deletes every record of `wallet` with the vault's full-scope key.
+    /// `Ok(false)` when it had none. Used to roll back a failed import; user
+    /// removal goes through [`Self::wipe_wallet_secret`].
     pub fn delete_wallet_secret(&self, wallet: &WalletId) -> Result<bool, VaultError> {
-        let ids: Vec<String> = [REC_MNEMONIC, REC_PASSPHRASE, REC_SEED]
-            .iter()
-            .map(|k| record_id(wallet, k))
-            .collect();
-        let present = {
-            let inner = self.inner();
-            let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
-            ids.iter().any(|id| f.records.contains_key(id))
-        };
-        if !present {
+        if !self.has_any_record(wallet)? {
             return Ok(false);
         }
         let dek = self.full_dek()?;
-        let changes: Vec<(String, Option<&[u8]>)> = ids.into_iter().map(|id| (id, None)).collect();
-        self.commit_records(&dek, &changes)?;
+        self.delete_records(wallet, &dek)?;
         Ok(true)
+    }
+
+    /// Deletes every record of `wallet` under a redeemed `Wipe` grant for that
+    /// wallet, with the grant's key when it carries one (a passphrase grant on
+    /// a locked vault). `Ok(false)` when it had none.
+    pub fn wipe_wallet_secret(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+    ) -> Result<bool, VaultError> {
+        if token.purpose.kind() != GrantKind::Wipe || token.wallet.as_ref() != Some(wallet) {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        if !self.has_any_record(wallet)? {
+            return Ok(false);
+        }
+        let dek = self.key_for(token)?;
+        self.delete_records(wallet, &dek)?;
+        Ok(true)
+    }
+
+    fn wallet_record_ids(wallet: &WalletId) -> Vec<String> {
+        [REC_MNEMONIC, REC_PASSPHRASE, REC_SEED]
+            .iter()
+            .map(|k| record_id(wallet, k))
+            .collect()
+    }
+
+    fn has_any_record(&self, wallet: &WalletId) -> Result<bool, VaultError> {
+        let inner = self.inner();
+        let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+        Ok(Self::wallet_record_ids(wallet)
+            .iter()
+            .any(|id| f.records.contains_key(id)))
+    }
+
+    fn delete_records(&self, wallet: &WalletId, dek: &Key32) -> Result<(), VaultError> {
+        let changes: Vec<(String, Option<&[u8]>)> = Self::wallet_record_ids(wallet)
+            .into_iter()
+            .map(|id| (id, None))
+            .collect();
+        self.commit_records(dek, &changes)
     }
 
     /// Whether the vault holds a seed for `wallet`. In-memory read.
@@ -815,14 +1015,14 @@ impl Vault {
     }
 
     /// The recovery phrase and BIP39 passphrase (QT-113, IOS-006). Needs a
-    /// `RevealSecret` grant.
+    /// `RevealSecret` grant bound to `wallet`.
     pub fn reveal_mnemonic(
         &self,
         wallet: &WalletId,
         grant_id: &str,
     ) -> Result<RevealedMnemonic, VaultError> {
-        self.redeem_grant(grant_id, GrantKind::RevealSecret)?;
-        let dek = self.full_dek()?;
+        let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
+        let dek = self.key_for(&token)?;
         let phrase = self
             .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
             .ok_or(VaultError::NoSecret)?;
@@ -836,18 +1036,29 @@ impl Vault {
     }
 
     /// A signer for every derivation of `wallet`, authorized by a redeemed
-    /// grant whose purpose signs (spend, message, masternode, governance,
-    /// platform). The signer stops working when the vault locks.
+    /// grant for that wallet whose purpose signs (spend, message, masternode,
+    /// governance, platform). A grant authorized by passphrase on a locked or
+    /// mixing-only vault hands its own key to the signer. The signer stops
+    /// working when the vault locks or changes unlock scope.
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
-        if !token.purpose.signs() {
+        if !token.purpose.signs() || token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        self.full_dek()?;
+        let own_key = match &token.key {
+            Some(key) => Some(Arc::new(Zeroizing::new(**key))),
+            None => {
+                self.full_dek()?;
+                None
+            }
+        };
         let inner = self.inner();
         if token.epoch != inner.epoch {
             return Err(VaultError::GrantInvalid);
         }
-        self.signer_locked(&inner, wallet, SignerScope::Full)
+        if own_key.is_none() && inner.dek.is_none() {
+            return Err(VaultError::Locked);
+        }
+        self.signer_locked(&inner, wallet, SignerScope::Full, own_key)
     }
 
     /// A signer limited to the CoinJoin account (`m/9'/coin'/4'/…`). Works in
@@ -863,7 +1074,10 @@ impl Vault {
             LockState::Unlocked | LockState::UnlockedMixingOnly => {}
         }
         let inner = self.inner();
-        self.signer_locked(&inner, wallet, SignerScope::CoinJoinOnly)
+        if inner.dek.is_none() {
+            return Err(VaultError::Locked);
+        }
+        self.signer_locked(&inner, wallet, SignerScope::CoinJoinOnly, None)
     }
 
     fn signer_locked(
@@ -871,10 +1085,8 @@ impl Vault {
         inner: &Inner,
         wallet: &WalletId,
         scope: SignerScope,
+        own_key: Option<Arc<Key32>>,
     ) -> Result<VaultSigner, VaultError> {
-        if inner.dek.is_none() {
-            return Err(VaultError::Locked);
-        }
         let has_seed = inner
             .file
             .as_ref()
@@ -882,21 +1094,32 @@ impl Vault {
         if !has_seed {
             return Err(VaultError::NoSecret);
         }
-        Ok(VaultSigner::new(self.clone(), *wallet, scope, inner.epoch))
+        Ok(VaultSigner::new(
+            self.clone(),
+            *wallet,
+            scope,
+            inner.epoch,
+            own_key,
+        ))
     }
 
-    /// Seed of `wallet` for a signer issued at `epoch`.
+    /// Seed of `wallet` for a signer issued at `epoch`, decrypted with the
+    /// signer's own key or the vault's.
     pub(crate) fn signing_seed(
         &self,
         wallet: &WalletId,
         epoch: u64,
+        own_key: Option<&Key32>,
     ) -> Result<Zeroizing<[u8; 64]>, SignerError> {
         let dek = {
             let inner = self.inner();
             if inner.epoch != epoch {
                 return Err(SignerError::Locked);
             }
-            Zeroizing::new(**inner.dek.as_ref().ok_or(SignerError::Locked)?)
+            match own_key {
+                Some(key) => Zeroizing::new(**key),
+                None => Zeroizing::new(**inner.dek.as_ref().ok_or(SignerError::Locked)?),
+            }
         };
         let payload = self
             .read_record(&dek, &record_id(wallet, REC_SEED))?

@@ -32,7 +32,7 @@ Owners:
 | Pure functions | `units`, `uri`, `verify_message`, `generate_mnemonic`, `check_mnemonic` are free functions; they need no session and run on the caller's thread. |
 | Events | Signals, not data (DESIGN-opus §1.5 rule 4). Hosts re-query on arrival. Rust debounces each domain to ≤ 4 Hz and **always delivers the last change of a burst** (review H2). |
 | Errors | One `uniffi::Error` enum per domain. Each variant has a stable code (§4). `detail` strings are diagnostics for logs; Rust never produces user-facing copy. |
-| Grants | Calls that spend, reveal, sign or wipe take a `grant_id` from `Vault.authorize`. Grants are single-use. The engine checks purpose, expiry and, for `Spend`, that `external_sent` (§2.7.1) is at most `max_duffs`. |
+| Grants | Calls that spend, reveal, sign or wipe take a `grant_id` from `Vault.authorize`. Grants are single-use and bound to the wallet they were issued for (§2.2). The engine checks purpose, wallet, expiry and, for `Spend`, that `external_sent` (§2.7.1) is at most `max_duffs`. |
 
 Object model:
 
@@ -61,18 +61,61 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 
 `NetworkSession.vault() -> Vault` returns a handle to the network's vault (sync, cheap).
 
+Status: every row marked **works** is tested in `dw-vault/tests/` (`vault.rs`, `race.rs`) and through the
+engine and FFI tests (review H2).
+
 | Call | Kind | Semantics | Errors (besides common) | Serves | Status |
 |---|---|---|---|---|---|
 | `Vault.status()` | sync | `VaultStatus { state, encrypted, quick_unlock_enrolled, failed_attempts, retry_after_secs, wallets_with_secrets }`. `state` ∈ `NoVault, NoKeys, Unencrypted, Locked, UnlockedMixingOnly, Unlocked`. | — | QT-022, IOS-013 | **works** |
 | `Vault.create(passphrase: Option<bytes>)` | async | `Some` = encrypted (slot P, Argon2id), `None` = unencrypted (slot O, OS store). Leaves the vault unlocked. | `vault.already_exists`, `vault.passphrase_rejected`, `vault.os_store_unavailable` | QT-102, QT-111, IOS-010 | **works** |
-| `Vault.encrypt(new_passphrase, grant_id)` | async | dash-qt "Encrypt Wallet": add slot P, delete slot O. `ChangeCredential` grant. | `vault.already_encrypted`, `vault.grant_invalid` | QT-111 | **works** |
-| `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`). | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | **works** |
-| `Vault.lock()` | sync | Drops the DEK, revokes all grants. Idempotent. | — | QT-111, IOS-015 | **works** |
-| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; seed unchanged. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected` | QT-111 | **works** |
-| `Vault.authorize(purpose, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`. Credentials: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted`. A passphrase also unlocks a locked vault. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `MasternodeOp`, `Governance`, `PlatformOp`. | `vault.wrong_passphrase`, `vault.throttled`, `vault.mixing_only`, `vault.quick_unlock_unavailable` | IOS-016/017 | **works** |
+| `Vault.encrypt(new_passphrase, grant_id)` | async | dash-qt "Encrypt Wallet": add slot P, delete slot O (the OS store copy of the data key). Leaves the vault locked. `ChangeCredential` grant (no wallet). | `vault.already_encrypted`, `vault.grant_invalid`, `vault.grant_purpose_mismatch` | QT-111 | **works** |
+| `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`), which is persisted in the vault file and survives a restart. Attempts (unlock, change passphrase, passphrase grants) run one at a time, so parallel attempts cannot all pass the throttle check. | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | **works** |
+| `Vault.lock()` | sync | Drops the DEK, revokes all grants and invalidates redeemed grants and signers (including those holding a grant's own key). Idempotent. | — | QT-111, IOS-015 | **works** |
+| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; records and seed unchanged; lock state unchanged. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted` | QT-111 | **works** |
+| `Vault.authorize(purpose, wallet_id: Option<String>, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`, single use, TTL 120 s. **Wallet binding** (review M-6): `wallet_id` is required for every purpose except `ChangeCredential`, which takes `None` (else `invalid_argument`); the grant is refused for any other wallet. **Credentials**: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted` (= no credential); see the requirement table below. A passphrase does **not** change the lock state (dash-qt re-lock parity, review M4): on a `Locked` or `UnlockedMixingOnly` vault the unwrapped key is held by this grant only and is dropped when the grant is used, expires, is revoked or the vault locks. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `MasternodeOp`, `Governance`, `PlatformOp`. | `vault.wrong_passphrase`, `vault.throttled`, `vault.not_encrypted`, `vault.locked`, `vault.mixing_only`, `vault.credential_required`, `vault.quick_unlock_unavailable`, `invalid_argument` (wallet binding) | IOS-016/017 | **works** |
 | `Vault.revoke_grant(grant_id)` | sync | Unknown ids ignored. | — | IOS-017 | **works** |
-| `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch`, `vault.locked` | QT-113, IOS-006 | **works** |
+| `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant for `wallet_id`. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch` (other purpose or other wallet), `vault.locked` | QT-113, IOS-006 | **works** |
 | `Vault.enroll_quick_unlock(grant_id)` / `remove_quick_unlock()` | async | Biometric slot B (M2). | `vault.quick_unlock_unavailable` | IOS-011 | stub (M2): `NotImplemented` from dw-vault |
+
+**Credential requirements** (Rust enforces these in `dw_vault::Vault::authorize`, review M5; Swift's
+`AuthenticationGate.requirement(for:)` must ask for at least as much):
+
+| Vault state | `RevealSecret`, `Wipe`, `ChangeCredential` | `Spend`, `SignMessage`, `MasternodeOp`, `Governance`, `PlatformOp` |
+|---|---|---|
+| `NoVault` | `vault.no_vault` | `vault.no_vault` |
+| `NoKeys`, `Unencrypted` | none (`Unencrypted`); a passphrase gives `vault.not_encrypted` | none (`Unencrypted`); a passphrase gives `vault.not_encrypted` |
+| `Locked` | passphrase (else `vault.credential_required`) | passphrase (else `vault.locked`) |
+| `UnlockedMixingOnly` | passphrase (else `vault.credential_required`) | passphrase (else `vault.mixing_only`) |
+| `Unlocked` | passphrase (else `vault.credential_required`) | none or passphrase; the host decides with "require authentication for every payment" |
+
+`QuickUnlock` will stand in for the passphrase once slot B exists (M2); until then it returns
+`vault.quick_unlock_unavailable`.
+
+**Using a grant.** The call a grant authorizes redeems it (consumes it) and names the wallet it acts on:
+`TxDraft.prepare` (`Spend`, the draft's wallet), `sign_message` (`SignMessage`), `remove_wallet` (`Wipe`),
+`reveal_mnemonic` (`RevealSecret`), `encrypt` (`ChangeCredential`). A grant of another purpose or for
+another wallet is refused and left in place; in the send, message and wallet domains this is their
+`grant_invalid` code. Before it plans, `TxDraft.prepare` checks without consuming the grant
+(`dw_vault::Vault::check_grant`) that a key is available, so a locked or mixing-only vault fails with
+`send.vault_locked` unless the grant carries its own key; grant errors come from the redemption after the
+plan. A passphrase
+grant on a locked or mixing-only vault signs, reveals or wipes with its own key and leaves the vault as it
+was.
+
+**Concurrency** (review H1). All changes of the vault file (create, encrypt, change passphrase, record
+writes, throttle updates) and all passphrase checks are serialized by one vault-level writer lock. Each
+write starts from the in-memory file and changes only its own part (a slot, the throttle, or records); the
+file on disk is read only when the vault opens and to verify a record write. A disk snapshot is never
+installed over the in-memory state, so a passphrase change running beside a wallet import cannot drop the
+imported seed.
+
+**Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
+or individually rolled-back record, or a changed manifest, makes unlock and reads fail with
+`vault.corrupt`. A changed wrapped key or KDF parameter fails like a wrong passphrase
+(`vault.wrong_passphrase`; the AEAD cannot tell them apart). The throttle counter is outside the AEAD
+(UX throttling only; Argon2id cost is the protection). A whole-file rollback to an older, self-consistent
+vault file is not detected across restarts (it needs a trusted monotonic anchor outside the file); while
+the app runs such a file is ignored and overwritten by the next write.
 
 ### 2.3 Wallets (`wallet.rs`) — owners B (generate/check/import) and E1 (registry)
 
@@ -158,8 +201,8 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   and a foreign custom change address); `total_debit` = inputs − outputs back to the wallet = `external_sent +
   fee`. A `Spend{max_duffs}` grant caps `external_sent`; the fee is bounded separately by `send.absurd_fee`
   (fee > 0.1 DASH, dash-qt `-maxtxfee`). The host authorizes `max_duffs = Σ recipient amounts` (plus
-  `estimate.change` when the change address is foreign). Spend grants are single-use (all grants are). Binding a
-  grant to a wallet id (review M-6) is the vault's (B) and not done yet.
+  `estimate.change` when the change address is foreign). Spend grants are single-use (all grants are) and
+  bound to the draft's wallet (review M-6, §2.2).
 - **Max (M-4).** See `max_spendable`.
 - **Draft binding (Low).** A `TxDraft` keeps its session alive but works only while it is open
   (`network_not_open` after close) and while the wallet is registered (`wallet_not_found` after removal). A
@@ -244,7 +287,7 @@ and `not_implemented` of these. Domain codes:
 
 | Domain enum | Codes |
 |---|---|
-| `VaultError` | `vault.no_vault`, `vault.already_exists`, `vault.locked`, `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted`, `vault.already_encrypted`, `vault.grant_invalid`, `vault.grant_purpose_mismatch`, `vault.mixing_only`, `vault.no_secret`, `vault.quick_unlock_unavailable`, `vault.os_store_unavailable`, `vault.corrupt` |
+| `VaultError` | `vault.no_vault`, `vault.already_exists`, `vault.locked`, `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted`, `vault.already_encrypted`, `vault.grant_invalid`, `vault.grant_purpose_mismatch`, `vault.credential_required`, `vault.mixing_only`, `vault.no_secret`, `vault.quick_unlock_unavailable`, `vault.os_store_unavailable`, `vault.corrupt` |
 | `WalletError` | `wallet.invalid_mnemonic`, `wallet.unsupported_word_count`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.grant_invalid`, `wallet.name_rejected` |
 | `SyncError` | `sync.spv_not_running`, `sync.height_out_of_range`, `sync.spv` |
 | `HistoryError` | `history.invalid_query`, `history.stale_cursor`, `history.tx_not_found` |
@@ -302,7 +345,7 @@ key-wallet builder parity check, `send::flow_tests` offline flows that sign thro
 Review findings H-3, H-4 (option A), M-4, M-5, M-7 (engine side), M-8 (contract) and the send Lows are settled in
 §2.7.1; Swift-side follow-ups are in m1-swift.md §3 (SendViewModel). Still owed:
 - `FullyMixedOnly` (and `utxos.fully_mixed_only`, `coinjoin_rounds`) need per-coin CoinJoin rounds (WS-06).
-- Grant ↔ wallet binding (review M-6) is the vault's.
+- Grant ↔ wallet binding (review M-6): done in the vault (§2.2).
 - `nSequence`/locktime differ from dash-qt (key-wallet builder), see §2.7.1.
 
 ### B vault
@@ -310,8 +353,12 @@ Status on main: dw-vault, §2.2 (except quick unlock, M2), `generate_mnemonic`, 
 the vault side of `import_wallet`, `VaultSigner` and `sign_message` are done and tested through the
 engine and the FFI. H1 and M5 are fixed: `create_wallet` is no longer exported, and the import order
 is derive → store and read back → register, rolling back only the records this call wrote.
+Final-review fixes (m1fix/vault): H1 (one writer lock over every vault-file read-modify-write and
+passphrase check; writes start from the in-memory file), H2 (`dw-vault/tests/`), M4 (passphrase grants keep
+the lock state), M5 (Rust enforces the credential table in §2.2), the throttle Low (attempts serialized),
+previous M-6 (grants bound to a wallet). `remove_wallet` deletes the records with the redeemed `Wipe`
+token (`Vault::wipe_wallet_secret`), which carries the key of a passphrase grant on a locked vault.
 Still owed:
-- The vault side of `remove_wallet` (delete the wallet's records under a `Wipe` grant).
 - Watch-only import (`wallet.watch_only_exists`) once watch-only wallets exist.
 - `lookahead` (QT-105, default 1000 for dash-qt restores) needs a per-wallet gap limit upstream (U12);
   until then `ImportOptions.lookahead` returns `NotImplemented`.

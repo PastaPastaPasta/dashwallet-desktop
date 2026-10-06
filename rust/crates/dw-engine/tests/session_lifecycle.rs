@@ -421,7 +421,9 @@ fn imported_wallet_signs_after_restart_and_unlock() {
 
     // Locked: no grant without the passphrase.
     let locked =
-        engine.block_on(s.vault_op(|v| v.authorize(GrantPurpose::SignMessage, Credential::None)));
+        engine.block_on(s.vault_op(move |v| {
+            v.authorize(GrantPurpose::SignMessage, Some(&id.0), Credential::None)
+        }));
     assert!(
         matches!(locked, Err(EngineError::Vault(VaultError::Locked))),
         "{locked:?}"
@@ -431,7 +433,9 @@ fn imported_wallet_signs_after_restart_and_unlock() {
         .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, UnlockScope::Full)))
         .unwrap();
     let grant = engine
-        .block_on(s.vault_op(|v| v.authorize(GrantPurpose::SignMessage, Credential::None)))
+        .block_on(s.vault_op(move |v| {
+            v.authorize(GrantPurpose::SignMessage, Some(&id.0), Credential::None)
+        }))
         .unwrap();
     let address = first_receive_address(ABANDON_12);
     let message = b"dashwallet-desktop restart test".to_vec();

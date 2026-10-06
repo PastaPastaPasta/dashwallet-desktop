@@ -32,9 +32,13 @@ pub enum VaultError {
     /// Unknown, expired or already used grant.
     #[error("grant invalid")]
     GrantInvalid,
-    /// The grant was issued for another purpose.
+    /// The grant was issued for another purpose or another wallet.
     #[error("grant purpose mismatch")]
     GrantPurposeMismatch,
+    /// The purpose needs the passphrase (or quick unlock) on an encrypted
+    /// vault, even while it is unlocked: reveal, wipe, credential change.
+    #[error("this purpose needs the passphrase")]
+    CredentialRequired,
     /// The vault is unlocked for CoinJoin mixing only.
     #[error("unlocked for mixing only")]
     MixingOnly,
@@ -79,6 +83,7 @@ impl VaultError {
             Self::AlreadyEncrypted => "vault.already_encrypted",
             Self::GrantInvalid => "vault.grant_invalid",
             Self::GrantPurposeMismatch => "vault.grant_purpose_mismatch",
+            Self::CredentialRequired => "vault.credential_required",
             Self::MixingOnly => "vault.mixing_only",
             Self::NoSecret => "vault.no_secret",
             Self::QuickUnlockUnavailable => "vault.quick_unlock_unavailable",

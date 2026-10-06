@@ -29,7 +29,7 @@ use dashcore::address::Payload;
 use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
-use dw_vault::{GrantKind, LockState, VaultError};
+use dw_vault::{GrantKind, VaultError};
 use key_wallet::Utxo;
 use key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
@@ -658,11 +658,16 @@ impl TxDraft {
         if !session.vault.has_wallet_secret(&wallet_id.0) {
             return Err(SendFailure::WatchOnly.into());
         }
-        match session.vault.lock_state() {
-            LockState::NoVault | LockState::Locked | LockState::UnlockedMixingOnly => {
-                return Err(SendFailure::VaultLocked.into());
-            }
-            LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked => {}
+        // No key to sign with (locked or mixing-only vault, and the grant
+        // does not carry its own key) fails before the plan. A grant that is
+        // unknown, expired, of another purpose or for another wallet fails
+        // after it, when it is redeemed, so plan errors are reported first.
+        if let Err(e @ (VaultError::NoVault | VaultError::Locked | VaultError::MixingOnly)) =
+            session
+                .vault
+                .check_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))
+        {
+            return Err(vault_failure(e));
         }
         let r = self.resolve().await?;
         let wallet = session.wallet(&wallet_id).await?;
@@ -695,7 +700,7 @@ impl TxDraft {
 
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
-            let token = vault.redeem_grant(&grant_id, GrantKind::Spend)?;
+            let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
             let max_duffs = token.max_duffs().unwrap_or(0);
             if external_sent > max_duffs {
                 return Ok(Err(SendFailure::GrantExceeded {
