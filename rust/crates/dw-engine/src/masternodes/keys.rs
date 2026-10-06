@@ -255,8 +255,9 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || {
                     (start..end)
                         .map(|index| {
-                            let key =
-                                wallet.derive_provider_key_at_index(kind, index, None, false)?;
+                            let key = wallet
+                                .derive_provider_key_at_index(kind, index, None, false)
+                                .map_err(EngineError::from)?;
                             Ok(MasternodeKeyInfo {
                                 role,
                                 index,
@@ -271,7 +272,7 @@ impl NetworkSession {
                                 used_by: Vec::new(),
                             })
                         })
-                        .collect::<Result<Vec<_>, platform_wallet::PlatformWalletError>>()
+                        .collect::<Result<Vec<_>, EngineError>>()
                 })
                 .await??
             };
@@ -332,7 +333,9 @@ impl NetworkSession {
                     let vault = this.vault.clone();
                     let derived = tokio::task::spawn_blocking(move || {
                         vault.with_revealed_seed(&wallet_id.0, &grant_id, |seed| {
-                            wallet.derive_provider_key_at_index(kind, index, Some(&seed[..]), true)
+                            wallet
+                                .derive_provider_key_at_index(kind, index, Some(&seed[..]), true)
+                                .map_err(EngineError::from)
                         })
                     })
                     .await?
@@ -530,7 +533,12 @@ impl NetworkSession {
             if snap.list_available && !snap.known.contains_key(&hash) {
                 return Err(MasternodeFailure::NotFound(pro_tx_hash).into());
             }
-            tokio::task::spawn_blocking(move || service.track_blocking(hash, label)).await??;
+            tokio::task::spawn_blocking(move || {
+                service
+                    .track_blocking(hash, label)
+                    .map_err(EngineError::from)
+            })
+            .await??;
             this.announce_masternodes();
             let (known, snap) = this.tracked_known(&hash).await?;
             Ok(this.tracked_info(&known, snap.network, snap.list_available))
@@ -554,11 +562,14 @@ impl NetworkSession {
                 return Ok(false);
             }
             // Keys first: a locked vault refuses before the row is gone.
-            this.vault
-                .delete_masternode_keys(&hash, None)
+            let vault = this.vault.clone();
+            tokio::task::spawn_blocking(move || vault.delete_masternode_keys(&hash, None))
+                .await?
                 .map_err(vault_failure)?;
-            let removed =
-                tokio::task::spawn_blocking(move || service.untrack_blocking(&hash)).await??;
+            let removed = tokio::task::spawn_blocking(move || {
+                service.untrack_blocking(&hash).map_err(EngineError::from)
+            })
+            .await??;
             this.announce_masternodes();
             Ok(removed)
         })
@@ -578,7 +589,12 @@ impl NetworkSession {
             if service.get(&hash).is_none() {
                 return Err(MasternodeFailure::NotFound(pro_tx_hash).into());
             }
-            tokio::task::spawn_blocking(move || service.set_label_blocking(&hash, label)).await??;
+            tokio::task::spawn_blocking(move || {
+                service
+                    .set_label_blocking(&hash, label)
+                    .map_err(EngineError::from)
+            })
+            .await??;
             this.announce_masternodes();
             Ok(())
         })
@@ -642,19 +658,18 @@ impl NetworkSession {
                     .into());
                 }
             }
-            let stored = (|| {
-                let wallet = this
-                    .vault
+            let vault = this.vault.clone();
+            let key_text = Zeroizing::new(std::mem::take(&mut text));
+            tokio::task::spawn_blocking(move || {
+                let wallet = vault
                     .grant_wallet(&grant_id)
                     .ok_or(dw_vault::VaultError::GrantInvalid)?;
                 let token =
-                    this.vault
-                        .redeem_grant(&grant_id, GrantKind::MasternodeOp, Some(&wallet))?;
-                this.vault
-                    .store_masternode_key(&token, &hash, role_name(role), text.as_bytes())
-            })();
-            text.zeroize();
-            stored.map_err(vault_failure)?;
+                    vault.redeem_grant(&grant_id, GrantKind::MasternodeOp, Some(&wallet))?;
+                vault.store_masternode_key(&token, &hash, role_name(role), key_text.as_bytes())
+            })
+            .await?
+            .map_err(vault_failure)?;
             this.announce_masternodes();
             Ok(())
         })
@@ -670,9 +685,12 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            this.vault
-                .delete_masternode_keys(&hash, Some(role_name(role)))
-                .map_err(vault_failure)?;
+            let vault = this.vault.clone();
+            tokio::task::spawn_blocking(move || {
+                vault.delete_masternode_keys(&hash, Some(role_name(role)))
+            })
+            .await?
+            .map_err(vault_failure)?;
             this.announce_masternodes();
             Ok(())
         })

@@ -797,7 +797,7 @@ impl NetworkSession {
                     || k.wallet
                         .as_ref()
                         .and_then(|w| w.collateral_script.as_ref())
-                        .is_some_and(|s| owns_script(s))
+                        .is_some_and(&owns_script)
                 {
                     roles.insert(OwnedRole::Collateral);
                 }

@@ -427,7 +427,7 @@ impl PreparedRegistration {
 
     /// The generated secret (64 hex) and the `masternodeblsprivkey=` line,
     /// as ASCII bytes in zeroing buffers.
-    pub fn operator_secret(&self) -> Result<(Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>), EngineError> {
+    pub fn operator_secret(&self) -> Result<SecretAndConfigLine, EngineError> {
         let guard = self.secret.lock().unwrap_or_else(|p| p.into_inner());
         let secret = guard.as_ref().ok_or_else(|| {
             EngineError::InvalidArgument(
@@ -658,14 +658,22 @@ fn platform_ports(
     })
 }
 
+/// Fills a provider payload's `inputsHash` and signature once the inputs
+/// are chosen (key-wallet's payload finalizer).
+type Finalizer =
+    Box<dyn FnOnce(&Transaction) -> Result<TransactionPayload, payloads::PayloadError> + Send>;
+
+/// The generated operator secret (64 hex) and its `masternodeblsprivkey=`
+/// line, ASCII in zeroing buffers.
+pub type SecretAndConfigLine = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
+
 /// What a provider build funds and how it is finished.
 struct BuildPlan {
     wallet_id: WalletId,
     fee_source: FeeSourceChoice,
     outputs: Vec<(Address, u64)>,
     payload: TransactionPayload,
-    finalizer:
-        Box<dyn FnOnce(&Transaction) -> Result<TransactionPayload, payloads::PayloadError> + Send>,
+    finalizer: Finalizer,
     /// Coins that must not fund it (an existing collateral).
     exclude: HashSet<OutPoint>,
 }
@@ -678,36 +686,12 @@ impl NetworkSession {
         plan: BuildPlan,
         signer: &VaultSigner,
     ) -> Result<Prepared, EngineError> {
-        let network = self.network.core_network();
         let wallet = self.wallet(&plan.wallet_id).await?;
-        let snapshot = self.coin_snapshot(&wallet, plan.wallet_id).await?;
-        let source = match &plan.fee_source {
-            FeeSourceChoice::Automatic => None,
-            FeeSourceChoice::Address(text) => {
-                Some(l1_address(text.trim(), network).map_err(|_| {
-                    EngineError::InvalidArgument(format!(
-                        "fee source {text:?} is not an address of this network"
-                    ))
-                })?)
-            }
-        };
-        let candidates: Vec<key_wallet::Utxo> = snapshot
-            .coins
-            .iter()
-            .filter(|c| c.send_account && c.auto_selectable(snapshot.height))
-            .filter(|c| !plan.exclude.contains(&c.utxo.outpoint))
-            .filter(|c| source.as_ref().is_none_or(|a| &c.utxo.address == a))
-            .map(|c| c.utxo.clone())
-            .collect();
-        let available: u64 = candidates.iter().map(|u| u.value()).sum();
         let total_out: u64 = plan.outputs.iter().map(|(_, v)| *v).sum();
-        if candidates.is_empty() || available < total_out {
-            return Err(MasternodeFailure::InsufficientFunds {
-                needed: total_out,
-                available,
-            }
-            .into());
-        }
+        let (candidates, source, height) = self
+            .funding_candidates(plan.wallet_id, &plan.fee_source, &plan.exclude, total_out)
+            .await?;
+        let available: u64 = candidates.iter().map(|u| u.value()).sum();
         let change = match &source {
             Some(a) => a.clone(),
             None => wallet.core().next_change_address_for_account(0).await?,
@@ -715,7 +699,7 @@ impl NetworkSession {
         let finalizer = plan.finalizer;
         let mut builder = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(PROVIDER_FEE_PER_KB))
-            .set_current_height(snapshot.height)
+            .set_current_height(height)
             .set_selection_strategy(SelectionStrategy::LargestFirst)
             .set_change_address(change)
             .add_inputs(candidates);
@@ -776,6 +760,51 @@ impl NetworkSession {
             signed: Mutex::new(Some(Arc::new(signed))),
             phase: Mutex::new(Phase::Pending),
         })
+    }
+
+    /// The coins that may fund a provider transaction (what a plain send may
+    /// spend, from the fee-source address when one is chosen, `exclude` left
+    /// out), the fee-source address and the wallet height. Refuses with
+    /// `masternode.insufficient_funds` when they cannot cover `total_out`.
+    /// The flows call it before they redeem the grant, so a wallet that
+    /// cannot pay keeps its grant.
+    async fn funding_candidates(
+        &self,
+        wallet_id: WalletId,
+        fee_source: &FeeSourceChoice,
+        exclude: &HashSet<OutPoint>,
+        total_out: u64,
+    ) -> Result<(Vec<key_wallet::Utxo>, Option<Address>, u32), EngineError> {
+        let network = self.network.core_network();
+        let wallet = self.wallet(&wallet_id).await?;
+        let snapshot = self.coin_snapshot(&wallet, wallet_id).await?;
+        let source = match fee_source {
+            FeeSourceChoice::Automatic => None,
+            FeeSourceChoice::Address(text) => {
+                Some(l1_address(text.trim(), network).map_err(|_| {
+                    EngineError::InvalidArgument(format!(
+                        "fee source {text:?} is not an address of this network"
+                    ))
+                })?)
+            }
+        };
+        let candidates: Vec<key_wallet::Utxo> = snapshot
+            .coins
+            .iter()
+            .filter(|c| c.send_account && c.auto_selectable(snapshot.height))
+            .filter(|c| !exclude.contains(&c.utxo.outpoint))
+            .filter(|c| source.as_ref().is_none_or(|a| &c.utxo.address == a))
+            .map(|c| c.utxo.clone())
+            .collect();
+        let available: u64 = candidates.iter().map(|u| u.value()).sum();
+        if candidates.is_empty() || available <= total_out {
+            return Err(MasternodeFailure::InsufficientFunds {
+                needed: total_out,
+                available,
+            }
+            .into());
+        }
+        Ok((candidates, source, snapshot.height))
     }
 
     /// Redeems a `MasternodeOp` grant for `wallet_id` and opens its signer.
@@ -924,29 +953,25 @@ impl NetworkSession {
         let used = used.clone();
         tokio::task::spawn_blocking(move || {
             for index in 0..1000 {
-                let key = wallet.derive_provider_key_at_index(
-                    ProviderKeyKind::Owner,
-                    index,
-                    None,
-                    false,
-                )?;
-                let address = key.address.ok_or_else(|| {
-                    PlatformWalletError::KeyDerivation("owner key without an address".into())
-                })?;
+                let key = wallet
+                    .derive_provider_key_at_index(ProviderKeyKind::Owner, index, None, false)
+                    .map_err(EngineError::from)?;
+                let address = key
+                    .address
+                    .ok_or_else(|| EngineError::Internal("owner key without an address".into()))?;
                 let address = Address::from_str(&address)
-                    .map_err(|e| PlatformWalletError::KeyDerivation(e.to_string()))?
+                    .map_err(|e| EngineError::Internal(e.to_string()))?
                     .require_network(network)
-                    .map_err(|e| PlatformWalletError::KeyDerivation(e.to_string()))?;
+                    .map_err(|e| EngineError::Internal(e.to_string()))?;
                 if key_id_of(&address).is_some_and(|h| !used.contains(&h)) {
                     return Ok(address);
                 }
             }
-            Err(PlatformWalletError::KeyDerivation(
+            Err(EngineError::Internal(
                 "the first 1000 owner keys are all in use".into(),
             ))
         })
         .await?
-        .map_err(EngineError::from)
     }
 
     /// Builds a registration (QT-123). Rules: m3-engine.md §2.4.
@@ -1123,6 +1148,12 @@ impl NetworkSession {
             .into());
         }
 
+        let fund_new_amount = match &collateral_source {
+            CollateralSource::FundNew { amount, .. } => *amount,
+            CollateralSource::Existing(_) => 0,
+        };
+        self.funding_candidates(wallet_id, &request.fee_source, &exclude, fund_new_amount)
+            .await?;
         let (signer, _token) = self.masternode_signer(wallet_id, grant_id).await?;
         let registration_signer = match collateral_secret {
             None => RegistrationSigner::FundNew {
@@ -1275,12 +1306,14 @@ impl NetworkSession {
             let signer = signer.clone();
             let secret = tokio::task::spawn_blocking(move || {
                 signer.with_seed(|seed| {
-                    wallet.derive_provider_key_at_index(
-                        ProviderKeyKind::Operator,
-                        index,
-                        Some(&seed[..]),
-                        true,
-                    )
+                    wallet
+                        .derive_provider_key_at_index(
+                            ProviderKeyKind::Operator,
+                            index,
+                            Some(&seed[..]),
+                            true,
+                        )
+                        .map_err(EngineError::from)
                 })
             })
             .await?
@@ -1425,6 +1458,8 @@ impl NetworkSession {
                 .into());
             }
         };
+        self.funding_candidates(wallet_id, &request.fee_source, &HashSet::new(), 0)
+            .await?;
         let (signer, token) = self.masternode_signer(wallet_id, grant_id).await?;
         let secret = self
             .operator_secret_for(
@@ -1536,6 +1571,8 @@ impl NetworkSession {
             )
             .into());
         }
+        self.funding_candidates(wallet_id, &request.fee_source, &HashSet::new(), 0)
+            .await?;
         let (signer, _token) = self.masternode_signer(wallet_id, grant_id).await?;
         let owner_secret = {
             let signer = signer.clone();
@@ -1600,6 +1637,8 @@ impl NetworkSession {
         self.wallet(&wallet_id).await?;
         self.check_masternode_grant(wallet_id, &grant_id)?;
         let (known, _) = self.known_masternode(&request.pro_tx_hash).await?;
+        self.funding_candidates(wallet_id, &request.fee_source, &HashSet::new(), 0)
+            .await?;
         let (signer, token) = self.masternode_signer(wallet_id, grant_id).await?;
         let secret = self
             .operator_secret_for(
