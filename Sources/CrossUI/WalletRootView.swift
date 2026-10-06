@@ -21,6 +21,9 @@ public struct WalletRootView: View {
         let state = state
         let main = state.main
         VStack(spacing: 0) {
+            if showsMainWindow(main) {
+                ShellBanners(state: state)
+            }
             content(main)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             StatusRow(state: state)
@@ -67,6 +70,12 @@ public struct WalletRootView: View {
         }
     }
 
+    /// The sidebar and pages are shown (not onboarding, lock, overlays).
+    private func showsMainWindow(_ main: MainViewModel) -> Bool {
+        !state.shutdown.isVisible && !main.showsTransitionOverlay && main.wallets != nil && !main.needsOnboarding
+            && !main.showsLockScreen && !main.showsSyncOverlay
+    }
+
     private func colorScheme(_ theme: AppTheme) -> ColorScheme? {
         switch theme {
         case .light: .light
@@ -91,25 +100,24 @@ struct MainSplitView: View {
         }
     }
 
+    /// The page itself, without a wrapping stack: every SwiftCrossUI layer is
+    /// another GTK container in the accessibility tree (ADR 0002 gap A6).
     @ViewBuilder
     private func detail(_ main: MainViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ShellBanners(state: state)
-            if let page = state.currentPage {
-                toolPage(page)
-            } else {
-                switch main.selection {
-                case .overview:
-                    if let home = main.home { OverviewScreen(model: home, state: state) }
-                case .send:
-                    if let send = main.send { SendScreen(model: send, state: state) }
-                case .receive:
-                    if let receive = main.receive { ReceiveScreen(model: receive) }
-                case .transactions:
-                    if let transactions = state.transactions() { TransactionsScreen(model: transactions, state: state) }
-                case .coinJoin, .masternodes, .governance, .contacts, .explore:
-                    Page(main.selection.title) { Text(L10n.Common.notAvailableYet) }
-                }
+        if let page = state.currentPage {
+            toolPage(page)
+        } else {
+            switch main.selection {
+            case .overview:
+                if let home = main.home { OverviewScreen(model: home, state: state) }
+            case .send:
+                if let send = main.send { SendScreen(model: send, state: state) }
+            case .receive:
+                if let receive = main.receive { ReceiveScreen(model: receive) }
+            case .transactions:
+                if let transactions = state.transactions() { TransactionsScreen(model: transactions, state: state) }
+            case .coinJoin, .masternodes, .governance, .contacts, .explore:
+                Page(main.selection.title) { Text(L10n.Common.notAvailableYet) }
             }
         }
     }
@@ -226,6 +234,14 @@ struct ShellBanners: View {
     var body: some View {
         let state = state
         let shell = state.shell
+        let empty = shell.confirmation == nil && shell.errorMessage == nil && state.information.bannerText == nil
+            && state.copyMessage == nil
+        if !empty {
+            banners(state, shell)
+        }
+    }
+
+    private func banners(_ state: CrossAppState, _ shell: ShellModel) -> some View {
         VStack(alignment: .leading, spacing: Int(DashSpacing.xs)) {
             if let confirmation = shell.confirmation {
                 ConfirmationCard(

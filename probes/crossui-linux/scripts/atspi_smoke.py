@@ -96,7 +96,10 @@ def describe(node):
     return info
 
 
-def walk(node, depth=0, lines=None, nodes=None, max_depth=80):
+# SwiftCrossUI puts every modifier in its own GtkFixed (ADR 0002 gap A6), so
+# a button inside a card on a scrolled page sits ~80 levels below the
+# application; the M2 run of 2026-10-06 lost its deepest controls at 80.
+def walk(node, depth=0, lines=None, nodes=None, max_depth=200):
     if lines is None:
         lines, nodes = [], []
     info = describe(node)

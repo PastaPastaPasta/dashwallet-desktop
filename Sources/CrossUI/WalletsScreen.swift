@@ -1,8 +1,9 @@
-// Wallet management (QT-101, QT-106…110, QT-114, QT-116, IOS-009, IOS-110,
-// IOS-111): open/close/load on startup, rename, remove, imports from Dash
-// Core files and key material, watch-only wallets, backup and restore,
-// exports for Dash Core, automatic backups, the account xpub and the
-// first-run "Wallets found on this device" question.
+// Wallet management (QT-101, QT-106…110, QT-114, QT-116, IOS-110, IOS-111):
+// open/close/load on startup, rename, remove, imports from Dash Core files
+// and key material, watch-only wallets, backup and restore, exports for Dash
+// Core, automatic backups and the account xpub. The first-run "Wallets found
+// on this device" question (IOS-009) belongs before onboarding and is not
+// shown here: on this page the open network always has data.
 import DashUICross
 import DesignTokens
 import Foundation
@@ -26,7 +27,6 @@ struct WalletsScreen: View {
     @State var watchName = ""
     @State var watchBirthHeight = ""
     @State var exportFormat: CoreExportFormat = .dumpWallet
-    @State var acceptance = ""
 
     var body: some View {
         let model = model
@@ -34,9 +34,6 @@ struct WalletsScreen: View {
             flowPanel(model)
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
-            }
-            if model.showsExistingDataPrompt {
-                existingData(model)
             }
             walletList(model)
             if let xpub = model.xpub {
@@ -61,7 +58,6 @@ struct WalletsScreen: View {
         .task {
             model.start()
             await model.load()
-            await model.loadExistingData()
         }
     }
 
@@ -138,29 +134,6 @@ struct WalletsScreen: View {
             Toast(L10n.Security.wiped, kind: .success, actionTitle: CrossStrings.dismiss) { model.dismiss() }
         case .failed(let text):
             Toast(text, kind: .error, actionTitle: CrossStrings.dismiss) { model.dismiss() }
-        }
-    }
-
-    // MARK: IOS-009
-
-    @ViewBuilder
-    private func existingData(_ model: WalletManagementViewModel) -> some View {
-        DashCard {
-            SectionHeader(L10n.Wallets.existingTitle, style: .subheadMedium)
-            Text(L10n.Wallets.existingMessage).dashFont(.footnote)
-            ForEach(model.existingData, id: \.self) { info in
-                Text("\(L10n.Settings.networkName(info.network)): \(info.directory.path)").dashFont(.caption1)
-            }
-            DashButton(L10n.Wallets.keepWallets, style: .tintedBlue, size: .small) { model.keepExistingData() }
-            SectionHeader(L10n.Wallets.deleteAllTitle, style: .footnoteMedium)
-            Text(L10n.Wallets.deleteAllMessage).dashFont(.footnote)
-            Text(L10n.Wallets.wipeAcceptPhrase).dashFont(.footnoteMedium).textSelectionEnabled()
-            DashTextField(CrossStrings.typeSentence, text: $acceptance)
-            DashButton(L10n.Wallets.deleteAll, style: .filledRed, size: .small, isEnabled: !acceptance.isEmpty) {
-                let text = acceptance
-                acceptance = ""
-                Task { await model.deleteAll(acceptance: text) }
-            }
         }
     }
 

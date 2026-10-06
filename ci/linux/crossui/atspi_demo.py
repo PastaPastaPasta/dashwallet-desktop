@@ -396,8 +396,10 @@ def m2_pages_flow(report, app, out_dir, step):
         report.check("hard", "about: Export Logs", bool(wait_for(app, named(("push button",), "Export Logs"), 10)))
         record(app, out_dir, f"{step}-about")
         if press(report, app, "Command-line options"):
+            # LaunchArgumentsParser lists "-choosedatadir"; the demo's stand-in "--choosedatadir".
             report.check("hard", "command-line options: dash-qt options listed",
-                         bool(wait_for(app, has_text("-choosedatadir"), 10)))
+                         bool(wait_for(app, lambda n, i: has_text("-choosedatadir")(n, i)
+                                       or has_text("--choosedatadir")(n, i), 10)))
             record(app, out_dir, f"{step}-command-line")
     if not select_sidebar(report, app, "Transactions"):
         return

@@ -217,8 +217,8 @@ public final class CrossAppState {
         case .createWallet: open(.createWallet)
         case .backupWallet, .restoreWallet: open(.wallets)
         case .openURI: open(.openURI)
-        case .signMessage: main.sheet = .signMessage; page = nil
-        case .verifyMessage: main.sheet = .verifyMessage; page = nil
+        case .signMessage: show(.signMessage)
+        case .verifyMessage: show(.verifyMessage)
         case .loadPSBTFromFile:
             open(.psbt)
             if let chooseFile, let url = await chooseFile(L10n.Shell.loadPSBTFromFile) {
@@ -228,24 +228,27 @@ public final class CrossAppState {
             open(.psbt)
             await psbt.loadFromClipboard()
         case .exit: await quit()
-        case .encryptWallet, .changePassphrase, .showRecoveryPhrase, .unlockWallet:
-            main.sheet = .settings
-            page = nil
+        case .encryptWallet, .changePassphrase, .showRecoveryPhrase, .unlockWallet: show(.settings)
         case .options: open(.options)
-        case .sendingAddresses: main.sheet = .sendingAddresses; page = nil
-        case .receivingAddresses: main.sheet = .receivingAddresses; page = nil
+        case .sendingAddresses: show(.sendingAddresses)
+        case .receivingAddresses: show(.receivingAddresses)
         case .tools(let tab): open(.tools(tab))
         case .commandLineOptions: open(.commandLineOptions)
         case .about: open(.about)
-        case .section(let item):
-            closePage()
-            main.selection = item
-        // Disabled in the shell (no feature yet), or handled by it, or
+        // Handled by the shell itself, disabled there (no feature yet), or
         // without meaning in a single-window app without a tray.
-        case .openWallet, .closeWallet, .closeAllWallets, .migrateWallet, .openDebugLog, .openConfigurationFile,
-            .showAutomaticBackups, .lockWallet, .toggleDiscreetMode, .minimize, .coinJoinInformation, .showHideWindow:
+        case .section, .openWallet, .closeWallet, .closeAllWallets, .migrateWallet, .openDebugLog,
+            .openConfigurationFile, .showAutomaticBackups, .lockWallet, .toggleDiscreetMode, .minimize,
+            .coinJoinInformation, .showHideWindow:
             break
         }
+    }
+
+    /// Shows an M1 tool page through MainViewModel's sheet route.
+    private func show(_ sheet: SheetRoute) {
+        page = nil
+        copyMessage = nil
+        main.sheet = sheet
     }
 
     /// File ▸ Exit: the shutdown page (QT-008) while the engine stops, then

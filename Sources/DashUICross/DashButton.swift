@@ -80,6 +80,10 @@ public struct DashButton: View {
             .font(.system(size: metrics.fontSize, weight: .medium))
             .foregroundColor(style.content(enabled: isEnabled).color)
             .disabled(!isEnabled)
+            // SwiftCrossUI truncates text to the proposed size; a stack that
+            // proposes less than the title needs (the M2 Linux run showed
+            // "OK" as "…" and "Wallet" as "Wa…") would cut the title.
+            .fixedSize()
             .padding(.horizontal, points(metrics.horizontalPadding))
             .padding(.vertical, points(metrics.verticalPadding))
         let shaped = backgroundShape(label, metrics: metrics)
