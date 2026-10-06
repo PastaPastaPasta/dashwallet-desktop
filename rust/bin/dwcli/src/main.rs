@@ -76,6 +76,10 @@ enum Command {
         /// Address lookahead of the restore scan (1..=1000).
         #[arg(long)]
         lookahead: Option<u32>,
+        /// File holding the BIP39 passphrase ("25th word"), first line, as
+        /// bytes.
+        #[arg(long)]
+        bip39_passphrase_file: Option<PathBuf>,
     },
     /// List wallets with names and balances (duffs; `unknown` before the
     /// first scan).
@@ -333,7 +337,13 @@ fn run(cli: Cli) -> Result<(), String> {
             core_compat,
             name,
             lookahead,
+            bip39_passphrase_file,
         } => {
+            let bip39_passphrase = bip39_passphrase_file
+                .as_deref()
+                .map(read_passphrase)
+                .transpose()?
+                .unwrap_or_default();
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let mut phrase = Zeroizing::new(String::new());
             std::io::stdin()
@@ -343,7 +353,7 @@ fn run(cli: Cli) -> Result<(), String> {
             engine
                 .block_on(session.import_wallet(
                     phrase,
-                    Zeroizing::new(Vec::new()),
+                    bip39_passphrase,
                     ImportOptions {
                         birth_height,
                         core_compat,

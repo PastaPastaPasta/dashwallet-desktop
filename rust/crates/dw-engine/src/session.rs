@@ -263,6 +263,7 @@ impl NetworkSession {
             pump: Mutex::new(None),
             spends: Default::default(),
         });
+        session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
         }

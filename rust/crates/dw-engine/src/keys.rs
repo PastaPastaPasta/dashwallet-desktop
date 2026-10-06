@@ -30,6 +30,9 @@ use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
 pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
 /// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
 pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
+/// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
+/// whenever the session opens (key-wallet keeps the gap limit in memory).
+const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
 /// Options of [`NetworkSession::import_wallet`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,10 +46,10 @@ pub struct ImportOptions {
     /// Display name (1–64 characters after trimming); `None` = "Wallet N".
     pub name: Option<String>,
     /// Address lookahead (gap limit) of the BIP44 account's receive and
-    /// change chains for the restore scan, 1..=1000. `None` = the default
-    /// (30), or [`CORE_COMPAT_LOOKAHEAD`] with `core_compat`. The raised gap
-    /// lives in memory: addresses it derived stay monitored, but a restart
-    /// before the scan finishes falls back to the default gap for new ones.
+    /// change chains, 1..=1000. `None` = the default (30), or
+    /// [`CORE_COMPAT_LOOKAHEAD`] with `core_compat`, as dash-qt keeps a
+    /// 1000-key pool. A raised gap is stored with the wallet and applied
+    /// again each time the session opens.
     pub lookahead: Option<u32>,
 }
 
@@ -270,13 +273,15 @@ impl NetworkSession {
                     return Err(e);
                 }
             };
-            if let Some(gap) = lookahead
-                && let Err(e) = wallet
+            if let Some(gap) = lookahead {
+                if let Err(e) = wallet
                     .core()
                     .set_gap_limit(AccountTypePreference::BIP44, 0, gap)
                     .await
-            {
-                tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
+                {
+                    tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
+                }
+                this.store_lookahead(wallet_id, gap).await;
             }
             this.refresh_wallet_state(&manager, wallet_id).await;
             // The wallet is registered; a failed name write leaves it with
@@ -295,6 +300,47 @@ impl NetworkSession {
             Ok(wallet_id)
         })
         .await
+    }
+
+    async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
+        let Ok(live) = self.live() else { return };
+        let key = wallet_id.to_string();
+        let stored = tokio::task::spawn_blocking(move || {
+            live.appdb
+                .set_setting(&key, LOOKAHEAD_SETTING, Some(&gap.to_string()))
+        })
+        .await;
+        if !matches!(stored, Ok(Ok(()))) {
+            tracing::warn!(%wallet_id, "could not store the lookahead; it lasts until restart");
+        }
+    }
+
+    /// Applies the stored lookahead of every wallet that has one (session
+    /// open). Failures are logged; the wallet keeps the default gap.
+    pub(crate) async fn apply_stored_lookaheads(&self, manager: &crate::session::Manager) {
+        let Ok(live) = self.live() else { return };
+        for id in manager.list_wallet_ids_blocking() {
+            let key = hex::encode(id);
+            let appdb = std::sync::Arc::clone(&live.appdb);
+            let stored =
+                tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|g| (1..=MAX_LOOKAHEAD).contains(g));
+            let (Some(gap), Some(wallet)) = (stored, manager.get_wallet(&id).await) else {
+                continue;
+            };
+            if let Err(e) = wallet
+                .core()
+                .set_gap_limit(AccountTypePreference::BIP44, 0, gap)
+                .await
+            {
+                tracing::warn!(wallet_id = %hex::encode(id), error = %e, "could not apply the stored lookahead");
+            }
+        }
     }
 
     /// Stores the master key fingerprint of a wallet (dw-appdb, wallet

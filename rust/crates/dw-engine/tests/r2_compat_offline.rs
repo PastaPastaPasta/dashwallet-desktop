@@ -650,3 +650,33 @@ fn test_qt_116_automatic_backups_rotate() {
     assert!(e.block_on(s.automatic_backups(None)).unwrap().is_empty());
     assert_eq!(s.backup_policy().unwrap().keep, 0);
 }
+
+#[test]
+fn test_qt_105_core_lookahead_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(dir.path());
+    let s = open(&e, Some(b"pw"));
+    let id = e
+        .block_on(s.import_dump_wallet(
+            testdata("dumpwallet/dump_hd_nopass.txt"),
+            ImportOptions::default(),
+        ))
+        .unwrap()
+        .wallet_id;
+    let before = receive_addresses(&e, &s, id, 2000).len();
+    assert!(before >= 1000, "{before}");
+    e.block_on(e.close_network(DashNetwork::Regtest)).unwrap();
+    // Same data directory, new session: the stored lookahead is applied again.
+    let s = e
+        .block_on(e.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+            },
+        ))
+        .unwrap();
+    assert_eq!(receive_addresses(&e, &s, id, 2000).len(), before);
+    assert!(chain_addresses(&e, &s, id, AddressChain::Change, 2000).len() >= 1000);
+}
