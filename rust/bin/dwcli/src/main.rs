@@ -1,6 +1,7 @@
 //! `dwcli` — headless driver over dw-engine. Grows into the regtest test driver
 //! and console host (DESIGN-opus §1.4).
 
+mod coinjoin;
 mod compat;
 mod pay;
 mod tools;
@@ -122,6 +123,8 @@ enum Command {
     Tools(tools::ToolsCommand),
     #[command(flatten)]
     Compat(compat::CompatCommand),
+    #[command(flatten)]
+    CoinJoin(coinjoin::CoinJoinCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -457,6 +460,17 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Compat(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
+        Command::CoinJoin(cmd) => {
+            // `coinjoin-mix --mixing-only` unlocks for mixing only itself.
+            if !cmd.mixing_only() {
+                unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            }
+            let result = coinjoin::run(&engine, &session, passphrase.as_ref(), cmd);
             engine
                 .block_on(engine.shutdown())
                 .map_err(|e| e.to_string())?;
