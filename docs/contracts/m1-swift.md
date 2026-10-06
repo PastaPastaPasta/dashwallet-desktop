@@ -183,10 +183,11 @@ Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, 
 - Any edit of entries, fee or source in confirmDuplicates / authorizing / preparing / confirm / failed returns to
   `.editing`, abandons the prepared tx and revokes an unredeemed grant; a prepare that finishes later is abandoned.
 - Broadcast errors `send.broadcast_rejected`, `send.prepared_tx_spent`, `send.no_peers`, `send.prepared_tx_unknown`,
-  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented` are definite (`.failed`). After the
-  first four the engine has released the inputs and spent the `PreparedTx`: the view model drops it, there is no
-  retry, and `dismiss()` returns to `.editing` with the form kept so Review runs a new grant and prepare (M1).
-  After the session/argument errors the tx is still pending and `dismiss()` abandons it.
+  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented`, `wallet`, `storage`, `spv`, `io`
+  are definite (`.failed`). After the first four the engine has released the inputs and spent the `PreparedTx`: the
+  view model drops it, there is no retry, and `dismiss()` returns to `.editing` with the form kept so Review runs a
+  new grant and prepare (M1). The others are raised before the engine hands the tx to the network (m1-engine.md
+  §2.7.1 "not dispatched", review L5): the tx is still pending and `dismiss()` abandons it.
 - Any other broadcast error, including the engine's `send.broadcast_unknown`, is `.broadcastUnknown`: the user is
   routed to the transaction, the inputs stay reserved and the view model keeps the draft and prepared tx so
   `broadcastAgain()` can send the same signed tx (M3). A failed second attempt keeps `.broadcastUnknown` (the first
@@ -196,10 +197,11 @@ Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, 
   dismissed (m1-engine.md §2.7.1). The view model still drops the handle if a repeat ever reports
   `send.prepared_tx_spent`/`send.prepared_tx_unknown`. `cancel()` is ignored; `dismiss()` clears the form and
   drops the handles without abandoning (the engine refuses: `send.prepared_tx_spent`), so the inputs stay
-  reserved in this session.
-- Address book (QT-063, M7): the engine's broadcast owns the labels from the send form. After a successful send
-  the view model only adds recipients without a label that are not in the address book yet (purpose send,
-  `replace: false`, best effort); it never relabels.
+  reserved until the network is reopened.
+- `isEditable` is false in `.broadcasting` and `.broadcastUnknown`: both UIs show the form read-only, every editing
+  method is ignored and a change of `entries` is undone (review L6).
+- Address book (QT-063, M7): the engine's broadcast adds every recipient, labelled or not, and fills empty labels
+  (m1-engine.md §2.7.1 "Address book"). The view model writes no address-book entries (review L3).
 - `ServiceError` needs the numeric context of a code (review M-5): `parameters: [String: Int64]` with `index`,
   `fee`, `available`, `max_duffs` as the engine reports them. `send.amount_with_fee_exceeds_balance` shows
   `parameters["fee"]` (the estimate is nil when `estimate()` itself failed this way; M6).

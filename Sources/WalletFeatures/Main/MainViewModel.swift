@@ -40,15 +40,24 @@ public final class MainViewModel {
     public let syncRates = SyncRateTracker()
     /// The user asked for the sync overlay (status bar).
     public var syncOverlayRequested = false
-    /// The user hid the sync overlay; it stays hidden until asked for again.
+    /// The user hid the sync overlay; it stays hidden until asked for again
+    /// or another network opens.
     public private(set) var syncOverlayHidden = false
+    /// The time the tip age is measured against; refreshed every
+    /// `syncOverlayRecheck` while started, so the overlay appears once the
+    /// tip turns old even without a new sync status.
+    private var syncOverlayNow: Date
+
+    /// How often the tip age is re-evaluated for the sync overlay.
+    public static let syncOverlayRecheck: Duration = .seconds(60)
 
     /// The sync overlay (QT-027): over the wallet while it catches up, when
     /// asked for, or by itself while the tip is more than 25 minutes old
     /// unless hidden.
     public var showsSyncOverlay: Bool {
         guard !needsOnboarding, !showsLockScreen else { return false }
-        return SyncRateTracker.showsOverlay(home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
+        return SyncRateTracker.showsOverlay(
+            home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden, now: syncOverlayNow)
     }
 
     public func hideSyncOverlay() {
@@ -76,6 +85,7 @@ public final class MainViewModel {
         self.lock = LockViewModel(auth: env.auth, vault: env.vault, timing: env.timing)
         self.settings = SettingsViewModel(env: env)
         self.lockState = env.auth.lockState
+        self.syncOverlayNow = env.timing.now()
     }
 
     /// Loads the active network and its wallets and starts following changes.
@@ -105,6 +115,14 @@ public final class MainViewModel {
             for await state in lockChanges {
                 guard let self else { return }
                 self.lockState = state
+            }
+        })
+        let timing = env.timing
+        syncOverlayNow = timing.now()
+        tasks.append(Task { [weak self] in
+            while (try? await timing.sleep(Self.syncOverlayRecheck)) != nil {
+                guard let self else { return }
+                self.syncOverlayNow = timing.now()
             }
         })
     }
@@ -159,6 +177,11 @@ public final class MainViewModel {
     private func reloadNetwork() async {
         let active = await env.host.activeNetwork
         let rebuild = active != network || home == nil
+        if active != network {
+            // A hidden overlay was hidden for the previous network's sync.
+            syncOverlayHidden = false
+            syncOverlayRequested = false
+        }
         if rebuild {
             network = active
             rebuildPages()

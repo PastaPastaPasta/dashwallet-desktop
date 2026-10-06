@@ -74,6 +74,102 @@ import Testing
         }
     }
 
+    /// What the real vault answers to `authorize` without and with the
+    /// passphrase.
+    private struct EngineAnswer {
+        /// `nil`: a grant was issued.
+        let withoutCredential: ServiceErrorCode?
+        let withPassphrase: ServiceErrorCode?
+    }
+
+    /// Asks the real engine for a grant; a grant it issues is revoked again.
+    private static func answer(
+        _ auth: AuthenticationGate, _ purpose: GrantPurpose, wallet: WalletID?, credential: Credential
+    ) async -> ServiceErrorCode? {
+        do {
+            let grant = try await auth.authorize(purpose, wallet: wallet, credential: credential)
+            auth.revoke(grant)
+            return nil
+        } catch {
+            return error.code
+        }
+    }
+
+    /// Review L4: `AuthenticationGate.requirement(for:)` against dw-vault's
+    /// credential table, lock state × purpose × credential, with "require
+    /// authentication for every payment" on and off:
+    /// - `.none` is only answered when the vault issues the grant without a
+    ///   credential; with the setting off it is answered exactly then;
+    /// - whenever the passphrase is asked for, the vault issues the grant for
+    ///   it and the lock state does not change;
+    /// - a grant refused without a credential is refused for the lock state
+    ///   or the purpose (`vault.credential_required`, `vault.locked`,
+    ///   `vault.mixing_only`).
+    /// The unencrypted states are not covered here: creating an unencrypted
+    /// vault writes the data key to the login keychain (dw-vault's
+    /// `passphrase_operations_on_an_unencrypted_vault` covers them).
+    @Test func L4_requirementMatchesTheEngineCredentialTable() async throws {
+        try await Self.withLive { services in
+            try await services.launch(defaultNetwork: .regtest)
+            let auth = services.auth
+            let vault = services.vault
+            let passphrase = "matrix test passphrase"
+            let anyWallet = WalletID(hex: String(repeating: "ab", count: 32))!
+            #expect(auth.lockState == .noVault)
+            for purpose in [GrantPurpose.spend(max: Amount(duffs: 1)), .signMessage, .revealSecret, .wipe] {
+                #expect(auth.requirement(for: purpose) == .none)
+                let none = await Self.answer(auth, purpose, wallet: anyWallet, credential: .unencrypted)
+                #expect(none == .vaultNoVault, "\(purpose)")
+            }
+
+            _ = try await vault.create(passphrase: vault.makeSecret(utf8: passphrase))
+            let phrase = try await vault.generateMnemonic(wordCount: 12, language: .english)
+            let wallet = try await services.lifecycle.importWallet(
+                mnemonic: phrase, bip39Passphrase: vault.makeSecret(utf8: ""), options: WalletImportOptions(birthHeight: 0))
+
+            let purposes: [GrantPurpose] = [.spend(max: Amount(duffs: 1)), .signMessage, .revealSecret, .wipe, .changeCredential]
+            let states: [VaultLockState] = [.unlocked, .unlockedMixingOnly, .locked]
+            for state in states {
+                try await auth.lock()
+                switch state {
+                case .unlocked: try await auth.unlock(passphrase: vault.makeSecret(utf8: passphrase), scope: .full)
+                case .unlockedMixingOnly:
+                    try await auth.unlock(passphrase: vault.makeSecret(utf8: passphrase), scope: .mixingOnly)
+                default: break
+                }
+                #expect(auth.lockState == state)
+                for purpose in purposes {
+                    let bound = purpose == .changeCredential ? nil : wallet
+                    let answer = EngineAnswer(
+                        withoutCredential: await Self.answer(auth, purpose, wallet: bound, credential: .unencrypted),
+                        withPassphrase: await Self.answer(
+                            auth, purpose, wallet: bound, credential: .passphrase(vault.makeSecret(utf8: passphrase))))
+                    let label = "\(state) \(purpose)"
+                    #expect(answer.withPassphrase == nil, "\(label): the passphrase must be accepted")
+                    #expect(auth.lockState == state, "\(label): a passphrase grant keeps the lock state")
+                    if let refused = answer.withoutCredential {
+                        #expect(
+                            [.vaultCredentialRequired, .vaultLocked, .vaultMixingOnly].contains(refused),
+                            "\(label): \(refused)")
+                    }
+                    for everyPayment in [true, false] {
+                        try services.settings.setRequireAuthenticationForEveryPayment(everyPayment)
+                        let requirement = auth.requirement(for: purpose)
+                        if requirement == .none {
+                            #expect(answer.withoutCredential == nil, "\(label) every=\(everyPayment): asks for nothing")
+                        }
+                        if !everyPayment {
+                            #expect(
+                                (requirement == .none) == (answer.withoutCredential == nil),
+                                "\(label): requirement \(requirement), engine \(String(describing: answer.withoutCredential))")
+                        }
+                    }
+                }
+            }
+            try services.settings.setRequireAuthenticationForEveryPayment(true)
+        }
+    }
+
     /// Start → vault → import → lock/unlock → authorize → shutdown through
     /// the composition root, as an app would drive it.
     @Test func liveServicesRunTheM1Flow() async throws {

@@ -4,8 +4,23 @@
 // Session calls fail with `network_not_open` unless the network was opened.
 // Calls a test has not configured fail with `not_implemented`, like engine
 // stubs, so a test never sees invented success.
+//
+// Grants follow dw-vault (m1-engine.md §2.2, review L4): `authorize` applies
+// the credential table to the vault's lock state, a passphrase grant on a
+// locked or mixing-only vault carries its own key, `lockVault` and a change
+// of the unlocked scope drop every grant, and `prepare` redeems a live spend
+// grant of the draft's wallet (`send.grant_invalid`, `send.vault_locked`,
+// `send.grant_exceeded` otherwise). The vault's passphrase is "correct".
 import DashKit
 import Foundation
+
+/// A grant the fake vault holds.
+struct FakeGrant: Sendable {
+    let purpose: GrantPurpose
+    let wallet: WalletID?
+    /// Issued by passphrase on a locked or mixing-only vault.
+    let ownKey: Bool
+}
 
 final class FakeEngine: EngineProtocol, @unchecked Sendable {
     struct State {
@@ -17,6 +32,8 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         var balances: [WalletID: WalletBalances] = [:]
         var vault: VaultStatus?
         var issuedGrants: [String] = []
+        /// Grants not yet redeemed, revoked or dropped by a lock.
+        var liveGrants: [String: FakeGrant] = [:]
         /// The wallet each `authorize` call named, in order.
         var grantWallets: [WalletID?] = []
         var revokedGrants: [String] = []
@@ -163,7 +180,12 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         let status = VaultStatus(
             state: state, encrypted: encrypted, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSeconds: nil,
             walletsWithSecrets: [])
-        with { $0.vault = status }
+        with { s in
+            // dw-vault's `forget_key` / `install_key`: a lock or a change of
+            // the unlocked scope drops every grant.
+            if state == .locked || s.vault?.state != state { s.liveGrants = [:] }
+            s.vault = status
+        }
         events.publish(.lockStateChanged(network))
         return status
     }
@@ -218,22 +240,83 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         }
         with { $0.grantWallets.append(wallet) }
         let result: Result<AuthGrant, DashKitError>
+        var ownKey = false
         if let handler = authorizeHandler {
             result = await handler(purpose)
         } else {
+            ownKey = try checkCredential(purpose, credential)
             result = .success(
                 AuthGrant(
                     id: "grant-\(with { $0.issuedGrants.count + 1 })", purpose: purpose,
                     expiresAt: Date().addingTimeInterval(60), singleUse: true))
         }
         let grant = try result.get()
-        with { $0.issuedGrants.append(grant.id) }
+        with { s in
+            s.issuedGrants.append(grant.id)
+            s.liveGrants[grant.id] = FakeGrant(purpose: purpose, wallet: wallet, ownKey: ownKey)
+        }
         return grant
+    }
+
+    /// dw-vault `Vault::authorize`'s credential table. Returns whether the
+    /// grant carries its own key.
+    private func checkCredential(_ purpose: GrantPurpose, _ credential: VaultCredential) throws(DashKitError) -> Bool {
+        let state = with { $0.vault?.state } ?? .noVault
+        let sensitive: Bool
+        switch purpose {
+        case .revealSecret, .wipe, .changeCredential: sensitive = true
+        case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation: sensitive = false
+        }
+        switch credential {
+        case .quickUnlock:
+            throw .domain(code: "vault.quick_unlock_unavailable", detail: "")
+        case .passphrase(let secret):
+            switch state {
+            case .noVault: throw .domain(code: "vault.no_vault", detail: "")
+            case .noKeys, .unencrypted: throw .domain(code: "vault.not_encrypted", detail: "")
+            case .locked, .unlockedMixingOnly, .unlocked:
+                guard secret.utf8String() == "correct" else {
+                    throw .vaultAttempt(code: "vault.wrong_passphrase", failedAttempts: 1, retryAfterSeconds: nil)
+                }
+                return state != .unlocked
+            }
+        case .unencrypted:
+            if sensitive, [.locked, .unlockedMixingOnly, .unlocked].contains(state) {
+                throw .domain(code: "vault.credential_required", detail: "")
+            }
+            switch state {
+            case .noVault: throw .domain(code: "vault.no_vault", detail: "")
+            case .locked: throw .domain(code: "vault.locked", detail: "")
+            case .unlockedMixingOnly: throw .domain(code: "vault.mixing_only", detail: "")
+            case .noKeys, .unencrypted, .unlocked: return false
+            }
+        }
+    }
+
+    /// Redeems a spend grant for `prepare` the way the engine's send path
+    /// maps dw-vault's answers.
+    func redeemSpend(_ grantID: String, wallet: WalletID, sending: Int64) -> DashKitError? {
+        with { s in
+            guard let grant = s.liveGrants[grantID], grant.wallet == wallet, case .spend(let max) = grant.purpose else {
+                return .domain(code: "send.grant_invalid", detail: grantID)
+            }
+            switch s.vault?.state ?? .noVault {
+            case .noKeys, .unencrypted, .unlocked: break
+            case .noVault, .locked, .unlockedMixingOnly:
+                if !grant.ownKey { return .domain(code: "send.vault_locked", detail: "") }
+            }
+            guard sending <= max.duffs else { return .domain(code: "send.grant_exceeded", detail: "") }
+            s.liveGrants[grantID] = nil
+            return nil
+        }
     }
 
     func revokeGrant(on network: DashNetwork, grantID: String) async throws(DashKitError) {
         try requireOpen(network, "revokeGrant")
-        with { $0.revokedGrants.append(grantID) }
+        with { s in
+            s.revokedGrants.append(grantID)
+            s.liveGrants[grantID] = nil
+        }
     }
 
     func revealMnemonic(on network: DashNetwork, wallet: WalletID, grantID: String) async throws(DashKitError)
@@ -328,6 +411,10 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         try requireOpen(network, "newTxDraft")
         let draft = with { s in
             let d = s.nextDraft ?? FakeTxDraft(walletID: wallet, network: network)
+            d.redeem = { [weak self] id, sending in
+                guard let self else { return .domain(code: "send.grant_invalid", detail: "engine gone") }
+                return self.redeemSpend(id, wallet: wallet, sending: sending)
+            }
             s.nextDraft = nil
             s.drafts.append(d)
             return d
@@ -436,6 +523,13 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
 
     let walletID: WalletID
     let network: DashNetwork
+    /// Redeems the grant `prepare` names for the amount sent; set by the
+    /// engine that hands out the draft.
+    var redeem: (@Sendable (String, Int64) -> DashKitError?)? {
+        get { lock.withLock { _redeem } }
+        set { lock.withLock { _redeem = newValue } }
+    }
+    private var _redeem: (@Sendable (String, Int64) -> DashKitError?)?
     private let lock = NSLock()
     private var state = State()
 
@@ -509,11 +603,13 @@ final class FakeTxDraft: TxDraftHandle, @unchecked Sendable {
     }
 
     func prepare(grantID: String) async throws(DashKitError) -> PreparedTxHandle {
-        let (n, empty) = with { s in
+        let (n, empty, sending) = with { s in
             s.calls.append("prepare \(grantID)")
-            return (s.calls.count, s.recipients.isEmpty)
+            return (s.calls.count, s.recipients.isEmpty, s.recipients.reduce(Int64(0)) { $0 + $1.amount.duffs })
         }
         if empty { throw .domain(code: "send.no_recipients", detail: "") }
+        guard let redeem else { throw .domain(code: "send.grant_invalid", detail: "no vault behind this draft") }
+        if let refused = redeem(grantID, sending) { throw refused }
         let txid = String(repeating: String(n % 10), count: 64)
         let summary = PreparedTxSummary(
             txid: txid, fee: Amount(duffs: 226), feeRatePerKilobyte: Amount(duffs: 1000), sizeBytes: 226, inputs: [],
