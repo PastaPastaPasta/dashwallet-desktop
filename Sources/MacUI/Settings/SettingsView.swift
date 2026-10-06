@@ -1,6 +1,6 @@
-// Settings scene (QT-020, QT-036, QT-039, QT-135…141 subset, IOS-104/106):
-// General (network), Display (unit, digits, discreet, theme, language),
-// Security (encryption, passphrase, recovery phrase).
+// Wallet encryption controls and their sheets (QT-111/113): the vault
+// section of the Options Security tab, Encrypt Wallet, Change Passphrase and
+// Show Recovery Phrase.
 #if os(macOS)
 import DashUIMac
 import DesignTokens
@@ -10,117 +10,15 @@ import SwiftUI
 import WalletFeatures
 import WalletRuntime
 
-struct SettingsView: View {
-    @Bindable var model: MacAppModel
-
-    var body: some View {
-        if let main = model.main {
-            TabView {
-                GeneralSettings(model: model, settings: main.settings)
-                    .tabItem { Label(MacStrings.Settings.general, systemImage: "gearshape") }
-                DisplaySettingsTab(model: model, settings: main.settings)
-                    .tabItem { Label(MacStrings.Settings.display, systemImage: "textformat") }
-                SecuritySettings(settings: main.settings, screenCapture: model.env?.screenCapture)
-                    .tabItem { Label(MacStrings.Settings.security, systemImage: "lock.shield") }
-            }
-            .frame(width: 520)
-            .task { await main.settings.load() }
-        } else {
-            Text(model.unavailableReason ?? "").padding()
-        }
-    }
-}
-
-private struct GeneralSettings: View {
-    let model: MacAppModel
-    let settings: SettingsViewModel
-
-    var body: some View {
-        Form {
-            Picker(MacStrings.Settings.network, selection: Binding(
-                get: { settings.network ?? .mainnet },
-                set: { network in Task { await settings.switchNetwork(to: network) } }
-            )) {
-                ForEach(settings.availableNetworks, id: \.self) { network in
-                    Text(L10n.Settings.networkName(network)).tag(network)
-                }
-            }
-            .disabled(settings.isSwitchingNetwork)
-            .accessibilityIdentifier("settings.network")
-            Text(MacStrings.Settings.networkHelp)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if settings.isSwitchingNetwork {
-                ProgressView().controlSize(.small)
-            }
-            Toggle(MacStrings.Settings.menuBar, isOn: Binding(
-                get: { model.showsMenuBarExtra }, set: { model.showsMenuBarExtra = $0 }))
-            .accessibilityIdentifier("settings.menuBar")
-            if let error = model.preferencesError {
-                Text(error).foregroundStyle(Color.dash.errorText)
-            }
-            if let error = settings.errorMessage {
-                Text(error).foregroundStyle(Color.dash.errorText)
-            }
-        }
-        .formStyle(.grouped)
-        .padding(DashSpacing.m)
-    }
-}
-
-private struct DisplaySettingsTab: View {
-    let model: MacAppModel
-    let settings: SettingsViewModel
-
-    var body: some View {
-        Form {
-            Picker(MacStrings.Settings.unit, selection: Binding(
-                get: { settings.display.unit }, set: { settings.setUnit($0) }
-            )) {
-                ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                    Text(model.env?.amounts.unitName(unit) ?? "").tag(unit)
-                }
-            }
-            .accessibilityIdentifier("settings.unit")
-            Stepper(
-                value: Binding(get: { settings.display.decimalDigits }, set: { settings.setDecimalDigits($0) }),
-                in: SettingsViewModel.decimalDigitsRange
-            ) {
-                LabeledContent(MacStrings.Settings.decimalDigits, value: "\(settings.display.decimalDigits)")
-            }
-            Toggle(MacStrings.Settings.discreet, isOn: Binding(
-                get: { settings.display.hideBalances }, set: { settings.setDiscreet($0) }))
-            .help(MacStrings.Settings.discreetHelp)
-            Picker(MacStrings.Settings.theme, selection: Binding(get: { settings.theme }, set: { settings.setTheme($0) })) {
-                Text(L10n.Settings.themeSystem).tag(AppTheme.system)
-                Text(L10n.Settings.themeLight).tag(AppTheme.light)
-                Text(L10n.Settings.themeDark).tag(AppTheme.dark)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("settings.theme")
-            Picker(MacStrings.Settings.language, selection: Binding(
-                get: { settings.languageCode }, set: { settings.setLanguage($0) }
-            )) {
-                ForEach(settings.availableLanguages, id: \.self) { code in
-                    Text(code == nil ? L10n.Settings.languageSystem : MacStrings.Settings.english).tag(code)
-                }
-            }
-            if let error = settings.errorMessage {
-                Text(error).foregroundStyle(Color.dash.errorText)
-            }
-        }
-        .formStyle(.grouped)
-        .padding(DashSpacing.m)
-    }
-}
-
-private struct SecuritySettings: View {
+/// The vault's encryption state with Encrypt Wallet, Change Passphrase and
+/// Show Recovery Phrase (the Options Security tab).
+struct VaultSettingsSection: View {
     let settings: SettingsViewModel
     let screenCapture: (any ScreenCaptureGuard)?
     @State private var sheet: SheetItem?
 
     var body: some View {
-        Form {
+        Section {
             LabeledContent(MacStrings.Settings.vault) {
                 Text(vaultText)
             }
@@ -138,8 +36,6 @@ private struct SecuritySettings: View {
                 Text(info).foregroundStyle(Color.dash.successText)
             }
         }
-        .formStyle(.grouped)
-        .padding(DashSpacing.m)
         .sheet(item: $sheet) { item in
             SecuritySheet(route: item.route, settings: settings, screenCapture: screenCapture, onClose: { sheet = nil })
         }

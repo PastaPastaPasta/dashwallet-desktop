@@ -1,5 +1,8 @@
-// Menus (QT-015…018 on macOS): File, Wallet (dash-qt's Settings menu),
-// View (sidebar shortcuts), Window and Help.
+// Menus (QT-015…018): dash-qt's File, Settings, Window and Help menus from
+// `ShellModel.menus`, placed the macOS way. "About", "Options…" (Cmd-,) and
+// "Exit" (Cmd-Q) move to the app menu, as Qt does on macOS; Minimize stays
+// the system's Window ▸ Minimize. Every item routes through
+// `MacAppModel.perform(_:)`.
 #if os(macOS)
 import SwiftUI
 import WalletFeatures
@@ -7,59 +10,32 @@ import WalletRuntime
 
 struct WalletCommands: Commands {
     let model: MacAppModel
-    @Environment(\.openWindow) private var openWindow
 
     private var main: MainViewModel? { model.main }
-    private var vault: VaultStatus? { main?.settings.vault }
-    private var hasWallet: Bool { !(main?.wallets?.isEmpty ?? true) }
+    private var menus: [MenuModel] { model.shell?.menus ?? [] }
+
+    private func items(_ id: MenuID) -> [MenuItemModel] {
+        menus.first { $0.id == id }?.items ?? []
+    }
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
-            Button(MacStrings.Menu.about) { openWindow(id: SceneID.about) }
+            Button(L10n.Shell.about) { model.perform(.about) }
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button(L10n.Shell.options) { model.perform(.options) }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(model.features == nil)
         }
 
-        // File (QT-015). Create/open/close wallet arrive with multi-wallet (M2).
+        // File (QT-015).
         CommandGroup(replacing: .newItem) {
-            Button(MacStrings.Menu.openURI) { model.isOpenURIPresented = true }
-                .keyboardShortcut("u", modifiers: [.command, .shift])
-                .disabled(main == nil)
-            Button(MacStrings.Menu.backupWallet) {}
-                .disabled(true)
-                .help(MacStrings.Menu.backupUnavailable)
-            Divider()
-            Button(MacStrings.Menu.signMessage) {
-                model.signVerifyTab = .sign
-                openWindow(id: SceneID.signVerify)
-            }
-            .disabled(!hasWallet)
-            Button(MacStrings.Menu.verifyMessage) {
-                model.signVerifyTab = .verify
-                openWindow(id: SceneID.signVerify)
-            }
-            .disabled(main == nil)
+            ShellMenuItems(items: items(.file), model: model, skip: Self.appMenuCommands)
         }
 
-        // dash-qt's Settings menu (QT-016); "Settings…" itself is the app menu item.
-        CommandMenu(MacStrings.Menu.wallet) {
-            Button(MacStrings.Menu.encryptWallet) { main?.sheet = .encryptWallet }
-                .disabled(!hasWallet || vault?.encrypted != false)
-            Button(MacStrings.Menu.changePassphrase) { main?.sheet = .changePassphrase }
-                .disabled(vault?.encrypted != true)
-            Button(MacStrings.Menu.showRecoveryPhrase) { main?.sheet = .showRecoveryPhrase }
-                .disabled(!hasWallet)
-            Divider()
-            Button(MacStrings.Menu.lockWallet) {
-                Task { await main?.lock.lock() }
-            }
-            .keyboardShortcut("l", modifiers: [.command, .control])
-            .disabled(main?.lockState != .unlocked && main?.lockState != .unlockedMixingOnly)
-            // Goes through the settings view model so Settings and Overview
-            // (which follows the settings stream) stay in step.
-            Toggle(MacStrings.Menu.discreetMode, isOn: Binding(
-                get: { main?.settings.display.hideBalances ?? false },
-                set: { main?.settings.setDiscreet($0) }))
-            .keyboardShortcut("d", modifiers: [.command, .shift])
-            .disabled(main == nil)
+        // Settings (QT-016).
+        CommandMenu(L10n.Shell.settingsMenu) {
+            ShellMenuItems(items: items(.settings), model: model, skip: Self.appMenuCommands)
         }
 
         // Sidebar shortcuts, renumbered by the visible items (QT-012).
@@ -76,24 +52,81 @@ struct WalletCommands: Commands {
             }
         }
 
-        // Window menu (QT-017).
+        // Window (QT-017): addresses and the Tools window tabs.
         CommandGroup(before: .windowList) {
-            Button(MacStrings.Menu.sendingAddresses) {
-                model.addressBookPurpose = .send
-                openWindow(id: SceneID.addressBook)
-            }
-            .disabled(!hasWallet)
-            Button(MacStrings.Menu.receivingAddresses) {
-                model.addressBookPurpose = .receive
-                openWindow(id: SceneID.addressBook)
-            }
-            .disabled(!hasWallet)
+            ShellMenuItems(items: items(.window), model: model, skip: Self.appMenuCommands)
             Divider()
         }
 
+        // Help (QT-018).
         CommandGroup(replacing: .help) {
-            Link(MacStrings.Menu.help, destination: URL(string: "https://docs.dash.org/")!)
+            ShellMenuItems(items: items(.help), model: model, skip: Self.appMenuCommands)
+            Divider()
+            Link(MacStrings.Menu.help, destination: AboutViewModel.documentationURL)
         }
+    }
+
+    /// Commands macOS shows in the app menu or the system Window menu.
+    static let appMenuCommands: Set<ShellCommand> = [.about, .options, .exit, .minimize]
+}
+
+/// One dash-qt menu's items as SwiftUI menu content: buttons with their
+/// shortcuts and help text, check marks, separators and submenus (File ▸
+/// Open Wallet). Disabled items stay visible with the reason as help.
+struct ShellMenuItems: View {
+    let items: [MenuItemModel]
+    let model: MacAppModel
+    var skip: Set<ShellCommand> = []
+
+    var body: some View {
+        ForEach(visible) { item in
+            if item.isSeparator {
+                Divider()
+            } else if !item.children.isEmpty || item.command == nil {
+                Menu(item.title) {
+                    ShellMenuItems(items: item.children, model: model, skip: skip)
+                }
+                .help(item.helpText ?? "")
+            } else if let command = item.command {
+                button(item, command)
+            }
+        }
+    }
+
+    /// Without separators at the start or end, or twice in a row, once the
+    /// skipped items are gone.
+    private var visible: [MenuItemModel] {
+        var result: [MenuItemModel] = []
+        for item in items where !(item.command.map(skip.contains) ?? false) {
+            if item.isSeparator, result.isEmpty || result.last?.isSeparator == true { continue }
+            result.append(item)
+        }
+        while result.last?.isSeparator == true { result.removeLast() }
+        return result
+    }
+
+    @ViewBuilder
+    private func button(_ item: MenuItemModel, _ command: ShellCommand) -> some View {
+        let shortcut = item.shortcut.map(Self.keyboardShortcut)
+        if let checked = item.isChecked {
+            Toggle(item.title, isOn: Binding(get: { checked }, set: { _ in model.perform(command) }))
+                .keyboardShortcut(shortcut)
+                .disabled(!item.isEnabled)
+                .help(item.helpText ?? "")
+        } else {
+            Button(item.title) { model.perform(command) }
+                .keyboardShortcut(shortcut)
+                .disabled(!item.isEnabled)
+                .help(item.helpText ?? "")
+        }
+    }
+
+    static func keyboardShortcut(_ shortcut: KeyShortcut) -> KeyboardShortcut {
+        var modifiers: EventModifiers = []
+        if shortcut.modifiers.contains(.command) { modifiers.insert(.command) }
+        if shortcut.modifiers.contains(.shift) { modifiers.insert(.shift) }
+        if shortcut.modifiers.contains(.option) { modifiers.insert(.option) }
+        return KeyboardShortcut(KeyEquivalent(Character(shortcut.key)), modifiers: modifiers)
     }
 }
 #endif

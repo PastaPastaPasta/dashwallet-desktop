@@ -263,3 +263,22 @@ for each wallet, then `destroy`.
   - `DesktopIdleMonitor` has no OS source yet, so auto-lock uses only its inactivity timer there.
   - `DesktopBiometricKeyStore.kind == .none`.
   - `CommandLineClipboard` (wl-clipboard / xclip) is Linux only.
+
+## 5. U implementation status, macOS (2026-10-06, branch `m2/mac-ui`)
+
+- **Composition.** `MacAppComposition` builds `DemoEnvironment.makeWithM2` for `--demo` (with the Mac clipboard)
+  and, live, `DesktopRuntimeServices` over `PlatformServicesMac` plus `M2Services.live`; the launch runs through
+  `StartupProgress.run` so the splash follows the engine. `MacFeatureModels` owns every §3 view model once per run.
+  `MainViewModel(env:m2:)` gives the Transactions page the M2 actions.
+- **Launch options.** MacUI's `LaunchOptions` keeps its own switches (`--demo`, `--datadir <path>`, …) and passes
+  dash-qt's `-min`, `-splash`, `-windowtitle=`, `-choosedatadir`, `-resetguisettings`, `-lang=`, `-help`,
+  `-version`, chain options and URIs to `LaunchArgumentsParser` (`runtime`, `argumentError`).
+- **Data directory (QT-004).** The chooser opens on `-choosedatadir`, or on the first run when nothing is stored and
+  the default directory does not exist; the choice is kept in `UserDefaults` (`DataDirectory`), like dash-qt's
+  `strDataDir`.
+- **Menus.** File, Settings, Window and Help come from `ShellModel.menus`; About, Options… (Cmd-,) and Exit (Cmd-Q)
+  sit in the app menu, Minimize in the system Window menu, as Qt places them on macOS. The Dock menu is dash-qt's
+  tray menu.
+- **Known limits.** Send has no custom change address yet, so the coin-control panel shows that option disabled
+  with the reason. The Network Traffic tab says it is not available. In demo mode PSBT parsing, Dash Core
+  imports/exports, backups, watch-only import and log export answer `not_implemented` and the screens show it.
