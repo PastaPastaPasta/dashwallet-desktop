@@ -6,6 +6,7 @@ import AppKit
 import DashUIMac
 import DesignTokens
 import Foundation
+import PlatformServicesMac
 import SwiftUI
 import Testing
 import WalletFeatures
@@ -178,12 +179,9 @@ struct ScreenTests {
         try await Self.settle { home.recent.isEmpty }
         #expect(home.discreet)
         #expect(home.formattedTotal?.contains("#") == true)
-        // HomeViewModel.reloadRecent checks `discreet` before awaiting the
-        // history page but not after, so a reload in flight when discreet
-        // mode turns on writes the rows back (WalletFeatures WIP, owner D).
-        withKnownIssue("HomeViewModel.reloadRecent race refills recent rows in discreet mode", isIntermittent: true) {
-            #expect(home.recent.isEmpty)
-        }
+        // A reload in flight when discreet mode turns on must not write the rows back.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(home.recent.isEmpty)
     }
 
     @Test func openURIFillsSend() async throws {
@@ -198,7 +196,7 @@ struct ScreenTests {
         #expect(model.uriError != nil)
     }
 
-    @Test func launchOptions() {
+    @Test func launchOptions() throws {
         #expect(LaunchOptions.parse(["app"]).demoScenario == nil)
         #expect(LaunchOptions.parse(["app", "--demo"]).demoScenario == .funded)
         #expect(LaunchOptions.parse(["app", "--fixture"]).demoScenario == .funded)
@@ -208,18 +206,64 @@ struct ScreenTests {
         let options = LaunchOptions.parse(["app", "--appearance", "dark", "--no-menu-bar-extra"])
         #expect(options.appearance == .dark)
         #expect(!options.menuBarExtra)
-        #expect(AppPaths.dataDirectory().path.hasSuffix("Library/Application Support/org.dashfoundation.DashWallet"))
+        let live = LaunchOptions.parse([
+            "app", "--datadir", "/tmp/dwd", "--network", "testnet", "--peer", "127.0.0.1:19899",
+            "--peer", "127.0.0.1:19999", "--dapi", "http://127.0.0.1:3000", "--quorum-url", "http://127.0.0.1:8080",
+        ])
+        #expect(live.dataDirectory?.path == "/tmp/dwd")
+        #expect(live.network == .testnet)
+        #expect(live.networkOptions == NetworkOptions(
+            dapiAddresses: ["http://127.0.0.1:3000"], quorumURL: "http://127.0.0.1:8080",
+            spvPeers: ["127.0.0.1:19899", "127.0.0.1:19999"]))
+        #expect(LaunchOptions.parse(["app", "--network", "devnet"]).network == nil)
+        let root = try MacDataLocation().defaultDataRoot()
+        #expect(root.path.hasSuffix("Library/Application Support/org.dashfoundation.DashWallet"))
     }
 
-    @Test func liveCompositionReportsMissingRuntime() throws {
+    /// The live composition builds the real runtime over the Rust engine in a
+    /// fresh data root, opens regtest offline (endpoints point at a closed
+    /// local port) and finds no wallet, so onboarding is offered. Shutdown
+    /// releases the engine.
+    @Test func liveCompositionOpensTheEngine() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dwd-macui-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let model = MacAppComposition.makeModel(launch: LaunchOptions(), dataDirectory: directory) { url throws(ServiceError) in
-            throw ServiceError(code: .notImplemented, detail: url.path)
-        }
+        let model = MacAppComposition.makeModel(
+            launch: LaunchOptions(
+                dataDirectory: directory, network: .regtest,
+                networkOptions: NetworkOptions(
+                    dapiAddresses: ["http://127.0.0.1:1"], quorumURL: "http://127.0.0.1:1", spvPeers: ["127.0.0.1:1"])))
+        #expect(model.unavailableReason == nil)
+        let main = try #require(model.main)
+        await model.start()
+        try await Self.settle(timeout: .seconds(20)) { main.network != nil && main.wallets != nil }
+        #expect(model.launchError == nil)
+        #expect(main.network == .regtest)
+        #expect(main.wallets?.isEmpty == true)
+        // Off mainnet the unit is tDASH; the formatter is the engine's.
+        #expect(model.unitName == "tDASH")
+        #expect(main.needsOnboarding)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("global.json").path))
+        await model.shutdown()
+    }
+
+    /// Without endpoints regtest cannot open; the window says so and offers a retry.
+    @Test func liveLaunchFailureIsShown() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dwd-macui-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = MacAppComposition.makeModel(launch: LaunchOptions(dataDirectory: directory, network: .regtest))
+        await model.start()
+        try await Self.settle(timeout: .seconds(20)) { model.launchError != nil }
+        #expect(model.launchError?.code.rawValue == "invalid_config")
+        await model.shutdown()
+    }
+
+    @Test func unusableDataFolderIsReported() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("dwd-macui-file-\(UUID().uuidString)")
+        try Data().write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let model = MacAppComposition.makeModel(launch: LaunchOptions(dataDirectory: file))
         #expect(model.main == nil)
-        #expect(model.unavailableReason?.contains(directory.path) == true)
-        #expect(FileManager.default.fileExists(atPath: directory.path))
+        #expect(model.unavailableReason?.contains(file.path) == true)
     }
 
     @Test func demoPhraseUsesBIP39Words() {
@@ -231,9 +275,10 @@ struct ScreenTests {
 
     // MARK: Helpers
 
-    /// Polls `condition` on the main actor for up to two seconds.
-    static func settle(_ condition: () -> Bool) async throws {
-        for _ in 0..<40 where !condition() {
+    /// Polls `condition` on the main actor for up to `timeout`.
+    static func settle(timeout: Duration = .seconds(2), _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
     }

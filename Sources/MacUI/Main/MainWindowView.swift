@@ -27,6 +27,11 @@ struct MainWindowView: View {
                 TransitionOverlay(transition: main.transition)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let error = model.launchError {
+                LaunchErrorBanner(error: error, retry: { Task { await model.retryLaunch() } })
+            }
+        }
         .frame(minWidth: 920, minHeight: 600)
         .animation(.easeInOut(duration: 0.2), value: main.showsLockScreen)
         .sheet(item: Binding(get: { main.sheet.map(SheetItem.init) }, set: { main.sheet = $0?.route })) { item in
@@ -104,6 +109,31 @@ struct MainWindowView: View {
             // Hidden in M1 (FeatureFlags.m1); not reachable from the sidebar.
             LoadingPage()
         }
+    }
+}
+
+/// Opening the network failed: the engine's code and a retry button.
+struct LaunchErrorBanner: View {
+    let error: ServiceError
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: DashSpacing.m) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Color.dash.orange)
+                .accessibilityHidden(true)
+            Text(MacStrings.App.launchFailed(error.code.rawValue))
+                .dashFont(.footnote)
+                .foregroundStyle(Color.dash.primaryText)
+                .textSelection(.enabled)
+            Spacer()
+            Button(MacStrings.App.retry, action: retry)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, DashSpacing.l)
+        .padding(.vertical, DashSpacing.s)
+        .background(Color.dash.orangeAlpha10)
+        .accessibilityIdentifier("banner.launchError")
     }
 }
 

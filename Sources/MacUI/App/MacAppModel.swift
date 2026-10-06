@@ -35,15 +35,22 @@ public final class MacAppModel {
     public var signVerifyTab: SignVerifyTab = .sign
     /// The last `dash:` URI the app could not parse, for the alert.
     public var uriError: String?
+    /// Why opening the network at launch failed (`nil` while it works).
+    public private(set) var launchError: ServiceError?
 
-    private var started = false
+    @ObservationIgnored private let lifecycle: RuntimeLifecycle?
+    @ObservationIgnored private var started = false
+    @ObservationIgnored private var shutDown = false
 
-    public init(environment: AppEnvironment, launch: LaunchOptions) {
+    /// - Parameter lifecycle: starts and stops the services; `nil` when they
+    ///   run without one (demo).
+    public init(environment: AppEnvironment, launch: LaunchOptions, lifecycle: RuntimeLifecycle? = nil) {
         self.launch = launch
         self.env = environment
         self.main = MainViewModel(env: environment)
         self.unavailableReason = nil
         self.showsMenuBarExtra = launch.menuBarExtra
+        self.lifecycle = lifecycle
     }
 
     /// The runtime could not be built; the window explains why.
@@ -53,16 +60,50 @@ public final class MacAppModel {
         self.main = nil
         self.unavailableReason = unavailableReason
         self.showsMenuBarExtra = false
+        self.lifecycle = nil
     }
 
     public var isDemo: Bool { launch.isDemo }
 
-    /// Loads the active network and starts following changes. Idempotent.
+    /// Starts following the runtime, then opens the last network (live
+    /// runtime only). The view models observe the lifecycle first, so the
+    /// "Starting…" overlay shows while the network opens. Idempotent.
     public func start() async {
         guard !started, let main else { return }
         started = true
         await main.start()
         await main.settings.load()
+        await openNetwork()
+    }
+
+    /// Retries opening the network after `launchError`.
+    public func retryLaunch() async {
+        guard started, launchError != nil else { return }
+        await openNetwork()
+    }
+
+    /// Stops the observers and releases the engine (stops SPV and closes the
+    /// session first). Called once when the app quits; later calls do nothing.
+    public func shutdown() async {
+        guard !shutDown else { return }
+        shutDown = true
+        main?.stop()
+        do {
+            try await lifecycle?.shutdown()
+        } catch {
+            // The process is exiting; the engine drops what is left.
+            launchError = error
+        }
+    }
+
+    private func openNetwork() async {
+        guard let lifecycle else { return }
+        do {
+            try await lifecycle.launch()
+            launchError = nil
+        } catch {
+            launchError = error
+        }
     }
 
     /// A `dash:` URL from Launch Services, drag and drop or File ▸ Open URI (QT-019, QT-150).

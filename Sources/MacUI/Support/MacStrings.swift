@@ -7,7 +7,10 @@ enum MacStrings {
     enum App {
         static let demoBadge = "Demo"
         static let demoHelp = "Demo mode: sample data, no network, nothing is sent."
-        static let runtimeUnavailableTitle = "The wallet engine is not available in this build"
+        static let runtimeUnavailableTitle = "The wallet could not start"
+        static func runtimeFailed(_ code: String) -> String { "The wallet engine could not be opened (\(code))." }
+        static func launchFailed(_ code: String) -> String { "The network could not be opened (\(code))." }
+        static let retry = "Try Again"
         static let aboutTitle = "About Dash Wallet"
         static let aboutBody =
             "Dash Wallet for desktop. Released under the MIT licence. Built on dashpay/platform's platform-wallet."

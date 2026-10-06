@@ -93,6 +93,7 @@ var targets: [Target] = [
         name: "MacUITests",
         dependencies: [
             .target(name: "MacUI", condition: .when(platforms: [.macOS])),
+            .target(name: "PlatformServicesMac", condition: .when(platforms: [.macOS])),
             "WalletFeatures",
             "WalletRuntime",
         ]
