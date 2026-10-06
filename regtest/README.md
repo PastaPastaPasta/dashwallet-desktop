@@ -234,7 +234,35 @@ passed every run after their initial fixes.
   `--portseed=<k>` to make them deterministic. RPC listens on 127.0.0.1 only. The intended way to
   test `dwcli` against a masternode network is to run `dwcli` (Linux build) inside the same
   container from a `DashTestFramework` subclass and connect it to `p2p_port(i)`; this is not built
-  yet.
+  yet. On a macOS host, a host-built `dwcli` can drive the darwin release directly
+  (`functional/dwd_governance.py` does).
+
+## Governance suite (`governance`, M3 R2)
+
+`functional/dwd_governance.py` runs a 4-masternode `DashTestFramework` network and a host-built `dwcli`
+(env `DWCLI`) speaking SPV/P2P to node 0 (started with `-blockfilterindex=1 -peerblockfilters=1`). Mocktime
+starts at the wall clock, because dwcli signs objects and votes with it and Core refuses votes more than
+an hour ahead of its own time. Steps:
+
+1. quorums for InstantSend and ChainLocks (dash-spv then syncs the masternode list);
+2. node 0 registers a fifth masternode (`protx register_fund`, no service) whose voting address is the
+   dwcli wallet's first DIP-3 voting key (`dwcli gov voting-address`); DKG is then switched off;
+3. `dwcli gov prepare`: the 1 DASH collateral (its `OP_RETURN` carries the object hash) is IS-locked and
+   mined 6 deep;
+4. a new dwcli process lists it as pending and `Ready` (`dwcli gov pending`), i.e. it resumed from
+   app.sqlite;
+5. `dwcli gov submit`: node 0 lists the object (`gobject list valid proposals`);
+6. node 0 votes yes with its four masternodes (`gobject vote-many`); `dwcli gov vote --gov` syncs objects
+   and votes over govsync and votes yes with its masternode; node 0 shows the vote under the collateral
+   with the vote hash dwcli computed;
+7. the tally dwcli shows (`dwcli gov list`) equals node 0's `FundingResult` (5 yes), and `dwcli gov info`
+   equals `getgovernanceinfo` (superblocks, budget).
+
+```sh
+cargo build -p dwcli    # in rust/, with the usual CARGO_TARGET_DIR
+DWD_PYTHON=/path/to/func-venv/bin/python DASHCORE_DIR=/path/to/dashcore DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    regtest/functional/run.sh dwd_governance.py --portseed=4712 --timeout-factor=3
+```
 
 ## CoinJoin on regtest
 

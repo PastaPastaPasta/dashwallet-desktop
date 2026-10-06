@@ -121,6 +121,19 @@ on 14 cores. Neither looks like a release-binary or harness problem: the same fr
 (DKG, quorum list, ChainLocks) pass on every run of our own tests. This is not verified on an idle
 machine.
 
+## 6a. Governance suite (`functional/dwd_governance.py`, M3 R2, 2026-10-06)
+
+macOS host, darwin release, host-built debug `dwcli`, `--portseed=4712 --timeout-factor=3`.
+
+| Run | Result | Cause / fix |
+|---|---|---|
+| 1, 2 | FAIL in setup | test bugs: the `skip_test_if_missing_module` override dropped `skip_if_no_wallet()` (no wallet loaded); `register_fund` pays the collateral from its funds address only |
+| 3–7 | FAIL at the vote step: "no voting masternodes" | engine: the wallet's masternode had no collateral. platform-wallet reloads chainlocked provider records as bare txids in a new process, and `register_fund`'s collateral hash is null (the ProRegTx pays its own collateral). Fixed: collaterals also come from the history store, a null hash is the proTxHash. Run 4 also hit the known `mine_cycle_quorum` flake (one quorum for both indices); the test now mines one more cycle when that happens |
+| 8 | **PASS**, 1 min 42 s | create (IS-locked collateral, `OP_RETURN` = object hash), resume in a new process (`Ready`, 6 confirmations), submit (node 0 lists it), govsync (1 object, 4 votes), our vote accepted by node 0 under the collateral with the hash dwcli computed, tally 5Y/0N/0A = node 0's `FundingResult`, `next`/`last`/budget = `getgovernanceinfo` |
+
+The fifth masternode runs no node, so it is PoSe-banned after the next DKG and counts in neither
+"eligible" nor "controlled" (dash-qt skips banned entries); its vote still counts, as in Core.
+
 ## 7. Not verified
 
 * Windows: nothing was run. There is no Windows dashd path in the harness yet.
