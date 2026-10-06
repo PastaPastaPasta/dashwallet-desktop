@@ -13,8 +13,13 @@ struct LaunchOptions: Sendable, Equatable {
     }
 
     var mode: Mode = .live
-    /// `--network <mainnet|testnet|regtest|devnet-NAME>`; defaults to testnet.
-    var networkName = "testnet"
+    /// `--network <mainnet|testnet|regtest|devnet-NAME>`. Unset: the live app
+    /// reopens the last network (first run: mainnet); the demo uses testnet.
+    var networkName: String?
+    /// `--connect HOST:PORT` (repeatable): SPV peers instead of DNS seeds.
+    var spvPeers: [String] = []
+    /// `--dapi URL` (repeatable): DAPI endpoints; regtest and devnets have no defaults.
+    var dapiAddresses: [String] = []
     /// `--datadir <path>` overrides the per-OS data root.
     var dataDirectory: String?
     /// `--page <name>`: the page shown first (screenshots, smoke tests).
@@ -24,11 +29,16 @@ struct LaunchOptions: Sendable, Equatable {
 
     static let usage = """
         Usage: dash-wallet [--demo [funded|locked|onboarding]] [--gallery]
-                           [--network mainnet|testnet|regtest|devnet-NAME] [--datadir PATH] [--page NAME]
+                           [--network mainnet|testnet|regtest|devnet-NAME] [--datadir PATH]
+                           [--connect HOST:PORT]... [--dapi URL]... [--page NAME]
           --demo       run on in-memory sample data (DWD_DEMO=1 does the same)
           --gallery    show the DashUICross component gallery
-          --network    network to open (default testnet)
-          --datadir    data directory root (default: per-OS location)
+          --network    network to open (default: the last one opened, first run
+                       mainnet; the demo uses testnet)
+          --datadir    data directory root (default: $XDG_DATA_HOME/dashwallet on
+                       Linux, %APPDATA%\\Dash\\DashWallet on Windows)
+          --connect    SPV peer to use instead of DNS seeds (repeatable)
+          --dapi       DAPI endpoint (repeatable; needed for regtest and devnets)
           --page       first page: overview, send, receive, transactions,
                        address-book, sign-verify, settings
         """
@@ -64,6 +74,10 @@ struct LaunchOptions: Sendable, Equatable {
                 mode = .gallery
             case "--network":
                 if let value = next() { networkName = value } else { problems.append("--network needs a value") }
+            case "--connect":
+                if let value = next() { spvPeers.append(value) } else { problems.append("--connect needs a value") }
+            case "--dapi":
+                if let value = next() { dapiAddresses.append(value) } else { problems.append("--dapi needs a value") }
             case "--datadir":
                 if let value = next() { dataDirectory = value } else { problems.append("--datadir needs a value") }
             case "--page":

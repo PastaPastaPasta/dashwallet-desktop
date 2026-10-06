@@ -4,6 +4,7 @@
 // This file is compiled on every OS (not only Linux/Windows) so the macOS
 // development build of the SwiftCrossUI app and the tests can use it.
 import Foundation
+import PlatformServices
 
 public enum DesktopDataDirectory {
     public enum HostOS: Sendable, Hashable {
@@ -72,5 +73,28 @@ public enum DesktopDataDirectory {
     public static func prepare(_ root: URL) throws -> URL {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+}
+
+/// `DataLocating` over `DesktopDataDirectory.root(for:)`: the XDG data
+/// directory on Linux, `%APPDATA%` on Windows, Application Support on macOS.
+/// `defaultDataRoot()` also creates the directory.
+public struct DesktopDataLocation: DataLocating {
+    public let os: DesktopDataDirectory.HostOS
+    public let environment: [String: String]
+    public let home: URL
+
+    public init(
+        os: DesktopDataDirectory.HostOS = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) {
+        self.os = os
+        self.environment = environment
+        self.home = home
+    }
+
+    public func defaultDataRoot() throws -> URL {
+        try DesktopDataDirectory.prepare(DesktopDataDirectory.root(for: os, environment: environment, home: home))
     }
 }

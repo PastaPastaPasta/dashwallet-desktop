@@ -6,15 +6,25 @@ import DashUICross
 import DefaultBackend
 import DesignTokens
 import Foundation
+import PlatformServices
 import PlatformServicesDesktop
 import SwiftCrossUI
 import WalletFeatures
 import WalletRuntime
 
+#if os(macOS)
+    import AppKit
+#elseif os(Linux)
+    import CGtk
+    import GtkBackend
+#endif
+
 @main
 struct DashWalletCrossApp: App {
     let options: LaunchOptions
     let demoState: CrossAppState?
+    /// Shuts the live engine down when the app quits.
+    let quitHook = QuitHook()
 
     init() {
         let options = LaunchOptions(arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
@@ -24,8 +34,13 @@ struct DashWalletCrossApp: App {
             exit(options.showHelp && options.problems.isEmpty ? 0 : 64)
         }
         self.options = options
+        #if os(Linux)
+            // AT-SPI and desktop shells show this instead of the executable
+            // name (ADR 0002, gap A7).
+            g_set_application_name(L10n.Navigation.appName)
+        #endif
         if case .demo(let scenario) = options.mode {
-            let network = Self.runtimeNetwork(options.networkName) ?? .testnet
+            let network = options.networkName.flatMap(Self.runtimeNetwork) ?? .testnet
             let env = DemoEnvironment.make(network: network, scenario: scenario)
             let main = MainViewModel(env: env)
             Self.open(page: options.page, in: main)
@@ -33,6 +48,7 @@ struct DashWalletCrossApp: App {
         } else {
             demoState = nil
         }
+        quitHook.install()
     }
 
     var body: some Scene {
@@ -43,7 +59,7 @@ struct DashWalletCrossApp: App {
             case .demo:
                 if let demoState { WalletRootView(state: demoState) }
             case .live:
-                LiveStartView(options: options)
+                LiveStartView(options: options, quitHook: quitHook)
             }
         }
         .defaultSize(width: 1100, height: 760)
@@ -75,38 +91,67 @@ enum CrossDemoText {
     static let notice = "Demo mode: sample data, nothing is sent (passphrase: demo)"
 }
 
-/// Live start: opens the engine on the data directory, then builds the live
-/// environment. Until the runtime adapters exist that second step fails with
-/// `notImplemented`, and this view says so instead of showing the wallet.
+/// Runs `LiveSession.shutdownBeforeExit()` on the way out:
+/// - macOS (AppKitBackend): on `NSApplication.willTerminateNotification`.
+/// - Linux (GtkBackend): when the window is destroyed. Closing the last
+///   window ends the GTK application right after that.
+/// - Windows (WinUIBackend): not hooked yet; the process exits without the
+///   engine's orderly shutdown.
+@MainActor
+final class QuitHook {
+    var session: LiveSession?
+
+    func install() {
+        #if os(macOS)
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.session?.shutdownBeforeExit() }
+            }
+        #endif
+    }
+
+    func windowDestroyed() {
+        session?.shutdownBeforeExit()
+    }
+}
+
+/// Live start: resolves the data directory, opens the engine and builds the
+/// runtime, then shows the wallet while the last (or requested) network
+/// opens. Failures are shown on this page.
 struct LiveStartView: View {
     let options: LaunchOptions
+    let quitHook: QuitHook
 
-    @State var report: LiveEngineReport?
     @State var state: CrossAppState?
+    @State var dataRoot: URL?
+    @State var launchFailure: String?
     @State var failure: String?
 
     var body: some View {
+        content.hookWindowDestroy(quitHook)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let state {
-            WalletRootView(state: state)
+            VStack(spacing: 0) {
+                if let launchFailure {
+                    Toast(launchFailure, kind: .error).padding(Int(DashSpacing.s))
+                }
+                WalletRootView(state: state)
+            }
         } else {
             VStack(alignment: .leading, spacing: Int(DashSpacing.m)) {
                 SectionHeader(L10n.Navigation.appName, style: .title2)
-                if let report {
-                    KeyValueRow("Data directory", report.dataRoot.path)
-                    KeyValueRow("Network", report.networkName)
-                    KeyValueRow("Engine", report.coreVersion)
-                    KeyValueRow("Wallets on disk", report.walletCount.map(String.init) ?? L10n.Common.unknown)
-                    if let engineFailure = report.failure {
-                        Toast("The engine could not open the wallet data: \(engineFailure)", kind: .error)
-                    }
-                } else {
-                    Text("Opening the wallet data…")
-                }
+                if let dataRoot { KeyValueRow("Data directory", dataRoot.path) }
                 if let failure {
-                    Toast(failure, kind: .warning)
+                    Toast(failure, kind: .error)
                     Text("Run `dash-wallet --demo` to try the screens on sample data.")
                         .dashFont(.footnote)
                         .textSelectionEnabled()
+                } else {
+                    Text("Opening the wallet data…")
                 }
                 Spacer()
             }
@@ -116,29 +161,69 @@ struct LiveStartView: View {
     }
 
     private func start() async {
-        guard report == nil else { return }
-        guard let network = DashWalletCrossApp.runtimeNetwork(options.networkName),
-            let engineNetwork = LiveEngineProbe.network(named: options.networkName)
-        else {
-            failure = "Unknown network \(options.networkName)."
+        guard state == nil, failure == nil else { return }
+        var network: DashNetwork?
+        if let name = options.networkName {
+            guard let named = DashWalletCrossApp.runtimeNetwork(name) else {
+                failure = "Unknown network \(name)."
+                return
+            }
+            network = named
+        }
+        let root: URL
+        do {
+            if let directory = options.dataDirectory {
+                root = try FixedDataLocation(root: URL(fileURLWithPath: directory, isDirectory: true)).defaultDataRoot()
+                try DesktopDataDirectory.prepare(root)
+            } else {
+                root = try DesktopDataLocation().defaultDataRoot()
+            }
+        } catch {
+            failure = "Could not create the data directory: \(error.localizedDescription)"
             return
         }
-        let root = options.dataDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? DesktopDataDirectory.root()
+        dataRoot = root
+        let session: LiveSession
         do {
-            try DesktopDataDirectory.prepare(root)
+            session = try LiveSession(
+                dataRoot: root, network: network,
+                options: NetworkOptions(dapiAddresses: options.dapiAddresses, spvPeers: options.spvPeers))
         } catch {
-            failure = "Could not create \(root.path): \(error.localizedDescription)"
+            Self.log(error)
+            failure = "The wallet engine could not open \(root.path) (\(error.code.rawValue))."
             return
         }
-        report = await LiveEngineProbe.run(dataRoot: root, network: engineNetwork)
+        quitHook.session = session
+        DashWalletCrossApp.open(page: options.page, in: session.state.main)
+        state = session.state
         do {
-            let env = try LiveEnvironment.make(dataRoot: root, network: network)
-            let main = MainViewModel(env: env)
-            DashWalletCrossApp.open(page: options.page, in: main)
-            state = CrossAppState(env: env, main: main)
+            try await session.launch()
         } catch {
-            failure = "The wallet screens need the WalletRuntime adapters, which this build does not have yet (\(error.code))."
+            Self.log(error)
+            launchFailure = "The network could not be opened (\(error.code.rawValue))."
         }
+    }
+}
+
+extension LiveStartView {
+    /// Writes an error's code and detail to stderr; the page shows only the code.
+    static func log(_ error: ServiceError) {
+        FileHandle.standardError.write(Data("dash-wallet: \(error.code.rawValue): \(error.detail)\n".utf8))
+    }
+}
+
+extension View {
+    /// Tells `hook` when the GTK window is destroyed (Linux only).
+    @ViewBuilder
+    func hookWindowDestroy(_ hook: QuitHook) -> some View {
+        #if os(Linux)
+            inspectWindow { window in
+                window.onDestroy = { [weak hook] _ in
+                    MainActor.assumeIsolated { hook?.windowDestroyed() }
+                }
+            }
+        #else
+            self
+        #endif
     }
 }

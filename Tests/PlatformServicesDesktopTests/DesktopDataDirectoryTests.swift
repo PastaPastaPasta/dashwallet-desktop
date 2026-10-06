@@ -46,4 +46,15 @@ struct DesktopDataDirectoryTests {
         #expect(FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory))
         #expect(isDirectory.boolValue)
     }
+
+    @Test func dataLocationCreatesTheXDGRoot() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dwd-datalocation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let location = DesktopDataLocation(os: .linux, environment: ["XDG_DATA_HOME": scratch.path], home: home)
+        let root = try location.defaultDataRoot()
+        #expect(root.path == scratch.appendingPathComponent("dashwallet").path)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    }
 }
