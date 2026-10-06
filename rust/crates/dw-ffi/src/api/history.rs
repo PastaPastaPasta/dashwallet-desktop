@@ -2,7 +2,7 @@
 //! Contract: docs/contracts/m1-engine.md §history.
 
 use crate::NetworkSession;
-use crate::api::common::{OutPoint, domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{OutPoint, domain_error_common, parse_wallet_id};
 
 /// dash-qt `TransactionRecord::Type`, same order (QT-086; research 02 §4.1).
 /// The order is the bit position of dash-qt's persisted type filter.
@@ -227,7 +227,162 @@ pub enum HistoryError {
     Internal { detail: String },
 }
 
-domain_error_common!(HistoryError);
+domain_error_common!(@not_implemented HistoryError);
+
+impl From<dw_engine::EngineError> for HistoryError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::InvalidQuery(detail) => Self::InvalidQuery { detail },
+            E::StaleCursor => Self::StaleCursor,
+            E::TxNotFound(txid) => Self::TxNotFound { txid },
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+/// Maps an enum between the FFI and dw-engine, variant by variant (the two
+/// declare the same variants in the same order).
+macro_rules! map_enum {
+    ($from:ty => $to:ty { $($v:ident),* $(,)? }) => {
+        impl From<$from> for $to {
+            fn from(x: $from) -> Self {
+                match x { $(<$from>::$v => <$to>::$v),* }
+            }
+        }
+    };
+}
+
+map_enum!(TxType => dw_engine::TxType {
+    Other, Generated, SendToAddress, SendToOther, RecvWithAddress, RecvFromOther, SendToSelf,
+    RecvWithCoinJoin, CoinJoinMixing, CoinJoinCollateralPayment, CoinJoinMakeCollaterals,
+    CoinJoinCreateDenominations, CoinJoinSend, PlatformTransfer, DustReceive, DataTransaction,
+    MasternodeRegistration, MasternodeUpdate, AssetLock,
+});
+map_enum!(dw_engine::TxType => TxType {
+    Other, Generated, SendToAddress, SendToOther, RecvWithAddress, RecvFromOther, SendToSelf,
+    RecvWithCoinJoin, CoinJoinMixing, CoinJoinCollateralPayment, CoinJoinMakeCollaterals,
+    CoinJoinCreateDenominations, CoinJoinSend, PlatformTransfer, DustReceive, DataTransaction,
+    MasternodeRegistration, MasternodeUpdate, AssetLock,
+});
+map_enum!(TxCategory => dw_engine::TxCategory {
+    Sent, Received, Reward, Masternode, InternalTransfer, CoinJoin, Platform, Other,
+});
+map_enum!(dw_engine::TxCategory => TxCategory {
+    Sent, Received, Reward, Masternode, InternalTransfer, CoinJoin, Platform, Other,
+});
+map_enum!(TxStatusKind => dw_engine::TxStatusKind {
+    Unconfirmed, Confirming, Confirmed, Conflicted, Abandoned, Immature, NotAccepted,
+});
+map_enum!(dw_engine::TxStatusKind => TxStatusKind {
+    Unconfirmed, Confirming, Confirmed, Conflicted, Abandoned, Immature, NotAccepted,
+});
+map_enum!(WatchOnlyFilter => dw_engine::WatchOnlyFilter { All, Yes, No });
+map_enum!(HistorySort => dw_engine::HistorySort {
+    NewestFirst, OldestFirst, AmountDescending, AmountAscending,
+});
+
+impl From<dw_engine::TxStatus> for TxStatus {
+    fn from(s: dw_engine::TxStatus) -> Self {
+        Self {
+            kind: s.kind.into(),
+            confirmations: s.confirmations,
+            instant_locked: s.instant_locked,
+            chain_locked: s.chain_locked,
+            matures_in: s.matures_in,
+        }
+    }
+}
+
+impl From<dw_engine::TxRecord> for TxRecord {
+    fn from(r: dw_engine::TxRecord) -> Self {
+        Self {
+            txid: r.txid,
+            record_index: r.record_index,
+            tx_type: r.tx_type.into(),
+            category: r.category.into(),
+            status: r.status.into(),
+            timestamp: r.timestamp,
+            block_height: r.block_height,
+            amount: r.amount,
+            fee: r.fee,
+            address: r.address,
+            label: r.label,
+            counts_toward_balance: r.counts_toward_balance,
+            involves_watch_only: r.involves_watch_only,
+        }
+    }
+}
+
+impl From<HistoryQuery> for dw_engine::HistoryQuery {
+    fn from(q: HistoryQuery) -> Self {
+        let f = q.filter;
+        Self {
+            filter: dw_engine::HistoryFilter {
+                types: f.types.into_iter().map(Into::into).collect(),
+                categories: f.categories.into_iter().map(Into::into).collect(),
+                statuses: f.statuses.into_iter().map(Into::into).collect(),
+                date_from: f.date_from,
+                date_to: f.date_to,
+                text: f.text,
+                min_amount: f.min_amount,
+                watch_only: f.watch_only.into(),
+            },
+            sort: q.sort.into(),
+            cursor: q.cursor,
+            limit: q.limit,
+        }
+    }
+}
+
+impl From<dw_engine::TxDetail> for TxDetail {
+    fn from(d: dw_engine::TxDetail) -> Self {
+        Self {
+            txid: d.txid,
+            records: d.records.into_iter().map(Into::into).collect(),
+            status: d.status.into(),
+            timestamp: d.timestamp,
+            block_height: d.block_height,
+            block_hash: d.block_hash,
+            fee: d.fee,
+            size_bytes: d.size_bytes,
+            inputs: d
+                .inputs
+                .into_iter()
+                .map(|i| TxInputDetail {
+                    previous_output: OutPoint {
+                        txid: i.previous_txid,
+                        vout: i.previous_vout,
+                    },
+                    address: i.address,
+                    amount: i.amount,
+                    is_mine: i.is_mine,
+                })
+                .collect(),
+            outputs: d
+                .outputs
+                .into_iter()
+                .map(|o| TxOutputDetail {
+                    vout: o.vout,
+                    address: o.address,
+                    amount: o.amount,
+                    is_mine: o.is_mine,
+                    is_change: o.is_change,
+                    data_hex: o.data_hex,
+                })
+                .collect(),
+            message: d.message,
+            label: d.label,
+            raw_hex: d.raw_hex,
+        }
+    }
+}
 
 impl HistoryError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -249,14 +404,22 @@ impl HistoryError {
 #[uniffi::export]
 impl NetworkSession {
     /// One page of history records. Hosts call it again after
-    /// `EngineEvent::HistoryChanged` for the wallet.
+    /// `EngineEvent::HistoryChanged` for the wallet. Cursors are keyset
+    /// cursors: transactions arriving between pages do not invalidate them
+    /// (a CSV export can page through a running sync); only a cursor from a
+    /// different filter or sort is `StaleCursor`.
     pub async fn history_page(
         &self,
         wallet_id: String,
         query: HistoryQuery,
     ) -> Result<HistoryPage, HistoryError> {
-        let _ = (parse_wallet_id(&wallet_id)?, query);
-        not_implemented("NetworkSession.history_page")
+        let id = parse_wallet_id(&wallet_id)?;
+        let page = self.inner.history_page(id, query.into()).await?;
+        Ok(HistoryPage {
+            records: page.records.into_iter().map(Into::into).collect(),
+            next_cursor: page.next_cursor,
+            total_matching: page.total_matching,
+        })
     }
 
     pub async fn tx_detail(
@@ -264,7 +427,7 @@ impl NetworkSession {
         wallet_id: String,
         txid: String,
     ) -> Result<TxDetail, HistoryError> {
-        let _ = (parse_wallet_id(&wallet_id)?, txid);
-        not_implemented("NetworkSession.tx_detail")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.tx_detail(id, txid).await?.into())
     }
 }

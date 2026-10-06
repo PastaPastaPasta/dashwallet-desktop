@@ -3,7 +3,7 @@
 //! Contract: docs/contracts/m1-engine.md §sync.
 
 use crate::NetworkSession;
-use crate::api::common::{domain_error_common, not_implemented};
+use crate::api::common::domain_error_common;
 
 /// dash-spv sync phases, in the order they run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -24,7 +24,8 @@ pub struct SyncPhaseProgress {
 }
 
 /// Whole-network sync state (QT-024/025/027, IOS-023). Raw values: damping
-/// and the 45 s stall rule are the host's `SPVCoordinator` job.
+/// is the host's `SPVCoordinator` job. The 45 s stall rule is the engine's:
+/// it sends `NoticeCode::SyncStalled` once per stall.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SyncSnapshot {
     pub running: bool,
@@ -103,7 +104,87 @@ pub enum SyncError {
     Internal { detail: String },
 }
 
-domain_error_common!(SyncError);
+domain_error_common!(@not_implemented SyncError);
+
+impl From<dw_engine::EngineError> for SyncError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::SpvNotRunning => Self::SpvNotRunning,
+            E::HeightOutOfRange(height) => Self::HeightOutOfRange { height },
+            E::Spv(_) => Self::Spv { detail },
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_engine::SyncPhase> for SyncPhase {
+    fn from(p: dw_engine::SyncPhase) -> Self {
+        match p {
+            dw_engine::SyncPhase::Headers => Self::Headers,
+            dw_engine::SyncPhase::FilterHeaders => Self::FilterHeaders,
+            dw_engine::SyncPhase::Filters => Self::Filters,
+            dw_engine::SyncPhase::Masternodes => Self::Masternodes,
+        }
+    }
+}
+
+impl From<dw_engine::SyncSnapshot> for SyncSnapshot {
+    fn from(s: dw_engine::SyncSnapshot) -> Self {
+        Self {
+            running: s.running,
+            phases: s
+                .phases
+                .into_iter()
+                .map(|p| SyncPhaseProgress {
+                    phase: p.phase.into(),
+                    current_height: p.current_height,
+                    target_height: p.target_height,
+                    done: p.done,
+                })
+                .collect(),
+            active_phase: s.active_phase.map(Into::into),
+            tip_height: s.tip_height,
+            tip_time: s.tip_time,
+            chainlock_height: s.chainlock_height,
+            connected_peers: s.connected_peers,
+            caught_up: s.caught_up,
+            seconds_since_progress: s.seconds_since_progress,
+        }
+    }
+}
+
+impl From<dw_engine::PeerInfo> for PeerInfo {
+    fn from(p: dw_engine::PeerInfo) -> Self {
+        Self {
+            address: p.address,
+            user_agent: p.user_agent,
+            protocol_version: p.protocol_version,
+            best_height: p.best_height,
+            ping_ms: p.ping_ms,
+            connected_since: p.connected_since,
+            inbound: p.inbound,
+            bytes_sent: p.bytes_sent,
+            bytes_received: p.bytes_received,
+        }
+    }
+}
+
+impl From<RescanFrom> for dw_engine::RescanFrom {
+    fn from(r: RescanFrom) -> Self {
+        match r {
+            RescanFrom::WalletBirth => Self::WalletBirth,
+            RescanFrom::Genesis => Self::Genesis,
+            RescanFrom::Height { height } => Self::Height(height),
+        }
+    }
+}
 
 impl SyncError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -126,24 +207,26 @@ impl SyncError {
 impl NetworkSession {
     /// Current sync state. In-memory read; also pushed as `EngineEvent::Sync`.
     pub fn sync_snapshot(&self) -> Result<SyncSnapshot, SyncError> {
-        not_implemented("NetworkSession.sync_snapshot")
+        Ok(self.inner.sync_snapshot()?.into())
     }
 
-    /// Connected peers. In-memory read.
+    /// Connected peers. In-memory read. dash-spv reports only addresses, so
+    /// the other fields are `None` until it exposes per-peer data.
     pub fn peers(&self) -> Result<Vec<PeerInfo>, SyncError> {
-        not_implemented("NetworkSession.peers")
+        Ok(self.inner.peers()?.into_iter().map(Into::into).collect())
     }
 
-    /// Disconnects the current peers and connects to new ones (IOS-023
-    /// "Change peers" after a stall).
+    /// Disconnects the current peers and connects again (IOS-023 "Change
+    /// peers" after a stall). Restarts the SPV client: with configured peers
+    /// only, the same peers are dialled again.
     pub async fn rotate_peers(&self) -> Result<(), SyncError> {
-        not_implemented("NetworkSession.rotate_peers")
+        Ok(self.inner.rotate_peers().await?)
     }
 
     /// Re-scans compact filters from `from` for every wallet on the network.
-    /// Returns once the rescan is scheduled; progress arrives as `Sync` events.
+    /// Returns once the rescan is scheduled; progress arrives as `Sync`
+    /// events. The rewind is not persisted: after a restart, call it again.
     pub async fn rescan(&self, from: RescanFrom) -> Result<(), SyncError> {
-        let _ = from;
-        not_implemented("NetworkSession.rescan")
+        Ok(self.inner.rescan(from.into()).await?)
     }
 }

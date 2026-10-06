@@ -92,11 +92,12 @@ public struct WalletInfo: Sendable, Hashable {
     public let hd: Bool
     public let birthHeight: UInt32?
     public let createdAt: Date?
-    public let balances: WalletBalances
+    /// `nil` until the wallet's scan has passed its birth height.
+    public let balances: WalletBalances?
 
     public init(
         walletID: WalletID, name: String, watchOnly: Bool, hasMnemonic: Bool, hd: Bool, birthHeight: UInt32?,
-        createdAt: Date?, balances: WalletBalances
+        createdAt: Date?, balances: WalletBalances?
     ) {
         self.walletID = walletID
         self.name = name
@@ -112,7 +113,9 @@ public struct WalletInfo: Sendable, Hashable {
         self.init(
             walletID: try .engine(ffi.walletId), name: ffi.name, watchOnly: ffi.watchOnly,
             hasMnemonic: ffi.hasMnemonic, hd: ffi.hd, birthHeight: ffi.birthHeight,
-            createdAt: ffi.createdAt.engineDate, balances: try WalletBalances(ffi.balances))
+            createdAt: ffi.createdAt.engineDate, balances: try ffi.balances.map { b throws(DashKitError) in
+                try WalletBalances(b)
+            })
     }
 }
 

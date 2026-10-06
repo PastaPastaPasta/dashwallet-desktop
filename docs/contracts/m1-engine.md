@@ -19,7 +19,7 @@ Owners:
 
 | Topic | Rule |
 |---|---|
-| Wallet id | 64-char lowercase hex `String`. Every call that takes one parses it first and returns `invalid_argument` for a malformed id, even when the rest is a stub. |
+| Wallet id | 64-char lowercase hex `String`. Every call that takes one parses it first and returns `invalid_argument` for a malformed id (upper case included), even when the rest is a stub. |
 | Txid | 64-char lowercase hex, display (RPC) byte order. |
 | Amounts | Duffs. `u64` for quantities, `i64` for signed net amounts (history). |
 | Times | UNIX seconds `u64`. `None` means unknown; never 0 as a placeholder. |
@@ -27,7 +27,8 @@ Owners:
 | Secrets in | `Vec<u8>` (Swift `Data`): passphrases, phrases, quick-unlock keys. Rust wraps them in `Zeroizing` on entry. |
 | Secrets out | Only `generate_mnemonic` and `Vault.reveal_mnemonic`, as bytes. DashKit copies them into `SecretBytes` at once and zeroes the `Data`. Residual risk: UniFFI frees the returned `RustBuffer` without zeroing it (B decides on a zeroing transfer type). |
 | Async | Every `async` export spawns its work on the engine's tokio runtime (`NetworkSession::on_runtime` pattern) and only awaits the join handle, so UniFFI's Swift executor never blocks. |
-| Sync | A sync export is O(1) or reads in-memory state. No SQLite or network I/O on the caller's thread: E1/E2 keep the data a sync call needs (wallet names, sync snapshot, peers) in memory. |
+| Sync | A sync export is O(1) or reads in-memory state. No SQLite or network I/O on the caller's thread: E1/E2 keep the data a sync call needs (wallet names, sync snapshot, peers, balances) in memory. |
+| Close | `close_network` waits for admitted calls to finish; a call that starts once the close has begun returns `network_not_open` (review M1). |
 | Pure functions | `units`, `uri`, `verify_message`, `generate_mnemonic`, `check_mnemonic` are free functions; they need no session and run on the caller's thread. |
 | Events | Signals, not data (DESIGN-opus §1.5 rule 4). Hosts re-query on arrival. Rust debounces each domain to ≤ 4 Hz and **always delivers the last change of a burst** (review H2). |
 | Errors | One `uniffi::Error` enum per domain. Each variant has a stable code (§4). `detail` strings are diagnostics for logs; Rust never produces user-facing copy. |
@@ -79,28 +80,37 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 |---|---|---|---|---|---|---|
 | `generate_mnemonic(word_count, language)` | sync, free | Fresh phrase (12/15/18/21/24 words) as UTF-8 bytes. **Stores nothing.** The host shows it, runs the verify step, then calls `import_wallet`. | `wallet.unsupported_word_count` | QT-102/103, IOS-002…004 | B | **works** |
 | `check_mnemonic(phrase)` | sync, free | `MnemonicCheck { word_count, unknown_word_indices, language, checksum: Valid\|CoreOnly\|Invalid }` for live restore validation. `CoreOnly` = fails BIP39, passes Dash Core's weak check. | — | QT-104, IOS-007 | B | **works** |
-| `NetworkSession.import_wallet(mnemonic, bip39_passphrase, options)` | async | Stores phrase and passphrase in the vault, then registers the wallet, in DESIGN-opus §1.8 seed-safety order. `ImportOptions { name, birth_height, core_compat, lookahead }`. Returns the wallet id. Over an existing watch-only wallet with the same id: attach the keys, or `wallet.watch_only_exists`. | `wallet.invalid_mnemonic`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.name_rejected` | QT-104/105, IOS-007, IOS-123 | B | **partial**: phrase, BIP39 passphrase, `birth_height` and `core_compat` work; the seed is stored and read back before registration, so without a usable vault the call fails with `wallet.no_vault` / `wallet.vault_locked` and registers nothing (review H-1). Re-import over a registered wallet without a seed attaches the keys. `name` (needs dw-appdb names, E1) and `lookahead` (needs a per-wallet gap limit upstream, U12) return `NotImplemented`. No watch-only wallets exist yet, so `wallet.watch_only_exists` is never returned. |
-| `NetworkSession.list_wallets()` | sync | **M0, superseded by `wallet_infos`.** | `EngineError` | — | E1 removes it | M0 |
-| `NetworkSession.wallet_infos()` / `wallet_info(id)` | sync | `WalletInfo { wallet_id, name, watch_only, has_mnemonic, hd, birth_height, created_at, balances }`, creation order. | — | QT-014, QT-021, QT-035, QT-101, IOS-110 | E1 | stub |
-| `NetworkSession.balances(id)` | sync | `WalletBalances { confirmed, unconfirmed, immature, locked, total }`. | `EngineError` | QT-034, IOS-019/021 | E1 | M0 |
-| `NetworkSession.remove_wallet(id, grant_id)` | async | Unloads, deletes wallet rows, vault records and app metadata. `Wipe` grant. Emits `WalletRemoved`. | `wallet.grant_invalid` | QT-101, IOS-109 | E1 (+B for vault records) | stub |
-| `NetworkSession.rename_wallet(id, name)` | async | 1–64 chars after trimming; stored in `dw-appdb`. | `wallet.name_rejected` | QT-014, IOS-110 | E1 | stub |
+| `NetworkSession.import_wallet(mnemonic, bip39_passphrase, options)` | async | Stores phrase and passphrase in the vault, then registers the wallet, in DESIGN-opus §1.8 seed-safety order. `ImportOptions { name, birth_height, core_compat, lookahead }`. Returns the wallet id. Over an existing watch-only wallet with the same id: attach the keys, or `wallet.watch_only_exists`. | `wallet.invalid_mnemonic`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.name_rejected`, `invalid_argument` (lookahead) | QT-104/105, IOS-007, IOS-123 | B, E1 | **works**: the seed is stored and read back before registration, so without a usable vault the call fails with `wallet.no_vault` / `wallet.vault_locked` and registers nothing (review H-1). Re-import over a registered wallet without a seed attaches the keys (emits `WalletCreated`). `name` is stored in dw-appdb (`None` = "Wallet N"). `lookahead` (1..=1000) raises the gap limit of BIP44 account 0's chains; `core_compat` defaults it to 1000. The raised gap is in memory only: after a restart mid-restore, new addresses beyond those already derived use the default gap (30). No watch-only wallets exist yet, so `wallet.watch_only_exists` is never returned. |
+| `NetworkSession.wallet_infos()` / `wallet_info(id)` | sync | `WalletInfo { wallet_id, name, watch_only, has_mnemonic, hd, birth_height, created_at, balances }`, creation order (wallets without a stored creation time last). `watch_only` = the vault holds no seed for it. `balances` is `None` until the scan has processed the birth block (review M-3). | `wallet_not_found` | QT-014, QT-021, QT-035, QT-101, IOS-110 | E1 | **works** |
+| `NetworkSession.balances(id)` | sync | `Option<WalletBalances { confirmed, unconfirmed, immature, locked, total, coinjoin }>`; `None` = not known yet. `coinjoin` is the spendable balance of the DIP9 CoinJoin accounts (dash-qt's "fully mixed" rule is WS-06). | `EngineError` | QT-034, IOS-019/021 | E1 | **works** |
+| `NetworkSession.remove_wallet(id, grant_id)` | async | Unloads, deletes wallet rows, app metadata and finally the vault records. `Wipe` grant, redeemed after the wallet is found. Emits `WalletRemoved`. | `wallet.grant_invalid`, `wallet_not_found` | QT-101, IOS-109 | E1 (+B for vault records) | **works** |
+| `NetworkSession.rename_wallet(id, name)` | async | 1–64 chars after trimming, no control characters; stored in `dw-appdb`. | `wallet.name_rejected` | QT-014, IOS-110 | E1 | **works** |
+
+`list_wallets` (M0) is removed; use `wallet_infos`.
 
 ### 2.4 Sync (`sync.rs`) — owner E1
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `NetworkSession.sync_snapshot()` | sync | `SyncSnapshot { running, phases: [SyncPhaseProgress{phase, current_height, target_height, done}], active_phase, tip_height, tip_time, chainlock_height, connected_peers, caught_up, seconds_since_progress }`. Phases: `Headers, FilterHeaders, Filters, Masternodes`. `caught_up` = dash-spv steady state (the iOS `syncDone` gate). Raw values; damping is Swift's. | — | QT-024/025/027, IOS-023 | stub |
-| `NetworkSession.peers()` | sync | `[PeerInfo { address, user_agent, protocol_version, best_height, ping_ms, connected_since, inbound, bytes_sent, bytes_received }]`. | — | QT-147, IOS-023 | stub |
-| `NetworkSession.rotate_peers()` | async | Drop current peers, connect to new ones ("Change peers"). | `sync.spv_not_running` | IOS-023 | stub |
-| `NetworkSession.rescan(from: WalletBirth\|Genesis\|Height{h})` | async | Schedules a filter rescan for every wallet; progress via `Sync` events. | `sync.height_out_of_range`, `sync.spv_not_running` | QT-117, QT-148, IOS-113 | stub |
+| `NetworkSession.sync_snapshot()` | sync | `SyncSnapshot { running, phases: [SyncPhaseProgress{phase, current_height, target_height, done}], active_phase, tip_height, tip_time, chainlock_height, connected_peers, caught_up, seconds_since_progress }`. Phases: `Headers, FilterHeaders, Filters, Masternodes`. `caught_up` = dash-spv steady state (every reported phase `Synced`, or idle in `WaitForEvents` at its target — the iOS `syncDone` gate). Raw values; damping is Swift's. The 45 s stall rule is the engine's: it sends `Notice{SyncStalled}` once per stall. | — | QT-024/025/027, IOS-023 | **works**. On a single regtest node without quorums the masternode phase never finishes (dashd fails `getqrinfo`), so `caught_up` stays false there. |
+| `NetworkSession.peers()` | sync | `[PeerInfo { address, user_agent, protocol_version, best_height, ping_ms, connected_since, inbound, bytes_sent, bytes_received }]`. | — | QT-147, IOS-023 | **works**: dash-spv reports only addresses, so every other field is `None` (`connected_since` = when this engine saw the connection; `inbound` is always false). |
+| `NetworkSession.rotate_peers()` | async | Drop current peers, connect to new ones ("Change peers"). | `sync.spv_not_running` | IOS-023 | **works** as an SPV client restart (dash-spv has no per-peer disconnect); with `spv_peers` configured the same peers are dialled again. |
+| `NetworkSession.rescan(from: WalletBirth\|Genesis\|Height{h})` | async | Schedules a filter rescan for every wallet; progress via `Sync` events. | `sync.height_out_of_range` (above the header tip), `sync.spv_not_running` | QT-117, QT-148, IOS-113 | **works**: rewinds each wallet's filter checkpoint in memory; a restart before the rescan ends needs another call. |
 
 ### 2.5 History (`history.rs`) — owner E1
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `NetworkSession.history_page(id, query)` | async | `HistoryQuery { filter, sort, cursor, limit (1..=500) }` → `HistoryPage { records, next_cursor, total_matching }`. Filter: `types`, `categories`, `statuses`, `date_from` (inclusive), `date_to` (**exclusive**, dash-qt), `text` (case-insensitive address/label/txid), `min_amount` (absolute), `watch_only`. Empty list / `None` = any. Records are dash-qt `TransactionRecord`s: one per non-change output for sends, fee on the first; `record_index` orders them. | `history.invalid_query`, `history.stale_cursor` | QT-086…089, QT-094 (rows for CSV), IOS-027/028 | stub |
-| `NetworkSession.tx_detail(id, txid)` | async | `TxDetail { records, status, timestamp, block_height, block_hash, fee, size_bytes, inputs, outputs, message, label, raw_hex }`. | `history.tx_not_found` | QT-092, IOS-031 | stub |
+| `NetworkSession.history_page(id, query)` | async | `HistoryQuery { filter, sort, cursor, limit (1..=500) }` → `HistoryPage { records, next_cursor, total_matching }`. Filter: `types`, `categories`, `statuses`, `date_from` (inclusive), `date_to` (**exclusive**, dash-qt), `text` (case-insensitive address/label/txid, ≤ 256 chars), `min_amount` (absolute), `watch_only`. Empty list / `None` = any. Records are dash-qt `TransactionRecord`s: one per non-change output for sends, fee on the first; `record_index` orders them. Cursors are keyset cursors (they name the last record returned): new transactions between pages never invalidate them, so a CSV export can page through a running sync; `stale_cursor` only for a cursor of another filter/sort or a malformed one. | `history.invalid_query`, `history.stale_cursor`, `wallet_not_found` | QT-086…089, QT-094 (rows for CSV), IOS-027/028 | **works** |
+| `NetworkSession.tx_detail(id, txid)` | async | `TxDetail { records, status, timestamp, block_height, block_hash, fee, size_bytes, inputs, outputs, message, label, raw_hex }`. Input `amount`/`address` are `None` when the spent output is not in the wallet's history. | `history.tx_not_found`, `invalid_argument` (txid not 64 lower-case hex) | QT-092, IOS-031 | **works** |
+
+The history read model is kept in memory per session: persisted records from `wallet.sqlite` at
+open (platform-wallet evicts chainlocked records from its own memory), then wallet events.
+`timestamp` is the earlier of the first-seen time (dw-appdb `tx_meta.created_at`) and the block
+time. Not produced yet, for lack of data: `Conflicted` and `Abandoned` (platform-wallet deletes
+provably beaten spends, so they leave the history), `CoinJoinSend` (needs the send flow's
+`DS=1` mark), `DustReceive` (dust protection, E2) and `RecvWithCoinJoin` (never assigned by
+dash-qt either). Labels: the transaction label, else the address label (dw-appdb).
 
 Classification: `TxType` is dash-qt's 19-value enum in dash-qt's order (research 02 §4.1); `TxCategory`
 is the iOS filter category (`Sent, Received, Reward, Masternode, InternalTransfer, CoinJoin, Platform,
@@ -112,11 +122,11 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `current_receive_address(id)` | async | First unused external address as `AddressInfo { address, chain, index, derivation_path, used, label, balance, tx_count }`. Re-queried after `HistoryChanged`, which rotates it once paid. | `receive.gap_limit` | IOS-053/054 | stub |
-| `next_receive_address(id, label)` | async | Issues and labels a fresh address. | `receive.gap_limit` | QT-081 | stub |
-| `addresses(id, AddressFilter{chain, used})` | async | Standard BIP44 account addresses. | — | QT-096 | stub |
-| `create_receive_request(id, amount, label, message)` | async | Stores a `ReceiveRequest { id, created_at, address, amount, label, message, uri }` on a fresh address; `uri` from dw-uri `format_bitcoin_uri`. | — | QT-081/082/085, IOS-055 | stub |
-| `receive_requests(id)` / `delete_receive_request(id, request_id)` | async | Newest first. | `receive.request_not_found` | QT-083 | stub |
+| `current_receive_address(id)` | async | First unused external address of BIP44 account 0 as `AddressInfo { address, chain, index, derivation_path, used, label, balance, tx_count }`. Re-queried after `HistoryChanged`, which rotates it once paid. | `receive.gap_limit` | IOS-053/054 | **works** |
+| `next_receive_address(id, label)` | async | Issues and labels a fresh address: unused, not reserved by key-wallet, never issued before (issued addresses are dw-appdb `receive` address-book entries and request addresses, so issuance survives restarts). `gap_limit` once every address inside the gap is issued. | `receive.gap_limit` | QT-081 | **works** |
+| `addresses(id, AddressFilter{chain, used})` | async | BIP44 account 0 addresses, receiving then change, by index. `balance` from the account's UTXOs; `tx_count` from the history. | — | QT-096 | **works** |
+| `create_receive_request(id, amount, label, message)` | async | Stores a `ReceiveRequest { id, created_at, address, amount, label, message, uri }` on a freshly issued address; `uri` from dw-uri `format_bitcoin_uri`. Amount 0 = any amount; above 21 M DASH is `invalid_argument`. | `receive.gap_limit`, `invalid_argument` | QT-081/082/085, IOS-055 | **works** |
+| `receive_requests(id)` / `delete_receive_request(id, request_id)` | async | Newest first. | `receive.request_not_found` | QT-083 | **works** |
 
 ### 2.7 Send (`send.rs`) — owner E2
 
@@ -186,11 +196,13 @@ stay in dw-uri for M2 (IOS-048 OS registration).
 | `WalletRemoved {network, wallet_id}` | `remove_wallet` done | reload wallet list | E1 |
 | `SpvStateChanged {network, running}` | SPV started/stopped | status bar | M0 |
 | `Sync {network, snapshot}` | snapshot changed (≤ 4 Hz, trailing edge kept) | `SPVCoordinator` | E1 |
-| `Balances {network, wallet_id, balances}` | balance buckets changed | Home / status bar | E1 |
-| `HistoryChanged {network, wallet_id, txids}` | tx added or status changed (`txids` empty = reload all) | re-query `history_page`, current receive address | E1 |
+| `Balances {network, wallet_id, balances: Option}` | balance buckets changed, or became known (≤ 4 Hz per wallet set, trailing edge kept) | Home / status bar | E1 |
+| `HistoryChanged {network, wallet_id, txids}` | tx added or status changed, including confirmations of young transactions on a new block; `txids` empty = reload all (rescan) | re-query `history_page`, current receive address | E1 |
 | `LockState {network, state}` | vault lock state changed | lock screen, status bar | B (emitted) |
-| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled`, `BackupFailed` | banner / log | E1 |
-| `SyncProgress`, `PeersChanged`, `WalletChanged` | **M0**; E1 removes them once `Sync`, `Balances`, `HistoryChanged` are emitted and C has migrated | — | M0 |
+| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
+
+`WalletCreated` is also sent when keys are attached to a registered wallet. The M0 events
+`SyncProgress`, `PeersChanged` and `WalletChanged` are removed.
 
 The observer callback runs on an engine thread, must return quickly and must not call back into the
 engine synchronously.
@@ -229,6 +241,11 @@ everywhere, README test command, unused dev-dep, redundant script, DesignTokensT
 `tests/` vs `Tests/` collision (harness moved to `regtest/`).
 
 ### E1 engine-core
+Status: done in m1b/e1-engine-core: §2.1 removals, §2.3 registry calls, §2.4, §2.5, §2.6, the E1
+events in §3, H2, M1, M3, M4, M7, L2 (the drop thread; C still releases off the main thread), L6,
+review M-3 (Option balances), the Low items on `SyncError` mapping, the stall-rule owner (engine)
+and lower-case wallet ids. Regtest: `regtest/harness/tests/test_l1_sync.py`.
+Original routing:
 - Implement §2.1 removals, §2.3 registry calls, §2.4, §2.5, §2.6 and the E1 events in §3.
 - **H2** `SessionEventBridge::progress_due` drops the last progress update of a burst. Debounce with a
   trailing edge (timer flush) for `Sync`, `Balances` and `HistoryChanged`.

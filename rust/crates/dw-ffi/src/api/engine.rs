@@ -54,10 +54,12 @@ pub enum NoticeCode {
     PlatformContextUnavailable,
     SpvError,
     UncleanShutdown,
-    /// SPV made no progress for 45 s while not caught up (IOS-023); the host
-    /// may offer `rotate_peers`.
+    /// SPV made no progress for 45 s while not caught up (IOS-023). The
+    /// engine owns the rule and sends one notice per stall; the host may
+    /// offer `rotate_peers`.
     SyncStalled,
-    /// An automatic wallet backup failed (QT-116).
+    /// An automatic wallet backup failed (QT-116). Automatic backups do not
+    /// exist yet, so the engine never sends it.
     BackupFailed,
 }
 
@@ -67,16 +69,16 @@ impl From<dw_engine::NoticeCode> for NoticeCode {
             dw_engine::NoticeCode::PlatformContextUnavailable => Self::PlatformContextUnavailable,
             dw_engine::NoticeCode::SpvError => Self::SpvError,
             dw_engine::NoticeCode::UncleanShutdown => Self::UncleanShutdown,
+            dw_engine::NoticeCode::SyncStalled => Self::SyncStalled,
+            dw_engine::NoticeCode::BackupFailed => Self::BackupFailed,
         }
     }
 }
 
 /// Engine → host signal; the host re-queries data when it arrives
-/// (DESIGN-opus §1.5 rule 4). Each domain is debounced in Rust to at most
-/// 4 Hz, and the last change of a burst is always delivered.
-///
-/// M0 variants (`SyncProgress`, `PeersChanged`, `WalletChanged`) stay until
-/// E1 emits `Sync`, `Balances` and `HistoryChanged`; E1 then removes them.
+/// (DESIGN-opus §1.5 rule 4). `Sync`, `Balances` and `HistoryChanged` are
+/// debounced in Rust to at most 4 Hz per domain, and the last change of a
+/// burst is always delivered.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum EngineEvent {
     SessionOpened {
@@ -85,26 +87,15 @@ pub enum EngineEvent {
     SessionClosed {
         network: DashNetwork,
     },
+    /// A wallet was registered, or keys were attached to a registered
+    /// wallet; reload the wallet list.
     WalletCreated {
-        network: DashNetwork,
-        wallet_id: String,
-    },
-    WalletChanged {
         network: DashNetwork,
         wallet_id: String,
     },
     SpvStateChanged {
         network: DashNetwork,
         running: bool,
-    },
-    SyncProgress {
-        network: DashNetwork,
-        header_tip_height: Option<u32>,
-        synced: bool,
-    },
-    PeersChanged {
-        network: DashNetwork,
-        connected: u32,
     },
     Notice {
         network: Option<DashNetwork>,
@@ -116,11 +107,12 @@ pub enum EngineEvent {
         network: DashNetwork,
         snapshot: SyncSnapshot,
     },
-    /// The wallet's balance buckets changed.
+    /// The wallet's balance buckets changed. `None` while the balance is
+    /// not known yet (the scan has not reached the birth height).
     Balances {
         network: DashNetwork,
         wallet_id: String,
-        balances: WalletBalances,
+        balances: Option<WalletBalances>,
     },
     /// Transactions of the wallet were added or changed status; re-query
     /// `history_page`. `txids` lists the affected ones when known (empty =
@@ -155,7 +147,7 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
             },
-            E::WalletChanged { network, wallet_id } => Self::WalletChanged {
+            E::WalletRemoved { network, wallet_id } => Self::WalletRemoved {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
             },
@@ -163,18 +155,27 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 network: network.into(),
                 running,
             },
-            E::SyncProgress {
-                network,
-                header_tip_height,
-                synced,
-            } => Self::SyncProgress {
+            E::Sync { network, snapshot } => Self::Sync {
                 network: network.into(),
-                header_tip_height,
-                synced,
+                snapshot: snapshot.into(),
             },
-            E::PeersChanged { network, connected } => Self::PeersChanged {
+            E::Balances {
+                network,
+                wallet_id,
+                balances,
+            } => Self::Balances {
                 network: network.into(),
-                connected,
+                wallet_id: wallet_id.to_string(),
+                balances: balances.map(Into::into),
+            },
+            E::HistoryChanged {
+                network,
+                wallet_id,
+                txids,
+            } => Self::HistoryChanged {
+                network: network.into(),
+                wallet_id: wallet_id.to_string(),
+                txids: txids.iter().map(ToString::to_string).collect(),
             },
             E::Notice {
                 network,

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
-    NetworkSession, SessionOptions, WalletBalances, WalletId,
+    NetworkSession, SessionOptions, WalletId,
 };
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, UnlockScope,
@@ -90,7 +90,7 @@ fn import(
         Zeroizing::new(Vec::new()),
         ImportOptions {
             birth_height: Some(0),
-            core_compat: false,
+            ..ImportOptions::default()
         },
     ))
 }
@@ -124,14 +124,14 @@ fn created_wallet_survives_engine_restart() {
     assert!(session.vault().has_wallet_secret(&created.wallet_id.0));
     assert_eq!(created.mnemonic.split_whitespace().count(), 12);
 
-    let wallets = session.list_wallets().unwrap();
+    let wallets = session.wallet_infos().unwrap();
     assert_eq!(wallets.len(), 1);
     assert_eq!(wallets[0].wallet_id, created.wallet_id);
-    assert_eq!(wallets[0].balances, WalletBalances::default());
-    assert_eq!(
-        session.balances(&created.wallet_id).unwrap(),
-        WalletBalances::default()
-    );
+    assert_eq!(wallets[0].name, "Wallet 1");
+    assert!(wallets[0].has_mnemonic && !wallets[0].watch_only);
+    // Nothing scanned yet: the balance is unknown, not zero (review M-3).
+    assert_eq!(wallets[0].balances, None);
+    assert_eq!(session.balances(&created.wallet_id).unwrap(), None);
 
     let events = rec.events();
     assert!(events.contains(&EngineEvent::SessionOpened {
@@ -145,7 +145,7 @@ fn created_wallet_survives_engine_restart() {
     engine.block_on(engine.shutdown()).unwrap();
     assert!(!session.is_open());
     assert!(matches!(
-        session.list_wallets(),
+        session.wallet_infos(),
         Err(EngineError::NetworkNotOpen(_))
     ));
     assert!(rec.events().contains(&EngineEvent::SessionClosed {
@@ -158,13 +158,14 @@ fn created_wallet_survives_engine_restart() {
     let session = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
-    let ids: Vec<_> = session
-        .list_wallets()
-        .unwrap()
-        .into_iter()
-        .map(|w| w.wallet_id)
-        .collect();
-    assert_eq!(ids, vec![created.wallet_id]);
+    let infos = session.wallet_infos().unwrap();
+    assert_eq!(
+        infos.iter().map(|w| w.wallet_id).collect::<Vec<_>>(),
+        vec![created.wallet_id]
+    );
+    // Review H-2: the keys are still there after the restart.
+    assert!(infos[0].has_mnemonic && !infos[0].watch_only);
+    assert_eq!(infos[0].name, "Wallet 1");
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -217,7 +218,7 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .unwrap();
     let ids: Vec<_> = regtest
-        .list_wallets()
+        .wallet_infos()
         .unwrap()
         .into_iter()
         .map(|w| w.wallet_id)
@@ -236,14 +237,25 @@ fn dropping_engine_without_shutdown_releases_storage() {
     create_vault(&engine, &s, true);
     let id = import(&engine, &s, ABANDON_12).unwrap();
     drop(s);
+    // Review L2: dropping returns at once; the sessions are closed on a
+    // background thread, so the storage is free shortly after.
+    let started = std::time::Instant::now();
     drop(engine);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
-    let s = engine
-        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
-        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let s = loop {
+        match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+            Ok(s) => break s,
+            Err(EngineError::StorageInUse(_)) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+    };
     assert_eq!(
-        s.list_wallets()
+        s.wallet_infos()
             .unwrap()
             .into_iter()
             .map(|w| w.wallet_id)
@@ -358,7 +370,7 @@ fn import_without_usable_vault_registers_nothing() {
         matches!(err, Err(EngineError::Vault(VaultError::NoVault))),
         "{err:?}"
     );
-    assert!(s.list_wallets().unwrap().is_empty());
+    assert!(s.wallet_infos().unwrap().is_empty());
 
     create_vault(&engine, &s, true);
     s.lock_vault().unwrap();
@@ -367,7 +379,7 @@ fn import_without_usable_vault_registers_nothing() {
         matches!(err, Err(EngineError::Vault(VaultError::Locked))),
         "{err:?}"
     );
-    assert!(s.list_wallets().unwrap().is_empty());
+    assert!(s.wallet_infos().unwrap().is_empty());
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -399,7 +411,7 @@ fn imported_wallet_signs_after_restart_and_unlock() {
     assert_eq!(status.state, LockState::Locked);
     assert_eq!(status.wallets_with_secrets, vec![id.0]);
     assert_eq!(
-        s.list_wallets()
+        s.wallet_infos()
             .unwrap()
             .into_iter()
             .map(|w| w.wallet_id)
@@ -453,6 +465,6 @@ fn import_attaches_keys_to_registered_wallet_without_secret() {
 
     assert_eq!(import(&engine, &s, ABANDON_12).unwrap(), id);
     assert!(s.vault().has_wallet_secret(&id.0));
-    assert_eq!(s.list_wallets().unwrap().len(), 1);
+    assert_eq!(s.wallet_infos().unwrap().len(), 1);
     engine.block_on(engine.shutdown()).unwrap();
 }

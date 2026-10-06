@@ -1053,7 +1053,10 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * One page of history records. Hosts call it again after
-     * `EngineEvent::HistoryChanged` for the wallet.
+     * `EngineEvent::HistoryChanged` for the wallet. Cursors are keyset
+     * cursors: transactions arriving between pages do not invalidate them
+     * (a CSV export can page through a running sync); only a cursor from a
+     * different filter or sort is `StaleCursor`.
      */
     func historyPage(walletId: String, query: HistoryQuery) async throws  -> HistoryPage
     
@@ -1089,12 +1092,14 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func signMessage(walletId: String, address: String, message: String, grantId: String) async throws  -> String
     
     /**
-     * Addresses of the wallet's standard BIP44 account (QT-096 receiving tab).
+     * Addresses of the wallet's BIP44 account 0 (QT-096 receiving tab), by
+     * chain then index.
      */
     func addresses(walletId: String, filter: AddressFilter) async throws  -> [AddressInfo]
     
     /**
-     * Stores a payment request on a fresh address and returns it.
+     * Stores a payment request on a freshly issued address and returns it.
+     * An amount of 0 means "any amount".
      */
     func createReceiveRequest(walletId: String, amount: UInt64?, label: String?, message: String?) async throws  -> ReceiveRequest
     
@@ -1107,8 +1112,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func deleteReceiveRequest(walletId: String, id: UInt64) async throws 
     
     /**
-     * Issues the next unused receiving address and labels it (dash-qt
-     * "Request payment" always uses a fresh address, QT-081).
+     * Issues a receiving address that was never issued before and labels
+     * it (dash-qt "Request payment" always uses a fresh address, QT-081).
+     * `GapLimit` once every address inside the gap limit is issued.
      */
     func nextReceiveAddress(walletId: String, label: String?) async throws  -> AddressInfo
     
@@ -1148,19 +1154,22 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func stopSpv() async throws 
     
     /**
-     * Connected peers. In-memory read.
+     * Connected peers. In-memory read. dash-spv reports only addresses, so
+     * the other fields are `None` until it exposes per-peer data.
      */
     func peers() throws  -> [PeerInfo]
     
     /**
      * Re-scans compact filters from `from` for every wallet on the network.
-     * Returns once the rescan is scheduled; progress arrives as `Sync` events.
+     * Returns once the rescan is scheduled; progress arrives as `Sync`
+     * events. The rewind is not persisted: after a restart, call it again.
      */
     func rescan(from: RescanFrom) async throws 
     
     /**
-     * Disconnects the current peers and connects to new ones (IOS-023
-     * "Change peers" after a stall).
+     * Disconnects the current peers and connects again (IOS-023 "Change
+     * peers" after a stall). Restarts the SPV client: with configured peers
+     * only, the same peers are dialled again.
      */
     func rotatePeers() async throws 
     
@@ -1176,9 +1185,10 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func vault()  -> Vault
     
     /**
-     * Core balance buckets. In-memory read.
+     * Core balance buckets; `None` while not known yet (review M-3).
+     * In-memory read.
      */
-    func balances(walletId: String) throws  -> WalletBalances
+    func balances(walletId: String) throws  -> WalletBalances?
     
     /**
      * Stores `mnemonic` (UTF-8 phrase bytes) and `bip39_passphrase` in the
@@ -1188,20 +1198,15 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      *
      * Over a registered wallet whose seed the vault lacks, the seed is
      * stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
-     * `NoVault`, `VaultLocked` (also when unlocked for mixing only).
-     * `options.name` and `options.lookahead` are not supported yet and
-     * return `NotImplemented`.
+     * `NoVault`, `VaultLocked` (also when unlocked for mixing only),
+     * `NameRejected`, `InvalidArgument` (lookahead outside 1..=1000).
      */
     func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOptions) async throws  -> String
     
     /**
-     * M0: registered wallets with balances. Superseded by `wallet_infos`.
-     */
-    func listWallets() throws  -> [WalletSummary]
-    
-    /**
-     * Unloads the wallet, deletes its wallet-state rows and its vault
-     * records (IOS-109, QT-101 close+delete). Needs a `Wipe` grant.
+     * Unloads the wallet, deletes its wallet-state rows, its app metadata
+     * and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
+     * grant. Emits `WalletRemoved`.
      */
     func removeWallet(walletId: String, grantId: String) async throws 
     
@@ -1213,7 +1218,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func walletInfo(walletId: String) throws  -> WalletInfo
     
     /**
-     * Every registered wallet on this network, in creation order.
+     * Every registered wallet on this network, in creation order. In-memory
+     * read.
      */
     func walletInfos() throws  -> [WalletInfo]
     
@@ -1343,7 +1349,10 @@ open func utxos(walletId: String, filter: UtxoFilter)async throws  -> [Utxo]  {
     
     /**
      * One page of history records. Hosts call it again after
-     * `EngineEvent::HistoryChanged` for the wallet.
+     * `EngineEvent::HistoryChanged` for the wallet. Cursors are keyset
+     * cursors: transactions arriving between pages do not invalidate them
+     * (a CSV export can page through a running sync); only a cursor from a
+     * different filter or sort is `StaleCursor`.
      */
 open func historyPage(walletId: String, query: HistoryQuery)async throws  -> HistoryPage  {
     return
@@ -1477,7 +1486,8 @@ open func signMessage(walletId: String, address: String, message: String, grantI
 }
     
     /**
-     * Addresses of the wallet's standard BIP44 account (QT-096 receiving tab).
+     * Addresses of the wallet's BIP44 account 0 (QT-096 receiving tab), by
+     * chain then index.
      */
 open func addresses(walletId: String, filter: AddressFilter)async throws  -> [AddressInfo]  {
     return
@@ -1496,7 +1506,8 @@ open func addresses(walletId: String, filter: AddressFilter)async throws  -> [Ad
 }
     
     /**
-     * Stores a payment request on a fresh address and returns it.
+     * Stores a payment request on a freshly issued address and returns it.
+     * An amount of 0 means "any amount".
      */
 open func createReceiveRequest(walletId: String, amount: UInt64?, label: String?, message: String?)async throws  -> ReceiveRequest  {
     return
@@ -1551,8 +1562,9 @@ open func deleteReceiveRequest(walletId: String, id: UInt64)async throws   {
 }
     
     /**
-     * Issues the next unused receiving address and labels it (dash-qt
-     * "Request payment" always uses a fresh address, QT-081).
+     * Issues a receiving address that was never issued before and labels
+     * it (dash-qt "Request payment" always uses a fresh address, QT-081).
+     * `GapLimit` once every address inside the gap limit is issued.
      */
 open func nextReceiveAddress(walletId: String, label: String?)async throws  -> AddressInfo  {
     return
@@ -1698,7 +1710,8 @@ open func stopSpv()async throws   {
 }
     
     /**
-     * Connected peers. In-memory read.
+     * Connected peers. In-memory read. dash-spv reports only addresses, so
+     * the other fields are `None` until it exposes per-peer data.
      */
 open func peers()throws  -> [PeerInfo]  {
     return try  FfiConverterSequenceTypePeerInfo.lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
@@ -1711,7 +1724,8 @@ open func peers()throws  -> [PeerInfo]  {
     
     /**
      * Re-scans compact filters from `from` for every wallet on the network.
-     * Returns once the rescan is scheduled; progress arrives as `Sync` events.
+     * Returns once the rescan is scheduled; progress arrives as `Sync`
+     * events. The rewind is not persisted: after a restart, call it again.
      */
 open func rescan(from: RescanFrom)async throws   {
     return
@@ -1730,8 +1744,9 @@ open func rescan(from: RescanFrom)async throws   {
 }
     
     /**
-     * Disconnects the current peers and connects to new ones (IOS-023
-     * "Change peers" after a stall).
+     * Disconnects the current peers and connects again (IOS-023 "Change
+     * peers" after a stall). Restarts the SPV client: with configured peers
+     * only, the same peers are dialled again.
      */
 open func rotatePeers()async throws   {
     return
@@ -1775,10 +1790,11 @@ open func vault() -> Vault  {
 }
     
     /**
-     * Core balance buckets. In-memory read.
+     * Core balance buckets; `None` while not known yet (review M-3).
+     * In-memory read.
      */
-open func balances(walletId: String)throws  -> WalletBalances  {
-    return try  FfiConverterTypeWalletBalances_lift(try rustCallWithError(FfiConverterTypeEngineError_lift) {
+open func balances(walletId: String)throws  -> WalletBalances?  {
+    return try  FfiConverterOptionTypeWalletBalances.lift(try rustCallWithError(FfiConverterTypeEngineError_lift) {
         uniffiCallStatus in
     uniffi_dashwallet_core_fn_method_networksession_balances(
             self.uniffiCloneHandle(),
@@ -1795,9 +1811,8 @@ open func balances(walletId: String)throws  -> WalletBalances  {
      *
      * Over a registered wallet whose seed the vault lacks, the seed is
      * stored (keys attached). Errors: `InvalidMnemonic`, `AlreadyExists`,
-     * `NoVault`, `VaultLocked` (also when unlocked for mixing only).
-     * `options.name` and `options.lookahead` are not supported yet and
-     * return `NotImplemented`.
+     * `NoVault`, `VaultLocked` (also when unlocked for mixing only),
+     * `NameRejected`, `InvalidArgument` (lookahead outside 1..=1000).
      */
 open func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOptions)async throws  -> String  {
     return
@@ -1816,20 +1831,9 @@ open func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOpt
 }
     
     /**
-     * M0: registered wallets with balances. Superseded by `wallet_infos`.
-     */
-open func listWallets()throws  -> [WalletSummary]  {
-    return try  FfiConverterSequenceTypeWalletSummary.lift(try rustCallWithError(FfiConverterTypeEngineError_lift) {
-        uniffiCallStatus in
-    uniffi_dashwallet_core_fn_method_networksession_list_wallets(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Unloads the wallet, deletes its wallet-state rows and its vault
-     * records (IOS-109, QT-101 close+delete). Needs a `Wipe` grant.
+     * Unloads the wallet, deletes its wallet-state rows, its app metadata
+     * and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
+     * grant. Emits `WalletRemoved`.
      */
 open func removeWallet(walletId: String, grantId: String)async throws   {
     return
@@ -1877,7 +1881,8 @@ open func walletInfo(walletId: String)throws  -> WalletInfo  {
 }
     
     /**
-     * Every registered wallet on this network, in creation order.
+     * Every registered wallet on this network, in creation order. In-memory
+     * read.
      */
 open func walletInfos()throws  -> [WalletInfo]  {
     return try  FfiConverterSequenceTypeWalletInfo.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
@@ -3391,8 +3396,8 @@ public func FfiConverterTypeHistoryQuery_lower(_ value: HistoryQuery) -> RustBuf
  */
 public struct ImportOptions: Equatable, Hashable {
     /**
-     * Display name; `None` = engine default ("Wallet N"). Names live in
-     * dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
+     * Display name, 1–64 characters after trimming (`wallet.name_rejected`
+     * otherwise); `None` = engine default ("Wallet N"). Stored in dw-appdb.
      */
     public let name: String?
     /**
@@ -3406,9 +3411,11 @@ public struct ImportOptions: Equatable, Hashable {
      */
     public let coreCompat: Bool
     /**
-     * Address lookahead for the restore scan; `None` = engine default.
-     * dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
-     * gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
+     * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
+     * for the restore scan; `None` = the default (30), or 1000 with
+     * `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
+     * memory only: a restart before the scan finishes continues with the
+     * default gap beyond the addresses already derived.
      */
     public let lookahead: UInt32?
 
@@ -3416,8 +3423,8 @@ public struct ImportOptions: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Display name; `None` = engine default ("Wallet N"). Names live in
-         * dw-appdb, which is not wired yet: `Some` returns `NotImplemented`.
+         * Display name, 1–64 characters after trimming (`wallet.name_rejected`
+         * otherwise); `None` = engine default ("Wallet N"). Stored in dw-appdb.
          */name: String?, 
         /**
          * First block to scan. `Some(0)` = genesis; `None` = SPV tip or latest
@@ -3428,9 +3435,11 @@ public struct ImportOptions: Equatable, Hashable {
          * salt cut at 256 bytes) via dw-compat (QT-104).
          */coreCompat: Bool, 
         /**
-         * Address lookahead for the restore scan; `None` = engine default.
-         * dash-qt restores use 1000 (QT-105). platform-wallet has no per-wallet
-         * gap limit yet (DESIGN-fable U12): `Some` returns `NotImplemented`.
+         * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
+         * for the restore scan; `None` = the default (30), or 1000 with
+         * `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
+         * memory only: a restart before the scan finishes continues with the
+         * default gap beyond the addresses already derived.
          */lookahead: UInt32?) {
         self.name = name
         self.birthHeight = birthHeight
@@ -4470,7 +4479,8 @@ public func FfiConverterTypeSyncPhaseProgress_lower(_ value: SyncPhaseProgress) 
 
 /**
  * Whole-network sync state (QT-024/025/027, IOS-023). Raw values: damping
- * and the 45 s stall rule are the host's `SPVCoordinator` job.
+ * is the host's `SPVCoordinator` job. The 45 s stall rule is the engine's:
+ * it sends `NoticeCode::SyncStalled` once per stall.
  */
 public struct SyncSnapshot: Equatable, Hashable {
     public let running: Bool
@@ -5484,15 +5494,25 @@ public struct WalletBalances: Equatable, Hashable {
     public let immature: UInt64
     public let locked: UInt64
     public let total: UInt64
+    /**
+     * Spendable balance of the DIP9 CoinJoin accounts. dash-qt's "fully
+     * mixed" rounds rule is not applied yet (CoinJoin is WS-06).
+     */
+    public let coinjoin: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(confirmed: UInt64, unconfirmed: UInt64, immature: UInt64, locked: UInt64, total: UInt64) {
+    public init(confirmed: UInt64, unconfirmed: UInt64, immature: UInt64, locked: UInt64, total: UInt64, 
+        /**
+         * Spendable balance of the DIP9 CoinJoin accounts. dash-qt's "fully
+         * mixed" rounds rule is not applied yet (CoinJoin is WS-06).
+         */coinjoin: UInt64) {
         self.confirmed = confirmed
         self.unconfirmed = unconfirmed
         self.immature = immature
         self.locked = locked
         self.total = total
+        self.coinjoin = coinjoin
     }
 
     
@@ -5515,7 +5535,8 @@ public struct FfiConverterTypeWalletBalances: FfiConverterRustBuffer {
                 unconfirmed: FfiConverterUInt64.read(from: &buf), 
                 immature: FfiConverterUInt64.read(from: &buf), 
                 locked: FfiConverterUInt64.read(from: &buf), 
-                total: FfiConverterUInt64.read(from: &buf)
+                total: FfiConverterUInt64.read(from: &buf), 
+                coinjoin: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -5525,6 +5546,7 @@ public struct FfiConverterTypeWalletBalances: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.immature, into: &buf)
         FfiConverterUInt64.write(value.locked, into: &buf)
         FfiConverterUInt64.write(value.total, into: &buf)
+        FfiConverterUInt64.write(value.coinjoin, into: &buf)
     }
 }
 
@@ -5567,7 +5589,11 @@ public struct WalletInfo: Equatable, Hashable {
      * UNIX seconds the wallet was added on this device.
      */
     public let createdAt: UInt64?
-    public let balances: WalletBalances
+    /**
+     * `None` until the scan has processed the wallet's birth block: an
+     * unsynced wallet shows "unknown", not 0 DASH (review M-3).
+     */
+    public let balances: WalletBalances?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -5583,7 +5609,11 @@ public struct WalletInfo: Equatable, Hashable {
          */hd: Bool, birthHeight: UInt32?, 
         /**
          * UNIX seconds the wallet was added on this device.
-         */createdAt: UInt64?, balances: WalletBalances) {
+         */createdAt: UInt64?, 
+        /**
+         * `None` until the scan has processed the wallet's birth block: an
+         * unsynced wallet shows "unknown", not 0 DASH (review M-3).
+         */balances: WalletBalances?) {
         self.walletId = walletId
         self.name = name
         self.watchOnly = watchOnly
@@ -5617,7 +5647,7 @@ public struct FfiConverterTypeWalletInfo: FfiConverterRustBuffer {
                 hd: FfiConverterBool.read(from: &buf), 
                 birthHeight: FfiConverterOptionUInt32.read(from: &buf), 
                 createdAt: FfiConverterOptionUInt64.read(from: &buf), 
-                balances: FfiConverterTypeWalletBalances.read(from: &buf)
+                balances: FfiConverterOptionTypeWalletBalances.read(from: &buf)
         )
     }
 
@@ -5629,7 +5659,7 @@ public struct FfiConverterTypeWalletInfo: FfiConverterRustBuffer {
         FfiConverterBool.write(value.hd, into: &buf)
         FfiConverterOptionUInt32.write(value.birthHeight, into: &buf)
         FfiConverterOptionUInt64.write(value.createdAt, into: &buf)
-        FfiConverterTypeWalletBalances.write(value.balances, into: &buf)
+        FfiConverterOptionTypeWalletBalances.write(value.balances, into: &buf)
     }
 }
 
@@ -5646,69 +5676,6 @@ public func FfiConverterTypeWalletInfo_lift(_ buf: RustBuffer) throws -> WalletI
 #endif
 public func FfiConverterTypeWalletInfo_lower(_ value: WalletInfo) -> RustBuffer {
     return FfiConverterTypeWalletInfo.lower(value)
-}
-
-
-/**
- * M0 row of `list_wallets`; superseded by `WalletInfo`.
- */
-public struct WalletSummary: Equatable, Hashable {
-    /**
-     * 64-char lowercase hex.
-     */
-    public let walletId: String
-    public let balances: WalletBalances
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * 64-char lowercase hex.
-         */walletId: String, balances: WalletBalances) {
-        self.walletId = walletId
-        self.balances = balances
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension WalletSummary: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeWalletSummary: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WalletSummary {
-        return
-            try WalletSummary(
-                walletId: FfiConverterString.read(from: &buf), 
-                balances: FfiConverterTypeWalletBalances.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: WalletSummary, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.walletId, into: &buf)
-        FfiConverterTypeWalletBalances.write(value.balances, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeWalletSummary_lift(_ buf: RustBuffer) throws -> WalletSummary {
-    return try FfiConverterTypeWalletSummary.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeWalletSummary_lower(_ value: WalletSummary) -> RustBuffer {
-    return FfiConverterTypeWalletSummary.lower(value)
 }
 
 
@@ -6677,7 +6644,7 @@ public func FfiConverterTypeDisplayUnit_lower(_ value: DisplayUnit) -> RustBuffe
 
 /**
  * Engine-level error of the M0 calls (engine, session, SPV start/stop,
- * `list_wallets`, `balances`). M1 domain calls use their own
+ * `balances`). M1 domain calls use their own
  * error enums (`VaultError`, `WalletError`, …). Swift maps the case to
  * localized copy; `detail` is diagnostic text for logs only.
  */
@@ -6888,11 +6855,9 @@ public func FfiConverterTypeEngineError_lower(_ value: EngineError) -> RustBuffe
 
 /**
  * Engine → host signal; the host re-queries data when it arrives
- * (DESIGN-opus §1.5 rule 4). Each domain is debounced in Rust to at most
- * 4 Hz, and the last change of a burst is always delivered.
- *
- * M0 variants (`SyncProgress`, `PeersChanged`, `WalletChanged`) stay until
- * E1 emits `Sync`, `Balances` and `HistoryChanged`; E1 then removes them.
+ * (DESIGN-opus §1.5 rule 4). `Sync`, `Balances` and `HistoryChanged` are
+ * debounced in Rust to at most 4 Hz per domain, and the last change of a
+ * burst is always delivered.
  */
 
 public enum EngineEvent: Equatable, Hashable {
@@ -6901,15 +6866,13 @@ public enum EngineEvent: Equatable, Hashable {
     )
     case sessionClosed(network: DashNetwork
     )
+    /**
+     * A wallet was registered, or keys were attached to a registered
+     * wallet; reload the wallet list.
+     */
     case walletCreated(network: DashNetwork, walletId: String
     )
-    case walletChanged(network: DashNetwork, walletId: String
-    )
     case spvStateChanged(network: DashNetwork, running: Bool
-    )
-    case syncProgress(network: DashNetwork, headerTipHeight: UInt32?, synced: Bool
-    )
-    case peersChanged(network: DashNetwork, connected: UInt32
     )
     case notice(network: DashNetwork?, code: NoticeCode, detail: String
     )
@@ -6919,9 +6882,10 @@ public enum EngineEvent: Equatable, Hashable {
     case sync(network: DashNetwork, snapshot: SyncSnapshot
     )
     /**
-     * The wallet's balance buckets changed.
+     * The wallet's balance buckets changed. `None` while the balance is
+     * not known yet (the scan has not reached the birth height).
      */
-    case balances(network: DashNetwork, walletId: String, balances: WalletBalances
+    case balances(network: DashNetwork, walletId: String, balances: WalletBalances?
     )
     /**
      * Transactions of the wallet were added or changed status; re-query
@@ -6967,34 +6931,25 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
         case 3: return .walletCreated(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf)
         )
         
-        case 4: return .walletChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf)
+        case 4: return .spvStateChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), running: try FfiConverterBool.read(from: &buf)
         )
         
-        case 5: return .spvStateChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), running: try FfiConverterBool.read(from: &buf)
+        case 5: return .notice(network: try FfiConverterOptionTypeDashNetwork.read(from: &buf), code: try FfiConverterTypeNoticeCode.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
         )
         
-        case 6: return .syncProgress(network: try FfiConverterTypeDashNetwork.read(from: &buf), headerTipHeight: try FfiConverterOptionUInt32.read(from: &buf), synced: try FfiConverterBool.read(from: &buf)
+        case 6: return .sync(network: try FfiConverterTypeDashNetwork.read(from: &buf), snapshot: try FfiConverterTypeSyncSnapshot.read(from: &buf)
         )
         
-        case 7: return .peersChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), connected: try FfiConverterUInt32.read(from: &buf)
+        case 7: return .balances(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), balances: try FfiConverterOptionTypeWalletBalances.read(from: &buf)
         )
         
-        case 8: return .notice(network: try FfiConverterOptionTypeDashNetwork.read(from: &buf), code: try FfiConverterTypeNoticeCode.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
+        case 8: return .historyChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), txids: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 9: return .sync(network: try FfiConverterTypeDashNetwork.read(from: &buf), snapshot: try FfiConverterTypeSyncSnapshot.read(from: &buf)
+        case 9: return .walletRemoved(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf)
         )
         
-        case 10: return .balances(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), balances: try FfiConverterTypeWalletBalances.read(from: &buf)
-        )
-        
-        case 11: return .historyChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), txids: try FfiConverterSequenceString.read(from: &buf)
-        )
-        
-        case 12: return .walletRemoved(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 13: return .lockState(network: try FfiConverterTypeDashNetwork.read(from: &buf), state: try FfiConverterTypeVaultLockState.read(from: &buf)
+        case 10: return .lockState(network: try FfiConverterTypeDashNetwork.read(from: &buf), state: try FfiConverterTypeVaultLockState.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -7021,66 +6976,47 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
             FfiConverterString.write(walletId, into: &buf)
             
         
-        case let .walletChanged(network,walletId):
-            writeInt(&buf, Int32(4))
-            FfiConverterTypeDashNetwork.write(network, into: &buf)
-            FfiConverterString.write(walletId, into: &buf)
-            
-        
         case let .spvStateChanged(network,running):
-            writeInt(&buf, Int32(5))
+            writeInt(&buf, Int32(4))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterBool.write(running, into: &buf)
             
         
-        case let .syncProgress(network,headerTipHeight,synced):
-            writeInt(&buf, Int32(6))
-            FfiConverterTypeDashNetwork.write(network, into: &buf)
-            FfiConverterOptionUInt32.write(headerTipHeight, into: &buf)
-            FfiConverterBool.write(synced, into: &buf)
-            
-        
-        case let .peersChanged(network,connected):
-            writeInt(&buf, Int32(7))
-            FfiConverterTypeDashNetwork.write(network, into: &buf)
-            FfiConverterUInt32.write(connected, into: &buf)
-            
-        
         case let .notice(network,code,detail):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(5))
             FfiConverterOptionTypeDashNetwork.write(network, into: &buf)
             FfiConverterTypeNoticeCode.write(code, into: &buf)
             FfiConverterString.write(detail, into: &buf)
             
         
         case let .sync(network,snapshot):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(6))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterTypeSyncSnapshot.write(snapshot, into: &buf)
             
         
         case let .balances(network,walletId,balances):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(7))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterString.write(walletId, into: &buf)
-            FfiConverterTypeWalletBalances.write(balances, into: &buf)
+            FfiConverterOptionTypeWalletBalances.write(balances, into: &buf)
             
         
         case let .historyChanged(network,walletId,txids):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(8))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterString.write(walletId, into: &buf)
             FfiConverterSequenceString.write(txids, into: &buf)
             
         
         case let .walletRemoved(network,walletId):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(9))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterString.write(walletId, into: &buf)
             
         
         case let .lockState(network,state):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(10))
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterTypeVaultLockState.write(state, into: &buf)
             
@@ -8211,12 +8147,14 @@ public enum NoticeCode: Equatable, Hashable {
     case spvError
     case uncleanShutdown
     /**
-     * SPV made no progress for 45 s while not caught up (IOS-023); the host
-     * may offer `rotate_peers`.
+     * SPV made no progress for 45 s while not caught up (IOS-023). The
+     * engine owns the rule and sends one notice per stall; the host may
+     * offer `rotate_peers`.
      */
     case syncStalled
     /**
-     * An automatic wallet backup failed (QT-116).
+     * An automatic wallet backup failed (QT-116). Automatic backups do not
+     * exist yet, so the engine never sends it.
      */
     case backupFailed
 
@@ -10989,6 +10927,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeWalletBalances: FfiConverterRustBuffer {
+    typealias SwiftType = WalletBalances?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeWalletBalances.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeWalletBalances.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeAddressChain: FfiConverterRustBuffer {
     typealias SwiftType = AddressChain?
 
@@ -11534,31 +11496,6 @@ fileprivate struct FfiConverterSequenceTypeWalletInfo: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypeWalletSummary: FfiConverterRustBuffer {
-    typealias SwiftType = [WalletSummary]
-
-    public static func write(_ value: [WalletSummary], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeWalletSummary.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [WalletSummary] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [WalletSummary]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeWalletSummary.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterSequenceTypeTxCategory: FfiConverterRustBuffer {
     typealias SwiftType = [TxCategory]
 
@@ -11929,7 +11866,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_utxos() != 8589) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_history_page() != 31403) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_history_page() != 62490) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_tx_detail() != 14157) {
@@ -11950,10 +11887,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_sign_message() != 58632) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_addresses() != 28691) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_addresses() != 57714) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_create_receive_request() != 48418) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_create_receive_request() != 44231) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_current_receive_address() != 2029) {
@@ -11962,7 +11899,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_delete_receive_request() != 29442) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_next_receive_address() != 20856) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_next_receive_address() != 46012) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_receive_requests() != 404) {
@@ -11992,13 +11929,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_stop_spv() != 54196) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_peers() != 36401) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_peers() != 37193) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_rescan() != 65451) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_rescan() != 35879) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_rotate_peers() != 43425) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_rotate_peers() != 14749) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_sync_snapshot() != 45870) {
@@ -12007,16 +11944,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_vault() != 18573) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_balances() != 838) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_balances() != 34629) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet() != 11655) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet() != 47304) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_list_wallets() != 12990) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_dashwallet_core_checksum_method_networksession_remove_wallet() != 50079) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_remove_wallet() != 50684) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_rename_wallet() != 59660) {
@@ -12025,7 +11959,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_info() != 39984) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 22496) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 60873) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 22576) {

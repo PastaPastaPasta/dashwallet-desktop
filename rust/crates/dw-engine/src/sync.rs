@@ -252,10 +252,6 @@ impl SyncTracker {
         true
     }
 
-    pub(crate) fn is_running(&self) -> bool {
-        self.running
-    }
-
     /// Applies a dash-spv progress report. Returns whether the snapshot changed.
     pub(crate) fn on_progress(&mut self, progress: &SyncProgress) -> bool {
         self.apply(Readings::from_progress(progress))
@@ -405,6 +401,84 @@ impl SyncTracker {
                 bytes_received: None,
             })
             .collect()
+    }
+}
+
+impl crate::NetworkSession {
+    /// Current sync state. In-memory read; also pushed as `EngineEvent::Sync`.
+    pub fn sync_snapshot(&self) -> Result<SyncSnapshot, crate::EngineError> {
+        let _op = self.try_enter()?;
+        Ok(self.hub.tracker().snapshot())
+    }
+
+    /// Connected peers. In-memory read.
+    pub fn peers(&self) -> Result<Vec<PeerInfo>, crate::EngineError> {
+        let _op = self.try_enter()?;
+        Ok(self.hub.tracker().peers())
+    }
+
+    /// "Change peers" (IOS-023): restarts the SPV client, which drops every
+    /// connection and dials again from dash-spv's peer store and seeds.
+    /// dash-spv has no per-peer disconnect, so with configured peers only
+    /// (`spv_peers`) the same peers are dialled again.
+    pub async fn rotate_peers(self: &std::sync::Arc<Self>) -> Result<(), crate::EngineError> {
+        let this = std::sync::Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let manager = this.manager()?;
+            if !manager.spv().is_started() {
+                return Err(crate::EngineError::SpvNotRunning);
+            }
+            this.stop_spv_inner(&manager).await?;
+            this.start_spv_inner(&manager).await
+        })
+        .await
+    }
+
+    /// Schedules a compact-filter rescan for every wallet of the network
+    /// (QT-117, QT-148, IOS-113): rewinds each wallet's filter checkpoint so
+    /// the running filter sync re-matches from there. Progress arrives as
+    /// `Sync` events; found transactions as `HistoryChanged`. The rewound
+    /// checkpoint is in memory only: a restart before the rescan finishes
+    /// needs another `rescan`.
+    pub async fn rescan(
+        self: &std::sync::Arc<Self>,
+        from: RescanFrom,
+    ) -> Result<(), crate::EngineError> {
+        let this = std::sync::Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let manager = this.manager()?;
+            if !manager.spv().is_started() {
+                return Err(crate::EngineError::SpvNotRunning);
+            }
+            if let RescanFrom::Height(h) = from {
+                let tip = this.hub.tracker().tip_height().unwrap_or(0);
+                if h > tip {
+                    return Err(crate::EngineError::HeightOutOfRange(h));
+                }
+            }
+            for id in manager.list_wallet_ids_blocking() {
+                let wallet = crate::WalletId(id);
+                let start = match from {
+                    RescanFrom::WalletBirth => {
+                        this.hub.wallet_state(&wallet).map_or(0, |s| s.birth_height)
+                    }
+                    RescanFrom::Genesis => 0,
+                    RescanFrom::Height(h) => h,
+                };
+                // The checkpoint is the last scanned height: rewind to just
+                // below the first block to scan.
+                let checkpoint = start.saturating_sub(1);
+                let m = std::sync::Arc::clone(&manager);
+                tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id, checkpoint))
+                    .await?;
+                this.hub.pump.mark_history(wallet, None);
+            }
+            this.hub.pump.mark_sync();
+            Ok(())
+        })
+        .await
     }
 }
 

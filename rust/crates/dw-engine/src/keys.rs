@@ -18,12 +18,21 @@ use dw_vault::mnemonic;
 use dw_vault::{GrantKind, LockState, Vault, VaultError, VaultStatus, WalletSigner};
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use zeroize::Zeroizing;
 
+use crate::wallets::validate_name;
 use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
 
+/// Address lookahead of restores in Dash Core compatibility mode: dash-qt
+/// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
+/// on its BIP44 chains (DESIGN.md R2).
+pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
+/// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
+pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
+
 /// Options of [`NetworkSession::import_wallet`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportOptions {
     /// First block to scan. `Some(0)` = genesis; `None` = SPV tip, or the
     /// latest checkpoint when SPV is not running (right for a new phrase).
@@ -31,6 +40,21 @@ pub struct ImportOptions {
     /// Derive the seed with Dash Core's BIP39 quirks (weak checksum, no NFKD,
     /// salt cut at 256 bytes; QT-104).
     pub core_compat: bool,
+    /// Display name (1–64 characters after trimming); `None` = "Wallet N".
+    pub name: Option<String>,
+    /// Address lookahead (gap limit) of the BIP44 account's receive and
+    /// change chains for the restore scan, 1..=1000. `None` = the default
+    /// (30), or [`CORE_COMPAT_LOOKAHEAD`] with `core_compat`. The raised gap
+    /// lives in memory: addresses it derived stay monitored, but a restart
+    /// before the scan finishes falls back to the default gap for new ones.
+    pub lookahead: Option<u32>,
+}
+
+impl ImportOptions {
+    fn effective_lookahead(&self) -> Option<u32> {
+        self.lookahead
+            .or(self.core_compat.then_some(CORE_COMPAT_LOOKAHEAD))
+    }
 }
 
 fn mnemonic_error(e: MnemonicError) -> EngineError {
@@ -60,8 +84,9 @@ impl NetworkSession {
         F: FnOnce(&Vault) -> Result<T, VaultError> + Send + 'static,
         T: Send + 'static,
     {
-        self.manager()?;
         let this = Arc::clone(self);
+        let _op = self.enter().await?;
+        self.manager()?;
         self.rt
             .spawn_blocking(move || {
                 let before = this.vault.lock_state();
@@ -75,6 +100,7 @@ impl NetworkSession {
     /// Drops the vault's data key and revokes every grant. In-memory; never
     /// blocks.
     pub fn lock_vault(&self) -> Result<VaultStatus, EngineError> {
+        let _op = self.try_enter()?;
         self.manager()?;
         let before = self.vault.lock_state();
         let status = self.vault.lock();
@@ -109,6 +135,7 @@ impl NetworkSession {
                 ImportOptions::default(),
             )
             .await?;
+        // `import_wallet` took and released the operation guard.
         let text = std::str::from_utf8(&phrase)
             .map_err(|_| EngineError::Internal("generated phrase is not UTF-8".into()))?;
         Ok(CreatedWallet {
@@ -139,8 +166,18 @@ impl NetworkSession {
         bip39_passphrase: Zeroizing<Vec<u8>>,
         options: ImportOptions,
     ) -> Result<WalletId, EngineError> {
+        let name = options.name.as_deref().map(validate_name).transpose()?;
+        let lookahead = options.effective_lookahead();
+        if let Some(n) = lookahead
+            && !(1..=MAX_LOOKAHEAD).contains(&n)
+        {
+            return Err(EngineError::InvalidArgument(format!(
+                "lookahead {n} outside 1..={MAX_LOOKAHEAD}"
+            )));
+        }
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let manager = this.manager()?;
             let network = this.network.core_network();
             let vault = this.vault.clone();
@@ -165,13 +202,15 @@ impl NetworkSession {
                 if had_secret {
                     return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
                 }
-                this.sink.emit(EngineEvent::WalletChanged {
+                // Keys attached: watch-only becomes false; hosts reload.
+                this.sink.emit(EngineEvent::WalletCreated {
                     network: this.network.clone(),
                     wallet_id,
                 });
                 return Ok(wallet_id);
             }
 
+            let default_name = this.next_default_name();
             let registered = manager
                 .create_wallet_from_seed_bytes(
                     network,
@@ -181,8 +220,8 @@ impl NetworkSession {
                 )
                 .await;
             drop(seed);
-            match registered {
-                Ok(wallet) if wallet.wallet_id() == wallet_id.0 => {}
+            let wallet = match registered {
+                Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
                 Ok(wallet) => {
                     return Err(EngineError::Internal(format!(
                         "platform-wallet registered {} for the seed of {wallet_id}",
@@ -198,6 +237,23 @@ impl NetworkSession {
                     }
                     return Err(e);
                 }
+            };
+            if let Some(gap) = lookahead
+                && let Err(e) = wallet
+                    .core()
+                    .set_gap_limit(AccountTypePreference::BIP44, 0, gap)
+                    .await
+            {
+                tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
+            }
+            this.refresh_wallet_state(&manager, wallet_id).await;
+            // The wallet is registered; a failed name write leaves it with
+            // the computed default name and is reported in the log only.
+            if let Err(e) = this
+                .store_name(wallet_id, name.unwrap_or(default_name), None)
+                .await
+            {
+                tracing::warn!(%wallet_id, error = %e, "could not store the wallet name");
             }
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
@@ -237,6 +293,7 @@ impl NetworkSession {
     ) -> Result<String, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let manager = this.manager()?;
             let network = this.network.core_network();
             match decode_destination(&address, network) {

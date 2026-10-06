@@ -19,26 +19,28 @@ mod context;
 mod engine;
 mod error;
 mod events;
-// E1 building blocks (sync snapshot, event pump, operation gate, private
-// directories) that NetworkSession does not use yet. Declared so they compile
-// and their unit tests run; the allow goes when E1 wires them in.
-#[allow(dead_code)]
 mod fsutil;
-#[allow(dead_code)]
 mod gate;
+pub mod history;
+mod history_ops;
 mod keys;
 mod network;
-#[allow(dead_code)]
 mod pump;
+mod receive;
 mod session;
-#[allow(dead_code)]
-mod sync;
+pub mod sync;
+mod wallets;
 
 pub use engine::{Engine, EngineConfig};
 pub use error::EngineError;
 pub use events::{EngineEvent, EventSink, NoticeCode};
-pub use keys::ImportOptions;
-pub use network::DashNetwork;
-pub use session::{
-    CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId, WalletSummary,
+pub use history::{
+    AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
+    TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
 };
+pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
+pub use network::DashNetwork;
+pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
+pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
+pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
+pub use wallets::{MAX_WALLET_NAME, WalletInfo};

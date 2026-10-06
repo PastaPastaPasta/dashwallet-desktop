@@ -3,19 +3,26 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
+use dw_appdb::{APP_DB_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
+use key_wallet::wallet::balance::WalletCoreBalance;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use tokio::runtime::Handle;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 use crate::context::{LazyTrustedContext, SharedContext};
-use crate::events::SessionEventBridge;
+use crate::events::{SessionHub, SessionPump, WalletName, WalletState};
+use crate::fsutil::create_private_dir;
+use crate::gate::{OpGate, OpGuard};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
 pub(crate) type Manager = PlatformWalletManager<SqlitePersister>;
@@ -44,7 +51,13 @@ impl fmt::Debug for WalletId {
 
 impl FromStr for WalletId {
     type Err = EngineError;
+    /// Accepts exactly 64 lower-case hex characters (the contract's id form).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() != 64 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(EngineError::InvalidArgument(
+                "wallet id must be 64 lower-case hex characters".into(),
+            ));
+        }
         let bytes = hex::decode(s)
             .map_err(|e| EngineError::InvalidArgument(format!("wallet id is not hex: {e}")))?;
         let arr: [u8; 32] = bytes
@@ -54,8 +67,7 @@ impl FromStr for WalletId {
     }
 }
 
-/// Core balance buckets in duffs, read from platform-wallet's lock-free
-/// `WalletBalance` atomics.
+/// Core balance buckets in duffs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WalletBalances {
     pub confirmed: u64,
@@ -63,12 +75,10 @@ pub struct WalletBalances {
     pub immature: u64,
     pub locked: u64,
     pub total: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalletSummary {
-    pub wallet_id: WalletId,
-    pub balances: WalletBalances,
+    /// Spendable balance (confirmed + unconfirmed) of the wallet's DIP9
+    /// CoinJoin accounts. dash-qt's "fully mixed" rounds rule is not applied
+    /// here (CoinJoin mixing is WS-06).
+    pub coinjoin: u64,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -100,7 +110,24 @@ pub struct SessionOptions {
     pub spv_peers: Vec<String>,
 }
 
-/// One open network: SDK + PlatformWalletManager<SqlitePersister>.
+/// What a session holds while it is open. Taken out on close so the
+/// persister (and its process-wide open-path claim) is released even while
+/// hosts still hold `Arc<NetworkSession>`.
+#[derive(Clone)]
+pub(crate) struct Live {
+    pub manager: Arc<Manager>,
+    pub persister: Arc<SqlitePersister>,
+    pub appdb: Arc<AppDb>,
+}
+
+/// The running event pump: its stop signal and task.
+struct PumpTask {
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+/// One open network: SDK + PlatformWalletManager<SqlitePersister>, the
+/// network's vault and app database, and the in-memory read models.
 pub struct NetworkSession {
     pub(crate) network: DashNetwork,
     data_dir: PathBuf,
@@ -111,10 +138,11 @@ pub struct NetworkSession {
     /// registers wallets external-signable, so this is the only key material.
     pub(crate) vault: Vault,
     spv_peers: Vec<SocketAddr>,
-    /// `None` once closed. Taken out on close so the persister (and its
-    /// process-wide open-path claim) is released even while hosts still hold
-    /// `Arc<NetworkSession>`.
-    manager: RwLock<Option<Arc<Manager>>>,
+    pub(crate) hub: Arc<SessionHub>,
+    /// Admission of operations vs close (review M1).
+    gate: OpGate,
+    live: RwLock<Option<Live>>,
+    pump: Mutex<Option<PumpTask>>,
 }
 
 impl NetworkSession {
@@ -145,6 +173,16 @@ impl NetworkSession {
         })
         .await??;
 
+        let appdb_path = data_dir.join(APP_DB_FILE);
+        let (appdb, names) = tokio::task::spawn_blocking(move || {
+            let db = AppDb::open(&appdb_path)?;
+            let names = db.wallets()?;
+            Ok::<_, dw_appdb::AppDbError>((db, names))
+        })
+        .await?
+        .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
+        let appdb = Arc::new(appdb);
+
         let context = Arc::new(LazyTrustedContext::new(
             network.core_network(),
             network.devnet_name().map(str::to_string),
@@ -171,16 +209,31 @@ impl NetworkSession {
         let sdk = build_sdk(&network, &opts, Arc::clone(&context))?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
-        let persister = tokio::task::spawn_blocking(move || {
-            SqlitePersister::open(SqlitePersisterConfig::new(db_path))
-        })
-        .await??;
+        let persister = Arc::new(
+            tokio::task::spawn_blocking(move || {
+                SqlitePersister::open(SqlitePersisterConfig::new(db_path))
+            })
+            .await??,
+        );
 
-        let bridge = Arc::new(SessionEventBridge::new(network.clone(), Arc::clone(&sink)));
+        let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
+        for (order, (id, name, created_at)) in (0u64..).zip(names) {
+            match id.parse::<WalletId>() {
+                Ok(id) => hub.set_name(
+                    id,
+                    WalletName {
+                        name,
+                        created_at: Some(created_at),
+                        order,
+                    },
+                ),
+                Err(_) => tracing::warn!(wallet_id = %id, "ignoring a malformed wallet name row"),
+            }
+        }
         let manager = Arc::new(PlatformWalletManager::new(
             Arc::new(sdk),
-            Arc::new(persister),
-            bridge,
+            Arc::clone(&persister),
+            Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
         if let Err(e) = manager.load_from_persistor().await {
             let report = manager.shutdown().await;
@@ -190,7 +243,7 @@ impl NetworkSession {
             return Err(e.into());
         }
 
-        Ok(Arc::new(Self {
+        let session = Arc::new(Self {
             network,
             data_dir,
             rt: Handle::current(),
@@ -198,8 +251,57 @@ impl NetworkSession {
             context,
             vault,
             spv_peers,
-            manager: RwLock::new(Some(manager)),
-        }))
+            hub,
+            gate: OpGate::default(),
+            live: RwLock::new(Some(Live {
+                manager: Arc::clone(&manager),
+                persister,
+                appdb: Arc::clone(&appdb),
+            })),
+            pump: Mutex::new(None),
+        });
+        for id in manager.list_wallet_ids_blocking() {
+            session.refresh_wallet_state(&manager, WalletId(id)).await;
+        }
+        session.load_history().await?;
+        session.start_pump(&manager, appdb);
+        Ok(session)
+    }
+
+    fn start_pump(self: &Arc<Self>, manager: &Arc<Manager>, appdb: Arc<AppDb>) {
+        let (stop, stop_rx) = watch::channel(false);
+        let target = SessionPump {
+            hub: Arc::clone(&self.hub),
+            spv: manager.spv_arc(),
+            appdb,
+        };
+        let hub = Arc::clone(&self.hub);
+        let task = tokio::spawn(async move { hub.pump.run(&target, stop_rx).await });
+        *self.pump.lock().unwrap_or_else(|p| p.into_inner()) = Some(PumpTask { stop, task });
+    }
+
+    /// Reads a wallet's balance and scan heights into the hub.
+    pub(crate) async fn refresh_wallet_state(&self, manager: &Manager, id: WalletId) {
+        let balance = manager.get_wallet(&id.0).await.map(|w| {
+            let b = w.balance();
+            WalletCoreBalance::new(b.confirmed(), b.unconfirmed(), b.immature(), b.locked())
+        });
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return;
+        };
+        let core = &info.core_wallet;
+        self.hub.set_wallet_state(
+            id,
+            WalletState {
+                birth_height: core.birth_height(),
+                synced_height: core.synced_height(),
+                processed_height: core.last_processed_height(),
+                balance: balance.unwrap_or_else(|| core.balance()),
+                accounts: core.account_balances(),
+            },
+        );
     }
 
     pub fn network(&self) -> &DashNetwork {
@@ -211,10 +313,12 @@ impl NetworkSession {
     }
 
     pub fn is_open(&self) -> bool {
-        self.manager
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some()
+        !self.gate.is_closed()
+            && self
+                .live
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some()
     }
 
     /// Whether the trusted quorum provider has been constructed.
@@ -222,13 +326,33 @@ impl NetworkSession {
         self.context.is_ready()
     }
 
-    pub(crate) fn manager(&self) -> Result<Arc<Manager>, EngineError> {
-        self.manager
+    fn not_open(&self) -> EngineError {
+        EngineError::NetworkNotOpen(self.network.to_string())
+    }
+
+    /// Admits an async operation; `NetworkNotOpen` once close has started.
+    /// Public entry points take one guard each; helpers they call do not
+    /// (a nested admission behind a waiting close would deadlock).
+    pub(crate) async fn enter(&self) -> Result<OpGuard<'_>, EngineError> {
+        self.gate.enter().await.ok_or_else(|| self.not_open())
+    }
+
+    /// Admits a synchronous operation without waiting.
+    pub(crate) fn try_enter(&self) -> Result<OpGuard<'_>, EngineError> {
+        self.gate.try_enter().ok_or_else(|| self.not_open())
+    }
+
+    pub(crate) fn live(&self) -> Result<Live, EngineError> {
+        self.live
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .cloned()
-            .ok_or_else(|| EngineError::NetworkNotOpen(self.network.to_string()))
+            .ok_or_else(|| self.not_open())
+    }
+
+    pub(crate) fn manager(&self) -> Result<Arc<Manager>, EngineError> {
+        Ok(self.live()?.manager)
     }
 
     /// Runs `fut` on the engine runtime; a panic becomes `EngineError::Internal`.
@@ -240,59 +364,58 @@ impl NetworkSession {
         self.rt.spawn(fut).await?
     }
 
-    /// Registered wallets with their balance buckets. Wait-free read
-    /// (platform-wallet keeps the wallet map in an `ArcSwap`).
-    pub fn list_wallets(&self) -> Result<Vec<WalletSummary>, EngineError> {
-        let manager = self.manager()?;
-        Ok(manager
-            .list_wallet_ids_blocking()
-            .into_iter()
-            .filter_map(|id| {
-                manager.get_wallet_blocking(&id).map(|w| WalletSummary {
-                    wallet_id: WalletId(id),
-                    balances: balances_of(&w),
-                })
-            })
-            .collect())
-    }
-
-    pub fn balances(&self, wallet_id: &WalletId) -> Result<WalletBalances, EngineError> {
-        let manager = self.manager()?;
-        let wallet = manager
-            .get_wallet_blocking(&wallet_id.0)
-            .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-        Ok(balances_of(&wallet))
-    }
-
-    /// Starts dash-spv for this network (storage under `<network dir>/spv`) and
-    /// spawns its run loop. Masternode sync stays on: InstantSend/ChainLock
-    /// handling depends on it. Counterpart: `platform_wallet_manager_spv_start`
+    /// The configuration dash-spv is started with: storage under
+    /// `<network dir>/spv`, masternode sync on (InstantSend/ChainLock
+    /// handling depends on it), restricted to the configured peers when any
+    /// were given. Counterpart: `platform_wallet_manager_spv_start`
     /// (rs-platform-wallet-ffi/src/spv.rs:408, config built at :519-551).
+    fn spv_config(&self) -> Result<ClientConfig, EngineError> {
+        let mut config = ClientConfig::new(self.network.core_network())
+            .with_storage_path(self.data_dir.join(SPV_DIR));
+        config.enable_masternodes = true;
+        for peer in &self.spv_peers {
+            config.add_peer(*peer);
+        }
+        if !self.spv_peers.is_empty() {
+            config = config.with_restrict_to_configured_peers(true);
+        }
+        if let Some(name) = self.network.devnet_name() {
+            config = config.with_devnet(DevnetConfig::new(name));
+        }
+        config.validate().map_err(EngineError::InvalidConfig)?;
+        Ok(config)
+    }
+
+    /// Starts dash-spv and spawns its run loop.
+    pub(crate) async fn start_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
+        let config = self.spv_config()?;
+        let spv = manager.spv_arc();
+        spv.start(config).await?;
+        spv.spawn_run_loop();
+        self.hub.set_spv_running(true);
+        self.sink.emit(EngineEvent::SpvStateChanged {
+            network: self.network.clone(),
+            running: true,
+        });
+        Ok(())
+    }
+
+    pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
+        let stopped = manager.spv().stop().await;
+        self.hub.set_spv_running(false);
+        self.sink.emit(EngineEvent::SpvStateChanged {
+            network: self.network.clone(),
+            running: false,
+        });
+        Ok(stopped?)
+    }
+
     pub async fn start_spv(self: &Arc<Self>) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let manager = this.manager()?;
-            let mut config = ClientConfig::new(this.network.core_network())
-                .with_storage_path(this.data_dir.join(SPV_DIR));
-            config.enable_masternodes = true;
-            for peer in &this.spv_peers {
-                config.add_peer(*peer);
-            }
-            if !this.spv_peers.is_empty() {
-                config = config.with_restrict_to_configured_peers(true);
-            }
-            if let Some(name) = this.network.devnet_name() {
-                config = config.with_devnet(DevnetConfig::new(name));
-            }
-            config.validate().map_err(EngineError::InvalidConfig)?;
-            let spv = manager.spv_arc();
-            spv.start(config).await?;
-            spv.spawn_run_loop();
-            this.sink.emit(EngineEvent::SpvStateChanged {
-                network: this.network.clone(),
-                running: true,
-            });
-            Ok(())
+            this.start_spv_inner(&manager).await
         })
         .await
     }
@@ -301,31 +424,36 @@ impl NetworkSession {
     pub async fn stop_spv(self: &Arc<Self>) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let manager = this.manager()?;
-            manager.spv().stop().await?;
-            this.sink.emit(EngineEvent::SpvStateChanged {
-                network: this.network.clone(),
-                running: false,
-            });
-            Ok(())
+            this.stop_spv_inner(&manager).await
         })
         .await
     }
 
     pub fn spv_running(&self) -> Result<bool, EngineError> {
+        let _op = self.try_enter()?;
         Ok(self.manager()?.spv().is_started())
     }
 
-    /// Shuts the manager down (SPV, coordinators, persistence adapter drain)
-    /// and releases the persister. Must run on the engine runtime.
+    /// Closes the session: waits for admitted operations (review M1), stops
+    /// the event pump, shuts the manager down (SPV, coordinators,
+    /// persistence adapter drain) and releases the databases. Must run on
+    /// the engine runtime.
     pub(crate) async fn close(&self) {
-        let taken = self
-            .manager
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        let Some(manager) = taken else { return };
+        let _closing = self.gate.close().await;
+        let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(pump) = pump {
+            let _ = pump.stop.send(true);
+            if let Err(e) = pump.task.await {
+                tracing::warn!(error = %e, "event pump task ended abnormally");
+            }
+        }
+        let taken = self.live.write().unwrap_or_else(|p| p.into_inner()).take();
+        let Some(live) = taken else { return };
+        let manager = live.manager;
         let report = manager.shutdown().await;
+        self.hub.set_spv_running(false);
         if !report.all_clean() {
             self.sink.emit(EngineEvent::Notice {
                 network: Some(self.network.clone()),
@@ -350,20 +478,11 @@ impl NetworkSession {
             }
         }
         drop(manager);
+        drop(live.persister);
+        drop(live.appdb);
         self.sink.emit(EngineEvent::SessionClosed {
             network: self.network.clone(),
         });
-    }
-}
-
-fn balances_of(wallet: &platform_wallet::wallet::PlatformWallet) -> WalletBalances {
-    let b = wallet.balance();
-    WalletBalances {
-        confirmed: b.confirmed(),
-        unconfirmed: b.unconfirmed(),
-        immature: b.immature(),
-        locked: b.locked(),
-        total: b.total(),
     }
 }
 
@@ -392,18 +511,6 @@ fn build_sdk(
         .build()?)
 }
 
-/// Creates `dir` (and parents) and restricts it to the current user, because
-/// SqlitePersister refuses databases under group/world-writable directories.
-pub(crate) fn create_private_dir(dir: &Path) -> Result<(), EngineError> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +523,8 @@ mod tests {
         assert_eq!(s.parse::<WalletId>().unwrap(), id);
         assert!("abcd".parse::<WalletId>().is_err());
         assert!("zz".repeat(32).parse::<WalletId>().is_err());
+        // The contract's form is lower case only.
+        assert!("AB".repeat(32).parse::<WalletId>().is_err());
     }
 
     #[test]

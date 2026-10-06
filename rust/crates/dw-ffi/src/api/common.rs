@@ -46,7 +46,7 @@ macro_rules! domain_error_common {
                     E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
                     E::WalletNotFound(_) => Self::WalletNotFound { detail },
                     E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
-                    E::NotImplemented(_) => Self::NotImplemented { call: detail },
+                    E::NotImplemented(call) => Self::NotImplemented { call },
                     _ => Self::Internal { detail },
                 }
             }
@@ -65,7 +65,7 @@ macro_rules! domain_error_common {
 
 pub(crate) use domain_error_common;
 
-/// Parses a wallet id argument.
+/// Parses a wallet id argument: 64 lower-case hex characters.
 pub(crate) fn parse_wallet_id(
     wallet_id: &str,
 ) -> Result<dw_engine::WalletId, dw_engine::EngineError> {

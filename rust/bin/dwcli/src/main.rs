@@ -5,11 +5,12 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use dw_engine::{
-    DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
-    SessionOptions,
+    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, HistoryFilter,
+    HistoryQuery, HistorySort, ImportOptions, NetworkSession, SessionOptions, WalletId,
 };
 use dw_vault::{LockState, UnlockScope, VaultConfig};
 use zeroize::Zeroizing;
@@ -66,9 +67,47 @@ enum Command {
         /// Derive the seed with Dash Core's BIP39 quirks (QT-104).
         #[arg(long)]
         core_compat: bool,
+        /// Display name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Address lookahead of the restore scan (1..=1000).
+        #[arg(long)]
+        lookahead: Option<u32>,
     },
-    /// List wallets with balances (duffs).
+    /// List wallets with names and balances (duffs; `unknown` before the
+    /// first scan).
     List,
+    /// Start SPV, wait until the condition holds, print the sync state and
+    /// the wallets, stop SPV. Without `--txid` / `--min-height` it waits
+    /// until dash-spv is caught up.
+    Sync {
+        /// Give up after this many seconds (exit status 1).
+        #[arg(long, default_value_t = 120)]
+        timeout_secs: u64,
+        /// Wait until every wallet has scanned this height.
+        #[arg(long)]
+        min_height: Option<u32>,
+        /// Wait until this txid is in the first wallet's history; repeatable.
+        #[arg(long = "txid")]
+        txids: Vec<String>,
+        /// Confirmations the `--txid` transactions need.
+        #[arg(long, default_value_t = 0)]
+        confirmations: u32,
+    },
+    /// Print the first wallet's history, newest first, one record per line:
+    /// txid, record index, type, amount, status, confirmations, address.
+    History {
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    /// Print the first wallet's current receive address, or issue a fresh
+    /// one with `--next`.
+    Receive {
+        #[arg(long)]
+        next: bool,
+        #[arg(long)]
+        label: Option<String>,
+    },
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -127,6 +166,110 @@ fn unlock_if_needed(
         .map_err(|e| e.to_string())
 }
 
+fn print_wallets(session: &Arc<NetworkSession>) -> Result<(), EngineError> {
+    for w in session.wallet_infos()? {
+        let balances = match w.balances {
+            Some(b) => format!(
+                "confirmed={} unconfirmed={} immature={} locked={} total={} coinjoin={}",
+                b.confirmed, b.unconfirmed, b.immature, b.locked, b.total, b.coinjoin
+            ),
+            None => "balance=unknown".to_string(),
+        };
+        println!("{} name={:?} {balances}", w.wallet_id, w.name);
+    }
+    Ok(())
+}
+
+/// The oldest wallet; the headless commands act on it.
+fn first_wallet(session: &Arc<NetworkSession>) -> Result<WalletId, EngineError> {
+    session
+        .wallet_infos()?
+        .first()
+        .map(|w| w.wallet_id)
+        .ok_or_else(|| EngineError::WalletNotFound("no wallet on this network".into()))
+}
+
+/// Whether every `txids` entry is in `wallet`'s history with
+/// `confirmations` or more.
+fn txids_seen(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    txids: &[String],
+    confirmations: u32,
+) -> Result<bool, EngineError> {
+    for txid in txids {
+        match engine.block_on(session.tx_detail(wallet, txid.clone())) {
+            Ok(d) if d.status.confirmations >= confirmations => {}
+            Ok(_) | Err(EngineError::TxNotFound(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(true)
+}
+
+fn sync(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    timeout: Duration,
+    min_height: Option<u32>,
+    txids: &[String],
+    confirmations: u32,
+) -> Result<(), EngineError> {
+    engine.block_on(session.start_spv())?;
+    let deadline = Instant::now() + timeout;
+    let mut last_line = String::new();
+    let outcome = loop {
+        let snap = session.sync_snapshot()?;
+        let line = format!(
+            "sync running={} caught_up={} tip={:?} peers={} active={:?}",
+            snap.running, snap.caught_up, snap.tip_height, snap.connected_peers, snap.active_phase
+        );
+        if line != last_line {
+            eprintln!("{line}");
+            last_line = line;
+        }
+        let wallets = session.wallet_infos()?;
+        let heights_ok = min_height.is_none_or(|h| {
+            !wallets.is_empty()
+                && wallets.iter().all(|w| {
+                    session
+                        .wallet_scan_height(&w.wallet_id)
+                        .is_some_and(|scanned| scanned >= h)
+                })
+        });
+        let txids_ok = match wallets.first() {
+            Some(w) if !txids.is_empty() => {
+                txids_seen(engine, session, w.wallet_id, txids, confirmations)?
+            }
+            _ => txids.is_empty(),
+        };
+        let done = if min_height.is_none() && txids.is_empty() {
+            snap.caught_up
+        } else {
+            heights_ok && txids_ok
+        };
+        if done {
+            println!(
+                "synced tip={} peers={} caught_up={}",
+                snap.tip_height.map_or("-".into(), |h| h.to_string()),
+                snap.connected_peers,
+                snap.caught_up
+            );
+            break Ok(());
+        }
+        if Instant::now() >= deadline {
+            break Err(EngineError::Spv(format!(
+                "sync condition not reached within {timeout:?}: {last_line}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let printed = outcome.and_then(|()| print_wallets(session));
+    engine.block_on(session.stop_spv())?;
+    printed
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     let passphrase = cli
         .passphrase_file
@@ -181,6 +324,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Import {
             birth_height,
             core_compat,
+            name,
+            lookahead,
         } => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let mut phrase = Zeroizing::new(String::new());
@@ -195,18 +340,61 @@ fn run(cli: Cli) -> Result<(), String> {
                     ImportOptions {
                         birth_height,
                         core_compat,
+                        name,
+                        lookahead,
                     },
                 ))
                 .map(|id| println!("wallet_id {id}"))
         }
-        Command::List => session.list_wallets().map(|wallets| {
-            for w in wallets {
-                let b = w.balances;
+        Command::List => print_wallets(&session),
+        Command::Sync {
+            timeout_secs,
+            min_height,
+            txids,
+            confirmations,
+        } => sync(
+            &engine,
+            &session,
+            Duration::from_secs(timeout_secs),
+            min_height,
+            &txids,
+            confirmations,
+        ),
+        Command::History { limit } => first_wallet(&session).and_then(|id| {
+            let page = engine.block_on(session.history_page(
+                id,
+                HistoryQuery {
+                    filter: HistoryFilter::default(),
+                    sort: HistorySort::NewestFirst,
+                    cursor: None,
+                    limit,
+                },
+            ))?;
+            for r in page.records {
                 println!(
-                    "{} confirmed={} unconfirmed={} immature={} locked={} total={}",
-                    w.wallet_id, b.confirmed, b.unconfirmed, b.immature, b.locked, b.total
+                    "{} {} {:?} {} {:?} {} {}",
+                    r.txid,
+                    r.record_index,
+                    r.tx_type,
+                    r.amount,
+                    r.status.kind,
+                    r.status.confirmations,
+                    r.address.as_deref().unwrap_or("-")
                 );
             }
+            Ok(())
+        }),
+        Command::Receive { next, label } => first_wallet(&session).and_then(|id| {
+            let a = if next {
+                engine.block_on(session.next_receive_address(id, label))?
+            } else {
+                engine.block_on(session.current_receive_address(id))?
+            };
+            println!(
+                "address {} index {} path {}",
+                a.address, a.index, a.derivation_path
+            );
+            Ok(())
         }),
     };
     engine

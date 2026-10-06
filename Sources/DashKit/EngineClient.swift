@@ -145,17 +145,6 @@ public actor EngineClient: EngineProtocol {
             options: ImportOptions(birthHeight: birthHeight))
     }
 
-    /// M0 wallet list, superseded by `walletInfos` — kept until E1 removes it.
-    public func wallets(on network: DashNetwork) throws(DashKitError) -> [WalletSummary] {
-        let session = try session(network)
-        let rows = try mapped { try session.listWallets() }
-        var result: [WalletSummary] = []
-        for row in rows {
-            result.append(WalletSummary(walletID: try .engine(row.walletId), balances: try WalletBalances(row.balances)))
-        }
-        return result
-    }
-
     public func walletInfos(on network: DashNetwork) throws(DashKitError) -> [WalletInfo] {
         let session = try session(network)
         let rows = try mapped { try session.walletInfos() }
@@ -166,9 +155,9 @@ public actor EngineClient: EngineProtocol {
         return result
     }
 
-    public func balances(on network: DashNetwork, wallet: WalletID) throws(DashKitError) -> WalletBalances {
+    public func balances(on network: DashNetwork, wallet: WalletID) throws(DashKitError) -> WalletBalances? {
         let session = try session(network)
-        let raw = try mapped { try session.balances(walletId: wallet.hex) }
+        guard let raw = try mapped({ try session.balances(walletId: wallet.hex) }) else { return nil }
         return try WalletBalances(raw)
     }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 
-use crate::session::create_private_dir;
+use crate::fsutil::create_private_dir;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, SessionOptions};
 
 #[derive(Debug, Clone)]
@@ -148,23 +148,31 @@ impl Engine {
 }
 
 impl Drop for Engine {
+    /// Hosts should call [`Engine::shutdown`] first. Otherwise the open
+    /// sessions are closed (databases flushed and released) on a background
+    /// thread that then shuts the runtime down, so the dropping thread —
+    /// possibly the UI thread — never blocks (review L2). Storage is released
+    /// shortly after `drop` returns, not before.
     fn drop(&mut self) {
         let Some(rt) = self.runtime.take() else {
             return;
         };
-        // Hosts should call `shutdown` first. If they did not, and this thread
-        // is not inside a tokio runtime (where blocking would panic), close the
-        // remaining sessions so their databases are flushed and released.
-        if tokio::runtime::Handle::try_current().is_err() {
-            let shared = Arc::clone(&self.shared);
-            rt.block_on(async move {
-                let mut sessions = shared.sessions.lock().await;
-                for (_, session) in sessions.drain() {
-                    session.close().await;
-                }
+        let shared = Arc::clone(&self.shared);
+        let spawned = std::thread::Builder::new()
+            .name("dw-engine-drop".into())
+            .spawn(move || {
+                rt.block_on(async move {
+                    let mut sessions = shared.sessions.lock().await;
+                    for (_, session) in sessions.drain() {
+                        session.close().await;
+                    }
+                });
+                rt.shutdown_background();
             });
+        if let Err(e) = spawned {
+            // Without a thread the sessions cannot be closed without
+            // blocking here; the runtime is dropped in the background.
+            tracing::warn!(error = %e, "could not start the engine drop thread");
         }
-        // Never blocks, so this is safe from any thread.
-        rt.shutdown_background();
     }
 }

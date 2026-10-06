@@ -101,7 +101,7 @@ public final class SPVCoordinator: SyncStatusProviding, SessionObserving {
     private func handle(_ event: EngineEvent) {
         guard let network, event.network == nil || event.network == network else { return }
         switch event {
-        case .syncChanged, .spvStateChanged, .peersChanged, .syncProgress, .sessionOpened, .resynchronize:
+        case .syncChanged, .spvStateChanged, .sessionOpened, .resynchronize:
             coalescer.request()
         case .notice(_, .syncStalled, _):
             damper.noteStallNotice()

@@ -205,6 +205,19 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// `(wallet_id, name, created_at)` for every named wallet, in the order
+    /// the rows were added (oldest first, insertion order within a second).
+    pub fn wallets(&self) -> Result<Vec<(String, String, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT wallet_id, name, created_at FROM wallets ORDER BY created_at, rowid",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Deletes every row that belongs to `wallet_id` (wallet removal).
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
         let mut conn = self.conn();
@@ -393,6 +406,33 @@ impl AppDb {
             params![wallet_id, txid, message, now as i64],
         )?;
         Ok(())
+    }
+
+    /// Records `now` as the first-seen time of each txid that has no
+    /// `tx_meta` row yet. Existing rows (and their messages) are untouched.
+    pub fn note_txs_seen(&self, wallet_id: &str, txids: &[String], now: u64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tx_meta (wallet_id, txid, message, created_at) VALUES (?1, ?2, NULL, ?3)
+                 ON CONFLICT (wallet_id, txid) DO NOTHING",
+            )?;
+            for txid in txids {
+                stmt.execute(params![wallet_id, txid, now as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `(txid, created_at)` of every `tx_meta` row of a wallet: when this
+    /// device first saw (or sent) the transaction.
+    pub fn tx_seen_times(&self, wallet_id: &str) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT txid, created_at FROM tx_meta WHERE wallet_id = ?1")?;
+        let rows = stmt.query_map([wallet_id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn tx_message(&self, wallet_id: &str, txid: &str) -> Result<Option<String>> {
@@ -696,6 +736,25 @@ mod tests {
         db.set_tx_message(W, "t1", Some("order 42"), 1).unwrap();
         assert_eq!(db.tx_message(W, "t1").unwrap().as_deref(), Some("order 42"));
         assert_eq!(db.tx_message(W2, "t1").unwrap(), None);
+    }
+
+    #[test]
+    fn first_seen_times_keep_the_first_and_the_message() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_tx_message(W, "t1", Some("order 42"), 5).unwrap();
+        db.note_txs_seen(W, &["t1".into(), "t2".into()], 9).unwrap();
+        db.note_txs_seen(W, &["t2".into()], 20).unwrap();
+        let mut seen = db.tx_seen_times(W).unwrap();
+        seen.sort();
+        assert_eq!(seen, vec![("t1".into(), 5), ("t2".into(), 9)]);
+        assert_eq!(db.tx_message(W, "t1").unwrap().as_deref(), Some("order 42"));
+        assert!(db.tx_seen_times(W2).unwrap().is_empty());
+
+        db.set_wallet_name(W, "Savings", 3).unwrap();
+        assert_eq!(
+            db.wallets().unwrap(),
+            vec![(W.to_string(), "Savings".to_string(), 3)]
+        );
     }
 
     #[test]

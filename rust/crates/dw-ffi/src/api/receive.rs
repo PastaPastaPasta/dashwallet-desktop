@@ -3,7 +3,7 @@
 //! Contract: docs/contracts/m1-engine.md §receive.
 
 use crate::NetworkSession;
-use crate::api::common::{domain_error_common, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 
 /// External (receiving) or internal (change) BIP44 chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -77,7 +77,24 @@ pub enum ReceiveError {
     Internal { detail: String },
 }
 
-domain_error_common!(ReceiveError);
+domain_error_common!(@not_implemented ReceiveError);
+
+impl From<dw_engine::EngineError> for ReceiveError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::GapLimit => Self::GapLimit,
+            E::RequestNotFound(id) => Self::RequestNotFound { id },
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
 
 impl ReceiveError {
     /// Stable code (docs/contracts/m1-engine.md "Error codes").
@@ -95,6 +112,53 @@ impl ReceiveError {
     }
 }
 
+impl From<AddressChain> for dw_engine::AddressChain {
+    fn from(c: AddressChain) -> Self {
+        match c {
+            AddressChain::Receiving => Self::Receiving,
+            AddressChain::Change => Self::Change,
+        }
+    }
+}
+
+impl From<dw_engine::AddressChain> for AddressChain {
+    fn from(c: dw_engine::AddressChain) -> Self {
+        match c {
+            dw_engine::AddressChain::Receiving => Self::Receiving,
+            dw_engine::AddressChain::Change => Self::Change,
+        }
+    }
+}
+
+impl From<dw_engine::AddressInfo> for AddressInfo {
+    fn from(a: dw_engine::AddressInfo) -> Self {
+        Self {
+            address: a.address,
+            chain: a.chain.into(),
+            index: a.index,
+            derivation_path: a.derivation_path,
+            used: a.used,
+            label: a.label,
+            balance: a.balance,
+            tx_count: a.tx_count,
+        }
+    }
+}
+
+impl From<dw_engine::ReceiveRequest> for ReceiveRequest {
+    fn from(r: dw_engine::ReceiveRequest) -> Self {
+        Self {
+            id: r.id,
+            created_at: r.created_at,
+            address: r.address,
+            amount: r.amount,
+            label: r.label,
+            message: r.message,
+            uri: r.uri,
+        }
+    }
+}
+
 #[uniffi::export]
 impl NetworkSession {
     /// The first unused receiving address (IOS-053). Hosts re-query after
@@ -103,32 +167,45 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<AddressInfo, ReceiveError> {
-        let _ = parse_wallet_id(&wallet_id)?;
-        not_implemented("NetworkSession.current_receive_address")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.current_receive_address(id).await?.into())
     }
 
-    /// Issues the next unused receiving address and labels it (dash-qt
-    /// "Request payment" always uses a fresh address, QT-081).
+    /// Issues a receiving address that was never issued before and labels
+    /// it (dash-qt "Request payment" always uses a fresh address, QT-081).
+    /// `GapLimit` once every address inside the gap limit is issued.
     pub async fn next_receive_address(
         &self,
         wallet_id: String,
         label: Option<String>,
     ) -> Result<AddressInfo, ReceiveError> {
-        let _ = (parse_wallet_id(&wallet_id)?, label);
-        not_implemented("NetworkSession.next_receive_address")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.next_receive_address(id, label).await?.into())
     }
 
-    /// Addresses of the wallet's standard BIP44 account (QT-096 receiving tab).
+    /// Addresses of the wallet's BIP44 account 0 (QT-096 receiving tab), by
+    /// chain then index.
     pub async fn addresses(
         &self,
         wallet_id: String,
         filter: AddressFilter,
     ) -> Result<Vec<AddressInfo>, ReceiveError> {
-        let _ = (parse_wallet_id(&wallet_id)?, filter);
-        not_implemented("NetworkSession.addresses")
+        let id = parse_wallet_id(&wallet_id)?;
+        let filter = dw_engine::AddressFilter {
+            chain: filter.chain.map(Into::into),
+            used: filter.used,
+        };
+        Ok(self
+            .inner
+            .addresses(id, filter)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
-    /// Stores a payment request on a fresh address and returns it.
+    /// Stores a payment request on a freshly issued address and returns it.
+    /// An amount of 0 means "any amount".
     pub async fn create_receive_request(
         &self,
         wallet_id: String,
@@ -136,8 +213,12 @@ impl NetworkSession {
         label: Option<String>,
         message: Option<String>,
     ) -> Result<ReceiveRequest, ReceiveError> {
-        let _ = (parse_wallet_id(&wallet_id)?, amount, label, message);
-        not_implemented("NetworkSession.create_receive_request")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .create_receive_request(id, amount, label, message)
+            .await?
+            .into())
     }
 
     /// Stored requests, newest first (QT-083).
@@ -145,8 +226,14 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<Vec<ReceiveRequest>, ReceiveError> {
-        let _ = parse_wallet_id(&wallet_id)?;
-        not_implemented("NetworkSession.receive_requests")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .receive_requests(id)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub async fn delete_receive_request(
@@ -154,7 +241,7 @@ impl NetworkSession {
         wallet_id: String,
         id: u64,
     ) -> Result<(), ReceiveError> {
-        let _ = (parse_wallet_id(&wallet_id)?, id);
-        not_implemented("NetworkSession.delete_receive_request")
+        let wallet = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.delete_receive_request(wallet, id).await?)
     }
 }

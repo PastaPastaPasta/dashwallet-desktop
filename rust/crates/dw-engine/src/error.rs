@@ -55,6 +55,13 @@ pub enum EngineError {
     /// than the gap limit lets a restore find.
     #[error("receive gap limit reached")]
     GapLimit,
+    /// No stored payment request has this id.
+    #[error("receive request {0} not found")]
+    RequestNotFound(u64),
+    /// A wallet name that is empty or longer than 64 characters after
+    /// trimming.
+    #[error("wallet name rejected: {0}")]
+    NameRejected(String),
     /// The vault refused the operation (no vault, locked, bad grant, …).
     #[error("vault: {0}")]
     Vault(VaultError),
@@ -99,6 +106,8 @@ impl EngineError {
             EngineError::StaleCursor => "stale_cursor",
             EngineError::TxNotFound(_) => "tx_not_found",
             EngineError::GapLimit => "gap_limit",
+            EngineError::RequestNotFound(_) => "request_not_found",
+            EngineError::NameRejected(_) => "name_rejected",
             EngineError::Vault(_) => "vault",
             EngineError::Signer(_) => "signer",
             EngineError::InvalidAddress(_) => "invalid_address",
