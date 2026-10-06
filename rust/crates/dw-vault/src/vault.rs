@@ -174,6 +174,12 @@ impl Inner {
         self.grants.clear();
     }
 
+    /// Drops grants that expired before `now`, together with any key they
+    /// hold, so a grant's own copy of the data key does not outlive the grant.
+    fn drop_expired_grants(&mut self, now: u64) {
+        self.grants.retain(|_, g| g.grant.expires_at >= now);
+    }
+
     /// Installs a data key with `scope`; bumps the epoch when the state changes.
     fn install_key(&mut self, dek: Key32, scope: UnlockScope) {
         let changed = self.dek.is_none() || self.scope != scope;
@@ -331,13 +337,29 @@ impl Vault {
         }
     }
 
-    /// Current state. In-memory read.
+    /// Current state. In-memory read; also drops expired grants.
     pub fn status(&self) -> VaultStatus {
-        self.status_of(&self.inner())
+        let now = self.now();
+        let mut inner = self.inner();
+        inner.drop_expired_grants(now);
+        self.status_of(&inner)
     }
 
+    /// Current lock state. In-memory read; also drops expired grants.
     pub fn lock_state(&self) -> LockState {
-        Self::state_of(&self.inner())
+        let now = self.now();
+        let mut inner = self.inner();
+        inner.drop_expired_grants(now);
+        Self::state_of(&inner)
+    }
+
+    /// Drops expired grants and the keys they hold. [`Self::status`],
+    /// [`Self::lock_state`] and every grant issue, check or redemption do
+    /// this too; the engine also calls it every second while a network is
+    /// open, so an unused grant's key is not kept past the grant's lifetime.
+    pub fn purge_expired_grants(&self) {
+        let now = self.now();
+        self.inner().drop_expired_grants(now);
     }
 
     /// Creates the vault. `Some(passphrase)` = encrypted (slot P);
@@ -567,7 +589,14 @@ impl Vault {
         if had_failures {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
-            self.persist(writer, next)?;
+            // The passphrase is already proven: a failed write of the reset
+            // counter must not refuse it (a full disk would otherwise lock
+            // the user out). The counter is reset in memory and the write is
+            // retried by the next file change, which starts from memory.
+            if let Err(e) = file::write(&self.shared.dir, &next) {
+                tracing::warn!(error = %e, "could not persist the reset failed-attempt counter");
+            }
+            self.inner().file = Some(next);
         }
         Ok(dek)
     }
@@ -688,7 +717,7 @@ impl Vault {
             expires_at: now.saturating_add(self.shared.config.grant_ttl_secs),
             single_use: true,
         };
-        inner.grants.retain(|_, g| g.grant.expires_at >= now);
+        inner.drop_expired_grants(now);
         inner.grants.insert(
             id,
             IssuedGrant {
@@ -713,18 +742,8 @@ impl Vault {
         wallet: Option<&WalletId>,
         now: u64,
     ) -> Result<&'a IssuedGrant, VaultError> {
-        let expired = inner
-            .grants
-            .get(grant_id)
-            .ok_or(VaultError::GrantInvalid)?
-            .grant
-            .expires_at
-            < now;
-        if expired {
-            inner.grants.remove(grant_id);
-            return Err(VaultError::GrantInvalid);
-        }
-        let issued = &inner.grants[grant_id];
+        inner.drop_expired_grants(now);
+        let issued = inner.grants.get(grant_id).ok_or(VaultError::GrantInvalid)?;
         if issued.grant.purpose.kind() != expected || issued.grant.wallet.as_ref() != wallet {
             return Err(VaultError::GrantPurposeMismatch);
         }
@@ -1236,6 +1255,130 @@ mod tests {
             new_passphrase(b""),
             Err(VaultError::PassphraseRejected(_))
         ));
+    }
+
+    /// A clock the test moves by hand.
+    struct StepClock(std::sync::atomic::AtomicU64);
+
+    impl crate::types::Clock for StepClock {
+        fn now_secs(&self) -> u64 {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    fn test_config(clock: Arc<StepClock>) -> VaultConfig {
+        VaultConfig {
+            kdf: crate::KdfPolicy::Fixed(crate::KdfParams::TEST),
+            os_store: Arc::new(crate::MemoryOsStore::new()),
+            clock,
+            grant_ttl_secs: 120,
+        }
+    }
+
+    fn step_clock() -> Arc<StepClock> {
+        Arc::new(StepClock(std::sync::atomic::AtomicU64::new(1_000)))
+    }
+
+    /// Review L2: a grant that carries its own copy of the data key (issued
+    /// by passphrase on a locked vault) is dropped, key and all, once it has
+    /// expired, by `status`, `lock_state`, `check_grant` or the engine's
+    /// timer, without the grant itself ever being looked up.
+    #[test]
+    fn expired_grants_and_their_keys_are_dropped_without_a_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = step_clock();
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            test_config(clock.clone()),
+        )
+        .unwrap();
+        v.create(Some(b"pw")).unwrap();
+        v.lock();
+        let w = [1u8; 32];
+        let spend = GrantPurpose::Spend { max_duffs: 1 };
+
+        type Sweep = fn(&Vault);
+        let sweeps: [(&str, Sweep); 4] = [
+            ("status", |v| {
+                v.status();
+            }),
+            ("lock_state", |v| {
+                v.lock_state();
+            }),
+            ("check_grant of another id", |v| {
+                let _ = v.check_grant("unknown", GrantKind::Spend, Some(&[1u8; 32]));
+            }),
+            ("purge_expired_grants", |v| v.purge_expired_grants()),
+        ];
+        for (name, sweep) in sweeps {
+            v.authorize(spend, Some(&w), Credential::Passphrase(b"pw"))
+                .unwrap();
+            assert!(
+                v.inner().grants.values().all(|g| g.key.is_some()),
+                "{name}: a passphrase grant on a locked vault holds its own key"
+            );
+            sweep(&v);
+            assert_eq!(v.inner().grants.len(), 1, "{name}: a live grant stays");
+            clock.0.fetch_add(121, std::sync::atomic::Ordering::SeqCst);
+            sweep(&v);
+            assert!(
+                v.inner().grants.is_empty(),
+                "{name}: an expired grant is dropped"
+            );
+        }
+    }
+
+    /// Review L1: a correct passphrase is accepted even when the reset of
+    /// the failed-attempt counter cannot be written; the counter is reset in
+    /// memory and reaches the disk with the next successful write.
+    #[test]
+    fn correct_passphrase_works_when_the_throttle_reset_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault_dir = dir.path().join("vault");
+        let open = || {
+            Vault::open(
+                &vault_dir,
+                Network::Regtest,
+                "regtest",
+                test_config(step_clock()),
+            )
+            .unwrap()
+        };
+        let v = open();
+        v.create(Some(b"pw")).unwrap();
+        v.lock();
+        assert!(matches!(
+            v.unlock(b"wrong", UnlockScope::Full),
+            Err(VaultError::WrongPassphrase {
+                failed_attempts: 1,
+                ..
+            })
+        ));
+
+        // A directory where the temp file goes makes every write fail, as a
+        // full disk would.
+        let blocker = vault_dir.join(file::TMP_NAME);
+        std::fs::create_dir(&blocker).unwrap();
+        let unlocked = v.unlock(b"pw", UnlockScope::Full);
+        let failures_on_disk = open().status().failed_attempts;
+        v.lock();
+        let granted = v.authorize(
+            GrantPurpose::Wipe,
+            Some(&[1u8; 32]),
+            Credential::Passphrase(b"pw"),
+        );
+        std::fs::remove_dir(&blocker).unwrap();
+
+        assert_eq!(unlocked.unwrap().state, LockState::Unlocked);
+        assert_eq!(v.status().failed_attempts, 0, "reset in memory");
+        assert_eq!(failures_on_disk, 1, "the disk still holds the old counter");
+        granted.unwrap();
+
+        // The next successful write carries the reset counter.
+        v.change_passphrase(b"pw", b"pw2").unwrap();
+        assert_eq!(open().status().failed_attempts, 0);
     }
 
     #[test]

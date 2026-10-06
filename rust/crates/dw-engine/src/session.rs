@@ -277,6 +277,7 @@ impl NetworkSession {
             hub: Arc::clone(&self.hub),
             spv: manager.spv_arc(),
             appdb,
+            vault: self.vault.clone(),
         };
         let hub = Arc::clone(&self.hub);
         let task = tokio::spawn(async move { hub.pump.run(&target, stop_rx).await });
