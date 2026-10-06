@@ -115,6 +115,20 @@ struct TransactionDetailCard: View {
     }
 }
 
+/// The selected transaction's details, in a view of its own so it re-reads
+/// `model.detail` itself when the selection's details arrive.
+struct TransactionDetailHost: View {
+    let model: TransactionsViewModel
+    let state: CrossAppState
+    let labelText: Binding<String>
+
+    var body: some View {
+        if let detail = model.detail {
+            TransactionDetailCard(model: model, state: state, detail: detail, labelText: labelText)
+        }
+    }
+}
+
 /// Abandon's question (with the SPV warning when the mempool is unknown)
 /// and the outcome of an action.
 struct TransactionActionBanner: View {
@@ -222,7 +236,7 @@ struct DayRows: View {
                 }
             })
         }
-        .frame(height: Double(CrossLayout.txRowMinHeight * items.count + 4))
+        .frame(height: Double(CrossLayout.txListRowHeight * items.count + 4))
     }
 }
 

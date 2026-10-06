@@ -103,7 +103,7 @@ struct MainSplitView: View {
         let main = state.main
         NavigationSplitView {
             Sidebar(state: state)
-                .frame(minWidth: CrossLayout.sidebarWidth - 20)
+                .frame(minWidth: CrossLayout.sidebarWidth + 20)
         } detail: {
             detail(main)
                 .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -189,7 +189,7 @@ struct Sidebar: View {
             })
         VStack(alignment: .leading, spacing: Int(DashSpacing.s)) {
             HStack {
-                DashIcon(main.network == .mainnet || main.network == nil ? .dashLogo : .dashLogoTestnet, size: 22)
+                DashIcon(.dashLogo, size: 22)
                 Spacer()
             }
             .padding(.horizontal, Int(DashSpacing.s))
@@ -245,8 +245,9 @@ struct Sidebar: View {
         .background(CrossRole.sidebar.color)
     }
 
-    /// Row content height: 20 pt icon row plus 2 × 8 pt padding, and GTK's row spacing.
-    static let rowHeight = 38
+    /// A GTK list row's height for `SidebarRowLabel` (36 pt content plus the
+    /// list row's own padding; measured on the Linux run of 2026-10-06).
+    static let rowHeight = 48
 
     /// Section icons (UX-SPEC §2.7; Cross uses the exported PNGs, tinted).
     /// Send is the down arrow drawn upside down.
@@ -284,7 +285,8 @@ struct SidebarRowLabel: View {
     var flipped = false
 
     var body: some View {
-        let tint: IconTint = template ? .color(selected ? CrossRole.white : CrossRole.accent) : .original
+        // On the accent pill a blue tile would vanish: selected icons are white.
+        let tint: IconTint = selected ? .color(CrossRole.white) : (template ? .color(CrossRole.accent) : .original)
         HStack(spacing: Int(DashSpacing.m)) {
             DashIcon(icon, size: 20, width: 20, tint: tint, flipped: flipped)
             Text(title)

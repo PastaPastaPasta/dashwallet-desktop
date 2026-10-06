@@ -75,6 +75,9 @@ public enum CrossLayout {
     public static let cardPadding = 16
     public static let rowMinHeight = 56
     public static let txRowMinHeight = 62
+    /// A GTK list row holding a `TransactionView` (62 pt plus the row's own
+    /// padding; measured on the Linux run of 2026-10-06).
+    public static let txListRowHeight = 76
     public static let sidebarWidth = 220
     public static let statusBarHeight = 28
     /// The transaction day-group card (iOS `RoundedShape(…radii: 10)`).

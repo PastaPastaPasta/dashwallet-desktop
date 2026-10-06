@@ -44,9 +44,7 @@ struct TransactionsScreen: View {
                 Toast(exportMessage, kind: exportFailed ? .error : .success)
             }
             TransactionActionBanner(model: model)
-            if let detail = model.detail {
-                TransactionDetailCard(model: model, state: state, detail: detail, labelText: $labelText)
-            }
+            TransactionDetailHost(model: model, state: state, labelText: $labelText)
             if tableMode {
                 recordList(model)
             } else {

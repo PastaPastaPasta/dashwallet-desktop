@@ -240,7 +240,7 @@ struct RecentRows: View {
                 "\(Self.title(row, state.overviewRecords[row.id])), \(row.title), \(row.amountText), \(Format.date(row.date))"
             })
         }
-        .frame(height: Double(CrossLayout.txRowMinHeight * rows.count + 4))
+        .frame(height: Double(CrossLayout.txListRowHeight * rows.count + 4))
     }
 
     static func title(_ row: RecentTransaction, _ record: TxRecord?) -> String {
