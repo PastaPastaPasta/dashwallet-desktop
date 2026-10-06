@@ -167,7 +167,7 @@ public enum HistoryDay {
     /// Groups `items` by calendar day, newest day first, keeping the order inside a day.
     /// Items without a date go last under `nil`.
     public static func group<Item>(_ items: [Item], calendar: Calendar = .current, date: (Item) -> Date?)
-        -> [(day: Date?, items: [Item])]
+        -> [HistoryDayBucket<Item>]
     {
         var order: [Date?] = []
         var byDay: [Date?: [Item]] = [:]
@@ -183,8 +183,15 @@ public enum HistoryDay {
             case (nil, _): false
             }
         }
-        return sorted.map { ($0, byDay[$0] ?? []) }
+        return sorted.map { HistoryDayBucket(day: $0, items: byDay[$0] ?? []) }
     }
+}
+
+/// One day of `HistoryDay.group`.
+public struct HistoryDayBucket<Item>: Identifiable {
+    public let day: Date?
+    public let items: [Item]
+    public var id: Date { day ?? .distantPast }
 }
 
 /// Addresses as fixed strings (UX-SPEC §5.5): the first and last twelve

@@ -38,8 +38,8 @@ struct MainWindowView: View {
                 LaunchErrorBanner(error: error, retry: { Task { await model.retryLaunch() } })
             }
         }
-        .frame(minWidth: 920, minHeight: 600)
-        .animation(.easeInOut(duration: 0.2), value: main.showsLockScreen)
+        .frame(minWidth: DashLayout.windowMinWidth, minHeight: DashLayout.windowMinHeight)
+        .animation(.easeInOut(duration: DashMotion.overlay), value: main.showsLockScreen)
         .sheet(item: Binding(get: { main.sheet.map(SheetItem.init) }, set: { main.sheet = $0?.route })) { item in
             SecuritySheet(
                 route: item.route, settings: main.settings, screenCapture: model.env?.screenCapture,
@@ -98,11 +98,12 @@ struct MainWindowView: View {
     private var walletView: some View {
         NavigationSplitView {
             Sidebar(main: main)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+                .navigationSplitViewColumnWidth(
+                    min: DashLayout.sidebarMinWidth, ideal: DashLayout.sidebarIdealWidth, max: DashLayout.sidebarMaxWidth)
         } detail: {
             page
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.dash.primaryBackground)
+                .dashCanvas()
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             WalletStatusBar(model: model, main: main)
@@ -160,19 +161,31 @@ struct OverviewPage: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let features = model.features, let network = main.network {
-                VStack(spacing: DashSpacing.m) {
-                    BackupReminderBanner(
-                        reminder: features.backupReminder, backUp: { model.perform(.showRecoveryPhrase) })
-                    ShortcutBarView(
-                        bar: features.shortcutBar(for: network),
-                        perform: { route in model.perform(route, openURL: openURL) })
-                }
-                .padding([.horizontal, .top], DashSpacing.xxl)
-            }
-            OverviewView(home: home, toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) })
-        }
+        OverviewView.make(model: model, main: main, home: home, perform: { route in model.perform(route, openURL: openURL) })
+    }
+}
+
+extension OverviewView {
+    /// The Overview wired to the app: shortcut card and backup reminder (M2
+    /// services), unit menu, sync overlay and the Transactions page.
+    @MainActor
+    static func make(
+        model: MacAppModel, main: MainViewModel, home: HomeViewModel, perform: @escaping (ShortcutRoute) -> Void
+    ) -> OverviewView {
+        let features = model.features
+        return OverviewView(
+            home: home,
+            toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) },
+            unit: main.settings.display.unit,
+            unitName: model.unitName,
+            shortcuts: main.network.flatMap { features?.shortcutBar(for: $0) },
+            reminder: features?.backupReminder,
+            perform: perform,
+            backUp: { model.perform(.showRecoveryPhrase) },
+            setUnit: { main.settings.setUnit($0) },
+            unitTitle: { model.env?.amounts.unitName($0) ?? "" },
+            showSyncDetails: { main.syncOverlayRequested = true },
+            seeAll: { main.selection = .transactions })
     }
 }
 
@@ -220,11 +233,11 @@ struct LaunchErrorBanner: View {
     var body: some View {
         HStack(spacing: DashSpacing.m) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Color.dash.orange)
+                .foregroundStyle(Color.role.warning)
                 .accessibilityHidden(true)
             Text(MacStrings.App.launchFailed(error.code.rawValue))
                 .dashFont(.footnote)
-                .foregroundStyle(Color.dash.primaryText)
+                .foregroundStyle(Color.role.textPrimary)
                 .textSelection(.enabled)
             Spacer()
             Button(MacStrings.App.retry, action: retry)
@@ -232,7 +245,7 @@ struct LaunchErrorBanner: View {
         }
         .padding(.horizontal, DashSpacing.l)
         .padding(.vertical, DashSpacing.s)
-        .background(Color.dash.orangeAlpha10)
+        .background(Color.role.warningTint)
         .accessibilityIdentifier("banner.launchError")
     }
 }
@@ -295,17 +308,8 @@ struct MainToolbar: ToolbarContent {
     @Bindable var main: MainViewModel
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            if model.isDemo {
-                Badge(MacStrings.App.demoBadge, tone: .warning)
-                    .help(MacStrings.App.demoHelp)
-                    .accessibilityIdentifier("toolbar.demo")
-            }
-            if let network = main.network, network != .mainnet {
-                Badge(L10n.Settings.networkName(network), tone: .info)
-                    .accessibilityIdentifier("toolbar.network")
-            }
-        }
+        // The network and demo tags are in the window title only; the
+        // status bar carries the Demo badge (UX-SPEC §4.1).
         ToolbarItemGroup(placement: .primaryAction) {
             // Wallet selector only with two or more wallets (QT-014).
             if main.showsWalletSelector, let wallets = main.wallets {
@@ -350,15 +354,15 @@ struct TransitionOverlay: View {
 
     var body: some View {
         ZStack {
-            Color.dash.backgroundOverlay.ignoresSafeArea()
+            Color.role.overlay.ignoresSafeArea()
             VStack(spacing: DashSpacing.m) {
                 ProgressView()
                 Text(Self.text(transition))
                     .dashFont(.subheadMedium)
-                    .foregroundStyle(Color.dash.primaryText)
+                    .foregroundStyle(Color.role.textPrimary)
             }
             .padding(DashSpacing.xxl)
-            .background(RoundedRectangle(cornerRadius: DashRadius.card).fill(Color.dash.secondaryBackground))
+            .dashCard(padding: nil)
         }
         .accessibilityIdentifier("overlay.transition")
     }

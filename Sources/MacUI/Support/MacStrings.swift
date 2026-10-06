@@ -138,6 +138,10 @@ enum MacStrings {
         static let recent = "Recent transactions"
         static let noTransactions = "No transactions yet."
         static let hiddenRecent = "Recent transactions are hidden in discreet mode."
+        /// dash-qt Settings ▸ Display unit menu title.
+        static let displayUnit = "Display unit"
+        /// new
+        static let copyBalance = "Copy balance"
     }
 
     enum Send {

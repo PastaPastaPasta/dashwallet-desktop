@@ -41,9 +41,7 @@ public struct ShortcutItem: View {
     public var body: some View {
         Button(action: action) {
             VStack(spacing: DashSpacing.xs) {
-                DashIconImage(icon)
-                    .scaledToFit()
-                    .frame(width: DashLayout.rowIconSize + 6, height: DashLayout.rowIconSize + 6)
+                iconView
                     .frame(width: DashLayout.shortcutIconSize, height: DashLayout.shortcutIconSize)
                 Text(title)
                     .font(.system(size: DesignTokens.DashTextStyle.caption2.size + 1, weight: .semibold))
@@ -62,6 +60,23 @@ public struct ShortcutItem: View {
         .buttonStyle(ShortcutPressStyle())
         .opacity(isEnabled ? 1 : DashOpacity.disabled)
         .onHover { isHovering = $0 }
+    }
+
+    /// An exported shortcut icon (30 pt circle in a 46 pt frame), or an SF Symbol drawn white in a
+    /// blue circle of the same size.
+    @ViewBuilder
+    private var iconView: some View {
+        if case .system(let name) = icon {
+            Image(systemName: name)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.role.textOnHero)
+                .frame(width: DashLayout.rowIconSize, height: DashLayout.rowIconSize)
+                .background(Circle().fill(Color.role.accent))
+        } else {
+            DashIconImage(icon)
+                .scaledToFit()
+                .frame(width: DashLayout.rowIconSize, height: DashLayout.rowIconSize)
+        }
     }
 }
 

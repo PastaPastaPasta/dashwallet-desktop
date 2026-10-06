@@ -14,7 +14,10 @@ struct WalletStatusBar: View {
     private var sync: SyncStatus? { main.home?.sync }
 
     var body: some View {
-        StatusBar(message: message, progress: progress, items: items)
+        StatusBar(
+            message: message, progress: progress, items: items,
+            badge: model.isDemo ? MacStrings.App.demoBadge : nil, badgeHelp: MacStrings.App.demoHelp,
+            onMessage: progress == nil ? nil : { main.syncOverlayRequested = true })
             .contextMenu {
                 // Unit selector menu (QT-020).
                 ForEach(DisplayUnit.allCases, id: \.self) { unit in
@@ -55,23 +58,24 @@ struct WalletStatusBar: View {
             action: { main.settings.setUnit(Self.next(after: unit)) }))
         if let id = main.selectedWalletID, let wallet = main.wallets?.first(where: { $0.id == id }), wallet.hd {
             items.append(StatusBarItem(
-                id: "hd", icon: .system("key.horizontal"), text: "HD", accessibilityLabel: MacStrings.Status.hdEnabled,
+                id: "hd", icon: .system("checkmark.shield.fill"), text: "HD", accessibilityLabel: MacStrings.Status.hdEnabled,
                 help: MacStrings.Status.hdEnabled, tone: .success))
         }
         // dash-qt hides the lock icon for an unencrypted wallet (QT-022).
+        // Locked is green, unlocked red, unlocked for mixing only orange (UX-SPEC §4.1).
         switch main.lockState {
         case .unlocked:
             items.append(StatusBarItem(
-                id: "lock", icon: .system("lock.open"), accessibilityLabel: MacStrings.Status.unlocked,
-                help: MacStrings.Status.unlocked, tone: .success))
+                id: "lock", icon: .system("lock.open.fill"), accessibilityLabel: MacStrings.Status.unlocked,
+                help: MacStrings.Status.unlocked, tone: .error))
         case .unlockedMixingOnly:
             items.append(StatusBarItem(
-                id: "lock", icon: .system("lock.open"), accessibilityLabel: MacStrings.Status.mixingOnly,
+                id: "lock", icon: .system("lock.open.fill"), accessibilityLabel: MacStrings.Status.mixingOnly,
                 help: MacStrings.Status.mixingOnly, tone: .warning))
         case .locked:
             items.append(StatusBarItem(
-                id: "lock", icon: .system("lock"), accessibilityLabel: MacStrings.Status.locked,
-                help: MacStrings.Status.locked, tone: .neutral))
+                id: "lock", icon: .system("lock.fill"), accessibilityLabel: MacStrings.Status.locked,
+                help: MacStrings.Status.locked, tone: .success))
         case .noVault, .noKeys, .unencrypted, nil:
             break
         }
@@ -87,7 +91,7 @@ struct WalletStatusBar: View {
                 id: "sync", icon: .system(sync.isDone ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath"),
                 accessibilityLabel: sync.isDone ? MacStrings.Status.synced : MacStrings.Status.syncing,
                 help: sync.isDone ? main.home?.syncText : "\(main.home?.syncText ?? ""). \(MacStrings.SyncOverlay.show)",
-                tone: sync.isDone ? .success : .info,
+                tone: sync.isDone ? .success : .warning,
                 action: sync.isDone ? nil : { main.syncOverlayRequested = true }))
         }
         return items
@@ -99,14 +103,10 @@ struct WalletStatusBar: View {
         return all[(index + 1) % all.count]
     }
 
-    /// Connection icon: none, 1–3 peers, more. (dash-qt has five levels;
-    /// SF Symbols offers three distinct wifi states.)
+    /// Connection icon: crossed out without peers, radio waves otherwise
+    /// (the count is next to it; red when there are none).
     static func connectionsSymbol(_ count: UInt32) -> String {
-        switch count {
-        case 0: "wifi.slash"
-        case 1...3: "wifi.exclamationmark"
-        default: "wifi"
-        }
+        count == 0 ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right"
     }
 }
 #endif
