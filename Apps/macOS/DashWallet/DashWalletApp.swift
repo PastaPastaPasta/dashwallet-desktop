@@ -25,6 +25,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = MacAppComposition.makeModel(
         launch: LaunchOptions.parse(CommandLine.arguments, environment: ProcessInfo.processInfo.environment))
 
+    /// Opens the network as soon as the app runs, not only when the main
+    /// window first appears (the menu bar companion works without it).
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { await model.start() }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
             await model.shutdown()
