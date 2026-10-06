@@ -2439,10 +2439,20 @@ public func FfiConverterTypeTxDraft_lower(_ value: TxDraft) -> UInt64 {
 public protocol VaultProtocol: AnyObject, Sendable {
     
     /**
-     * Checks `credential` and issues a single-use grant for `purpose`. A
-     * passphrase credential also unlocks a locked vault (scope Full).
+     * Checks `credential` and issues a single-use grant for `purpose`.
+     *
+     * `wallet_id` binds the grant to the wallet it is for: required for
+     * every purpose except `ChangeCredential`, which must pass `None`
+     * (`invalid_argument` otherwise). The grant is refused on any other
+     * wallet (`grant_purpose_mismatch`, or the call domain's
+     * `grant_invalid`).
+     *
+     * A passphrase credential does not change the lock state: on a locked
+     * or mixing-only vault the unwrapped key serves this grant only.
+     * Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
+     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
      */
-    func authorize(purpose: GrantPurpose, credential: VaultCredential) async throws  -> AuthGrant
+    func authorize(purpose: GrantPurpose, walletId: String?, credential: VaultCredential) async throws  -> AuthGrant
     
     /**
      * Re-wraps the data key under a new passphrase; the seed is unchanged
@@ -2482,7 +2492,8 @@ public protocol VaultProtocol: AnyObject, Sendable {
     
     /**
      * The recovery phrase and BIP39 passphrase of `wallet_id`. Needs a
-     * `RevealSecret` grant. Errors: `NoSecret`, `GrantInvalid`, `Locked`.
+     * `RevealSecret` grant for `wallet_id`. Errors: `NoSecret`,
+     * `GrantInvalid`, `GrantPurposeMismatch`, `Locked`.
      */
     func revealMnemonic(walletId: String, grantId: String) async throws  -> RevealedMnemonic
     
@@ -2559,15 +2570,25 @@ open class Vault: VaultProtocol, @unchecked Sendable {
 
     
     /**
-     * Checks `credential` and issues a single-use grant for `purpose`. A
-     * passphrase credential also unlocks a locked vault (scope Full).
+     * Checks `credential` and issues a single-use grant for `purpose`.
+     *
+     * `wallet_id` binds the grant to the wallet it is for: required for
+     * every purpose except `ChangeCredential`, which must pass `None`
+     * (`invalid_argument` otherwise). The grant is refused on any other
+     * wallet (`grant_purpose_mismatch`, or the call domain's
+     * `grant_invalid`).
+     *
+     * A passphrase credential does not change the lock state: on a locked
+     * or mixing-only vault the unwrapped key serves this grant only.
+     * Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
+     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
      */
-open func authorize(purpose: GrantPurpose, credential: VaultCredential)async throws  -> AuthGrant  {
+open func authorize(purpose: GrantPurpose, walletId: String?, credential: VaultCredential)async throws  -> AuthGrant  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_dashwallet_core_fn_method_vault_authorize(
-                        self.uniffiCloneHandle(),FfiConverterTypeGrantPurpose_lower(purpose),FfiConverterTypeVaultCredential_lower(credential)
+                        self.uniffiCloneHandle(),FfiConverterTypeGrantPurpose_lower(purpose),FfiConverterOptionString.lower(walletId),FfiConverterTypeVaultCredential_lower(credential)
                 )
             },
             pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
@@ -2693,7 +2714,8 @@ open func removeQuickUnlock()async throws  -> VaultStatus  {
     
     /**
      * The recovery phrase and BIP39 passphrase of `wallet_id`. Needs a
-     * `RevealSecret` grant. Errors: `NoSecret`, `GrantInvalid`, `Locked`.
+     * `RevealSecret` grant for `wallet_id`. Errors: `NoSecret`,
+     * `GrantInvalid`, `GrantPurposeMismatch`, `Locked`.
      */
 open func revealMnemonic(walletId: String, grantId: String)async throws  -> RevealedMnemonic  {
     return
@@ -10262,8 +10284,11 @@ public enum VaultCredential: Equatable, Hashable {
     case quickUnlock(wrapKey: Data
     )
     /**
-     * No credential: valid only for an unencrypted vault when the
-     * "require authentication for every payment" setting is off.
+     * No credential: accepted on an unencrypted vault, and on a vault
+     * unlocked with scope Full except for `RevealSecret`, `Wipe` and
+     * `ChangeCredential` (those need the passphrase whenever the vault is
+     * encrypted). Whether the host sends it for spending and signing is the
+     * "require authentication for every payment" setting.
      */
     case unencrypted
 
@@ -10382,9 +10407,15 @@ enum VaultError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case GrantInvalid
     /**
-     * Code `vault.grant_purpose_mismatch`: the grant does not cover this call.
+     * Code `vault.grant_purpose_mismatch`: the grant does not cover this
+     * call (another purpose, or bound to another wallet).
      */
     case GrantPurposeMismatch
+    /**
+     * Code `vault.credential_required`: reveal, wipe and credential change
+     * need the passphrase on an encrypted vault, even while it is unlocked.
+     */
+    case CredentialRequired
     /**
      * Code `vault.mixing_only`: the vault is unlocked for mixing only.
      */
@@ -10495,31 +10526,32 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
         case 8: return .AlreadyEncrypted
         case 9: return .GrantInvalid
         case 10: return .GrantPurposeMismatch
-        case 11: return .MixingOnly
-        case 12: return .NoSecret
-        case 13: return .QuickUnlockUnavailable
-        case 14: return .OsStoreUnavailable(
+        case 11: return .CredentialRequired
+        case 12: return .MixingOnly
+        case 13: return .NoSecret
+        case 14: return .QuickUnlockUnavailable
+        case 15: return .OsStoreUnavailable(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 15: return .Corrupt(
+        case 16: return .Corrupt(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 16: return .InvalidArgument(
+        case 17: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 17: return .NetworkNotOpen(
+        case 18: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 18: return .WalletNotFound(
+        case 19: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 19: return .Storage(
+        case 20: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 20: return .NotImplemented(
+        case 21: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 21: return .Internal(
+        case 22: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -10578,55 +10610,59 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(10))
         
         
-        case .MixingOnly:
+        case .CredentialRequired:
             writeInt(&buf, Int32(11))
         
         
-        case .NoSecret:
+        case .MixingOnly:
             writeInt(&buf, Int32(12))
         
         
-        case .QuickUnlockUnavailable:
+        case .NoSecret:
             writeInt(&buf, Int32(13))
         
         
-        case let .OsStoreUnavailable(detail):
+        case .QuickUnlockUnavailable:
             writeInt(&buf, Int32(14))
-            FfiConverterString.write(detail, into: &buf)
-            
         
-        case let .Corrupt(detail):
+        
+        case let .OsStoreUnavailable(detail):
             writeInt(&buf, Int32(15))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .InvalidArgument(detail):
+        case let .Corrupt(detail):
             writeInt(&buf, Int32(16))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NetworkNotOpen(detail):
+        case let .InvalidArgument(detail):
             writeInt(&buf, Int32(17))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .WalletNotFound(detail):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(18))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(19))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .Storage(detail):
             writeInt(&buf, Int32(20))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(21))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(22))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -12277,7 +12313,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 60873) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 22576) {
+    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 56663) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_change_passphrase() != 65154) {
@@ -12298,7 +12334,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_remove_quick_unlock() != 53682) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_reveal_mnemonic() != 34886) {
+    if (uniffi_dashwallet_core_checksum_method_vault_reveal_mnemonic() != 31325) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_revoke_grant() != 22869) {
