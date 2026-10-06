@@ -253,7 +253,7 @@ struct SendViewModelTests {
         #expect(draft.broadcasts.isEmpty)
     }
 
-    @Test func QT063_broadcastClearsFormRoutesAndRemembersAnUnlabelledRecipient() async {
+    @Test func QT063_broadcastClearsFormAndRoutesToTheTransaction() async {
         let model = makeModel()
         fillValid(model)
         await reviewToConfirm(model)
@@ -264,42 +264,20 @@ struct SendViewModelTests {
         #expect(model.entries.count == 1 && model.entries[0].isBlank)
         #expect(world.sender.lastDraft?.state.current.broadcasts.count == 1)
         #expect(world.sender.lastDraft?.state.current.abandoned.isEmpty == true)
-        let saves = world.addressBook.saves.current
-        #expect(saves.count == 1)
-        #expect(saves.first?.address == testnetAddress1 && saves.first?.label == "" && saves.first?.purpose == .send)
-        #expect(saves.first?.replace == false)
     }
 
-    /// Labels from the send form are the engine's to record at broadcast
-    /// (review M7): the view model writes nothing for a labelled recipient.
-    @Test func M7_labelledRecipientsAreLeftToTheEngine() async {
+    /// The engine's broadcast records every recipient, labelled or not, in
+    /// the address book (m1-engine.md §2.7.1, review M7/L3): the view model
+    /// hands the recipients to the draft and writes no entries itself.
+    @Test(arguments: ["", "Shop"])
+    func L3_addressBookEntriesAreLeftToTheEngine(label: String) async {
         let model = makeModel()
-        fillValid(model, label: "Shop")
+        fillValid(model, label: label)
         await reviewToConfirm(model)
         await model.confirm()
-        #expect(world.sender.lastDraft?.state.current.recipients.first?.label == "Shop")
-        #expect(world.addressBook.saves.current.isEmpty)
-    }
-
-    @Test func QT063_knownAddressIsNotTouched() async {
-        world.addressBook.entries.withLock {
-            $0 = [AddressBookEntry(address: testnetAddress1, label: "", purpose: .send, createdAt: nil)]
-        }
-        let model = makeModel()
-        fillValid(model)
-        await reviewToConfirm(model)
-        await model.confirm()
-        #expect(world.addressBook.saves.current.isEmpty)
-    }
-
-    @Test func QT063_nothingIsRememberedWithoutASend() async {
-        world.sender.configure.withLock {
-            $0 = { draft in draft.state.withLock { $0.broadcastError = ServiceError(code: .sendBroadcastRejected) } }
-        }
-        let model = makeModel()
-        fillValid(model)
-        await reviewToConfirm(model)
-        await model.confirm()
+        let recipient = world.sender.lastDraft?.state.current.recipients.first
+        #expect(recipient?.address == testnetAddress1)
+        #expect((recipient?.label ?? "") == label)
         #expect(world.addressBook.saves.current.isEmpty)
     }
 
@@ -343,7 +321,7 @@ struct SendViewModelTests {
     }
 
     @Test func QT061_encryptedWalletAsksForThePassphrase() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         let model = makeModel()
         fillValid(model)
         await model.review()
@@ -361,7 +339,7 @@ struct SendViewModelTests {
     /// A second passphrase submission while the first is being checked is
     /// ignored: one grant, one prepare.
     @Test func QT061_secondAuthorizeWhileCheckingIsIgnored() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         let gate = Gate()
         world.auth.authorizeGate = gate
         let model = makeModel()
@@ -383,7 +361,7 @@ struct SendViewModelTests {
     }
 
     @Test func QT061_wrongPassphraseFails() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         world.auth.authorizeErrors = [ServiceError(code: .vaultWrongPassphrase)]
         let model = makeModel()
         fillValid(model)
@@ -465,7 +443,7 @@ struct SendViewModelTests {
     }
 
     @Test func M7_cancelWhileAuthorizingIssuesNoGrant() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         let model = makeModel()
         fillValid(model)
         await model.review()
@@ -586,6 +564,73 @@ struct SendViewModelTests {
         let draft = world.sender.lastDraft!.state.current
         #expect(draft.released.count == 1)
         #expect(draft.abandoned.isEmpty)
+    }
+
+    /// Errors the engine raises before it hands a first broadcast to the
+    /// network leave the transaction pending (m1-engine.md §2.7.1 "not
+    /// dispatched"): a definite failure, abandoned on dismiss, never
+    /// "outcome unknown" (review L5).
+    @Test(arguments: [ServiceErrorCode.wallet, .storage, .spv, .io, .walletNotFound, .invalidArgument])
+    func L5_preDispatchErrorIsADefiniteFailure(code: ServiceErrorCode) async {
+        world.sender.configure.withLock {
+            $0 = { draft in draft.state.withLock { $0.broadcastErrors = [ServiceError(code: code)] } }
+        }
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        await model.confirm()
+        guard case .failed(let failure) = model.phase else {
+            Issue.record("expected failed, got \(model.phase)")
+            return
+        }
+        #expect(failure.code == code)
+        #expect(model.route == nil)
+        #expect(!model.canBroadcastAgain)
+        await model.dismiss()
+        #expect(model.phase == .editing)
+        let draft = world.sender.lastDraft!.state.current
+        #expect(draft.abandoned.count == 1)
+        #expect(draft.released.count == 1)
+    }
+
+    /// While a broadcast is in flight or its outcome is unknown the form is
+    /// read-only: edits through `entries` are undone and the editing methods
+    /// do nothing, so "Broadcast again" sends what was reviewed (review L6).
+    @Test func L6_formIsReadOnlyWhileBroadcastingAndWhileTheOutcomeIsUnknown() async {
+        let gate = Gate()
+        world.sender.configure.withLock {
+            $0 = { draft in
+                draft.broadcastGate.withLock { $0 = gate }
+                draft.state.withLock { $0.broadcastErrors = [ServiceError(code: .sendBroadcastUnknown)] }
+            }
+        }
+        let model = makeModel()
+        fillValid(model, label: "Shop")
+        await reviewToConfirm(model)
+        let reviewed = model.entries
+        let broadcast = Task { await model.confirm() }
+        await eventually { gate.waiterCount == 1 }
+        #expect(model.phase == .broadcasting)
+        #expect(!model.isEditable)
+        model.entries[0].address = testnetAddress2
+        model.entries[0].label = "Other"
+        model.addRecipient()
+        #expect(model.entries == reviewed)
+        gate.open()
+        await broadcast.value
+        guard case .broadcastUnknown = model.phase else {
+            Issue.record("expected broadcastUnknown, got \(model.phase)")
+            return
+        }
+        #expect(!model.isEditable)
+        model.entries[0].amountText = "2"
+        model.paste(testnetAddress2)
+        model.clearAll()
+        #expect(model.entries == reviewed)
+        // The gate is open now: the repeat goes through at once.
+        await model.broadcastAgain()
+        #expect(model.phase == .done(txid: String(repeating: "f", count: 64)))
+        #expect(model.isEditable)
     }
 
     @Test func M7_sessionErrorOnBroadcastIsAbandonedOnDismiss() async {

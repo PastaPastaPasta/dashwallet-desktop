@@ -331,12 +331,21 @@ struct AuthorizeCall {
     let passphrase: String?
 }
 
+/// The authentication gate over a fake vault (review L4):
+/// - `requirement(for:)` is `AuthenticationGate`'s rule for `lockState`
+///   (a real-engine test checks that rule against dw-vault);
+/// - `authorize` answers like dw-vault's credential table for `lockState`:
+///   `vault.no_vault`, `vault.not_encrypted` (passphrase on an unencrypted
+///   vault), `vault.credential_required` (reveal, wipe and credential change
+///   without the passphrase on an encrypted vault), `vault.locked` and
+///   `vault.mixing_only` (no credential); the lock state does not change.
+///   Scripted `authorizeErrors` (e.g. a wrong passphrase) come first.
 @MainActor
 final class FakeAuth: AuthenticationGating {
     var lockState: VaultLockState?
     let broadcast = Broadcast<VaultLockState>()
-    var requirements: [String: CredentialRequirement] = [:]
-    var defaultRequirement: CredentialRequirement = .none
+    /// The iOS "require authentication for every payment" setting.
+    var requireAuthenticationForEveryPayment = true
     var authorizeCalls: [AuthorizeCall] = []
     var authorizeErrors: [ServiceError] = []
     var unlockCalls: [(String, UnlockScope)] = []
@@ -359,21 +368,31 @@ final class FakeAuth: AuthenticationGating {
         broadcast.send(state)
     }
 
-    static func key(_ purpose: GrantPurpose) -> String {
-        switch purpose {
-        case .spend: "spend"
-        case .revealSecret: "revealSecret"
-        case .signMessage: "signMessage"
-        case .changeCredential: "changeCredential"
-        case .wipe: "wipe"
-        case .masternodeOperation: "masternodeOperation"
-        case .governance: "governance"
-        case .platformOperation: "platformOperation"
-        }
+    func requirement(for purpose: GrantPurpose) -> CredentialRequirement {
+        AuthenticationGate.requirement(
+            for: purpose, lockState: lockState, quickUnlockEnrolled: false,
+            requireAuthenticationForEveryPayment: requireAuthenticationForEveryPayment)
     }
 
-    func requirement(for purpose: GrantPurpose) -> CredentialRequirement {
-        requirements[Self.key(purpose)] ?? defaultRequirement
+    /// dw-vault `Vault::authorize`'s credential table.
+    private func checkCredential(_ purpose: GrantPurpose, passphrase: String?) throws(ServiceError) {
+        let encrypted: Bool
+        switch lockState {
+        case .noVault, nil: throw ServiceError(code: .vaultNoVault)
+        case .noKeys, .unencrypted: encrypted = false
+        case .locked, .unlockedMixingOnly, .unlocked: encrypted = true
+        }
+        if passphrase != nil {
+            if !encrypted { throw ServiceError(code: .vaultNotEncrypted) }
+            return
+        }
+        guard encrypted else { return }
+        switch purpose {
+        case .revealSecret, .wipe, .changeCredential: throw ServiceError(code: .vaultCredentialRequired)
+        case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation: break
+        }
+        if lockState == .locked { throw ServiceError(code: .vaultLocked) }
+        if lockState == .unlockedMixingOnly { throw ServiceError(code: .vaultMixingOnly) }
     }
 
     func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)
@@ -393,6 +412,7 @@ final class FakeAuth: AuthenticationGating {
         }
         if let authorizeGate { await authorizeGate.wait() }
         if !authorizeErrors.isEmpty { throw authorizeErrors.removeFirst() }
+        try checkCredential(purpose, passphrase: passphrase)
         grantCounter += 1
         return AuthGrant(
             id: "grant-\(grantCounter)", purpose: purpose, expiresAt: Date(timeIntervalSince1970: 2_000_000_000),
@@ -432,7 +452,8 @@ final class FakeAuth: AuthenticationGating {
 ///   `send.prepared_tx_unknown`, of one in flight with
 ///   `send.broadcast_outcome_unknown`. Success forgets it. `send.no_peers`,
 ///   `send.broadcast_rejected` and `send.prepared_tx_spent` release its inputs
-///   and forget it. Argument and session errors leave it as it was. Any other
+///   and forget it. Errors raised before dispatch (argument, session,
+///   `wallet`, `storage`, `spv`, `io`) leave it as it was. Any other
 ///   error marks the outcome unknown: it may be broadcast again but not
 ///   abandoned (`send.broadcast_outcome_unknown`). A repeat of an unknown
 ///   outcome is never released: the engine reports any `send.*` failure of a
@@ -580,7 +601,8 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
                 return BroadcastResult(txid: prepared.summary.txid, peersAnnounced: 3)
             }
             switch error.code {
-            case .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound:
+            case .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound, .wallet, .storage, .spv, .io:
+                // Raised before dispatch (m1-engine.md §2.7.1 "not dispatched").
                 s.held[prepared.id] = previous
             case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected:
                 s.held[prepared.id] = nil

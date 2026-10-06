@@ -15,13 +15,19 @@
 //   `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
 //   the engine has already released the inputs and spent the prepared
 //   transaction, so sending again means a new review: new grant, new
-//   prepare (review M1). After the other definite failures dismissing
-//   abandons the transaction.
+//   prepare (review M1). The other definite failures are errors the engine
+//   raises before it hands the transaction to the network (m1-engine.md
+//   §2.7.1 "not dispatched", review L5): the transaction stays pending and
+//   dismissing abandons it.
 // - A broadcast whose outcome is unknown (any other error) ends in
 //   `.broadcastUnknown` and is never abandoned: its inputs may already be in
 //   the mempool, and releasing them would let the next send double-spend.
 //   The prepared transaction is kept so `broadcastAgain()` can send the same
-//   signed transaction (same txid) again (review M3).
+//   signed transaction (same txid) again (review M3). The form is read-only
+//   until the user dismisses it (review L6).
+// - The engine records the recipients in the address book once a broadcast
+//   was accepted or its outcome is unknown (m1-engine.md §2.7.1 "Address
+//   book"); this view model writes no address-book entries.
 import Foundation
 import Observation
 import WalletRuntime
@@ -115,12 +121,20 @@ public final class SendViewModel {
     /// Recipients listed in the confirm text before "(x of y entries displayed)".
     public static let maxConfirmLines = 10
 
-    /// Editable by the UI. A change of the user fields while a payment is
-    /// under review returns to `.editing` and abandons the prepared
-    /// transaction (review M-7).
+    /// Editable by the UI while `isEditable`. A change of the user fields
+    /// while a payment is under review returns to `.editing` and abandons the
+    /// prepared transaction (review M-7). A change of the user fields while
+    /// the form is read-only (broadcasting, outcome unknown) is undone (review
+    /// L6).
     public var entries: [RecipientEntry] = [RecipientEntry()] {
         didSet {
             guard internalEdits == 0, oldValue.map(\.userFields) != entries.map(\.userFields) else { return }
+            guard isEditable else {
+                // `entries` is an observed property: the undo goes through its
+                // setter, so it is marked internal to end the recursion.
+                withInternalEdits { entries = oldValue }
+                return
+            }
             userEdited()
         }
     }
@@ -172,7 +186,6 @@ public final class SendViewModel {
     private let amounts: any AmountFormatting
     private let settings: any SettingsProviding
     private let sync: (any SyncStatusProviding)?
-    private let addressBook: (any AddressBookProviding)?
     private let network: DashNetwork
     private let timing: Timing
     private var draft: (any TransactionDrafting)?
@@ -192,8 +205,8 @@ public final class SendViewModel {
     public init(
         walletState: any WalletStateProviding, sender: any TransactionSending, auth: any AuthenticationGating,
         vault: any VaultProviding, uri: any URIHandling, amounts: any AmountFormatting,
-        settings: any SettingsProviding, sync: (any SyncStatusProviding)?, addressBook: (any AddressBookProviding)?,
-        network: DashNetwork, timing: Timing, page: SendPage = .regular
+        settings: any SettingsProviding, sync: (any SyncStatusProviding)?, network: DashNetwork, timing: Timing,
+        page: SendPage = .regular
     ) {
         self.walletState = walletState
         self.sender = sender
@@ -203,7 +216,6 @@ public final class SendViewModel {
         self.amounts = amounts
         self.settings = settings
         self.sync = sync
-        self.addressBook = addressBook
         self.network = network
         self.timing = timing
         self.page = page
@@ -213,8 +225,7 @@ public final class SendViewModel {
     public convenience init(env: AppEnvironment, network: DashNetwork, page: SendPage = .regular) {
         self.init(
             walletState: env.walletState, sender: env.sender, auth: env.auth, vault: env.vault, uri: env.uri,
-            amounts: env.amounts, settings: env.settings, sync: env.sync, addressBook: env.addressBook,
-            network: network, timing: env.timing, page: page)
+            amounts: env.amounts, settings: env.settings, sync: env.sync, network: network, timing: env.timing, page: page)
     }
 
     // MARK: Editing
@@ -464,11 +475,16 @@ public final class SendViewModel {
         Amount(duffs: recipients.reduce(Int64(0)) { $0 + $1.amount.duffs })
     }
 
-    /// Broadcast errors after which peers certainly do not have the
-    /// transaction.
+    /// Errors of a first broadcast after which peers certainly do not have
+    /// the transaction: never sent (`send.no_peers`, `send.broadcast_rejected`,
+    /// `send.prepared_tx_spent`), not held by the draft, or raised by the
+    /// engine before dispatch, which leaves the transaction pending
+    /// (m1-engine.md §2.7.1 "not dispatched": `network_not_open`,
+    /// `wallet_not_found`, `invalid_argument`, `wallet`, `storage`, `spv`,
+    /// `io`; review L5).
     public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
         .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendPreparedTxUnknown, .networkNotOpen,
-        .walletNotFound, .invalidArgument, .notImplemented,
+        .walletNotFound, .invalidArgument, .notImplemented, .wallet, .storage, .spv, .io,
     ]
 
     /// Broadcast errors after which the prepared transaction no longer
@@ -623,12 +639,10 @@ public final class SendViewModel {
             let result = try await draft.broadcast(prepared)
             self.prepared = nil
             self.draft = nil
-            let sent = entries
             withInternalEdits { entries = [RecipientEntry()] }
             estimate = nil
             phase = .done(txid: result.txid)
             route = .transaction(txid: result.txid)
-            await rememberUnlabelledRecipients(sent)
         } catch {
             let failure = failure(for: error)
             if Self.preparedGoneAfter.contains(error.code) {
@@ -841,22 +855,5 @@ public final class SendViewModel {
         }
         withInternalEdits { entries = merged }
         return true
-    }
-
-    /// Adds sent-to addresses without a label to the sending address book
-    /// (QT-063). The engine's broadcast owns every label from the send form
-    /// (it adds a labelled recipient or fills an empty label); this only adds
-    /// the unlabelled recipients it does not record, and never touches an
-    /// address already in the book. Best effort: a failure here does not undo
-    /// the sent transaction.
-    private func rememberUnlabelledRecipients(_ sent: [RecipientEntry]) async {
-        guard let addressBook, let wallet = walletState.selectedWalletID else { return }
-        let unlabelled = sent.filter { $0.label.isEmpty && !$0.address.isEmpty }
-        guard !unlabelled.isEmpty else { return }
-        guard let existing = try? await addressBook.entries(wallet: wallet, purpose: nil, search: nil) else { return }
-        var known = Set(existing.map(\.address))
-        for entry in unlabelled where known.insert(entry.address).inserted {
-            _ = try? await addressBook.save(wallet: wallet, address: entry.address, label: "", purpose: .send, replace: false)
-        }
     }
 }

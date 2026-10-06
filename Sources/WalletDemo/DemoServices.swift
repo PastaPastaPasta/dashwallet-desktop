@@ -208,11 +208,12 @@ final class DemoAuth: AuthenticationGating {
 
     /// `AuthenticationGate`'s table with "require authentication for every
     /// payment" on (the setting's default).
+    /// The live gate's rule, with "require authentication for every
+    /// payment" on (its default; the demo has no settings store for it).
     func requirement(for purpose: GrantPurpose) -> CredentialRequirement {
-        switch world.vault.state {
-        case .noVault, .noKeys, .unencrypted: .none
-        case .locked, .unlockedMixingOnly, .unlocked: .passphrase
-        }
+        AuthenticationGate.requirement(
+            for: purpose, lockState: world.vault.state, quickUnlockEnrolled: false,
+            requireAuthenticationForEveryPayment: true)
     }
 
     func authorize(_ purpose: GrantPurpose, wallet: WalletID?, credential: Credential) async throws(ServiceError)

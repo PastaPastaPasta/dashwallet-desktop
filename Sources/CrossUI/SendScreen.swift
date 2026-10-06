@@ -22,13 +22,21 @@ struct SendScreen: View {
             ForEach(model.entries) { entry in
                 RecipientEditor(model: model, id: entry.id, canRemove: model.entries.count > 1)
             }
+            // The form is read-only while broadcasting and while the outcome
+            // is unknown: "Broadcast again" sends what was reviewed (L6).
+            // `disabled` covers the fields; each button gets `isEnabled`
+            // because its own `disabled(false)` would re-enable it.
             HStack(spacing: Int(DashSpacing.s)) {
                 DashTextField(CrossStrings.pasteCaption, placeholder: CrossStrings.pasteURI, text: $pasteText)
-                DashButton(CrossStrings.pasteCaption, style: .tintedBlue, size: .small, isEnabled: !pasteText.isEmpty) {
+                DashButton(
+                    CrossStrings.pasteCaption, style: .tintedBlue, size: .small,
+                    isEnabled: model.isEditable && !pasteText.isEmpty
+                ) {
                     model.paste(pasteText)
                     pasteText = ""
                 }
             }
+            .disabled(!model.isEditable)
             feeSection(model)
             HStack(spacing: Int(DashSpacing.s)) {
                 DashButton(L10n.Send.send, style: .filledBlue, isEnabled: model.phase == .editing) {
@@ -56,15 +64,20 @@ struct SendScreen: View {
                         return ConfirmationTarget.defaultBlocks
                     },
                     { model.setFee(.recommended(targetBlocks: $0)) }))
+                .disabled(!model.isEditable)
             HStack(spacing: Int(DashSpacing.s)) {
                 DashTextField(
                     CrossStrings.customFee, placeholder: CrossStrings.customFeePlaceholder, text: $customFeeText,
                     width: 260)
-                DashButton(CrossStrings.applyCustomFee, style: .tintedGray, size: .small, isEnabled: Int64(customFeeText) != nil) {
+                .disabled(!model.isEditable)
+                DashButton(
+                    CrossStrings.applyCustomFee, style: .tintedGray, size: .small,
+                    isEnabled: model.isEditable && Int64(customFeeText) != nil
+                ) {
                     if let duffs = Int64(customFeeText) { model.setFee(.perKilobyte(Amount(duffs: duffs))) }
                 }
                 if case .perKilobyte = model.fee {
-                    DashButton(CrossStrings.recommendedFee, style: .plainBlue, size: .small) {
+                    DashButton(CrossStrings.recommendedFee, style: .plainBlue, size: .small, isEnabled: model.isEditable) {
                         model.setFee(.recommended(targetBlocks: ConfirmationTarget.defaultBlocks))
                     }
                 }
@@ -165,25 +178,30 @@ struct RecipientEditor: View {
         let model = model
         let id = id
         let entry = model.entries.first { $0.id == id } ?? RecipientEntry(id: id)
+        let editable = model.isEditable
         DashCard {
             DashTextField(
                 CrossStrings.payTo, placeholder: CrossStrings.payToPlaceholder,
                 text: field(\.address), error: entry.addressError)
+            .disabled(!editable)
             HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
                 DashTextField(
                     CrossStrings.amount, placeholder: CrossStrings.amountPlaceholder,
                     text: field(\.amountText), error: entry.amountError, width: 200)
+                .disabled(!editable)
                 DashToggle(CrossStrings.subtractFee, isOn: field(\.subtractFee))
-                DashButton(CrossStrings.useMax, style: .plainBlue, size: .small) {
+                    .disabled(!editable)
+                DashButton(CrossStrings.useMax, style: .plainBlue, size: .small, isEnabled: editable) {
                     Task { await model.useMax(for: id) }
                 }
             }
             DashTextField(CrossStrings.label, placeholder: CrossStrings.labelPlaceholder, text: field(\.label))
+                .disabled(!editable)
             if let message = entry.message {
                 KeyValueRow(CrossStrings.message, message)
             }
             if canRemove {
-                DashButton(CrossStrings.removeRecipient, style: .plainRed, size: .small) {
+                DashButton(CrossStrings.removeRecipient, style: .plainRed, size: .small, isEnabled: editable) {
                     model.removeRecipient(id)
                 }
             }

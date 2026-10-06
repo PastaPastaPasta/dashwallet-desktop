@@ -95,11 +95,18 @@ public final class SignVerifyViewModel {
             credential = .passphrase(vault.makeSecret(utf8: passphrase))
         }
         needsPassphrase = false
+        var grant: AuthGrant?
         do {
-            let grant = try await auth.authorize(.signMessage, wallet: wallet, credential: credential)
-            signature = try await messages.sign(wallet: wallet, address: cleaned, message: message, grant: grant)
+            let issued = try await auth.authorize(.signMessage, wallet: wallet, credential: credential)
+            grant = issued
+            signature = try await messages.sign(wallet: wallet, address: cleaned, message: message, grant: issued)
             signResult = .signed
         } catch {
+            // `sign` can fail before it redeems the grant (address not in the
+            // wallet, no key); withdraw it so its key does not stay in the
+            // vault until it expires (review L2). An already redeemed grant
+            // is unknown to the vault and the revoke does nothing.
+            if let grant { auth.revoke(grant) }
             signResult = .failed(error.code, message: Self.signText(error.code))
         }
     }

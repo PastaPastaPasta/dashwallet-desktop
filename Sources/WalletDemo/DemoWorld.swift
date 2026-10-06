@@ -253,18 +253,24 @@ final class DemoWorld {
         if state.vault.state != before { lockChanges.send(state.vault.state) }
     }
 
+    /// The engine's `new_passphrase` check: a new passphrase is non-empty and
+    /// at most 1024 bytes.
+    private static func validateNew(_ passphrase: String) throws(ServiceError) {
+        guard !passphrase.isEmpty, passphrase.utf8.count <= 1024 else { throw .demo(.vaultPassphraseRejected) }
+    }
+
     func createVault(passphrase: String?) throws(ServiceError) -> VaultStatus {
         guard vault.state == .noVault else { throw .demo(.vaultAlreadyExists) }
-        if let passphrase, passphrase.isEmpty { throw .demo(.vaultPassphraseRejected) }
+        if let passphrase { try Self.validateNew(passphrase) }
         setVault { $0 = DemoVaultState(state: passphrase == nil ? .unencrypted : .unlocked, passphrase: passphrase) }
         return vaultStatus
     }
 
     /// dash-qt "Encrypt Wallet": leaves the vault locked, like the engine.
     func encrypt(newPassphrase: String, grant: AuthGrant) throws(ServiceError) -> VaultStatus {
+        try Self.validateNew(newPassphrase)
         guard vault.state != .noVault else { throw .demo(.vaultNoVault) }
         guard !vault.encrypted else { throw .demo(.vaultAlreadyEncrypted) }
-        guard !newPassphrase.isEmpty else { throw .demo(.vaultPassphraseRejected) }
         try redeem(grant, .changeCredential, wallet: nil, refuse: .vault)
         grants = [:]
         setVault {
@@ -274,10 +280,12 @@ final class DemoWorld {
         return vaultStatus
     }
 
+    /// Like the engine, the new passphrase is validated before the old one is
+    /// checked, so a rejected new passphrase counts no failed attempt.
     func changePassphrase(old: String, new: String) throws(ServiceError) -> VaultStatus {
+        try Self.validateNew(new)
         guard vault.encrypted else { throw .demo(.vaultNotEncrypted) }
         try checkPassphrase(old)
-        guard !new.isEmpty else { throw .demo(.vaultPassphraseRejected) }
         setVault { $0.passphrase = new }
         return vaultStatus
     }
@@ -286,7 +294,11 @@ final class DemoWorld {
         guard vault.state != .noVault else { throw .demo(.vaultNoVault) }
         guard vault.encrypted else { throw .demo(.vaultNotEncrypted) }
         try checkPassphrase(passphrase)
-        setVault { $0.state = scope == .full ? .unlocked : .unlockedMixingOnly }
+        let next: VaultLockState = scope == .full ? .unlocked : .unlockedMixingOnly
+        // The engine's `install_key`: a change of the lock state revokes
+        // every grant.
+        if next != vault.state { grants = [:] }
+        setVault { $0.state = next }
     }
 
     /// Drops the key and every grant; idempotent.

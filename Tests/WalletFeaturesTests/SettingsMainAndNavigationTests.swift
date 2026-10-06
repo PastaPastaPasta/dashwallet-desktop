@@ -102,7 +102,7 @@ struct SettingsViewModelTests {
     }
 
     @Test func QT113_revealNeedsAuthorizationFirst() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         let model = makeModel()
         #expect(await model.revealPhrase() == nil)
         #expect(model.needsPassphrase)
@@ -195,6 +195,32 @@ struct MainViewModelTests {
         await model.navigate(.transaction(txid: txid(3)))
         #expect(model.selection == .transactions)
         #expect(model.transactions?.selection == [TxRecord.ID(txid: txid(3), recordIndex: 0)])
+        model.stop()
+    }
+
+    /// The sync overlay shows by itself once the tip is more than 25
+    /// minutes old, re-checked on a timer without a new sync status; hiding
+    /// it lasts until another network opens (QT-027).
+    @Test func QT027_syncOverlayFollowsTheTipAgeAndResetsOnNetworkChange() async {
+        let tip = world.clock.now.addingTimeInterval(-20 * 60)
+        world.sync.status = SyncStatus(
+            running: true, phases: [], activePhase: .filters, tipHeight: 100, tipDate: tip, chainLockHeight: nil,
+            connectedPeers: 8, progress: 0.5, isDone: false, isStalled: false)
+        let model = MainViewModel(env: world.environment())
+        await model.start()
+        #expect(!model.showsSyncOverlay)
+        await eventually { world.sleeper.requested.current.contains(MainViewModel.syncOverlayRecheck) }
+        world.clock.advance(6 * 60)
+        world.sleeper.fireNext()
+        await eventually { model.showsSyncOverlay }
+        model.hideSyncOverlay()
+        #expect(!model.showsSyncOverlay)
+
+        world.host.network.withLock { $0 = .mainnet }
+        world.lifecycle.publish(.idle)
+        await eventually { model.network == .mainnet }
+        #expect(!model.syncOverlayHidden)
+        #expect(model.showsSyncOverlay)
         model.stop()
     }
 

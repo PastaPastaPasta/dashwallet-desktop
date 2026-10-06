@@ -69,7 +69,7 @@ unoptimised wipe of one owned allocation).
 | `LifecycleQueueing` | `Host/LifecycleQueue` (actor) | Start: host → observers → SPV; stop: reverse; `shutdown()` releases the engine. |
 | `WalletStateProviding` | `State/WalletStateModel` → `WalletState` | `wallets` `nil` until `wallet_infos` succeeds (`lastError` otherwise); `Balances` events re-read one wallet. |
 | `SyncStatusProviding` | `State/SPVCoordinator` + `SyncProgressDamper` | 10 % max step, monotonic per SPV run, `isDone` after 3.25 s of `caught_up`, stall at 45 s or `SyncStalled`. |
-| `AuthenticationGating` | `State/AuthenticationGate` | Lock state from `Vault.status` + `LockState` events; `authorize(_:wallet:credential:)` under a 60 s watchdog (`auth.timed_out`, late grant revoked); `wallet` is the wallet the grant is bound to (the draft's wallet for spend, the signing wallet, the wallet whose phrase is revealed or that is removed) and `nil` only for `.changeCredential` (else `invalid_argument`); a grant for another wallet is refused when used. A passphrase grant does not unlock the vault: on a locked or mixing-only vault the grant carries its own key and the lock state stays as it was (no `LockState` event); flows that need the vault unlocked (import, adding a wallet) call `unlock(passphrase:scope:)`. `vault.credential_required` (reveal, wipe or credential change without a passphrase on an encrypted vault) is shown as "Enter your passphrase." `requirement(for:)`: none for no-vault/no-keys/unencrypted (no passphrase slot); passphrase when locked or mixing-only; when unlocked, passphrase for reveal/credential change/wipe (dw-vault refuses those grants without it whenever the vault has a passphrase slot) and, while "require authentication for every payment" is on (default), for spend/sign. |
+| `AuthenticationGating` | `State/AuthenticationGate` | Lock state from `Vault.status` + `LockState` events; `authorize(_:wallet:credential:)` under a 60 s watchdog (`auth.timed_out`, late grant revoked); `wallet` is the wallet the grant is bound to (the draft's wallet for spend, the signing wallet, the wallet whose phrase is revealed or that is removed) and `nil` only for `.changeCredential` (else `invalid_argument`); a grant for another wallet is refused when used. A passphrase grant does not unlock the vault: on a locked or mixing-only vault the grant carries its own key and the lock state stays as it was (no `LockState` event); flows that need the vault unlocked (import, adding a wallet) call `unlock(passphrase:scope:)`. `vault.credential_required` (reveal, wipe or credential change without a passphrase on an encrypted vault) is shown as "Enter your passphrase." `requirement(for:)`: none for no-vault/no-keys/unencrypted (no passphrase slot); passphrase when locked or mixing-only; when unlocked, passphrase for reveal/credential change/wipe (dw-vault refuses those grants without it whenever the vault has a passphrase slot) and, while "require authentication for every payment" is on (default), for spend/sign. The rule is the static `AuthenticationGate.requirement(for:lockState:quickUnlockEnrolled:requireAuthenticationForEveryPayment:)`, which the test fakes and the demo share; `RealEngineTests.L4_requirementMatchesTheEngineCredentialTable` checks it against dw-vault (review L4). |
 | `VaultProviding` | `Services/VaultService` | Grant purpose checked before the engine; every returned status is forwarded to the gate. `SecretBuffer` = DashKit `SecretBytes` (zeroed on deinit); foreign buffers are copied into one. |
 | `TransactionSending` / `TransactionDrafting` | `Services/TransactionSender`, `TransactionDraft` (actor) | Holds engine `PreparedTx` handles by `PreparedTransaction.id`. Setters abandon unsent prepared txs (M-7). After `send.no_peers`, `send.broadcast_rejected` or `send.prepared_tx_spent` the engine has released the inputs and the handle is dropped (`abandon` no-op, `broadcast` → `send.prepared_tx_unknown`). Argument/session errors (`invalid_argument`, `network_not_open`, `wallet_not_found`, `not_implemented`) keep the tx's previous state. Any other failure may have reached a peer and marks the tx "outcome unknown": `abandon` then throws `send.broadcast_outcome_unknown` and keeps the inputs reserved; `broadcast` may be called again. |
 | `HistoryProviding` | `Services/HistoryService` | `changes(wallet:)` merges pending txid lists; `.resynchronize` yields `[]`. |
@@ -183,10 +183,11 @@ Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, 
 - Any edit of entries, fee or source in confirmDuplicates / authorizing / preparing / confirm / failed returns to
   `.editing`, abandons the prepared tx and revokes an unredeemed grant; a prepare that finishes later is abandoned.
 - Broadcast errors `send.broadcast_rejected`, `send.prepared_tx_spent`, `send.no_peers`, `send.prepared_tx_unknown`,
-  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented` are definite (`.failed`). After the
-  first four the engine has released the inputs and spent the `PreparedTx`: the view model drops it, there is no
-  retry, and `dismiss()` returns to `.editing` with the form kept so Review runs a new grant and prepare (M1).
-  After the session/argument errors the tx is still pending and `dismiss()` abandons it.
+  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented`, `wallet`, `storage`, `spv`, `io`
+  are definite (`.failed`). After the first four the engine has released the inputs and spent the `PreparedTx`: the
+  view model drops it, there is no retry, and `dismiss()` returns to `.editing` with the form kept so Review runs a
+  new grant and prepare (M1). The others are raised before the engine hands the tx to the network (m1-engine.md
+  §2.7.1 "not dispatched", review L5): the tx is still pending and `dismiss()` abandons it.
 - Any other broadcast error, including the engine's `send.broadcast_unknown`, is `.broadcastUnknown`: the user is
   routed to the transaction, the inputs stay reserved and the view model keeps the draft and prepared tx so
   `broadcastAgain()` can send the same signed tx (M3). A failed second attempt keeps `.broadcastUnknown` (the first
@@ -196,10 +197,11 @@ Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, 
   dismissed (m1-engine.md §2.7.1). The view model still drops the handle if a repeat ever reports
   `send.prepared_tx_spent`/`send.prepared_tx_unknown`. `cancel()` is ignored; `dismiss()` clears the form and
   drops the handles without abandoning (the engine refuses: `send.prepared_tx_spent`), so the inputs stay
-  reserved in this session.
-- Address book (QT-063, M7): the engine's broadcast owns the labels from the send form. After a successful send
-  the view model only adds recipients without a label that are not in the address book yet (purpose send,
-  `replace: false`, best effort); it never relabels.
+  reserved until the network is reopened.
+- `isEditable` is false in `.broadcasting` and `.broadcastUnknown`: both UIs show the form read-only, every editing
+  method is ignored and a change of `entries` is undone (review L6).
+- Address book (QT-063, M7): the engine's broadcast adds every recipient, labelled or not, and fills empty labels
+  (m1-engine.md §2.7.1 "Address book"). The view model writes no address-book entries (review L3).
 - `ServiceError` needs the numeric context of a code (review M-5): `parameters: [String: Int64]` with `index`,
   `fee`, `available`, `max_duffs` as the engine reports them. `send.amount_with_fee_exceeds_balance` shows
   `parameters["fee"]` (the estimate is nil when `estimate()` itself failed this way; M6).

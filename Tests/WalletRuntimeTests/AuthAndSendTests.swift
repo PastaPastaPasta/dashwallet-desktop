@@ -214,7 +214,15 @@ private final class Latch: @unchecked Sendable {
 
 @MainActor
 @Suite struct TransactionSenderTests {
+    /// A spend grant the fake vault issued for wallet A.
+    private func spendGrant(_ h: Harness, max: Int64) async throws -> Grant {
+        try await h.services.auth.authorize(
+            .spend(max: WalletRuntime.Amount(duffs: max)), wallet: WalletRuntime.WalletID(Fixtures.walletA),
+            credential: .unencrypted)
+    }
+
     private func draft(_ h: Harness) async throws -> (any TransactionDrafting, FakeTxDraft) {
+        h.engine.with { $0.vault = Fixtures.vault(.unlocked) }
         try await h.start()
         let fake = FakeTxDraft(walletID: Fixtures.walletA)
         h.engine.with { $0.nextDraft = fake }
@@ -234,7 +242,7 @@ private final class Latch: @unchecked Sendable {
         } catch {
             #expect(error.code == .vaultGrantPurposeMismatch)
         }
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 1226))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 1226))
         #expect(prepared.summary.totalDebit.duffs == 1226)
         #expect(!fake.calls.contains { $0.hasPrefix("broadcast") })
 
@@ -254,7 +262,7 @@ private final class Latch: @unchecked Sendable {
     @Test func uncertainBroadcastKeepsInputsReserved() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         fake.with { $0.broadcastErrors = [.domain(code: "send.broadcast_unknown", detail: "timeout")] }
         do {
             _ = try await draft.broadcast(prepared)
@@ -282,7 +290,7 @@ private final class Latch: @unchecked Sendable {
     @Test func noPeersReleasesTheTransaction() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         fake.with { $0.broadcastErrors = [.domain(code: "send.no_peers", detail: "")] }
         do {
             _ = try await draft.broadcast(prepared)
@@ -303,7 +311,7 @@ private final class Latch: @unchecked Sendable {
         #expect(fake.calls.filter { $0.hasPrefix("broadcast") }.count == 1)
 
         // A new prepare can be sent.
-        let again = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000)), id: "g2"))
+        let again = try await draft.prepare(grant: spendGrant(h, max: 2000))
         let result = try await draft.broadcast(again)
         #expect(result.txid == again.summary.txid)
     }
@@ -317,7 +325,7 @@ private final class Latch: @unchecked Sendable {
     @Test func aFailedRepeatAfterAnUnknownOutcomeStaysUnknown() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         fake.with {
             $0.broadcastErrors = [
                 .domain(code: "send.broadcast_unknown", detail: "timeout"), .domain(code: "send.no_peers", detail: ""),
@@ -347,7 +355,7 @@ private final class Latch: @unchecked Sendable {
     @Test func sessionErrorsKeepTheTransactionPending() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         fake.with { $0.broadcastErrors = [.networkNotOpen(detail: "closed")] }
         await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
         #expect(fake.phase(of: prepared.summary.txid) == .pending)
@@ -379,7 +387,7 @@ private final class Latch: @unchecked Sendable {
     @Test func inFlightBroadcastIsNeverAbandoned() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         let latch = Latch()
         fake.with { $0.broadcastHold = { await latch.wait() } }
         let sending = Task { try await draft.broadcast(prepared) }
@@ -408,7 +416,7 @@ private final class Latch: @unchecked Sendable {
     @Test func editingAfterPrepareAbandonsTheUnsentTransaction() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        let prepared = try await draft.prepare(grant: spendGrant(h, max: 2000))
         try await draft.setSource(.any)
         #expect(fake.with { $0.abandoned } == [prepared.summary.txid])
         do {

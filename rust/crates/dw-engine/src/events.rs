@@ -442,6 +442,7 @@ pub(crate) struct SessionPump {
     pub hub: Arc<SessionHub>,
     pub spv: Arc<platform_wallet::SpvRuntime>,
     pub appdb: Arc<dw_appdb::AppDb>,
+    pub vault: dw_vault::Vault,
 }
 
 impl PumpTarget for SessionPump {
@@ -504,6 +505,9 @@ impl PumpTarget for SessionPump {
     }
 
     fn tick(&self) {
+        // An unused grant's own copy of the data key goes when the grant
+        // expires, not at the next vault call.
+        self.vault.purge_expired_grants();
         let stalled = self.hub.tracker().check_stall();
         if stalled {
             let since = self.hub.tracker().snapshot().seconds_since_progress;

@@ -33,7 +33,7 @@ pub(crate) const FORMAT: u32 = 1;
 /// Record payload schema version, bound into every record's AAD.
 pub(crate) const SCHEMA_VER: u16 = 1;
 pub(crate) const FILE_NAME: &str = "vault.dwv";
-const TMP_NAME: &str = "vault.dwv.tmp";
+pub(crate) const TMP_NAME: &str = "vault.dwv.tmp";
 /// A vault holds a few dozen small records; anything larger is not ours.
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 

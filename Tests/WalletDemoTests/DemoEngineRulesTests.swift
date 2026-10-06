@@ -201,6 +201,43 @@ struct DemoEngineRulesTests {
         #expect(released == max)
     }
 
+    /// The engine's `install_key`: an unlock that changes the lock state
+    /// drops every grant (review L7).
+    @Test func unlockWithAnotherScopeDropsEveryGrant() async throws {
+        let env = Self.environment(.locked)
+        let wallet = try Self.wallet(env)
+        func secret() -> any SecretBuffer { env.vault.makeSecret(utf8: DemoEnvironment.passphrase) }
+        try await env.auth.unlock(passphrase: secret(), scope: .full)
+        // Unlocking again with the same scope changes nothing: the grant stays.
+        let kept = try await env.auth.authorize(.revealSecret, wallet: wallet, credential: .passphrase(secret()))
+        try await env.auth.unlock(passphrase: secret(), scope: .full)
+        _ = try await env.vault.revealMnemonic(wallet: wallet, grant: kept)
+        // Another scope drops it.
+        let dropped = try await env.auth.authorize(.revealSecret, wallet: wallet, credential: .passphrase(secret()))
+        try await env.auth.unlock(passphrase: secret(), scope: .mixingOnly)
+        #expect(env.auth.lockState == .unlockedMixingOnly)
+        #expect(await Self.code { _ = try await env.vault.revealMnemonic(wallet: wallet, grant: dropped) } == .vaultGrantInvalid)
+    }
+
+    /// Like the engine, `changePassphrase` rejects an empty new passphrase
+    /// before it checks the old one, so no failed attempt is counted (L7).
+    @Test func changePassphraseValidatesTheNewPassphraseFirst() async throws {
+        let env = Self.environment(.locked)
+        let before = try await env.vault.status().failedAttempts
+        let rejected = await Self.code {
+            _ = try await env.vault.changePassphrase(
+                old: env.vault.makeSecret(utf8: "wrong"), new: env.vault.makeSecret(utf8: ""))
+        }
+        #expect(rejected == .vaultPassphraseRejected)
+        #expect(try await env.vault.status().failedAttempts == before)
+        let wrong = await Self.code {
+            _ = try await env.vault.changePassphrase(
+                old: env.vault.makeSecret(utf8: "wrong"), new: env.vault.makeSecret(utf8: "new one"))
+        }
+        #expect(wrong == .vaultWrongPassphrase)
+        #expect(try await env.vault.status().failedAttempts == before + 1)
+    }
+
     @Test func lockingDropsEveryGrant() async throws {
         let env = Self.environment(.locked)
         let wallet = try Self.wallet(env)

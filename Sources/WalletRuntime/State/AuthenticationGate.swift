@@ -65,7 +65,19 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
     /// `.quickUnlockOrPassphrase` replaces `.passphrase` once quick unlock is
     /// enrolled (M2).
     public func requirement(for purpose: GrantPurpose) -> CredentialRequirement {
-        let ask: CredentialRequirement = vaultStatus?.quickUnlockEnrolled == true ? .quickUnlockOrPassphrase : .passphrase
+        Self.requirement(
+            for: purpose, lockState: lockState, quickUnlockEnrolled: vaultStatus?.quickUnlockEnrolled == true,
+            requireAuthenticationForEveryPayment: requireAuthenticationForEveryPayment())
+    }
+
+    /// The rule of `requirement(for:)` for a given state. Test fakes of
+    /// `AuthenticationGating` use it so they cannot drift from the gate; a
+    /// real-engine test checks it against dw-vault (review L4).
+    public nonisolated static func requirement(
+        for purpose: GrantPurpose, lockState: VaultLockState?, quickUnlockEnrolled: Bool,
+        requireAuthenticationForEveryPayment: Bool
+    ) -> CredentialRequirement {
+        let ask: CredentialRequirement = quickUnlockEnrolled ? .quickUnlockOrPassphrase : .passphrase
         switch lockState {
         case .noVault, .noKeys, .unencrypted:
             return .none
@@ -76,7 +88,7 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
             case .revealSecret, .changeCredential, .wipe:
                 return ask
             case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation:
-                return requireAuthenticationForEveryPayment() ? ask : .none
+                return requireAuthenticationForEveryPayment ? ask : .none
             }
         }
     }

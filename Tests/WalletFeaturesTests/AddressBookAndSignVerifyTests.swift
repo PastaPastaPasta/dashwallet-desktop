@@ -146,7 +146,7 @@ struct SignVerifyViewModelTests {
     }
 
     @Test func QT099_encryptedWalletNeedsThePassphrase() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .locked
         let model = makeModel()
         model.address = testnetAddress1
         await model.sign()
@@ -179,6 +179,26 @@ struct SignVerifyViewModelTests {
         #expect(model.signResult?.text == L10n.SignVerify.privateKeyUnavailable)
         #expect(model.signResult?.isSuccess == false)
         #expect(SignVerifyViewModel.signText(.init(rawValue: "message.something")) == L10n.SignVerify.signingFailed)
+    }
+
+    /// A grant the engine did not redeem because signing failed first is
+    /// withdrawn (review L2).
+    @Test func L2_failedSignRevokesTheGrant() async {
+        world.messages.signResult.withLock { $0 = .failure(ServiceError(code: .messageAddressNotMine)) }
+        let model = makeModel()
+        model.address = testnetAddress1
+        await model.sign()
+        #expect(model.signResult?.isSuccess == false)
+        #expect(world.auth.revoked.map(\.purpose) == [.signMessage])
+        #expect(world.auth.revoked.map(\.id) == ["grant-1"])
+    }
+
+    @Test func L2_successfulSignRevokesNothing() async {
+        let model = makeModel()
+        model.address = testnetAddress1
+        await model.sign()
+        #expect(model.signResult == .signed)
+        #expect(world.auth.revoked.isEmpty)
     }
 
     @Test func QT100_verify() {
