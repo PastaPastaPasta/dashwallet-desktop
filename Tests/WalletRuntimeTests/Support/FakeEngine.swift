@@ -26,6 +26,19 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         var nextDraft: FakeTxDraft?
         var historyPage: Result<HistoryPage, DashKitError> = .failure(.notImplemented(detail: "history_page"))
         var signature: Result<String, DashKitError> = .failure(.notImplemented(detail: "sign_message"))
+        // M2 (FakeEngine+M2.swift).
+        var quickUnlockPolicy: Result<QuickUnlockPolicy, DashKitError> =
+            .failure(.notImplemented(detail: "quick_unlock_policy"))
+        var enrollKey: Result<[UInt8], DashKitError> = .failure(.notImplemented(detail: "enroll_quick_unlock"))
+        var removeQuickUnlock: Result<VaultStatus, DashKitError> =
+            .failure(.notImplemented(detail: "remove_quick_unlock"))
+        var spendLimits: [Amount] = []
+        var recovery: Result<VaultRecovery, DashKitError> = .failure(.notImplemented(detail: "recover_with_mnemonic"))
+        var destroy: Result<VaultStatus, DashKitError> = .failure(.notImplemented(detail: "destroy"))
+        var destroyCredentials: [String] = []
+        var txNotices: Result<[TxNotice], DashKitError> = .failure(.notImplemented(detail: "tx_notices"))
+        var logExport: Result<LogExport, DashKitError> = .failure(.notImplemented(detail: "export_logs"))
+        var exportedExtraFiles: [URL] = []
     }
 
     let events = EventBus()
@@ -49,7 +62,7 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         with { $0.calls.append(name) }
     }
 
-    private func requireOpen(_ network: DashNetwork, _ name: String) throws(DashKitError) {
+    func requireOpen(_ network: DashNetwork, _ name: String) throws(DashKitError) {
         record(name)
         guard with({ $0.open.contains(network) }) else { throw .networkNotOpen(detail: "\(network)") }
     }

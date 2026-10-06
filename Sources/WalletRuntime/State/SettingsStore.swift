@@ -79,6 +79,8 @@ public final class SettingsStore: SettingsProviding, SessionObserving {
     private struct GlobalFile: Codable {
         var version = 1
         var lastNetwork: DashNetwork?
+        /// Sections other modules store for every network (M2: `shell`).
+        var sections: [String: JSONValue] = [:]
 
         init() {}
 
@@ -86,6 +88,7 @@ public final class SettingsStore: SettingsProviding, SessionObserving {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
             lastNetwork = try c.decodeIfPresent(DashNetwork.self, forKey: .lastNetwork)
+            sections = try c.decodeIfPresent([String: JSONValue].self, forKey: .sections) ?? [:]
         }
     }
 
@@ -170,6 +173,69 @@ public final class SettingsStore: SettingsProviding, SessionObserving {
         var next = settings
         next.sections[key] = json
         try write(next)
+    }
+
+    /// A section of `global.json`, decoded as `type`; `nil` when absent or
+    /// no longer decodable as `type`.
+    public func globalSection<T: Decodable>(_ key: String, as type: T.Type) -> T? {
+        guard let value = global.sections[key], let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    public func setGlobalSection<T: Encodable>(_ key: String, _ value: T) throws(ServiceError) {
+        let json: JSONValue
+        do {
+            json = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
+        } catch {
+            throw ServiceError(code: .invalidArgument, detail: "section \(key) is not encodable: \(error)")
+        }
+        var next = global
+        next.sections[key] = json
+        do {
+            try Self.save(next, to: globalURL)
+        } catch {
+            lastError = error
+            throw error
+        }
+        global = next
+        lastError = nil
+    }
+
+    /// Resets both files to defaults (`-resetguisettings`, Options "Reset
+    /// options", QT-007 "Reset"). Each existing file is first copied to
+    /// `<name>.bak` (replacing an older copy; a file already moved there as
+    /// corrupt stays). Returns the copies made. Clears
+    /// `recoveredFromCorruption`. The last network is kept, as dash-qt keeps
+    /// the data directory.
+    @discardableResult
+    public func resetToDefaults() throws(ServiceError) -> [URL] {
+        let fm = FileManager.default
+        var backups: [URL] = []
+        for url in [settingsURL, globalURL] where fm.fileExists(atPath: url.path) {
+            let backup = url.appendingPathExtension("bak")
+            do {
+                try? fm.removeItem(at: backup)
+                try fm.copyItem(at: url, to: backup)
+            } catch {
+                throw ServiceError(code: .settingsWriteFailed, detail: "backing up \(url.lastPathComponent): \(error)")
+            }
+            backups.append(backup)
+        }
+        var freshGlobal = GlobalFile()
+        freshGlobal.lastNetwork = global.lastNetwork
+        do {
+            try Self.save(SettingsFile(), to: settingsURL)
+            try Self.save(freshGlobal, to: globalURL)
+        } catch {
+            lastError = error
+            throw error
+        }
+        settings = SettingsFile()
+        global = freshGlobal
+        recoveredFromCorruption = []
+        lastError = nil
+        broadcaster.send(settings.display)
+        return backups
     }
 
     // MARK: SessionObserving
