@@ -28,7 +28,7 @@ Owners:
 | Secrets out | Only `generate_mnemonic` and `Vault.reveal_mnemonic`, as bytes. DashKit copies them into `SecretBytes` at once and zeroes the `Data`. Residual risk: UniFFI frees the returned `RustBuffer` without zeroing it (B decides on a zeroing transfer type). |
 | Async | Every `async` export spawns its work on the engine's tokio runtime (`NetworkSession::on_runtime` pattern) and only awaits the join handle, so UniFFI's Swift executor never blocks. |
 | Sync | A sync export is O(1) or reads in-memory state. No SQLite or network I/O on the caller's thread: E1/E2 keep the data a sync call needs (wallet names, sync snapshot, peers, balances) in memory. |
-| Close | `close_network` waits for admitted calls to finish; a call that starts once the close has begun returns `network_not_open` (review M1). |
+| Close | `close_network` waits for admitted calls to finish; a call that starts once the close has begun returns `network_not_open` (review M1). Every session call is admitted, send, coins and labels included (final review M2), so a close waits for an in-flight `prepare` or `broadcast` (up to ~60 s). |
 | Pure functions | `units`, `uri`, `verify_message`, `generate_mnemonic`, `check_mnemonic` are free functions; they need no session and run on the caller's thread. |
 | Events | Signals, not data (DESIGN-opus §1.5 rule 4). Hosts re-query on arrival. Rust debounces each domain to ≤ 4 Hz and **always delivers the last change of a burst** (review H2). |
 | Errors | One `uniffi::Error` enum per domain. Each variant has a stable code (§4). `detail` strings are diagnostics for logs; Rust never produces user-facing copy. |
@@ -83,7 +83,7 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 | `NetworkSession.import_wallet(mnemonic, bip39_passphrase, options)` | async | Stores phrase and passphrase in the vault, then registers the wallet, in DESIGN-opus §1.8 seed-safety order. `ImportOptions { name, birth_height, core_compat, lookahead }`. Returns the wallet id. Over an existing watch-only wallet with the same id: attach the keys, or `wallet.watch_only_exists`. | `wallet.invalid_mnemonic`, `wallet.already_exists`, `wallet.watch_only_exists`, `wallet.no_vault`, `wallet.vault_locked`, `wallet.name_rejected`, `invalid_argument` (lookahead) | QT-104/105, IOS-007, IOS-123 | B, E1 | **works**: the seed is stored and read back before registration, so without a usable vault the call fails with `wallet.no_vault` / `wallet.vault_locked` and registers nothing (review H-1). Re-import over a registered wallet without a seed attaches the keys (emits `WalletCreated`). `name` is stored in dw-appdb (`None` = "Wallet N"). `lookahead` (1..=1000) raises the gap limit of BIP44 account 0's chains; `core_compat` defaults it to 1000. The raised gap is in memory only: after a restart mid-restore, new addresses beyond those already derived use the default gap (30). No watch-only wallets exist yet, so `wallet.watch_only_exists` is never returned. |
 | `NetworkSession.wallet_infos()` / `wallet_info(id)` | sync | `WalletInfo { wallet_id, name, watch_only, has_mnemonic, hd, birth_height, created_at, balances }`, creation order (wallets without a stored creation time last). `watch_only` = the vault holds no seed for it. `balances` is `None` until the scan has processed the birth block (review M-3). | `wallet_not_found` | QT-014, QT-021, QT-035, QT-101, IOS-110 | E1 | **works** |
 | `NetworkSession.balances(id)` | sync | `Option<WalletBalances { confirmed, unconfirmed, immature, locked, total, coinjoin }>`; `None` = not known yet. `coinjoin` is the spendable balance of the DIP9 CoinJoin accounts (dash-qt's "fully mixed" rule is WS-06). | `EngineError` | QT-034, IOS-019/021 | E1 | **works** |
-| `NetworkSession.remove_wallet(id, grant_id)` | async | Unloads, deletes wallet rows, app metadata and finally the vault records. `Wipe` grant, redeemed after the wallet is found. Emits `WalletRemoved`. | `wallet.grant_invalid`, `wallet_not_found` | QT-101, IOS-109 | E1 (+B for vault records) | **works** |
+| `NetworkSession.remove_wallet(id, grant_id)` | async | Unloads, deletes wallet rows, app metadata and finally the vault records. `Wipe` grant, redeemed after the wallet is found. A wallet with a seed is refused before anything is redeemed or deleted while the vault is locked or mixing-only (deleting the records needs the full data key). Emits `WalletRemoved` as soon as the rows are gone. If the vault records then cannot be deleted (vault locked meanwhile, write failure) the call still succeeds and `Notice{WalletSecretNotDeleted}` names the wallet whose seed stayed in the vault (final review M8). | `wallet.vault_locked`, `wallet.grant_invalid`, `wallet_not_found` | QT-101, IOS-109 | E1 (+B for vault records) | **works** |
 | `NetworkSession.rename_wallet(id, name)` | async | 1–64 chars after trimming, no control characters; stored in `dw-appdb`. | `wallet.name_rejected` | QT-014, IOS-110 | E1 | **works** |
 
 `list_wallets` (M0) is removed; use `wallet_infos`.
@@ -138,10 +138,10 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | `TxDraft.set_source(Any\|FullyMixedOnly\|Outpoints)` | sync | `Any`: every coin of the BIP44, BIP32 and DashPay-receiving accounts that is mature, trusted (confirmed, InstantSend-locked or own change), not user-locked and not reserved; CoinJoin coins are never pooled with them. `Outpoints`: exactly these coins, **all of them** (Dash Core coin control); they may be unconfirmed but not locked, reserved, immature or CoinJoin-account coins (checked by `estimate`/`prepare`). `FullyMixedOnly`: `not_implemented` until CoinJoin rounds are tracked (WS-06). | `invalid_argument` (empty or repeated outpoints), `not_implemented` | QT-051, QT-068…071 | **works** (`FullyMixedOnly`: stub) |
 | `TxDraft.set_fee(Recommended{target_blocks}\|PerKb{duffs_per_kb})` | sync | `Recommended`: target 1..=1008; on SPV every target pays the minimum relay fee, 1000 duff/kB (DESIGN-opus §1.14). `PerKb`: 1000..=10,000,000 duff/kB. | `invalid_argument` | QT-057 | **works** |
 | `TxDraft.set_change(Auto\|Address{address})` | sync | `Auto`: a fresh BIP44 internal address, derived only when the payment has change. `Address`: any L1 address of the network; a foreign one counts against the spend cap. | `send.invalid_change_address` | QT-073 | **works** |
-| `TxDraft.estimate()` | async | Plans the payment (§2.7.1) against the wallet's current coins: `TxEstimate { fee, size_bytes, input_count, change, total_sent }` (`total_sent` after subtract-fee shares). Nothing signed or reserved. | balance errors, `send.amount_too_small_after_fee`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large` | QT-072, IOS-044 | **works** |
-| `TxDraft.prepare(grant_id)` | async | Plans, then redeems the `Spend` grant (single-use; refused if `external_sent > max_duffs`), builds with key-wallet's builder through platform-wallet's reservation-only finalize, signs through dw-vault's `VaultSigner`, checks the transaction against the plan and reserves the inputs. **Never broadcasts.** A balance error does not consume the grant. `PreparedTx.summary()` = `PreparedTxSummary { txid, fee, fee_rate_per_kb, size_bytes, inputs, outputs[{address, amount, is_change, label, is_mine}], total_sent, total_debit, external_sent }`. | `send.amount_exceeds_balance{available}`, `send.amount_with_fee_exceeds_balance{fee, available}`, `send.amount_too_small_after_fee{index}`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.watch_only`, `send.vault_locked` (locked or mixing-only), `send.grant_invalid`, `send.grant_exceeded{max_duffs}` | QT-058/059/061, QT-064/065/066, IOS-046 | **works** |
-| `TxDraft.broadcast(prepared)` | async | Stores the payment's message and recipient labels (dash-qt `sendCoins` address-book rule), then announces through platform-wallet's SPV broadcaster and waits for dash-spv's acceptance verdict (peer echo, InstantSend lock or block; up to ~60 s). Outcomes: accepted → `BroadcastOutcome { txid, peers_announced: None }` (dash-spv does not report the count); never sent (SPV stopped, no peer, rejected before dispatch) → `send.no_peers` / `send.broadcast_rejected`, inputs released, the `PreparedTx` is spent; no verdict → `send.broadcast_unknown`, inputs stay reserved, `broadcast` may be retried (same txid), `abandon` is refused. | `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected{reason}`, `send.broadcast_unknown{reason}`, `invalid_argument` (another draft's `PreparedTx`) | QT-062/063, IOS-052 | **works** |
-| `TxDraft.abandon(prepared)` | async | Releases the reserved inputs (key-wallet's reservation, owner-guarded, and the engine's). Idempotent while pending or released. Releasing the last reference to a pending `PreparedTx` does the same. | `send.prepared_tx_spent` (sent or outcome unknown), `invalid_argument` (another draft's) | IOS rule 4 | **works** |
+| `TxDraft.estimate()` | async | Plans the payment (§2.7.1) against the wallet's current coins and dry-runs key-wallet's builder over the plan (unsigned, nothing reserved): `TxEstimate { fee, size_bytes, input_count, change, total_sent }` (`total_sent` after subtract-fee shares). Nothing signed or reserved. `send.outpoint_unavailable{outpoint}` also names a chosen coin the builder would leave out (worth no more than its own input fee at the draft's rate). | balance errors, `send.amount_too_small_after_fee`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large` | QT-072, IOS-044 | **works** |
+| `TxDraft.prepare(grant_id)` | async | Plans and dry-runs the build as `estimate` does, then redeems the `Spend` grant (single-use; refused if `external_sent > max_duffs`), builds with key-wallet's builder through platform-wallet's reservation-only finalize, signs through dw-vault's `VaultSigner`, checks the transaction against the plan and reserves the inputs. **Never broadcasts.** A balance error or a coin-control choice the builder would not spend does not consume the grant. `PreparedTx.summary()` = `PreparedTxSummary { txid, fee, fee_rate_per_kb, size_bytes, inputs, outputs[{address, amount, is_change, label, is_mine}], total_sent, total_debit, external_sent }`. | `send.amount_exceeds_balance{available}`, `send.amount_with_fee_exceeds_balance{fee, available}`, `send.amount_too_small_after_fee{index}`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.watch_only`, `send.vault_locked` (locked or mixing-only), `send.grant_invalid`, `send.grant_exceeded{max_duffs}` | QT-058/059/061, QT-064/065/066, IOS-046 | **works** |
+| `TxDraft.broadcast(prepared)` | async | Announces through platform-wallet's SPV broadcaster and waits for dash-spv's acceptance verdict (peer echo, InstantSend lock or block; up to ~60 s). Outcomes and reservations: §2.7.1 "Broadcast". Accepted → `BroadcastOutcome { txid, peers_announced: None }` (dash-spv does not report the count). Once accepted or unknown, stores the payment's message and adds the recipients to the address book (§2.7.1 "Address book"). | `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected{reason}`, `send.broadcast_unknown{reason}`, `invalid_argument` (another draft's `PreparedTx`) | QT-062/063, IOS-052 | **works** |
+| `TxDraft.abandon(prepared)` | async | Releases the reserved inputs (key-wallet's reservation, owner-guarded, and the engine's). Idempotent while pending or released. Releasing the last reference to a pending `PreparedTx` does the same; releasing one whose outcome is unknown releases nothing. | `send.prepared_tx_spent` (sent or outcome unknown), `invalid_argument` (another draft's) | IOS rule 4 | **works** |
 
 #### 2.7.1 Payment rules (settles review H-3, H-4, M-4, M-5, M-7, M-8 and the send Lows)
 
@@ -161,6 +161,36 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   `estimate.change` when the change address is foreign). Spend grants are single-use (all grants are). Binding a
   grant to a wallet id (review M-6) is the vault's (B) and not done yet.
 - **Max (M-4).** See `max_spendable`.
+- **Coin control and the builder (final review Low).** key-wallet's selector, given exactly the planned inputs,
+  leaves out a chosen coin worth no more than its own input fee. `estimate` and `prepare` build the plan unsigned
+  first (no reservation) and report such a coin as `send.outpoint_unavailable{outpoint}` before any grant is
+  redeemed; coins reserved by another pending payment are refused the same way at planning time.
+- **Broadcast (final review M1, M3).** The first `broadcast` of a pending `PreparedTx`:
+  - accepted → `Ok`; the inputs are spent;
+  - never sent (SPV stopped, no connected peer, rejected before dispatch) → `send.no_peers` /
+    `send.broadcast_rejected`; the inputs are released and the `PreparedTx` is spent. This matches the iOS wallet
+    and platform-wallet, which release key-wallet's reservation on such a rejection so the payment is rebuilt
+    (dash-qt has no such outcome: it commits the transaction to its own wallet and relays it later). **Hosts
+    re-run review after `send.no_peers`: a new `prepare` with a new `Spend` grant**; the old handle is spent;
+  - no verdict within ~60 s → `send.broadcast_unknown{reason}`; the inputs stay reserved and the same handle may
+    be broadcast again (same transaction, same txid). From then on the transaction may be on the network, so it is
+    never released again: a repeated `broadcast` returns `Ok` when accepted and `send.broadcast_unknown` for any
+    other outcome (the reason says what that attempt saw: SPV not running, no peers, no verdict); `abandon` is
+    refused and dropping the handle releases nothing.
+
+  An unknown-outcome payment's inputs stay `reserved` (excluded from selection and from `max_spendable`) until
+  the wallet sees them spent, by the payment itself or by a conflicting transaction: every coin read drops the
+  reservation of a coin the wallet no longer holds unspent. Over SPV the broadcast is fed into the wallet's own
+  mempool view, so its inputs usually show as spent (the transaction appears unconfirmed in the history) right
+  away. Reservations live in the session: closing the network (or restarting) drops them. Nothing that merely
+  elapses releases them, as with platform-wallet's pending-spend fence: re-selecting those coins could sign a
+  second spend of coins the first transaction may still take.
+- **Address book after a send (final review M7).** Written only once a broadcast was accepted or its outcome is
+  unknown, never for a payment that was not sent. Like dash-qt's `sendCoins`, every recipient not yet in the
+  address book is added (Send, or Receive for one of the wallet's own addresses) with its label, or unlabelled;
+  unlike dash-qt a label is never replaced: a listed entry without a label gets the recipient's label, a listed
+  entry with a label (either purpose) is left as it is. The engine is the only writer of these entries; hosts do
+  not add recipients themselves. The payment's `message`s are stored with the transaction at the same time.
 - **Draft binding (Low).** A `TxDraft` keeps its session alive but works only while it is open
   (`network_not_open` after close) and while the wallet is registered (`wallet_not_found` after removal). A
   `PreparedTx` belongs to the draft that made it. `estimate` has no revision token: the host discards an estimate
@@ -200,8 +230,8 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `parse_payment_uri(network, text)` | sync, free | dash-qt `handleURIOrFile` + `parseBitcoinURI`, address checked on `network`. `PaymentUri { address, amount, label, message }`; amount 0 → `None`. A negative amount (dash-qt accepts it, then fails to send) is `uri.invalid_amount`. | `uri.double_slash`, `uri.not_dash_uri`, `uri.unparsable`, `uri.bip70_unsupported`, `uri.invalid_address{problem}`, `uri.invalid_amount` | QT-054, QT-149, IOS-048 | **works** |
-| `build_payment_uri(address, amount, label, message)` | sync, free | dash-qt `formatBitcoinURI`, byte for byte. | `uri.invalid_amount` | QT-085 | **works** |
+| `parse_payment_uri(network, text)` | sync, free | dash-qt `handleURIOrFile` + `parseBitcoinURI`, address checked on `network`. `PaymentUri { address, amount, label, message }`; amount 0 → `None`. A negative amount or one above the maximum supply (21 M DASH; dash-qt accepts both, then fails to send) is `uri.invalid_amount`. | `uri.double_slash`, `uri.not_dash_uri`, `uri.unparsable`, `uri.bip70_unsupported`, `uri.invalid_address{problem}`, `uri.invalid_amount` | QT-054, QT-149, IOS-048 | **works** |
+| `build_payment_uri(address, amount, label, message)` | sync, free | dash-qt `formatBitcoinURI`, byte for byte. An amount above 21 M DASH is `uri.invalid_amount`. | `uri.invalid_amount` | QT-085 | **works** |
 | `classify_address(network, text)` | sync, free | `Core{script_hash}`, `Platform`, `Shielded`, `Invalid{problem}`. | — | QT-055, QT-067, IOS-042 | **works** |
 | `qr_matrix(text)` | sync, free | `QrMatrix { size, modules }`, row-major, `true` = dark, ECC L, no quiet zone; > 255 chars → `uri.too_long_for_qr`. Implement with the `qrcode` crate in dw-uri (no image crosses the FFI). | `uri.too_long_for_qr` | QT-084, IOS-053 | **works** |
 
@@ -222,13 +252,13 @@ stay in dw-uri for M2 (IOS-048 OS registration).
 |---|---|---|---|
 | `SessionOpened` / `SessionClosed {network}` | session lifecycle | lifecycle overlay | M0 |
 | `WalletCreated {network, wallet_id}` | wallet registered (create or import) | reload wallet list | M0 |
-| `WalletRemoved {network, wallet_id}` | `remove_wallet` done | reload wallet list | E1 |
+| `WalletRemoved {network, wallet_id}` | `remove_wallet` deleted the wallet's rows (sent before the vault records are deleted) | reload wallet list | E1 |
 | `SpvStateChanged {network, running}` | SPV started/stopped | status bar | M0 |
 | `Sync {network, snapshot}` | snapshot changed (≤ 4 Hz, trailing edge kept) | `SPVCoordinator` | E1 |
 | `Balances {network, wallet_id, balances: Option}` | balance buckets changed, or became known (≤ 4 Hz per wallet set, trailing edge kept) | Home / status bar | E1 |
 | `HistoryChanged {network, wallet_id, txids}` | tx added or status changed, including confirmations of young transactions on a new block; `txids` empty = reload all (rescan) | re-query `history_page`, current receive address | E1 |
 | `LockState {network, state}` | vault lock state changed | lock screen, status bar | B (emitted) |
-| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
+| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall), `WalletSecretNotDeleted` (`remove_wallet` removed the wallet but its seed stayed in the vault; `detail` names the wallet id); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
 
 `WalletCreated` is also sent when keys are attached to a registered wallet. The M0 events
 `SyncProgress`, `PeersChanged` and `WalletChanged` are removed.
@@ -257,15 +287,17 @@ and `not_implemented` of these. Domain codes:
 | `UnitsError` | `units.unparsable` |
 | `EngineError` (M0 calls) | `invalid_config`, `invalid_argument`, `network_not_open`, `storage_in_use`, `storage`, `wallet_not_found`, `invalid_mnemonic`, `wallet_already_exists`, `wallet`, `sdk`, `spv`, `io`, `not_implemented`, `internal` |
 
-Each Rust enum has `code()` returning these strings; DashKit maps the generated Swift cases to the same
-strings (`DashKitError.code`, `ServiceErrorCode`). Swift chooses dash-qt / iOS copy by code (QT-062,
+Each FFI error enum exports `code()` returning these strings (a method on the generated Swift type, e.g.
+`SendError.code()`); DashKit maps the generated Swift cases to the same strings (`DashKitError.code`,
+`ServiceErrorCode`) and may read `code()` instead. A dw-ffi test checks the `EngineError` row against its
+variants. Swift chooses dash-qt / iOS copy by code (QT-062,
 IOS-051). The send codes cover dash-qt's `SendCoinsReturn` statuses.
 
 ## 5. Work routed to owners (M0 review findings)
 
 Done in this change: M6 (distinct invalid-mnemonic / already-exists errors), M8 (headless resolve keeps
 `Package.resolved`), M9 (`build-core.sh` target-dir default), L1 (bundle variants stamped with a hash of
-`rust/`; stale variants are left out of `info.json`), L5 (`@attr(args) import` lint), L7 (edition 2024
+`rust/` and the cargo profile; stale variants are left out of `info.json`), L5 (`@attr(args) import` lint), L7 (edition 2024
 everywhere, README test command, unused dev-dep, redundant script, DesignTokensTests in Docker), and the
 `tests/` vs `Tests/` collision (harness moved to `regtest/`).
 
@@ -300,7 +332,14 @@ Status: `dw-appdb`, §2.7–§2.12 work (except `FullyMixedOnly`), tested in dw-
 key-wallet builder parity check, `send::flow_tests` offline flows that sign through the vault), dw-ffi
 (`send_tests`) and the regtest suite `regtest/harness/tests/test_l1_send.py` (dwcli over SPV against dashd).
 Review findings H-3, H-4 (option A), M-4, M-5, M-7 (engine side), M-8 (contract) and the send Lows are settled in
-§2.7.1; Swift-side follow-ups are in m1-swift.md §3 (SendViewModel). Still owed:
+§2.7.1; Swift-side follow-ups are in m1-swift.md §3 (SendViewModel). Final review (scratch/m1/final-review.md),
+engine side, done in m1fix/engine: M1 (`send.no_peers` keeps releasing; hosts prepare again), M2 (send, coins and
+labels calls admitted by the session gate; `dust_protection`, `set_dust_protection`, `tx_label` and `tx_message`
+now run on the engine runtime instead of the caller's executor), M3 (unknown-outcome payments stay reserved and
+re-broadcastable, released only when seen spent or at close), M7 (address-book rule above, written only after a
+sent or unknown broadcast), M8 (§2.3), the coin-control dry run, the URI maximum-supply check, the build-stamp
+profile and the exported `code()`. Regtest: `test_rebroadcast_after_unknown_outcome` in `test_l1_send.py`. Still
+owed:
 - `FullyMixedOnly` (and `utxos.fully_mixed_only`, `coinjoin_rounds`) need per-coin CoinJoin rounds (WS-06).
 - Grant ↔ wallet binding (review M-6) is the vault's.
 - `nSequence`/locktime differ from dash-qt (key-wallet builder), see §2.7.1.
