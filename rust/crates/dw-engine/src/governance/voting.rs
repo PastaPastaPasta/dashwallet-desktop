@@ -38,6 +38,8 @@ pub(crate) struct VotingKey {
     pub wallet: WalletId,
     pub key_id: [u8; 20],
     pub path: DerivationPath,
+    /// Index in the account's pool.
+    pub index: u32,
 }
 
 /// A list masternode whose voting key a wallet holds.
@@ -83,6 +85,7 @@ impl NetworkSession {
                             wallet: *id,
                             key_id: hash.to_byte_array(),
                             path: info.path,
+                            index: info.index,
                         });
                     }
                 }
@@ -411,6 +414,35 @@ impl NetworkSession {
         }
         self.governance.changed();
         Ok(results)
+    }
+}
+
+impl NetworkSession {
+    /// The wallet's DIP-3 voting key addresses and derivation paths, by pool
+    /// index (headless hosts register masternodes with them).
+    pub async fn governance_voting_addresses(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Vec<(String, String)>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.wallet(&wallet).await?;
+            let network = this.network.core_network();
+            let mut keys = this.wallet_voting_keys(&[wallet]).await;
+            keys.sort_by_key(|k| k.index);
+            Ok(keys
+                .into_iter()
+                .map(|k| {
+                    let address = Address::new(
+                        network,
+                        Payload::PubkeyHash(PubkeyHash::from_byte_array(k.key_id)),
+                    );
+                    (address.to_string(), k.path.to_string())
+                })
+                .collect())
+        })
+        .await
     }
 }
 

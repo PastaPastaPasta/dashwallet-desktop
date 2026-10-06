@@ -2,6 +2,7 @@
 //! and console host (DESIGN-opus §1.4).
 
 mod compat;
+mod gov;
 mod pay;
 mod tools;
 
@@ -122,6 +123,9 @@ enum Command {
     Tools(tools::ToolsCommand),
     #[command(flatten)]
     Compat(compat::CompatCommand),
+    /// Governance (M3): list, info, prepare, pending, submit, vote, sync.
+    #[command(subcommand)]
+    Gov(gov::GovCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -449,6 +453,14 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Pay(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = pay::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
+        Command::Gov(cmd) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = gov::run(&engine, &session, passphrase.as_ref(), cmd);
             engine
                 .block_on(engine.shutdown())
                 .map_err(|e| e.to_string())?;
