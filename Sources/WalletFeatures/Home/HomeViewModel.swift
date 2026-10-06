@@ -208,6 +208,9 @@ public final class HomeViewModel {
             filter: filter, sort: .newestFirst, limit: Self.recentLimit(coinJoin: features.coinJoin))
         do {
             let page = try await history.page(wallet: wallet, query: query)
+            // Discreet mode or the selected wallet may have changed while
+            // the page loaded; those rows must not be shown.
+            guard !discreet, walletState.selectedWalletID == wallet else { return }
             recent = page.records.map(makeRecent)
             errorMessage = nil
         } catch {

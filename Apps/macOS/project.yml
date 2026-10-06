@@ -1,0 +1,102 @@
+# XcodeGen spec for the macOS app (DESIGN-opus §1.6, §3.1). The generated
+# DashWallet.xcodeproj is gitignored; regenerate with `xcodegen` in this
+# directory. The app links the root SwiftPM package's MacUI product, so
+# Artifacts/DashWalletCore.artifactbundle must exist (scripts/build-core.sh,
+# or a symlink to a prebuilt bundle) for the package to resolve.
+name: DashWallet
+options:
+  bundleIdPrefix: org.dashfoundation
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Ad-hoc signing for local builds; release signing is set in CI.
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    DEAD_CODE_STRIPPING: YES
+packages:
+  DashWalletDesktop:
+    path: ../..
+targets:
+  DashWallet:
+    type: application
+    platform: macOS
+    sources:
+      - path: DashWallet
+    dependencies:
+      - package: DashWalletDesktop
+        product: MacUI
+      - package: DashWalletDesktop
+        product: WalletFeatures
+      - package: DashWalletDesktop
+        product: WalletRuntime
+    info:
+      path: DashWallet/Info.plist
+      properties:
+        CFBundleDisplayName: Dash Wallet
+        CFBundleName: Dash Wallet
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.finance
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSHumanReadableCopyright: Copyright © 2026 Dash Core Group. MIT licence.
+        # dash: payment URIs open the Send page (QT-150). The other Dash
+        # schemes (pay, dashwallet, dashpay, dashid, dash-key, dash-st) are
+        # registered when their handlers exist.
+        CFBundleURLTypes:
+          - CFBundleURLName: org.dashfoundation.DashWallet.payment
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes:
+              - dash
+    entitlements:
+      path: DashWallet/DashWallet.entitlements
+      properties:
+        # Not sandboxed: the wallet keeps its data in
+        # ~/Library/Application Support/org.dashfoundation.DashWallet/ like
+        # dash-qt keeps ~/Library/Application Support/DashCore.
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.dashfoundation.DashWallet
+        PRODUCT_NAME: Dash Wallet
+        PRODUCT_MODULE_NAME: DashWalletApp
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        # Xcode does not pass the SE-0482 artifact bundle's module map to app
+        # targets, so the C module DashWalletCoreFFI (reached through
+        # MacUI → WalletFeatures → WalletRuntime → DashKit) is not found
+        # without its include directory here.
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/../../Artifacts/DashWalletCore.artifactbundle/macos-arm64/include
+  DashWalletUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: DashWalletUITests
+    dependencies:
+      - target: DashWallet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.dashfoundation.DashWalletUITests
+        TEST_TARGET_NAME: DashWallet
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  DashWallet:
+    build:
+      targets:
+        DashWallet: all
+        DashWalletUITests: [test]
+    run:
+      config: Debug
+      commandLineArguments:
+        "--demo": false
+    test:
+      config: Debug
+      targets:
+        - DashWalletUITests
