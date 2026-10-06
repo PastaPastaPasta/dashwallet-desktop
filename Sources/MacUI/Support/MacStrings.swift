@@ -145,7 +145,7 @@ enum MacStrings {
         static let outcomeUnknownTitle = "The transaction may have been sent"
         static let broadcastAgain = "Broadcast Again"
         static let outcomeUnknownText =
-            "The wallet could not confirm whether the network received the transaction. Its coins stay reserved. Check Transactions before you send again."
+            "The wallet could not confirm whether the network received the transaction. Its coins stay reserved until they show as spent or the wallet is reopened. Check Transactions before you send again."
         static let showTransaction = "Show Transaction"
         static let payToPlaceholder = "Enter a Dash address (e.g. yXdY…) or paste a dash: URI"
         static let chooseAddress = "Choose from address book"

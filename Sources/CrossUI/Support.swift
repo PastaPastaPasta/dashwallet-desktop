@@ -166,7 +166,7 @@ enum CrossStrings {
     static let done = "Done"
     static let broadcastAgain = "Broadcast again"
     static func broadcastUnknown(_ txid: String) -> String {
-        "It is not known whether the network received transaction \(txid). Its coins stay reserved; check Transactions before sending again."
+        "It is not known whether the network received transaction \(txid). Its coins stay reserved until they show as spent or the wallet is reopened; check Transactions before sending again."
     }
 
     // Receive.

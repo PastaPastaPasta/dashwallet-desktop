@@ -29,6 +29,9 @@ struct SendView: View {
                     }
                     FeeSection(send: send, unitName: model.unitName, amounts: model.env?.amounts)
                 }
+                // Read-only while broadcasting and while the outcome is
+                // unknown: "Broadcast again" sends what was reviewed (L6).
+                .disabled(!send.isEditable)
                 .padding(DashSpacing.xxl)
             }
             Divider()
@@ -41,7 +44,7 @@ struct SendView: View {
         .sheet(item: Binding(get: { choosingFor.map(ChooserItem.init) }, set: { choosingFor = $0?.id })) { item in
             if let book = model.makeAddressBook(purpose: .send, selectionMode: true) {
                 AddressBookView(book: book, onChoose: { chosen in
-                    if let index = send.entries.firstIndex(where: { $0.id == item.id }) {
+                    if send.isEditable, let index = send.entries.firstIndex(where: { $0.id == item.id }) {
                         send.entries[index].address = chosen.address
                         send.entries[index].label = chosen.label
                     }
@@ -87,8 +90,10 @@ struct SendView: View {
     private var actionBar: some View {
         HStack(spacing: DashSpacing.m) {
             Button(MacStrings.Send.addRecipient, systemImage: "plus") { send.addRecipient() }
+                .disabled(!send.isEditable)
                 .accessibilityIdentifier("send.addRecipient")
             Button(MacStrings.Send.clearAll) { send.clearAll() }
+                .disabled(!send.isEditable)
                 .accessibilityIdentifier("send.clearAll")
             // Coin control needs a coin-selection view model (QT-068…075), not in M1.
             Button(MacStrings.Send.coinControl) {}
