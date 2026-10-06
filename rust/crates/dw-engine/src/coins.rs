@@ -60,7 +60,8 @@ pub(crate) struct WalletCoin {
     pub is_change: bool,
     pub block_time: Option<u64>,
     pub chain_locked: bool,
-    /// The funding transaction spent none of the wallet's coins.
+    /// The funding transaction spent none of the wallet's coins (or, when
+    /// key-wallet no longer has the record, the coin is not change).
     pub foreign_incoming: bool,
     pub user_locked: bool,
     pub reserved: bool,
@@ -160,7 +161,14 @@ fn collect(
                 .map(|b| u64::from(b.timestamp())),
             chain_locked: record.is_some_and(|r| r.context.is_chain_locked())
                 || account.transaction_is_finalized(&txid),
-            foreign_incoming: record.is_some_and(|r| r.direction == TransactionDirection::Incoming),
+            // key-wallet drops the record of a ChainLocked transaction
+            // (only its txid survives), so the direction is often gone by
+            // the time coins are read. Without it, a coin on a receiving
+            // (non-change) address counts as foreign: dust protection then
+            // locks it, and the user can unlock it.
+            foreign_incoming: record.map_or(!is_change, |r| {
+                r.direction == TransactionDirection::Incoming
+            }),
             user_locked: false,
             reserved: false,
         });
