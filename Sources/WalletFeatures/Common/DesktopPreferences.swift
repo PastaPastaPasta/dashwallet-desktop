@@ -131,12 +131,14 @@ public struct DesktopPreferences: Sendable, Hashable, Codable {
     public var shortcuts: [ShortcutAction]?
     /// `consoleFontSize`, 4...40 pt.
     public var consoleFontSize: Int
+    /// CoinJoin, Masternodes and shared-masternode values (M3).
+    public var m3: M3Preferences
 
     public init(
         options: DesktopOptions = DesktopOptions(), windows: [String: WindowGeometry] = [:],
         coinControlMode: CoinControlMode = .list, coinSort: CoinSort = CoinSort(),
         backupReminders: [String: BackupReminderState] = [:], shortcuts: [ShortcutAction]? = nil,
-        consoleFontSize: Int = ConsoleViewModel.defaultFontSize
+        consoleFontSize: Int = ConsoleViewModel.defaultFontSize, m3: M3Preferences = M3Preferences()
     ) {
         self.options = options
         self.windows = windows
@@ -145,6 +147,7 @@ public struct DesktopPreferences: Sendable, Hashable, Codable {
         self.backupReminders = backupReminders
         self.shortcuts = shortcuts
         self.consoleFontSize = consoleFontSize
+        self.m3 = m3
     }
 
     public init(from decoder: any Decoder) throws {
@@ -156,6 +159,7 @@ public struct DesktopPreferences: Sendable, Hashable, Codable {
         backupReminders = try c.decodeIfPresent([String: BackupReminderState].self, forKey: .backupReminders) ?? [:]
         shortcuts = try c.decodeIfPresent([ShortcutAction].self, forKey: .shortcuts)
         consoleFontSize = try c.decodeIfPresent(Int.self, forKey: .consoleFontSize) ?? ConsoleViewModel.defaultFontSize
+        m3 = try c.decodeIfPresent(M3Preferences.self, forKey: .m3) ?? M3Preferences()
     }
 }
 
