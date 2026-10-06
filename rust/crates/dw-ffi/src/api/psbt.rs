@@ -97,17 +97,20 @@ pub enum PsbtSignability {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PsbtAnalysis {
     pub outputs: Vec<PsbtOutput>,
-    /// `None` while input values are missing.
+    /// `None` while an input's value is missing or unverified (only a
+    /// previous transaction whose txid matches the input counts;
+    /// `witness_utxo` is ignored).
     pub fee: Option<u64>,
-    /// What leaves the wallet: outputs not paying it plus the fee (every
-    /// output plus the fee without a wallet); `None` like `fee`.
+    /// What leaves the wallet: its inputs minus the outputs paying it (the
+    /// outputs not paying it plus the fee when every input is the wallet's;
+    /// every output plus the fee without a wallet); `None` like `fee`. A
+    /// signing `Spend` grant must cover it.
     pub total: Option<u64>,
     /// "Transaction has %1 unsigned inputs."
     pub unsigned_inputs: u32,
     pub status: PsbtStatus,
     pub signability: PsbtSignability,
-    /// Value paid to scripts the wallet does not own; a signing `Spend`
-    /// grant must cover it (same cap as `TxDraft.prepare`).
+    /// Value paid to scripts the wallet does not own (the fee excluded).
     pub external_sent: Option<u64>,
 }
 
@@ -128,6 +131,15 @@ pub enum PsbtError {
     /// Code `psbt.fee_rate_too_high`: above 0.1 DASH/kB (dash-qt's broadcast cap).
     #[error("fee rate {duffs_per_kb} duff/kB too high")]
     FeeRateTooHigh { duffs_per_kb: u64 },
+    /// Code `psbt.absurd_fee`: signing refused, the fee is above 0.1 DASH
+    /// (`send.absurd_fee`'s bound).
+    #[error("fee {fee} duffs is absurdly high")]
+    AbsurdFee { fee: u64 },
+    /// Code `psbt.fee_unknown`: signing refused, an input's previous
+    /// transaction is missing or does not match the input, so the fee and
+    /// what leaves the wallet are unknown.
+    #[error("fee unknown")]
+    FeeUnknown,
     /// Code `psbt.watch_only`: the wallet has no keys.
     #[error("watch-only wallet")]
     WatchOnly,
@@ -137,7 +149,8 @@ pub enum PsbtError {
     /// Code `psbt.grant_invalid`: missing, expired, other wallet or purpose.
     #[error("grant invalid")]
     GrantInvalid,
-    /// Code `psbt.grant_exceeded`: `external_sent` above the grant's cap.
+    /// Code `psbt.grant_exceeded`: the wallet's outflow (`total`: its inputs
+    /// minus the outputs paying it) above the grant's cap.
     #[error("grant cap {max_duffs} exceeded")]
     GrantExceeded { max_duffs: u64 },
     /// Code `psbt.no_peers`: not sent; nothing reached the network.
@@ -186,6 +199,8 @@ impl From<dw_engine::EngineError> for PsbtError {
                 F::TooLarge(size_bytes) => Self::TooLarge { size_bytes },
                 F::NotComplete => Self::NotComplete,
                 F::FeeRateTooHigh { duffs_per_kb } => Self::FeeRateTooHigh { duffs_per_kb },
+                F::AbsurdFee { fee } => Self::AbsurdFee { fee },
+                F::FeeUnknown => Self::FeeUnknown,
                 F::WatchOnly => Self::WatchOnly,
                 F::GrantExceeded { max_duffs } => Self::GrantExceeded { max_duffs },
                 F::NoPeers => Self::NoPeers,
@@ -217,6 +232,8 @@ impl PsbtError {
             Self::NetworkMismatch => "psbt.network_mismatch",
             Self::NotComplete => "psbt.not_complete",
             Self::FeeRateTooHigh { .. } => "psbt.fee_rate_too_high",
+            Self::AbsurdFee { .. } => "psbt.absurd_fee",
+            Self::FeeUnknown => "psbt.fee_unknown",
             Self::WatchOnly => "psbt.watch_only",
             Self::VaultLocked => "psbt.vault_locked",
             Self::GrantInvalid => "psbt.grant_invalid",
@@ -286,7 +303,9 @@ impl NetworkSession {
 
     /// "Sign Tx": signs every input the wallet owns through `VaultSigner`
     /// and returns the new PSBT. Needs a `Spend{max_duffs}` grant for the
-    /// wallet covering `external_sent`; redeemed after the checks.
+    /// wallet covering the analysis' `total` (what leaves the wallet, fee
+    /// included); redeemed after the checks. Refuses an unknown fee
+    /// (`psbt.fee_unknown`) and a fee above 0.1 DASH (`psbt.absurd_fee`).
     pub async fn sign_psbt(
         &self,
         wallet_id: String,

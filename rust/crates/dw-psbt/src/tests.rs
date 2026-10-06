@@ -201,3 +201,40 @@ async fn sighash_types_other_than_all_are_refused() {
     let p = paths(&all);
     assert_eq!(sign(&mut all, &p, &signer()).await.unwrap(), 2);
 }
+
+/// Review H1: a `witness_utxo` (no segwit on Dash, value not committed to)
+/// never stands in for the previous transaction, so it can neither feed the
+/// fee nor make an input signable.
+#[tokio::test]
+async fn witness_utxo_is_ignored_and_witness_only_inputs_are_not_signed() {
+    let mut psbt = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    assert!(analyze(&psbt, Network::Regtest).fee.is_some());
+    let real = spent_output(&psbt, 0).unwrap().clone();
+    // Same script, made-up small value, previous transaction dropped.
+    psbt.inputs[0].witness_utxo = Some(dashcore::TxOut {
+        value: 1,
+        script_pubkey: real.script_pubkey,
+    });
+    psbt.inputs[0].non_witness_utxo = None;
+    assert_eq!(spent_output(&psbt, 0), None);
+    let a = analyze(&psbt, Network::Regtest);
+    assert_eq!(a.fee, None);
+    assert_eq!(a.total, None);
+    assert_eq!(a.status, Status::MissingInputInfo);
+    let p = paths(&psbt);
+    assert_eq!(
+        sign(&mut psbt, &p, &signer()).await.unwrap_err(),
+        PsbtError::MissingUtxo(0)
+    );
+}
+
+/// Review H1: a previous transaction whose txid is not the input's is not
+/// used, even when the PSBT was built without `parse`'s check.
+#[test]
+fn unverified_previous_transactions_are_not_used() {
+    let mut psbt = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    psbt.inputs[0].non_witness_utxo = psbt.inputs[1].non_witness_utxo.clone();
+    assert_eq!(spent_output(&psbt, 0), None);
+    assert!(spent_output(&psbt, 1).is_some());
+    assert_eq!(analyze(&psbt, Network::Regtest).fee, None);
+}

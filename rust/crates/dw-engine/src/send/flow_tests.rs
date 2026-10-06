@@ -13,6 +13,7 @@ use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, Va
 use key_wallet::Utxo;
 use zeroize::Zeroizing;
 
+use super::psbt::{PsbtFailure, PsbtSignability};
 use super::*;
 use crate::{
     BookPurpose, CoinFilter, DashNetwork, Engine, EngineConfig, EventSink, ImportOptions,
@@ -916,4 +917,232 @@ fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
         .block_on(f.session.record_send_metadata(f.wallet, &p))
         .unwrap();
     assert_eq!(book(), want);
+}
+
+// ---- PSBT signing caps (review H1) ----
+
+impl Fixture {
+    /// Credits a confirmed coin of `value` to a fresh receive address and
+    /// returns the transaction that created it (output 0), so a PSBT can
+    /// carry it as the verified `non_witness_utxo`.
+    fn credit_with_prev(&self, seed: u8, value: u64) -> Transaction {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let address = wallet.core().next_receive_address_for_account(0).await?;
+                    let prev = Transaction {
+                        version: 2,
+                        lock_time: 0,
+                        input: vec![dashcore::TxIn {
+                            previous_output: OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+                            script_sig: dashcore::ScriptBuf::new(),
+                            sequence: u32::MAX,
+                            witness: dashcore::Witness::default(),
+                        }],
+                        output: vec![TxOut {
+                            value,
+                            script_pubkey: address.script_pubkey(),
+                        }],
+                        special_transaction_payload: None,
+                    };
+                    let outpoint = OutPoint::new(prev.txid(), 0);
+                    let mut utxo = Utxo::new(outpoint, prev.output[0].clone(), address, 1, false);
+                    utxo.is_confirmed = true;
+                    let mut state = wallet.state_mut().await;
+                    state
+                        .core_wallet
+                        .accounts
+                        .standard_bip44_accounts
+                        .get_mut(&0)
+                        .expect("BIP44 account 0")
+                        .utxos
+                        .insert(outpoint, utxo);
+                    Ok(prev)
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    fn sign_psbt(
+        &self,
+        psbt: &dw_psbt::PartiallySignedTransaction,
+        grant: String,
+    ) -> Result<dw_psbt::PartiallySignedTransaction, EngineError> {
+        self.engine
+            .block_on(self.session.sign_psbt(self.wallet, psbt.clone(), grant))
+    }
+}
+
+fn script_of(address: &str) -> dashcore::ScriptBuf {
+    Address::from_str(address)
+        .unwrap()
+        .assume_checked()
+        .script_pubkey()
+}
+
+/// An unsigned PSBT spending output 0 of `prev` (its `non_witness_utxo`),
+/// paying `outputs` (address, amount).
+fn psbt_spending(
+    prev: &Transaction,
+    outputs: &[(&str, u64)],
+) -> dw_psbt::PartiallySignedTransaction {
+    let tx = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(prev.txid(), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: u32::MAX,
+            witness: dashcore::Witness::default(),
+        }],
+        output: outputs
+            .iter()
+            .map(|(a, v)| TxOut {
+                value: *v,
+                script_pubkey: script_of(a),
+            })
+            .collect(),
+        special_transaction_payload: None,
+    };
+    let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(tx).unwrap();
+    psbt.inputs[0].non_witness_utxo = Some(prev.clone());
+    psbt
+}
+
+fn psbt_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> PsbtFailure {
+    match r {
+        Err(EngineError::Psbt(f)) => f,
+        other => panic!("expected a PSBT failure, got {other:?}"),
+    }
+}
+
+/// Before H1 the cap covered only the outputs to others, so a PSBT could
+/// burn the rest of a coin as fee under a small grant.
+#[test]
+fn psbt_signing_caps_the_wallet_outflow_including_the_fee() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(1, COIN);
+    let change = f.own_address();
+    // 0.5 to someone else, 0.45 back, 0.05 DASH fee (under MAX_TX_FEE).
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN / 2), (&change, 45_000_000)]);
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+        .unwrap();
+    assert_eq!(a.external_sent, Some(COIN / 2));
+    assert_eq!(a.fee, Some(5_000_000));
+    assert_eq!(a.total, Some(55_000_000));
+    // A grant covering only the external outputs is not enough.
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&psbt, f.spend_grant(COIN / 2))),
+        PsbtFailure::GrantExceeded {
+            max_duffs: COIN / 2
+        }
+    );
+    let signed = f.sign_psbt(&psbt, f.spend_grant(55_000_000)).unwrap();
+    assert_eq!(signed.inputs[0].partial_sigs.len(), 1);
+
+    // Burning the coin as fee is refused whatever the grant.
+    let burn = psbt_spending(&prev, &[(FOREIGN, COIN / 100)]);
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&burn, f.spend_grant(COIN))),
+        PsbtFailure::AbsurdFee {
+            fee: COIN - COIN / 100
+        }
+    );
+    // The refusal came before the grant was redeemed.
+    let grant = f.spend_grant(COIN);
+    psbt_failure(f.sign_psbt(&burn, grant.clone()));
+    f.session
+        .vault()
+        .check_grant(&grant, dw_vault::GrantKind::Spend, Some(&f.wallet.0))
+        .unwrap();
+}
+
+/// `witness_utxo` (no segwit on Dash; nothing commits to its value) never
+/// stands in for the previous transaction: the fee is unknown and nothing
+/// is signed.
+#[test]
+fn psbt_witness_only_inputs_are_refused() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(1, COIN);
+    let mut psbt = psbt_spending(&prev, &[(FOREIGN, COIN / 100)]);
+    // Claims our script with a small value, so the fee would look normal.
+    psbt.inputs[0].witness_utxo = Some(TxOut {
+        value: COIN / 100 + 1_000,
+        script_pubkey: prev.output[0].script_pubkey.clone(),
+    });
+    psbt.inputs[0].non_witness_utxo = None;
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+        .unwrap();
+    assert_eq!(a.fee, None);
+    assert_eq!(a.total, None);
+    assert_eq!(a.signability, PsbtSignability::NoMatchingKeys);
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&psbt, f.spend_grant(COIN * 2))),
+        PsbtFailure::FeeUnknown
+    );
+
+    // A second, verified input of ours does not make the unknown one count.
+    let other = f.credit_with_prev(2, COIN);
+    let mut two = psbt_spending(&other, &[(FOREIGN, COIN / 100)]);
+    two.unsigned_tx
+        .input
+        .push(psbt.unsigned_tx.input[0].clone());
+    two.inputs.push(psbt.inputs[0].clone());
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&two, f.spend_grant(COIN * 2))),
+        PsbtFailure::FeeUnknown
+    );
+}
+
+/// IOS-016 end to end: a quick-unlock grant (0.5 DASH limit) signs a PSBT
+/// whose outflow, fee included, is under the limit and is refused above it
+/// even when the outputs to others alone are under it.
+#[test]
+fn psbt_quick_unlock_grant_is_capped_by_the_outflow() {
+    let f = fixture(true);
+    let prev = f.credit_with_prev(1, COIN);
+    let change = f.own_address();
+    let vault = f.session.vault();
+    let change_grant = vault
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(b"pass phrase"),
+        )
+        .unwrap();
+    let key = vault.enroll_quick_unlock(&change_grant.id).unwrap();
+    f.session.lock_vault().unwrap();
+    let limit = dw_vault::DEFAULT_QUICK_UNLOCK_SPEND_LIMIT;
+    assert_eq!(limit, COIN / 2);
+    let quick = || {
+        vault
+            .authorize(
+                GrantPurpose::Spend { max_duffs: limit },
+                Some(&f.wallet.0),
+                Credential::QuickUnlock(&key),
+            )
+            .unwrap()
+            .id
+    };
+
+    // 0.48 out + 0.03 fee = 0.51 DASH leaves the wallet.
+    let over = psbt_spending(&prev, &[(FOREIGN, 48_000_000), (&change, 49_000_000)]);
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&over, quick())),
+        PsbtFailure::GrantExceeded { max_duffs: limit }
+    );
+    // 0.4 out + 0.001 fee.
+    let under = psbt_spending(&prev, &[(FOREIGN, 40_000_000), (&change, 59_900_000)]);
+    let mut signed = f.sign_psbt(&under, quick()).unwrap();
+    assert!(dw_psbt::finalize(&mut signed));
+    assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
 }

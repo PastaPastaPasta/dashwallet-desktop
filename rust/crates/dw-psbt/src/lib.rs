@@ -150,15 +150,20 @@ pub fn create_unsigned(
     Ok(psbt)
 }
 
-/// The output an input spends, if its previous transaction is present.
+/// The output an input spends, from its previous transaction
+/// (`non_witness_utxo`) and only when that transaction's txid is the one the
+/// input names. Dash has no segwit: a `witness_utxo` is ignored, because
+/// nothing commits to its value (the legacy sighash does not sign the
+/// amount), so a PSBT could claim any value for one of the wallet's scripts.
+/// Every amount, fee and spending cap is therefore computed from verified
+/// previous transactions only.
 pub fn spent_output(psbt: &PartiallySignedTransaction, index: usize) -> Option<&dashcore::TxOut> {
     let txin = psbt.unsigned_tx.input.get(index)?;
-    let input = psbt.inputs.get(index)?;
-    match (&input.non_witness_utxo, &input.witness_utxo) {
-        (Some(prev), _) => prev.output.get(txin.previous_output.vout as usize),
-        (None, Some(out)) => Some(out),
-        (None, None) => None,
+    let prev = psbt.inputs.get(index)?.non_witness_utxo.as_ref()?;
+    if prev.txid() != txin.previous_output.txid {
+        return None;
     }
+    prev.output.get(txin.previous_output.vout as usize)
 }
 
 /// The public key of a P2PKH script's hash among `keys`.
@@ -218,7 +223,7 @@ pub struct OutputLine {
 pub struct Analysis {
     pub outputs: Vec<OutputLine>,
     /// Inputs minus outputs; `None` while an input's previous transaction is
-    /// missing.
+    /// missing or is not the one the input names (see [`spent_output`]).
     pub fee: Option<u64>,
     /// Sum of every output ("Total Amount"); `None` like `fee`.
     pub total: Option<u64>,
@@ -414,7 +419,8 @@ pub fn extract(psbt: &PartiallySignedTransaction) -> Result<Transaction, PsbtErr
 }
 
 /// Fee rate of a complete PSBT in duffs per 1000 bytes, from the extracted
-/// transaction's size; `None` when the fee is unknown.
+/// transaction's size and the verified input values; `None` when the fee is
+/// unknown.
 pub fn fee_rate_per_kb(psbt: &PartiallySignedTransaction, tx: &Transaction) -> Option<u64> {
     let fee = analyze(psbt, Network::Mainnet).fee?;
     let size = dashcore::consensus::serialize(tx).len() as u64;

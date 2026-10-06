@@ -31,12 +31,29 @@ pub enum PsbtFailure {
     Invalid(String),
     TooLarge(u64),
     NotComplete,
-    FeeRateTooHigh { duffs_per_kb: u64 },
+    FeeRateTooHigh {
+        duffs_per_kb: u64,
+    },
+    /// Signing refused: the fee is above [`MAX_TX_FEE`](super::MAX_TX_FEE)
+    /// (`send.absurd_fee`'s bound).
+    AbsurdFee {
+        fee: u64,
+    },
+    /// Signing refused: an input's previous transaction is missing or is not
+    /// the one the input names, so the fee and the wallet's outflow are
+    /// unknown.
+    FeeUnknown,
     WatchOnly,
-    GrantExceeded { max_duffs: u64 },
+    GrantExceeded {
+        max_duffs: u64,
+    },
     NoPeers,
-    BroadcastRejected { reason: String },
-    BroadcastUnknown { reason: String },
+    BroadcastRejected {
+        reason: String,
+    },
+    BroadcastUnknown {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for PsbtFailure {
@@ -47,6 +64,10 @@ impl std::fmt::Display for PsbtFailure {
             Self::NotComplete => f.write_str("psbt not complete"),
             Self::FeeRateTooHigh { duffs_per_kb } => {
                 write!(f, "fee rate {duffs_per_kb} duff/kB too high")
+            }
+            Self::AbsurdFee { fee } => write!(f, "fee {fee} duffs is absurdly high"),
+            Self::FeeUnknown => {
+                f.write_str("the fee is unknown: an input lacks its verified previous transaction")
             }
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::GrantExceeded { max_duffs } => write!(f, "grant cap {max_duffs} exceeded"),
@@ -94,8 +115,10 @@ pub enum PsbtSignability {
 pub struct PsbtAnalysis {
     pub outputs: Vec<PsbtOutputInfo>,
     pub fee: Option<u64>,
-    /// What leaves the wallet: outputs not paying it plus the fee (every
-    /// output plus the fee without a wallet); `None` like `fee`.
+    /// What leaves the wallet: its inputs minus the outputs paying it (the
+    /// outputs not paying it plus the fee when every input is the wallet's;
+    /// every output plus the fee without a wallet); `None` like `fee`. A
+    /// signing `Spend` grant must cover it.
     pub total: Option<u64>,
     pub unsigned_inputs: u32,
     pub status: Status,
@@ -110,6 +133,26 @@ pub struct PsbtAnalysis {
 struct Ownership {
     paths: KeyPaths,
     outputs_mine: Vec<bool>,
+}
+
+impl Ownership {
+    /// The wallet's net outflow: the value of its inputs (from verified
+    /// previous transactions only, see [`dw_psbt::spent_output`]) minus the
+    /// outputs paying it. With every input the wallet's this is the value
+    /// sent to others plus the fee. `None` on overflow.
+    fn outflow(&self, psbt: &PartiallySignedTransaction) -> Option<u64> {
+        let spent = self.paths.keys().try_fold(0u64, |sum, &i| {
+            sum.checked_add(dw_psbt::spent_output(psbt, i)?.value)
+        })?;
+        let back = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .zip(&self.outputs_mine)
+            .filter(|(_, mine)| **mine)
+            .try_fold(0u64, |sum, (o, _)| sum.checked_add(o.value))?;
+        Some(spent.saturating_sub(back))
+    }
 }
 
 fn ownership(
@@ -300,6 +343,7 @@ impl NetworkSession {
                 .keys()
                 .filter(|i| !dw_psbt::input_signed(&psbt, **i))
                 .count();
+            let total = base.fee.and(owned.outflow(&psbt));
             let signability = if !this.vault.has_wallet_secret(&id.0) {
                 PsbtSignability::WatchOnly
             } else if signable == 0 {
@@ -318,7 +362,7 @@ impl NetworkSession {
                         is_mine,
                     })
                     .collect(),
-                total: base.fee.map(|fee| fee + external_sent),
+                total,
                 fee: base.fee,
                 unsigned_inputs: base.unsigned_inputs,
                 status: base.status,
@@ -331,8 +375,14 @@ impl NetworkSession {
 
     /// "Sign Tx": signs every input the wallet owns with the vault and
     /// returns the new PSBT. Needs a `Spend` grant for the wallet whose cap
-    /// covers the value paid to scripts the wallet does not own, redeemed
-    /// after the checks.
+    /// covers the wallet's net outflow (its inputs minus the outputs paying
+    /// it: what it sends plus the fee), redeemed after the checks. Every
+    /// amount comes from txid-verified previous transactions
+    /// (`witness_utxo` is ignored); with any input's unknown the fee is
+    /// unknown and nothing is signed (`FeeUnknown`). A fee above
+    /// [`MAX_TX_FEE`](super::MAX_TX_FEE) is refused (`AbsurdFee`), as the
+    /// send flow does: a signed PSBT can be broadcast anywhere, past
+    /// `broadcast_psbt`'s rate check.
     pub async fn sign_psbt(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -357,19 +407,18 @@ impl NetworkSession {
                 let state = w.state().await;
                 ownership(&state.core_wallet, &psbt, network)
             };
-            let external_sent: u64 = psbt
-                .unsigned_tx
-                .output
-                .iter()
-                .zip(&owned.outputs_mine)
-                .filter(|(_, mine)| !**mine)
-                .map(|(o, _)| o.value)
-                .sum();
+            let fee = dw_psbt::analyze(&psbt, network)
+                .fee
+                .ok_or(PsbtFailure::FeeUnknown)?;
+            if fee > super::MAX_TX_FEE {
+                return Err(PsbtFailure::AbsurdFee { fee }.into());
+            }
+            let outflow = owned.outflow(&psbt).ok_or(PsbtFailure::FeeUnknown)?;
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
                 let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
                 let max_duffs = token.max_duffs().unwrap_or(0);
-                if external_sent > max_duffs {
+                if outflow > max_duffs {
                     return Ok(Err(PsbtFailure::GrantExceeded { max_duffs }));
                 }
                 vault.signer(&wallet_id.0, &token).map(Ok)
@@ -385,7 +434,8 @@ impl NetworkSession {
     }
 
     /// "Broadcast Tx": finalizes a complete PSBT, refuses fee rates above
-    /// 0.1 DASH/kB and broadcasts with the send flow's verdict rules
+    /// 0.1 DASH/kB (from txid-verified input values only; an input without
+    /// one is `Invalid`) and broadcasts with the send flow's verdict rules
     /// (accepted; never sent: `NoPeers` / `BroadcastRejected`; no verdict:
     /// `BroadcastUnknown`). Returns the txid.
     pub async fn broadcast_psbt(
@@ -400,7 +450,9 @@ impl NetworkSession {
             }
             let tx: Transaction = dw_psbt::extract(&psbt).map_err(PsbtFailure::from)?;
             let rate = dw_psbt::fee_rate_per_kb(&psbt, &tx).ok_or_else(|| {
-                PsbtFailure::Invalid("an input's previous transaction is missing".into())
+                PsbtFailure::Invalid(
+                    "an input's previous transaction is missing or does not match it".into(),
+                )
             })?;
             if rate > dw_psbt::MAX_BROADCAST_FEE_PER_KB {
                 return Err(PsbtFailure::FeeRateTooHigh { duffs_per_kb: rate }.into());
