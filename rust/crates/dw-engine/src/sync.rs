@@ -502,7 +502,8 @@ impl crate::NetworkSession {
                 return Err(crate::EngineError::SpvNotRunning);
             }
             if let RescanFrom::Height(h) = from
-                && this.known_tip().is_some_and(|tip| h > tip)
+                // No known height yet: nothing to rescan up to (M1 rule).
+                && h > this.known_tip().unwrap_or(0)
             {
                 return Err(crate::EngineError::HeightOutOfRange(h));
             }

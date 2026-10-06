@@ -163,8 +163,8 @@ Changed M1 behaviour: `rescan` returns `sync.rescan_in_progress` while a rescan 
 rescanning"); `peers()` fills more `PeerInfo` fields once U2 lands (until then only addresses, as in M1). A
 rescan from below a wallet's birth height lowers (and stores) the birth height to the rescan start, because
 dash-spv never scans below it; dash-qt's `rescanblockchain` scans from any height. The height checks of `rescan`
-and `set_birth_height` use the best known height (SPV tip or the wallets' processed heights) and are skipped
-when none is known.
+and `set_birth_height` use the best known height (SPV tip or the wallets' processed heights); with none known,
+`rescan` refuses any height above 0 (as in M1) and `set_birth_height` skips the check.
 
 ### 2.5 Console (`console.rs`) — owner R1 (`dw-console`)
 

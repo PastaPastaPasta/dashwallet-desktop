@@ -524,7 +524,7 @@ pub fn run(
                 let grant = session
                     .vault()
                     .authorize(
-                        purpose.clone(),
+                        *purpose,
                         wallet.as_ref().map(|w| &w.0),
                         credential(session, passphrase),
                     )
