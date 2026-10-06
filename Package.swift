@@ -34,6 +34,8 @@ var products: [Product] = [
     .library(name: "AppServices", targets: ["AppServices"]),
     .library(name: "WalletFeatures", targets: ["WalletFeatures"]),
     .library(name: "MacUI", targets: ["MacUI"]),
+    // The macOS app's delegate builds the Dock menu with it (AppKit stays out of MacUI).
+    .library(name: "PlatformServicesMac", targets: ["PlatformServicesMac"]),
 ]
 
 // TODO(fork): switch to the dashpay/swift-cross-ui fork pinned by revision.
