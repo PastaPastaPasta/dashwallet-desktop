@@ -57,7 +57,7 @@ struct ScreenTests {
         #expect(!send.canConfirm, "Send stays disabled during the countdown")
         #expect(send.confirmLines.contains { $0.contains(Self.payTo) })
         try await Self.capture(
-            SendConfirmSheet(send: send, formatAmount: model.formatAmount), CGSize(width: 480, height: 420), scheme,
+            SendConfirmSheet(send: send, formatAmount: model.formatAmount), CGSize(width: 480, height: 400), scheme,
             "send-confirm")
         await send.cancel()
         #expect(send.phase == .editing)
@@ -195,7 +195,7 @@ struct ScreenTests {
     func menuBar(_ scheme: ColorScheme) async throws {
         let model = try await Self.model(.funded, scheme)
         try await Self.capture(
-            MenuBarContentView(model: model), CGSize(width: 280, height: 560), scheme, "menu-bar-compact")
+            MenuBarContentView(model: model), CGSize(width: 280, height: 700), scheme, "menu-bar-compact")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])

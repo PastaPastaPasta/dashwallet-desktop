@@ -343,7 +343,7 @@ struct M2ScreenTests {
         await about.load()
         #expect(about.networkName != nil)
         #expect(about.commandLineOptions.contains { $0.name.contains("windowtitle") })
-        try await Self.capture(AboutView(about: about), CGSize(width: 480, height: 560), scheme, "about")
+        try await Self.capture(AboutView(about: about), CGSize(width: 480, height: 400), scheme, "about")
         try await Self.capture(
             CommandLineOptionsView(about: about), CGSize(width: 560, height: 420), scheme, "command-line-options")
     }
@@ -369,7 +369,7 @@ struct M2ScreenTests {
         await companion.load()
         companion.setRequestAmount("0.5")
         #expect(companion.requestURI?.contains("amount=0.5") == true)
-        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 720), scheme, "menu-bar")
+        try await Self.capture(MenuBarContentView(model: model), CGSize(width: 280, height: 980), scheme, "menu-bar")
     }
 
     // MARK: Behaviour without rendering
