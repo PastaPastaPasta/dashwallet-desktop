@@ -10,7 +10,8 @@ use crate::{
     SendError, SessionOptions, UtxoFilter,
 };
 
-const ABANDON_12: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const ABANDON_12: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 
 struct Null;
@@ -162,7 +163,10 @@ fn send_coins_and_labels_map_engine_results() {
         Some(10_000)
     );
     let r = rt.block_on(session.set_dust_protection(Some(2_000_000)));
-    assert!(matches!(r, Err(CoinsError::InvalidArgument { .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(CoinsError::InvalidArgument { .. })),
+        "{r:?}"
+    );
 
     // Labels.
     let entry = rt
@@ -185,11 +189,7 @@ fn send_coins_and_labels_map_engine_results() {
     ));
     assert!(matches!(r, Err(LabelsError::DuplicateAddress)), "{r:?}");
     let book = rt
-        .block_on(session.address_book(
-            id.clone(),
-            Some(AddressPurpose::Send),
-            Some("ali".into()),
-        ))
+        .block_on(session.address_book(id.clone(), Some(AddressPurpose::Send), Some("ali".into())))
         .unwrap();
     assert_eq!(book.len(), 1);
     rt.block_on(session.delete_address_book_entry(id.clone(), FOREIGN.into()))
@@ -197,7 +197,10 @@ fn send_coins_and_labels_map_engine_results() {
     let r = rt.block_on(session.delete_address_book_entry(id.clone(), FOREIGN.into()));
     assert!(matches!(r, Err(LabelsError::EntryNotFound)), "{r:?}");
     let r = rt.block_on(session.set_tx_label(id.clone(), "xyz".into(), Some("x".into())));
-    assert!(matches!(r, Err(LabelsError::InvalidArgument { .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(LabelsError::InvalidArgument { .. })),
+        "{r:?}"
+    );
     rt.block_on(session.set_tx_label(id, "ab".repeat(32), Some("rent".into())))
         .unwrap();
 

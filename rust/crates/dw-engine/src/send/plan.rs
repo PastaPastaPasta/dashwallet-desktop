@@ -203,7 +203,8 @@ pub(crate) fn plan(
                 );
             match selected {
                 Ok(selection) => selection.selected,
-                Err(SelectionError::InsufficientFunds { .. }) | Err(SelectionError::NoUtxosAvailable) => {
+                Err(SelectionError::InsufficientFunds { .. })
+                | Err(SelectionError::NoUtxosAvailable) => {
                     let all = shapes(&lens, change_len, spendable.len());
                     let fee = fee_for(rate, all.without_change).ok_or(PlanError::Overflow)?;
                     return Err(PlanError::AmountWithFeeExceedsBalance { fee, available });
@@ -398,10 +399,21 @@ mod tests {
 
     fn assert_builder_reproduces(plan: &Plan, outputs: &[PlanOutput]) {
         let (inputs, fee, values) = rebuild(plan, outputs);
-        assert_eq!(inputs, plan.inputs.len(), "builder dropped inputs: {plan:?}");
+        assert_eq!(
+            inputs,
+            plan.inputs.len(),
+            "builder dropped inputs: {plan:?}"
+        );
         assert_eq!(fee, plan.fee, "builder fee differs: {plan:?}");
-        assert_eq!(values, expected_outputs(plan), "builder outputs differ: {plan:?}");
-        assert_eq!(plan.total_in(), plan.total_sent() + plan.change.unwrap_or(0) + plan.fee);
+        assert_eq!(
+            values,
+            expected_outputs(plan),
+            "builder outputs differ: {plan:?}"
+        );
+        assert_eq!(
+            plan.total_in(),
+            plan.total_sent() + plan.change.unwrap_or(0) + plan.fee
+        );
     }
 
     #[test]
@@ -482,13 +494,24 @@ mod tests {
     #[test]
     fn subtract_fee_splits_the_fee_and_keeps_change() {
         let coins = [coin(1, 50_000_000)];
-        let outputs = [out(9, 10_000_001, true), out(8, 5_000_000, true), out(7, 1_000_000, false)];
+        let outputs = [
+            out(9, 10_000_001, true),
+            out(8, 5_000_000, true),
+            out(7, 1_000_000, false),
+        ];
         let p = plan(InputChoice::Select(&coins), &outputs, rate1(), P2PKH, 1000).unwrap();
         let size = 148 + 34 * 4 + 10;
         assert_eq!(p.fee, size as u64);
         // 294 / 2 = 147 each; the first payer takes the odd duff.
         let share = size as u64 / 2;
-        assert_eq!(p.amounts, vec![10_000_001 - share - (size as u64 % 2), 5_000_000 - share, 1_000_000]);
+        assert_eq!(
+            p.amounts,
+            vec![
+                10_000_001 - share - (size as u64 % 2),
+                5_000_000 - share,
+                1_000_000
+            ]
+        );
         assert_eq!(p.change, Some(50_000_000 - 16_000_001));
         assert_builder_reproduces(&p, &outputs);
     }
@@ -517,9 +540,26 @@ mod tests {
     #[test]
     fn shortfalls_name_the_available_amount_and_fee() {
         let coins = [coin(1, 1_000_000), coin(2, 500_000)];
-        let r = plan(InputChoice::Select(&coins), &[out(9, 2_000_000, false)], rate1(), P2PKH, 1000);
-        assert_eq!(r, Err(PlanError::AmountExceedsBalance { available: 1_500_000 }));
-        let r = plan(InputChoice::Select(&coins), &[out(9, 1_499_900, false)], rate1(), P2PKH, 1000);
+        let r = plan(
+            InputChoice::Select(&coins),
+            &[out(9, 2_000_000, false)],
+            rate1(),
+            P2PKH,
+            1000,
+        );
+        assert_eq!(
+            r,
+            Err(PlanError::AmountExceedsBalance {
+                available: 1_500_000
+            })
+        );
+        let r = plan(
+            InputChoice::Select(&coins),
+            &[out(9, 1_499_900, false)],
+            rate1(),
+            P2PKH,
+            1000,
+        );
         assert_eq!(
             r,
             Err(PlanError::AmountWithFeeExceedsBalance {
@@ -527,10 +567,19 @@ mod tests {
                 available: 1_500_000
             })
         );
-        let r = plan(InputChoice::UseAll(&coins[..1]), &[out(9, 999_900, false)], rate1(), P2PKH, 1000);
+        let r = plan(
+            InputChoice::UseAll(&coins[..1]),
+            &[out(9, 999_900, false)],
+            rate1(),
+            P2PKH,
+            1000,
+        );
         assert_eq!(
             r,
-            Err(PlanError::AmountWithFeeExceedsBalance { fee: 192, available: 1_000_000 })
+            Err(PlanError::AmountWithFeeExceedsBalance {
+                fee: 192,
+                available: 1_000_000
+            })
         );
     }
 
@@ -540,8 +589,19 @@ mod tests {
         young.is_coinbase = true;
         young.height = 950;
         let coins = [young, coin(2, 1_000_000)];
-        let r = plan(InputChoice::Select(&coins), &[out(9, 2_000_000, false)], rate1(), P2PKH, 1000);
-        assert_eq!(r, Err(PlanError::AmountExceedsBalance { available: 1_000_000 }));
+        let r = plan(
+            InputChoice::Select(&coins),
+            &[out(9, 2_000_000, false)],
+            rate1(),
+            P2PKH,
+            1000,
+        );
+        assert_eq!(
+            r,
+            Err(PlanError::AmountExceedsBalance {
+                available: 1_000_000
+            })
+        );
     }
 
     #[test]
@@ -550,7 +610,7 @@ mod tests {
             Network::Regtest,
             Payload::ScriptHash(ScriptHash::from_byte_array([7; 20])),
         )
-            .script_pubkey();
+        .script_pubkey();
         assert_eq!(script.len(), 23);
         assert_eq!(dust_threshold(script.len()), 540);
         let _ = Address::from_str("yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n").unwrap();

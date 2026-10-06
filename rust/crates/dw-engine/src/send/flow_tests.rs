@@ -14,7 +14,10 @@ use key_wallet::Utxo;
 use zeroize::Zeroizing;
 
 use super::*;
-use crate::{BookPurpose, CoinFilter, LabelsFailure, DashNetwork, Engine, EngineConfig, EventSink, ImportOptions};
+use crate::{
+    BookPurpose, CoinFilter, DashNetwork, Engine, EngineConfig, EventSink, ImportOptions,
+    LabelsFailure,
+};
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -145,7 +148,11 @@ impl Fixture {
                 },
             ))
             .unwrap();
-        coins.into_iter().filter(|c| c.reserved).map(|c| c.outpoint).collect()
+        coins
+            .into_iter()
+            .filter(|c| c.reserved)
+            .map(|c| c.outpoint)
+            .collect()
     }
 }
 
@@ -217,8 +224,12 @@ fn prepare_signs_reserves_and_abandon_releases() {
         .unwrap();
     assert_eq!(p2.summary().inputs[0].outpoint, small);
 
-    f.engine.block_on(draft.abandon(Arc::clone(&prepared))).unwrap();
-    f.engine.block_on(draft.abandon(Arc::clone(&prepared))).unwrap();
+    f.engine
+        .block_on(draft.abandon(Arc::clone(&prepared)))
+        .unwrap();
+    f.engine
+        .block_on(draft.abandon(Arc::clone(&prepared)))
+        .unwrap();
     assert_eq!(f.reserved(), vec![small]);
     assert_eq!(
         send_failure(f.engine.block_on(draft.broadcast(Arc::clone(&prepared)))),
@@ -313,7 +324,10 @@ fn subtract_fee_and_coin_control() {
     r.subtract_fee_from_amount = true;
     let draft = f.draft(vec![r]);
     draft.set_source(CoinSource::Outpoints(vec![a])).unwrap();
-    let p = f.engine.block_on(draft.prepare(f.spend_grant(COIN))).unwrap();
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(COIN)))
+        .unwrap();
     let s = p.summary();
     assert_eq!(s.outputs.len(), 1);
     assert_eq!(s.total_sent, COIN - s.fee);
@@ -330,14 +344,19 @@ fn locked_coins_are_skipped_and_reported() {
         .block_on(f.session.lock_outpoints(f.wallet, vec![a]))
         .unwrap();
     assert_eq!(
-        f.engine.block_on(f.session.locked_outpoints(f.wallet)).unwrap(),
+        f.engine
+            .block_on(f.session.locked_outpoints(f.wallet))
+            .unwrap(),
         vec![a]
     );
     let listed = f
         .engine
         .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
         .unwrap();
-    assert_eq!(listed.iter().map(|c| c.outpoint).collect::<Vec<_>>(), vec![b]);
+    assert_eq!(
+        listed.iter().map(|c| c.outpoint).collect::<Vec<_>>(),
+        vec![b]
+    );
     let all = f
         .engine
         .block_on(f.session.utxos(
@@ -348,7 +367,10 @@ fn locked_coins_are_skipped_and_reported() {
             },
         ))
         .unwrap();
-    assert!(all.iter().any(|c| c.outpoint == a && c.user_locked && !c.spendable));
+    assert!(
+        all.iter()
+            .any(|c| c.outpoint == a && c.user_locked && !c.spendable)
+    );
     let max = f
         .engine
         .block_on(f.session.max_spendable(
@@ -376,15 +398,24 @@ fn locked_coins_are_skipped_and_reported() {
     draft.set_recipients(vec![pay(FOREIGN, COIN)]).unwrap();
     assert_eq!(
         send_failure(f.engine.block_on(draft.estimate())),
-        SendFailure::AmountExceedsBalance { available: COIN / 2 }
+        SendFailure::AmountExceedsBalance {
+            available: COIN / 2
+        }
     );
 
     f.engine
         .block_on(f.session.unlock_outpoints(f.wallet, vec![a]))
         .unwrap();
-    assert!(f.engine.block_on(f.session.locked_outpoints(f.wallet)).unwrap().is_empty());
+    assert!(
+        f.engine
+            .block_on(f.session.locked_outpoints(f.wallet))
+            .unwrap()
+            .is_empty()
+    );
     let unknown = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
-    let r = f.engine.block_on(f.session.lock_outpoints(f.wallet, vec![unknown]));
+    let r = f
+        .engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![unknown]));
     assert!(matches!(r, Err(EngineError::OutpointNotFound(_))), "{r:?}");
 }
 
@@ -420,14 +451,19 @@ fn broadcast_needs_spv_and_drop_releases() {
     for _ in 0..50 {
         let d = f.draft(vec![pay(FOREIGN, 10_000_000)]);
         if f.engine.block_on(d.estimate()).is_ok()
-            && f.engine.block_on(d.prepare(f.spend_grant(10_000_000))).is_ok()
+            && f.engine
+                .block_on(d.prepare(f.spend_grant(10_000_000)))
+                .is_ok()
         {
             ok = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(ok, "the dropped transaction's input never became spendable again");
+    assert!(
+        ok,
+        "the dropped transaction's input never became spendable again"
+    );
 }
 
 #[test]
@@ -495,7 +531,10 @@ fn address_book_follows_dash_qt_rules() {
         save(FOREIGN, "Bob", BookPurpose::Send, false),
         Err(EngineError::Labels(LabelsFailure::DuplicateAddress))
     ));
-    assert_eq!(save(FOREIGN, "Bob", BookPurpose::Send, true).unwrap().label, "Bob");
+    assert_eq!(
+        save(FOREIGN, "Bob", BookPurpose::Send, true).unwrap().label,
+        "Bob"
+    );
     assert!(matches!(
         save(&own, "mine", BookPurpose::Send, false),
         Err(EngineError::Labels(LabelsFailure::OwnAddress))
@@ -515,31 +554,51 @@ fn address_book_follows_dash_qt_rules() {
     );
     let found = f
         .engine
-        .block_on(f.session.address_book(f.wallet, Some(BookPurpose::Send), Some("b*b".into())))
+        .block_on(
+            f.session
+                .address_book(f.wallet, Some(BookPurpose::Send), Some("b*b".into())),
+        )
         .unwrap();
     assert_eq!(found.len(), 1);
     assert!(matches!(
-        f.engine.block_on(f.session.delete_address_book_entry(f.wallet, own.clone())),
+        f.engine
+            .block_on(f.session.delete_address_book_entry(f.wallet, own.clone())),
         Err(EngineError::Labels(LabelsFailure::ReceiveEntryNotDeletable))
     ));
     f.engine
-        .block_on(f.session.delete_address_book_entry(f.wallet, FOREIGN.into()))
+        .block_on(
+            f.session
+                .delete_address_book_entry(f.wallet, FOREIGN.into()),
+        )
         .unwrap();
     assert!(matches!(
-        f.engine.block_on(f.session.delete_address_book_entry(f.wallet, FOREIGN.into())),
+        f.engine.block_on(
+            f.session
+                .delete_address_book_entry(f.wallet, FOREIGN.into())
+        ),
         Err(EngineError::Labels(LabelsFailure::EntryNotFound))
     ));
 
     let txid = "ab".repeat(32);
     f.engine
-        .block_on(f.session.set_tx_label(f.wallet, txid.clone(), Some("rent".into())))
+        .block_on(
+            f.session
+                .set_tx_label(f.wallet, txid.clone(), Some("rent".into())),
+        )
         .unwrap();
     assert_eq!(
-        f.engine.block_on(f.session.tx_label(f.wallet, txid.clone())).unwrap(),
+        f.engine
+            .block_on(f.session.tx_label(f.wallet, txid.clone()))
+            .unwrap(),
         Some("rent".into())
     );
     f.engine
         .block_on(f.session.set_tx_label(f.wallet, txid.clone(), None))
         .unwrap();
-    assert_eq!(f.engine.block_on(f.session.tx_label(f.wallet, txid)).unwrap(), None);
+    assert_eq!(
+        f.engine
+            .block_on(f.session.tx_label(f.wallet, txid))
+            .unwrap(),
+        None
+    );
 }

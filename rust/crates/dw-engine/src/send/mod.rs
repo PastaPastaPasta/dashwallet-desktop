@@ -431,7 +431,10 @@ struct Resolved {
 impl NetworkSession {
     /// A new draft for `wallet_id`: no recipients, source `Any`, fee
     /// `Recommended{6}`, change `Auto`.
-    pub fn new_tx_draft(self: &Arc<Self>, wallet_id: WalletId) -> Result<Arc<TxDraft>, EngineError> {
+    pub fn new_tx_draft(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<Arc<TxDraft>, EngineError> {
         let manager = self.manager()?;
         if manager.get_wallet_blocking(&wallet_id.0).is_none() {
             return Err(EngineError::WalletNotFound(wallet_id.to_string()));
@@ -472,7 +475,10 @@ impl NetworkSession {
         .await
     }
 
-    pub(crate) async fn wallet(&self, wallet_id: &WalletId) -> Result<Arc<PlatformWallet>, EngineError> {
+    pub(crate) async fn wallet(
+        &self,
+        wallet_id: &WalletId,
+    ) -> Result<Arc<PlatformWallet>, EngineError> {
         self.manager()?
             .get_wallet(&wallet_id.0)
             .await
@@ -544,7 +550,9 @@ impl TxDraft {
                 }
                 let mut seen = HashSet::new();
                 if let Some(dup) = list.iter().find(|o| !seen.insert(**o)) {
-                    return Err(EngineError::InvalidArgument(format!("outpoint {dup} listed twice")));
+                    return Err(EngineError::InvalidArgument(format!(
+                        "outpoint {dup} listed twice"
+                    )));
                 }
             }
             CoinSource::Any => {}
@@ -631,14 +639,20 @@ impl TxDraft {
     /// Plans, signs through the vault with a `Spend` grant and reserves the
     /// inputs. Never broadcasts. The grant is redeemed only after the plan
     /// succeeded, so a balance error does not consume it.
-    pub async fn prepare(self: &Arc<Self>, grant_id: String) -> Result<Arc<PreparedTx>, EngineError> {
+    pub async fn prepare(
+        self: &Arc<Self>,
+        grant_id: String,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move { this.prepare_inner(grant_id).await })
             .await
     }
 
-    async fn prepare_inner(self: &Arc<Self>, grant_id: String) -> Result<Arc<PreparedTx>, EngineError> {
+    async fn prepare_inner(
+        self: &Arc<Self>,
+        grant_id: String,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
         let session = &self.session;
         let wallet_id = self.wallet_id;
         if !session.vault.has_wallet_secret(&wallet_id.0) {
@@ -673,7 +687,11 @@ impl TxDraft {
             .filter(|(_, mine)| !**mine)
             .map(|(a, _)| *a)
             .sum::<u64>()
-            + if change_mine { 0 } else { r.plan.change.unwrap_or(0) };
+            + if change_mine {
+                0
+            } else {
+                r.plan.change.unwrap_or(0)
+            };
 
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
@@ -695,7 +713,9 @@ impl TxDraft {
         // length (the first input's) keeps its estimate equal to the plan's.
         let change_address = match (&r.change, r.plan.change) {
             (ChangeTarget::Address(a), _) => a.clone(),
-            (ChangeTarget::Auto, Some(_)) => wallet.core().next_change_address_for_account(0).await?,
+            (ChangeTarget::Auto, Some(_)) => {
+                wallet.core().next_change_address_for_account(0).await?
+            }
             (ChangeTarget::Auto, None) => r.plan.inputs[0].address.clone(),
         };
         let mut builder = TransactionBuilder::new()
@@ -788,7 +808,10 @@ impl TxDraft {
             .await
     }
 
-    async fn broadcast_inner(&self, prepared: Arc<PreparedTx>) -> Result<BroadcastOutcome, EngineError> {
+    async fn broadcast_inner(
+        &self,
+        prepared: Arc<PreparedTx>,
+    ) -> Result<BroadcastOutcome, EngineError> {
         {
             let mut phase = prepared.phase();
             match *phase {
@@ -801,21 +824,30 @@ impl TxDraft {
             Ok(_) => Phase::Sent,
             Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => Phase::Unknown,
             Err(EngineError::Send(
-                SendFailure::NoPeers | SendFailure::BroadcastRejected { .. } | SendFailure::PreparedTxSpent,
+                SendFailure::NoPeers
+                | SendFailure::BroadcastRejected { .. }
+                | SendFailure::PreparedTxSpent,
             )) => Phase::Released,
             // Not dispatched (session closed, wallet gone): still pending.
             Err(_) => Phase::Pending,
         };
         *prepared.phase() = next;
         if next == Phase::Sent {
-            self.session.spends.remove(&self.wallet_id, prepared.inputs.iter().copied());
+            self.session
+                .spends
+                .remove(&self.wallet_id, prepared.inputs.iter().copied());
         }
         if next == Phase::Released {
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
             prepared.release(&self.session).await;
         }
-        if outcome.is_ok() || matches!(outcome, Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))) {
+        if outcome.is_ok()
+            || matches!(
+                outcome,
+                Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+            )
+        {
             self.session.sink.emit(EngineEvent::WalletChanged {
                 network: self.session.network.clone(),
                 wallet_id: self.wallet_id,
@@ -832,7 +864,9 @@ impl TxDraft {
             // rejection (inputs released, prepare again).
             return Err(SendFailure::NoPeers.into());
         }
-        self.session.record_send_metadata(self.wallet_id, prepared).await?;
+        self.session
+            .record_send_metadata(self.wallet_id, prepared)
+            .await?;
         // `Phase::Broadcasting` keeps abandon and drop away while the
         // broadcast awaits the network (up to about a minute).
         let Some(signed) = prepared.signed().clone() else {
@@ -886,7 +920,10 @@ impl TxDraft {
 /// dash-spv's never-sent rejections: client not started, no connected peer.
 fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
-    r.contains("not started") || r.contains("not connected") || r.contains("notconnected") || r.contains("no peer")
+    r.contains("not started")
+        || r.contains("not connected")
+        || r.contains("notconnected")
+        || r.contains("no peer")
 }
 
 fn finalize_failure(e: PlatformWalletError) -> EngineError {
@@ -928,15 +965,24 @@ fn check_against_plan(tx: &Transaction, plan: &Plan, change: &Address) -> Result
     got.sort_unstable();
     want.sort_unstable();
     if got != want {
-        return Err(Mismatch::Other(format!("outputs {got:?} instead of {want:?}")));
+        return Err(Mismatch::Other(format!(
+            "outputs {got:?} instead of {want:?}"
+        )));
     }
     let fee = plan.total_in() - tx.output.iter().map(|o| o.value).sum::<u64>();
     if fee != plan.fee {
-        return Err(Mismatch::Other(format!("fee {fee} instead of {}", plan.fee)));
+        return Err(Mismatch::Other(format!(
+            "fee {fee} instead of {}",
+            plan.fee
+        )));
     }
     if let Some(value) = plan.change {
         let script = change.script_pubkey();
-        if !tx.output.iter().any(|o| o.value == value && o.script_pubkey == script) {
+        if !tx
+            .output
+            .iter()
+            .any(|o| o.value == value && o.script_pubkey == script)
+        {
             return Err(Mismatch::Other("change output missing".into()));
         }
     }
@@ -1074,7 +1120,9 @@ impl PreparedTx {
     /// Releases the reservation (key-wallet's, owner-guarded, and the
     /// engine's) of a transaction that will not be sent.
     async fn release(&self, session: &NetworkSession) {
-        session.spends.remove(&self.wallet_id, self.inputs.iter().copied());
+        session
+            .spends
+            .remove(&self.wallet_id, self.inputs.iter().copied());
         let signed = self.signed().take();
         if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
             wallet.core().abandon_transaction(&signed).await;
@@ -1107,7 +1155,11 @@ impl NetworkSession {
     /// `WalletModel::sendCoins`): a labelled recipient not in the address
     /// book is added (Send, or Receive for one of the wallet's addresses); a
     /// listed one is relabelled.
-    async fn record_send_metadata(&self, wallet_id: WalletId, prepared: &PreparedTx) -> Result<(), EngineError> {
+    async fn record_send_metadata(
+        &self,
+        wallet_id: WalletId,
+        prepared: &PreparedTx,
+    ) -> Result<(), EngineError> {
         let messages: Vec<&str> = prepared
             .records
             .iter()
@@ -1174,7 +1226,10 @@ mod tests {
     #[test]
     fn recipients_are_validated_with_indices() {
         let net = dashcore::Network::Regtest;
-        assert_eq!(validate_recipients(vec![], net).unwrap_err(), SendFailure::NoRecipients);
+        assert_eq!(
+            validate_recipients(vec![], net).unwrap_err(),
+            SendFailure::NoRecipients
+        );
         let e = validate_recipients(vec![rc(ADDR, 1000), rc("nonsense", 1000)], net).unwrap_err();
         assert_eq!(e, SendFailure::InvalidAddress { index: 1 });
         let e = validate_recipients(vec![rc(ADDR, 0)], net).unwrap_err();
@@ -1190,7 +1245,10 @@ mod tests {
         let e = validate_recipients(vec![rc("XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg", 1000)], net)
             .unwrap_err();
         assert_eq!(e, SendFailure::InvalidAddress { index: 0 });
-        let other = Address::new(net, Payload::PubkeyHash(PubkeyHash::from_byte_array([5; 20])));
+        let other = Address::new(
+            net,
+            Payload::PubkeyHash(PubkeyHash::from_byte_array([5; 20])),
+        );
         let e = validate_recipients(vec![rc(ADDR, MAX_MONEY), rc(&other.to_string(), 1000)], net)
             .unwrap_err();
         assert_eq!(e, SendFailure::InvalidAmount { index: 1 });
@@ -1203,9 +1261,18 @@ mod tests {
 
     #[test]
     fn fee_modes_are_bounded() {
-        assert_eq!(FeeMode::Recommended { target_blocks: 6 }.rate().unwrap(), FeeRate::new(1000));
+        assert_eq!(
+            FeeMode::Recommended { target_blocks: 6 }.rate().unwrap(),
+            FeeRate::new(1000)
+        );
         assert!(FeeMode::Recommended { target_blocks: 0 }.rate().is_err());
-        assert!(FeeMode::Recommended { target_blocks: 1009 }.rate().is_err());
+        assert!(
+            FeeMode::Recommended {
+                target_blocks: 1009
+            }
+            .rate()
+            .is_err()
+        );
         assert!(FeeMode::PerKb(999).rate().is_err());
         assert_eq!(FeeMode::PerKb(1000).rate().unwrap(), FeeRate::new(1000));
         assert!(FeeMode::PerKb(MAX_FEE_PER_KB + 1).rate().is_err());

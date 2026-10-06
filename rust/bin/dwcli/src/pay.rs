@@ -36,9 +36,15 @@ pub enum PayCommand {
         all: bool,
     },
     /// Lock outpoints (`txid:vout`) against coin selection.
-    Lock { wallet: String, outpoints: Vec<String> },
+    Lock {
+        wallet: String,
+        outpoints: Vec<String>,
+    },
     /// Unlock outpoints.
-    Unlock { wallet: String, outpoints: Vec<String> },
+    Unlock {
+        wallet: String,
+        outpoints: Vec<String>,
+    },
     /// Print locked outpoints.
     Locked { wallet: String },
     /// Pay recipients. `--to address:duffs[:subtract]`, repeatable.
@@ -104,10 +110,16 @@ fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
 }
 
 /// `address:duffs[:subtract]`.
-fn recipient(s: &str, label: &Option<String>, message: &Option<String>) -> Result<Recipient, String> {
+fn recipient(
+    s: &str,
+    label: &Option<String>,
+    message: &Option<String>,
+) -> Result<Recipient, String> {
     let mut parts = s.split(':');
     let (Some(address), Some(amount)) = (parts.next(), parts.next()) else {
-        return Err(format!("bad recipient {s:?}; want address:duffs[:subtract]"));
+        return Err(format!(
+            "bad recipient {s:?}; want address:duffs[:subtract]"
+        ));
     };
     let subtract = match parts.next() {
         None => false,
@@ -116,7 +128,9 @@ fn recipient(s: &str, label: &Option<String>, message: &Option<String>) -> Resul
     };
     Ok(Recipient {
         address: address.to_string(),
-        amount: amount.parse().map_err(|e| format!("bad amount {amount:?}: {e}"))?,
+        amount: amount
+            .parse()
+            .map_err(|e| format!("bad amount {amount:?}: {e}"))?,
         subtract_fee_from_amount: subtract,
         label: label.clone(),
         message: message.clone(),
@@ -156,7 +170,9 @@ fn wait_for_height(
             return Ok(());
         }
         if start.elapsed() > timeout {
-            return Err(format!("wallet height {h} did not reach {height} in {timeout:?}"));
+            return Err(format!(
+                "wallet height {h} did not reach {height} in {timeout:?}"
+            ));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -182,7 +198,13 @@ pub fn run(
             timeout_secs,
         } => {
             let id = wallet_id(&wallet)?;
-            wait_for_height(engine, session, id, height, Duration::from_secs(timeout_secs))?;
+            wait_for_height(
+                engine,
+                session,
+                id,
+                height,
+                Duration::from_secs(timeout_secs),
+            )?;
             let b = session.balances(&id).map_err(e)?;
             println!(
                 "synced {height} confirmed={} unconfirmed={} immature={} total={}",
@@ -219,14 +241,20 @@ pub fn run(
             return Err("no outpoints given".into());
         }
         PayCommand::Lock { wallet, outpoints } => {
-            let list = outpoints.iter().map(|o| outpoint(o)).collect::<Result<_, _>>()?;
+            let list = outpoints
+                .iter()
+                .map(|o| outpoint(o))
+                .collect::<Result<_, _>>()?;
             engine
                 .block_on(session.lock_outpoints(wallet_id(&wallet)?, list))
                 .map_err(e)?;
             println!("locked {}", outpoints.len());
         }
         PayCommand::Unlock { wallet, outpoints } => {
-            let list = outpoints.iter().map(|o| outpoint(o)).collect::<Result<_, _>>()?;
+            let list = outpoints
+                .iter()
+                .map(|o| outpoint(o))
+                .collect::<Result<_, _>>()?;
             engine
                 .block_on(session.unlock_outpoints(wallet_id(&wallet)?, list))
                 .map_err(e)?;
@@ -267,7 +295,10 @@ pub fn run(
                 draft.set_fee(FeeMode::PerKb(rate)).map_err(e)?;
             }
             if !coins.is_empty() {
-                let list = coins.iter().map(|o| outpoint(o)).collect::<Result<_, _>>()?;
+                let list = coins
+                    .iter()
+                    .map(|o| outpoint(o))
+                    .collect::<Result<_, _>>()?;
                 draft.set_source(CoinSource::Outpoints(list)).map_err(e)?;
             }
             if let Some(addr) = change {
@@ -300,7 +331,12 @@ pub fn run(
             let s = prepared.summary();
             println!(
                 "prepared txid={} fee={} rate={} size={} sent={} external={} debit={}",
-                s.txid, s.fee, s.fee_rate_per_kb, s.size_bytes, s.total_sent, s.external_sent,
+                s.txid,
+                s.fee,
+                s.fee_rate_per_kb,
+                s.size_bytes,
+                s.total_sent,
+                s.external_sent,
                 s.total_debit
             );
             for i in &s.inputs {
@@ -330,10 +366,7 @@ pub fn run(
                 .block_on(session.address_book(wallet_id(&wallet)?, None, None))
                 .map_err(e)?
             {
-                println!(
-                    "book {:?} {} {}",
-                    entry.purpose, entry.address, entry.label
-                );
+                println!("book {:?} {} {}", entry.purpose, entry.address, entry.label);
             }
         }
         PayCommand::BookAdd {

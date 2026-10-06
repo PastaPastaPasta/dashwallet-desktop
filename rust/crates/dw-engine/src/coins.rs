@@ -314,7 +314,11 @@ impl NetworkSession {
                         spendable: has_keys && c.chosen_selectable(height),
                     }
                 })
-                .filter(|row| filter.min_confirmations.is_none_or(|n| row.confirmations >= n))
+                .filter(|row| {
+                    filter
+                        .min_confirmations
+                        .is_none_or(|n| row.confirmations >= n)
+                })
                 .collect();
             rows.sort_by(|a, b| b.amount.cmp(&a.amount).then(a.outpoint.cmp(&b.outpoint)));
             Ok(rows)

@@ -68,16 +68,26 @@ pub(crate) fn wildcard_contains(pattern: &str, text: &str) -> bool {
 
 /// Txid argument: 64 lowercase hex characters.
 fn check_txid(txid: &str) -> Result<(), EngineError> {
-    if txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+    if txid.len() == 64
+        && txid
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         Ok(())
     } else {
-        Err(EngineError::InvalidArgument(format!("txid {txid:?} is not 64 lowercase hex")))
+        Err(EngineError::InvalidArgument(format!(
+            "txid {txid:?} is not 64 lowercase hex"
+        )))
     }
 }
 
 impl NetworkSession {
     /// Whether `address` (already validated) is one of the wallet's.
-    async fn owns(&self, wallet_id: &WalletId, address: &dashcore::Address) -> Result<bool, EngineError> {
+    async fn owns(
+        &self,
+        wallet_id: &WalletId,
+        address: &dashcore::Address,
+    ) -> Result<bool, EngineError> {
         let wallet = self.wallet(wallet_id).await?;
         let state = wallet.state().await;
         Ok(wallet_owns(&state.core_wallet, address))
@@ -96,7 +106,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             this.wallet(&wallet_id).await?;
             let id = wallet_id.to_string();
-            let rows = this.appdb_op(move |db| db.address_book(&id, purpose)).await?;
+            let rows = this
+                .appdb_op(move |db| db.address_book(&id, purpose))
+                .await?;
             let search = search.filter(|s| !s.is_empty());
             Ok(rows
                 .into_iter()
@@ -144,16 +156,17 @@ impl NetworkSession {
             let id = wallet_id.to_string();
             let entry = this
                 .appdb_op(move |db| {
-                    if let Some(existing) = db.book_entry(&id, &address)? {
-                        if !replace || existing.purpose != purpose {
-                            return Ok(Err(LabelsFailure::DuplicateAddress));
-                        }
+                    if let Some(existing) = db.book_entry(&id, &address)?
+                        && (!replace || existing.purpose != purpose)
+                    {
+                        return Ok(Err(LabelsFailure::DuplicateAddress));
                     }
                     db.upsert_book_entry(&id, &address, purpose, &label, now_secs())?;
                     Ok(Ok(db.book_entry(&id, &address)?))
                 })
                 .await??;
-            let e = entry.ok_or_else(|| EngineError::Storage("entry vanished after save".into()))?;
+            let e =
+                entry.ok_or_else(|| EngineError::Storage("entry vanished after save".into()))?;
             Ok(BookEntryInfo {
                 address: e.address,
                 label: e.label.unwrap_or_default(),
@@ -221,7 +234,8 @@ impl NetworkSession {
     ) -> Result<Option<String>, EngineError> {
         check_txid(&txid)?;
         let id = wallet_id.to_string();
-        self.appdb_op(move |db| db.label(&id, LabelKind::Tx, &txid)).await
+        self.appdb_op(move |db| db.label(&id, LabelKind::Tx, &txid))
+            .await
     }
 
     /// The message stored with a sent transaction (QT-054).
