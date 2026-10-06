@@ -1477,6 +1477,20 @@ mod tests {
             assert_eq!(settle(true, &Err(f.clone().into())), Phase::Released);
         }
         assert_eq!(settle(true, &closed()), Phase::Pending);
+        // Review L5: errors raised before dispatch leave a first broadcast
+        // pending (not dispatched); hosts report them as definite failures.
+        let pre_dispatch: [fn() -> EngineError; 6] = [
+            || EngineError::WalletNotFound("w".into()),
+            || EngineError::InvalidArgument("other draft".into()),
+            || EngineError::Wallet("w".into()),
+            || EngineError::Storage("s".into()),
+            || EngineError::Spv("s".into()),
+            || EngineError::Io("i".into()),
+        ];
+        for e in pre_dispatch {
+            assert_eq!(settle(true, &Err(e())), Phase::Pending, "{:?}", e());
+            assert_eq!(settle(false, &Err(e())), Phase::Unknown, "{:?}", e());
+        }
 
         // A repeat after an unknown outcome.
         assert_eq!(settle(false, &accepted), Phase::Sent);

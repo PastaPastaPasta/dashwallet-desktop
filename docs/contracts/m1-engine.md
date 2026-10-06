@@ -219,7 +219,13 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
     be broadcast again (same transaction, same txid). From then on the transaction may be on the network, so it is
     never released again: a repeated `broadcast` returns `Ok` when accepted and `send.broadcast_unknown` for any
     other outcome (the reason says what that attempt saw: SPV not running, no peers, no verdict); `abandon` is
-    refused and dropping the handle releases nothing.
+    refused and dropping the handle releases nothing;
+  - not dispatched (review L5): any other error of a first `broadcast` (`network_not_open`, `wallet_not_found`,
+    `invalid_argument`, `wallet`, `storage`, `spv`, `io`) is raised before the transaction is handed to the network
+    (platform-wallet's finalized broadcast returns only `Ok`, a stale reservation, a rejection or an unconfirmed
+    outcome). The `PreparedTx` stays pending: it can be broadcast again as a first dispatch or abandoned, and
+    dropping it releases its inputs. Hosts treat these as definite failures; only `send.broadcast_unknown` means
+    the outcome of a first broadcast is unknown.
 
   An unknown-outcome payment's inputs stay `reserved` (excluded from selection and from `max_spendable`) until
   the wallet sees them spent, by the payment itself or by a conflicting transaction: every coin read drops the
