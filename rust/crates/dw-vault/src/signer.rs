@@ -126,6 +126,26 @@ impl VaultSigner {
         derived
     }
 
+    /// The secp256k1 secret at `path`, for a signature the transaction
+    /// signer cannot make (a provider payload signed inside a payload
+    /// finalizer). The caller keeps it in the returned zeroing buffer.
+    pub fn secp_secret(&self, path: &DerivationPath) -> Result<Zeroizing<[u8; 32]>, SignerError> {
+        self.with_key(path, |_, x| Zeroizing::new(x.private_key.secret_bytes()))
+    }
+
+    /// Runs `f` with the wallet's 64-byte seed, for keys on curves other
+    /// than secp256k1 (BLS operator, ed25519 platform node keys). Full-scope
+    /// signers only; the decrypted seed is erased when `f` returns.
+    pub fn with_seed<T>(&self, f: impl FnOnce(&[u8; 64]) -> T) -> Result<T, SignerError> {
+        if self.scope != SignerScope::Full {
+            return Err(SignerError::PathNotAllowed("wallet seed".into()));
+        }
+        let seed = self
+            .vault
+            .signing_seed(&self.wallet_id, self.epoch, self.own_key.as_deref())?;
+        Ok(f(&seed))
+    }
+
     /// Runs `f` on the private key at `path`, then erases the key.
     fn with_key<T>(
         &self,

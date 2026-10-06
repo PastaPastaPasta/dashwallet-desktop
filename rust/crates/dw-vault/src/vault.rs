@@ -42,8 +42,10 @@ use crate::types::{
 use crate::{SignerError, VaultError};
 
 mod compat;
+mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
+pub use masternode::MAX_MASTERNODE_KEY_BYTES;
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
