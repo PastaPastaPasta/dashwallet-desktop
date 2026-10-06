@@ -395,11 +395,13 @@ final class FakePSBT: PSBTHandling, @unchecked Sendable {
         return analysis
     }
 
-    /// Needs `.spend(max: ≥ externalSent)` (`psbt.grant_exceeded{max_duffs}`).
+    /// Like the engine: refuses an unknown fee, then needs
+    /// `.spend(max: ≥ total)` (`psbt.grant_exceeded{max_duffs}`).
     func sign(_ psbt: PSBTReference, wallet: WalletID, grant: AuthGrant) async throws(ServiceError) -> PSBTReference {
         guard let analysis = analyses.current[psbt.id] else { throw ServiceError(code: .invalidArgument) }
         guard case .spend(let max) = grant.purpose else { throw ServiceError(code: .psbtGrantInvalid) }
-        if let external = analysis.externalSent, max < external {
+        guard let total = analysis.total else { throw ServiceError(code: .psbtFeeUnknown) }
+        if max < total {
             throw ServiceError(code: .psbtGrantExceeded, parameters: ["max_duffs": max.duffs])
         }
         signGrants.withLock { $0.append(grant) }

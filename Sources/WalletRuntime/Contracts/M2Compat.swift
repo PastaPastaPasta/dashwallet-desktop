@@ -175,12 +175,16 @@ public enum PSBTSignability: Sendable, Hashable {
 /// PSBT Operations dialog content (QT-079).
 public struct PSBTAnalysis: Sendable, Hashable {
     public let outputs: [PSBTOutput]
+    /// `nil` while an input lacks its verified previous transaction.
     public let fee: Amount?
+    /// What leaves the wallet: its inputs minus the outputs paying it, fee
+    /// included (every output + fee without a wallet); `nil` like `fee`.
+    /// The `.spend(max:)` grant for `sign` must cover this.
     public let total: Amount?
     public let unsignedInputs: Int
     public let status: PSBTStatus
     public let signability: PSBTSignability
-    /// The `.spend(max:)` grant for `sign` must cover this.
+    /// Outputs to scripts the wallet does not own, fee excluded.
     public let externalSent: Amount?
 
     public init(
@@ -208,7 +212,8 @@ public protocol PSBTHandling: AnyObject, Sendable {
     /// BIP174 binary for "Save…".
     func bytes(_ psbt: PSBTReference) throws(ServiceError) -> Data
     func analyze(_ psbt: PSBTReference, wallet: WalletID?) async throws(ServiceError) -> PSBTAnalysis
-    /// Needs `.spend(max: ≥ externalSent)` for `wallet`.
+    /// Needs `.spend(max: ≥ total)` for `wallet`; refuses an unknown fee
+    /// (`psbt.fee_unknown`) and one above 0.1 DASH (`psbt.absurd_fee`).
     func sign(_ psbt: PSBTReference, wallet: WalletID, grant: AuthGrant) async throws(ServiceError) -> PSBTReference
     /// Returns the txid; send's broadcast verdicts apply.
     func broadcast(_ psbt: PSBTReference) async throws(ServiceError) -> String

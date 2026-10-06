@@ -1863,7 +1863,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     /**
      * "Sign Tx": signs every input the wallet owns through `VaultSigner`
      * and returns the new PSBT. Needs a `Spend{max_duffs}` grant for the
-     * wallet covering `external_sent`; redeemed after the checks.
+     * wallet covering the analysis' `total` (what leaves the wallet, fee
+     * included); redeemed after the checks. Refuses an unknown fee
+     * (`psbt.fee_unknown`) and a fee above 0.1 DASH (`psbt.absurd_fee`).
      */
     func signPsbt(walletId: String, psbt: Psbt, grantId: String) async throws  -> Psbt
     
@@ -2862,7 +2864,9 @@ open func broadcastPsbt(psbt: Psbt)async throws  -> String  {
     /**
      * "Sign Tx": signs every input the wallet owns through `VaultSigner`
      * and returns the new PSBT. Needs a `Spend{max_duffs}` grant for the
-     * wallet covering `external_sent`; redeemed after the checks.
+     * wallet covering the analysis' `total` (what leaves the wallet, fee
+     * included); redeemed after the checks. Refuses an unknown fee
+     * (`psbt.fee_unknown`) and a fee above 0.1 DASH (`psbt.absurd_fee`).
      */
 open func signPsbt(walletId: String, psbt: Psbt, grantId: String)async throws  -> Psbt  {
     return
@@ -8355,12 +8359,16 @@ public func FfiConverterTypePreparedTxSummary_lower(_ value: PreparedTxSummary) 
 public struct PsbtAnalysis: Equatable, Hashable {
     public let outputs: [PsbtOutput]
     /**
-     * `None` while input values are missing.
+     * `None` while an input's value is missing or unverified (only a
+     * previous transaction whose txid matches the input counts;
+     * `witness_utxo` is ignored).
      */
     public let fee: UInt64?
     /**
-     * What leaves the wallet: outputs not paying it plus the fee (every
-     * output plus the fee without a wallet); `None` like `fee`.
+     * What leaves the wallet: its inputs minus the outputs paying it (the
+     * outputs not paying it plus the fee when every input is the wallet's;
+     * every output plus the fee without a wallet); `None` like `fee`. A
+     * signing `Spend` grant must cover it.
      */
     public let total: UInt64?
     /**
@@ -8370,8 +8378,7 @@ public struct PsbtAnalysis: Equatable, Hashable {
     public let status: PsbtStatus
     public let signability: PsbtSignability
     /**
-     * Value paid to scripts the wallet does not own; a signing `Spend`
-     * grant must cover it (same cap as `TxDraft.prepare`).
+     * Value paid to scripts the wallet does not own (the fee excluded).
      */
     public let externalSent: UInt64?
 
@@ -8379,18 +8386,21 @@ public struct PsbtAnalysis: Equatable, Hashable {
     // declare one manually.
     public init(outputs: [PsbtOutput], 
         /**
-         * `None` while input values are missing.
+         * `None` while an input's value is missing or unverified (only a
+         * previous transaction whose txid matches the input counts;
+         * `witness_utxo` is ignored).
          */fee: UInt64?, 
         /**
-         * What leaves the wallet: outputs not paying it plus the fee (every
-         * output plus the fee without a wallet); `None` like `fee`.
+         * What leaves the wallet: its inputs minus the outputs paying it (the
+         * outputs not paying it plus the fee when every input is the wallet's;
+         * every output plus the fee without a wallet); `None` like `fee`. A
+         * signing `Spend` grant must cover it.
          */total: UInt64?, 
         /**
          * "Transaction has %1 unsigned inputs."
          */unsignedInputs: UInt32, status: PsbtStatus, signability: PsbtSignability, 
         /**
-         * Value paid to scripts the wallet does not own; a signing `Spend`
-         * grant must cover it (same cap as `TxDraft.prepare`).
+         * Value paid to scripts the wallet does not own (the fee excluded).
          */externalSent: UInt64?) {
         self.outputs = outputs
         self.fee = fee
@@ -14948,6 +14958,18 @@ enum PsbtError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case FeeRateTooHigh(duffsPerKb: UInt64
     )
     /**
+     * Code `psbt.absurd_fee`: signing refused, the fee is above 0.1 DASH
+     * (`send.absurd_fee`'s bound).
+     */
+    case AbsurdFee(fee: UInt64
+    )
+    /**
+     * Code `psbt.fee_unknown`: signing refused, an input's previous
+     * transaction is missing or does not match the input, so the fee and
+     * what leaves the wallet are unknown.
+     */
+    case FeeUnknown
+    /**
      * Code `psbt.watch_only`: the wallet has no keys.
      */
     case WatchOnly
@@ -14960,7 +14982,8 @@ enum PsbtError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case GrantInvalid
     /**
-     * Code `psbt.grant_exceeded`: `external_sent` above the grant's cap.
+     * Code `psbt.grant_exceeded`: the wallet's outflow (`total`: its inputs
+     * minus the outputs paying it) above the grant's cap.
      */
     case GrantExceeded(maxDuffs: UInt64
     )
@@ -15061,35 +15084,39 @@ public struct FfiConverterTypePsbtError: FfiConverterRustBuffer {
         case 5: return .FeeRateTooHigh(
             duffsPerKb: try FfiConverterUInt64.read(from: &buf)
             )
-        case 6: return .WatchOnly
-        case 7: return .VaultLocked
-        case 8: return .GrantInvalid
-        case 9: return .GrantExceeded(
+        case 6: return .AbsurdFee(
+            fee: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 7: return .FeeUnknown
+        case 8: return .WatchOnly
+        case 9: return .VaultLocked
+        case 10: return .GrantInvalid
+        case 11: return .GrantExceeded(
             maxDuffs: try FfiConverterUInt64.read(from: &buf)
             )
-        case 10: return .NoPeers
-        case 11: return .BroadcastRejected(
+        case 12: return .NoPeers
+        case 13: return .BroadcastRejected(
             reason: try FfiConverterString.read(from: &buf)
             )
-        case 12: return .BroadcastUnknown(
+        case 14: return .BroadcastUnknown(
             reason: try FfiConverterString.read(from: &buf)
             )
-        case 13: return .InvalidArgument(
+        case 15: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 14: return .NetworkNotOpen(
+        case 16: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 15: return .WalletNotFound(
+        case 17: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 16: return .Storage(
+        case 18: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 17: return .NotImplemented(
+        case 19: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 18: return .Internal(
+        case 20: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -15127,64 +15154,73 @@ public struct FfiConverterTypePsbtError: FfiConverterRustBuffer {
             FfiConverterUInt64.write(duffsPerKb, into: &buf)
             
         
-        case .WatchOnly:
+        case let .AbsurdFee(fee):
             writeInt(&buf, Int32(6))
+            FfiConverterUInt64.write(fee, into: &buf)
+            
         
-        
-        case .VaultLocked:
+        case .FeeUnknown:
             writeInt(&buf, Int32(7))
         
         
-        case .GrantInvalid:
+        case .WatchOnly:
             writeInt(&buf, Int32(8))
         
         
-        case let .GrantExceeded(maxDuffs):
+        case .VaultLocked:
             writeInt(&buf, Int32(9))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(10))
+        
+        
+        case let .GrantExceeded(maxDuffs):
+            writeInt(&buf, Int32(11))
             FfiConverterUInt64.write(maxDuffs, into: &buf)
             
         
         case .NoPeers:
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(12))
         
         
         case let .BroadcastRejected(reason):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(13))
             FfiConverterString.write(reason, into: &buf)
             
         
         case let .BroadcastUnknown(reason):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(14))
             FfiConverterString.write(reason, into: &buf)
             
         
         case let .InvalidArgument(detail):
-            writeInt(&buf, Int32(13))
-            FfiConverterString.write(detail, into: &buf)
-            
-        
-        case let .NetworkNotOpen(detail):
-            writeInt(&buf, Int32(14))
-            FfiConverterString.write(detail, into: &buf)
-            
-        
-        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(15))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(16))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(17))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(18))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(19))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(20))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -16548,7 +16584,8 @@ enum TxActionError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError 
     case Refused(refusal: TxActionRefusal
     )
     /**
-     * Code `tx_action.spv_not_running`: resend needs a running SPV client.
+     * Code `tx_action.spv_not_running`: abandon, resend and drop need a
+     * running SPV client.
      */
     case SpvNotRunning
     /**
@@ -20600,7 +20637,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_broadcast_psbt() != 26392) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_sign_psbt() != 36678) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_sign_psbt() != 31360) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_addresses() != 57714) {

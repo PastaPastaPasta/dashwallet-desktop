@@ -187,6 +187,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let psbtNetworkMismatch = Self(rawValue: "psbt.network_mismatch")
     public static let psbtNotComplete = Self(rawValue: "psbt.not_complete")
     public static let psbtFeeRateTooHigh = Self(rawValue: "psbt.fee_rate_too_high")
+    public static let psbtFeeUnknown = Self(rawValue: "psbt.fee_unknown")
+    public static let psbtAbsurdFee = Self(rawValue: "psbt.absurd_fee")
     public static let psbtWatchOnly = Self(rawValue: "psbt.watch_only")
     public static let psbtVaultLocked = Self(rawValue: "psbt.vault_locked")
     public static let psbtGrantInvalid = Self(rawValue: "psbt.grant_invalid")
@@ -265,7 +267,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
         .compatDestinationUnwritable,
         .backupVaultLocked, .backupPassphraseRequired, .backupWrongPassphrase, .backupCorrupt,
         .backupUnsupportedVersion, .backupNetworkMismatch, .backupAlreadyExists, .backupDestinationUnwritable,
-        .psbtInvalid, .psbtTooLarge, .psbtNetworkMismatch, .psbtNotComplete, .psbtFeeRateTooHigh, .psbtWatchOnly,
+        .psbtInvalid, .psbtTooLarge, .psbtNetworkMismatch, .psbtNotComplete, .psbtFeeRateTooHigh, .psbtFeeUnknown,
+        .psbtAbsurdFee, .psbtWatchOnly,
         .psbtVaultLocked, .psbtGrantInvalid, .psbtGrantExceeded, .psbtNoPeers, .psbtBroadcastRejected,
         .psbtBroadcastUnknown,
         .desktopUnsupported, .desktopOSError, .desktopNoQRCode, .desktopImageUnreadable,

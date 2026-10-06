@@ -160,17 +160,19 @@ public final class PSBTViewModel {
 
     // MARK: Operations
 
-    /// "Sign Tx" with a `.spend(max: externalSent)` grant. An encrypted vault
+    /// "Sign Tx" with a `.spend(max: total)` grant: what leaves the wallet,
+    /// fee included (the engine caps that, review H1). An encrypted vault
     /// needs `passphrase`; without it the step becomes `.needsPassphrase`.
     public func sign(passphrase: String? = nil) async {
         guard step == .ready || step == .needsPassphrase, let reference, let analysis,
             let wallet = walletState.selectedWalletID
         else { return }
-        guard let externalSent = analysis.externalSent else {
+        // `nil` while the fee is unknown; the engine refuses to sign then.
+        guard let outflow = analysis.total else {
             errorMessage = L10n.PSBT.noExternalAmount
             return
         }
-        let purpose = GrantPurpose.spend(max: externalSent)
+        let purpose = GrantPurpose.spend(max: outflow)
         let credential: Credential
         switch auth.requirement(for: purpose) {
         case .none:

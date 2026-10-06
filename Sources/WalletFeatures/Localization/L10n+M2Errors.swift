@@ -29,6 +29,9 @@ extension L10n {
         public static let psbtTooLarge = "PSBT file must be smaller than 100 MiB"
         public static let psbtNotComplete = "Transaction is not fully signed yet."
         public static let psbtFeeRateTooHigh = "The fee rate is above the broadcast limit of 0.1 DASH/kB."
+        public static let psbtFeeUnknown =
+            "The fee cannot be determined: the PSBT lacks the previous transaction of an input."
+        public static let psbtAbsurdFee = "The fee is above 0.1 DASH and is considered an absurdly high fee."
         public static let psbtCannotSign = "This wallet cannot sign transactions."
         public static let lockedSign = "Cannot sign inputs while wallet is locked."
         public static let grantExceeded = "The amount is more than was authorized. Please try again."
@@ -88,6 +91,8 @@ extension ErrorText {
         case .psbtTooLarge: return E.psbtTooLarge
         case .psbtNotComplete: return E.psbtNotComplete
         case .psbtFeeRateTooHigh: return E.psbtFeeRateTooHigh
+        case .psbtFeeUnknown: return E.psbtFeeUnknown
+        case .psbtAbsurdFee: return E.psbtAbsurdFee
         case .psbtWatchOnly: return E.psbtCannotSign
         case .psbtVaultLocked: return E.lockedSign
         case .psbtGrantExceeded: return E.grantExceeded

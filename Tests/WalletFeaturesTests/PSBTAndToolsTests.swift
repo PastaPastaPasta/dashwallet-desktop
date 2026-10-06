@@ -5,15 +5,19 @@ import Testing
 @testable import WalletFeatures
 import WalletRuntime
 
+/// The engine's numbers for a wallet that owns every input: `total` (what
+/// leaves the wallet) = outputs to others + fee; `nil` with the fee unknown.
 func psbtAnalysis(
-    status: PSBTStatus, signability: PSBTSignability = .canSign, unsigned: Int = 1, external: Int64? = 100_000_000
+    status: PSBTStatus, signability: PSBTSignability = .canSign, unsigned: Int = 1, external: Int64? = 100_000_000,
+    feeKnown: Bool = true
 ) -> PSBTAnalysis {
     PSBTAnalysis(
         outputs: [
             PSBTOutput(address: testnetAddress2, amount: Amount(duffs: 100_000_000), isMine: false),
             PSBTOutput(address: testnetAddress1, amount: Amount(duffs: 50_000), isMine: true),
         ],
-        fee: Amount(duffs: 374), total: Amount(duffs: 100_050_374), unsignedInputs: unsigned, status: status,
+        fee: feeKnown ? Amount(duffs: 374) : nil, total: feeKnown ? Amount(duffs: 100_000_374) : nil,
+        unsignedInputs: unsigned, status: status,
         signability: signability, externalSent: external.map { Amount(duffs: $0) })
 }
 
@@ -67,7 +71,8 @@ struct PSBTViewModelTests {
         #expect(!model.canSign && !model.canBroadcast)
     }
 
-    @Test func QT079_signNeedsASpendGrantCoveringExternalSent() async {
+    /// Review H1: the grant covers what leaves the wallet, fee included.
+    @Test func QT079_signNeedsASpendGrantCoveringTheOutflow() async {
         world.auth.lockState = .unlocked
         m2.psbt.loadAnalysis.withLock { $0 = psbtAnalysis(status: .needsSignatures) }
         m2.psbt.signedAnalysis.withLock { $0 = psbtAnalysis(status: .complete, unsigned: 0) }
@@ -77,11 +82,24 @@ struct PSBTViewModelTests {
         await model.sign()
         #expect(model.step == .needsPassphrase)
         await model.sign(passphrase: "secret")
-        #expect(world.auth.authorizeCalls.last?.purpose == .spend(max: Amount(duffs: 100_000_000)))
+        #expect(world.auth.authorizeCalls.last?.purpose == .spend(max: Amount(duffs: 100_000_374)))
         #expect(world.auth.authorizeCalls.last?.passphrase == "secret")
         #expect(model.message == "Signed transaction successfully. Transaction is ready to broadcast.")
         #expect(model.canBroadcast)
         #expect(m2.psbt.released.current.count == 1)
+    }
+
+    /// Review H1: with an input's previous transaction missing the fee is
+    /// unknown; no grant is asked for and nothing is signed.
+    @Test func QT079_unknownFeeIsNotSigned() async {
+        world.auth.lockState = .unlocked
+        m2.psbt.loadAnalysis.withLock { $0 = psbtAnalysis(status: .missingInputInfo, feeKnown: false) }
+        let model = make()
+        await model.load(data: Data("cHNidP8B".utf8))
+        await model.sign(passphrase: "secret")
+        #expect(world.auth.authorizeCalls.isEmpty)
+        #expect(m2.psbt.signGrants.current.isEmpty)
+        #expect(model.errorMessage == "The amount this transaction sends could not be determined.")
     }
 
     @Test func QT079_broadcastReportsTheTxidOrTheFailure() async {

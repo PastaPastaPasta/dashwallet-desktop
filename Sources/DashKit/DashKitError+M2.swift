@@ -96,6 +96,9 @@ extension DashKitError {
         case .NotComplete: self = .domain(code: "psbt.not_complete", detail: "")
         case .FeeRateTooHigh(let rate):
             self = .parameterized(code: "psbt.fee_rate_too_high", parameters: ["duffs_per_kb": Int64(clamping: rate)])
+        case .AbsurdFee(let fee):
+            self = .parameterized(code: "psbt.absurd_fee", parameters: ["fee": Int64(clamping: fee)])
+        case .FeeUnknown: self = .domain(code: "psbt.fee_unknown", detail: "")
         case .WatchOnly: self = .domain(code: "psbt.watch_only", detail: "")
         case .VaultLocked: self = .domain(code: "psbt.vault_locked", detail: "")
         case .GrantInvalid: self = .domain(code: "psbt.grant_invalid", detail: "")
