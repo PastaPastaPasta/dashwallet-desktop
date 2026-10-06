@@ -30,6 +30,7 @@ struct OnboardingView: View {
         case .showPhrase: ShowPhraseStep(model: model)
         case .verifyPhrase: VerifyPhraseStep(model: model)
         case .choosePassphrase: ChoosePassphraseStep(model: model)
+        case .unlockVault: UnlockVaultStep(model: model)
         case .restorePhrase: RestorePhraseStep(model: model)
         case .restoreOptions: RestoreOptionsStep(model: model)
         case .working, .done:
@@ -294,6 +295,37 @@ private struct ChoosePassphraseStep: View {
         case .good: .good
         case .strong: .strong
         }
+    }
+}
+
+/// Adding a wallet to an encrypted vault that is locked: the vault's
+/// passphrase unlocks it, then the wallet is added.
+private struct UnlockVaultStep: View {
+    let model: OnboardingViewModel
+    @State private var passphrase = ""
+
+    var body: some View {
+        VStack(spacing: DashSpacing.xl) {
+            BackButton(model: model)
+            StepHeader(title: L10n.Lock.title, message: L10n.Onboarding.vaultLocked)
+            PassphraseField(
+                label: MacStrings.Common.passphrase, text: $passphrase, errorText: model.unlockError,
+                isRevealable: false)
+            .frame(width: 420)
+            .accessibilityIdentifier("onboarding.unlockPassphrase")
+            .onSubmit(unlock)
+            DashButton(
+                text: MacStrings.Lock.unlock, isEnabled: !passphrase.isEmpty, fillsWidth: true, size: .large,
+                style: .filledBlue, action: unlock)
+            .frame(width: 320)
+            .accessibilityIdentifier("onboarding.unlock")
+        }
+    }
+
+    private func unlock() {
+        let text = passphrase
+        passphrase = ""
+        Task { await model.unlockVault(passphrase: text) }
     }
 }
 

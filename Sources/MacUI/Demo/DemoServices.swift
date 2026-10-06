@@ -150,6 +150,11 @@ final class DemoAuthentication: AuthenticationGating {
             id: UUID().uuidString, purpose: purpose, expiresAt: store.now().addingTimeInterval(60), singleUse: true)
     }
 
+    /// Demo grants are not recorded anywhere (the demo vault never redeems
+    /// them), so there is nothing to withdraw; the engine likewise ignores
+    /// unknown ids.
+    func revoke(_ grant: AuthGrant) {}
+
     func unlock(passphrase: any SecretBuffer, scope: UnlockScope) async throws(ServiceError) {
         try store.checkPassphrase(Self.text(passphrase))
         store.setLockState(scope == .full ? .unlocked : .unlockedMixingOnly)

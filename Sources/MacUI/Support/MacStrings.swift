@@ -104,7 +104,7 @@ enum MacStrings {
         static let passphraseBody = "Choose a passphrase. You need it to send coins and to see the recovery phrase."
         static let encrypt = "Encrypt and finish"
         static let skipEncryption = "Continue without encryption"
-        static let skipHelp = "Advanced: the wallet keys are kept in the macOS keychain without a passphrase."
+        static let skipHelp = "Advanced: the wallet keys are stored on this Mac without a passphrase. Anyone with access to your user account can spend the coins."
         static let restoreTitle = "Restore from recovery phrase"
         static let restoreBody = "Enter your 12, 15, 18, 21 or 24 words, separated by spaces."
         static let suggestions = "Suggestions"
