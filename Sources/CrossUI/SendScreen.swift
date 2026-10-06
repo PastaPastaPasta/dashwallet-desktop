@@ -136,18 +136,20 @@ struct SendScreen: View {
             Toast(failure.message, kind: .error, actionTitle: CrossStrings.back) {
                 Task { await model.dismiss() }
             }
-            if model.canRetryBroadcast {
-                DashButton(CrossStrings.retryBroadcast, style: .tintedBlue, size: .small) {
-                    Task { await model.retryBroadcast() }
-                }
-            }
         case .broadcastUnknown(let txid, let failure):
             // The inputs stay reserved: the transaction may already be in
             // the mempool. Dismiss clears the form without releasing them.
             DashCard {
                 Toast(CrossStrings.broadcastUnknown(txid), kind: .warning)
                 Text(failure.message).dashFont(.footnote).textSelectionEnabled()
-                DashButton(CrossStrings.done, style: .strokeGray) { Task { await model.dismiss() } }
+                HStack(spacing: Int(DashSpacing.s)) {
+                    if model.canBroadcastAgain {
+                        DashButton(CrossStrings.broadcastAgain, style: .tintedBlue) {
+                            Task { await model.broadcastAgain() }
+                        }
+                    }
+                    DashButton(CrossStrings.done, style: .strokeGray) { Task { await model.dismiss() } }
+                }
             }
         }
     }

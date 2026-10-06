@@ -164,7 +164,7 @@ enum CrossStrings {
     static func sent(_ txid: String) -> String { "Transaction sent: \(txid)" }
     static let viewTransaction = "View transaction"
     static let done = "Done"
-    static let retryBroadcast = "Retry sending"
+    static let broadcastAgain = "Broadcast again"
     static func broadcastUnknown(_ txid: String) -> String {
         "It is not known whether the network received transaction \(txid). Its coins stay reserved; check Transactions before sending again."
     }

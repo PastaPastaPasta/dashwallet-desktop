@@ -171,6 +171,7 @@ enum MacStrings {
     enum Send {
         static let payTo = "Pay To"
         static let outcomeUnknownTitle = "The transaction may have been sent"
+        static let broadcastAgain = "Broadcast Again"
         static let outcomeUnknownText =
             "The wallet could not confirm whether the network received the transaction. Its coins stay reserved. Check Transactions before you send again."
         static let showTransaction = "Show Transaction"

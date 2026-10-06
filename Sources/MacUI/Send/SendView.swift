@@ -68,6 +68,10 @@ struct SendView: View {
                 }
             }
             .accessibilityIdentifier("send.unknown.show")
+            if send.canBroadcastAgain {
+                Button(MacStrings.Send.broadcastAgain) { Task { await send.broadcastAgain() } }
+                    .accessibilityIdentifier("send.unknown.broadcastAgain")
+            }
         } message: {
             if case .broadcastUnknown(_, let failure) = send.phase {
                 Text("\(MacStrings.Send.outcomeUnknownText)\n\n\(failure.message)")
