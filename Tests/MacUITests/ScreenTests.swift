@@ -401,7 +401,11 @@ struct ScreenTests {
     static func capture<V: View>(
         _ view: V, _ size: CGSize, _ scheme: ColorScheme, _ name: String, milestone: String = "m1"
     ) async throws -> NSBitmapImageRep {
-        _ = NSApplication.shared
+        // An accessory app gets no Dock icon or menu bar and is never activated,
+        // so rendering does not take focus from the user's foreground app.
+        if NSApplication.shared.activationPolicy() != .accessory {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
         let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         // A ScrollView that fills the hosting view draws nothing through
         // cacheDisplay; a 1 pt sibling row above it makes it draw.
