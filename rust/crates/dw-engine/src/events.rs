@@ -1,13 +1,30 @@
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+//! Engine events and the per-session hub that turns dash-spv and
+//! platform-wallet callbacks into them.
+//!
+//! [`SessionHub`] is the session's in-memory state that callbacks update:
+//! the sync tracker, the history store and each wallet's balance and sync
+//! height. Callbacks only update that state and mark the event pump
+//! ([`crate::pump`]); the pump task delivers `Sync`, `Balances` and
+//! `HistoryChanged` at most 4 times a second per domain and always delivers
+//! the last change of a burst (reviews H2, M4).
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
 use dash_spv::sync::SyncProgress;
+use dashcore::Txid;
+use key_wallet::account::AccountType;
+use key_wallet::wallet::balance::WalletCoreBalance;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
 
-use crate::{DashNetwork, WalletId};
+use crate::history::HistoryStore;
+use crate::pump::{EventPump, PumpTarget, TxidSet};
+use crate::sync::{SyncSnapshot, SyncTracker};
+use crate::{DashNetwork, WalletBalances, WalletId};
 
 /// Engine → host signal. Events say *what changed*; hosts pull the data again
 /// (DESIGN-opus §1.5 rule 4).
@@ -19,12 +36,14 @@ pub enum EngineEvent {
     SessionClosed {
         network: DashNetwork,
     },
+    /// A wallet was registered, or keys were attached to a registered
+    /// wallet. Hosts reload the wallet list.
     WalletCreated {
         network: DashNetwork,
         wallet_id: WalletId,
     },
-    /// Something about this wallet changed (tx seen, IS lock, block processed).
-    WalletChanged {
+    /// `remove_wallet` finished.
+    WalletRemoved {
         network: DashNetwork,
         wallet_id: WalletId,
     },
@@ -32,15 +51,24 @@ pub enum EngineEvent {
         network: DashNetwork,
         running: bool,
     },
-    /// Throttled to at most [`PROGRESS_MIN_INTERVAL`] per network.
-    SyncProgress {
+    /// The sync snapshot changed (≤ 4 Hz, trailing edge kept).
+    Sync {
         network: DashNetwork,
-        header_tip_height: Option<u32>,
-        synced: bool,
+        snapshot: SyncSnapshot,
     },
-    PeersChanged {
+    /// The wallet's balance buckets changed. `None` while the balance is not
+    /// known yet (the scan has not reached the birth height).
+    Balances {
         network: DashNetwork,
-        connected: u32,
+        wallet_id: WalletId,
+        balances: Option<WalletBalances>,
+    },
+    /// Transactions were added or changed status. Empty `txids` means
+    /// "reload the whole history".
+    HistoryChanged {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        txids: Vec<Txid>,
     },
     Notice {
         network: Option<DashNetwork>,
@@ -65,6 +93,13 @@ pub enum NoticeCode {
     SpvError,
     /// Session shutdown left a worker running (see the detail text).
     UncleanShutdown,
+    /// SPV made no progress for 45 s while not caught up (IOS-023). The
+    /// engine owns this rule and sends one notice per stall; the host may
+    /// offer `rotate_peers`.
+    SyncStalled,
+    /// An automatic wallet backup failed (QT-116). Automatic backups are not
+    /// implemented yet, so the engine never sends it.
+    BackupFailed,
 }
 
 /// Receives engine events. Called from engine threads; must not block.
@@ -72,71 +107,309 @@ pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, event: EngineEvent);
 }
 
-/// Minimum spacing between `SyncProgress` events (≤4 Hz, DESIGN-opus §1.5).
-pub const PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Bridges platform-wallet / dash-spv callbacks of one session to the sink.
-pub(crate) struct SessionEventBridge {
-    network: DashNetwork,
-    sink: Arc<dyn EventSink>,
-    last_progress: Mutex<Option<Instant>>,
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
-impl SessionEventBridge {
+/// Balance and scan state of one wallet, kept from wallet events so the
+/// synchronous calls never wait for the wallet-manager lock.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WalletState {
+    pub birth_height: u32,
+    /// Filter-scan checkpoint (`synced_height`).
+    pub synced_height: u32,
+    /// Best processed block (`last_processed_height`).
+    pub processed_height: u32,
+    pub balance: WalletCoreBalance,
+    /// Latest balance per account.
+    pub accounts: BTreeMap<AccountType, WalletCoreBalance>,
+}
+
+impl WalletState {
+    /// Balances are known once the scan has processed the birth block
+    /// (review M-3): before that a zero would be a guess.
+    pub fn balances(&self) -> Option<WalletBalances> {
+        if self.synced_height == 0 || self.synced_height < self.birth_height {
+            return None;
+        }
+        let b = &self.balance;
+        let coinjoin = self
+            .accounts
+            .iter()
+            .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
+            .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
+            .sum();
+        Some(WalletBalances {
+            confirmed: b.confirmed(),
+            unconfirmed: b.unconfirmed(),
+            immature: b.immature(),
+            locked: b.locked(),
+            total: b.total(),
+            coinjoin,
+        })
+    }
+
+    /// Best height the wallet has seen, used as the tip for confirmations.
+    pub fn tip(&self) -> u32 {
+        self.processed_height.max(self.synced_height)
+    }
+}
+
+/// Display name and creation time of a wallet (dw-appdb `wallets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WalletName {
+    pub name: String,
+    pub created_at: Option<u64>,
+}
+
+/// In-memory state of one session, updated from SPV and wallet callbacks.
+pub(crate) struct SessionHub {
+    pub network: DashNetwork,
+    pub sink: Arc<dyn EventSink>,
+    pub tracker: Mutex<SyncTracker>,
+    pub pump: EventPump,
+    pub history: HistoryStore,
+    pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
+    pub names: RwLock<HashMap<WalletId, WalletName>>,
+}
+
+impl SessionHub {
     pub(crate) fn new(network: DashNetwork, sink: Arc<dyn EventSink>) -> Self {
         Self {
             network,
             sink,
-            last_progress: Mutex::new(None),
+            tracker: Mutex::new(SyncTracker::default()),
+            pump: EventPump::default(),
+            history: HistoryStore::default(),
+            wallets: RwLock::new(BTreeMap::new()),
+            names: RwLock::new(HashMap::new()),
         }
     }
 
-    fn progress_due(&self) -> bool {
-        let mut last = self.last_progress.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        match *last {
-            Some(t) if now.duration_since(t) < PROGRESS_MIN_INTERVAL => false,
-            _ => {
-                *last = Some(now);
-                true
+    pub(crate) fn emit(&self, event: EngineEvent) {
+        self.sink.emit(event);
+    }
+
+    pub(crate) fn tracker(&self) -> std::sync::MutexGuard<'_, SyncTracker> {
+        self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(crate) fn wallet_state(&self, id: &WalletId) -> Option<WalletState> {
+        self.wallets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    pub(crate) fn set_wallet_state(&self, id: WalletId, state: WalletState) {
+        self.wallets
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, state);
+    }
+
+    pub(crate) fn name_of(&self, id: &WalletId) -> Option<WalletName> {
+        self.names
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    pub(crate) fn set_name(&self, id: WalletId, name: WalletName) {
+        self.names
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, name);
+    }
+
+    /// Forgets everything about a removed wallet.
+    pub(crate) fn forget_wallet(&self, id: &WalletId) {
+        self.wallets
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        self.names
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        self.history.remove_wallet(id);
+    }
+
+    pub(crate) fn set_spv_running(&self, running: bool) {
+        if self.tracker().set_running(running) {
+            self.pump.mark_sync();
+        }
+    }
+
+    /// Applies a wallet event's balance snapshot. Returns whether the
+    /// visible balances changed.
+    fn update_balance(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) -> bool {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let state = map.entry(id).or_default();
+        let before = state.balances();
+        state.balance = *balance;
+        for (t, b) in accounts {
+            state.accounts.insert(t.clone(), *b);
+        }
+        before != state.balances()
+    }
+
+    /// Advances the wallet's scan heights. Returns whether the balances
+    /// became known or unknown.
+    fn update_heights(&self, id: WalletId, synced: Option<u32>, processed: Option<u32>) -> bool {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let state = map.entry(id).or_default();
+        let known_before = state.balances().is_some();
+        if let Some(h) = synced {
+            state.synced_height = h;
+        }
+        if let Some(h) = processed {
+            state.processed_height = state.processed_height.max(h);
+        }
+        known_before != state.balances().is_some()
+    }
+
+    /// Marks history entries whose confirmation count changed with a new
+    /// wallet tip.
+    fn mark_young(&self, id: WalletId) {
+        let tip = self.wallet_state(&id).map(|s| s.tip()).unwrap_or(0);
+        let young = self.history.young_txids(&id, tip);
+        if !young.is_empty() {
+            self.pump.mark_history(id, Some(&young));
+        }
+    }
+
+    pub(crate) fn apply_wallet_event(&self, event: &WalletEvent) {
+        let id = WalletId(event.wallet_id());
+        let now = Some(unix_now());
+        match event {
+            WalletEvent::TransactionDetected {
+                record,
+                balance,
+                account_balances,
+                ..
+            } => {
+                self.history.with_wallet(id, |h| h.upsert(record, now));
+                self.pump.mark_history(id, Some(&[record.txid]));
+                if self.update_balance(id, balance, account_balances) {
+                    self.pump.mark_balances(id);
+                }
+            }
+            WalletEvent::TransactionInstantLocked {
+                txid,
+                balance,
+                account_balances,
+                ..
+            } => {
+                if self.history.with_wallet(id, |h| h.set_instant_locked(txid)) {
+                    self.pump.mark_history(id, Some(&[*txid]));
+                }
+                if self.update_balance(id, balance, account_balances) {
+                    self.pump.mark_balances(id);
+                }
+            }
+            WalletEvent::TransactionsSwept {
+                txids,
+                balance,
+                account_balances,
+                ..
+            } => {
+                // Upstream deleted these records (provably beaten spends);
+                // the history drops them too.
+                self.history.with_wallet(id, |h| {
+                    for t in txids {
+                        h.txs.remove(t);
+                    }
+                });
+                self.pump.mark_history(id, Some(txids));
+                if self.update_balance(id, balance, account_balances) {
+                    self.pump.mark_balances(id);
+                }
+            }
+            WalletEvent::BlockProcessed {
+                height,
+                inserted,
+                updated,
+                matured,
+                balance,
+                account_balances,
+                ..
+            } => {
+                let changed: Vec<Txid> = self.history.with_wallet(id, |h| {
+                    inserted
+                        .iter()
+                        .chain(updated)
+                        .chain(matured)
+                        .map(|r| {
+                            h.upsert(r, now);
+                            r.txid
+                        })
+                        .collect()
+                });
+                let flipped = self.update_heights(id, None, Some(*height));
+                if !changed.is_empty() {
+                    self.pump.mark_history(id, Some(&changed));
+                }
+                self.mark_young(id);
+                if self.update_balance(id, balance, account_balances) || flipped {
+                    self.pump.mark_balances(id);
+                }
+            }
+            WalletEvent::SyncHeightAdvanced { height, .. } => {
+                if self.update_heights(id, Some(*height), Some(*height)) {
+                    self.pump.mark_balances(id);
+                }
+                self.mark_young(id);
+            }
+            WalletEvent::ChainLockProcessed {
+                locked_transactions,
+                ..
+            } => {
+                let locked: Vec<Txid> = self.history.with_wallet(id, |h| {
+                    locked_transactions
+                        .values()
+                        .flatten()
+                        .filter(|t| h.set_chain_locked(t))
+                        .copied()
+                        .collect()
+                });
+                if !locked.is_empty() {
+                    self.pump.mark_history(id, Some(&locked));
+                }
             }
         }
     }
 }
 
-impl EventHandler for SessionEventBridge {
+impl EventHandler for SessionHub {
     fn on_progress(&self, progress: &SyncProgress) {
-        if !self.progress_due() {
-            return;
+        if self.tracker().on_progress(progress) {
+            self.pump.mark_sync();
         }
-        self.sink.emit(EngineEvent::SyncProgress {
-            network: self.network.clone(),
-            header_tip_height: progress.headers().ok().map(|h| h.tip_height()),
-            synced: progress.is_synced(),
-        });
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if let NetworkEvent::PeersUpdated {
-            connected_count, ..
-        } = event
-        {
-            self.sink.emit(EngineEvent::PeersChanged {
-                network: self.network.clone(),
-                connected: u32::try_from(*connected_count).unwrap_or(u32::MAX),
-            });
+        if self.tracker().on_network_event(event) {
+            self.pump.mark_sync();
         }
     }
 
     fn on_wallet_event(&self, event: &WalletEvent) {
-        self.sink.emit(EngineEvent::WalletChanged {
-            network: self.network.clone(),
-            wallet_id: WalletId(event.wallet_id()),
-        });
+        self.apply_wallet_event(event);
     }
 
     fn on_error(&self, error: &str) {
-        self.sink.emit(EngineEvent::Notice {
+        self.emit(EngineEvent::Notice {
             network: Some(self.network.clone()),
             code: NoticeCode::SpvError,
             detail: error.to_string(),
@@ -144,4 +417,85 @@ impl EventHandler for SessionEventBridge {
     }
 }
 
-impl PlatformEventHandler for SessionEventBridge {}
+impl PlatformEventHandler for SessionHub {}
+
+/// Delivers the hub's merged changes. Runs on the pump task, which the
+/// session stops before it shuts the manager down.
+pub(crate) struct SessionPump {
+    pub hub: Arc<SessionHub>,
+    pub spv: Arc<platform_wallet::SpvRuntime>,
+    pub appdb: Arc<dw_appdb::AppDb>,
+}
+
+impl PumpTarget for SessionPump {
+    async fn flush_sync(&self) {
+        let due = self.hub.tracker().tip_time_due();
+        if let Some(height) = due {
+            let time = self.spv.tip_block_time().await.map(u64::from);
+            self.hub.tracker().set_tip_time(height, time);
+        }
+        let snapshot = self.hub.tracker().snapshot();
+        self.hub.emit(EngineEvent::Sync {
+            network: self.hub.network.clone(),
+            snapshot,
+        });
+    }
+
+    fn flush_balances(&self, wallets: BTreeSet<WalletId>) {
+        for wallet_id in wallets {
+            let Some(state) = self.hub.wallet_state(&wallet_id) else {
+                continue;
+            };
+            self.hub.emit(EngineEvent::Balances {
+                network: self.hub.network.clone(),
+                wallet_id,
+                balances: state.balances(),
+            });
+        }
+    }
+
+    fn flush_history(&self, changes: BTreeMap<WalletId, TxidSet>) {
+        let mut seen: Vec<(WalletId, Vec<String>)> = Vec::new();
+        for (wallet_id, set) in changes {
+            let txids = match set {
+                TxidSet::All => Vec::new(),
+                TxidSet::Some(set) => set.into_iter().collect(),
+            };
+            if !txids.is_empty() {
+                seen.push((wallet_id, txids.iter().map(Txid::to_string).collect()));
+            }
+            self.hub.emit(EngineEvent::HistoryChanged {
+                network: self.hub.network.clone(),
+                wallet_id,
+                txids,
+            });
+        }
+        if seen.is_empty() {
+            return;
+        }
+        // First-seen times keep a mempool payment's arrival time across
+        // restarts (the persisted record has only the block time).
+        let appdb = Arc::clone(&self.appdb);
+        let now = unix_now();
+        tokio::task::spawn_blocking(move || {
+            for (wallet_id, txids) in seen {
+                if let Err(e) = appdb.note_txs_seen(&wallet_id.to_string(), &txids, now) {
+                    tracing::warn!(%wallet_id, error = %e, "could not store first-seen times");
+                }
+            }
+        });
+    }
+
+    fn tick(&self) {
+        let stalled = self.hub.tracker().check_stall();
+        if stalled {
+            let since = self.hub.tracker().snapshot().seconds_since_progress;
+            self.hub.emit(EngineEvent::Notice {
+                network: Some(self.hub.network.clone()),
+                code: NoticeCode::SyncStalled,
+                detail: format!("no sync progress for {} s", since.unwrap_or(0)),
+            });
+            self.hub.pump.mark_sync();
+        }
+    }
+}
