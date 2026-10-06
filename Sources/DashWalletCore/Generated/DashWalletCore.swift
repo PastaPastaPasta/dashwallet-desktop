@@ -487,6 +487,22 @@ fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -545,6 +561,22 @@ fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
 
     public static func write(_ value: Int64, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
     }
 }
 
@@ -1661,6 +1693,77 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func setBackupPolicy(keep: UInt32) async throws  -> BackupPolicy
     
     /**
+     * IOS-057 recovery scan: raises the CoinJoin account's lookahead and
+     * the BIP44 chains' to the restore gap (1000), rescans from the
+     * wallet's birth height and reports what it found. Runs as a rescan
+     * (`rescan_progress`, `cancel_rescan`).
+     */
+    func coinjoinRecoveryScan(walletId: String) async throws  -> CoinJoinRecoveryReport
+    
+    /**
+     * The wallet's CoinJoin salt (`coinjoinsalt get`), 64 hex characters.
+     * Created on first use; imported from `cj_salt` with a Dash Core wallet.
+     */
+    func coinjoinSalt(walletId: String) async throws  -> String
+    
+    /**
+     * The network's CoinJoin options (defaults until changed). In-memory
+     * read.
+     */
+    func coinjoinSettings() throws  -> CoinJoinSettings
+    
+    /**
+     * The wallet's mixing status (QT-041…050). In-memory read; re-query on
+     * `CoinJoin` events.
+     */
+    func coinjoinStatus(walletId: String) throws  -> CoinJoinStatus
+    
+    /**
+     * `coinjoinsalt generate`: a new random salt; returns it.
+     */
+    func generateCoinjoinSalt(walletId: String) async throws  -> String
+    
+    /**
+     * The chunks "Move mixed coins" would broadcast. Reads coins only.
+     */
+    func mixedCoinsSweepPlan(walletId: String, destination: MixedCoinsDestination) async throws  -> MixedCoinsSweepPlan
+    
+    /**
+     * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
+     * of ≤ 500 inputs to `destination`. `grant_id`: a `Spend` grant of at
+     * least the plan's total. Stops at the first failing chunk and reports
+     * what moved.
+     */
+    func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, grantId: String) async throws  -> MixedCoinsSweepResult
+    
+    /**
+     * `coinjoinsalt set`: replaces the salt, which changes which coins
+     * count as fully mixed. Refused while mixing (`invalid_argument`).
+     */
+    func setCoinjoinSalt(walletId: String, saltHex: String) async throws 
+    
+    /**
+     * Applies the options live (dash-qt applies without restart) and
+     * stores them in app.sqlite. Turning CoinJoin off stops every wallet's
+     * mixing (`stop_reason = Disabled`). Ranges are checked first
+     * (`invalid_argument`, detail names the field).
+     */
+    func setCoinjoinSettings(settings: CoinJoinSettings) async throws 
+    
+    /**
+     * "Start CoinJoin" for one wallet. Needs the vault unencrypted,
+     * unlocked or unlocked for mixing only (`coinjoin.vault_locked`
+     * otherwise: the host offers "Unlock wallet for mixing only"). Idempotent.
+     */
+    func startMixing(walletId: String) async throws 
+    
+    /**
+     * "Stop CoinJoin": resets the open sessions (`resetPool`), releases
+     * their reserved coins, then stops. Idempotent.
+     */
+    func stopMixing(walletId: String) async throws 
+    
+    /**
      * Dust attack protection threshold in duffs; `None` = off (QT-075).
      */
     func dustProtection() async throws  -> UInt64?
@@ -1761,6 +1864,96 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func feePolicy() throws  -> FeePolicy
     
     /**
+     * Signs a funding vote for each masternode and relays it (QT-131).
+     * `grant_id`: a `Governance` grant. One result per masternode; a
+     * masternode that voted on this proposal less than an hour ago gets
+     * `governance.vote_too_often` without being sent.
+     */
+    func castVotes(hash: String, outcome: VoteOutcome, proTxHashes: [String], grantId: String) async throws  -> [VoteResult]
+    
+    /**
+     * Creates the proposal (`gobject prepare`): validates, builds and
+     * broadcasts the 1 DASH `OP_RETURN <hash>` collateral transaction from
+     * the wallet and stores the proposal as pending (app.sqlite).
+     * `grant_id`: a `Spend` grant of at least 1 DASH + fee.
+     */
+    func createProposal(walletId: String, draft: ProposalDraft, grantId: String) async throws  -> PendingProposal
+    
+    /**
+     * The clock (QT-026). Needs the chain tip only; `budget_committed`
+     * needs governance sync. In-memory read.
+     */
+    func governanceClock() throws  -> GovernanceClock
+    
+    /**
+     * The info panel (QT-134); `None` fields are not synced yet.
+     */
+    func governanceInfo() async throws  -> GovernanceInfo
+    
+    /**
+     * In-memory read; re-query on `Governance` events.
+     */
+    func governanceSyncState() throws  -> GovernanceSyncState
+    
+    /**
+     * Created, not yet submitted, unexpired proposals (Resume Proposals).
+     */
+    func pendingProposals(walletId: String) async throws  -> [PendingProposal]
+    
+    func proposalDetail(hash: String) async throws  -> ProposalDetail
+    
+    /**
+     * "View JSON": the data JSON with dash-qt's key order
+     * `name, payment_address, payment_amount, url, start_epoch, end_epoch,
+     * type`.
+     */
+    func proposalJson(draft: ProposalDraft) throws  -> String
+    
+    /**
+     * "View Payload": the hex-encoded object data (≤ 512 bytes).
+     */
+    func proposalPayloadHex(draft: ProposalDraft) throws  -> String
+    
+    /**
+     * The proposal list (QT-128/129), sorted by dash-qt's status order.
+     * `Active` needs sync enabled (`governance.sync_disabled`); `Mine`
+     * works without it and shows pending proposals.
+     */
+    func proposals(query: ProposalQuery) async throws  -> [ProposalRow]
+    
+    /**
+     * Turns govsync on or off. The host turns it on while the Governance
+     * tab or the governance clock is shown (both opt-in in dash-qt), so a
+     * wallet that never shows governance never downloads it. Persisted.
+     */
+    func setGovernanceSyncEnabled(enabled: Bool) async throws 
+    
+    /**
+     * "Broadcast" (`gobject submit`): relays the object once its collateral
+     * has ≥ 1 confirmation. Returns the object hash.
+     */
+    func submitProposal(walletId: String, hash: String) async throws  -> String
+    
+    /**
+     * The next 12 superblocks with estimated times (Create Proposal
+     * "Payment date"). Needs the chain tip (`governance.not_synced` before
+     * headers synced).
+     */
+    func superblockDates(count: UInt32) throws  -> [SuperblockDate]
+    
+    /**
+     * Every rule of QT-132 that fails, in field order; empty = valid.
+     */
+    func validateProposal(draft: ProposalDraft) throws  -> [ProposalField]
+    
+    /**
+     * Masternodes that can vote on `hash`: those whose voting key a
+     * wallet holds (all wallets, or `wallet_id`'s) or a tracked masternode
+     * has attached (owner keys are never used, dash-qt §11.2).
+     */
+    func votingMasternodes(hash: String, walletId: String?) async throws  -> [VotingMasternode]
+    
+    /**
      * One page of history records. Hosts call it again after
      * `EngineEvent::HistoryChanged` for the wallet. Cursors are keyset
      * cursors: transactions arriving between pages do not invalidate them
@@ -1795,6 +1988,75 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * Sets or clears (`None` or empty) the label of a transaction.
      */
     func setTxLabel(walletId: String, txid: String, label: String?) async throws 
+    
+    /**
+     * The details dialog (QT-122) and IOS-080 detail.
+     */
+    func masternodeDetail(proTxHash: String) async throws  -> MasternodeDetail
+    
+    /**
+     * In-memory read; re-query on `Masternodes` events.
+     */
+    func masternodeListState() throws  -> MasternodeListState
+    
+    /**
+     * The filtered list (QT-118/119), list order. Works without a wallet
+     * (owned detection then finds nothing). Before the list synced: only
+     * wallet and tracked masternodes, with `Unknown` status.
+     */
+    func masternodes(query: MasternodeQuery) async throws  -> [MasternodeRow]
+    
+    /**
+     * Attaches a private key to a tracked masternode: WIF or hex for
+     * secp256k1 roles, hex for BLS, hex/base64 for ed25519. The key must
+     * match the masternode's registered key for `role`
+     * (`masternode.invalid_key`). Stored in the vault; `MasternodeOp`
+     * grant. The bytes are wiped when the call returns.
+     */
+    func attachMasternodeKey(proTxHash: String, role: MasternodeKeyRole, key: Data, grantId: String) async throws 
+    
+    func detachMasternodeKey(proTxHash: String, role: MasternodeKeyRole) async throws 
+    
+    /**
+     * Evonode Platform status (IOS-080/081). Platform query: may land in
+     * M4 (`NotImplemented { call: "NetworkSession.evonode_status.platform" }`
+     * until then).
+     */
+    func evonodeStatus(proTxHash: String) async throws  -> EvonodePlatformStatus
+    
+    /**
+     * Finds masternodes in the list by IP, `IP:port`, proTxHash, owner /
+     * voting / payout address or operator key (IOS-082 "Track any
+     * masternode").
+     */
+    func locateMasternodes(query: String) async throws  -> [MasternodeRow]
+    
+    /**
+     * Derived provider keys of `role` for indexes `start..start+count`
+     * (count ≤ 100), with where each is used. Public data, no grant.
+     */
+    func masternodeKeys(walletId: String, role: MasternodeKeyRole, start: UInt32, count: UInt32) async throws  -> [MasternodeKeyInfo]
+    
+    func setTrackedMasternodeLabel(proTxHash: String, label: String?) async throws 
+    
+    func trackMasternode(proTxHash: String, label: String?) async throws  -> TrackedMasternode
+    
+    func trackedMasternodes() async throws  -> [TrackedMasternode]
+    
+    /**
+     * Stops tracking and deletes its attached keys from the vault.
+     * `false` when it was not tracked.
+     */
+    func untrackMasternode(proTxHash: String) async throws  -> Bool
+    
+    /**
+     * Withdraws evonode credits to Core (IOS-081, tracked withdraw
+     * IOS-082). Signs with the owner or payout key a wallet derives or a
+     * tracked masternode has attached; `MasternodeOp` grant. Platform state
+     * transition: may land in M4 (`.platform` call name until then).
+     * Returns the withdrawal's state-transition id.
+     */
+    func withdrawEvonodeCredits(proTxHash: String, amount: UInt64, destination: CreditWithdrawalDestination, grantId: String) async throws  -> String
     
     /**
      * `signmessage`: base64 compact signature of `message` by `address`'s
@@ -1846,6 +2108,137 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * In-memory read.
      */
     func walletLoadStates() throws  -> [WalletLoadState]
+    
+    /**
+     * The Network sub-tab. In-memory read; re-query on `Sync` and
+     * `Masternodes` events.
+     */
+    func networkStats() throws  -> NetworkStats
+    
+    /**
+     * Broadcasts saved standby-dissolution transactions in order.
+     * Returns their txids.
+     */
+    func broadcastStandbyDissolution(transactionsHex: [String]) async throws  -> [String]
+    
+    /**
+     * "Existing wallet UTXO" choices for `node_type`, usable ones first.
+     */
+    func collateralCandidates(walletId: String, nodeType: MasternodeType) async throws  -> [CollateralCandidate]
+    
+    /**
+     * Starts a shared-masternode registration as coordinator (QT-126).
+     */
+    func createSharedSession(walletId: String, terms: SharedMasternodeTerms) async throws  -> SharedSessionInfo
+    
+    /**
+     * Create Standby Dissolution: the two raw transactions to keep for a
+     * later broadcast; the engine records that one exists. `MasternodeOp`
+     * grant.
+     */
+    func createStandbyDissolution(walletId: String, proTxHash: String, grantId: String) async throws  -> StandbyDissolution
+    
+    /**
+     * Wallet addresses with spendable coins ("Fee source" list).
+     */
+    func feeSourceCandidates(walletId: String) async throws  -> [FeeSourceCandidate]
+    
+    /**
+     * Reads pasted text or a dropped file's contents (≤ 2 MiB, this
+     * network only) and routes it: a session message is checked and
+     * imported into its session (created for an invitation), a standby
+     * dissolution is returned for broadcast.
+     */
+    func importSharedMessage(walletId: String, text: String) async throws  -> SharedMessageKind
+    
+    /**
+     * Dissolve Now (unilateral). During the early period the wallet's
+     * principal pays the penalty; `accept_penalty` must be true then.
+     * `MasternodeOp` grant.
+     */
+    func prepareDissolveNow(proTxHash: String, acceptPenalty: Bool, feeWalletId: String, grantId: String) async throws  -> PreparedProviderTx
+    
+    /**
+     * Builds the registration (QT-123). `grant_id`: a `MasternodeOp`
+     * grant (a `FundNew` registration also spends the collateral, which
+     * the grant must cover as a spend). Rules and their codes:
+     * m3-engine.md §2.4.
+     */
+    func prepareRegistration(request: RegistrationRequest, grantId: String) async throws  -> PreparedRegistration
+    
+    /**
+     * Revoke (QT-125). `MasternodeOp` grant.
+     */
+    func prepareRevoke(request: RevokeRequest, grantId: String) async throws  -> PreparedProviderTx
+    
+    /**
+     * Change Reward Address of the wallet's share (ProUpShareTx).
+     * `MasternodeOp` grant.
+     */
+    func prepareShareRewardUpdate(proTxHash: String, shareIndex: UInt32, payoutAddress: String, feeWalletId: String, grantId: String) async throws  -> PreparedProviderTx
+    
+    /**
+     * Update Registrar (QT-125). `MasternodeOp` grant. Refused for shared
+     * masternodes (they rotate keys through a shared session).
+     */
+    func prepareUpdateRegistrar(request: UpdateRegistrarRequest, grantId: String) async throws  -> PreparedProviderTx
+    
+    /**
+     * Update Service (QT-125, IOS-081 unban). `MasternodeOp` grant.
+     */
+    func prepareUpdateService(request: UpdateServiceRequest, grantId: String) async throws  -> PreparedProviderTx
+    
+    /**
+     * Leaves the session and releases its reserved coins (close
+     * protection's "release").
+     */
+    func sharedSessionAbandon(sessionId: String) async throws 
+    
+    /**
+     * Approves the locked terms (consent signature with the share owner
+     * key). `MasternodeOp` grant.
+     */
+    func sharedSessionApprove(sessionId: String, grantId: String) async throws  -> SharedSessionInfo
+    
+    /**
+     * Coordinator: combines the signed contributions and broadcasts.
+     * Returns the txid (the proTxHash for a registration).
+     */
+    func sharedSessionBroadcast(sessionId: String) async throws  -> String
+    
+    /**
+     * Participant: reserves coins and fills in a share's addresses.
+     */
+    func sharedSessionContribute(sessionId: String, contribution: ShareContribution) async throws  -> SharedSessionInfo
+    
+    /**
+     * The message to send the others for the session's current stage.
+     */
+    func sharedSessionMessage(sessionId: String) async throws  -> SharedEnvelope
+    
+    /**
+     * Signs the wallet's inputs of the session transaction after checking
+     * that no foreign or short-changed input is asked
+     * (`masternode.shared_inputs_refused`). `MasternodeOp` grant.
+     */
+    func sharedSessionSign(sessionId: String, grantId: String) async throws  -> SharedSessionInfo
+    
+    /**
+     * Open sessions of the wallet (resumable after restart).
+     */
+    func sharedSessions(walletId: String) async throws  -> [SharedSessionInfo]
+    
+    /**
+     * Dissolve Together: a unanimous session that returns every
+     * principal.
+     */
+    func startDissolveTogether(walletId: String, proTxHash: String) async throws  -> SharedSessionInfo
+    
+    /**
+     * Rotate Operator/Voting Key: starts a session every owner approves,
+     * then the preparer sends (ProUpSharedRegTx).
+     */
+    func startSharedKeyRotation(walletId: String, proTxHash: String, operatorKey: OperatorKeyChoice?, votingAddress: String?) async throws  -> SharedSessionInfo
     
     /**
      * The Operations dialog content for `psbt` seen from `wallet_id`
@@ -2270,6 +2663,218 @@ open func setBackupPolicy(keep: UInt32)async throws  -> BackupPolicy  {
 }
     
     /**
+     * IOS-057 recovery scan: raises the CoinJoin account's lookahead and
+     * the BIP44 chains' to the restore gap (1000), rescans from the
+     * wallet's birth height and reports what it found. Runs as a rescan
+     * (`rescan_progress`, `cancel_rescan`).
+     */
+open func coinjoinRecoveryScan(walletId: String)async throws  -> CoinJoinRecoveryReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_coinjoin_recovery_scan(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCoinJoinRecoveryReport_lift,
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * The wallet's CoinJoin salt (`coinjoinsalt get`), 64 hex characters.
+     * Created on first use; imported from `cj_salt` with a Dash Core wallet.
+     */
+open func coinjoinSalt(walletId: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_coinjoin_salt(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * The network's CoinJoin options (defaults until changed). In-memory
+     * read.
+     */
+open func coinjoinSettings()throws  -> CoinJoinSettings  {
+    return try  FfiConverterTypeCoinJoinSettings_lift(try rustCallWithError(FfiConverterTypeCoinJoinError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_coinjoin_settings(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The wallet's mixing status (QT-041…050). In-memory read; re-query on
+     * `CoinJoin` events.
+     */
+open func coinjoinStatus(walletId: String)throws  -> CoinJoinStatus  {
+    return try  FfiConverterTypeCoinJoinStatus_lift(try rustCallWithError(FfiConverterTypeCoinJoinError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_coinjoin_status(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(walletId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * `coinjoinsalt generate`: a new random salt; returns it.
+     */
+open func generateCoinjoinSalt(walletId: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_generate_coinjoin_salt(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * The chunks "Move mixed coins" would broadcast. Reads coins only.
+     */
+open func mixedCoinsSweepPlan(walletId: String, destination: MixedCoinsDestination)async throws  -> MixedCoinsSweepPlan  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_mixed_coins_sweep_plan(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMixedCoinsDestination_lower(destination)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeMixedCoinsSweepPlan_lift,
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
+     * of ≤ 500 inputs to `destination`. `grant_id`: a `Spend` grant of at
+     * least the plan's total. Stops at the first failing chunk and reports
+     * what moved.
+     */
+open func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, grantId: String)async throws  -> MixedCoinsSweepResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_move_mixed_coins(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMixedCoinsDestination_lower(destination),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeMixedCoinsSweepResult_lift,
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * `coinjoinsalt set`: replaces the salt, which changes which coins
+     * count as fully mixed. Refused while mixing (`invalid_argument`).
+     */
+open func setCoinjoinSalt(walletId: String, saltHex: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_coinjoin_salt(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(saltHex)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * Applies the options live (dash-qt applies without restart) and
+     * stores them in app.sqlite. Turning CoinJoin off stops every wallet's
+     * mixing (`stop_reason = Disabled`). Ranges are checked first
+     * (`invalid_argument`, detail names the field).
+     */
+open func setCoinjoinSettings(settings: CoinJoinSettings)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_coinjoin_settings(
+                        self.uniffiCloneHandle(),FfiConverterTypeCoinJoinSettings_lower(settings)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * "Start CoinJoin" for one wallet. Needs the vault unencrypted,
+     * unlocked or unlocked for mixing only (`coinjoin.vault_locked`
+     * otherwise: the host offers "Unlock wallet for mixing only"). Idempotent.
+     */
+open func startMixing(walletId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_start_mixing(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
+     * "Stop CoinJoin": resets the open sessions (`resetPool`), releases
+     * their reserved coins, then stops. Idempotent.
+     */
+open func stopMixing(walletId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_stop_mixing(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoinJoinError_lift
+        )
+}
+    
+    /**
      * Dust attack protection threshold in duffs; `None` = off (QT-075).
      */
 open func dustProtection()async throws  -> UInt64?  {
@@ -2559,6 +3164,268 @@ open func feePolicy()throws  -> FeePolicy  {
 }
     
     /**
+     * Signs a funding vote for each masternode and relays it (QT-131).
+     * `grant_id`: a `Governance` grant. One result per masternode; a
+     * masternode that voted on this proposal less than an hour ago gets
+     * `governance.vote_too_often` without being sent.
+     */
+open func castVotes(hash: String, outcome: VoteOutcome, proTxHashes: [String], grantId: String)async throws  -> [VoteResult]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_cast_votes(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(hash),FfiConverterTypeVoteOutcome_lower(outcome),FfiConverterSequenceString.lower(proTxHashes),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeVoteResult.lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * Creates the proposal (`gobject prepare`): validates, builds and
+     * broadcasts the 1 DASH `OP_RETURN <hash>` collateral transaction from
+     * the wallet and stores the proposal as pending (app.sqlite).
+     * `grant_id`: a `Spend` grant of at least 1 DASH + fee.
+     */
+open func createProposal(walletId: String, draft: ProposalDraft, grantId: String)async throws  -> PendingProposal  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_create_proposal(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeProposalDraft_lower(draft),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePendingProposal_lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * The clock (QT-026). Needs the chain tip only; `budget_committed`
+     * needs governance sync. In-memory read.
+     */
+open func governanceClock()throws  -> GovernanceClock  {
+    return try  FfiConverterTypeGovernanceClock_lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_governance_clock(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The info panel (QT-134); `None` fields are not synced yet.
+     */
+open func governanceInfo()async throws  -> GovernanceInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_governance_info(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeGovernanceInfo_lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * In-memory read; re-query on `Governance` events.
+     */
+open func governanceSyncState()throws  -> GovernanceSyncState  {
+    return try  FfiConverterTypeGovernanceSyncState_lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_governance_sync_state(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Created, not yet submitted, unexpired proposals (Resume Proposals).
+     */
+open func pendingProposals(walletId: String)async throws  -> [PendingProposal]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_pending_proposals(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypePendingProposal.lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+open func proposalDetail(hash: String)async throws  -> ProposalDetail  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_proposal_detail(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(hash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeProposalDetail_lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * "View JSON": the data JSON with dash-qt's key order
+     * `name, payment_address, payment_amount, url, start_epoch, end_epoch,
+     * type`.
+     */
+open func proposalJson(draft: ProposalDraft)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_proposal_json(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeProposalDraft_lower(draft),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * "View Payload": the hex-encoded object data (≤ 512 bytes).
+     */
+open func proposalPayloadHex(draft: ProposalDraft)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_proposal_payload_hex(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeProposalDraft_lower(draft),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The proposal list (QT-128/129), sorted by dash-qt's status order.
+     * `Active` needs sync enabled (`governance.sync_disabled`); `Mine`
+     * works without it and shows pending proposals.
+     */
+open func proposals(query: ProposalQuery)async throws  -> [ProposalRow]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_proposals(
+                        self.uniffiCloneHandle(),FfiConverterTypeProposalQuery_lower(query)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeProposalRow.lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * Turns govsync on or off. The host turns it on while the Governance
+     * tab or the governance clock is shown (both opt-in in dash-qt), so a
+     * wallet that never shows governance never downloads it. Persisted.
+     */
+open func setGovernanceSyncEnabled(enabled: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_governance_sync_enabled(
+                        self.uniffiCloneHandle(),FfiConverterBool.lower(enabled)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * "Broadcast" (`gobject submit`): relays the object once its collateral
+     * has ≥ 1 confirmation. Returns the object hash.
+     */
+open func submitProposal(walletId: String, hash: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_submit_proposal(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(hash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
+     * The next 12 superblocks with estimated times (Create Proposal
+     * "Payment date"). Needs the chain tip (`governance.not_synced` before
+     * headers synced).
+     */
+open func superblockDates(count: UInt32)throws  -> [SuperblockDate]  {
+    return try  FfiConverterSequenceTypeSuperblockDate.lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_superblock_dates(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(count),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Every rule of QT-132 that fails, in field order; empty = valid.
+     */
+open func validateProposal(draft: ProposalDraft)throws  -> [ProposalField]  {
+    return try  FfiConverterSequenceTypeProposalField.lift(try rustCallWithError(FfiConverterTypeGovernanceError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_validate_proposal(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeProposalDraft_lower(draft),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Masternodes that can vote on `hash`: those whose voting key a
+     * wallet holds (all wallets, or `wallet_id`'s) or a tracked masternode
+     * has attached (owner keys are never used, dash-qt §11.2).
+     */
+open func votingMasternodes(hash: String, walletId: String?)async throws  -> [VotingMasternode]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_voting_masternodes(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(hash),FfiConverterOptionString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeVotingMasternode.lift,
+            errorHandler: FfiConverterTypeGovernanceError_lift
+        )
+}
+    
+    /**
      * One page of history records. Hosts call it again after
      * `EngineEvent::HistoryChanged` for the wallet. Cursors are keyset
      * cursors: transactions arriving between pages do not invalidate them
@@ -2675,6 +3542,250 @@ open func setTxLabel(walletId: String, txid: String, label: String?)async throws
             freeFunc: ffi_dashwallet_core_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeLabelsError_lift
+        )
+}
+    
+    /**
+     * The details dialog (QT-122) and IOS-080 detail.
+     */
+open func masternodeDetail(proTxHash: String)async throws  -> MasternodeDetail  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_masternode_detail(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeMasternodeDetail_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * In-memory read; re-query on `Masternodes` events.
+     */
+open func masternodeListState()throws  -> MasternodeListState  {
+    return try  FfiConverterTypeMasternodeListState_lift(try rustCallWithError(FfiConverterTypeMasternodeError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_masternode_list_state(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The filtered list (QT-118/119), list order. Works without a wallet
+     * (owned detection then finds nothing). Before the list synced: only
+     * wallet and tracked masternodes, with `Unknown` status.
+     */
+open func masternodes(query: MasternodeQuery)async throws  -> [MasternodeRow]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_masternodes(
+                        self.uniffiCloneHandle(),FfiConverterTypeMasternodeQuery_lower(query)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeMasternodeRow.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Attaches a private key to a tracked masternode: WIF or hex for
+     * secp256k1 roles, hex for BLS, hex/base64 for ed25519. The key must
+     * match the masternode's registered key for `role`
+     * (`masternode.invalid_key`). Stored in the vault; `MasternodeOp`
+     * grant. The bytes are wiped when the call returns.
+     */
+open func attachMasternodeKey(proTxHash: String, role: MasternodeKeyRole, key: Data, grantId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_attach_masternode_key(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterTypeMasternodeKeyRole_lower(role),FfiConverterData.lower(key),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func detachMasternodeKey(proTxHash: String, role: MasternodeKeyRole)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_detach_masternode_key(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterTypeMasternodeKeyRole_lower(role)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Evonode Platform status (IOS-080/081). Platform query: may land in
+     * M4 (`NotImplemented { call: "NetworkSession.evonode_status.platform" }`
+     * until then).
+     */
+open func evonodeStatus(proTxHash: String)async throws  -> EvonodePlatformStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_evonode_status(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeEvonodePlatformStatus_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Finds masternodes in the list by IP, `IP:port`, proTxHash, owner /
+     * voting / payout address or operator key (IOS-082 "Track any
+     * masternode").
+     */
+open func locateMasternodes(query: String)async throws  -> [MasternodeRow]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_locate_masternodes(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(query)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeMasternodeRow.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Derived provider keys of `role` for indexes `start..start+count`
+     * (count ≤ 100), with where each is used. Public data, no grant.
+     */
+open func masternodeKeys(walletId: String, role: MasternodeKeyRole, start: UInt32, count: UInt32)async throws  -> [MasternodeKeyInfo]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_masternode_keys(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMasternodeKeyRole_lower(role),FfiConverterUInt32.lower(start),FfiConverterUInt32.lower(count)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeMasternodeKeyInfo.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func setTrackedMasternodeLabel(proTxHash: String, label: String?)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_tracked_masternode_label(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterOptionString.lower(label)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func trackMasternode(proTxHash: String, label: String?)async throws  -> TrackedMasternode  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_track_masternode(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterOptionString.lower(label)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTrackedMasternode_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func trackedMasternodes()async throws  -> [TrackedMasternode]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_tracked_masternodes(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeTrackedMasternode.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Stops tracking and deletes its attached keys from the vault.
+     * `false` when it was not tracked.
+     */
+open func untrackMasternode(proTxHash: String)async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_untrack_masternode(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_i8,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_i8,
+            freeFunc: ffi_dashwallet_core_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Withdraws evonode credits to Core (IOS-081, tracked withdraw
+     * IOS-082). Signs with the owner or payout key a wallet derives or a
+     * tracked masternode has attached; `MasternodeOp` grant. Platform state
+     * transition: may land in M4 (`.platform` call name until then).
+     * Returns the withdrawal's state-transition id.
+     */
+open func withdrawEvonodeCredits(proTxHash: String, amount: UInt64, destination: CreditWithdrawalDestination, grantId: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_withdraw_evonode_credits(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterUInt64.lower(amount),FfiConverterTypeCreditWithdrawalDestination_lower(destination),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
         )
 }
     
@@ -2818,6 +3929,438 @@ open func walletLoadStates()throws  -> [WalletLoadState]  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * The Network sub-tab. In-memory read; re-query on `Sync` and
+     * `Masternodes` events.
+     */
+open func networkStats()throws  -> NetworkStats  {
+    return try  FfiConverterTypeNetworkStats_lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_network_stats(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Broadcasts saved standby-dissolution transactions in order.
+     * Returns their txids.
+     */
+open func broadcastStandbyDissolution(transactionsHex: [String])async throws  -> [String]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_broadcast_standby_dissolution(
+                        self.uniffiCloneHandle(),FfiConverterSequenceString.lower(transactionsHex)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceString.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * "Existing wallet UTXO" choices for `node_type`, usable ones first.
+     */
+open func collateralCandidates(walletId: String, nodeType: MasternodeType)async throws  -> [CollateralCandidate]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_collateral_candidates(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMasternodeType_lower(nodeType)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeCollateralCandidate.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Starts a shared-masternode registration as coordinator (QT-126).
+     */
+open func createSharedSession(walletId: String, terms: SharedMasternodeTerms)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_create_shared_session(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeSharedMasternodeTerms_lower(terms)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Create Standby Dissolution: the two raw transactions to keep for a
+     * later broadcast; the engine records that one exists. `MasternodeOp`
+     * grant.
+     */
+open func createStandbyDissolution(walletId: String, proTxHash: String, grantId: String)async throws  -> StandbyDissolution  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_create_standby_dissolution(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(proTxHash),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeStandbyDissolution_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Wallet addresses with spendable coins ("Fee source" list).
+     */
+open func feeSourceCandidates(walletId: String)async throws  -> [FeeSourceCandidate]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_fee_source_candidates(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeFeeSourceCandidate.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Reads pasted text or a dropped file's contents (≤ 2 MiB, this
+     * network only) and routes it: a session message is checked and
+     * imported into its session (created for an invitation), a standby
+     * dissolution is returned for broadcast.
+     */
+open func importSharedMessage(walletId: String, text: String)async throws  -> SharedMessageKind  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_import_shared_message(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(text)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedMessageKind_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Dissolve Now (unilateral). During the early period the wallet's
+     * principal pays the penalty; `accept_penalty` must be true then.
+     * `MasternodeOp` grant.
+     */
+open func prepareDissolveNow(proTxHash: String, acceptPenalty: Bool, feeWalletId: String, grantId: String)async throws  -> PreparedProviderTx  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_dissolve_now(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterBool.lower(acceptPenalty),FfiConverterString.lower(feeWalletId),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedProviderTx_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Builds the registration (QT-123). `grant_id`: a `MasternodeOp`
+     * grant (a `FundNew` registration also spends the collateral, which
+     * the grant must cover as a spend). Rules and their codes:
+     * m3-engine.md §2.4.
+     */
+open func prepareRegistration(request: RegistrationRequest, grantId: String)async throws  -> PreparedRegistration  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_registration(
+                        self.uniffiCloneHandle(),FfiConverterTypeRegistrationRequest_lower(request),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedRegistration_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Revoke (QT-125). `MasternodeOp` grant.
+     */
+open func prepareRevoke(request: RevokeRequest, grantId: String)async throws  -> PreparedProviderTx  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_revoke(
+                        self.uniffiCloneHandle(),FfiConverterTypeRevokeRequest_lower(request),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedProviderTx_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Change Reward Address of the wallet's share (ProUpShareTx).
+     * `MasternodeOp` grant.
+     */
+open func prepareShareRewardUpdate(proTxHash: String, shareIndex: UInt32, payoutAddress: String, feeWalletId: String, grantId: String)async throws  -> PreparedProviderTx  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_share_reward_update(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(proTxHash),FfiConverterUInt32.lower(shareIndex),FfiConverterString.lower(payoutAddress),FfiConverterString.lower(feeWalletId),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedProviderTx_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Update Registrar (QT-125). `MasternodeOp` grant. Refused for shared
+     * masternodes (they rotate keys through a shared session).
+     */
+open func prepareUpdateRegistrar(request: UpdateRegistrarRequest, grantId: String)async throws  -> PreparedProviderTx  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_update_registrar(
+                        self.uniffiCloneHandle(),FfiConverterTypeUpdateRegistrarRequest_lower(request),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedProviderTx_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Update Service (QT-125, IOS-081 unban). `MasternodeOp` grant.
+     */
+open func prepareUpdateService(request: UpdateServiceRequest, grantId: String)async throws  -> PreparedProviderTx  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_prepare_update_service(
+                        self.uniffiCloneHandle(),FfiConverterTypeUpdateServiceRequest_lower(request),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePreparedProviderTx_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Leaves the session and releases its reserved coins (close
+     * protection's "release").
+     */
+open func sharedSessionAbandon(sessionId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_abandon(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Approves the locked terms (consent signature with the share owner
+     * key). `MasternodeOp` grant.
+     */
+open func sharedSessionApprove(sessionId: String, grantId: String)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_approve(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Coordinator: combines the signed contributions and broadcasts.
+     * Returns the txid (the proTxHash for a registration).
+     */
+open func sharedSessionBroadcast(sessionId: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_broadcast(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Participant: reserves coins and fills in a share's addresses.
+     */
+open func sharedSessionContribute(sessionId: String, contribution: ShareContribution)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_contribute(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId),FfiConverterTypeShareContribution_lower(contribution)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * The message to send the others for the session's current stage.
+     */
+open func sharedSessionMessage(sessionId: String)async throws  -> SharedEnvelope  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_message(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedEnvelope_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Signs the wallet's inputs of the session transaction after checking
+     * that no foreign or short-changed input is asked
+     * (`masternode.shared_inputs_refused`). `MasternodeOp` grant.
+     */
+open func sharedSessionSign(sessionId: String, grantId: String)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_session_sign(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(sessionId),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Open sessions of the wallet (resumable after restart).
+     */
+open func sharedSessions(walletId: String)async throws  -> [SharedSessionInfo]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_shared_sessions(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeSharedSessionInfo.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Dissolve Together: a unanimous session that returns every
+     * principal.
+     */
+open func startDissolveTogether(walletId: String, proTxHash: String)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_start_dissolve_together(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(proTxHash)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Rotate Operator/Voting Key: starts a session every owner approves,
+     * then the preparer sends (ProUpSharedRegTx).
+     */
+open func startSharedKeyRotation(walletId: String, proTxHash: String, operatorKey: OperatorKeyChoice?, votingAddress: String?)async throws  -> SharedSessionInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_start_shared_key_rotation(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(proTxHash),FfiConverterOptionTypeOperatorKeyChoice.lower(operatorKey),FfiConverterOptionString.lower(votingAddress)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSharedSessionInfo_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
 }
     
     /**
@@ -3866,6 +5409,393 @@ public func FfiConverterTypeNotificationObserver_lower(_ value: NotificationObse
 
 
 /**
+ * A signed, not yet broadcast maintenance transaction.
+ */
+public protocol PreparedProviderTxProtocol: AnyObject, Sendable {
+    
+    func abandon() async throws 
+    
+    /**
+     * Returns the txid.
+     */
+    func broadcast() async throws  -> String
+    
+    func summary() throws  -> ProviderTxSummary
+    
+}
+/**
+ * A signed, not yet broadcast maintenance transaction.
+ */
+open class PreparedProviderTx: PreparedProviderTxProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_preparedprovidertx(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_preparedprovidertx(handle, $0) }
+    }
+
+    
+
+    
+open func abandon()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_preparedprovidertx_abandon(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * Returns the txid.
+     */
+open func broadcast()async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_preparedprovidertx_broadcast(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func summary()throws  -> ProviderTxSummary  {
+    return try  FfiConverterTypeProviderTxSummary_lift(try rustCallWithError(FfiConverterTypeMasternodeError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_preparedprovidertx_summary(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePreparedProviderTx: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = PreparedProviderTx
+
+    public static func lift(_ handle: UInt64) throws -> PreparedProviderTx {
+        return PreparedProviderTx(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: PreparedProviderTx) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreparedProviderTx {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: PreparedProviderTx, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedProviderTx_lift(_ handle: UInt64) throws -> PreparedProviderTx {
+    return try FfiConverterTypePreparedProviderTx.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedProviderTx_lower(_ value: PreparedProviderTx) -> UInt64 {
+    return FfiConverterTypePreparedProviderTx.lower(value)
+}
+
+
+
+
+
+
+/**
+ * A prepared registration (signed unless external; inputs reserved).
+ */
+public protocol PreparedRegistrationProtocol: AnyObject, Sendable {
+    
+    /**
+     * Releases the reserved inputs and forgets the secret.
+     */
+    func abandon() async throws 
+    
+    /**
+     * The "type the last 4 characters" gate: `true` and the gate opens
+     * when `last4` equals the secret's last four hex characters
+     * (case-insensitive). `submit` refuses until then.
+     */
+    func confirmOperatorSecret(last4: String) throws  -> Bool
+    
+    /**
+     * The generated secret. Available until `submit` succeeds or the
+     * object is abandoned; `invalid_argument` when the key was not
+     * generated. The host holds the bytes in a zeroing buffer.
+     */
+    func operatorSecret() throws  -> OperatorSecret
+    
+    /**
+     * Broadcasts. `collateral_signature`: the base64 `signmessage`
+     * signature for external collateral, else `None`. Returns the
+     * proTxHash. Refused with `masternode.operator_secret_unconfirmed`
+     * before the gate opened (dash-qt's order: secret page before
+     * broadcast).
+     */
+    func submit(collateralSignature: String?) async throws  -> String
+    
+    func summary() throws  -> RegistrationSummary
+    
+}
+/**
+ * A prepared registration (signed unless external; inputs reserved).
+ */
+open class PreparedRegistration: PreparedRegistrationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_preparedregistration(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_preparedregistration(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Releases the reserved inputs and forgets the secret.
+     */
+open func abandon()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_preparedregistration_abandon(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+    /**
+     * The "type the last 4 characters" gate: `true` and the gate opens
+     * when `last4` equals the secret's last four hex characters
+     * (case-insensitive). `submit` refuses until then.
+     */
+open func confirmOperatorSecret(last4: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeMasternodeError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_preparedregistration_confirm_operator_secret(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(last4),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The generated secret. Available until `submit` succeeds or the
+     * object is abandoned; `invalid_argument` when the key was not
+     * generated. The host holds the bytes in a zeroing buffer.
+     */
+open func operatorSecret()throws  -> OperatorSecret  {
+    return try  FfiConverterTypeOperatorSecret_lift(try rustCallWithError(FfiConverterTypeMasternodeError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_preparedregistration_operator_secret(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Broadcasts. `collateral_signature`: the base64 `signmessage`
+     * signature for external collateral, else `None`. Returns the
+     * proTxHash. Refused with `masternode.operator_secret_unconfirmed`
+     * before the gate opened (dash-qt's order: secret page before
+     * broadcast).
+     */
+open func submit(collateralSignature: String?)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_preparedregistration_submit(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(collateralSignature)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
+    
+open func summary()throws  -> RegistrationSummary  {
+    return try  FfiConverterTypeRegistrationSummary_lift(try rustCallWithError(FfiConverterTypeMasternodeError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_preparedregistration_summary(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePreparedRegistration: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = PreparedRegistration
+
+    public static func lift(_ handle: UInt64) throws -> PreparedRegistration {
+        return PreparedRegistration(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: PreparedRegistration) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreparedRegistration {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: PreparedRegistration, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedRegistration_lift(_ handle: UInt64) throws -> PreparedRegistration {
+    return try FfiConverterTypePreparedRegistration.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedRegistration_lower(_ value: PreparedRegistration) -> UInt64 {
+    return FfiConverterTypePreparedRegistration.lower(value)
+}
+
+
+
+
+
+
+/**
  * A signed transaction held by the engine with its inputs reserved. Only
  * `TxDraft::broadcast` sends it; `TxDraft::abandon`, or releasing the last
  * reference while it is pending, releases the inputs.
@@ -4901,6 +6831,13 @@ public func FfiConverterTypeTxDraft_lower(_ value: TxDraft) -> UInt64 {
 public protocol VaultProtocol: AnyObject, Sendable {
     
     /**
+     * Reveals one provider private key of a wallet (IOS-083) or attached
+     * to a tracked masternode (`wallet_id = None`, `index` ignored).
+     * `RevealSecret` grant.
+     */
+    func revealMasternodeKey(walletId: String?, proTxHash: String?, role: MasternodeKeyRole, index: UInt32, grantId: String) async throws  -> RevealedMasternodeKey
+    
+    /**
      * Checks `credential` and issues a single-use grant for `purpose`.
      *
      * `wallet_id` binds the grant to the wallet it is for: required for
@@ -5076,6 +7013,27 @@ open class Vault: VaultProtocol, @unchecked Sendable {
 
     
 
+    
+    /**
+     * Reveals one provider private key of a wallet (IOS-083) or attached
+     * to a tracked masternode (`wallet_id = None`, `index` ignored).
+     * `RevealSecret` grant.
+     */
+open func revealMasternodeKey(walletId: String?, proTxHash: String?, role: MasternodeKeyRole, index: UInt32, grantId: String)async throws  -> RevealedMasternodeKey  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_vault_reveal_masternode_key(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(walletId),FfiConverterOptionString.lower(proTxHash),FfiConverterTypeMasternodeKeyRole_lower(role),FfiConverterUInt32.lower(index),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeRevealedMasternodeKey_lift,
+            errorHandler: FfiConverterTypeMasternodeError_lift
+        )
+}
     
     /**
      * Checks `credential` and issues a single-use grant for `purpose`.
@@ -6221,6 +8179,780 @@ public func FfiConverterTypeChainLockInfo_lower(_ value: ChainLockInfo) -> RustB
 
 
 /**
+ * "Amount and Rounds": `amount / rounds Rounds`, shown as `~amount` in red
+ * with "Not enough compatible inputs to mix…" when `insufficient_inputs`.
+ */
+public struct CoinJoinAmountAndRounds: Equatable, Hashable {
+    /**
+     * `min(anonymizable + fully_mixed, target)`.
+     */
+    public let amount: UInt64
+    public let rounds: UInt32
+    public let insufficientInputs: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `min(anonymizable + fully_mixed, target)`.
+         */amount: UInt64, rounds: UInt32, insufficientInputs: Bool) {
+        self.amount = amount
+        self.rounds = rounds
+        self.insufficientInputs = insufficientInputs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinAmountAndRounds: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinAmountAndRounds: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinAmountAndRounds {
+        return
+            try CoinJoinAmountAndRounds(
+                amount: FfiConverterUInt64.read(from: &buf), 
+                rounds: FfiConverterUInt32.read(from: &buf), 
+                insufficientInputs: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinAmountAndRounds, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterUInt32.write(value.rounds, into: &buf)
+        FfiConverterBool.write(value.insufficientInputs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinAmountAndRounds_lift(_ buf: RustBuffer) throws -> CoinJoinAmountAndRounds {
+    return try FfiConverterTypeCoinJoinAmountAndRounds.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinAmountAndRounds_lower(_ value: CoinJoinAmountAndRounds) -> RustBuffer {
+    return FfiConverterTypeCoinJoinAmountAndRounds.lower(value)
+}
+
+
+/**
+ * The balances dash-qt's progress formula and panel use, duffs.
+ */
+public struct CoinJoinBalances: Equatable, Hashable {
+    /**
+     * Core `GetAnonymizableBalance`: what mixing could still use.
+     */
+    public let anonymizable: UInt64
+    /**
+     * Denominated coins, confirmed and unconfirmed.
+     */
+    public let denominated: UInt64
+    /**
+     * Σ over denominated coins of `value · min(rounds, N) / N`.
+     */
+    public let normalizedAnonymized: UInt64
+    /**
+     * Fully mixed by the QT-043 rule (rounds ≥ N and (rounds ≥ N+3 or the
+     * salted hash is odd)): the panel's "CoinJoin Balance" and what the
+     * CoinJoin send page may spend.
+     */
+    public let fullyMixed: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Core `GetAnonymizableBalance`: what mixing could still use.
+         */anonymizable: UInt64, 
+        /**
+         * Denominated coins, confirmed and unconfirmed.
+         */denominated: UInt64, 
+        /**
+         * Σ over denominated coins of `value · min(rounds, N) / N`.
+         */normalizedAnonymized: UInt64, 
+        /**
+         * Fully mixed by the QT-043 rule (rounds ≥ N and (rounds ≥ N+3 or the
+         * salted hash is odd)): the panel's "CoinJoin Balance" and what the
+         * CoinJoin send page may spend.
+         */fullyMixed: UInt64) {
+        self.anonymizable = anonymizable
+        self.denominated = denominated
+        self.normalizedAnonymized = normalizedAnonymized
+        self.fullyMixed = fullyMixed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinBalances: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinBalances: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinBalances {
+        return
+            try CoinJoinBalances(
+                anonymizable: FfiConverterUInt64.read(from: &buf), 
+                denominated: FfiConverterUInt64.read(from: &buf), 
+                normalizedAnonymized: FfiConverterUInt64.read(from: &buf), 
+                fullyMixed: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinBalances, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.anonymizable, into: &buf)
+        FfiConverterUInt64.write(value.denominated, into: &buf)
+        FfiConverterUInt64.write(value.normalizedAnonymized, into: &buf)
+        FfiConverterUInt64.write(value.fullyMixed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinBalances_lift(_ buf: RustBuffer) throws -> CoinJoinBalances {
+    return try FfiConverterTypeCoinJoinBalances.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinBalances_lower(_ value: CoinJoinBalances) -> RustBuffer {
+    return FfiConverterTypeCoinJoinBalances.lower(value)
+}
+
+
+/**
+ * Fixed CoinJoin values (Dash Core `coinjoin/{common,options}.h`).
+ */
+public struct CoinJoinLimits: Equatable, Hashable {
+    /**
+     * Largest first, duffs.
+     */
+    public let denominations: [UInt64]
+    /**
+     * 0.00140001 DASH: smallest denomination + largest collateral.
+     */
+    public let minMixingBalance: UInt64
+    public let collateralAmount: UInt64
+    public let maxCollateralAmount: UInt64
+    public let minRounds: UInt32
+    public let maxRounds: UInt32
+    public let minSessions: UInt32
+    public let maxSessions: UInt32
+    public let minAmountDash: UInt32
+    public let maxAmountDash: UInt32
+    public let minDenoms: UInt32
+    public let maxDenoms: UInt32
+    /**
+     * The defaults dash-qt starts with.
+     */
+    public let defaults: CoinJoinSettings
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Largest first, duffs.
+         */denominations: [UInt64], 
+        /**
+         * 0.00140001 DASH: smallest denomination + largest collateral.
+         */minMixingBalance: UInt64, collateralAmount: UInt64, maxCollateralAmount: UInt64, minRounds: UInt32, maxRounds: UInt32, minSessions: UInt32, maxSessions: UInt32, minAmountDash: UInt32, maxAmountDash: UInt32, minDenoms: UInt32, maxDenoms: UInt32, 
+        /**
+         * The defaults dash-qt starts with.
+         */defaults: CoinJoinSettings) {
+        self.denominations = denominations
+        self.minMixingBalance = minMixingBalance
+        self.collateralAmount = collateralAmount
+        self.maxCollateralAmount = maxCollateralAmount
+        self.minRounds = minRounds
+        self.maxRounds = maxRounds
+        self.minSessions = minSessions
+        self.maxSessions = maxSessions
+        self.minAmountDash = minAmountDash
+        self.maxAmountDash = maxAmountDash
+        self.minDenoms = minDenoms
+        self.maxDenoms = maxDenoms
+        self.defaults = defaults
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinLimits: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinLimits: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinLimits {
+        return
+            try CoinJoinLimits(
+                denominations: FfiConverterSequenceUInt64.read(from: &buf), 
+                minMixingBalance: FfiConverterUInt64.read(from: &buf), 
+                collateralAmount: FfiConverterUInt64.read(from: &buf), 
+                maxCollateralAmount: FfiConverterUInt64.read(from: &buf), 
+                minRounds: FfiConverterUInt32.read(from: &buf), 
+                maxRounds: FfiConverterUInt32.read(from: &buf), 
+                minSessions: FfiConverterUInt32.read(from: &buf), 
+                maxSessions: FfiConverterUInt32.read(from: &buf), 
+                minAmountDash: FfiConverterUInt32.read(from: &buf), 
+                maxAmountDash: FfiConverterUInt32.read(from: &buf), 
+                minDenoms: FfiConverterUInt32.read(from: &buf), 
+                maxDenoms: FfiConverterUInt32.read(from: &buf), 
+                defaults: FfiConverterTypeCoinJoinSettings.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinLimits, into buf: inout [UInt8]) {
+        FfiConverterSequenceUInt64.write(value.denominations, into: &buf)
+        FfiConverterUInt64.write(value.minMixingBalance, into: &buf)
+        FfiConverterUInt64.write(value.collateralAmount, into: &buf)
+        FfiConverterUInt64.write(value.maxCollateralAmount, into: &buf)
+        FfiConverterUInt32.write(value.minRounds, into: &buf)
+        FfiConverterUInt32.write(value.maxRounds, into: &buf)
+        FfiConverterUInt32.write(value.minSessions, into: &buf)
+        FfiConverterUInt32.write(value.maxSessions, into: &buf)
+        FfiConverterUInt32.write(value.minAmountDash, into: &buf)
+        FfiConverterUInt32.write(value.maxAmountDash, into: &buf)
+        FfiConverterUInt32.write(value.minDenoms, into: &buf)
+        FfiConverterUInt32.write(value.maxDenoms, into: &buf)
+        FfiConverterTypeCoinJoinSettings.write(value.defaults, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinLimits_lift(_ buf: RustBuffer) throws -> CoinJoinLimits {
+    return try FfiConverterTypeCoinJoinLimits.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinLimits_lower(_ value: CoinJoinLimits) -> RustBuffer {
+    return FfiConverterTypeCoinJoinLimits.lower(value)
+}
+
+
+/**
+ * dash-qt's progress (`overviewpage.cpp:462-512`, QT-042) and its tooltip
+ * parts, each 0–100.
+ */
+public struct CoinJoinProgress: Equatable, Hashable {
+    public let overallPercent: Double
+    public let denominatedPercent: Double
+    public let partiallyMixedPercent: Double
+    public let mixedPercent: Double
+    /**
+     * "Denominated inputs have X of N rounds on average".
+     */
+    public let averageRounds: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(overallPercent: Double, denominatedPercent: Double, partiallyMixedPercent: Double, mixedPercent: Double, 
+        /**
+         * "Denominated inputs have X of N rounds on average".
+         */averageRounds: Double) {
+        self.overallPercent = overallPercent
+        self.denominatedPercent = denominatedPercent
+        self.partiallyMixedPercent = partiallyMixedPercent
+        self.mixedPercent = mixedPercent
+        self.averageRounds = averageRounds
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinProgress {
+        return
+            try CoinJoinProgress(
+                overallPercent: FfiConverterDouble.read(from: &buf), 
+                denominatedPercent: FfiConverterDouble.read(from: &buf), 
+                partiallyMixedPercent: FfiConverterDouble.read(from: &buf), 
+                mixedPercent: FfiConverterDouble.read(from: &buf), 
+                averageRounds: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinProgress, into buf: inout [UInt8]) {
+        FfiConverterDouble.write(value.overallPercent, into: &buf)
+        FfiConverterDouble.write(value.denominatedPercent, into: &buf)
+        FfiConverterDouble.write(value.partiallyMixedPercent, into: &buf)
+        FfiConverterDouble.write(value.mixedPercent, into: &buf)
+        FfiConverterDouble.write(value.averageRounds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinProgress_lift(_ buf: RustBuffer) throws -> CoinJoinProgress {
+    return try FfiConverterTypeCoinJoinProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinProgress_lower(_ value: CoinJoinProgress) -> RustBuffer {
+    return FfiConverterTypeCoinJoinProgress.lower(value)
+}
+
+
+/**
+ * IOS-057 recovery scan result.
+ */
+public struct CoinJoinRecoveryReport: Equatable, Hashable {
+    /**
+     * Addresses checked on the DIP9 CoinJoin account.
+     */
+    public let coinjoinAddressesScanned: UInt32
+    /**
+     * BIP44 addresses checked (gap 1000, Core-mixed funds).
+     */
+    public let bip44AddressesScanned: UInt32
+    /**
+     * CoinJoin-account balance after the scan.
+     */
+    public let coinjoinBalance: UInt64
+    /**
+     * Transactions the scan found that the wallet did not know.
+     */
+    public let newTransactions: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Addresses checked on the DIP9 CoinJoin account.
+         */coinjoinAddressesScanned: UInt32, 
+        /**
+         * BIP44 addresses checked (gap 1000, Core-mixed funds).
+         */bip44AddressesScanned: UInt32, 
+        /**
+         * CoinJoin-account balance after the scan.
+         */coinjoinBalance: UInt64, 
+        /**
+         * Transactions the scan found that the wallet did not know.
+         */newTransactions: UInt32) {
+        self.coinjoinAddressesScanned = coinjoinAddressesScanned
+        self.bip44AddressesScanned = bip44AddressesScanned
+        self.coinjoinBalance = coinjoinBalance
+        self.newTransactions = newTransactions
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinRecoveryReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinRecoveryReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinRecoveryReport {
+        return
+            try CoinJoinRecoveryReport(
+                coinjoinAddressesScanned: FfiConverterUInt32.read(from: &buf), 
+                bip44AddressesScanned: FfiConverterUInt32.read(from: &buf), 
+                coinjoinBalance: FfiConverterUInt64.read(from: &buf), 
+                newTransactions: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinRecoveryReport, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.coinjoinAddressesScanned, into: &buf)
+        FfiConverterUInt32.write(value.bip44AddressesScanned, into: &buf)
+        FfiConverterUInt64.write(value.coinjoinBalance, into: &buf)
+        FfiConverterUInt32.write(value.newTransactions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinRecoveryReport_lift(_ buf: RustBuffer) throws -> CoinJoinRecoveryReport {
+    return try FfiConverterTypeCoinJoinRecoveryReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinRecoveryReport_lower(_ value: CoinJoinRecoveryReport) -> RustBuffer {
+    return FfiConverterTypeCoinJoinRecoveryReport.lower(value)
+}
+
+
+/**
+ * One open mixing session (`getcoinjoininfo` `sessions[]`).
+ */
+public struct CoinJoinSession: Equatable, Hashable {
+    /**
+     * The masternode's proTxHash, display order.
+     */
+    public let proTxHash: String?
+    public let service: String?
+    public let denomination: UInt64?
+    public let state: CoinJoinPoolState
+    public let entries: UInt32
+    public let lastMessage: CoinJoinPoolMessage?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The masternode's proTxHash, display order.
+         */proTxHash: String?, service: String?, denomination: UInt64?, state: CoinJoinPoolState, entries: UInt32, lastMessage: CoinJoinPoolMessage?) {
+        self.proTxHash = proTxHash
+        self.service = service
+        self.denomination = denomination
+        self.state = state
+        self.entries = entries
+        self.lastMessage = lastMessage
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinSession: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinSession: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinSession {
+        return
+            try CoinJoinSession(
+                proTxHash: FfiConverterOptionString.read(from: &buf), 
+                service: FfiConverterOptionString.read(from: &buf), 
+                denomination: FfiConverterOptionUInt64.read(from: &buf), 
+                state: FfiConverterTypeCoinJoinPoolState.read(from: &buf), 
+                entries: FfiConverterUInt32.read(from: &buf), 
+                lastMessage: FfiConverterOptionTypeCoinJoinPoolMessage.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinSession, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionString.write(value.service, into: &buf)
+        FfiConverterOptionUInt64.write(value.denomination, into: &buf)
+        FfiConverterTypeCoinJoinPoolState.write(value.state, into: &buf)
+        FfiConverterUInt32.write(value.entries, into: &buf)
+        FfiConverterOptionTypeCoinJoinPoolMessage.write(value.lastMessage, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinSession_lift(_ buf: RustBuffer) throws -> CoinJoinSession {
+    return try FfiConverterTypeCoinJoinSession.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinSession_lower(_ value: CoinJoinSession) -> RustBuffer {
+    return FfiConverterTypeCoinJoinSession.lower(value)
+}
+
+
+/**
+ * The CoinJoin options (Options → CoinJoin, QT-046). Global for the
+ * network; mixing state is per wallet (QT-049). The UI-only options
+ * (advanced interface, low-keys warning, popups) stay in the host's
+ * settings, as dash-qt keeps them in QSettings.
+ */
+public struct CoinJoinSettings: Equatable, Hashable {
+    /**
+     * `enablecoinjoin`, default on.
+     */
+    public let enabled: Bool
+    /**
+     * `coinjoinmultisession`, default off.
+     */
+    public let multiSession: Bool
+    /**
+     * `coinjoinsessions`, 1–10, default 4.
+     */
+    public let maxSessions: UInt32
+    /**
+     * `coinjoinrounds`, 2–16, default 4.
+     */
+    public let rounds: UInt32
+    /**
+     * `coinjoinamount`, whole DASH, 2–21,000,000, default 1000.
+     */
+    public let targetAmountDash: UInt32
+    /**
+     * `coinjoindenomsgoal`, 10–`denoms_hard_cap`, default 50.
+     */
+    public let denomsGoal: UInt32
+    /**
+     * `coinjoindenomshardcap`, 10–100,000, default 300.
+     */
+    public let denomsHardCap: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `enablecoinjoin`, default on.
+         */enabled: Bool, 
+        /**
+         * `coinjoinmultisession`, default off.
+         */multiSession: Bool, 
+        /**
+         * `coinjoinsessions`, 1–10, default 4.
+         */maxSessions: UInt32, 
+        /**
+         * `coinjoinrounds`, 2–16, default 4.
+         */rounds: UInt32, 
+        /**
+         * `coinjoinamount`, whole DASH, 2–21,000,000, default 1000.
+         */targetAmountDash: UInt32, 
+        /**
+         * `coinjoindenomsgoal`, 10–`denoms_hard_cap`, default 50.
+         */denomsGoal: UInt32, 
+        /**
+         * `coinjoindenomshardcap`, 10–100,000, default 300.
+         */denomsHardCap: UInt32) {
+        self.enabled = enabled
+        self.multiSession = multiSession
+        self.maxSessions = maxSessions
+        self.rounds = rounds
+        self.targetAmountDash = targetAmountDash
+        self.denomsGoal = denomsGoal
+        self.denomsHardCap = denomsHardCap
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinSettings: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinSettings: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinSettings {
+        return
+            try CoinJoinSettings(
+                enabled: FfiConverterBool.read(from: &buf), 
+                multiSession: FfiConverterBool.read(from: &buf), 
+                maxSessions: FfiConverterUInt32.read(from: &buf), 
+                rounds: FfiConverterUInt32.read(from: &buf), 
+                targetAmountDash: FfiConverterUInt32.read(from: &buf), 
+                denomsGoal: FfiConverterUInt32.read(from: &buf), 
+                denomsHardCap: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinSettings, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterBool.write(value.multiSession, into: &buf)
+        FfiConverterUInt32.write(value.maxSessions, into: &buf)
+        FfiConverterUInt32.write(value.rounds, into: &buf)
+        FfiConverterUInt32.write(value.targetAmountDash, into: &buf)
+        FfiConverterUInt32.write(value.denomsGoal, into: &buf)
+        FfiConverterUInt32.write(value.denomsHardCap, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinSettings_lift(_ buf: RustBuffer) throws -> CoinJoinSettings {
+    return try FfiConverterTypeCoinJoinSettings.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinSettings_lower(_ value: CoinJoinSettings) -> RustBuffer {
+    return FfiConverterTypeCoinJoinSettings.lower(value)
+}
+
+
+/**
+ * Everything the Overview CoinJoin panel, the advanced view and the
+ * session status text show for one wallet (QT-041…050).
+ */
+public struct CoinJoinStatus: Equatable, Hashable {
+    public let walletId: String
+    public let state: CoinJoinState
+    /**
+     * Why the last run stopped; `None` while mixing or before any run.
+     */
+    public let stopReason: CoinJoinStopReason?
+    /**
+     * `Some` when "Start CoinJoin" cannot be offered.
+     */
+    public let unavailable: CoinJoinUnavailable?
+    public let balances: CoinJoinBalances
+    public let progress: CoinJoinProgress
+    public let amountAndRounds: CoinJoinAmountAndRounds
+    /**
+     * "Submitted Denom" (advanced): denominations of the open sessions.
+     */
+    public let submittedDenominations: [UInt64]
+    public let sessions: [CoinJoinSession]
+    public let status: CoinJoinStatusCode
+    /**
+     * `dsq` queues known.
+     */
+    public let queueSize: UInt32
+    /**
+     * Legacy keypool keys left; `None` for HD wallets (all of ours).
+     */
+    public let keysLeft: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(walletId: String, state: CoinJoinState, 
+        /**
+         * Why the last run stopped; `None` while mixing or before any run.
+         */stopReason: CoinJoinStopReason?, 
+        /**
+         * `Some` when "Start CoinJoin" cannot be offered.
+         */unavailable: CoinJoinUnavailable?, balances: CoinJoinBalances, progress: CoinJoinProgress, amountAndRounds: CoinJoinAmountAndRounds, 
+        /**
+         * "Submitted Denom" (advanced): denominations of the open sessions.
+         */submittedDenominations: [UInt64], sessions: [CoinJoinSession], status: CoinJoinStatusCode, 
+        /**
+         * `dsq` queues known.
+         */queueSize: UInt32, 
+        /**
+         * Legacy keypool keys left; `None` for HD wallets (all of ours).
+         */keysLeft: UInt32?) {
+        self.walletId = walletId
+        self.state = state
+        self.stopReason = stopReason
+        self.unavailable = unavailable
+        self.balances = balances
+        self.progress = progress
+        self.amountAndRounds = amountAndRounds
+        self.submittedDenominations = submittedDenominations
+        self.sessions = sessions
+        self.status = status
+        self.queueSize = queueSize
+        self.keysLeft = keysLeft
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinStatus {
+        return
+            try CoinJoinStatus(
+                walletId: FfiConverterString.read(from: &buf), 
+                state: FfiConverterTypeCoinJoinState.read(from: &buf), 
+                stopReason: FfiConverterOptionTypeCoinJoinStopReason.read(from: &buf), 
+                unavailable: FfiConverterOptionTypeCoinJoinUnavailable.read(from: &buf), 
+                balances: FfiConverterTypeCoinJoinBalances.read(from: &buf), 
+                progress: FfiConverterTypeCoinJoinProgress.read(from: &buf), 
+                amountAndRounds: FfiConverterTypeCoinJoinAmountAndRounds.read(from: &buf), 
+                submittedDenominations: FfiConverterSequenceUInt64.read(from: &buf), 
+                sessions: FfiConverterSequenceTypeCoinJoinSession.read(from: &buf), 
+                status: FfiConverterTypeCoinJoinStatusCode.read(from: &buf), 
+                queueSize: FfiConverterUInt32.read(from: &buf), 
+                keysLeft: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinJoinStatus, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterTypeCoinJoinState.write(value.state, into: &buf)
+        FfiConverterOptionTypeCoinJoinStopReason.write(value.stopReason, into: &buf)
+        FfiConverterOptionTypeCoinJoinUnavailable.write(value.unavailable, into: &buf)
+        FfiConverterTypeCoinJoinBalances.write(value.balances, into: &buf)
+        FfiConverterTypeCoinJoinProgress.write(value.progress, into: &buf)
+        FfiConverterTypeCoinJoinAmountAndRounds.write(value.amountAndRounds, into: &buf)
+        FfiConverterSequenceUInt64.write(value.submittedDenominations, into: &buf)
+        FfiConverterSequenceTypeCoinJoinSession.write(value.sessions, into: &buf)
+        FfiConverterTypeCoinJoinStatusCode.write(value.status, into: &buf)
+        FfiConverterUInt32.write(value.queueSize, into: &buf)
+        FfiConverterOptionUInt32.write(value.keysLeft, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStatus_lift(_ buf: RustBuffer) throws -> CoinJoinStatus {
+    return try FfiConverterTypeCoinJoinStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStatus_lower(_ value: CoinJoinStatus) -> RustBuffer {
+    return FfiConverterTypeCoinJoinStatus.lower(value)
+}
+
+
+/**
  * dash-qt's coin-control panel values (QT-072, §5.6), computed with its
  * formula: bytes = 148·inputs + 34·(outputs + 1) + 10, minus 34 without
  * change. The host prefixes "≈".
@@ -6364,6 +9096,75 @@ public func FfiConverterTypeCoinSelectionSummary_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeCoinSelectionSummary_lower(_ value: CoinSelectionSummary) -> RustBuffer {
     return FfiConverterTypeCoinSelectionSummary.lower(value)
+}
+
+
+/**
+ * One wallet UTXO for "Existing wallet UTXO", with why it is unusable.
+ */
+public struct CollateralCandidate: Equatable, Hashable {
+    public let outpoint: OutPoint
+    public let address: String
+    public let amount: UInt64
+    public let confirmations: UInt32
+    public let refusal: CollateralRefusal?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outpoint: OutPoint, address: String, amount: UInt64, confirmations: UInt32, refusal: CollateralRefusal?) {
+        self.outpoint = outpoint
+        self.address = address
+        self.amount = amount
+        self.confirmations = confirmations
+        self.refusal = refusal
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CollateralCandidate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCollateralCandidate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CollateralCandidate {
+        return
+            try CollateralCandidate(
+                outpoint: FfiConverterTypeOutPoint.read(from: &buf), 
+                address: FfiConverterString.read(from: &buf), 
+                amount: FfiConverterUInt64.read(from: &buf), 
+                confirmations: FfiConverterUInt32.read(from: &buf), 
+                refusal: FfiConverterOptionTypeCollateralRefusal.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CollateralCandidate, into buf: inout [UInt8]) {
+        FfiConverterTypeOutPoint.write(value.outpoint, into: &buf)
+        FfiConverterString.write(value.address, into: &buf)
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterUInt32.write(value.confirmations, into: &buf)
+        FfiConverterOptionTypeCollateralRefusal.write(value.refusal, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralCandidate_lift(_ buf: RustBuffer) throws -> CollateralCandidate {
+    return try FfiConverterTypeCollateralCandidate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralCandidate_lower(_ value: CollateralCandidate) -> RustBuffer {
+    return FfiConverterTypeCollateralCandidate.lower(value)
 }
 
 
@@ -6563,6 +9364,71 @@ public func FfiConverterTypeCoreMnemonicCompatibility_lift(_ buf: RustBuffer) th
 #endif
 public func FfiConverterTypeCoreMnemonicCompatibility_lower(_ value: CoreMnemonicCompatibility) -> RustBuffer {
     return FfiConverterTypeCoreMnemonicCompatibility.lower(value)
+}
+
+
+/**
+ * "Credit Pool" (Core `getcreditpoolinfo`): full node only.
+ */
+public struct CreditPoolInfo: Equatable, Hashable {
+    public let lastBlockChange: UInt32
+    public let totalLocked: UInt64
+    public let pendingUnlocks: UInt64
+    public let withdrawalLimit: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lastBlockChange: UInt32, totalLocked: UInt64, pendingUnlocks: UInt64, withdrawalLimit: UInt64) {
+        self.lastBlockChange = lastBlockChange
+        self.totalLocked = totalLocked
+        self.pendingUnlocks = pendingUnlocks
+        self.withdrawalLimit = withdrawalLimit
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CreditPoolInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCreditPoolInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreditPoolInfo {
+        return
+            try CreditPoolInfo(
+                lastBlockChange: FfiConverterUInt32.read(from: &buf), 
+                totalLocked: FfiConverterUInt64.read(from: &buf), 
+                pendingUnlocks: FfiConverterUInt64.read(from: &buf), 
+                withdrawalLimit: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CreditPoolInfo, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.lastBlockChange, into: &buf)
+        FfiConverterUInt64.write(value.totalLocked, into: &buf)
+        FfiConverterUInt64.write(value.pendingUnlocks, into: &buf)
+        FfiConverterUInt64.write(value.withdrawalLimit, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCreditPoolInfo_lift(_ buf: RustBuffer) throws -> CreditPoolInfo {
+    return try FfiConverterTypeCreditPoolInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCreditPoolInfo_lower(_ value: CreditPoolInfo) -> RustBuffer {
+    return FfiConverterTypeCreditPoolInfo.lower(value)
 }
 
 
@@ -6766,6 +9632,84 @@ public func FfiConverterTypeEngineWarning_lower(_ value: EngineWarning) -> RustB
 }
 
 
+/**
+ * Evonode Platform status (IOS-080 claimable balance, epoch blocks;
+ * IOS-081 status request).
+ */
+public struct EvonodePlatformStatus: Equatable, Hashable {
+    public let proTxHash: String
+    /**
+     * Owner identity's claimable credits.
+     */
+    public let claimableCredits: UInt64?
+    /**
+     * Blocks the node proposed in the current epoch.
+     */
+    public let epochProposedBlocks: UInt32?
+    public let epochIndex: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, 
+        /**
+         * Owner identity's claimable credits.
+         */claimableCredits: UInt64?, 
+        /**
+         * Blocks the node proposed in the current epoch.
+         */epochProposedBlocks: UInt32?, epochIndex: UInt32?) {
+        self.proTxHash = proTxHash
+        self.claimableCredits = claimableCredits
+        self.epochProposedBlocks = epochProposedBlocks
+        self.epochIndex = epochIndex
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EvonodePlatformStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEvonodePlatformStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EvonodePlatformStatus {
+        return
+            try EvonodePlatformStatus(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                claimableCredits: FfiConverterOptionUInt64.read(from: &buf), 
+                epochProposedBlocks: FfiConverterOptionUInt32.read(from: &buf), 
+                epochIndex: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EvonodePlatformStatus, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionUInt64.write(value.claimableCredits, into: &buf)
+        FfiConverterOptionUInt32.write(value.epochProposedBlocks, into: &buf)
+        FfiConverterOptionUInt32.write(value.epochIndex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEvonodePlatformStatus_lift(_ buf: RustBuffer) throws -> EvonodePlatformStatus {
+    return try FfiConverterTypeEvonodePlatformStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEvonodePlatformStatus_lower(_ value: EvonodePlatformStatus) -> RustBuffer {
+    return FfiConverterTypeEvonodePlatformStatus.lower(value)
+}
+
+
 public struct ExportReport: Equatable, Hashable {
     public let path: String
     public let format: CoreExportFormat
@@ -6936,6 +9880,67 @@ public func FfiConverterTypeFeePolicy_lower(_ value: FeePolicy) -> RustBuffer {
 
 
 /**
+ * One address for the wizard's "Fee source" list.
+ */
+public struct FeeSourceCandidate: Equatable, Hashable {
+    public let address: String
+    public let spendable: UInt64
+    public let label: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(address: String, spendable: UInt64, label: String?) {
+        self.address = address
+        self.spendable = spendable
+        self.label = label
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FeeSourceCandidate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFeeSourceCandidate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeeSourceCandidate {
+        return
+            try FeeSourceCandidate(
+                address: FfiConverterString.read(from: &buf), 
+                spendable: FfiConverterUInt64.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FeeSourceCandidate, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.address, into: &buf)
+        FfiConverterUInt64.write(value.spendable, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSourceCandidate_lift(_ buf: RustBuffer) throws -> FeeSourceCandidate {
+    return try FfiConverterTypeFeeSourceCandidate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSourceCandidate_lower(_ value: FeeSourceCandidate) -> RustBuffer {
+    return FfiConverterTypeFeeSourceCandidate.lower(value)
+}
+
+
+/**
  * One confirmation target of dash-qt's fee drop-down (QT-057: 2, 4, 6, 12,
  * 24, 48, 144, 504, 1008 blocks).
  */
@@ -6990,6 +9995,448 @@ public func FfiConverterTypeFeeTarget_lift(_ buf: RustBuffer) throws -> FeeTarge
 #endif
 public func FfiConverterTypeFeeTarget_lower(_ value: FeeTarget) -> RustBuffer {
     return FfiConverterTypeFeeTarget.lower(value)
+}
+
+
+/**
+ * The status-bar governance clock (QT-026).
+ */
+public struct GovernanceClock: Equatable, Hashable {
+    /**
+     * Share of the cycle elapsed, 0–1 (the moon phase).
+     */
+    public let cycleProgress: Double
+    public let nextSuperblock: UInt32
+    public let blocksToSuperblock: UInt32
+    public let superblockEta: UInt64
+    public let votingCutoff: UInt32
+    public let votingOpen: Bool
+    /**
+     * `budget_allocated / budget_available`, 0–1; `None` until synced.
+     */
+    public let budgetCommitted: Double?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Share of the cycle elapsed, 0–1 (the moon phase).
+         */cycleProgress: Double, nextSuperblock: UInt32, blocksToSuperblock: UInt32, superblockEta: UInt64, votingCutoff: UInt32, votingOpen: Bool, 
+        /**
+         * `budget_allocated / budget_available`, 0–1; `None` until synced.
+         */budgetCommitted: Double?) {
+        self.cycleProgress = cycleProgress
+        self.nextSuperblock = nextSuperblock
+        self.blocksToSuperblock = blocksToSuperblock
+        self.superblockEta = superblockEta
+        self.votingCutoff = votingCutoff
+        self.votingOpen = votingOpen
+        self.budgetCommitted = budgetCommitted
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension GovernanceClock: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceClock: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceClock {
+        return
+            try GovernanceClock(
+                cycleProgress: FfiConverterDouble.read(from: &buf), 
+                nextSuperblock: FfiConverterUInt32.read(from: &buf), 
+                blocksToSuperblock: FfiConverterUInt32.read(from: &buf), 
+                superblockEta: FfiConverterUInt64.read(from: &buf), 
+                votingCutoff: FfiConverterUInt32.read(from: &buf), 
+                votingOpen: FfiConverterBool.read(from: &buf), 
+                budgetCommitted: FfiConverterOptionDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: GovernanceClock, into buf: inout [UInt8]) {
+        FfiConverterDouble.write(value.cycleProgress, into: &buf)
+        FfiConverterUInt32.write(value.nextSuperblock, into: &buf)
+        FfiConverterUInt32.write(value.blocksToSuperblock, into: &buf)
+        FfiConverterUInt64.write(value.superblockEta, into: &buf)
+        FfiConverterUInt32.write(value.votingCutoff, into: &buf)
+        FfiConverterBool.write(value.votingOpen, into: &buf)
+        FfiConverterOptionDouble.write(value.budgetCommitted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceClock_lift(_ buf: RustBuffer) throws -> GovernanceClock {
+    return try FfiConverterTypeGovernanceClock.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceClock_lower(_ value: GovernanceClock) -> RustBuffer {
+    return FfiConverterTypeGovernanceClock.lower(value)
+}
+
+
+/**
+ * Governance info panel (QT-134).
+ */
+public struct GovernanceInfo: Equatable, Hashable {
+    public let sync: GovernanceSyncState
+    public let superblockCycle: UInt32
+    public let lastSuperblock: UInt32?
+    public let nextSuperblock: UInt32?
+    public let nextSuperblockEta: UInt64?
+    /**
+     * `next_superblock − maturity_window`.
+     */
+    public let votingCutoff: UInt32?
+    /**
+     * Masternodes that voted on any active proposal / eligible.
+     */
+    public let masternodesVoting: UInt32?
+    public let masternodesEligible: UInt32?
+    public let evonodesVoting: UInt32?
+    public let evonodesEligible: UInt32?
+    /**
+     * `max(min_quorum, weighted_valid / 10)`.
+     */
+    public let passingThreshold: UInt32?
+    /**
+     * Masternodes whose voting keys the wallets hold, and their weight.
+     */
+    public let masternodesControlled: UInt32
+    public let votesControlled: UInt32
+    public let proposalCount: UInt32?
+    public let passing: UInt32?
+    public let failing: UInt32?
+    public let unfunded: UInt32?
+    /**
+     * How much more budget the unfunded ones need ("(short X)").
+     */
+    public let unfundedShort: UInt64?
+    /**
+     * Superblock budget available, from the height (no node needed).
+     */
+    public let budgetAvailable: UInt64?
+    /**
+     * Requested by passing proposals that fit.
+     */
+    public let budgetAllocated: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sync: GovernanceSyncState, superblockCycle: UInt32, lastSuperblock: UInt32?, nextSuperblock: UInt32?, nextSuperblockEta: UInt64?, 
+        /**
+         * `next_superblock − maturity_window`.
+         */votingCutoff: UInt32?, 
+        /**
+         * Masternodes that voted on any active proposal / eligible.
+         */masternodesVoting: UInt32?, masternodesEligible: UInt32?, evonodesVoting: UInt32?, evonodesEligible: UInt32?, 
+        /**
+         * `max(min_quorum, weighted_valid / 10)`.
+         */passingThreshold: UInt32?, 
+        /**
+         * Masternodes whose voting keys the wallets hold, and their weight.
+         */masternodesControlled: UInt32, votesControlled: UInt32, proposalCount: UInt32?, passing: UInt32?, failing: UInt32?, unfunded: UInt32?, 
+        /**
+         * How much more budget the unfunded ones need ("(short X)").
+         */unfundedShort: UInt64?, 
+        /**
+         * Superblock budget available, from the height (no node needed).
+         */budgetAvailable: UInt64?, 
+        /**
+         * Requested by passing proposals that fit.
+         */budgetAllocated: UInt64?) {
+        self.sync = sync
+        self.superblockCycle = superblockCycle
+        self.lastSuperblock = lastSuperblock
+        self.nextSuperblock = nextSuperblock
+        self.nextSuperblockEta = nextSuperblockEta
+        self.votingCutoff = votingCutoff
+        self.masternodesVoting = masternodesVoting
+        self.masternodesEligible = masternodesEligible
+        self.evonodesVoting = evonodesVoting
+        self.evonodesEligible = evonodesEligible
+        self.passingThreshold = passingThreshold
+        self.masternodesControlled = masternodesControlled
+        self.votesControlled = votesControlled
+        self.proposalCount = proposalCount
+        self.passing = passing
+        self.failing = failing
+        self.unfunded = unfunded
+        self.unfundedShort = unfundedShort
+        self.budgetAvailable = budgetAvailable
+        self.budgetAllocated = budgetAllocated
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension GovernanceInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceInfo {
+        return
+            try GovernanceInfo(
+                sync: FfiConverterTypeGovernanceSyncState.read(from: &buf), 
+                superblockCycle: FfiConverterUInt32.read(from: &buf), 
+                lastSuperblock: FfiConverterOptionUInt32.read(from: &buf), 
+                nextSuperblock: FfiConverterOptionUInt32.read(from: &buf), 
+                nextSuperblockEta: FfiConverterOptionUInt64.read(from: &buf), 
+                votingCutoff: FfiConverterOptionUInt32.read(from: &buf), 
+                masternodesVoting: FfiConverterOptionUInt32.read(from: &buf), 
+                masternodesEligible: FfiConverterOptionUInt32.read(from: &buf), 
+                evonodesVoting: FfiConverterOptionUInt32.read(from: &buf), 
+                evonodesEligible: FfiConverterOptionUInt32.read(from: &buf), 
+                passingThreshold: FfiConverterOptionUInt32.read(from: &buf), 
+                masternodesControlled: FfiConverterUInt32.read(from: &buf), 
+                votesControlled: FfiConverterUInt32.read(from: &buf), 
+                proposalCount: FfiConverterOptionUInt32.read(from: &buf), 
+                passing: FfiConverterOptionUInt32.read(from: &buf), 
+                failing: FfiConverterOptionUInt32.read(from: &buf), 
+                unfunded: FfiConverterOptionUInt32.read(from: &buf), 
+                unfundedShort: FfiConverterOptionUInt64.read(from: &buf), 
+                budgetAvailable: FfiConverterOptionUInt64.read(from: &buf), 
+                budgetAllocated: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: GovernanceInfo, into buf: inout [UInt8]) {
+        FfiConverterTypeGovernanceSyncState.write(value.sync, into: &buf)
+        FfiConverterUInt32.write(value.superblockCycle, into: &buf)
+        FfiConverterOptionUInt32.write(value.lastSuperblock, into: &buf)
+        FfiConverterOptionUInt32.write(value.nextSuperblock, into: &buf)
+        FfiConverterOptionUInt64.write(value.nextSuperblockEta, into: &buf)
+        FfiConverterOptionUInt32.write(value.votingCutoff, into: &buf)
+        FfiConverterOptionUInt32.write(value.masternodesVoting, into: &buf)
+        FfiConverterOptionUInt32.write(value.masternodesEligible, into: &buf)
+        FfiConverterOptionUInt32.write(value.evonodesVoting, into: &buf)
+        FfiConverterOptionUInt32.write(value.evonodesEligible, into: &buf)
+        FfiConverterOptionUInt32.write(value.passingThreshold, into: &buf)
+        FfiConverterUInt32.write(value.masternodesControlled, into: &buf)
+        FfiConverterUInt32.write(value.votesControlled, into: &buf)
+        FfiConverterOptionUInt32.write(value.proposalCount, into: &buf)
+        FfiConverterOptionUInt32.write(value.passing, into: &buf)
+        FfiConverterOptionUInt32.write(value.failing, into: &buf)
+        FfiConverterOptionUInt32.write(value.unfunded, into: &buf)
+        FfiConverterOptionUInt64.write(value.unfundedShort, into: &buf)
+        FfiConverterOptionUInt64.write(value.budgetAvailable, into: &buf)
+        FfiConverterOptionUInt64.write(value.budgetAllocated, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceInfo_lift(_ buf: RustBuffer) throws -> GovernanceInfo {
+    return try FfiConverterTypeGovernanceInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceInfo_lower(_ value: GovernanceInfo) -> RustBuffer {
+    return FfiConverterTypeGovernanceInfo.lower(value)
+}
+
+
+/**
+ * Governance constants of a network (QT-132, QT-134).
+ */
+public struct GovernanceParams: Equatable, Hashable {
+    public let superblockStartHeight: UInt32
+    public let superblockCycle: UInt32
+    /**
+     * Voting closes this many blocks before a superblock.
+     */
+    public let maturityWindow: UInt32
+    public let minQuorum: UInt32
+    /**
+     * 1 DASH, duffs.
+     */
+    public let proposalFee: UInt64
+    public let feeConfirmations: UInt32
+    public let maxNameLen: UInt32
+    public let maxPayloadBytes: UInt32
+    public let maxPayments: UInt32
+    public let evonodeVoteWeight: UInt32
+    public let voteUpdateMinSecs: UInt64
+    public let targetSpacingSecs: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(superblockStartHeight: UInt32, superblockCycle: UInt32, 
+        /**
+         * Voting closes this many blocks before a superblock.
+         */maturityWindow: UInt32, minQuorum: UInt32, 
+        /**
+         * 1 DASH, duffs.
+         */proposalFee: UInt64, feeConfirmations: UInt32, maxNameLen: UInt32, maxPayloadBytes: UInt32, maxPayments: UInt32, evonodeVoteWeight: UInt32, voteUpdateMinSecs: UInt64, targetSpacingSecs: UInt32) {
+        self.superblockStartHeight = superblockStartHeight
+        self.superblockCycle = superblockCycle
+        self.maturityWindow = maturityWindow
+        self.minQuorum = minQuorum
+        self.proposalFee = proposalFee
+        self.feeConfirmations = feeConfirmations
+        self.maxNameLen = maxNameLen
+        self.maxPayloadBytes = maxPayloadBytes
+        self.maxPayments = maxPayments
+        self.evonodeVoteWeight = evonodeVoteWeight
+        self.voteUpdateMinSecs = voteUpdateMinSecs
+        self.targetSpacingSecs = targetSpacingSecs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension GovernanceParams: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceParams: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceParams {
+        return
+            try GovernanceParams(
+                superblockStartHeight: FfiConverterUInt32.read(from: &buf), 
+                superblockCycle: FfiConverterUInt32.read(from: &buf), 
+                maturityWindow: FfiConverterUInt32.read(from: &buf), 
+                minQuorum: FfiConverterUInt32.read(from: &buf), 
+                proposalFee: FfiConverterUInt64.read(from: &buf), 
+                feeConfirmations: FfiConverterUInt32.read(from: &buf), 
+                maxNameLen: FfiConverterUInt32.read(from: &buf), 
+                maxPayloadBytes: FfiConverterUInt32.read(from: &buf), 
+                maxPayments: FfiConverterUInt32.read(from: &buf), 
+                evonodeVoteWeight: FfiConverterUInt32.read(from: &buf), 
+                voteUpdateMinSecs: FfiConverterUInt64.read(from: &buf), 
+                targetSpacingSecs: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: GovernanceParams, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.superblockStartHeight, into: &buf)
+        FfiConverterUInt32.write(value.superblockCycle, into: &buf)
+        FfiConverterUInt32.write(value.maturityWindow, into: &buf)
+        FfiConverterUInt32.write(value.minQuorum, into: &buf)
+        FfiConverterUInt64.write(value.proposalFee, into: &buf)
+        FfiConverterUInt32.write(value.feeConfirmations, into: &buf)
+        FfiConverterUInt32.write(value.maxNameLen, into: &buf)
+        FfiConverterUInt32.write(value.maxPayloadBytes, into: &buf)
+        FfiConverterUInt32.write(value.maxPayments, into: &buf)
+        FfiConverterUInt32.write(value.evonodeVoteWeight, into: &buf)
+        FfiConverterUInt64.write(value.voteUpdateMinSecs, into: &buf)
+        FfiConverterUInt32.write(value.targetSpacingSecs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceParams_lift(_ buf: RustBuffer) throws -> GovernanceParams {
+    return try FfiConverterTypeGovernanceParams.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceParams_lower(_ value: GovernanceParams) -> RustBuffer {
+    return FfiConverterTypeGovernanceParams.lower(value)
+}
+
+
+/**
+ * Governance sync state ("waiting for sync…", progress, G7 counters).
+ */
+public struct GovernanceSyncState: Equatable, Hashable {
+    public let phase: GovernanceSyncPhase
+    public let objects: UInt32
+    public let votes: UInt64
+    public let peers: UInt32
+    public let bytesReceived: UInt64
+    public let lastSyncedAt: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(phase: GovernanceSyncPhase, objects: UInt32, votes: UInt64, peers: UInt32, bytesReceived: UInt64, lastSyncedAt: UInt64?) {
+        self.phase = phase
+        self.objects = objects
+        self.votes = votes
+        self.peers = peers
+        self.bytesReceived = bytesReceived
+        self.lastSyncedAt = lastSyncedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension GovernanceSyncState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceSyncState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceSyncState {
+        return
+            try GovernanceSyncState(
+                phase: FfiConverterTypeGovernanceSyncPhase.read(from: &buf), 
+                objects: FfiConverterUInt32.read(from: &buf), 
+                votes: FfiConverterUInt64.read(from: &buf), 
+                peers: FfiConverterUInt32.read(from: &buf), 
+                bytesReceived: FfiConverterUInt64.read(from: &buf), 
+                lastSyncedAt: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: GovernanceSyncState, into buf: inout [UInt8]) {
+        FfiConverterTypeGovernanceSyncPhase.write(value.phase, into: &buf)
+        FfiConverterUInt32.write(value.objects, into: &buf)
+        FfiConverterUInt64.write(value.votes, into: &buf)
+        FfiConverterUInt32.write(value.peers, into: &buf)
+        FfiConverterUInt64.write(value.bytesReceived, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastSyncedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceSyncState_lift(_ buf: RustBuffer) throws -> GovernanceSyncState {
+    return try FfiConverterTypeGovernanceSyncState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceSyncState_lower(_ value: GovernanceSyncState) -> RustBuffer {
+    return FfiConverterTypeGovernanceSyncState.lower(value)
 }
 
 
@@ -7432,6 +10879,72 @@ public func FfiConverterTypeImportReport_lower(_ value: ImportReport) -> RustBuf
 }
 
 
+/**
+ * "InstantSend" counters (Core `getislocks`/mempool counters): full node
+ * only.
+ */
+public struct InstantSendCounters: Equatable, Hashable {
+    public let verified: UInt32
+    public let unverified: UInt32
+    public let awaitingTx: UInt32
+    public let unprotectedTxs: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(verified: UInt32, unverified: UInt32, awaitingTx: UInt32, unprotectedTxs: UInt32) {
+        self.verified = verified
+        self.unverified = unverified
+        self.awaitingTx = awaitingTx
+        self.unprotectedTxs = unprotectedTxs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension InstantSendCounters: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInstantSendCounters: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InstantSendCounters {
+        return
+            try InstantSendCounters(
+                verified: FfiConverterUInt32.read(from: &buf), 
+                unverified: FfiConverterUInt32.read(from: &buf), 
+                awaitingTx: FfiConverterUInt32.read(from: &buf), 
+                unprotectedTxs: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InstantSendCounters, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.verified, into: &buf)
+        FfiConverterUInt32.write(value.unverified, into: &buf)
+        FfiConverterUInt32.write(value.awaitingTx, into: &buf)
+        FfiConverterUInt32.write(value.unprotectedTxs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstantSendCounters_lift(_ buf: RustBuffer) throws -> InstantSendCounters {
+    return try FfiConverterTypeInstantSendCounters.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstantSendCounters_lower(_ value: InstantSendCounters) -> RustBuffer {
+    return FfiConverterTypeInstantSendCounters.lower(value)
+}
+
+
 public struct LogExport: Equatable, Hashable {
     public let path: String
     /**
@@ -7554,6 +11067,984 @@ public func FfiConverterTypeMasternodeCount_lower(_ value: MasternodeCount) -> R
 
 
 /**
+ * The details dialog (QT-122, IOS-080).
+ */
+public struct MasternodeDetail: Equatable, Hashable {
+    public let row: MasternodeRow
+    public let consecutivePayments: UInt32?
+    public let poseBanHeight: UInt32?
+    public let poseRevivedHeight: UInt32?
+    /**
+     * Every Core P2P address (v24 network info).
+     */
+    public let networkAddresses: [String]
+    public let platformP2pAddresses: [String]
+    public let platformHttpsAddresses: [String]
+    public let shares: [MasternodeShare]
+    /**
+     * Height the early-exit period ends.
+     */
+    public let earlyPeriodEnd: UInt32?
+    public let earlyExitPenalty: UInt64?
+    /**
+     * A standby dissolution was saved for it (QT-127).
+     */
+    public let hasStandbyDissolution: Bool
+    /**
+     * A ProUpRevTx was seen; the reason (0–3) when known.
+     */
+    public let revocationReason: UInt16?
+    /**
+     * Provider transactions of the wallets for it (the source of the
+     * owner/payout/collateral fields).
+     */
+    public let walletTransactions: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(row: MasternodeRow, consecutivePayments: UInt32?, poseBanHeight: UInt32?, poseRevivedHeight: UInt32?, 
+        /**
+         * Every Core P2P address (v24 network info).
+         */networkAddresses: [String], platformP2pAddresses: [String], platformHttpsAddresses: [String], shares: [MasternodeShare], 
+        /**
+         * Height the early-exit period ends.
+         */earlyPeriodEnd: UInt32?, earlyExitPenalty: UInt64?, 
+        /**
+         * A standby dissolution was saved for it (QT-127).
+         */hasStandbyDissolution: Bool, 
+        /**
+         * A ProUpRevTx was seen; the reason (0–3) when known.
+         */revocationReason: UInt16?, 
+        /**
+         * Provider transactions of the wallets for it (the source of the
+         * owner/payout/collateral fields).
+         */walletTransactions: UInt32) {
+        self.row = row
+        self.consecutivePayments = consecutivePayments
+        self.poseBanHeight = poseBanHeight
+        self.poseRevivedHeight = poseRevivedHeight
+        self.networkAddresses = networkAddresses
+        self.platformP2pAddresses = platformP2pAddresses
+        self.platformHttpsAddresses = platformHttpsAddresses
+        self.shares = shares
+        self.earlyPeriodEnd = earlyPeriodEnd
+        self.earlyExitPenalty = earlyExitPenalty
+        self.hasStandbyDissolution = hasStandbyDissolution
+        self.revocationReason = revocationReason
+        self.walletTransactions = walletTransactions
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeDetail: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeDetail: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeDetail {
+        return
+            try MasternodeDetail(
+                row: FfiConverterTypeMasternodeRow.read(from: &buf), 
+                consecutivePayments: FfiConverterOptionUInt32.read(from: &buf), 
+                poseBanHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                poseRevivedHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                networkAddresses: FfiConverterSequenceString.read(from: &buf), 
+                platformP2pAddresses: FfiConverterSequenceString.read(from: &buf), 
+                platformHttpsAddresses: FfiConverterSequenceString.read(from: &buf), 
+                shares: FfiConverterSequenceTypeMasternodeShare.read(from: &buf), 
+                earlyPeriodEnd: FfiConverterOptionUInt32.read(from: &buf), 
+                earlyExitPenalty: FfiConverterOptionUInt64.read(from: &buf), 
+                hasStandbyDissolution: FfiConverterBool.read(from: &buf), 
+                revocationReason: FfiConverterOptionUInt16.read(from: &buf), 
+                walletTransactions: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeDetail, into buf: inout [UInt8]) {
+        FfiConverterTypeMasternodeRow.write(value.row, into: &buf)
+        FfiConverterOptionUInt32.write(value.consecutivePayments, into: &buf)
+        FfiConverterOptionUInt32.write(value.poseBanHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.poseRevivedHeight, into: &buf)
+        FfiConverterSequenceString.write(value.networkAddresses, into: &buf)
+        FfiConverterSequenceString.write(value.platformP2pAddresses, into: &buf)
+        FfiConverterSequenceString.write(value.platformHttpsAddresses, into: &buf)
+        FfiConverterSequenceTypeMasternodeShare.write(value.shares, into: &buf)
+        FfiConverterOptionUInt32.write(value.earlyPeriodEnd, into: &buf)
+        FfiConverterOptionUInt64.write(value.earlyExitPenalty, into: &buf)
+        FfiConverterBool.write(value.hasStandbyDissolution, into: &buf)
+        FfiConverterOptionUInt16.write(value.revocationReason, into: &buf)
+        FfiConverterUInt32.write(value.walletTransactions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeDetail_lift(_ buf: RustBuffer) throws -> MasternodeDetail {
+    return try FfiConverterTypeMasternodeDetail.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeDetail_lower(_ value: MasternodeDetail) -> RustBuffer {
+    return FfiConverterTypeMasternodeDetail.lower(value)
+}
+
+
+/**
+ * One derived provider key (public data only).
+ */
+public struct MasternodeKeyInfo: Equatable, Hashable {
+    public let role: MasternodeKeyRole
+    public let index: UInt32
+    /**
+     * e.g. `m/9'/5'/3'/1'/0'` (DIP3/DIP9 provider key paths).
+     */
+    public let derivationPath: String
+    /**
+     * P2PKH address for secp256k1 roles.
+     */
+    public let address: String?
+    public let publicKeyHex: String
+    /**
+     * Legacy BLS serialization of an operator key.
+     */
+    public let legacyPublicKeyHex: String?
+    /**
+     * Tenderdash node id of a platform node key (40 hex).
+     */
+    public let platformNodeId: String?
+    public let usedBy: [MasternodeKeyUsage]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(role: MasternodeKeyRole, index: UInt32, 
+        /**
+         * e.g. `m/9'/5'/3'/1'/0'` (DIP3/DIP9 provider key paths).
+         */derivationPath: String, 
+        /**
+         * P2PKH address for secp256k1 roles.
+         */address: String?, publicKeyHex: String, 
+        /**
+         * Legacy BLS serialization of an operator key.
+         */legacyPublicKeyHex: String?, 
+        /**
+         * Tenderdash node id of a platform node key (40 hex).
+         */platformNodeId: String?, usedBy: [MasternodeKeyUsage]) {
+        self.role = role
+        self.index = index
+        self.derivationPath = derivationPath
+        self.address = address
+        self.publicKeyHex = publicKeyHex
+        self.legacyPublicKeyHex = legacyPublicKeyHex
+        self.platformNodeId = platformNodeId
+        self.usedBy = usedBy
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeKeyInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeKeyInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeKeyInfo {
+        return
+            try MasternodeKeyInfo(
+                role: FfiConverterTypeMasternodeKeyRole.read(from: &buf), 
+                index: FfiConverterUInt32.read(from: &buf), 
+                derivationPath: FfiConverterString.read(from: &buf), 
+                address: FfiConverterOptionString.read(from: &buf), 
+                publicKeyHex: FfiConverterString.read(from: &buf), 
+                legacyPublicKeyHex: FfiConverterOptionString.read(from: &buf), 
+                platformNodeId: FfiConverterOptionString.read(from: &buf), 
+                usedBy: FfiConverterSequenceTypeMasternodeKeyUsage.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeKeyInfo, into buf: inout [UInt8]) {
+        FfiConverterTypeMasternodeKeyRole.write(value.role, into: &buf)
+        FfiConverterUInt32.write(value.index, into: &buf)
+        FfiConverterString.write(value.derivationPath, into: &buf)
+        FfiConverterOptionString.write(value.address, into: &buf)
+        FfiConverterString.write(value.publicKeyHex, into: &buf)
+        FfiConverterOptionString.write(value.legacyPublicKeyHex, into: &buf)
+        FfiConverterOptionString.write(value.platformNodeId, into: &buf)
+        FfiConverterSequenceTypeMasternodeKeyUsage.write(value.usedBy, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyInfo_lift(_ buf: RustBuffer) throws -> MasternodeKeyInfo {
+    return try FfiConverterTypeMasternodeKeyInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyInfo_lower(_ value: MasternodeKeyInfo) -> RustBuffer {
+    return FfiConverterTypeMasternodeKeyInfo.lower(value)
+}
+
+
+/**
+ * Where a keychain key is used (IOS-083 "Used at ip:port" / revoked).
+ */
+public struct MasternodeKeyUsage: Equatable, Hashable {
+    public let proTxHash: String
+    public let service: String?
+    public let revoked: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, service: String?, revoked: Bool) {
+        self.proTxHash = proTxHash
+        self.service = service
+        self.revoked = revoked
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeKeyUsage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeKeyUsage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeKeyUsage {
+        return
+            try MasternodeKeyUsage(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                service: FfiConverterOptionString.read(from: &buf), 
+                revoked: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeKeyUsage, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionString.write(value.service, into: &buf)
+        FfiConverterBool.write(value.revoked, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyUsage_lift(_ buf: RustBuffer) throws -> MasternodeKeyUsage {
+    return try FfiConverterTypeMasternodeKeyUsage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyUsage_lower(_ value: MasternodeKeyUsage) -> RustBuffer {
+    return FfiConverterTypeMasternodeKeyUsage.lower(value)
+}
+
+
+/**
+ * Masternode list availability (QT-118 "Node Count", status line).
+ */
+public struct MasternodeListState: Equatable, Hashable {
+    /**
+     * The list synced at least once this session.
+     */
+    public let available: Bool
+    public let height: UInt32?
+    public let total: UInt32
+    public let enabled: UInt32
+    public let evoTotal: UInt32
+    public let evoEnabled: UInt32
+    /**
+     * SPV is not caught up (refresh every 30 s instead of 3 s).
+     */
+    public let syncing: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The list synced at least once this session.
+         */available: Bool, height: UInt32?, total: UInt32, enabled: UInt32, evoTotal: UInt32, evoEnabled: UInt32, 
+        /**
+         * SPV is not caught up (refresh every 30 s instead of 3 s).
+         */syncing: Bool) {
+        self.available = available
+        self.height = height
+        self.total = total
+        self.enabled = enabled
+        self.evoTotal = evoTotal
+        self.evoEnabled = evoEnabled
+        self.syncing = syncing
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeListState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeListState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeListState {
+        return
+            try MasternodeListState(
+                available: FfiConverterBool.read(from: &buf), 
+                height: FfiConverterOptionUInt32.read(from: &buf), 
+                total: FfiConverterUInt32.read(from: &buf), 
+                enabled: FfiConverterUInt32.read(from: &buf), 
+                evoTotal: FfiConverterUInt32.read(from: &buf), 
+                evoEnabled: FfiConverterUInt32.read(from: &buf), 
+                syncing: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeListState, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.available, into: &buf)
+        FfiConverterOptionUInt32.write(value.height, into: &buf)
+        FfiConverterUInt32.write(value.total, into: &buf)
+        FfiConverterUInt32.write(value.enabled, into: &buf)
+        FfiConverterUInt32.write(value.evoTotal, into: &buf)
+        FfiConverterUInt32.write(value.evoEnabled, into: &buf)
+        FfiConverterBool.write(value.syncing, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeListState_lift(_ buf: RustBuffer) throws -> MasternodeListState {
+    return try FfiConverterTypeMasternodeListState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeListState_lower(_ value: MasternodeListState) -> RustBuffer {
+    return FfiConverterTypeMasternodeListState.lower(value)
+}
+
+
+/**
+ * Default ports of a network (Register wizard, QT-123).
+ */
+public struct MasternodeNetworkDefaults: Equatable, Hashable {
+    public let coreP2pPort: UInt16
+    public let platformP2pPort: UInt16
+    public let platformHttpsPort: UInt16
+    public let masternodeCollateral: UInt64
+    public let evonodeCollateral: UInt64
+    public let minShares: UInt32
+    public let maxShares: UInt32
+    public let minShareAmount: UInt64
+    public let maxEarlyPeriodBlocks: UInt32
+    public let maxEnvelopeBytes: UInt64
+    public let maxOperatorRewardX100: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(coreP2pPort: UInt16, platformP2pPort: UInt16, platformHttpsPort: UInt16, masternodeCollateral: UInt64, evonodeCollateral: UInt64, minShares: UInt32, maxShares: UInt32, minShareAmount: UInt64, maxEarlyPeriodBlocks: UInt32, maxEnvelopeBytes: UInt64, maxOperatorRewardX100: UInt16) {
+        self.coreP2pPort = coreP2pPort
+        self.platformP2pPort = platformP2pPort
+        self.platformHttpsPort = platformHttpsPort
+        self.masternodeCollateral = masternodeCollateral
+        self.evonodeCollateral = evonodeCollateral
+        self.minShares = minShares
+        self.maxShares = maxShares
+        self.minShareAmount = minShareAmount
+        self.maxEarlyPeriodBlocks = maxEarlyPeriodBlocks
+        self.maxEnvelopeBytes = maxEnvelopeBytes
+        self.maxOperatorRewardX100 = maxOperatorRewardX100
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeNetworkDefaults: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeNetworkDefaults: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeNetworkDefaults {
+        return
+            try MasternodeNetworkDefaults(
+                coreP2pPort: FfiConverterUInt16.read(from: &buf), 
+                platformP2pPort: FfiConverterUInt16.read(from: &buf), 
+                platformHttpsPort: FfiConverterUInt16.read(from: &buf), 
+                masternodeCollateral: FfiConverterUInt64.read(from: &buf), 
+                evonodeCollateral: FfiConverterUInt64.read(from: &buf), 
+                minShares: FfiConverterUInt32.read(from: &buf), 
+                maxShares: FfiConverterUInt32.read(from: &buf), 
+                minShareAmount: FfiConverterUInt64.read(from: &buf), 
+                maxEarlyPeriodBlocks: FfiConverterUInt32.read(from: &buf), 
+                maxEnvelopeBytes: FfiConverterUInt64.read(from: &buf), 
+                maxOperatorRewardX100: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeNetworkDefaults, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.coreP2pPort, into: &buf)
+        FfiConverterUInt16.write(value.platformP2pPort, into: &buf)
+        FfiConverterUInt16.write(value.platformHttpsPort, into: &buf)
+        FfiConverterUInt64.write(value.masternodeCollateral, into: &buf)
+        FfiConverterUInt64.write(value.evonodeCollateral, into: &buf)
+        FfiConverterUInt32.write(value.minShares, into: &buf)
+        FfiConverterUInt32.write(value.maxShares, into: &buf)
+        FfiConverterUInt64.write(value.minShareAmount, into: &buf)
+        FfiConverterUInt32.write(value.maxEarlyPeriodBlocks, into: &buf)
+        FfiConverterUInt64.write(value.maxEnvelopeBytes, into: &buf)
+        FfiConverterUInt16.write(value.maxOperatorRewardX100, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeNetworkDefaults_lift(_ buf: RustBuffer) throws -> MasternodeNetworkDefaults {
+    return try FfiConverterTypeMasternodeNetworkDefaults.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeNetworkDefaults_lower(_ value: MasternodeNetworkDefaults) -> RustBuffer {
+    return FfiConverterTypeMasternodeNetworkDefaults.lower(value)
+}
+
+
+public struct MasternodeQuery: Equatable, Hashable {
+    public let typeFilter: MasternodeTypeFilter
+    /**
+     * Literal, case-insensitive substring over the fields dash-qt searches
+     * (service, type, PoSe, heights, payout addresses, operator reward
+     * text, collateral/owner/voting addresses, proTxHash, share
+     * addresses); not the operator key or platform node id.
+     */
+    public let text: String?
+    public let ownedOnly: Bool
+    public let hideBanned: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(typeFilter: MasternodeTypeFilter, 
+        /**
+         * Literal, case-insensitive substring over the fields dash-qt searches
+         * (service, type, PoSe, heights, payout addresses, operator reward
+         * text, collateral/owner/voting addresses, proTxHash, share
+         * addresses); not the operator key or platform node id.
+         */text: String?, ownedOnly: Bool, hideBanned: Bool) {
+        self.typeFilter = typeFilter
+        self.text = text
+        self.ownedOnly = ownedOnly
+        self.hideBanned = hideBanned
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeQuery: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeQuery: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeQuery {
+        return
+            try MasternodeQuery(
+                typeFilter: FfiConverterTypeMasternodeTypeFilter.read(from: &buf), 
+                text: FfiConverterOptionString.read(from: &buf), 
+                ownedOnly: FfiConverterBool.read(from: &buf), 
+                hideBanned: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeQuery, into buf: inout [UInt8]) {
+        FfiConverterTypeMasternodeTypeFilter.write(value.typeFilter, into: &buf)
+        FfiConverterOptionString.write(value.text, into: &buf)
+        FfiConverterBool.write(value.ownedOnly, into: &buf)
+        FfiConverterBool.write(value.hideBanned, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeQuery_lift(_ buf: RustBuffer) throws -> MasternodeQuery {
+    return try FfiConverterTypeMasternodeQuery.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeQuery_lower(_ value: MasternodeQuery) -> RustBuffer {
+    return FfiConverterTypeMasternodeQuery.lower(value)
+}
+
+
+/**
+ * One list row (QT-119). `None` = not known to an SPV wallet.
+ */
+public struct MasternodeRow: Equatable, Hashable {
+    /**
+     * Display order.
+     */
+    public let proTxHash: String
+    public let service: String?
+    public let nodeType: MasternodeType
+    /**
+     * `Some` for a v24 shared masternode the wallets know of.
+     */
+    public let shared: SharedHolding?
+    public let status: MasternodeListStatus
+    public let poseScore: UInt32?
+    public let registeredHeight: UInt32?
+    public let lastPaidHeight: UInt32?
+    public let nextPaymentHeight: UInt32?
+    public let operatorReward: OperatorReward?
+    public let collateral: OutPoint?
+    public let collateralAddress: String?
+    public let ownerAddress: String?
+    public let votingAddress: String
+    public let payoutAddresses: [String]
+    /**
+     * 96 hex characters.
+     */
+    public let operatorPublicKey: String
+    public let platformNodeId: String?
+    /**
+     * Empty = not owned.
+     */
+    public let ownedRoles: [OwnedRole]
+    /**
+     * Tracked masternode label (IOS-082).
+     */
+    public let label: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Display order.
+         */proTxHash: String, service: String?, nodeType: MasternodeType, 
+        /**
+         * `Some` for a v24 shared masternode the wallets know of.
+         */shared: SharedHolding?, status: MasternodeListStatus, poseScore: UInt32?, registeredHeight: UInt32?, lastPaidHeight: UInt32?, nextPaymentHeight: UInt32?, operatorReward: OperatorReward?, collateral: OutPoint?, collateralAddress: String?, ownerAddress: String?, votingAddress: String, payoutAddresses: [String], 
+        /**
+         * 96 hex characters.
+         */operatorPublicKey: String, platformNodeId: String?, 
+        /**
+         * Empty = not owned.
+         */ownedRoles: [OwnedRole], 
+        /**
+         * Tracked masternode label (IOS-082).
+         */label: String?) {
+        self.proTxHash = proTxHash
+        self.service = service
+        self.nodeType = nodeType
+        self.shared = shared
+        self.status = status
+        self.poseScore = poseScore
+        self.registeredHeight = registeredHeight
+        self.lastPaidHeight = lastPaidHeight
+        self.nextPaymentHeight = nextPaymentHeight
+        self.operatorReward = operatorReward
+        self.collateral = collateral
+        self.collateralAddress = collateralAddress
+        self.ownerAddress = ownerAddress
+        self.votingAddress = votingAddress
+        self.payoutAddresses = payoutAddresses
+        self.operatorPublicKey = operatorPublicKey
+        self.platformNodeId = platformNodeId
+        self.ownedRoles = ownedRoles
+        self.label = label
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeRow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeRow: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeRow {
+        return
+            try MasternodeRow(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                service: FfiConverterOptionString.read(from: &buf), 
+                nodeType: FfiConverterTypeMasternodeType.read(from: &buf), 
+                shared: FfiConverterOptionTypeSharedHolding.read(from: &buf), 
+                status: FfiConverterTypeMasternodeListStatus.read(from: &buf), 
+                poseScore: FfiConverterOptionUInt32.read(from: &buf), 
+                registeredHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                lastPaidHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                nextPaymentHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                operatorReward: FfiConverterOptionTypeOperatorReward.read(from: &buf), 
+                collateral: FfiConverterOptionTypeOutPoint.read(from: &buf), 
+                collateralAddress: FfiConverterOptionString.read(from: &buf), 
+                ownerAddress: FfiConverterOptionString.read(from: &buf), 
+                votingAddress: FfiConverterString.read(from: &buf), 
+                payoutAddresses: FfiConverterSequenceString.read(from: &buf), 
+                operatorPublicKey: FfiConverterString.read(from: &buf), 
+                platformNodeId: FfiConverterOptionString.read(from: &buf), 
+                ownedRoles: FfiConverterSequenceTypeOwnedRole.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeRow, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionString.write(value.service, into: &buf)
+        FfiConverterTypeMasternodeType.write(value.nodeType, into: &buf)
+        FfiConverterOptionTypeSharedHolding.write(value.shared, into: &buf)
+        FfiConverterTypeMasternodeListStatus.write(value.status, into: &buf)
+        FfiConverterOptionUInt32.write(value.poseScore, into: &buf)
+        FfiConverterOptionUInt32.write(value.registeredHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.lastPaidHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.nextPaymentHeight, into: &buf)
+        FfiConverterOptionTypeOperatorReward.write(value.operatorReward, into: &buf)
+        FfiConverterOptionTypeOutPoint.write(value.collateral, into: &buf)
+        FfiConverterOptionString.write(value.collateralAddress, into: &buf)
+        FfiConverterOptionString.write(value.ownerAddress, into: &buf)
+        FfiConverterString.write(value.votingAddress, into: &buf)
+        FfiConverterSequenceString.write(value.payoutAddresses, into: &buf)
+        FfiConverterString.write(value.operatorPublicKey, into: &buf)
+        FfiConverterOptionString.write(value.platformNodeId, into: &buf)
+        FfiConverterSequenceTypeOwnedRole.write(value.ownedRoles, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeRow_lift(_ buf: RustBuffer) throws -> MasternodeRow {
+    return try FfiConverterTypeMasternodeRow.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeRow_lower(_ value: MasternodeRow) -> RustBuffer {
+    return FfiConverterTypeMasternodeRow.lower(value)
+}
+
+
+/**
+ * One share of a shared masternode (details "shares table").
+ */
+public struct MasternodeShare: Equatable, Hashable {
+    public let amount: UInt64
+    public let ownerAddress: String
+    public let payoutAddress: String
+    public let refundAddress: String
+    public let mine: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(amount: UInt64, ownerAddress: String, payoutAddress: String, refundAddress: String, mine: Bool) {
+        self.amount = amount
+        self.ownerAddress = ownerAddress
+        self.payoutAddress = payoutAddress
+        self.refundAddress = refundAddress
+        self.mine = mine
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeShare: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeShare: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeShare {
+        return
+            try MasternodeShare(
+                amount: FfiConverterUInt64.read(from: &buf), 
+                ownerAddress: FfiConverterString.read(from: &buf), 
+                payoutAddress: FfiConverterString.read(from: &buf), 
+                refundAddress: FfiConverterString.read(from: &buf), 
+                mine: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeShare, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterString.write(value.ownerAddress, into: &buf)
+        FfiConverterString.write(value.payoutAddress, into: &buf)
+        FfiConverterString.write(value.refundAddress, into: &buf)
+        FfiConverterBool.write(value.mine, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeShare_lift(_ buf: RustBuffer) throws -> MasternodeShare {
+    return try FfiConverterTypeMasternodeShare.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeShare_lower(_ value: MasternodeShare) -> RustBuffer {
+    return FfiConverterTypeMasternodeShare.lower(value)
+}
+
+
+/**
+ * One sweep transaction of the plan (≤ 500 inputs each, iOS chunking).
+ */
+public struct MixedCoinsChunk: Equatable, Hashable {
+    public let inputs: UInt32
+    public let amount: UInt64
+    public let fee: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(inputs: UInt32, amount: UInt64, fee: UInt64) {
+        self.inputs = inputs
+        self.amount = amount
+        self.fee = fee
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MixedCoinsChunk: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMixedCoinsChunk: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MixedCoinsChunk {
+        return
+            try MixedCoinsChunk(
+                inputs: FfiConverterUInt32.read(from: &buf), 
+                amount: FfiConverterUInt64.read(from: &buf), 
+                fee: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MixedCoinsChunk, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.inputs, into: &buf)
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterUInt64.write(value.fee, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsChunk_lift(_ buf: RustBuffer) throws -> MixedCoinsChunk {
+    return try FfiConverterTypeMixedCoinsChunk.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsChunk_lower(_ value: MixedCoinsChunk) -> RustBuffer {
+    return FfiConverterTypeMixedCoinsChunk.lower(value)
+}
+
+
+public struct MixedCoinsSweepPlan: Equatable, Hashable {
+    public let destination: MixedCoinsDestination
+    /**
+     * The CoinJoin-account balance the plan moves (coins above the
+     * 1000-duff threshold, mixed or not).
+     */
+    public let total: UInt64
+    public let chunks: [MixedCoinsChunk]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(destination: MixedCoinsDestination, 
+        /**
+         * The CoinJoin-account balance the plan moves (coins above the
+         * 1000-duff threshold, mixed or not).
+         */total: UInt64, chunks: [MixedCoinsChunk]) {
+        self.destination = destination
+        self.total = total
+        self.chunks = chunks
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MixedCoinsSweepPlan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMixedCoinsSweepPlan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MixedCoinsSweepPlan {
+        return
+            try MixedCoinsSweepPlan(
+                destination: FfiConverterTypeMixedCoinsDestination.read(from: &buf), 
+                total: FfiConverterUInt64.read(from: &buf), 
+                chunks: FfiConverterSequenceTypeMixedCoinsChunk.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MixedCoinsSweepPlan, into buf: inout [UInt8]) {
+        FfiConverterTypeMixedCoinsDestination.write(value.destination, into: &buf)
+        FfiConverterUInt64.write(value.total, into: &buf)
+        FfiConverterSequenceTypeMixedCoinsChunk.write(value.chunks, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsSweepPlan_lift(_ buf: RustBuffer) throws -> MixedCoinsSweepPlan {
+    return try FfiConverterTypeMixedCoinsSweepPlan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsSweepPlan_lower(_ value: MixedCoinsSweepPlan) -> RustBuffer {
+    return FfiConverterTypeMixedCoinsSweepPlan.lower(value)
+}
+
+
+/**
+ * Result of "Move mixed coins". A later chunk can fail after earlier ones
+ * were broadcast (iOS "may partially succeed").
+ */
+public struct MixedCoinsSweepResult: Equatable, Hashable {
+    public let txids: [String]
+    public let moved: UInt64
+    public let remaining: UInt64
+    /**
+     * Code of the error that stopped the sweep, `None` when complete.
+     */
+    public let failureCode: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(txids: [String], moved: UInt64, remaining: UInt64, 
+        /**
+         * Code of the error that stopped the sweep, `None` when complete.
+         */failureCode: String?) {
+        self.txids = txids
+        self.moved = moved
+        self.remaining = remaining
+        self.failureCode = failureCode
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MixedCoinsSweepResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMixedCoinsSweepResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MixedCoinsSweepResult {
+        return
+            try MixedCoinsSweepResult(
+                txids: FfiConverterSequenceString.read(from: &buf), 
+                moved: FfiConverterUInt64.read(from: &buf), 
+                remaining: FfiConverterUInt64.read(from: &buf), 
+                failureCode: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MixedCoinsSweepResult, into buf: inout [UInt8]) {
+        FfiConverterSequenceString.write(value.txids, into: &buf)
+        FfiConverterUInt64.write(value.moved, into: &buf)
+        FfiConverterUInt64.write(value.remaining, into: &buf)
+        FfiConverterOptionString.write(value.failureCode, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsSweepResult_lift(_ buf: RustBuffer) throws -> MixedCoinsSweepResult {
+    return try FfiConverterTypeMixedCoinsSweepResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsSweepResult_lower(_ value: MixedCoinsSweepResult) -> RustBuffer {
+    return FfiConverterTypeMixedCoinsSweepResult.lower(value)
+}
+
+
+/**
  * Word-by-word validation for the restore screen.
  */
 public struct MnemonicCheck: Equatable, Hashable {
@@ -7627,6 +12118,72 @@ public func FfiConverterTypeMnemonicCheck_lift(_ buf: RustBuffer) throws -> Mnem
 #endif
 public func FfiConverterTypeMnemonicCheck_lower(_ value: MnemonicCheck) -> RustBuffer {
     return FfiConverterTypeMnemonicCheck.lower(value)
+}
+
+
+/**
+ * "My Votes": weighted votes of the masternodes whose voting keys the
+ * wallets hold.
+ */
+public struct MyVotes: Equatable, Hashable {
+    public let yes: UInt32
+    public let no: UInt32
+    public let abstain: UInt32
+    public let unvoted: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(yes: UInt32, no: UInt32, abstain: UInt32, unvoted: UInt32) {
+        self.yes = yes
+        self.no = no
+        self.abstain = abstain
+        self.unvoted = unvoted
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MyVotes: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMyVotes: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MyVotes {
+        return
+            try MyVotes(
+                yes: FfiConverterUInt32.read(from: &buf), 
+                no: FfiConverterUInt32.read(from: &buf), 
+                abstain: FfiConverterUInt32.read(from: &buf), 
+                unvoted: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MyVotes, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.yes, into: &buf)
+        FfiConverterUInt32.write(value.no, into: &buf)
+        FfiConverterUInt32.write(value.abstain, into: &buf)
+        FfiConverterUInt32.write(value.unvoted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMyVotes_lift(_ buf: RustBuffer) throws -> MyVotes {
+    return try FfiConverterTypeMyVotes.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMyVotes_lower(_ value: MyVotes) -> RustBuffer {
+    return FfiConverterTypeMyVotes.lower(value)
 }
 
 
@@ -7723,6 +12280,105 @@ public func FfiConverterTypeNetworkDataInfo_lift(_ buf: RustBuffer) throws -> Ne
 #endif
 public func FfiConverterTypeNetworkDataInfo_lower(_ value: NetworkDataInfo) -> RustBuffer {
     return FfiConverterTypeNetworkDataInfo.lower(value)
+}
+
+
+/**
+ * The Network sub-tab.
+ */
+public struct NetworkStats: Equatable, Hashable {
+    /**
+     * `None` on SPV.
+     */
+    public let creditPool: CreditPoolInfo?
+    /**
+     * `None` on SPV.
+     */
+    public let instantsend: InstantSendCounters?
+    /**
+     * From the SML, as `NodeInfo` (M2).
+     */
+    public let masternodes: MasternodeCount?
+    public let evonodes: MasternodeCount?
+    public let bestChainlock: ChainLockInfo?
+    /**
+     * From the quorum list of the synced masternode list; empty before it
+     * synced.
+     */
+    public let quorums: [QuorumSummary]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `None` on SPV.
+         */creditPool: CreditPoolInfo?, 
+        /**
+         * `None` on SPV.
+         */instantsend: InstantSendCounters?, 
+        /**
+         * From the SML, as `NodeInfo` (M2).
+         */masternodes: MasternodeCount?, evonodes: MasternodeCount?, bestChainlock: ChainLockInfo?, 
+        /**
+         * From the quorum list of the synced masternode list; empty before it
+         * synced.
+         */quorums: [QuorumSummary]) {
+        self.creditPool = creditPool
+        self.instantsend = instantsend
+        self.masternodes = masternodes
+        self.evonodes = evonodes
+        self.bestChainlock = bestChainlock
+        self.quorums = quorums
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NetworkStats: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkStats: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkStats {
+        return
+            try NetworkStats(
+                creditPool: FfiConverterOptionTypeCreditPoolInfo.read(from: &buf), 
+                instantsend: FfiConverterOptionTypeInstantSendCounters.read(from: &buf), 
+                masternodes: FfiConverterOptionTypeMasternodeCount.read(from: &buf), 
+                evonodes: FfiConverterOptionTypeMasternodeCount.read(from: &buf), 
+                bestChainlock: FfiConverterOptionTypeChainLockInfo.read(from: &buf), 
+                quorums: FfiConverterSequenceTypeQuorumSummary.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NetworkStats, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCreditPoolInfo.write(value.creditPool, into: &buf)
+        FfiConverterOptionTypeInstantSendCounters.write(value.instantsend, into: &buf)
+        FfiConverterOptionTypeMasternodeCount.write(value.masternodes, into: &buf)
+        FfiConverterOptionTypeMasternodeCount.write(value.evonodes, into: &buf)
+        FfiConverterOptionTypeChainLockInfo.write(value.bestChainlock, into: &buf)
+        FfiConverterSequenceTypeQuorumSummary.write(value.quorums, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkStats_lift(_ buf: RustBuffer) throws -> NetworkStats {
+    return try FfiConverterTypeNetworkStats.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkStats_lower(_ value: NetworkStats) -> RustBuffer {
+    return FfiConverterTypeNetworkStats.lower(value)
 }
 
 
@@ -7874,6 +12530,140 @@ public func FfiConverterTypeNodeInfo_lift(_ buf: RustBuffer) throws -> NodeInfo 
 #endif
 public func FfiConverterTypeNodeInfo_lower(_ value: NodeInfo) -> RustBuffer {
     return FfiConverterTypeNodeInfo.lower(value)
+}
+
+
+/**
+ * "Operator Reward" column: "NONE" when `percent_x100 == 0`, "x.xx% to
+ * <addr>", or "…but not claimed" without a payout address.
+ */
+public struct OperatorReward: Equatable, Hashable {
+    /**
+     * Hundredths of a percent (0–10000).
+     */
+    public let percentX100: UInt16
+    public let payoutAddress: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Hundredths of a percent (0–10000).
+         */percentX100: UInt16, payoutAddress: String?) {
+        self.percentX100 = percentX100
+        self.payoutAddress = payoutAddress
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension OperatorReward: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOperatorReward: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OperatorReward {
+        return
+            try OperatorReward(
+                percentX100: FfiConverterUInt16.read(from: &buf), 
+                payoutAddress: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: OperatorReward, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.percentX100, into: &buf)
+        FfiConverterOptionString.write(value.payoutAddress, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorReward_lift(_ buf: RustBuffer) throws -> OperatorReward {
+    return try FfiConverterTypeOperatorReward.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorReward_lower(_ value: OperatorReward) -> RustBuffer {
+    return FfiConverterTypeOperatorReward.lower(value)
+}
+
+
+/**
+ * The generated operator secret, shown once (QT-124). Bytes so the host
+ * keeps them in a zeroing buffer; both are ASCII.
+ */
+public struct OperatorSecret: Equatable, Hashable {
+    /**
+     * 64 hex characters.
+     */
+    public let secretHex: Data
+    /**
+     * `masternodeblsprivkey=<hex>`.
+     */
+    public let configLine: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 64 hex characters.
+         */secretHex: Data, 
+        /**
+         * `masternodeblsprivkey=<hex>`.
+         */configLine: Data) {
+        self.secretHex = secretHex
+        self.configLine = configLine
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension OperatorSecret: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOperatorSecret: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OperatorSecret {
+        return
+            try OperatorSecret(
+                secretHex: FfiConverterData.read(from: &buf), 
+                configLine: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: OperatorSecret, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.secretHex, into: &buf)
+        FfiConverterData.write(value.configLine, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorSecret_lift(_ buf: RustBuffer) throws -> OperatorSecret {
+    return try FfiConverterTypeOperatorSecret.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorSecret_lower(_ value: OperatorSecret) -> RustBuffer {
+    return FfiConverterTypeOperatorSecret.lower(value)
 }
 
 
@@ -8114,6 +12904,163 @@ public func FfiConverterTypePeerInfo_lower(_ value: PeerInfo) -> RustBuffer {
 }
 
 
+/**
+ * A created, not yet submitted proposal (QT-133).
+ */
+public struct PendingProposal: Equatable, Hashable {
+    public let hash: String
+    public let name: String
+    public let url: String
+    public let paymentAmount: UInt64
+    public let paymentCount: UInt32
+    public let collateralTxid: String
+    public let collateralStatus: CollateralStatus
+    public let confirmations: UInt32
+    public let createdAt: UInt64
+    public let endEpoch: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(hash: String, name: String, url: String, paymentAmount: UInt64, paymentCount: UInt32, collateralTxid: String, collateralStatus: CollateralStatus, confirmations: UInt32, createdAt: UInt64, endEpoch: UInt64) {
+        self.hash = hash
+        self.name = name
+        self.url = url
+        self.paymentAmount = paymentAmount
+        self.paymentCount = paymentCount
+        self.collateralTxid = collateralTxid
+        self.collateralStatus = collateralStatus
+        self.confirmations = confirmations
+        self.createdAt = createdAt
+        self.endEpoch = endEpoch
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PendingProposal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePendingProposal: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PendingProposal {
+        return
+            try PendingProposal(
+                hash: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                url: FfiConverterString.read(from: &buf), 
+                paymentAmount: FfiConverterUInt64.read(from: &buf), 
+                paymentCount: FfiConverterUInt32.read(from: &buf), 
+                collateralTxid: FfiConverterString.read(from: &buf), 
+                collateralStatus: FfiConverterTypeCollateralStatus.read(from: &buf), 
+                confirmations: FfiConverterUInt32.read(from: &buf), 
+                createdAt: FfiConverterUInt64.read(from: &buf), 
+                endEpoch: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PendingProposal, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.hash, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterUInt64.write(value.paymentAmount, into: &buf)
+        FfiConverterUInt32.write(value.paymentCount, into: &buf)
+        FfiConverterString.write(value.collateralTxid, into: &buf)
+        FfiConverterTypeCollateralStatus.write(value.collateralStatus, into: &buf)
+        FfiConverterUInt32.write(value.confirmations, into: &buf)
+        FfiConverterUInt64.write(value.createdAt, into: &buf)
+        FfiConverterUInt64.write(value.endEpoch, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingProposal_lift(_ buf: RustBuffer) throws -> PendingProposal {
+    return try FfiConverterTypePendingProposal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingProposal_lower(_ value: PendingProposal) -> RustBuffer {
+    return FfiConverterTypePendingProposal.lower(value)
+}
+
+
+/**
+ * EvoNode Platform fields. v24 networks take address lists; before v24
+ * only the ports of the first entries count.
+ */
+public struct PlatformFields: Equatable, Hashable {
+    /**
+     * 40 hex characters (Tenderdash node id).
+     */
+    public let nodeIdHex: String
+    public let p2pAddresses: [String]
+    public let httpsAddresses: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 40 hex characters (Tenderdash node id).
+         */nodeIdHex: String, p2pAddresses: [String], httpsAddresses: [String]) {
+        self.nodeIdHex = nodeIdHex
+        self.p2pAddresses = p2pAddresses
+        self.httpsAddresses = httpsAddresses
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PlatformFields: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformFields: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformFields {
+        return
+            try PlatformFields(
+                nodeIdHex: FfiConverterString.read(from: &buf), 
+                p2pAddresses: FfiConverterSequenceString.read(from: &buf), 
+                httpsAddresses: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlatformFields, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.nodeIdHex, into: &buf)
+        FfiConverterSequenceString.write(value.p2pAddresses, into: &buf)
+        FfiConverterSequenceString.write(value.httpsAddresses, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformFields_lift(_ buf: RustBuffer) throws -> PlatformFields {
+    return try FfiConverterTypePlatformFields.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformFields_lower(_ value: PlatformFields) -> RustBuffer {
+    return FfiConverterTypePlatformFields.lower(value)
+}
+
+
 public struct PreparedInput: Equatable, Hashable {
     public let outpoint: OutPoint
     public let address: String?
@@ -8350,6 +13297,471 @@ public func FfiConverterTypePreparedTxSummary_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypePreparedTxSummary_lower(_ value: PreparedTxSummary) -> RustBuffer {
     return FfiConverterTypePreparedTxSummary.lower(value)
+}
+
+
+/**
+ * The details view (double-click) and "Copy Raw JSON" (QT-130).
+ */
+public struct ProposalDetail: Equatable, Hashable {
+    public let row: ProposalRow
+    public let parentHash: String
+    public let collateralTxid: String
+    public let createdAt: UInt64
+    /**
+     * Payments requested: `ceil((end − start) / cycle time)`.
+     */
+    public let payments: UInt32
+    /**
+     * The object's data JSON, exactly as signed.
+     */
+    public let rawJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(row: ProposalRow, parentHash: String, collateralTxid: String, createdAt: UInt64, 
+        /**
+         * Payments requested: `ceil((end − start) / cycle time)`.
+         */payments: UInt32, 
+        /**
+         * The object's data JSON, exactly as signed.
+         */rawJson: String) {
+        self.row = row
+        self.parentHash = parentHash
+        self.collateralTxid = collateralTxid
+        self.createdAt = createdAt
+        self.payments = payments
+        self.rawJson = rawJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProposalDetail: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalDetail: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalDetail {
+        return
+            try ProposalDetail(
+                row: FfiConverterTypeProposalRow.read(from: &buf), 
+                parentHash: FfiConverterString.read(from: &buf), 
+                collateralTxid: FfiConverterString.read(from: &buf), 
+                createdAt: FfiConverterUInt64.read(from: &buf), 
+                payments: FfiConverterUInt32.read(from: &buf), 
+                rawJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProposalDetail, into buf: inout [UInt8]) {
+        FfiConverterTypeProposalRow.write(value.row, into: &buf)
+        FfiConverterString.write(value.parentHash, into: &buf)
+        FfiConverterString.write(value.collateralTxid, into: &buf)
+        FfiConverterUInt64.write(value.createdAt, into: &buf)
+        FfiConverterUInt32.write(value.payments, into: &buf)
+        FfiConverterString.write(value.rawJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalDetail_lift(_ buf: RustBuffer) throws -> ProposalDetail {
+    return try FfiConverterTypeProposalDetail.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalDetail_lower(_ value: ProposalDetail) -> RustBuffer {
+    return FfiConverterTypeProposalDetail.lower(value)
+}
+
+
+/**
+ * The Create Proposal wizard's input (QT-132).
+ */
+public struct ProposalDraft: Equatable, Hashable {
+    public let name: String
+    public let url: String
+    public let paymentAddress: String
+    /**
+     * Per payment, duffs.
+     */
+    public let paymentAmount: UInt64
+    /**
+     * 1–12.
+     */
+    public let paymentCount: UInt32
+    /**
+     * One of `superblock_dates()`. dash-qt ignores the chosen date (a bug,
+     * research 02 §11.3); the engine honours it: `start_epoch` is half a
+     * cycle before that superblock and `end_epoch` half a cycle after the
+     * last payment.
+     */
+    public let firstSuperblockHeight: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, url: String, paymentAddress: String, 
+        /**
+         * Per payment, duffs.
+         */paymentAmount: UInt64, 
+        /**
+         * 1–12.
+         */paymentCount: UInt32, 
+        /**
+         * One of `superblock_dates()`. dash-qt ignores the chosen date (a bug,
+         * research 02 §11.3); the engine honours it: `start_epoch` is half a
+         * cycle before that superblock and `end_epoch` half a cycle after the
+         * last payment.
+         */firstSuperblockHeight: UInt32) {
+        self.name = name
+        self.url = url
+        self.paymentAddress = paymentAddress
+        self.paymentAmount = paymentAmount
+        self.paymentCount = paymentCount
+        self.firstSuperblockHeight = firstSuperblockHeight
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProposalDraft: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalDraft: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalDraft {
+        return
+            try ProposalDraft(
+                name: FfiConverterString.read(from: &buf), 
+                url: FfiConverterString.read(from: &buf), 
+                paymentAddress: FfiConverterString.read(from: &buf), 
+                paymentAmount: FfiConverterUInt64.read(from: &buf), 
+                paymentCount: FfiConverterUInt32.read(from: &buf), 
+                firstSuperblockHeight: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProposalDraft, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterString.write(value.paymentAddress, into: &buf)
+        FfiConverterUInt64.write(value.paymentAmount, into: &buf)
+        FfiConverterUInt32.write(value.paymentCount, into: &buf)
+        FfiConverterUInt32.write(value.firstSuperblockHeight, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalDraft_lift(_ buf: RustBuffer) throws -> ProposalDraft {
+    return try FfiConverterTypeProposalDraft.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalDraft_lower(_ value: ProposalDraft) -> RustBuffer {
+    return FfiConverterTypeProposalDraft.lower(value)
+}
+
+
+public struct ProposalQuery: Equatable, Hashable {
+    public let source: ProposalSource
+    /**
+     * Case-insensitive substring of the title only (dash-qt).
+     */
+    public let titleFilter: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(source: ProposalSource, 
+        /**
+         * Case-insensitive substring of the title only (dash-qt).
+         */titleFilter: String?) {
+        self.source = source
+        self.titleFilter = titleFilter
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProposalQuery: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalQuery: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalQuery {
+        return
+            try ProposalQuery(
+                source: FfiConverterTypeProposalSource.read(from: &buf), 
+                titleFilter: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProposalQuery, into buf: inout [UInt8]) {
+        FfiConverterTypeProposalSource.write(value.source, into: &buf)
+        FfiConverterOptionString.write(value.titleFilter, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalQuery_lift(_ buf: RustBuffer) throws -> ProposalQuery {
+    return try FfiConverterTypeProposalQuery.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalQuery_lower(_ value: ProposalQuery) -> RustBuffer {
+    return FfiConverterTypeProposalQuery.lower(value)
+}
+
+
+/**
+ * One row of the proposal list (QT-129).
+ */
+public struct ProposalRow: Equatable, Hashable {
+    /**
+     * Object hash, display order.
+     */
+    public let hash: String
+    public let name: String
+    public let url: String
+    public let paymentAddress: String
+    /**
+     * Per payment, duffs.
+     */
+    public let paymentAmount: UInt64
+    public let startEpoch: UInt64
+    public let endEpoch: UInt64
+    public let status: ProposalStatus
+    /**
+     * Collateral confirmations while `Confirming`/`Pending`.
+     */
+    public let collateralConfirmations: UInt32?
+    /**
+     * Weighted funding votes.
+     */
+    public let yes: UInt32
+    public let no: UInt32
+    public let abstain: UInt32
+    /**
+     * `(yes − no) − threshold`: the "(%4%5)" margin of the Votes column.
+     */
+    public let margin: Int64
+    /**
+     * `None` = "No voting keys".
+     */
+    public let myVotes: MyVotes?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Object hash, display order.
+         */hash: String, name: String, url: String, paymentAddress: String, 
+        /**
+         * Per payment, duffs.
+         */paymentAmount: UInt64, startEpoch: UInt64, endEpoch: UInt64, status: ProposalStatus, 
+        /**
+         * Collateral confirmations while `Confirming`/`Pending`.
+         */collateralConfirmations: UInt32?, 
+        /**
+         * Weighted funding votes.
+         */yes: UInt32, no: UInt32, abstain: UInt32, 
+        /**
+         * `(yes − no) − threshold`: the "(%4%5)" margin of the Votes column.
+         */margin: Int64, 
+        /**
+         * `None` = "No voting keys".
+         */myVotes: MyVotes?) {
+        self.hash = hash
+        self.name = name
+        self.url = url
+        self.paymentAddress = paymentAddress
+        self.paymentAmount = paymentAmount
+        self.startEpoch = startEpoch
+        self.endEpoch = endEpoch
+        self.status = status
+        self.collateralConfirmations = collateralConfirmations
+        self.yes = yes
+        self.no = no
+        self.abstain = abstain
+        self.margin = margin
+        self.myVotes = myVotes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProposalRow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalRow: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalRow {
+        return
+            try ProposalRow(
+                hash: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                url: FfiConverterString.read(from: &buf), 
+                paymentAddress: FfiConverterString.read(from: &buf), 
+                paymentAmount: FfiConverterUInt64.read(from: &buf), 
+                startEpoch: FfiConverterUInt64.read(from: &buf), 
+                endEpoch: FfiConverterUInt64.read(from: &buf), 
+                status: FfiConverterTypeProposalStatus.read(from: &buf), 
+                collateralConfirmations: FfiConverterOptionUInt32.read(from: &buf), 
+                yes: FfiConverterUInt32.read(from: &buf), 
+                no: FfiConverterUInt32.read(from: &buf), 
+                abstain: FfiConverterUInt32.read(from: &buf), 
+                margin: FfiConverterInt64.read(from: &buf), 
+                myVotes: FfiConverterOptionTypeMyVotes.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProposalRow, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.hash, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterString.write(value.paymentAddress, into: &buf)
+        FfiConverterUInt64.write(value.paymentAmount, into: &buf)
+        FfiConverterUInt64.write(value.startEpoch, into: &buf)
+        FfiConverterUInt64.write(value.endEpoch, into: &buf)
+        FfiConverterTypeProposalStatus.write(value.status, into: &buf)
+        FfiConverterOptionUInt32.write(value.collateralConfirmations, into: &buf)
+        FfiConverterUInt32.write(value.yes, into: &buf)
+        FfiConverterUInt32.write(value.no, into: &buf)
+        FfiConverterUInt32.write(value.abstain, into: &buf)
+        FfiConverterInt64.write(value.margin, into: &buf)
+        FfiConverterOptionTypeMyVotes.write(value.myVotes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalRow_lift(_ buf: RustBuffer) throws -> ProposalRow {
+    return try FfiConverterTypeProposalRow.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalRow_lower(_ value: ProposalRow) -> RustBuffer {
+    return FfiConverterTypeProposalRow.lower(value)
+}
+
+
+public struct ProviderTxSummary: Equatable, Hashable {
+    public let kind: ProviderTxKind
+    public let proTxHash: String
+    public let txid: String
+    public let fee: UInt64
+    /**
+     * Penalty paid by a dissolve during the early period.
+     */
+    public let penalty: UInt64?
+    /**
+     * "Changing the operator key immediately PoSe-bans the masternode…"
+     */
+    public let bansMasternode: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: ProviderTxKind, proTxHash: String, txid: String, fee: UInt64, 
+        /**
+         * Penalty paid by a dissolve during the early period.
+         */penalty: UInt64?, 
+        /**
+         * "Changing the operator key immediately PoSe-bans the masternode…"
+         */bansMasternode: Bool) {
+        self.kind = kind
+        self.proTxHash = proTxHash
+        self.txid = txid
+        self.fee = fee
+        self.penalty = penalty
+        self.bansMasternode = bansMasternode
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProviderTxSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProviderTxSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderTxSummary {
+        return
+            try ProviderTxSummary(
+                kind: FfiConverterTypeProviderTxKind.read(from: &buf), 
+                proTxHash: FfiConverterString.read(from: &buf), 
+                txid: FfiConverterString.read(from: &buf), 
+                fee: FfiConverterUInt64.read(from: &buf), 
+                penalty: FfiConverterOptionUInt64.read(from: &buf), 
+                bansMasternode: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProviderTxSummary, into buf: inout [UInt8]) {
+        FfiConverterTypeProviderTxKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterString.write(value.txid, into: &buf)
+        FfiConverterUInt64.write(value.fee, into: &buf)
+        FfiConverterOptionUInt64.write(value.penalty, into: &buf)
+        FfiConverterBool.write(value.bansMasternode, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderTxSummary_lift(_ buf: RustBuffer) throws -> ProviderTxSummary {
+    return try FfiConverterTypeProviderTxSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderTxSummary_lower(_ value: ProviderTxSummary) -> RustBuffer {
+    return FfiConverterTypeProviderTxSummary.lower(value)
 }
 
 
@@ -8678,6 +14090,89 @@ public func FfiConverterTypeQuickUnlockPolicy_lower(_ value: QuickUnlockPolicy) 
 
 
 /**
+ * One LLMQ type in the masternode list ("N active (x.x% health)").
+ */
+public struct QuorumSummary: Equatable, Hashable {
+    /**
+     * Core name, e.g. `llmq_400_60`.
+     */
+    public let llmqName: String
+    public let llmqType: UInt8
+    public let active: UInt32
+    /**
+     * Share of the type's quorums that are valid, 0–100; `None` when the
+     * list does not say.
+     */
+    public let healthPercent: Double?
+    public let rotated: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Core name, e.g. `llmq_400_60`.
+         */llmqName: String, llmqType: UInt8, active: UInt32, 
+        /**
+         * Share of the type's quorums that are valid, 0–100; `None` when the
+         * list does not say.
+         */healthPercent: Double?, rotated: Bool) {
+        self.llmqName = llmqName
+        self.llmqType = llmqType
+        self.active = active
+        self.healthPercent = healthPercent
+        self.rotated = rotated
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension QuorumSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeQuorumSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> QuorumSummary {
+        return
+            try QuorumSummary(
+                llmqName: FfiConverterString.read(from: &buf), 
+                llmqType: FfiConverterUInt8.read(from: &buf), 
+                active: FfiConverterUInt32.read(from: &buf), 
+                healthPercent: FfiConverterOptionDouble.read(from: &buf), 
+                rotated: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: QuorumSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.llmqName, into: &buf)
+        FfiConverterUInt8.write(value.llmqType, into: &buf)
+        FfiConverterUInt32.write(value.active, into: &buf)
+        FfiConverterOptionDouble.write(value.healthPercent, into: &buf)
+        FfiConverterBool.write(value.rotated, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuorumSummary_lift(_ buf: RustBuffer) throws -> QuorumSummary {
+    return try FfiConverterTypeQuorumSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuorumSummary_lower(_ value: QuorumSummary) -> RustBuffer {
+    return FfiConverterTypeQuorumSummary.lower(value)
+}
+
+
+/**
  * A stored payment request (QT-081/083, IOS-055).
  */
 public struct ReceiveRequest: Equatable, Hashable {
@@ -8866,6 +14361,266 @@ public func FfiConverterTypeRecipient_lower(_ value: Recipient) -> RustBuffer {
 
 
 /**
+ * The Register wizard's answers (QT-123).
+ */
+public struct RegistrationRequest: Equatable, Hashable {
+    public let walletId: String
+    public let nodeType: MasternodeType
+    public let collateral: CollateralChoice
+    /**
+     * `IP:port` entries; empty = register without service (inactive until
+     * an Update Service).
+     */
+    public let serviceAddresses: [String]
+    /**
+     * `None` = a fresh wallet address.
+     */
+    public let ownerAddress: String?
+    /**
+     * `None` = the owner address.
+     */
+    public let votingAddress: String?
+    public let operatorKey: OperatorKeyChoice
+    public let payoutAddress: String
+    /**
+     * 0–10000 (hundredths of a percent).
+     */
+    public let operatorRewardX100: UInt16
+    /**
+     * Required for EvoNodes, refused for regular masternodes.
+     */
+    public let platform: PlatformFields?
+    public let feeSource: FeeSourceChoice
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(walletId: String, nodeType: MasternodeType, collateral: CollateralChoice, 
+        /**
+         * `IP:port` entries; empty = register without service (inactive until
+         * an Update Service).
+         */serviceAddresses: [String], 
+        /**
+         * `None` = a fresh wallet address.
+         */ownerAddress: String?, 
+        /**
+         * `None` = the owner address.
+         */votingAddress: String?, operatorKey: OperatorKeyChoice, payoutAddress: String, 
+        /**
+         * 0–10000 (hundredths of a percent).
+         */operatorRewardX100: UInt16, 
+        /**
+         * Required for EvoNodes, refused for regular masternodes.
+         */platform: PlatformFields?, feeSource: FeeSourceChoice) {
+        self.walletId = walletId
+        self.nodeType = nodeType
+        self.collateral = collateral
+        self.serviceAddresses = serviceAddresses
+        self.ownerAddress = ownerAddress
+        self.votingAddress = votingAddress
+        self.operatorKey = operatorKey
+        self.payoutAddress = payoutAddress
+        self.operatorRewardX100 = operatorRewardX100
+        self.platform = platform
+        self.feeSource = feeSource
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RegistrationRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegistrationRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegistrationRequest {
+        return
+            try RegistrationRequest(
+                walletId: FfiConverterString.read(from: &buf), 
+                nodeType: FfiConverterTypeMasternodeType.read(from: &buf), 
+                collateral: FfiConverterTypeCollateralChoice.read(from: &buf), 
+                serviceAddresses: FfiConverterSequenceString.read(from: &buf), 
+                ownerAddress: FfiConverterOptionString.read(from: &buf), 
+                votingAddress: FfiConverterOptionString.read(from: &buf), 
+                operatorKey: FfiConverterTypeOperatorKeyChoice.read(from: &buf), 
+                payoutAddress: FfiConverterString.read(from: &buf), 
+                operatorRewardX100: FfiConverterUInt16.read(from: &buf), 
+                platform: FfiConverterOptionTypePlatformFields.read(from: &buf), 
+                feeSource: FfiConverterTypeFeeSourceChoice.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegistrationRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterTypeMasternodeType.write(value.nodeType, into: &buf)
+        FfiConverterTypeCollateralChoice.write(value.collateral, into: &buf)
+        FfiConverterSequenceString.write(value.serviceAddresses, into: &buf)
+        FfiConverterOptionString.write(value.ownerAddress, into: &buf)
+        FfiConverterOptionString.write(value.votingAddress, into: &buf)
+        FfiConverterTypeOperatorKeyChoice.write(value.operatorKey, into: &buf)
+        FfiConverterString.write(value.payoutAddress, into: &buf)
+        FfiConverterUInt16.write(value.operatorRewardX100, into: &buf)
+        FfiConverterOptionTypePlatformFields.write(value.platform, into: &buf)
+        FfiConverterTypeFeeSourceChoice.write(value.feeSource, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationRequest_lift(_ buf: RustBuffer) throws -> RegistrationRequest {
+    return try FfiConverterTypeRegistrationRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationRequest_lower(_ value: RegistrationRequest) -> RustBuffer {
+    return FfiConverterTypeRegistrationRequest.lower(value)
+}
+
+
+/**
+ * The review page (QT-123 "Review").
+ */
+public struct RegistrationSummary: Equatable, Hashable {
+    public let nodeType: MasternodeType
+    /**
+     * Known after prepare for every collateral choice.
+     */
+    public let proTxHash: String
+    public let collateral: OutPoint
+    public let collateralAddress: String
+    public let ownerAddress: String
+    public let votingAddress: String
+    public let payoutAddress: String
+    public let operatorPublicKey: String
+    public let operatorRewardX100: UInt16
+    public let serviceAddresses: [String]
+    public let platform: PlatformFields?
+    public let fee: UInt64
+    /**
+     * Collateral (with `FundNew`) + fee.
+     */
+    public let totalSpent: UInt64
+    /**
+     * The secret gate applies (the operator key was generated).
+     */
+    public let operatorSecretRequired: Bool
+    /**
+     * `Some` for external collateral: the message to sign with the
+     * collateral key (`payout|operatorReward|ownerAddr|votingAddr|payloadHash`).
+     */
+    public let collateralSignMessage: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(nodeType: MasternodeType, 
+        /**
+         * Known after prepare for every collateral choice.
+         */proTxHash: String, collateral: OutPoint, collateralAddress: String, ownerAddress: String, votingAddress: String, payoutAddress: String, operatorPublicKey: String, operatorRewardX100: UInt16, serviceAddresses: [String], platform: PlatformFields?, fee: UInt64, 
+        /**
+         * Collateral (with `FundNew`) + fee.
+         */totalSpent: UInt64, 
+        /**
+         * The secret gate applies (the operator key was generated).
+         */operatorSecretRequired: Bool, 
+        /**
+         * `Some` for external collateral: the message to sign with the
+         * collateral key (`payout|operatorReward|ownerAddr|votingAddr|payloadHash`).
+         */collateralSignMessage: String?) {
+        self.nodeType = nodeType
+        self.proTxHash = proTxHash
+        self.collateral = collateral
+        self.collateralAddress = collateralAddress
+        self.ownerAddress = ownerAddress
+        self.votingAddress = votingAddress
+        self.payoutAddress = payoutAddress
+        self.operatorPublicKey = operatorPublicKey
+        self.operatorRewardX100 = operatorRewardX100
+        self.serviceAddresses = serviceAddresses
+        self.platform = platform
+        self.fee = fee
+        self.totalSpent = totalSpent
+        self.operatorSecretRequired = operatorSecretRequired
+        self.collateralSignMessage = collateralSignMessage
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RegistrationSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegistrationSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegistrationSummary {
+        return
+            try RegistrationSummary(
+                nodeType: FfiConverterTypeMasternodeType.read(from: &buf), 
+                proTxHash: FfiConverterString.read(from: &buf), 
+                collateral: FfiConverterTypeOutPoint.read(from: &buf), 
+                collateralAddress: FfiConverterString.read(from: &buf), 
+                ownerAddress: FfiConverterString.read(from: &buf), 
+                votingAddress: FfiConverterString.read(from: &buf), 
+                payoutAddress: FfiConverterString.read(from: &buf), 
+                operatorPublicKey: FfiConverterString.read(from: &buf), 
+                operatorRewardX100: FfiConverterUInt16.read(from: &buf), 
+                serviceAddresses: FfiConverterSequenceString.read(from: &buf), 
+                platform: FfiConverterOptionTypePlatformFields.read(from: &buf), 
+                fee: FfiConverterUInt64.read(from: &buf), 
+                totalSpent: FfiConverterUInt64.read(from: &buf), 
+                operatorSecretRequired: FfiConverterBool.read(from: &buf), 
+                collateralSignMessage: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegistrationSummary, into buf: inout [UInt8]) {
+        FfiConverterTypeMasternodeType.write(value.nodeType, into: &buf)
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterTypeOutPoint.write(value.collateral, into: &buf)
+        FfiConverterString.write(value.collateralAddress, into: &buf)
+        FfiConverterString.write(value.ownerAddress, into: &buf)
+        FfiConverterString.write(value.votingAddress, into: &buf)
+        FfiConverterString.write(value.payoutAddress, into: &buf)
+        FfiConverterString.write(value.operatorPublicKey, into: &buf)
+        FfiConverterUInt16.write(value.operatorRewardX100, into: &buf)
+        FfiConverterSequenceString.write(value.serviceAddresses, into: &buf)
+        FfiConverterOptionTypePlatformFields.write(value.platform, into: &buf)
+        FfiConverterUInt64.write(value.fee, into: &buf)
+        FfiConverterUInt64.write(value.totalSpent, into: &buf)
+        FfiConverterBool.write(value.operatorSecretRequired, into: &buf)
+        FfiConverterOptionString.write(value.collateralSignMessage, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationSummary_lift(_ buf: RustBuffer) throws -> RegistrationSummary {
+    return try FfiConverterTypeRegistrationSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationSummary_lower(_ value: RegistrationSummary) -> RustBuffer {
+    return FfiConverterTypeRegistrationSummary.lower(value)
+}
+
+
+/**
  * A running rescan (QT-117 progress dialog, IOS-113).
  */
 public struct RescanProgress: Equatable, Hashable {
@@ -8937,6 +14692,82 @@ public func FfiConverterTypeRescanProgress_lower(_ value: RescanProgress) -> Rus
 
 
 /**
+ * A revealed provider private key. ASCII bytes, held by the host in a
+ * zeroing buffer.
+ */
+public struct RevealedMasternodeKey: Equatable, Hashable {
+    public let privateKeyHex: Data
+    /**
+     * WIF for secp256k1 roles.
+     */
+    public let wif: Data?
+    /**
+     * The Tenderdash `priv_validator_key`/node key form for a platform
+     * node key (base64).
+     */
+    public let tenderdashKey: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(privateKeyHex: Data, 
+        /**
+         * WIF for secp256k1 roles.
+         */wif: Data?, 
+        /**
+         * The Tenderdash `priv_validator_key`/node key form for a platform
+         * node key (base64).
+         */tenderdashKey: Data?) {
+        self.privateKeyHex = privateKeyHex
+        self.wif = wif
+        self.tenderdashKey = tenderdashKey
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RevealedMasternodeKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRevealedMasternodeKey: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RevealedMasternodeKey {
+        return
+            try RevealedMasternodeKey(
+                privateKeyHex: FfiConverterData.read(from: &buf), 
+                wif: FfiConverterOptionData.read(from: &buf), 
+                tenderdashKey: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RevealedMasternodeKey, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.privateKeyHex, into: &buf)
+        FfiConverterOptionData.write(value.wif, into: &buf)
+        FfiConverterOptionData.write(value.tenderdashKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevealedMasternodeKey_lift(_ buf: RustBuffer) throws -> RevealedMasternodeKey {
+    return try FfiConverterTypeRevealedMasternodeKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevealedMasternodeKey_lower(_ value: RevealedMasternodeKey) -> RustBuffer {
+    return FfiConverterTypeRevealedMasternodeKey.lower(value)
+}
+
+
+/**
  * A revealed recovery phrase (QT-113, IOS-006). Both fields are secret.
  */
 public struct RevealedMnemonic: Equatable, Hashable {
@@ -9002,6 +14833,75 @@ public func FfiConverterTypeRevealedMnemonic_lift(_ buf: RustBuffer) throws -> R
 #endif
 public func FfiConverterTypeRevealedMnemonic_lower(_ value: RevealedMnemonic) -> RustBuffer {
     return FfiConverterTypeRevealedMnemonic.lower(value)
+}
+
+
+/**
+ * Revoke (ProUpRevTx); needs the operator secret.
+ */
+public struct RevokeRequest: Equatable, Hashable {
+    public let proTxHash: String
+    public let operatorSecret: Data?
+    public let reason: RevocationReason
+    public let feeSource: FeeSourceChoice
+    public let feeWalletId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, operatorSecret: Data?, reason: RevocationReason, feeSource: FeeSourceChoice, feeWalletId: String) {
+        self.proTxHash = proTxHash
+        self.operatorSecret = operatorSecret
+        self.reason = reason
+        self.feeSource = feeSource
+        self.feeWalletId = feeWalletId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RevokeRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRevokeRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RevokeRequest {
+        return
+            try RevokeRequest(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                operatorSecret: FfiConverterOptionData.read(from: &buf), 
+                reason: FfiConverterTypeRevocationReason.read(from: &buf), 
+                feeSource: FfiConverterTypeFeeSourceChoice.read(from: &buf), 
+                feeWalletId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RevokeRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionData.write(value.operatorSecret, into: &buf)
+        FfiConverterTypeRevocationReason.write(value.reason, into: &buf)
+        FfiConverterTypeFeeSourceChoice.write(value.feeSource, into: &buf)
+        FfiConverterString.write(value.feeWalletId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevokeRequest_lift(_ buf: RustBuffer) throws -> RevokeRequest {
+    return try FfiConverterTypeRevokeRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevokeRequest_lower(_ value: RevokeRequest) -> RustBuffer {
+    return FfiConverterTypeRevokeRequest.lower(value)
 }
 
 
@@ -9078,6 +14978,612 @@ public func FfiConverterTypeSessionOptions_lift(_ buf: RustBuffer) throws -> Ses
 #endif
 public func FfiConverterTypeSessionOptions_lower(_ value: SessionOptions) -> RustBuffer {
     return FfiConverterTypeSessionOptions.lower(value)
+}
+
+
+/**
+ * A participant's contribution to one share (QT-126 "reserve coins").
+ */
+public struct ShareContribution: Equatable, Hashable {
+    public let shareIndex: UInt32
+    public let inputs: [OutPoint]
+    /**
+     * `None` = fresh wallet addresses.
+     */
+    public let ownerAddress: String?
+    public let payoutAddress: String?
+    public let refundAddress: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(shareIndex: UInt32, inputs: [OutPoint], 
+        /**
+         * `None` = fresh wallet addresses.
+         */ownerAddress: String?, payoutAddress: String?, refundAddress: String?) {
+        self.shareIndex = shareIndex
+        self.inputs = inputs
+        self.ownerAddress = ownerAddress
+        self.payoutAddress = payoutAddress
+        self.refundAddress = refundAddress
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ShareContribution: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeShareContribution: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ShareContribution {
+        return
+            try ShareContribution(
+                shareIndex: FfiConverterUInt32.read(from: &buf), 
+                inputs: FfiConverterSequenceTypeOutPoint.read(from: &buf), 
+                ownerAddress: FfiConverterOptionString.read(from: &buf), 
+                payoutAddress: FfiConverterOptionString.read(from: &buf), 
+                refundAddress: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ShareContribution, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.shareIndex, into: &buf)
+        FfiConverterSequenceTypeOutPoint.write(value.inputs, into: &buf)
+        FfiConverterOptionString.write(value.ownerAddress, into: &buf)
+        FfiConverterOptionString.write(value.payoutAddress, into: &buf)
+        FfiConverterOptionString.write(value.refundAddress, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShareContribution_lift(_ buf: RustBuffer) throws -> ShareContribution {
+    return try FfiConverterTypeShareContribution.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShareContribution_lower(_ value: ShareContribution) -> RustBuffer {
+    return FfiConverterTypeShareContribution.lower(value)
+}
+
+
+/**
+ * An outgoing message for the other participants (clipboard or `.json`).
+ */
+public struct SharedEnvelope: Equatable, Hashable {
+    public let json: String
+    public let fingerprint: String
+    public let suggestedFileName: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(json: String, fingerprint: String, suggestedFileName: String) {
+        self.json = json
+        self.fingerprint = fingerprint
+        self.suggestedFileName = suggestedFileName
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedEnvelope: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedEnvelope: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedEnvelope {
+        return
+            try SharedEnvelope(
+                json: FfiConverterString.read(from: &buf), 
+                fingerprint: FfiConverterString.read(from: &buf), 
+                suggestedFileName: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedEnvelope, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.json, into: &buf)
+        FfiConverterString.write(value.fingerprint, into: &buf)
+        FfiConverterString.write(value.suggestedFileName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedEnvelope_lift(_ buf: RustBuffer) throws -> SharedEnvelope {
+    return try FfiConverterTypeSharedEnvelope.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedEnvelope_lower(_ value: SharedEnvelope) -> RustBuffer {
+    return FfiConverterTypeSharedEnvelope.lower(value)
+}
+
+
+/**
+ * "Shared (you hold %1 of %2)".
+ */
+public struct SharedHolding: Equatable, Hashable {
+    public let heldShares: UInt32
+    public let totalShares: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(heldShares: UInt32, totalShares: UInt32) {
+        self.heldShares = heldShares
+        self.totalShares = totalShares
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedHolding: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedHolding: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedHolding {
+        return
+            try SharedHolding(
+                heldShares: FfiConverterUInt32.read(from: &buf), 
+                totalShares: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedHolding, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.heldShares, into: &buf)
+        FfiConverterUInt32.write(value.totalShares, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedHolding_lift(_ buf: RustBuffer) throws -> SharedHolding {
+    return try FfiConverterTypeSharedHolding.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedHolding_lower(_ value: SharedHolding) -> RustBuffer {
+    return FfiConverterTypeSharedHolding.lower(value)
+}
+
+
+/**
+ * The terms a coordinator starts a shared masternode with.
+ */
+public struct SharedMasternodeTerms: Equatable, Hashable {
+    /**
+     * 2–8 shares.
+     */
+    public let shares: [SharedShareTerms]
+    /**
+     * ≤ 420480 blocks.
+     */
+    public let earlyPeriodBlocks: UInt32
+    /**
+     * Below the smallest share.
+     */
+    public let earlyExitPenalty: UInt64
+    public let serviceAddresses: [String]
+    public let operatorKey: OperatorKeyChoice
+    public let operatorRewardX100: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 2–8 shares.
+         */shares: [SharedShareTerms], 
+        /**
+         * ≤ 420480 blocks.
+         */earlyPeriodBlocks: UInt32, 
+        /**
+         * Below the smallest share.
+         */earlyExitPenalty: UInt64, serviceAddresses: [String], operatorKey: OperatorKeyChoice, operatorRewardX100: UInt16) {
+        self.shares = shares
+        self.earlyPeriodBlocks = earlyPeriodBlocks
+        self.earlyExitPenalty = earlyExitPenalty
+        self.serviceAddresses = serviceAddresses
+        self.operatorKey = operatorKey
+        self.operatorRewardX100 = operatorRewardX100
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedMasternodeTerms: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedMasternodeTerms: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedMasternodeTerms {
+        return
+            try SharedMasternodeTerms(
+                shares: FfiConverterSequenceTypeSharedShareTerms.read(from: &buf), 
+                earlyPeriodBlocks: FfiConverterUInt32.read(from: &buf), 
+                earlyExitPenalty: FfiConverterUInt64.read(from: &buf), 
+                serviceAddresses: FfiConverterSequenceString.read(from: &buf), 
+                operatorKey: FfiConverterTypeOperatorKeyChoice.read(from: &buf), 
+                operatorRewardX100: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedMasternodeTerms, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeSharedShareTerms.write(value.shares, into: &buf)
+        FfiConverterUInt32.write(value.earlyPeriodBlocks, into: &buf)
+        FfiConverterUInt64.write(value.earlyExitPenalty, into: &buf)
+        FfiConverterSequenceString.write(value.serviceAddresses, into: &buf)
+        FfiConverterTypeOperatorKeyChoice.write(value.operatorKey, into: &buf)
+        FfiConverterUInt16.write(value.operatorRewardX100, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMasternodeTerms_lift(_ buf: RustBuffer) throws -> SharedMasternodeTerms {
+    return try FfiConverterTypeSharedMasternodeTerms.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMasternodeTerms_lower(_ value: SharedMasternodeTerms) -> RustBuffer {
+    return FfiConverterTypeSharedMasternodeTerms.lower(value)
+}
+
+
+/**
+ * A shared session the wallet takes part in (persisted in app.sqlite).
+ */
+public struct SharedSessionInfo: Equatable, Hashable {
+    public let sessionId: String
+    /**
+     * First 6 hex characters of the session id.
+     */
+    public let sessionCode: String
+    public let purpose: SharedSessionPurpose
+    public let role: SharedRole
+    public let stage: SharedStage
+    public let revision: UInt32
+    /**
+     * `XXXX-XXXX` of the latest message.
+     */
+    public let fingerprint: String
+    public let walletId: String
+    public let myShareIndexes: [UInt32]
+    /**
+     * Coins reserved for the session (persistent locks).
+     */
+    public let reservedInputs: [OutPoint]
+    /**
+     * A reserved coin was spent elsewhere.
+     */
+    public let reservedCoinSpent: Bool
+    /**
+     * The proTxHash once registered, or the masternode a rotate/dissolve
+     * session concerns.
+     */
+    public let proTxHash: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sessionId: String, 
+        /**
+         * First 6 hex characters of the session id.
+         */sessionCode: String, purpose: SharedSessionPurpose, role: SharedRole, stage: SharedStage, revision: UInt32, 
+        /**
+         * `XXXX-XXXX` of the latest message.
+         */fingerprint: String, walletId: String, myShareIndexes: [UInt32], 
+        /**
+         * Coins reserved for the session (persistent locks).
+         */reservedInputs: [OutPoint], 
+        /**
+         * A reserved coin was spent elsewhere.
+         */reservedCoinSpent: Bool, 
+        /**
+         * The proTxHash once registered, or the masternode a rotate/dissolve
+         * session concerns.
+         */proTxHash: String?) {
+        self.sessionId = sessionId
+        self.sessionCode = sessionCode
+        self.purpose = purpose
+        self.role = role
+        self.stage = stage
+        self.revision = revision
+        self.fingerprint = fingerprint
+        self.walletId = walletId
+        self.myShareIndexes = myShareIndexes
+        self.reservedInputs = reservedInputs
+        self.reservedCoinSpent = reservedCoinSpent
+        self.proTxHash = proTxHash
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedSessionInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedSessionInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedSessionInfo {
+        return
+            try SharedSessionInfo(
+                sessionId: FfiConverterString.read(from: &buf), 
+                sessionCode: FfiConverterString.read(from: &buf), 
+                purpose: FfiConverterTypeSharedSessionPurpose.read(from: &buf), 
+                role: FfiConverterTypeSharedRole.read(from: &buf), 
+                stage: FfiConverterTypeSharedStage.read(from: &buf), 
+                revision: FfiConverterUInt32.read(from: &buf), 
+                fingerprint: FfiConverterString.read(from: &buf), 
+                walletId: FfiConverterString.read(from: &buf), 
+                myShareIndexes: FfiConverterSequenceUInt32.read(from: &buf), 
+                reservedInputs: FfiConverterSequenceTypeOutPoint.read(from: &buf), 
+                reservedCoinSpent: FfiConverterBool.read(from: &buf), 
+                proTxHash: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedSessionInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterString.write(value.sessionCode, into: &buf)
+        FfiConverterTypeSharedSessionPurpose.write(value.purpose, into: &buf)
+        FfiConverterTypeSharedRole.write(value.role, into: &buf)
+        FfiConverterTypeSharedStage.write(value.stage, into: &buf)
+        FfiConverterUInt32.write(value.revision, into: &buf)
+        FfiConverterString.write(value.fingerprint, into: &buf)
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterSequenceUInt32.write(value.myShareIndexes, into: &buf)
+        FfiConverterSequenceTypeOutPoint.write(value.reservedInputs, into: &buf)
+        FfiConverterBool.write(value.reservedCoinSpent, into: &buf)
+        FfiConverterOptionString.write(value.proTxHash, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSessionInfo_lift(_ buf: RustBuffer) throws -> SharedSessionInfo {
+    return try FfiConverterTypeSharedSessionInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSessionInfo_lower(_ value: SharedSessionInfo) -> RustBuffer {
+    return FfiConverterTypeSharedSessionInfo.lower(value)
+}
+
+
+/**
+ * One share the coordinator proposes (QT-126).
+ */
+public struct SharedShareTerms: Equatable, Hashable {
+    /**
+     * ≥ 100 DASH; all shares sum to 1000 DASH.
+     */
+    public let amount: UInt64
+    public let label: String?
+    /**
+     * The coordinator's own share.
+     */
+    public let mine: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * ≥ 100 DASH; all shares sum to 1000 DASH.
+         */amount: UInt64, label: String?, 
+        /**
+         * The coordinator's own share.
+         */mine: Bool) {
+        self.amount = amount
+        self.label = label
+        self.mine = mine
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedShareTerms: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedShareTerms: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedShareTerms {
+        return
+            try SharedShareTerms(
+                amount: FfiConverterUInt64.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf), 
+                mine: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedShareTerms, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+        FfiConverterBool.write(value.mine, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedShareTerms_lift(_ buf: RustBuffer) throws -> SharedShareTerms {
+    return try FfiConverterTypeSharedShareTerms.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedShareTerms_lower(_ value: SharedShareTerms) -> RustBuffer {
+    return FfiConverterTypeSharedShareTerms.lower(value)
+}
+
+
+/**
+ * Standby dissolution (QT-127): raw transactions saved to `.txt` for a
+ * later `sendrawtransaction`.
+ */
+public struct StandbyDissolution: Equatable, Hashable {
+    public let proTxHash: String
+    public let transactionsHex: [String]
+    public let suggestedFileName: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, transactionsHex: [String], suggestedFileName: String) {
+        self.proTxHash = proTxHash
+        self.transactionsHex = transactionsHex
+        self.suggestedFileName = suggestedFileName
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension StandbyDissolution: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStandbyDissolution: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StandbyDissolution {
+        return
+            try StandbyDissolution(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                transactionsHex: FfiConverterSequenceString.read(from: &buf), 
+                suggestedFileName: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: StandbyDissolution, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterSequenceString.write(value.transactionsHex, into: &buf)
+        FfiConverterString.write(value.suggestedFileName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStandbyDissolution_lift(_ buf: RustBuffer) throws -> StandbyDissolution {
+    return try FfiConverterTypeStandbyDissolution.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStandbyDissolution_lower(_ value: StandbyDissolution) -> RustBuffer {
+    return FfiConverterTypeStandbyDissolution.lower(value)
+}
+
+
+/**
+ * A superblock the first payment can be in (Create Proposal "Payment
+ * date").
+ */
+public struct SuperblockDate: Equatable, Hashable {
+    public let height: UInt32
+    public let estimatedTime: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(height: UInt32, estimatedTime: UInt64) {
+        self.height = height
+        self.estimatedTime = estimatedTime
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SuperblockDate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSuperblockDate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SuperblockDate {
+        return
+            try SuperblockDate(
+                height: FfiConverterUInt32.read(from: &buf), 
+                estimatedTime: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SuperblockDate, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.height, into: &buf)
+        FfiConverterUInt64.write(value.estimatedTime, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSuperblockDate_lift(_ buf: RustBuffer) throws -> SuperblockDate {
+    return try FfiConverterTypeSuperblockDate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSuperblockDate_lower(_ value: SuperblockDate) -> RustBuffer {
+    return FfiConverterTypeSuperblockDate.lower(value)
 }
 
 
@@ -9268,6 +15774,161 @@ public func FfiConverterTypeSyncSnapshot_lift(_ buf: RustBuffer) throws -> SyncS
 #endif
 public func FfiConverterTypeSyncSnapshot_lower(_ value: SyncSnapshot) -> RustBuffer {
     return FfiConverterTypeSyncSnapshot.lower(value)
+}
+
+
+/**
+ * What a tracked masternode's attached keys allow (platform-wallet
+ * `MasternodeCapabilities`).
+ */
+public struct TrackedCapabilities: Equatable, Hashable {
+    /**
+     * Owner or payout key: evonode credit withdrawal.
+     */
+    public let canWithdraw: Bool
+    /**
+     * Operator key: Update Service / unban, revoke.
+     */
+    public let canUpdateService: Bool
+    /**
+     * Owner key: Update Registrar.
+     */
+    public let canUpdateRegistrar: Bool
+    /**
+     * Voting key: governance and contested-name votes.
+     */
+    public let canVote: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Owner or payout key: evonode credit withdrawal.
+         */canWithdraw: Bool, 
+        /**
+         * Operator key: Update Service / unban, revoke.
+         */canUpdateService: Bool, 
+        /**
+         * Owner key: Update Registrar.
+         */canUpdateRegistrar: Bool, 
+        /**
+         * Voting key: governance and contested-name votes.
+         */canVote: Bool) {
+        self.canWithdraw = canWithdraw
+        self.canUpdateService = canUpdateService
+        self.canUpdateRegistrar = canUpdateRegistrar
+        self.canVote = canVote
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TrackedCapabilities: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrackedCapabilities: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrackedCapabilities {
+        return
+            try TrackedCapabilities(
+                canWithdraw: FfiConverterBool.read(from: &buf), 
+                canUpdateService: FfiConverterBool.read(from: &buf), 
+                canUpdateRegistrar: FfiConverterBool.read(from: &buf), 
+                canVote: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrackedCapabilities, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.canWithdraw, into: &buf)
+        FfiConverterBool.write(value.canUpdateService, into: &buf)
+        FfiConverterBool.write(value.canUpdateRegistrar, into: &buf)
+        FfiConverterBool.write(value.canVote, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackedCapabilities_lift(_ buf: RustBuffer) throws -> TrackedCapabilities {
+    return try FfiConverterTypeTrackedCapabilities.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackedCapabilities_lower(_ value: TrackedCapabilities) -> RustBuffer {
+    return FfiConverterTypeTrackedCapabilities.lower(value)
+}
+
+
+/**
+ * A tracked masternode (IOS-082).
+ */
+public struct TrackedMasternode: Equatable, Hashable {
+    public let row: MasternodeRow
+    public let label: String?
+    public let attachedRoles: [MasternodeKeyRole]
+    public let capabilities: TrackedCapabilities
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(row: MasternodeRow, label: String?, attachedRoles: [MasternodeKeyRole], capabilities: TrackedCapabilities) {
+        self.row = row
+        self.label = label
+        self.attachedRoles = attachedRoles
+        self.capabilities = capabilities
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TrackedMasternode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrackedMasternode: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrackedMasternode {
+        return
+            try TrackedMasternode(
+                row: FfiConverterTypeMasternodeRow.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf), 
+                attachedRoles: FfiConverterSequenceTypeMasternodeKeyRole.read(from: &buf), 
+                capabilities: FfiConverterTypeTrackedCapabilities.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrackedMasternode, into buf: inout [UInt8]) {
+        FfiConverterTypeMasternodeRow.write(value.row, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+        FfiConverterSequenceTypeMasternodeKeyRole.write(value.attachedRoles, into: &buf)
+        FfiConverterTypeTrackedCapabilities.write(value.capabilities, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackedMasternode_lift(_ buf: RustBuffer) throws -> TrackedMasternode {
+    return try FfiConverterTypeTrackedMasternode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackedMasternode_lower(_ value: TrackedMasternode) -> RustBuffer {
+    return FfiConverterTypeTrackedMasternode.lower(value)
 }
 
 
@@ -10249,6 +16910,186 @@ public func FfiConverterTypeTxStatus_lower(_ value: TxStatus) -> RustBuffer {
 }
 
 
+/**
+ * Update Registrar (ProUpRegTx): only changed fields are sent; needs the
+ * owner key.
+ */
+public struct UpdateRegistrarRequest: Equatable, Hashable {
+    public let proTxHash: String
+    /**
+     * 96 hex; legacy scheme when the ProTx version is LegacyBLS.
+     */
+    public let operatorPublicKey: String?
+    public let votingAddress: String?
+    public let payoutAddress: String?
+    public let feeSource: FeeSourceChoice
+    public let feeWalletId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, 
+        /**
+         * 96 hex; legacy scheme when the ProTx version is LegacyBLS.
+         */operatorPublicKey: String?, votingAddress: String?, payoutAddress: String?, feeSource: FeeSourceChoice, feeWalletId: String) {
+        self.proTxHash = proTxHash
+        self.operatorPublicKey = operatorPublicKey
+        self.votingAddress = votingAddress
+        self.payoutAddress = payoutAddress
+        self.feeSource = feeSource
+        self.feeWalletId = feeWalletId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UpdateRegistrarRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUpdateRegistrarRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UpdateRegistrarRequest {
+        return
+            try UpdateRegistrarRequest(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                operatorPublicKey: FfiConverterOptionString.read(from: &buf), 
+                votingAddress: FfiConverterOptionString.read(from: &buf), 
+                payoutAddress: FfiConverterOptionString.read(from: &buf), 
+                feeSource: FfiConverterTypeFeeSourceChoice.read(from: &buf), 
+                feeWalletId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UpdateRegistrarRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionString.write(value.operatorPublicKey, into: &buf)
+        FfiConverterOptionString.write(value.votingAddress, into: &buf)
+        FfiConverterOptionString.write(value.payoutAddress, into: &buf)
+        FfiConverterTypeFeeSourceChoice.write(value.feeSource, into: &buf)
+        FfiConverterString.write(value.feeWalletId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUpdateRegistrarRequest_lift(_ buf: RustBuffer) throws -> UpdateRegistrarRequest {
+    return try FfiConverterTypeUpdateRegistrarRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUpdateRegistrarRequest_lower(_ value: UpdateRegistrarRequest) -> RustBuffer {
+    return FfiConverterTypeUpdateRegistrarRequest.lower(value)
+}
+
+
+/**
+ * Update Service (ProUpServTx; also revives a PoSe-banned node, IOS-081
+ * "Unban").
+ */
+public struct UpdateServiceRequest: Equatable, Hashable {
+    public let proTxHash: String
+    public let serviceAddresses: [String]
+    /**
+     * The operator secret typed in (dash-qt asks every time), 64 hex
+     * ASCII bytes. `None` = use the key a wallet derives or a tracked
+     * masternode has attached (`masternode.key_not_in_wallet` otherwise).
+     */
+    public let operatorSecret: Data?
+    public let platform: PlatformFields?
+    /**
+     * Only when the operator reward is above 0.
+     */
+    public let operatorPayoutAddress: String?
+    public let feeSource: FeeSourceChoice
+    /**
+     * The wallet paying the fee.
+     */
+    public let feeWalletId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, serviceAddresses: [String], 
+        /**
+         * The operator secret typed in (dash-qt asks every time), 64 hex
+         * ASCII bytes. `None` = use the key a wallet derives or a tracked
+         * masternode has attached (`masternode.key_not_in_wallet` otherwise).
+         */operatorSecret: Data?, platform: PlatformFields?, 
+        /**
+         * Only when the operator reward is above 0.
+         */operatorPayoutAddress: String?, feeSource: FeeSourceChoice, 
+        /**
+         * The wallet paying the fee.
+         */feeWalletId: String) {
+        self.proTxHash = proTxHash
+        self.serviceAddresses = serviceAddresses
+        self.operatorSecret = operatorSecret
+        self.platform = platform
+        self.operatorPayoutAddress = operatorPayoutAddress
+        self.feeSource = feeSource
+        self.feeWalletId = feeWalletId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UpdateServiceRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUpdateServiceRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UpdateServiceRequest {
+        return
+            try UpdateServiceRequest(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                serviceAddresses: FfiConverterSequenceString.read(from: &buf), 
+                operatorSecret: FfiConverterOptionData.read(from: &buf), 
+                platform: FfiConverterOptionTypePlatformFields.read(from: &buf), 
+                operatorPayoutAddress: FfiConverterOptionString.read(from: &buf), 
+                feeSource: FfiConverterTypeFeeSourceChoice.read(from: &buf), 
+                feeWalletId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UpdateServiceRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterSequenceString.write(value.serviceAddresses, into: &buf)
+        FfiConverterOptionData.write(value.operatorSecret, into: &buf)
+        FfiConverterOptionTypePlatformFields.write(value.platform, into: &buf)
+        FfiConverterOptionString.write(value.operatorPayoutAddress, into: &buf)
+        FfiConverterTypeFeeSourceChoice.write(value.feeSource, into: &buf)
+        FfiConverterString.write(value.feeWalletId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUpdateServiceRequest_lift(_ buf: RustBuffer) throws -> UpdateServiceRequest {
+    return try FfiConverterTypeUpdateServiceRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUpdateServiceRequest_lower(_ value: UpdateServiceRequest) -> RustBuffer {
+    return FfiConverterTypeUpdateServiceRequest.lower(value)
+}
+
+
 public struct Utxo: Equatable, Hashable {
     public let outpoint: OutPoint
     public let address: String
@@ -10624,6 +17465,184 @@ public func FfiConverterTypeVaultStatus_lift(_ buf: RustBuffer) throws -> VaultS
 #endif
 public func FfiConverterTypeVaultStatus_lower(_ value: VaultStatus) -> RustBuffer {
     return FfiConverterTypeVaultStatus.lower(value)
+}
+
+
+/**
+ * The result of one masternode's vote ("Voted successfully %n time(s)").
+ */
+public struct VoteResult: Equatable, Hashable {
+    public let proTxHash: String
+    /**
+     * `None` = relayed; otherwise a `governance.*` code.
+     */
+    public let errorCode: String?
+    /**
+     * Diagnostic text for logs (Core's reject reason).
+     */
+    public let detail: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, 
+        /**
+         * `None` = relayed; otherwise a `governance.*` code.
+         */errorCode: String?, 
+        /**
+         * Diagnostic text for logs (Core's reject reason).
+         */detail: String?) {
+        self.proTxHash = proTxHash
+        self.errorCode = errorCode
+        self.detail = detail
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VoteResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVoteResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VoteResult {
+        return
+            try VoteResult(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                errorCode: FfiConverterOptionString.read(from: &buf), 
+                detail: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VoteResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterOptionString.write(value.errorCode, into: &buf)
+        FfiConverterOptionString.write(value.detail, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVoteResult_lift(_ buf: RustBuffer) throws -> VoteResult {
+    return try FfiConverterTypeVoteResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVoteResult_lower(_ value: VoteResult) -> RustBuffer {
+    return FfiConverterTypeVoteResult.lower(value)
+}
+
+
+/**
+ * A masternode a wallet can vote with (QT-131 table).
+ */
+public struct VotingMasternode: Equatable, Hashable {
+    public let proTxHash: String
+    /**
+     * `txid-n`.
+     */
+    public let collateral: String
+    public let votingAddress: String
+    /**
+     * 1, or 4 for an EvoNode.
+     */
+    public let weight: UInt32
+    public let currentVote: VoteOutcome?
+    public let voteTime: UInt64?
+    /**
+     * Earliest time a changed vote is accepted (1 h rule).
+     */
+    public let nextVoteAt: UInt64?
+    /**
+     * Tracked masternode label, when it is one.
+     */
+    public let label: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(proTxHash: String, 
+        /**
+         * `txid-n`.
+         */collateral: String, votingAddress: String, 
+        /**
+         * 1, or 4 for an EvoNode.
+         */weight: UInt32, currentVote: VoteOutcome?, voteTime: UInt64?, 
+        /**
+         * Earliest time a changed vote is accepted (1 h rule).
+         */nextVoteAt: UInt64?, 
+        /**
+         * Tracked masternode label, when it is one.
+         */label: String?) {
+        self.proTxHash = proTxHash
+        self.collateral = collateral
+        self.votingAddress = votingAddress
+        self.weight = weight
+        self.currentVote = currentVote
+        self.voteTime = voteTime
+        self.nextVoteAt = nextVoteAt
+        self.label = label
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VotingMasternode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVotingMasternode: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VotingMasternode {
+        return
+            try VotingMasternode(
+                proTxHash: FfiConverterString.read(from: &buf), 
+                collateral: FfiConverterString.read(from: &buf), 
+                votingAddress: FfiConverterString.read(from: &buf), 
+                weight: FfiConverterUInt32.read(from: &buf), 
+                currentVote: FfiConverterOptionTypeVoteOutcome.read(from: &buf), 
+                voteTime: FfiConverterOptionUInt64.read(from: &buf), 
+                nextVoteAt: FfiConverterOptionUInt64.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VotingMasternode, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.proTxHash, into: &buf)
+        FfiConverterString.write(value.collateral, into: &buf)
+        FfiConverterString.write(value.votingAddress, into: &buf)
+        FfiConverterUInt32.write(value.weight, into: &buf)
+        FfiConverterOptionTypeVoteOutcome.write(value.currentVote, into: &buf)
+        FfiConverterOptionUInt64.write(value.voteTime, into: &buf)
+        FfiConverterOptionUInt64.write(value.nextVoteAt, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVotingMasternode_lift(_ buf: RustBuffer) throws -> VotingMasternode {
+    return try FfiConverterTypeVotingMasternode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVotingMasternode_lower(_ value: VotingMasternode) -> RustBuffer {
+    return FfiConverterTypeVotingMasternode.lower(value)
 }
 
 
@@ -11786,6 +18805,997 @@ public func FfiConverterTypeChangePolicy_lower(_ value: ChangePolicy) -> RustBuf
 
 
 
+public 
+enum CoinJoinError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `coinjoin.disabled`.
+     */
+    case Disabled
+    /**
+     * Code `coinjoin.watch_only`.
+     */
+    case WatchOnly
+    /**
+     * Code `coinjoin.insufficient_funds`.
+     */
+    case InsufficientFunds(minDuffs: UInt64
+    )
+    /**
+     * Code `coinjoin.vault_locked`.
+     */
+    case VaultLocked
+    /**
+     * Code `coinjoin.grant_invalid`.
+     */
+    case GrantInvalid
+    /**
+     * Code `coinjoin.nothing_to_move`.
+     */
+    case NothingToMove
+    /**
+     * Code `coinjoin.spv_not_running`.
+     */
+    case SpvNotRunning
+    /**
+     * Code `coinjoin.no_peers`.
+     */
+    case NoPeers
+    /**
+     * Code `coinjoin.broadcast_rejected`.
+     */
+    case BroadcastRejected(reason: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_coinjoinerror_code(
+            FfiConverterTypeCoinJoinError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension CoinJoinError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinError: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Disabled
+        case 2: return .WatchOnly
+        case 3: return .InsufficientFunds(
+            minDuffs: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 4: return .VaultLocked
+        case 5: return .GrantInvalid
+        case 6: return .NothingToMove
+        case 7: return .SpvNotRunning
+        case 8: return .NoPeers
+        case 9: return .BroadcastRejected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 11: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 12: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 13: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 14: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 15: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case .Disabled:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .WatchOnly:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .InsufficientFunds(minDuffs):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(minDuffs, into: &buf)
+            
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .NothingToMove:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .SpvNotRunning:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .NoPeers:
+            writeInt(&buf, Int32(8))
+        
+        
+        case let .BroadcastRejected(reason):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(11))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(12))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinError_lift(_ buf: RustBuffer) throws -> CoinJoinError {
+    return try FfiConverterTypeCoinJoinError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinError_lower(_ value: CoinJoinError) -> RustBuffer {
+    return FfiConverterTypeCoinJoinError.lower(value)
+}
+
+
+/**
+ * Core `PoolMessage`: a masternode's reply in a session (research 02
+ * §9.4 "pool messages"). The host holds Core's English texts.
+ */
+
+public enum CoinJoinPoolMessage: Equatable, Hashable {
+    
+    case alreadyHave
+    case denom
+    case entriesFull
+    case existingTx
+    case fees
+    case invalidCollateral
+    case invalidInput
+    case invalidScript
+    case invalidTx
+    case maximum
+    case mnList
+    case mode
+    case nonStandardPubkey
+    case notAMasternode
+    case queueFull
+    case recent
+    case session
+    case missingTx
+    case version
+    case noError
+    case success
+    case entriesAdded
+    case sizeMismatch
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinPoolMessage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinPoolMessage: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinPoolMessage
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinPoolMessage {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .alreadyHave
+        
+        case 2: return .denom
+        
+        case 3: return .entriesFull
+        
+        case 4: return .existingTx
+        
+        case 5: return .fees
+        
+        case 6: return .invalidCollateral
+        
+        case 7: return .invalidInput
+        
+        case 8: return .invalidScript
+        
+        case 9: return .invalidTx
+        
+        case 10: return .maximum
+        
+        case 11: return .mnList
+        
+        case 12: return .mode
+        
+        case 13: return .nonStandardPubkey
+        
+        case 14: return .notAMasternode
+        
+        case 15: return .queueFull
+        
+        case 16: return .recent
+        
+        case 17: return .session
+        
+        case 18: return .missingTx
+        
+        case 19: return .version
+        
+        case 20: return .noError
+        
+        case 21: return .success
+        
+        case 22: return .entriesAdded
+        
+        case 23: return .sizeMismatch
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinPoolMessage, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .alreadyHave:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .denom:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .entriesFull:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .existingTx:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .fees:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .invalidCollateral:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .invalidInput:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .invalidScript:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .invalidTx:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .maximum:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .mnList:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .mode:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .nonStandardPubkey:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .notAMasternode:
+            writeInt(&buf, Int32(14))
+        
+        
+        case .queueFull:
+            writeInt(&buf, Int32(15))
+        
+        
+        case .recent:
+            writeInt(&buf, Int32(16))
+        
+        
+        case .session:
+            writeInt(&buf, Int32(17))
+        
+        
+        case .missingTx:
+            writeInt(&buf, Int32(18))
+        
+        
+        case .version:
+            writeInt(&buf, Int32(19))
+        
+        
+        case .noError:
+            writeInt(&buf, Int32(20))
+        
+        
+        case .success:
+            writeInt(&buf, Int32(21))
+        
+        
+        case .entriesAdded:
+            writeInt(&buf, Int32(22))
+        
+        
+        case .sizeMismatch:
+            writeInt(&buf, Int32(23))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinPoolMessage_lift(_ buf: RustBuffer) throws -> CoinJoinPoolMessage {
+    return try FfiConverterTypeCoinJoinPoolMessage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinPoolMessage_lower(_ value: CoinJoinPoolMessage) -> RustBuffer {
+    return FfiConverterTypeCoinJoinPoolMessage.lower(value)
+}
+
+
+
+/**
+ * Core `PoolState`.
+ */
+
+public enum CoinJoinPoolState: Equatable, Hashable {
+    
+    case idle
+    case queue
+    case acceptingEntries
+    case signing
+    case error
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinPoolState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinPoolState: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinPoolState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinPoolState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .queue
+        
+        case 3: return .acceptingEntries
+        
+        case 4: return .signing
+        
+        case 5: return .error
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinPoolState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .queue:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .acceptingEntries:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .signing:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .error:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinPoolState_lift(_ buf: RustBuffer) throws -> CoinJoinPoolState {
+    return try FfiConverterTypeCoinJoinPoolState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinPoolState_lower(_ value: CoinJoinPoolState) -> RustBuffer {
+    return FfiConverterTypeCoinJoinPoolState.lower(value)
+}
+
+
+
+
+public enum CoinJoinState: Equatable, Hashable {
+    
+    /**
+     * Not mixing ("Start CoinJoin").
+     */
+    case idle
+    /**
+     * Mixing ("Stop CoinJoin").
+     */
+    case mixing
+    /**
+     * Stop requested; open sessions are being reset.
+     */
+    case stopping
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinState: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .mixing
+        
+        case 3: return .stopping
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .mixing:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .stopping:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinState_lift(_ buf: RustBuffer) throws -> CoinJoinState {
+    return try FfiConverterTypeCoinJoinState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinState_lower(_ value: CoinJoinState) -> RustBuffer {
+    return FfiConverterTypeCoinJoinState.lower(value)
+}
+
+
+
+/**
+ * The status line of `coinjoin status` (Core `strAutoDenomResult`,
+ * research 02 §9.4); QT-050 shows it.
+ */
+
+public enum CoinJoinStatusCode: Equatable, Hashable {
+    
+    case idle
+    case syncInProgress
+    case walletLocked
+    case mixingInProgress
+    case noMasternodes
+    case notEnoughFunds
+    case unconfirmedDenominated
+    case noCompatibleMasternode
+    case noCompatibleInputs
+    case tryingToConnect
+    case noQueueToJoin
+    case noRandomMasternode
+    case failedToStartQueue
+    case waitingInQueue
+    case signing
+    /**
+     * "Masternode: <message>".
+     */
+    case masternode(message: CoinJoinPoolMessage
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinStatusCode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinStatusCode: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinStatusCode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinStatusCode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .syncInProgress
+        
+        case 3: return .walletLocked
+        
+        case 4: return .mixingInProgress
+        
+        case 5: return .noMasternodes
+        
+        case 6: return .notEnoughFunds
+        
+        case 7: return .unconfirmedDenominated
+        
+        case 8: return .noCompatibleMasternode
+        
+        case 9: return .noCompatibleInputs
+        
+        case 10: return .tryingToConnect
+        
+        case 11: return .noQueueToJoin
+        
+        case 12: return .noRandomMasternode
+        
+        case 13: return .failedToStartQueue
+        
+        case 14: return .waitingInQueue
+        
+        case 15: return .signing
+        
+        case 16: return .masternode(message: try FfiConverterTypeCoinJoinPoolMessage.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinStatusCode, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .syncInProgress:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .walletLocked:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .mixingInProgress:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .noMasternodes:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .notEnoughFunds:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .unconfirmedDenominated:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .noCompatibleMasternode:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .noCompatibleInputs:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .tryingToConnect:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .noQueueToJoin:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .noRandomMasternode:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .failedToStartQueue:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .waitingInQueue:
+            writeInt(&buf, Int32(14))
+        
+        
+        case .signing:
+            writeInt(&buf, Int32(15))
+        
+        
+        case let .masternode(message):
+            writeInt(&buf, Int32(16))
+            FfiConverterTypeCoinJoinPoolMessage.write(message, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStatusCode_lift(_ buf: RustBuffer) throws -> CoinJoinStatusCode {
+    return try FfiConverterTypeCoinJoinStatusCode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStatusCode_lower(_ value: CoinJoinStatusCode) -> RustBuffer {
+    return FfiConverterTypeCoinJoinStatusCode.lower(value)
+}
+
+
+
+/**
+ * Why mixing stopped without the user asking (the panel shows it once).
+ */
+
+public enum CoinJoinStopReason: Equatable, Hashable {
+    
+    case userRequested
+    /**
+     * The vault was locked while mixing ("Wallet is locked and user
+     * declined to unlock. Disabling CoinJoin." when the host's prompt was
+     * cancelled).
+     */
+    case vaultLocked
+    case walletUnloaded
+    case sessionClosed
+    /**
+     * CoinJoin was turned off in Options.
+     */
+    case disabled
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinStopReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinStopReason: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinStopReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinStopReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .userRequested
+        
+        case 2: return .vaultLocked
+        
+        case 3: return .walletUnloaded
+        
+        case 4: return .sessionClosed
+        
+        case 5: return .disabled
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinStopReason, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .userRequested:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .vaultLocked:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .walletUnloaded:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .sessionClosed:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .disabled:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStopReason_lift(_ buf: RustBuffer) throws -> CoinJoinStopReason {
+    return try FfiConverterTypeCoinJoinStopReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinStopReason_lower(_ value: CoinJoinStopReason) -> RustBuffer {
+    return FfiConverterTypeCoinJoinStopReason.lower(value)
+}
+
+
+
+/**
+ * Why "Start CoinJoin" is unavailable (the button shows "(Disabled)").
+ * A locked vault is not here: the host asks to unlock for mixing only.
+ */
+
+public enum CoinJoinUnavailable: Equatable, Hashable {
+    
+    /**
+     * Options: CoinJoin features off.
+     */
+    case disabled
+    case watchOnly
+    /**
+     * Balance below `min_duffs` ("CoinJoin requires at least %2 to use.").
+     */
+    case insufficientFunds(minDuffs: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoinJoinUnavailable: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinJoinUnavailable: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinUnavailable
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinJoinUnavailable {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .disabled
+        
+        case 2: return .watchOnly
+        
+        case 3: return .insufficientFunds(minDuffs: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoinJoinUnavailable, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .disabled:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .watchOnly:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .insufficientFunds(minDuffs):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(minDuffs, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinUnavailable_lift(_ buf: RustBuffer) throws -> CoinJoinUnavailable {
+    return try FfiConverterTypeCoinJoinUnavailable.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinJoinUnavailable_lower(_ value: CoinJoinUnavailable) -> RustBuffer {
+    return FfiConverterTypeCoinJoinUnavailable.lower(value)
+}
+
+
+
 /**
  * Which coins a draft may spend.
  */
@@ -12042,6 +20052,282 @@ public func FfiConverterTypeCoinsError_lift(_ buf: RustBuffer) throws -> CoinsEr
 public func FfiConverterTypeCoinsError_lower(_ value: CoinsError) -> RustBuffer {
     return FfiConverterTypeCoinsError.lower(value)
 }
+
+
+/**
+ * Where a registration's collateral comes from (QT-123 "Collateral").
+ */
+
+public enum CollateralChoice: Equatable, Hashable {
+    
+    /**
+     * Default: the registration pays the collateral to a fresh wallet
+     * address (`protx register_fund`).
+     */
+    case fundNew
+    /**
+     * An exact-amount, confirmed, P2PKH, unlocked wallet UTXO.
+     */
+    case existingUtxo(outpoint: OutPoint
+    )
+    /**
+     * An outpoint the wallet does not hold (hardware wallet): the
+     * registration is prepared, then the collateral key's owner signs
+     * `collateral_sign_message` (`register_prepare` / `register_submit`).
+     */
+    case external(outpoint: OutPoint
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CollateralChoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCollateralChoice: FfiConverterRustBuffer {
+    typealias SwiftType = CollateralChoice
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CollateralChoice {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .fundNew
+        
+        case 2: return .existingUtxo(outpoint: try FfiConverterTypeOutPoint.read(from: &buf)
+        )
+        
+        case 3: return .external(outpoint: try FfiConverterTypeOutPoint.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CollateralChoice, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .fundNew:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .existingUtxo(outpoint):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeOutPoint.write(outpoint, into: &buf)
+            
+        
+        case let .external(outpoint):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeOutPoint.write(outpoint, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralChoice_lift(_ buf: RustBuffer) throws -> CollateralChoice {
+    return try FfiConverterTypeCollateralChoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralChoice_lower(_ value: CollateralChoice) -> RustBuffer {
+    return FfiConverterTypeCollateralChoice.lower(value)
+}
+
+
+
+/**
+ * Why an outpoint cannot be a collateral.
+ */
+
+public enum CollateralRefusal: Equatable, Hashable {
+    
+    case wrongAmount
+    case unconfirmed
+    case notP2pkh
+    case locked
+    case alreadyCollateral
+    case notFound
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CollateralRefusal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCollateralRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CollateralRefusal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CollateralRefusal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .wrongAmount
+        
+        case 2: return .unconfirmed
+        
+        case 3: return .notP2pkh
+        
+        case 4: return .locked
+        
+        case 5: return .alreadyCollateral
+        
+        case 6: return .notFound
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CollateralRefusal, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .wrongAmount:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .unconfirmed:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .notP2pkh:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .locked:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .alreadyCollateral:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .notFound:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralRefusal_lift(_ buf: RustBuffer) throws -> CollateralRefusal {
+    return try FfiConverterTypeCollateralRefusal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralRefusal_lower(_ value: CollateralRefusal) -> RustBuffer {
+    return FfiConverterTypeCollateralRefusal.lower(value)
+}
+
+
+
+/**
+ * Collateral state of a pending proposal (Resume Proposals).
+ */
+
+public enum CollateralStatus: Equatable, Hashable {
+    
+    /**
+     * The collateral transaction is not known to the wallet's view.
+     */
+    case unknown
+    /**
+     * Not yet one confirmation.
+     */
+    case pending
+    /**
+     * ≥ 1 confirmation: "Broadcast" is enabled.
+     */
+    case ready
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CollateralStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCollateralStatus: FfiConverterRustBuffer {
+    typealias SwiftType = CollateralStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CollateralStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .unknown
+        
+        case 2: return .pending
+        
+        case 3: return .ready
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CollateralStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .pending:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .ready:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralStatus_lift(_ buf: RustBuffer) throws -> CollateralStatus {
+    return try FfiConverterTypeCollateralStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCollateralStatus_lower(_ value: CollateralStatus) -> RustBuffer {
+    return FfiConverterTypeCollateralStatus.lower(value)
+}
+
 
 
 public 
@@ -12653,6 +20939,84 @@ public func FfiConverterTypeCoreExportFormat_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCoreExportFormat_lower(_ value: CoreExportFormat) -> RustBuffer {
     return FfiConverterTypeCoreExportFormat.lower(value)
+}
+
+
+
+/**
+ * Where withdrawn evonode credits go (iOS withdrawal sheet).
+ */
+
+public enum CreditWithdrawalDestination: Equatable, Hashable {
+    
+    /**
+     * The registered payout address (no choice with only the payout key).
+     */
+    case payoutAddress
+    /**
+     * Any Core address (needs the owner key).
+     */
+    case address(address: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CreditWithdrawalDestination: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCreditWithdrawalDestination: FfiConverterRustBuffer {
+    typealias SwiftType = CreditWithdrawalDestination
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreditWithdrawalDestination {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .payoutAddress
+        
+        case 2: return .address(address: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CreditWithdrawalDestination, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .payoutAddress:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .address(address):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(address, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCreditWithdrawalDestination_lift(_ buf: RustBuffer) throws -> CreditWithdrawalDestination {
+    return try FfiConverterTypeCreditWithdrawalDestination.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCreditWithdrawalDestination_lower(_ value: CreditWithdrawalDestination) -> RustBuffer {
+    return FfiConverterTypeCreditWithdrawalDestination.lower(value)
 }
 
 
@@ -13276,6 +21640,27 @@ public enum EngineEvent: Equatable, Hashable {
      */
     case walletLoadChanged(network: DashNetwork, walletId: String, loaded: Bool
     )
+    /**
+     * M3 (QT-041…050): the wallet's mixing status, CoinJoin balances or
+     * progress changed; re-query `coinjoin_status`. At most once a second
+     * per wallet (dash-qt's panel timer), trailing edge kept.
+     */
+    case coinJoin(network: DashNetwork, walletId: String
+    )
+    /**
+     * M3 (QT-026, QT-128…134): governance sync progressed, or objects,
+     * votes or pending proposals changed; re-query what is shown. At most
+     * once a second, trailing edge kept.
+     */
+    case governance(network: DashNetwork
+    )
+    /**
+     * M3 (QT-118…122, IOS-080…082): the masternode list, owned detection
+     * or tracked masternodes changed; re-query. At most every 3 s (every
+     * 30 s while SPV is not caught up), as dash-qt refreshes its list.
+     */
+    case masternodes(network: DashNetwork
+    )
 
 
 
@@ -13331,6 +21716,15 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
         )
         
         case 12: return .walletLoadChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), loaded: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 13: return .coinJoin(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 14: return .governance(network: try FfiConverterTypeDashNetwork.read(from: &buf)
+        )
+        
+        case 15: return .masternodes(network: try FfiConverterTypeDashNetwork.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -13415,6 +21809,22 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterString.write(walletId, into: &buf)
             FfiConverterBool.write(loaded, into: &buf)
+            
+        
+        case let .coinJoin(network,walletId):
+            writeInt(&buf, Int32(13))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
+            FfiConverterString.write(walletId, into: &buf)
+            
+        
+        case let .governance(network):
+            writeInt(&buf, Int32(14))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
+            
+        
+        case let .masternodes(network):
+            writeInt(&buf, Int32(15))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
             
         }
     }
@@ -13665,6 +22075,498 @@ public func FfiConverterTypeFeeSource_lift(_ buf: RustBuffer) throws -> FeeSourc
 #endif
 public func FfiConverterTypeFeeSource_lower(_ value: FeeSource) -> RustBuffer {
     return FfiConverterTypeFeeSource.lower(value)
+}
+
+
+
+/**
+ * Who pays the provider-transaction fee.
+ */
+
+public enum FeeSourceChoice: Equatable, Hashable {
+    
+    /**
+     * The engine picks spendable coins (Update Service "Automatic").
+     */
+    case automatic
+    /**
+     * Coins of one wallet address (Register wizard "Fee source"; it must
+     * also hold the collateral with `FundNew`).
+     */
+    case address(address: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FeeSourceChoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFeeSourceChoice: FfiConverterRustBuffer {
+    typealias SwiftType = FeeSourceChoice
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeeSourceChoice {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .automatic
+        
+        case 2: return .address(address: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FeeSourceChoice, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .automatic:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .address(address):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(address, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSourceChoice_lift(_ buf: RustBuffer) throws -> FeeSourceChoice {
+    return try FfiConverterTypeFeeSourceChoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSourceChoice_lower(_ value: FeeSourceChoice) -> RustBuffer {
+    return FfiConverterTypeFeeSourceChoice.lower(value)
+}
+
+
+
+public 
+enum GovernanceError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `governance.sync_disabled`.
+     */
+    case SyncDisabled
+    /**
+     * Code `governance.not_synced`.
+     */
+    case NotSynced
+    /**
+     * Code `governance.proposal_not_found`.
+     */
+    case ProposalNotFound(hash: String
+    )
+    /**
+     * Code `governance.invalid_proposal`.
+     */
+    case InvalidProposal(field: ProposalField
+    )
+    /**
+     * Code `governance.no_voting_keys`.
+     */
+    case NoVotingKeys
+    /**
+     * Code `governance.vote_too_often`.
+     */
+    case VoteTooOften(retryAfterSecs: UInt64
+    )
+    /**
+     * Code `governance.insufficient_funds`.
+     */
+    case InsufficientFunds(needed: UInt64, available: UInt64
+    )
+    /**
+     * Code `governance.collateral_unconfirmed`.
+     */
+    case CollateralUnconfirmed(confirmations: UInt32
+    )
+    /**
+     * Code `governance.proposal_expired`.
+     */
+    case ProposalExpired
+    /**
+     * Code `governance.watch_only`.
+     */
+    case WatchOnly
+    /**
+     * Code `governance.vault_locked`.
+     */
+    case VaultLocked
+    /**
+     * Code `governance.grant_invalid`.
+     */
+    case GrantInvalid
+    /**
+     * Code `governance.no_peers`.
+     */
+    case NoPeers
+    /**
+     * Code `governance.broadcast_rejected`.
+     */
+    case BroadcastRejected(reason: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_governanceerror_code(
+            FfiConverterTypeGovernanceError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension GovernanceError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceError: FfiConverterRustBuffer {
+    typealias SwiftType = GovernanceError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .SyncDisabled
+        case 2: return .NotSynced
+        case 3: return .ProposalNotFound(
+            hash: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .InvalidProposal(
+            field: try FfiConverterTypeProposalField.read(from: &buf)
+            )
+        case 5: return .NoVotingKeys
+        case 6: return .VoteTooOften(
+            retryAfterSecs: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 7: return .InsufficientFunds(
+            needed: try FfiConverterUInt64.read(from: &buf), 
+            available: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 8: return .CollateralUnconfirmed(
+            confirmations: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 9: return .ProposalExpired
+        case 10: return .WatchOnly
+        case 11: return .VaultLocked
+        case 12: return .GrantInvalid
+        case 13: return .NoPeers
+        case 14: return .BroadcastRejected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 15: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 16: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 17: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 18: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 19: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 20: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: GovernanceError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case .SyncDisabled:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .NotSynced:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .ProposalNotFound(hash):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(hash, into: &buf)
+            
+        
+        case let .InvalidProposal(field):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeProposalField.write(field, into: &buf)
+            
+        
+        case .NoVotingKeys:
+            writeInt(&buf, Int32(5))
+        
+        
+        case let .VoteTooOften(retryAfterSecs):
+            writeInt(&buf, Int32(6))
+            FfiConverterUInt64.write(retryAfterSecs, into: &buf)
+            
+        
+        case let .InsufficientFunds(needed,available):
+            writeInt(&buf, Int32(7))
+            FfiConverterUInt64.write(needed, into: &buf)
+            FfiConverterUInt64.write(available, into: &buf)
+            
+        
+        case let .CollateralUnconfirmed(confirmations):
+            writeInt(&buf, Int32(8))
+            FfiConverterUInt32.write(confirmations, into: &buf)
+            
+        
+        case .ProposalExpired:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .WatchOnly:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .NoPeers:
+            writeInt(&buf, Int32(13))
+        
+        
+        case let .BroadcastRejected(reason):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(16))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(17))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(18))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(19))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(20))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceError_lift(_ buf: RustBuffer) throws -> GovernanceError {
+    return try FfiConverterTypeGovernanceError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceError_lower(_ value: GovernanceError) -> RustBuffer {
+    return FfiConverterTypeGovernanceError.lower(value)
+}
+
+
+
+public enum GovernanceSyncPhase: Equatable, Hashable {
+    
+    /**
+     * Sync is off (Governance tab and clock hidden).
+     */
+    case disabled
+    /**
+     * Waiting for the chain and masternode list to sync, or for peers.
+     */
+    case waiting
+    case syncingObjects
+    case syncingVotes
+    /**
+     * Caught up; new objects and votes keep arriving.
+     */
+    case synced
+    /**
+     * The last attempt failed; it is retried.
+     */
+    case failed
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension GovernanceSyncPhase: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGovernanceSyncPhase: FfiConverterRustBuffer {
+    typealias SwiftType = GovernanceSyncPhase
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GovernanceSyncPhase {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .disabled
+        
+        case 2: return .waiting
+        
+        case 3: return .syncingObjects
+        
+        case 4: return .syncingVotes
+        
+        case 5: return .synced
+        
+        case 6: return .failed
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: GovernanceSyncPhase, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .disabled:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .waiting:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .syncingObjects:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .syncingVotes:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .synced:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .failed:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceSyncPhase_lift(_ buf: RustBuffer) throws -> GovernanceSyncPhase {
+    return try FfiConverterTypeGovernanceSyncPhase.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGovernanceSyncPhase_lower(_ value: GovernanceSyncPhase) -> RustBuffer {
+    return FfiConverterTypeGovernanceSyncPhase.lower(value)
 }
 
 
@@ -14376,6 +23278,820 @@ public func FfiConverterTypeLabelsError_lower(_ value: LabelsError) -> RustBuffe
 
 
 public 
+enum MasternodeError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `masternode.list_unavailable`.
+     */
+    case ListUnavailable
+    /**
+     * Code `masternode.not_found`.
+     */
+    case NotFound(proTxHash: String
+    )
+    /**
+     * Code `masternode.key_not_in_wallet`.
+     */
+    case KeyNotInWallet(role: MasternodeKeyRole
+    )
+    /**
+     * Code `masternode.invalid_service`.
+     */
+    case InvalidService(detail: String
+    )
+    /**
+     * Code `masternode.invalid_key`.
+     */
+    case InvalidKey(role: MasternodeKeyRole, detail: String
+    )
+    /**
+     * Code `masternode.invalid_payout`.
+     */
+    case InvalidPayout(detail: String
+    )
+    /**
+     * Code `masternode.duplicate_address`.
+     */
+    case DuplicateAddress(detail: String
+    )
+    /**
+     * Code `masternode.collateral_unavailable`.
+     */
+    case CollateralUnavailable(refusal: CollateralRefusal
+    )
+    /**
+     * Code `masternode.insufficient_funds`.
+     */
+    case InsufficientFunds(needed: UInt64, available: UInt64
+    )
+    /**
+     * Code `masternode.operator_secret_mismatch`.
+     */
+    case OperatorSecretMismatch
+    /**
+     * Code `masternode.operator_secret_unconfirmed`.
+     */
+    case OperatorSecretUnconfirmed
+    /**
+     * Code `masternode.collateral_signature_invalid`.
+     */
+    case CollateralSignatureInvalid
+    /**
+     * Code `masternode.unsupported_entry`.
+     */
+    case UnsupportedEntry(detail: String
+    )
+    /**
+     * Code `masternode.watch_only`.
+     */
+    case WatchOnly
+    /**
+     * Code `masternode.vault_locked`.
+     */
+    case VaultLocked
+    /**
+     * Code `masternode.grant_invalid`.
+     */
+    case GrantInvalid
+    /**
+     * Code `masternode.no_peers`.
+     */
+    case NoPeers
+    /**
+     * Code `masternode.broadcast_rejected`.
+     */
+    case BroadcastRejected(reason: String
+    )
+    /**
+     * Code `masternode.shared_envelope_invalid`.
+     */
+    case SharedEnvelopeInvalid(detail: String
+    )
+    /**
+     * Code `masternode.shared_envelope_too_large`.
+     */
+    case SharedEnvelopeTooLarge(sizeBytes: UInt64
+    )
+    /**
+     * Code `masternode.shared_network_mismatch`.
+     */
+    case SharedNetworkMismatch
+    /**
+     * Code `masternode.shared_session_not_found`.
+     */
+    case SharedSessionNotFound(sessionId: String
+    )
+    /**
+     * Code `masternode.shared_inputs_refused`.
+     */
+    case SharedInputsRefused(detail: String
+    )
+    /**
+     * Code `masternode.shared_coin_spent`.
+     */
+    case SharedCoinSpent(outpoint: OutPoint
+    )
+    /**
+     * Code `masternode.already_tracked`.
+     */
+    case AlreadyTracked(proTxHash: String
+    )
+    /**
+     * Code `masternode.platform_unavailable`.
+     */
+    case PlatformUnavailable
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_masternodeerror_code(
+            FfiConverterTypeMasternodeError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension MasternodeError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeError: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .ListUnavailable
+        case 2: return .NotFound(
+            proTxHash: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .KeyNotInWallet(
+            role: try FfiConverterTypeMasternodeKeyRole.read(from: &buf)
+            )
+        case 4: return .InvalidService(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .InvalidKey(
+            role: try FfiConverterTypeMasternodeKeyRole.read(from: &buf), 
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .InvalidPayout(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .DuplicateAddress(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .CollateralUnavailable(
+            refusal: try FfiConverterTypeCollateralRefusal.read(from: &buf)
+            )
+        case 9: return .InsufficientFunds(
+            needed: try FfiConverterUInt64.read(from: &buf), 
+            available: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 10: return .OperatorSecretMismatch
+        case 11: return .OperatorSecretUnconfirmed
+        case 12: return .CollateralSignatureInvalid
+        case 13: return .UnsupportedEntry(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 14: return .WatchOnly
+        case 15: return .VaultLocked
+        case 16: return .GrantInvalid
+        case 17: return .NoPeers
+        case 18: return .BroadcastRejected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 19: return .SharedEnvelopeInvalid(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 20: return .SharedEnvelopeTooLarge(
+            sizeBytes: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 21: return .SharedNetworkMismatch
+        case 22: return .SharedSessionNotFound(
+            sessionId: try FfiConverterString.read(from: &buf)
+            )
+        case 23: return .SharedInputsRefused(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 24: return .SharedCoinSpent(
+            outpoint: try FfiConverterTypeOutPoint.read(from: &buf)
+            )
+        case 25: return .AlreadyTracked(
+            proTxHash: try FfiConverterString.read(from: &buf)
+            )
+        case 26: return .PlatformUnavailable
+        case 27: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 28: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 29: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 30: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 31: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 32: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasternodeError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case .ListUnavailable:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .NotFound(proTxHash):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(proTxHash, into: &buf)
+            
+        
+        case let .KeyNotInWallet(role):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMasternodeKeyRole.write(role, into: &buf)
+            
+        
+        case let .InvalidService(detail):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .InvalidKey(role,detail):
+            writeInt(&buf, Int32(5))
+            FfiConverterTypeMasternodeKeyRole.write(role, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .InvalidPayout(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .DuplicateAddress(detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .CollateralUnavailable(refusal):
+            writeInt(&buf, Int32(8))
+            FfiConverterTypeCollateralRefusal.write(refusal, into: &buf)
+            
+        
+        case let .InsufficientFunds(needed,available):
+            writeInt(&buf, Int32(9))
+            FfiConverterUInt64.write(needed, into: &buf)
+            FfiConverterUInt64.write(available, into: &buf)
+            
+        
+        case .OperatorSecretMismatch:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .OperatorSecretUnconfirmed:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .CollateralSignatureInvalid:
+            writeInt(&buf, Int32(12))
+        
+        
+        case let .UnsupportedEntry(detail):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case .WatchOnly:
+            writeInt(&buf, Int32(14))
+        
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(15))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(16))
+        
+        
+        case .NoPeers:
+            writeInt(&buf, Int32(17))
+        
+        
+        case let .BroadcastRejected(reason):
+            writeInt(&buf, Int32(18))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .SharedEnvelopeInvalid(detail):
+            writeInt(&buf, Int32(19))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .SharedEnvelopeTooLarge(sizeBytes):
+            writeInt(&buf, Int32(20))
+            FfiConverterUInt64.write(sizeBytes, into: &buf)
+            
+        
+        case .SharedNetworkMismatch:
+            writeInt(&buf, Int32(21))
+        
+        
+        case let .SharedSessionNotFound(sessionId):
+            writeInt(&buf, Int32(22))
+            FfiConverterString.write(sessionId, into: &buf)
+            
+        
+        case let .SharedInputsRefused(detail):
+            writeInt(&buf, Int32(23))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .SharedCoinSpent(outpoint):
+            writeInt(&buf, Int32(24))
+            FfiConverterTypeOutPoint.write(outpoint, into: &buf)
+            
+        
+        case let .AlreadyTracked(proTxHash):
+            writeInt(&buf, Int32(25))
+            FfiConverterString.write(proTxHash, into: &buf)
+            
+        
+        case .PlatformUnavailable:
+            writeInt(&buf, Int32(26))
+        
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(27))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(28))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(29))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(30))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(31))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(32))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeError_lift(_ buf: RustBuffer) throws -> MasternodeError {
+    return try FfiConverterTypeMasternodeError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeError_lower(_ value: MasternodeError) -> RustBuffer {
+    return FfiConverterTypeMasternodeError.lower(value)
+}
+
+
+/**
+ * A key's job on a masternode (platform-wallet `MasternodeKeyRole`).
+ */
+
+public enum MasternodeKeyRole: Equatable, Hashable {
+    
+    case owner
+    case voting
+    /**
+     * BLS operator key.
+     */
+    case `operator`
+    /**
+     * ed25519 Tenderdash node key (EvoNodes).
+     */
+    case platformNode
+    case ownerPayout
+    case operatorPayout
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MasternodeKeyRole: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeKeyRole: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeKeyRole
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeKeyRole {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .owner
+        
+        case 2: return .voting
+        
+        case 3: return .`operator`
+        
+        case 4: return .platformNode
+        
+        case 5: return .ownerPayout
+        
+        case 6: return .operatorPayout
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasternodeKeyRole, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .owner:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .voting:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .`operator`:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .platformNode:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .ownerPayout:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .operatorPayout:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyRole_lift(_ buf: RustBuffer) throws -> MasternodeKeyRole {
+    return try FfiConverterTypeMasternodeKeyRole.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeKeyRole_lower(_ value: MasternodeKeyRole) -> RustBuffer {
+    return FfiConverterTypeMasternodeKeyRole.lower(value)
+}
+
+
+
+/**
+ * Status from the list (QT-119 status icon).
+ */
+
+public enum MasternodeListStatus: Equatable, Hashable {
+    
+    /**
+     * Valid in the list. `since_height` is unknown on SPV.
+     */
+    case active(sinceHeight: UInt32?
+    )
+    /**
+     * PoSe-banned in the list.
+     */
+    case banned(sinceHeight: UInt32?
+    )
+    /**
+     * Not in the list (revoked, collateral spent); only for wallet and
+     * tracked masternodes.
+     */
+    case retired
+    /**
+     * The list has not synced.
+     */
+    case unknown
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MasternodeListStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeListStatus: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeListStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeListStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .active(sinceHeight: try FfiConverterOptionUInt32.read(from: &buf)
+        )
+        
+        case 2: return .banned(sinceHeight: try FfiConverterOptionUInt32.read(from: &buf)
+        )
+        
+        case 3: return .retired
+        
+        case 4: return .unknown
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasternodeListStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .active(sinceHeight):
+            writeInt(&buf, Int32(1))
+            FfiConverterOptionUInt32.write(sinceHeight, into: &buf)
+            
+        
+        case let .banned(sinceHeight):
+            writeInt(&buf, Int32(2))
+            FfiConverterOptionUInt32.write(sinceHeight, into: &buf)
+            
+        
+        case .retired:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeListStatus_lift(_ buf: RustBuffer) throws -> MasternodeListStatus {
+    return try FfiConverterTypeMasternodeListStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeListStatus_lower(_ value: MasternodeListStatus) -> RustBuffer {
+    return FfiConverterTypeMasternodeListStatus.lower(value)
+}
+
+
+
+
+public enum MasternodeType: Equatable, Hashable {
+    
+    case regular
+    /**
+     * EvoNode (high-performance masternode).
+     */
+    case evo
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MasternodeType: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeType: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeType
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeType {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .regular
+        
+        case 2: return .evo
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasternodeType, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .regular:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .evo:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeType_lift(_ buf: RustBuffer) throws -> MasternodeType {
+    return try FfiConverterTypeMasternodeType.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeType_lower(_ value: MasternodeType) -> RustBuffer {
+    return FfiConverterTypeMasternodeType.lower(value)
+}
+
+
+
+/**
+ * The list's type combo (QT-118).
+ */
+
+public enum MasternodeTypeFilter: Equatable, Hashable {
+    
+    case all
+    case regular
+    case evo
+    case shared
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MasternodeTypeFilter: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeTypeFilter: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeTypeFilter
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeTypeFilter {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .all
+        
+        case 2: return .regular
+        
+        case 3: return .evo
+        
+        case 4: return .shared
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasternodeTypeFilter, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .all:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .regular:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .evo:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .shared:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeTypeFilter_lift(_ buf: RustBuffer) throws -> MasternodeTypeFilter {
+    return try FfiConverterTypeMasternodeTypeFilter.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeTypeFilter_lower(_ value: MasternodeTypeFilter) -> RustBuffer {
+    return FfiConverterTypeMasternodeTypeFilter.lower(value)
+}
+
+
+
+public 
 enum MessageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
@@ -14611,6 +24327,81 @@ public func FfiConverterTypeMessageError_lift(_ buf: RustBuffer) throws -> Messa
 public func FfiConverterTypeMessageError_lower(_ value: MessageError) -> RustBuffer {
     return FfiConverterTypeMessageError.lower(value)
 }
+
+
+/**
+ * Where "Move mixed coins" sends the CoinJoin balance (IOS-057).
+ */
+
+public enum MixedCoinsDestination: Equatable, Hashable {
+    
+    /**
+     * A fresh receive address of the same wallet's BIP44 account.
+     */
+    case wallet
+    /**
+     * The wallet's shielded pool (M4: `NotImplemented` until then).
+     */
+    case shielded
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MixedCoinsDestination: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMixedCoinsDestination: FfiConverterRustBuffer {
+    typealias SwiftType = MixedCoinsDestination
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MixedCoinsDestination {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .wallet
+        
+        case 2: return .shielded
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MixedCoinsDestination, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .wallet:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .shielded:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsDestination_lift(_ buf: RustBuffer) throws -> MixedCoinsDestination {
+    return try FfiConverterTypeMixedCoinsDestination.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMixedCoinsDestination_lower(_ value: MixedCoinsDestination) -> RustBuffer {
+    return FfiConverterTypeMixedCoinsDestination.lower(value)
+}
+
 
 
 /**
@@ -14925,6 +24716,609 @@ public func FfiConverterTypeNoticeCode_lift(_ buf: RustBuffer) throws -> NoticeC
 #endif
 public func FfiConverterTypeNoticeCode_lower(_ value: NoticeCode) -> RustBuffer {
     return FfiConverterTypeNoticeCode.lower(value)
+}
+
+
+
+/**
+ * The operator BLS key (basic scheme only).
+ */
+
+public enum OperatorKeyChoice: Equatable, Hashable {
+    
+    /**
+     * A fresh key; its secret is shown once (QT-124) and never stored.
+     */
+    case generate
+    /**
+     * An existing public key, 96 hex characters.
+     */
+    case existing(publicKeyHex: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OperatorKeyChoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOperatorKeyChoice: FfiConverterRustBuffer {
+    typealias SwiftType = OperatorKeyChoice
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OperatorKeyChoice {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .generate
+        
+        case 2: return .existing(publicKeyHex: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OperatorKeyChoice, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .generate:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .existing(publicKeyHex):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(publicKeyHex, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorKeyChoice_lift(_ buf: RustBuffer) throws -> OperatorKeyChoice {
+    return try FfiConverterTypeOperatorKeyChoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOperatorKeyChoice_lower(_ value: OperatorKeyChoice) -> RustBuffer {
+    return FfiConverterTypeOperatorKeyChoice.lower(value)
+}
+
+
+
+/**
+ * Why the wallets count a masternode as theirs (QT-120 "Owned").
+ */
+
+public enum OwnedRole: Equatable, Hashable {
+    
+    case collateral
+    case owner
+    case voting
+    case `operator`
+    case payout
+    case operatorPayout
+    case platformNode
+    case shareOwner
+    case shareRefund
+    /**
+     * Tracked by the user (IOS-082), with or without keys.
+     */
+    case tracked
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OwnedRole: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOwnedRole: FfiConverterRustBuffer {
+    typealias SwiftType = OwnedRole
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OwnedRole {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .collateral
+        
+        case 2: return .owner
+        
+        case 3: return .voting
+        
+        case 4: return .`operator`
+        
+        case 5: return .payout
+        
+        case 6: return .operatorPayout
+        
+        case 7: return .platformNode
+        
+        case 8: return .shareOwner
+        
+        case 9: return .shareRefund
+        
+        case 10: return .tracked
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OwnedRole, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .collateral:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .owner:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .voting:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .`operator`:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .payout:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .operatorPayout:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .platformNode:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .shareOwner:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .shareRefund:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .tracked:
+            writeInt(&buf, Int32(10))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnedRole_lift(_ buf: RustBuffer) throws -> OwnedRole {
+    return try FfiConverterTypeOwnedRole.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnedRole_lower(_ value: OwnedRole) -> RustBuffer {
+    return FfiConverterTypeOwnedRole.lower(value)
+}
+
+
+
+/**
+ * The proposal field a validation issue concerns.
+ */
+
+public enum ProposalField: Equatable, Hashable {
+    
+    case name
+    case url
+    case paymentAddress
+    case paymentAmount
+    case paymentCount
+    case firstPayment
+    case payload
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProposalField: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalField: FfiConverterRustBuffer {
+    typealias SwiftType = ProposalField
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalField {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .name
+        
+        case 2: return .url
+        
+        case 3: return .paymentAddress
+        
+        case 4: return .paymentAmount
+        
+        case 5: return .paymentCount
+        
+        case 6: return .firstPayment
+        
+        case 7: return .payload
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProposalField, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .name:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .url:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .paymentAddress:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .paymentAmount:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .paymentCount:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .firstPayment:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .payload:
+            writeInt(&buf, Int32(7))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalField_lift(_ buf: RustBuffer) throws -> ProposalField {
+    return try FfiConverterTypeProposalField.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalField_lower(_ value: ProposalField) -> RustBuffer {
+    return FfiConverterTypeProposalField.lower(value)
+}
+
+
+
+/**
+ * Which proposals the list shows (the Source combo).
+ */
+
+public enum ProposalSource: Equatable, Hashable {
+    
+    /**
+     * "Active Proposals": every valid proposal not yet past its end.
+     */
+    case active
+    /**
+     * "My Proposals": the wallet's proposals, broadcast or pending.
+     */
+    case mine(walletId: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProposalSource: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalSource: FfiConverterRustBuffer {
+    typealias SwiftType = ProposalSource
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalSource {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .active
+        
+        case 2: return .mine(walletId: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProposalSource, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .active:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .mine(walletId):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(walletId, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalSource_lift(_ buf: RustBuffer) throws -> ProposalSource {
+    return try FfiConverterTypeProposalSource.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalSource_lower(_ value: ProposalSource) -> RustBuffer {
+    return FfiConverterTypeProposalSource.lower(value)
+}
+
+
+
+/**
+ * dash-qt `ProposalStatus`, evaluated in dash-qt's order (research 02
+ * §11.1).
+ */
+
+public enum ProposalStatus: Equatable, Hashable {
+    
+    case funded
+    case lapsed
+    case confirming
+    case pending
+    case passing
+    case failing
+    case voting
+    case unfunded
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProposalStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProposalStatus: FfiConverterRustBuffer {
+    typealias SwiftType = ProposalStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProposalStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .funded
+        
+        case 2: return .lapsed
+        
+        case 3: return .confirming
+        
+        case 4: return .pending
+        
+        case 5: return .passing
+        
+        case 6: return .failing
+        
+        case 7: return .voting
+        
+        case 8: return .unfunded
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProposalStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .funded:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .lapsed:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .confirming:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .pending:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .passing:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .failing:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .voting:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .unfunded:
+            writeInt(&buf, Int32(8))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalStatus_lift(_ buf: RustBuffer) throws -> ProposalStatus {
+    return try FfiConverterTypeProposalStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProposalStatus_lower(_ value: ProposalStatus) -> RustBuffer {
+    return FfiConverterTypeProposalStatus.lower(value)
+}
+
+
+
+
+public enum ProviderTxKind: Equatable, Hashable {
+    
+    case updateService
+    case updateRegistrar
+    case revoke
+    /**
+     * v24 ProUpShareTx (change a share's reward address).
+     */
+    case updateShare
+    /**
+     * v24 ProUpSharedRegTx (rotate keys of a shared masternode).
+     */
+    case updateSharedRegistrar
+    /**
+     * v24 ProDissolveTx.
+     */
+    case dissolve
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProviderTxKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProviderTxKind: FfiConverterRustBuffer {
+    typealias SwiftType = ProviderTxKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderTxKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .updateService
+        
+        case 2: return .updateRegistrar
+        
+        case 3: return .revoke
+        
+        case 4: return .updateShare
+        
+        case 5: return .updateSharedRegistrar
+        
+        case 6: return .dissolve
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProviderTxKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .updateService:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .updateRegistrar:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .revoke:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .updateShare:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .updateSharedRegistrar:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .dissolve:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderTxKind_lift(_ buf: RustBuffer) throws -> ProviderTxKind {
+    return try FfiConverterTypeProviderTxKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderTxKind_lower(_ value: ProviderTxKind) -> RustBuffer {
+    return FfiConverterTypeProviderTxKind.lower(value)
 }
 
 
@@ -15764,6 +26158,89 @@ public func FfiConverterTypeRescanFrom_lower(_ value: RescanFrom) -> RustBuffer 
 
 
 
+/**
+ * ProUpRevTx reason (QT-125 "Revoke").
+ */
+
+public enum RevocationReason: Equatable, Hashable {
+    
+    case notSpecified
+    case terminationOfService
+    case compromisedKeys
+    case changeOfKeys
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RevocationReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRevocationReason: FfiConverterRustBuffer {
+    typealias SwiftType = RevocationReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RevocationReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .notSpecified
+        
+        case 2: return .terminationOfService
+        
+        case 3: return .compromisedKeys
+        
+        case 4: return .changeOfKeys
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RevocationReason, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .notSpecified:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .terminationOfService:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .compromisedKeys:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .changeOfKeys:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevocationReason_lift(_ buf: RustBuffer) throws -> RevocationReason {
+    return try FfiConverterTypeRevocationReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRevocationReason_lower(_ value: RevocationReason) -> RustBuffer {
+    return FfiConverterTypeRevocationReason.lower(value)
+}
+
+
+
 public 
 enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -16257,6 +26734,348 @@ public func FfiConverterTypeSeparators_lift(_ buf: RustBuffer) throws -> Separat
 #endif
 public func FfiConverterTypeSeparators_lower(_ value: Separators) -> RustBuffer {
     return FfiConverterTypeSeparators.lower(value)
+}
+
+
+
+/**
+ * What a paste or a dropped file is (QT-127 paste routing).
+ */
+
+public enum SharedMessageKind: Equatable, Hashable {
+    
+    /**
+     * A session message; imported into `session`.
+     */
+    case envelope(session: SharedSessionInfo
+    )
+    /**
+     * A standby dissolution file's transactions.
+     */
+    case standbyDissolution(proTxHash: String?, transactionsHex: [String]
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedMessageKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedMessageKind: FfiConverterRustBuffer {
+    typealias SwiftType = SharedMessageKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedMessageKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .envelope(session: try FfiConverterTypeSharedSessionInfo.read(from: &buf)
+        )
+        
+        case 2: return .standbyDissolution(proTxHash: try FfiConverterOptionString.read(from: &buf), transactionsHex: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedMessageKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .envelope(session):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeSharedSessionInfo.write(session, into: &buf)
+            
+        
+        case let .standbyDissolution(proTxHash,transactionsHex):
+            writeInt(&buf, Int32(2))
+            FfiConverterOptionString.write(proTxHash, into: &buf)
+            FfiConverterSequenceString.write(transactionsHex, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMessageKind_lift(_ buf: RustBuffer) throws -> SharedMessageKind {
+    return try FfiConverterTypeSharedMessageKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMessageKind_lower(_ value: SharedMessageKind) -> RustBuffer {
+    return FfiConverterTypeSharedMessageKind.lower(value)
+}
+
+
+
+
+public enum SharedRole: Equatable, Hashable {
+    
+    case coordinator
+    case participant
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedRole: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedRole: FfiConverterRustBuffer {
+    typealias SwiftType = SharedRole
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedRole {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .coordinator
+        
+        case 2: return .participant
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedRole, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .coordinator:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .participant:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRole_lift(_ buf: RustBuffer) throws -> SharedRole {
+    return try FfiConverterTypeSharedRole.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRole_lower(_ value: SharedRole) -> RustBuffer {
+    return FfiConverterTypeSharedRole.lower(value)
+}
+
+
+
+/**
+ * What a session is for.
+ */
+
+public enum SharedSessionPurpose: Equatable, Hashable {
+    
+    case register
+    case rotateKeys
+    case dissolveTogether
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedSessionPurpose: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedSessionPurpose: FfiConverterRustBuffer {
+    typealias SwiftType = SharedSessionPurpose
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedSessionPurpose {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .register
+        
+        case 2: return .rotateKeys
+        
+        case 3: return .dissolveTogether
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedSessionPurpose, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .register:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .rotateKeys:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .dissolveTogether:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSessionPurpose_lift(_ buf: RustBuffer) throws -> SharedSessionPurpose {
+    return try FfiConverterTypeSharedSessionPurpose.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSessionPurpose_lower(_ value: SharedSessionPurpose) -> RustBuffer {
+    return FfiConverterTypeSharedSessionPurpose.lower(value)
+}
+
+
+
+/**
+ * Stage of a shared session (dash-qt's three rounds, then broadcast).
+ */
+
+public enum SharedStage: Equatable, Hashable {
+    
+    case invitation
+    case details
+    case lockedTerms
+    case approvals
+    case signingRequest
+    case signedContributions
+    case broadcast
+    case completed
+    case abandoned
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedStage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedStage: FfiConverterRustBuffer {
+    typealias SwiftType = SharedStage
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedStage {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .invitation
+        
+        case 2: return .details
+        
+        case 3: return .lockedTerms
+        
+        case 4: return .approvals
+        
+        case 5: return .signingRequest
+        
+        case 6: return .signedContributions
+        
+        case 7: return .broadcast
+        
+        case 8: return .completed
+        
+        case 9: return .abandoned
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedStage, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .invitation:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .details:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .lockedTerms:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .approvals:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .signingRequest:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .signedContributions:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .broadcast:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .completed:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .abandoned:
+            writeInt(&buf, Int32(9))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedStage_lift(_ buf: RustBuffer) throws -> SharedStage {
+    return try FfiConverterTypeSharedStage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedStage_lower(_ value: SharedStage) -> RustBuffer {
+    return FfiConverterTypeSharedStage.lower(value)
 }
 
 
@@ -18237,6 +29056,79 @@ public func FfiConverterTypeVaultLockState_lower(_ value: VaultLockState) -> Rus
 
 
 
+
+public enum VoteOutcome: Equatable, Hashable {
+    
+    case yes
+    case no
+    case abstain
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension VoteOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVoteOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = VoteOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VoteOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .yes
+        
+        case 2: return .no
+        
+        case 3: return .abstain
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: VoteOutcome, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .yes:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .no:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .abstain:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVoteOutcome_lift(_ buf: RustBuffer) throws -> VoteOutcome {
+    return try FfiConverterTypeVoteOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVoteOutcome_lower(_ value: VoteOutcome) -> RustBuffer {
+    return FfiConverterTypeVoteOutcome.lower(value)
+}
+
+
+
 public 
 enum WalletError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -18851,6 +29743,30 @@ fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
     typealias SwiftType = UInt32?
 
@@ -18891,6 +29807,30 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
+    typealias SwiftType = Double?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterDouble.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterDouble.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -19019,6 +29959,54 @@ fileprivate struct FfiConverterOptionTypeChainLockInfo: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCreditPoolInfo: FfiConverterRustBuffer {
+    typealias SwiftType = CreditPoolInfo?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCreditPoolInfo.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCreditPoolInfo.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeInstantSendCounters: FfiConverterRustBuffer {
+    typealias SwiftType = InstantSendCounters?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeInstantSendCounters.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeInstantSendCounters.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMasternodeCount: FfiConverterRustBuffer {
     typealias SwiftType = MasternodeCount?
 
@@ -19043,6 +30031,102 @@ fileprivate struct FfiConverterOptionTypeMasternodeCount: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeMyVotes: FfiConverterRustBuffer {
+    typealias SwiftType = MyVotes?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMyVotes.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMyVotes.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeOperatorReward: FfiConverterRustBuffer {
+    typealias SwiftType = OperatorReward?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeOperatorReward.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeOperatorReward.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeOutPoint: FfiConverterRustBuffer {
+    typealias SwiftType = OutPoint?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeOutPoint.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeOutPoint.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypePlatformFields: FfiConverterRustBuffer {
+    typealias SwiftType = PlatformFields?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypePlatformFields.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypePlatformFields.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeRescanProgress: FfiConverterRustBuffer {
     typealias SwiftType = RescanProgress?
 
@@ -19059,6 +30143,30 @@ fileprivate struct FfiConverterOptionTypeRescanProgress: FfiConverterRustBuffer 
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeRescanProgress.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeSharedHolding: FfiConverterRustBuffer {
+    typealias SwiftType = SharedHolding?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSharedHolding.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSharedHolding.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -19139,6 +30247,102 @@ fileprivate struct FfiConverterOptionTypeAddressPurpose: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoinJoinPoolMessage: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinPoolMessage?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoinJoinPoolMessage.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoinJoinPoolMessage.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoinJoinStopReason: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinStopReason?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoinJoinStopReason.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoinJoinStopReason.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoinJoinUnavailable: FfiConverterRustBuffer {
+    typealias SwiftType = CoinJoinUnavailable?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoinJoinUnavailable.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoinJoinUnavailable.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCollateralRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CollateralRefusal?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCollateralRefusal.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCollateralRefusal.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeDashNetwork: FfiConverterRustBuffer {
     typealias SwiftType = DashNetwork?
 
@@ -19187,6 +30391,30 @@ fileprivate struct FfiConverterOptionTypeMnemonicLanguage: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeOperatorKeyChoice: FfiConverterRustBuffer {
+    typealias SwiftType = OperatorKeyChoice?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeOperatorKeyChoice.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeOperatorKeyChoice.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeSyncPhase: FfiConverterRustBuffer {
     typealias SwiftType = SyncPhase?
 
@@ -19203,6 +30431,30 @@ fileprivate struct FfiConverterOptionTypeSyncPhase: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeSyncPhase.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeVoteOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = VoteOutcome?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeVoteOutcome.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeVoteOutcome.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -19411,6 +30663,56 @@ fileprivate struct FfiConverterSequenceTypeBannedPeer: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoinJoinSession: FfiConverterRustBuffer {
+    typealias SwiftType = [CoinJoinSession]
+
+    public static func write(_ value: [CoinJoinSession], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoinJoinSession.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoinJoinSession] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoinJoinSession]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoinJoinSession.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCollateralCandidate: FfiConverterRustBuffer {
+    typealias SwiftType = [CollateralCandidate]
+
+    public static func write(_ value: [CollateralCandidate], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCollateralCandidate.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CollateralCandidate] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CollateralCandidate]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCollateralCandidate.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeConsoleCommand: FfiConverterRustBuffer {
     typealias SwiftType = [ConsoleCommand]
 
@@ -19461,6 +30763,31 @@ fileprivate struct FfiConverterSequenceTypeEngineWarning: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFeeSourceCandidate: FfiConverterRustBuffer {
+    typealias SwiftType = [FeeSourceCandidate]
+
+    public static func write(_ value: [FeeSourceCandidate], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFeeSourceCandidate.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FeeSourceCandidate] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FeeSourceCandidate]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFeeSourceCandidate.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFeeTarget: FfiConverterRustBuffer {
     typealias SwiftType = [FeeTarget]
 
@@ -19478,6 +30805,131 @@ fileprivate struct FfiConverterSequenceTypeFeeTarget: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeFeeTarget.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMasternodeKeyInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [MasternodeKeyInfo]
+
+    public static func write(_ value: [MasternodeKeyInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMasternodeKeyInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MasternodeKeyInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MasternodeKeyInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMasternodeKeyInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMasternodeKeyUsage: FfiConverterRustBuffer {
+    typealias SwiftType = [MasternodeKeyUsage]
+
+    public static func write(_ value: [MasternodeKeyUsage], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMasternodeKeyUsage.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MasternodeKeyUsage] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MasternodeKeyUsage]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMasternodeKeyUsage.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMasternodeRow: FfiConverterRustBuffer {
+    typealias SwiftType = [MasternodeRow]
+
+    public static func write(_ value: [MasternodeRow], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMasternodeRow.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MasternodeRow] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MasternodeRow]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMasternodeRow.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMasternodeShare: FfiConverterRustBuffer {
+    typealias SwiftType = [MasternodeShare]
+
+    public static func write(_ value: [MasternodeShare], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMasternodeShare.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MasternodeShare] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MasternodeShare]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMasternodeShare.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMixedCoinsChunk: FfiConverterRustBuffer {
+    typealias SwiftType = [MixedCoinsChunk]
+
+    public static func write(_ value: [MixedCoinsChunk], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMixedCoinsChunk.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MixedCoinsChunk] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MixedCoinsChunk]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMixedCoinsChunk.read(from: &buf))
         }
         return seq
     }
@@ -19561,6 +31013,31 @@ fileprivate struct FfiConverterSequenceTypePeerInfo: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypePendingProposal: FfiConverterRustBuffer {
+    typealias SwiftType = [PendingProposal]
+
+    public static func write(_ value: [PendingProposal], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePendingProposal.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PendingProposal] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PendingProposal]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePendingProposal.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePreparedInput: FfiConverterRustBuffer {
     typealias SwiftType = [PreparedInput]
 
@@ -19611,6 +31088,31 @@ fileprivate struct FfiConverterSequenceTypePreparedOutput: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeProposalRow: FfiConverterRustBuffer {
+    typealias SwiftType = [ProposalRow]
+
+    public static func write(_ value: [ProposalRow], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeProposalRow.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProposalRow] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ProposalRow]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeProposalRow.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePsbtOutput: FfiConverterRustBuffer {
     typealias SwiftType = [PsbtOutput]
 
@@ -19628,6 +31130,31 @@ fileprivate struct FfiConverterSequenceTypePsbtOutput: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypePsbtOutput.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeQuorumSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [QuorumSummary]
+
+    public static func write(_ value: [QuorumSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeQuorumSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [QuorumSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [QuorumSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeQuorumSummary.read(from: &buf))
         }
         return seq
     }
@@ -19686,6 +31213,81 @@ fileprivate struct FfiConverterSequenceTypeRecipient: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeSharedSessionInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedSessionInfo]
+
+    public static func write(_ value: [SharedSessionInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedSessionInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedSessionInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedSessionInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedSessionInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedShareTerms: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedShareTerms]
+
+    public static func write(_ value: [SharedShareTerms], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedShareTerms.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedShareTerms] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedShareTerms]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedShareTerms.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSuperblockDate: FfiConverterRustBuffer {
+    typealias SwiftType = [SuperblockDate]
+
+    public static func write(_ value: [SuperblockDate], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSuperblockDate.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SuperblockDate] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SuperblockDate]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSuperblockDate.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeSyncPhaseProgress: FfiConverterRustBuffer {
     typealias SwiftType = [SyncPhaseProgress]
 
@@ -19703,6 +31305,31 @@ fileprivate struct FfiConverterSequenceTypeSyncPhaseProgress: FfiConverterRustBu
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeSyncPhaseProgress.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTrackedMasternode: FfiConverterRustBuffer {
+    typealias SwiftType = [TrackedMasternode]
+
+    public static func write(_ value: [TrackedMasternode], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTrackedMasternode.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TrackedMasternode] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TrackedMasternode]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTrackedMasternode.read(from: &buf))
         }
         return seq
     }
@@ -19861,6 +31488,56 @@ fileprivate struct FfiConverterSequenceTypeUtxo: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeVoteResult: FfiConverterRustBuffer {
+    typealias SwiftType = [VoteResult]
+
+    public static func write(_ value: [VoteResult], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeVoteResult.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VoteResult] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [VoteResult]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeVoteResult.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeVotingMasternode: FfiConverterRustBuffer {
+    typealias SwiftType = [VotingMasternode]
+
+    public static func write(_ value: [VotingMasternode], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeVotingMasternode.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VotingMasternode] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [VotingMasternode]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeVotingMasternode.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeWalletInfo: FfiConverterRustBuffer {
     typealias SwiftType = [WalletInfo]
 
@@ -19928,6 +31605,81 @@ fileprivate struct FfiConverterSequenceTypeExportWarning: FfiConverterRustBuffer
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeExportWarning.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMasternodeKeyRole: FfiConverterRustBuffer {
+    typealias SwiftType = [MasternodeKeyRole]
+
+    public static func write(_ value: [MasternodeKeyRole], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMasternodeKeyRole.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MasternodeKeyRole] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MasternodeKeyRole]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMasternodeKeyRole.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeOwnedRole: FfiConverterRustBuffer {
+    typealias SwiftType = [OwnedRole]
+
+    public static func write(_ value: [OwnedRole], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeOwnedRole.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [OwnedRole] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [OwnedRole]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeOwnedRole.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeProposalField: FfiConverterRustBuffer {
+    typealias SwiftType = [ProposalField]
+
+    public static func write(_ value: [ProposalField], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeProposalField.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProposalField] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ProposalField]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeProposalField.read(from: &buf))
         }
         return seq
     }
@@ -20054,6 +31806,16 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     } else {
         print("uniffiFutureContinuationCallback invalid handle")
     }
+}
+/**
+ * The fixed CoinJoin values. **Works** (constants of `dw-coinjoin`).
+ */
+public func coinjoinLimits() -> CoinJoinLimits  {
+    return try!  FfiConverterTypeCoinJoinLimits_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_coinjoin_limits(uniffiCallStatus
+    )
+})
 }
 /**
  * Every console command, sorted by name (tab completion, `help`).
@@ -20207,6 +31969,31 @@ public func coreVersion() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_dashwallet_core_fn_func_core_version(uniffiCallStatus
+    )
+})
+}
+/**
+ * The governance constants of `network`. **Works** (constants of
+ * `dw-governance`; regtest values are Core's defaults, which
+ * `-budgetparams` can change on a node).
+ */
+public func governanceParams(network: DashNetwork) -> GovernanceParams  {
+    return try!  FfiConverterTypeGovernanceParams_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_governance_params(
+        FfiConverterTypeDashNetwork_lower(network),uniffiCallStatus
+    )
+})
+}
+/**
+ * The masternode constants of `network`. **Works** (constants of
+ * `dw-protx`).
+ */
+public func masternodeNetworkDefaults(network: DashNetwork) -> MasternodeNetworkDefaults  {
+    return try!  FfiConverterTypeMasternodeNetworkDefaults_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_masternode_network_defaults(
+        FfiConverterTypeDashNetwork_lower(network),uniffiCallStatus
     )
 })
 }
@@ -20373,6 +32160,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_dashwallet_core_checksum_func_coinjoin_limits() != 9881) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_func_console_commands() != 22839) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20407,6 +32197,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_core_version() != 56472) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_governance_params() != 45473) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_masternode_network_defaults() != 15868) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_verify_message() != 59039) {
@@ -20493,6 +32289,30 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_engineobserver_on_event() != 60320) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_preparedprovidertx_abandon() != 57486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedprovidertx_broadcast() != 34553) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedprovidertx_summary() != 29363) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedregistration_abandon() != 56092) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedregistration_confirm_operator_secret() != 58468) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedregistration_operator_secret() != 5218) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedregistration_submit() != 21417) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_preparedregistration_summary() != 33774) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_psbt_to_base64() != 32481) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20550,6 +32370,39 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_set_backup_policy() != 8617) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_networksession_coinjoin_recovery_scan() != 57214) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_coinjoin_salt() != 36397) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_coinjoin_settings() != 1754) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_coinjoin_status() != 6573) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_generate_coinjoin_salt() != 31009) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_mixed_coins_sweep_plan() != 52064) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_move_mixed_coins() != 17880) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_coinjoin_salt() != 37838) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_coinjoin_settings() != 4417) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_start_mixing() != 21029) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_stop_mixing() != 64219) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_networksession_dust_protection() != 9690) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20592,6 +32445,51 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_fee_policy() != 15470) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_networksession_cast_votes() != 20192) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_create_proposal() != 13821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_governance_clock() != 62230) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_governance_info() != 53527) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_governance_sync_state() != 31523) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_pending_proposals() != 39137) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_proposal_detail() != 6350) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_proposal_json() != 65426) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_proposal_payload_hex() != 19490) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_proposals() != 5253) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_governance_sync_enabled() != 16630) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_submit_proposal() != 49814) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_superblock_dates() != 52632) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_validate_proposal() != 46420) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_voting_masternodes() != 38723) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_networksession_history_page() != 62490) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20608,6 +32506,45 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_set_tx_label() != 39083) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_masternode_detail() != 64484) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_masternode_list_state() != 43742) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_masternodes() != 25879) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_attach_masternode_key() != 59133) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_detach_masternode_key() != 48510) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_evonode_status() != 43914) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_locate_masternodes() != 1824) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_masternode_keys() != 23463) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_tracked_masternode_label() != 53233) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_track_masternode() != 59937) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_tracked_masternodes() != 29838) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_untrack_masternode() != 333) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_withdraw_evonode_credits() != 16770) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_sign_message() != 58632) {
@@ -20629,6 +32566,72 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_load_states() != 38144) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_network_stats() != 30003) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_broadcast_standby_dissolution() != 61159) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_collateral_candidates() != 31536) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_create_shared_session() != 49127) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_create_standby_dissolution() != 60558) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_fee_source_candidates() != 14443) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_shared_message() != 58501) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_dissolve_now() != 14340) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_registration() != 63867) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_revoke() != 62015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_share_reward_update() != 39991) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_update_registrar() != 60139) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_prepare_update_service() != 10754) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_abandon() != 17184) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_approve() != 10646) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_broadcast() != 32527) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_contribute() != 43211) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_message() != 35125) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_session_sign() != 21090) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_shared_sessions() != 35754) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_start_dissolve_together() != 14837) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_start_shared_key_rotation() != 27207) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_analyze_psbt() != 30907) {
@@ -20761,6 +32764,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 60873) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_vault_reveal_masternode_key() != 240) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 23787) {
