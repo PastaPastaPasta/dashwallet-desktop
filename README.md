@@ -88,8 +88,25 @@ declared, so `Package.resolved` is unchanged), so no GTK is needed.
 There is no runnable wallet UI yet. The M1 screens (onboarding, lock, home, send, receive, transactions)
 had not landed on `main` at the M1 integration point; see [`docs/parity.md`](docs/parity.md).
 
-- **macOS.** There is no macOS app target or Xcode project yet. `MacUI` is a placeholder SwiftUI
-  library and builds with `swift build`; nothing launches it.
+- **macOS.** `Apps/macOS/project.yml` is the XcodeGen spec for the SwiftUI app (`MacUI`); the
+  generated `DashWallet.xcodeproj` is gitignored. It needs the Rust bundle in `Artifacts/`.
+  ```sh
+  cd Apps/macOS && xcodegen generate
+  xcodebuild -project DashWallet.xcodeproj -scheme DashWallet -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' -derivedDataPath ../../.derived build
+  "../../.derived/Build/Products/Debug/Dash Wallet.app/Contents/MacOS/Dash Wallet" --demo
+  ```
+  Without `--demo` the app runs the real engine on
+  `~/Library/Application Support/org.dashfoundation.DashWallet/` and opens the last network
+  (mainnet the first time). Switches: `--datadir <dir>`, `--network mainnet|testnet|regtest`
+  (first launch only), `--peer host:port`, `--dapi <url>`, `--quorum-url <url>` (regtest needs all
+  three), `--demo-scenario funded|fresh|locked` (demo passphrase `demo`), `--appearance light|dark`,
+  `--no-menu-bar-extra`. `dash:` links open the Send page.
+  UI tests (XCUITest, demo mode): replace `build` with `test`. They need a logged-in GUI session and
+  the macOS automation-mode authorization (Xcode asks for it, or an administrator runs
+  `automationmodetool enable-automationmode-without-authentication`). `DWD_HEADLESS=1
+  DWD_WRITE_SCREENSHOTS=1 swift test --filter MacUITests` renders every screen offscreen into
+  `docs/screenshots/m1/`.
 - **Linux (and macOS, for development).** `swift run dash-wallet` builds and runs the SwiftCrossUI
   executable (`DashWalletCross`). Today it only prints `the SwiftCrossUI app is not implemented yet`
   and exits; it proves the target graph links. Building it on Linux needs GTK 4 development packages
