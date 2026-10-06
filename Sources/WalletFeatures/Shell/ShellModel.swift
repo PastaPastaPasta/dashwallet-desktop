@@ -70,10 +70,14 @@ public struct MenuItemModel: Sendable, Hashable, Identifiable {
     public let helpText: String?
     public let children: [MenuItemModel]
     public let isSeparator: Bool
+    /// Unlock items: which unlock they open (QT-016 "Unlock Wallet for
+    /// mixing only"); run them with `ShellModel.perform(item:)`.
+    public let unlockScope: UnlockScope?
 
     public init(
         id: String, title: String, command: ShellCommand?, shortcut: KeyShortcut? = nil, isEnabled: Bool = true,
-        isChecked: Bool? = nil, helpText: String? = nil, children: [MenuItemModel] = [], isSeparator: Bool = false
+        isChecked: Bool? = nil, helpText: String? = nil, children: [MenuItemModel] = [], isSeparator: Bool = false,
+        unlockScope: UnlockScope? = nil
     ) {
         self.id = id
         self.title = title
@@ -84,6 +88,7 @@ public struct MenuItemModel: Sendable, Hashable, Identifiable {
         self.helpText = helpText
         self.children = children
         self.isSeparator = isSeparator
+        self.unlockScope = unlockScope
     }
 
     static func separator(_ id: String) -> MenuItemModel {
@@ -105,6 +110,9 @@ public struct MenuModel: Sendable, Hashable, Identifiable {
 /// without keys show none.
 public enum LockIcon: Sendable, Hashable {
     case unlocked, unlockedMixingOnly, locked
+
+    /// dash-qt's orange open lock: unlocked for mixing only (QT-022).
+    public var isMixingOnly: Bool { self == .unlockedMixingOnly }
 
     public var tooltip: String {
         switch self {
@@ -151,6 +159,14 @@ public final class ShellModel {
     public private(set) var pendingPresentation: ShellCommand?
     public private(set) var confirmation: ShellConfirmation?
     public private(set) var errorMessage: String?
+    /// Options ▸ Wallet ▸ "Enable CoinJoin features" (engine setting).
+    public private(set) var coinJoinEnabled = false
+    /// The unlock the pending `.unlockWallet` presentation asks for: full,
+    /// or for mixing only (QT-016, QT-112).
+    public private(set) var pendingUnlockScope: UnlockScope = .full
+
+    /// CoinJoin is on: the feature is built in and enabled in the options.
+    public var coinJoinOn: Bool { features.coinJoin && coinJoinEnabled }
 
     /// `Dash Wallet - <--windowtitle> - <wallet> - [network]` (QT-011).
     public var windowTitle: String {
@@ -168,6 +184,7 @@ public final class ShellModel {
             switch item {
             case .masternodes: options.showMasternodesTab
             case .governance: options.showGovernanceTab
+            case .coinJoin: coinJoinEnabled
             default: true
             }
         }
@@ -205,13 +222,16 @@ public final class ShellModel {
     private let fileRevealer: any FileRevealing
     private let desktopPreferences: any DesktopPreferencesStoring
     private let launchOptions: LaunchOptions
+    private let coinJoin: (any CoinJoinControlling)?
+    private let platform: DesktopPlatform
     private var tasks: [Task<Void, Never>] = []
 
     public init(
         walletState: any WalletStateProviding, auth: any AuthenticationGating, settings: any SettingsProviding,
         host: any WalletHosting, walletLifecycle: any WalletLifecycleManaging, backups: any BackupProviding,
         fileRevealer: any FileRevealing, desktopPreferences: any DesktopPreferencesStoring,
-        launchOptions: LaunchOptions, features: FeatureFlags = .m1
+        launchOptions: LaunchOptions, features: FeatureFlags = .m1, coinJoin: (any CoinJoinControlling)? = nil,
+        platform: DesktopPlatform = .current
     ) {
         self.walletState = walletState
         self.auth = auth
@@ -223,17 +243,22 @@ public final class ShellModel {
         self.desktopPreferences = desktopPreferences
         self.launchOptions = launchOptions
         self.features = features
+        self.coinJoin = coinJoin
+        self.platform = platform
         self.discreet = settings.display.hideBalances
         self.lockState = auth.lockState
         self.wallets = walletState.wallets
         self.selectedWalletID = walletState.selectedWalletID
     }
 
-    public convenience init(env: AppEnvironment, m2: M2Services, features: FeatureFlags = .m1) {
+    public convenience init(
+        env: AppEnvironment, m2: M2Services, features: FeatureFlags = .m1, m3: M3Services? = nil
+    ) {
         self.init(
             walletState: env.walletState, auth: env.auth, settings: env.settings, host: env.host,
             walletLifecycle: m2.walletLifecycle, backups: m2.backups, fileRevealer: m2.fileRevealer,
-            desktopPreferences: m2.desktopPreferences, launchOptions: m2.launchOptions, features: features)
+            desktopPreferences: m2.desktopPreferences, launchOptions: m2.launchOptions, features: features,
+            coinJoin: m3?.coinJoin, platform: m2.platform)
     }
 
     // MARK: Observation
@@ -283,6 +308,23 @@ public final class ShellModel {
         lockState = auth.lockState
         discreet = settings.display.hideBalances
         await reloadLoadStates()
+        await reloadCoinJoinEnabled()
+        if !sections.contains(selection) { selection = .overview }
+    }
+
+    /// Reads "Enable CoinJoin features"; an engine without CoinJoin keeps it off.
+    private func reloadCoinJoinEnabled() async {
+        guard features.coinJoin, let coinJoin else {
+            coinJoinEnabled = false
+            return
+        }
+        coinJoinEnabled = (try? await coinJoin.settings().enabled) ?? false
+    }
+
+    /// Options OK changed "Enable CoinJoin features": the CoinJoin section,
+    /// tray entry and Help item follow it (dash-qt).
+    public func coinJoinOptionChanged(enabled: Bool) {
+        coinJoinEnabled = enabled
         if !sections.contains(selection) { selection = .overview }
     }
 
@@ -306,6 +348,9 @@ public final class ShellModel {
             confirmation = .closeAllWallets
         case .lockWallet:
             await run { () async throws(ServiceError) in try await self.auth.lock() }
+        case .unlockWallet:
+            pendingUnlockScope = .full
+            pendingPresentation = command
         case .toggleDiscreetMode:
             var display = settings.display
             display.hideBalances.toggle()
@@ -324,6 +369,18 @@ public final class ShellModel {
 
     public func presentationHandled() {
         pendingPresentation = nil
+        pendingUnlockScope = .full
+    }
+
+    /// Runs a menu item; unlock items carry their scope (QT-016 "Unlock
+    /// Wallet for mixing only" presents `.unlockWallet` with
+    /// `pendingUnlockScope == .mixingOnly`).
+    public func perform(item: MenuItemModel) async {
+        guard let command = item.command else { return }
+        await perform(command)
+        if command == .unlockWallet, pendingPresentation == .unlockWallet, let scope = item.unlockScope {
+            pendingUnlockScope = scope
+        }
     }
 
     /// Answers `confirmation` with Yes. Closing a wallet also drops it from
@@ -388,7 +445,7 @@ public final class ShellModel {
         case .migrateWallet, .openDebugLog, .openConfigurationFile, .tools(.networkTraffic):
             false
         case .coinJoinInformation:
-            features.coinJoin
+            coinJoinOn
         case .encryptWallet:
             lockState == .unencrypted
         case .changePassphrase:
@@ -458,7 +515,15 @@ public final class ShellModel {
         ]
         // dash-qt shows Unlock or Lock depending on the state, not both.
         if lockState == .locked || lockState == .unlockedMixingOnly {
-            items.append(item("settings.unlock", L10n.Shell.unlockWallet, .unlockWallet, tip: L10n.Shell.unlockWalletTip))
+            items.append(item(
+                "settings.unlock", L10n.Shell.unlockWallet, .unlockWallet, tip: L10n.Shell.unlockWalletTip,
+                unlockScope: .full))
+        }
+        // dash-qt offers the mixing-only unlock while CoinJoin is on.
+        if coinJoinOn, lockState == .locked {
+            items.append(item(
+                "settings.unlockMixing", L10n.Shell.unlockWalletForMixing, .unlockWallet,
+                tip: L10n.Shell.unlockWalletForMixingTip, unlockScope: .mixingOnly))
         }
         if lockState == .unlocked || lockState == .unlockedMixingOnly {
             items.append(item("settings.lock", L10n.Shell.lockWallet, .lockWallet, tip: L10n.Shell.lockWalletTip))
@@ -499,7 +564,7 @@ public final class ShellModel {
                 tip: L10n.Shell.commandLineOptionsTip),
         ]
         // Shown only while CoinJoin is enabled (dash-qt).
-        if features.coinJoin {
+        if coinJoinOn {
             items.append(item("help.coinJoin", L10n.Shell.coinJoinInformation, .coinJoinInformation))
         }
         items.append(item("help.about", L10n.Shell.about, .about, tip: L10n.Shell.aboutTip))
@@ -508,7 +573,7 @@ public final class ShellModel {
 
     private func item(
         _ id: String, _ title: String, _ command: ShellCommand, shortcut: KeyShortcut? = nil, checked: Bool? = nil,
-        tip: String? = nil
+        tip: String? = nil, unlockScope: UnlockScope? = nil
     ) -> MenuItemModel {
         let enabled = isEnabled(command)
         let needsWallet: Bool
@@ -522,7 +587,48 @@ public final class ShellModel {
         let help = !enabled && needsWallet && !hasWallet ? L10n.Shell.walletRequired : tip
         return MenuItemModel(
             id: id, title: title, command: command, shortcut: shortcut, isEnabled: enabled, isChecked: checked,
-            helpText: help)
+            helpText: help, unlockScope: unlockScope)
+    }
+
+    /// dash-qt's tray / Dock menu (QT-029, research 02 §2.4): Show/Hide and
+    /// Exit are left out on macOS; "CoinJoin" follows the CoinJoin option.
+    public var trayMenu: [MenuItemModel] {
+        var items: [MenuItemModel] = []
+        if platform != .macOS {
+            items += [item("tray.showHide", L10n.Shell.showHide, .showHideWindow), .separator("tray.sep0")]
+        }
+        items.append(item("tray.send", L10n.Navigation.send, .section(.send)))
+        if coinJoinOn {
+            items.append(item("tray.coinJoin", L10n.Navigation.coinJoin, .section(.coinJoin)))
+        }
+        items += [
+            item("tray.receive", L10n.Navigation.receive, .section(.receive)),
+            .separator("tray.sep1"),
+            item("tray.sign", L10n.Shell.signMessage, .signMessage, tip: L10n.Shell.signMessageTip),
+            item("tray.verify", L10n.Shell.verifyMessage, .verifyMessage, tip: L10n.Shell.verifyMessageTip),
+            .separator("tray.sep2"),
+            item("tray.options", L10n.Shell.options, .options, tip: L10n.Shell.optionsTip),
+            .separator("tray.sep3"),
+            item("tray.information", L10n.Shell.information, .tools(.information)),
+            item("tray.console", L10n.Shell.console, .tools(.console)),
+            item(
+                "tray.traffic", L10n.Shell.networkTraffic, .tools(.networkTraffic),
+                tip: L10n.Shell.networkTrafficUnavailable),
+            item("tray.peers", L10n.Shell.peers, .tools(.peers)),
+            item("tray.repair", L10n.Shell.repair, .tools(.repair)),
+            .separator("tray.sep4"),
+            item("tray.debugLog", L10n.Shell.openDebugLog, .openDebugLog, tip: L10n.Shell.openDebugLogUnavailable),
+            item(
+                "tray.config", L10n.Shell.openConfigurationFile, .openConfigurationFile,
+                tip: L10n.Shell.openConfigurationFileUnavailable),
+            item(
+                "tray.backups", L10n.Shell.showAutomaticBackups, .showAutomaticBackups,
+                tip: L10n.Shell.showAutomaticBackupsTip),
+        ]
+        if platform != .macOS {
+            items += [.separator("tray.sep5"), item("tray.exit", L10n.Shell.exit, .exit, tip: L10n.Shell.exitTip)]
+        }
+        return items
     }
 
     // MARK: Private

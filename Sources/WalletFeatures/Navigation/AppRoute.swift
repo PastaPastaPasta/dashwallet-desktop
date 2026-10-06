@@ -67,6 +67,8 @@ public struct FeatureFlags: Sendable, Hashable {
     }
 
     public static let m1 = FeatureFlags()
+    /// CoinJoin, Masternodes and Governance (M3).
+    public static let m3 = FeatureFlags(coinJoin: true, masternodes: true, governance: true)
 }
 
 /// Navigation requests view models raise; the UI layer performs them.

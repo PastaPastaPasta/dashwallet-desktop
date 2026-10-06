@@ -168,9 +168,13 @@ struct ShellAndStartupTests {
         #expect(item(shell, "window.traffic")?.isEnabled == false)
     }
 
+    /// M3: the item needs the CoinJoin feature and "Enable CoinJoin features"
+    /// (see ShellM3Tests for the engine-backed case).
     @Test func QT018_helpMenuShowsCoinJoinInformationOnlyWithCoinJoin() {
         #expect(makeShell().menus[3].items.map(\.title) == ["Command-line options", "About Dash Wallet"])
         let withCoinJoin = makeShell(features: FeatureFlags(coinJoin: true))
+        #expect(withCoinJoin.menus[3].items.map(\.title) == ["Command-line options", "About Dash Wallet"])
+        withCoinJoin.coinJoinOptionChanged(enabled: true)
         #expect(withCoinJoin.menus[3].items.map(\.title) == [
             "Command-line options", "CoinJoin information", "About Dash Wallet",
         ])

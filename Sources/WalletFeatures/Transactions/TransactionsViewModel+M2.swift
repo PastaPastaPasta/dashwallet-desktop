@@ -45,6 +45,17 @@ public struct CoinJoinDayRow: Sendable, Hashable {
     public var title: String { L10n.TransactionsM2.mixingTransactions }
 }
 
+/// The app's own CoinJoin sweeps as one combined row (IOS-030). Not per
+/// day: the sweep is a one-off, sorted under its latest transaction's day.
+public struct CoinJoinWithdrawalGroup: Sendable, Hashable {
+    public let records: [TxRecord]
+    /// What the sweeps changed the balance by (their fees, negative).
+    public let total: Amount
+    public let day: Date?
+    public var title: String { L10n.CoinJoin.withdrawalsTitle }
+    public var info: String { L10n.CoinJoin.withdrawalsInfo }
+}
+
 public enum HistoryItem: Sendable, Hashable, Identifiable {
     case record(TxRecord)
     case coinJoinMixing(CoinJoinDayRow)
@@ -131,7 +142,8 @@ extension TransactionsViewModel {
         let calendar = timing.calendar
         var order: [Date?] = []
         var byDay: [Date?: [TxRecord]] = [:]
-        for record in rows {
+        let grouped = groupsCoinJoinWithdrawals ? Set(coinJoinWithdrawals?.records.map(\.id) ?? []) : []
+        for record in rows where !grouped.contains(record.id) {
             let day = record.date.map { calendar.startOfDay(for: $0) }
             if byDay[day] == nil { order.append(day) }
             byDay[day, default: []].append(record)
@@ -164,6 +176,23 @@ extension TransactionsViewModel {
             }
             return HistoryDayGroup(day: day, title: dayTitle(day), items: items)
         }
+    }
+
+    // MARK: CoinJoin withdrawals (IOS-030)
+
+    /// The app's own "move mixed coins" sweeps among `rows`, as one combined
+    /// "CoinJoin Withdrawals" row (iOS `CoinJoinWithdrawalTxSet`). Membership
+    /// is by the txids the sweep recorded, not by transaction type.
+    public var coinJoinWithdrawals: CoinJoinWithdrawalGroup? {
+        guard let wallet = walletState.selectedWalletID,
+            let tagged = desktopPreferences?.desktop.m3.coinJoinWithdrawals[wallet.hex], !tagged.isEmpty
+        else { return nil }
+        let txids = Set(tagged)
+        let records = rows.filter { txids.contains($0.id.txid) }
+        guard !records.isEmpty else { return nil }
+        return CoinJoinWithdrawalGroup(
+            records: records, total: Amount(duffs: records.reduce(0) { $0 + $1.amount.duffs }),
+            day: records.compactMap(\.date).max())
     }
 
     private func dayTitle(_ day: Date?) -> String {
