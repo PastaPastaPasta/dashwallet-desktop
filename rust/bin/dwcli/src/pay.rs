@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use clap::Subcommand;
 use dw_engine::{
-    BookPurpose, ChangePolicy, CoinFilter, CoinSource, Engine, FeeMode, NetworkSession, Recipient,
-    WalletId,
+    BookPurpose, ChangePolicy, CoinFilter, CoinSource, Engine, EngineError, FeeMode,
+    NetworkSession, Recipient, SendFailure, WalletId,
 };
 use dw_vault::{Credential, GrantPurpose, LockState};
 use zeroize::Zeroizing;
@@ -75,6 +75,12 @@ pub enum PayCommand {
         /// abandon it.
         #[arg(long)]
         no_broadcast: bool,
+        /// After a `send.broadcast_unknown` outcome, report the payment's
+        /// inputs (`held reserved=<n> unlisted=<n>`), check that abandon is
+        /// refused, and broadcast the same prepared transaction again; at
+        /// most this many times.
+        #[arg(long, default_value_t = 0)]
+        rebroadcast_unknown: u32,
     },
     /// Address book: list entries.
     Book { wallet: String },
@@ -280,6 +286,7 @@ pub fn run(
             message,
             sync_height,
             no_broadcast,
+            rebroadcast_unknown,
         } => {
             let id = wallet_id(&wallet)?;
             if let Some(h) = sync_height {
@@ -366,8 +373,54 @@ pub fn run(
                 engine.block_on(draft.abandon(prepared)).map_err(e)?;
                 println!("abandoned");
             } else {
-                let outcome = engine.block_on(draft.broadcast(prepared)).map_err(e)?;
-                println!("broadcast {}", outcome.txid);
+                let inputs: Vec<dashcore::OutPoint> = s.inputs.iter().map(|i| i.outpoint).collect();
+                let mut repeats = 0;
+                loop {
+                    match engine.block_on(draft.broadcast(Arc::clone(&prepared))) {
+                        Ok(outcome) => {
+                            println!("broadcast {}", outcome.txid);
+                            break;
+                        }
+                        Err(EngineError::Send(SendFailure::BroadcastUnknown { reason }))
+                            if repeats < rebroadcast_unknown =>
+                        {
+                            repeats += 1;
+                            println!("unknown {} reason={}", s.txid, reason.replace(' ', "_"));
+                            // The inputs are either still reserved or already
+                            // seen spent by the transaction; never selectable.
+                            let coins = engine
+                                .block_on(session.utxos(
+                                    id,
+                                    CoinFilter {
+                                        include_locked: true,
+                                        ..Default::default()
+                                    },
+                                ))
+                                .map_err(e)?;
+                            let reserved = coins
+                                .iter()
+                                .filter(|c| inputs.contains(&c.outpoint) && c.reserved)
+                                .count();
+                            let unlisted = inputs
+                                .iter()
+                                .filter(|o| !coins.iter().any(|c| c.outpoint == **o))
+                                .count();
+                            println!("held reserved={reserved} unlisted={unlisted}");
+                            match engine.block_on(draft.abandon(Arc::clone(&prepared))) {
+                                Err(EngineError::Send(SendFailure::PreparedTxSpent)) => {
+                                    println!("abandon refused");
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "abandon after an unknown outcome: {other:?}"
+                                    ));
+                                }
+                            }
+                            println!("rebroadcast {repeats}");
+                        }
+                        Err(err) => return Err(err.to_string()),
+                    }
+                }
             }
         }
         PayCommand::Book { wallet } => {

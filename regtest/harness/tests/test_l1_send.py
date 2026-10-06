@@ -22,6 +22,7 @@ background while the test mines the transaction from dashd's mempool.
 from __future__ import annotations
 
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -271,6 +272,85 @@ def test_foreign_change_address_counts_against_the_cap(dw, regtest_node, recipie
     # The foreign change is spent from the wallet's point of view.
     assert int(prepared["external"]) == COIN // 10 + int(estimate["change"])
     assert int(prepared["debit"]) == int(prepared["external"]) + tx_fee(regtest_node, tx)
+
+
+def test_rebroadcast_after_unknown_outcome(dw, regtest_node, recipient):
+    """A broadcast with no acceptance verdict stays reserved and can be sent
+    again through the same prepared transaction (review M3).
+
+    With one peer and no InstantSend quorum nothing accepts the payment
+    until it is mined, so leaving it unmined makes dash-spv report the
+    outcome uncertain after its 60 s acceptance timeout: the engine returns
+    send.broadcast_unknown. dwcli then checks the inputs are still held and
+    abandon is refused, and broadcasts the same handle again; mining the
+    transaction makes that repeat succeed with the same txid."""
+    height = regtest_node.rpc.getblockcount()
+    dw.sync(height)
+    address = recipient.getnewaddress()
+    proc = subprocess.Popen(
+        [
+            *dw.base,
+            "send",
+            dw.wallet,
+            "--sync-height",
+            str(height),
+            "--to",
+            f"{address}:{COIN // 10}",
+            "--rebroadcast-unknown",
+            "1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines: queue.Queue[str] = queue.Queue()
+    stderr: list[str] = []
+    threading.Thread(
+        target=lambda: [lines.put(line.rstrip("\n")) for line in proc.stdout], daemon=True
+    ).start()
+    threading.Thread(target=lambda: stderr.append(proc.stderr.read()), daemon=True).start()
+    seen: list[str] = []
+
+    def read_until(prefix: str, timeout: float) -> str:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = lines.get(timeout=1)
+            except queue.Empty:
+                if proc.poll() is not None and lines.empty():
+                    break
+                continue
+            seen.append(line)
+            if line.startswith(prefix):
+                return line
+        raise AssertionError(f"no {prefix!r} line: {seen}\n{''.join(stderr)[-4000:]}")
+
+    try:
+        txid = fields(read_until("prepared ", 300))["txid"]
+        wait_until(
+            lambda: txid in regtest_node.rpc.getrawmempool(),
+            timeout=90,
+            what=f"tx {txid} in dashd's mempool",
+        )
+        # No block: no verdict within the acceptance timeout.
+        unknown = read_until("unknown ", 120)
+        assert unknown.split()[1] == txid, unknown
+        held = fields(read_until("held ", 30))
+        inputs = sum(1 for line in seen if line.startswith("input "))
+        assert inputs >= 1, seen
+        # Still reserved, or already seen spent by the transaction itself;
+        # never offered to another payment.
+        assert int(held["reserved"]) + int(held["unlisted"]) == inputs, (held, seen)
+        read_until("abandon refused", 30)
+        read_until("rebroadcast 1", 30)
+        regtest_node.mine(1)
+        assert read_until("broadcast ", 120) == f"broadcast {txid}"
+        assert proc.wait(timeout=60) == 0, f"{seen}\n{''.join(stderr)[-4000:]}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    tx = regtest_node.rpc.getrawtransaction(txid, True)
+    assert paid_to(tx, address) == COIN // 10
 
 
 def test_balance_after_payments(dw, regtest_node):
