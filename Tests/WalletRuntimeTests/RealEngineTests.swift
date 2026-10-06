@@ -224,4 +224,45 @@ import Testing
             #expect(services.settings.lastNetwork == .regtest)
         }
     }
+    /// The R1/R2 adapters reach the Rust engine: SPV-honest node info, the
+    /// minimum-relay fee policy, wallet close/open, CSV, console, xpub and
+    /// the peer-moderation stub (U2).
+    @Test func liveM2AdaptersAnswerThroughRust() async throws {
+        try await Self.withLive { services in
+            try await services.launch(defaultNetwork: .regtest)
+            let desktop = DesktopRuntimeServices(runtime: services, platform: .fake(), onQuit: {})
+            let vault = services.vault
+            _ = try await vault.create(passphrase: nil)
+            let phrase = try await vault.generateMnemonic(wordCount: 12, language: .english)
+            let id = try await services.lifecycle.importWallet(
+                mnemonic: phrase, bip39Passphrase: vault.makeSecret(utf8: ""), options: WalletImportOptions(birthHeight: 0))
+
+            let info = try await desktop.nodeInformation.information()
+            #expect(info.network == .regtest && info.mempoolTransactionCount == nil && info.tipHash == nil)
+            let fees = try await desktop.fees.feePolicy()
+            #expect(fees.source == .minimumRelay && fees.minimumRelayPerKB == 1000)
+            #expect(try await desktop.walletLifecycle.existingNetworks().contains { $0.network == .regtest })
+
+            try await desktop.walletLifecycle.unload(id)
+            #expect(try await desktop.walletLifecycle.loadStates().first { $0.walletID == id }?.loaded == false)
+            #expect(services.walletState.wallets?.contains { $0.id == id } != true)
+            try await desktop.walletLifecycle.load(id)
+            #expect(try await desktop.walletLifecycle.loadStates().first { $0.walletID == id }?.loaded == true)
+
+            let xpub = try await desktop.walletLifecycle.accountXpub(wallet: id, account: 0)
+            #expect(xpub.xpub.hasPrefix("tpub"))
+            let csv = try await desktop.transactionActions.exportCSV(
+                wallet: id, filter: HistoryFilter(), sort: .newestFirst, options: HistoryCSVOptions(unit: .dash))
+            #expect(String(decoding: csv, as: UTF8.self).hasPrefix("\"Confirmed\""))
+            let commands = try await desktop.console.commands()
+            #expect(commands.contains { $0.name == "getblockcount" && $0.available })
+
+            do throws(ServiceError) {
+                _ = try await desktop.peerModeration.bannedPeers()
+                Issue.record("peer moderation is a typed stub until U2")
+            } catch {
+                #expect(error.code == .notImplemented)
+            }
+        }
+    }
 }

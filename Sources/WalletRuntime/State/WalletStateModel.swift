@@ -118,7 +118,7 @@ public final class WalletState: WalletStateProviding, SessionObserving {
         guard let network else { return }
         switch event {
         case .walletCreated(let n, _) where n == network, .walletRemoved(let n, _) where n == network,
-             .sessionOpened(let n) where n == network:
+             .sessionOpened(let n) where n == network, .walletLoadChanged(let n, _, _) where n == network:
             reloader.request()
         case .balancesChanged(let n, let id) where n == network:
             staleBalances.insert(WalletID(id))

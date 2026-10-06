@@ -105,10 +105,12 @@ public struct DesktopOSServices: Sendable {
     }
 }
 
-/// The S1 services of M2 over one `WalletRuntimeServices` and the OS
-/// services: quick unlock and vault recovery, auto-lock, transaction
-/// notifications, startup and shutdown, shell settings, incoming URIs,
-/// log export and QR images. No singletons: each app builds one.
+/// The M2 services over one `WalletRuntimeServices` and the OS services:
+/// quick unlock and vault recovery, auto-lock, transaction notifications,
+/// startup and shutdown, shell settings, incoming URIs, log export, QR
+/// images, and the engine adapters for wallet lifecycle, transaction
+/// actions, fees, dust, Dash Core imports/exports, backups, PSBT and the
+/// Tools window. No singletons: each app builds one.
 @MainActor
 public final class DesktopRuntimeServices {
     public let runtime: WalletRuntimeServices
@@ -125,6 +127,19 @@ public final class DesktopRuntimeServices {
     public let incomingURIs: IncomingURIRouter
     public let logs: LogExportService
     public let qrImages: QRImageImport
+    // The R1/R2 engine adapters (EngineToolAdapters.swift).
+    public let walletLifecycle: WalletLifecycleService
+    public let transactionActions: TransactionActionService
+    public let fees: FeeService
+    public let dustProtection: DustProtectionService
+    public let fileImporter: WalletFileImportService
+    public let coreExporter: CoreExportService
+    public let backups: BackupService
+    public let psbt: PSBTService
+    public let nodeInformation: NodeInformationService
+    public let peerModeration: PeerModerationService
+    public let repair: RepairService
+    public let console: ConsoleService
 
     /// - Parameters:
     ///   - onQuit: terminates the process once `shutdown` finished (or on
@@ -175,6 +190,19 @@ public final class DesktopRuntimeServices {
         incomingURIs = IncomingURIRouter(uriHandler: runtime.uri)
         logs = LogExportService(engine: engine, appLogFiles: appLogFiles)
         qrImages = QRImageImport(decoder: platform.qrDecoder, clipboard: platform.clipboard)
+        let queue = runtime.lifecycle
+        walletLifecycle = WalletLifecycleService(context: context, queue: queue)
+        transactionActions = TransactionActionService(context: context)
+        fees = FeeService(context: context)
+        dustProtection = DustProtectionService(context: context)
+        fileImporter = WalletFileImportService(context: context, queue: queue)
+        coreExporter = CoreExportService(context: context)
+        backups = BackupService(context: context, queue: queue)
+        psbt = PSBTService(context: context)
+        nodeInformation = NodeInformationService(context: context)
+        peerModeration = PeerModerationService(context: context)
+        repair = RepairService(context: context, queue: queue)
+        console = ConsoleService(context: context)
     }
 
     /// Starts the background parts: notifications and forwarded launches.

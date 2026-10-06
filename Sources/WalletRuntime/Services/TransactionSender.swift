@@ -109,6 +109,12 @@ public actor TransactionDraft: TransactionDrafting {
         TxEstimate(try await serviceCall { () async throws(DashKitError) in try await handle.estimate() })
     }
 
+    /// The draft as an unsigned PSBT (`PSBTService.createUnsigned`, QT-076).
+    /// Reserves nothing.
+    func createUnsignedPSBT() async throws(ServiceError) -> DashKit.PSBTHandle {
+        try await serviceCall { () async throws(DashKitError) in try await handle.createUnsigned() }
+    }
+
     /// Signs and reserves inputs; never broadcasts. Needs a `.spend` grant.
     public func prepare(grant: AuthGrant) async throws(ServiceError) -> PreparedTransaction {
         guard case .spend = grant.purpose else {

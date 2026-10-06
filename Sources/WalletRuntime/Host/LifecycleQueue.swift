@@ -116,6 +116,25 @@ public actor LifecycleQueue: LifecycleQueueing {
         }
     }
 
+    /// Runs an M2 wallet operation (open/close wallet, Dash Core imports,
+    /// backup restore, chain-data reset) on the open network, after every
+    /// earlier operation. `transition` is published while it runs (`nil`:
+    /// no overlay); with `walletsChanged` the observers reload the wallet
+    /// list afterwards, as they do after an import or removal.
+    func runWalletOperation<T: Sendable>(
+        transition: LifecycleTransition?,
+        walletsChanged: Bool,
+        _ operation: @escaping @Sendable (any EngineProtocol, DashKit.DashNetwork) async throws(ServiceError) -> T
+    ) async throws(ServiceError) -> T {
+        try await enqueue { () async throws(ServiceError) in
+            if let transition { self.transitionState.send(transition) }
+            let network = try self.host.active.require()
+            let result = try await operation(self.host.engine, network)
+            if walletsChanged { await self.notifyWalletsChanged(network) }
+            return result
+        }
+    }
+
     /// Stops the open network (if any) and shuts the engine down, after
     /// every queued operation. Call once, when the app quits.
     public func shutdown() async throws(ServiceError) {
