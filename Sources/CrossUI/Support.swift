@@ -17,38 +17,59 @@ func bind<T: Sendable>(_ get: @escaping @MainActor () -> T, _ set: @escaping @Ma
         set: { value in MainActor.assumeIsolated { set(value) } })
 }
 
-/// A page body: a scrollable column with the page title on top. Pages are
-/// top-aligned (ADR 0002 noted SwiftCrossUI centres stacks vertically).
+/// How wide a page's centred column may grow (UX-SPEC §2.3).
+enum PageWidth {
+    /// Home, Receive, settings-style pages.
+    case content
+    /// Send, Sign/Verify, forms and wizards.
+    case form
+    /// Technical tables fill the detail column.
+    case full
+
+    var maxWidth: Double {
+        switch self {
+        case .content: CrossLayout.contentMaxWidth
+        case .form: CrossLayout.formMaxWidth
+        case .full: .infinity
+        }
+    }
+}
+
+/// A page body on the canvas: a scrollable, centred column with `TopIntro`
+/// on top. Pages are top-aligned (ADR 0002 noted SwiftCrossUI centres stacks
+/// vertically).
 struct Page<Content: View>: View {
     let title: String
+    let subtitle: String?
+    let width: PageWidth
     let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, subtitle: String? = nil, width: PageWidth = .content, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.subtitle = subtitle
+        self.width = width
         self.content = content()
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Int(DashSpacing.l)) {
-                SectionHeader(title, style: .title2)
+                TopIntro(title, description: subtitle)
                 content
                 Spacer()
             }
-            .padding(Int(DashSpacing.xl))
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxWidth: width.maxWidth, alignment: .topLeading)
+            .padding(.horizontal, CrossLayout.pagePaddingH)
+            .padding(.top, CrossLayout.pagePaddingTop)
+            .padding(.bottom, CrossLayout.sectionGap)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
+        .background(CrossRole.canvas.color)
     }
 }
 
 enum Format {
-    static let dateTime: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter
-    }()
-
+    /// Parses the YYYY-MM-DD range fields (their captions name the format).
     static let day: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -56,8 +77,9 @@ enum Format {
         return formatter
     }()
 
+    /// The locale's medium date and short time (UX-SPEC §5.7).
     static func date(_ date: Date?) -> String {
-        date.map { dateTime.string(from: $0) } ?? L10n.Common.unknown
+        date.map { localDateTime.string(from: $0) } ?? L10n.Common.unknown
     }
 
     static func height(_ height: UInt32?) -> String {
@@ -402,6 +424,58 @@ enum CrossStrings {
 
     // Startup.
     static let customDirectory = "Custom data directory"
+
+    // UX restyle (UX-SPEC §4, §5.4). New strings unless marked iOS / dash-qt.
+    static let history = "History"  // iOS
+    static let filter = "Filter"  // iOS
+    static let seeAllTransactions = "See all transactions"
+    static let noTransactionsToDisplay = "There are no transactions to display"  // iOS
+    static let loadingTransactions = "Loading transactions"  // iOS
+    static let receiveDash = "Receive Dash"
+    static let spendableNow = "Spendable now"
+    static let awaitingConfirmation = "Awaiting confirmation"
+    static let maturing = "Mining/masternode rewards maturing"
+    static let syncingBalance = "Syncing balance"  // iOS
+    static let balanceUnavailable = "Balance unavailable"  // iOS
+    static let clickToHide = "Click to hide balance"  // iOS "Tap to hide balance", adapted
+    static let showBalance = "Show balance"
+    static let hideBalance = "Hide balance"
+    static let more = "More"
+    static let demo = "Demo"
+    static let synced = "Synced"
+    static let syncing = "Syncing"
+    static let sendSubtitle = "Send Dash to a Dash address"
+    static let receiveSubtitle = "Share your address or create a payment request"
+    static let copyURI = "Copy URI"
+    static let quickReceive = "Quick Receive"  // iOS
+    static let advancedOptions = "Advanced options"
+    static let hideAdvancedOptions = "Hide advanced options"
+    static let welcomeSubtitle = "A wallet for Dash on your desktop."
+    static func syncPercent(_ value: Double) -> String { String(format: "Syncing %.1f%%", value * 100) }
+    static func transactionCount(_ count: Int) -> String { count == 1 ? "1 transaction" : "\(count) transactions" }
+
+    /// List-mode titles (UX-SPEC §5.4, table `TxTitle`; en from iOS where it exists).
+    enum TxTitle {
+        static let received = "Received"
+        static let sent = "Sent"
+        static let sentToYourself = "Sent to yourself"
+        static let internalTransfer = "Internal transfer"
+        static let mixing = "Mixing"
+        static let masternodeReward = "Masternode reward"
+        static let mined = "Mined"
+        static let providerTransaction = "Provider transaction"
+        static let assetLock = "Asset lock"
+    }
+
+    /// Row status chips (UX-SPEC §4.9).
+    enum TxChip {
+        static let pending = "Pending"
+        static let instantSend = "InstantSend"
+        static let abandoned = "Abandoned"
+        static let conflicted = "Conflicted"
+        static let notAccepted = "Not accepted"
+        static let locked = "Locked"
+    }
 
     // About.
     static let versionTitle = "Version"

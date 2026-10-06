@@ -20,16 +20,21 @@ public struct WalletRootView: View {
     public var body: some View {
         let state = state
         let main = state.main
+        let scheme = colorScheme(state.appearanceOverride ?? main.settings.theme)
         VStack(spacing: 0) {
             if showsMainWindow(main) {
                 ShellBanners(state: state)
             }
             content(main)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let message = state.copyMessage {
+                CopyToast(state: state, message: message)
+            }
             StatusRow(state: state)
         }
-        .background(DashColor.primaryBackground.color)
-        .preferredColorScheme(colorScheme(main.settings.theme))
+        .background(CrossRole.canvas.color)
+        .toolkitThemeFromEnvironment()
+        .preferredColorScheme(scheme)
         .onChange(of: main.home?.sync, initial: true) {
             if let status = main.home?.sync { main.syncRates.record(status) }
         }
@@ -93,7 +98,7 @@ struct MainSplitView: View {
         let main = state.main
         NavigationSplitView {
             Sidebar(state: state)
-                .frame(minWidth: 200)
+                .frame(minWidth: CrossLayout.sidebarWidth - 20)
         } detail: {
             detail(main)
                 .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -117,7 +122,9 @@ struct MainSplitView: View {
             case .transactions:
                 if let transactions = state.transactions() { TransactionsScreen(model: transactions, state: state) }
             case .coinJoin, .masternodes, .governance, .contacts, .explore:
-                Page(main.selection.title) { Text(L10n.Common.notAvailableYet) }
+                Page(main.selection.title) {
+                    DashCard { EmptyState(icon: Sidebar.icon(main.selection), title: L10n.Common.notAvailableYet) }
+                }
             }
         }
     }
@@ -155,6 +162,10 @@ struct MainSplitView: View {
     }
 }
 
+/// The sidebar (C1): the Dash wordmark, the wallet selector (two or more
+/// wallets), the sections as a selectable list (PNG icon + title; the
+/// selected row is the accent pill with white content), then "More" with
+/// the tool pages as rows of the same style (UX-SPEC §4.1, Cross only).
 struct Sidebar: View {
     let state: CrossAppState
 
@@ -162,6 +173,7 @@ struct Sidebar: View {
         let state = state
         let main = state.main
         let items = state.shell.sections
+        let current: SidebarItem? = state.currentPage == nil ? main.selection : nil
         let selection = bind(
             { state.currentPage == nil ? Optional(main.selection.id) : nil },
             { (id: String?) in
@@ -170,8 +182,13 @@ struct Sidebar: View {
                 main.selection = item
                 Task { await state.shell.perform(.section(item)) }
             })
-        VStack(alignment: .leading, spacing: Int(DashSpacing.m)) {
-            SectionHeader(L10n.Navigation.appName, style: .headline)
+        VStack(alignment: .leading, spacing: Int(DashSpacing.s)) {
+            HStack {
+                DashIcon(main.network == .mainnet || main.network == nil ? .dashLogo : .dashLogoTestnet, size: 22)
+                Spacer()
+            }
+            .padding(.horizontal, Int(DashSpacing.s))
+            .padding(.vertical, Int(DashSpacing.s))
             if main.showsWalletSelector, let wallets = main.wallets {
                 DashPicker(
                     CrossStrings.wallet,
@@ -183,51 +200,129 @@ struct Sidebar: View {
             // ADR 0002 rule until fork patch P5: every List sits in a ScrollView.
             ScrollView {
                 List(items, selection: selection) { item in
-                    Text(item.title).lineLimit(1)
+                    SidebarRowLabel(
+                        title: item.title, icon: Self.icon(item), template: true, selected: item == current,
+                        flipped: item == .send)
                 }
                 .accessibleRowNames(items.map(\.title))
+                .listCSSClass("dwd-sidebar")
             }
-            .frame(height: Double(44 * items.count))
-            SectionHeader(CrossStrings.tools, style: .footnoteMedium)
-            VStack(alignment: .leading, spacing: Int(DashSpacing.xxs)) {
-                toolButton(CrossStrings.addressBook, .addressBook(.send)) {
+            .frame(height: Double(Self.rowHeight * items.count + 4))
+            Text(CrossStrings.more.uppercased())
+                .dashFont(.caption1Medium)
+                .dashForeground(CrossRole.textTertiary)
+                .padding(.horizontal, Int(DashSpacing.sm))
+                .padding(.top, Int(DashSpacing.s))
+            VStack(alignment: .leading, spacing: Int(DashSpacing.xxxs)) {
+                toolRow(CrossStrings.addressBook, .addressBook, .addressBook(.send)) {
                     if case .addressBook = $0 { true } else { false }
                 }
-                toolButton(CrossStrings.signVerify, .signVerify)
-                toolButton(CrossStrings.toolsWindow, .tools(.information)) {
+                toolRow(CrossStrings.signVerify, .clipboard, .signVerify)
+                toolRow(CrossStrings.toolsWindow, .tools, .tools(.information)) {
                     if case .tools = $0 { true } else { false }
                 }
-                toolButton(L10n.PSBT.dialogTitle, .psbt)
-                toolButton(CrossStrings.walletsPage, .wallets)
-                toolButton(CrossStrings.optionsPage, .options)
-                toolButton(CrossStrings.securityPage, .security)
-                toolButton(CrossStrings.settings, .settings)
-                toolButton(CrossStrings.aboutPage, .about)
+                toolRow(L10n.PSBT.dialogTitle, .file, .psbt)
+                toolRow(CrossStrings.walletsPage, .wallet, .wallets)
+                toolRow(CrossStrings.optionsPage, .settings, .options)
+                toolRow(CrossStrings.securityPage, .security, .security)
+                toolRow(CrossStrings.settings, .appearance, .settings)
+                toolRow(CrossStrings.aboutPage, .about, .about)
             }
+            Spacer()
             if main.lockState == .unlocked || main.lockState == .unlockedMixingOnly {
-                DashButton(CrossStrings.lockWallet, style: .plainBlue, size: .small) {
+                DashButton(CrossStrings.lockWallet, style: .tintedGray, size: .small) {
                     Task { await state.perform(.lockWallet) }
                 }
             }
-            Spacer()
         }
         .padding(Int(DashSpacing.m))
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(CrossRole.sidebar.color)
     }
 
-    private func toolButton(
-        _ title: String, _ page: ToolPage, matches: ((ToolPage) -> Bool)? = nil
+    /// Row content height: 20 pt icon row plus 2 × 8 pt padding, and GTK's row spacing.
+    static let rowHeight = 38
+
+    /// Section icons (UX-SPEC §2.7; Cross uses the exported PNGs, tinted).
+    /// Send is the down arrow drawn upside down.
+    static func icon(_ item: SidebarItem) -> DashIconToken {
+        switch item {
+        case .overview: .tabHome
+        case .send: .arrowDown
+        case .receive: .arrowDown
+        case .transactions: .votingList
+        case .coinJoin: .coinjoinShuffle
+        case .masternodes: .tabMore
+        case .governance: .voting
+        case .contacts: .tabContacts
+        case .explore: .tabExplore
+        }
+    }
+
+    private func toolRow(
+        _ title: String, _ icon: DashIconToken, _ page: ToolPage, matches: ((ToolPage) -> Bool)? = nil
     ) -> some View {
         let state = state
         let active = state.currentPage.map { matches?($0) ?? ($0 == page) } ?? false
-        return DashButton(title, style: active ? .tintedBlue : .plainBlue, size: .small) {
-            state.open(page)
+        return SidebarButtonRow(title: title, icon: icon, selected: active) { state.open(page) }
+    }
+}
+
+/// The content of a sidebar row: 20 pt icon and `subhead` title; white on
+/// the accent pill when selected. `template` icons are tinted (accent, or
+/// white when selected); the filled `settings-*` tiles keep their colours.
+struct SidebarRowLabel: View {
+    let title: String
+    let icon: DashIconToken
+    let template: Bool
+    let selected: Bool
+    var flipped = false
+
+    var body: some View {
+        let tint: IconTint = template ? .color(selected ? CrossRole.white : CrossRole.accent) : .original
+        HStack(spacing: Int(DashSpacing.m)) {
+            DashIcon(icon, size: 20, width: 20, tint: tint, flipped: flipped)
+            Text(title)
+                .dashFont(selected ? .subheadMedium : .subhead)
+                .dashForeground(selected ? CrossRole.white : CrossRole.textPrimary)
+                .lineLimit(1)
+            Spacer()
         }
+        .padding(.horizontal, Int(DashSpacing.sm))
+        .padding(.vertical, Int(DashSpacing.s))
+    }
+}
+
+/// A "More" row: a button that looks like a sidebar row (hover tint,
+/// accent pill when its page is open). Its title is its accessible name.
+struct SidebarButtonRow: View {
+    let title: String
+    let icon: DashIconToken
+    let selected: Bool
+    let action: @MainActor @Sendable () -> Void
+
+    @State var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            SidebarRowLabel(title: title, icon: icon, template: false, selected: selected)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if selected {
+                RoundedRectangle(cornerRadius: Double(CrossLayout.sidebarRowRadius)).fill(CrossRole.accent.color)
+            } else if hovering {
+                RoundedRectangle(cornerRadius: Double(CrossLayout.sidebarRowRadius)).fill(CrossRole.accentTint.color)
+            }
+        }
+        .onHover { hovering = $0 }
     }
 }
 
 /// Above every page: the shell's question (Close wallet / Close all
-/// wallets), its error, the node warning banner (QT-040) and the outcome of
-/// the last copy action.
+/// wallets), its error and the node warning banner (QT-040).
 struct ShellBanners: View {
     let state: CrossAppState
 
@@ -235,7 +330,6 @@ struct ShellBanners: View {
         let state = state
         let shell = state.shell
         let empty = shell.confirmation == nil && shell.errorMessage == nil && state.information.bannerText == nil
-            && state.copyMessage == nil
         if !empty {
             banners(state, shell)
         }
@@ -254,12 +348,35 @@ struct ShellBanners: View {
             if let banner = state.information.bannerText {
                 Toast(banner, kind: .warning)
             }
-            if let message = state.copyMessage {
-                Toast(message, kind: .info, actionTitle: CrossStrings.dismiss) { state.copyMessage = nil }
-            }
         }
-        .padding(.horizontal, Int(DashSpacing.xl))
-        .padding(.top, Int(DashSpacing.s))
+        .padding(.horizontal, CrossLayout.pagePaddingH)
+        .padding(.vertical, Int(DashSpacing.s))
+    }
+}
+
+/// The outcome of the last copy action as the bottom toast (C21): "…
+/// copied" disappears after 3 s; the no-clipboard text (which carries the
+/// value to copy by hand) stays until dismissed.
+struct CopyToast: View {
+    let state: CrossAppState
+    let message: String
+
+    var body: some View {
+        let state = state
+        let copied = state.capabilities.clipboard
+        HStack {
+            Spacer()
+            ToastPill(message, icon: copied ? .toastCopied : .toastWarning, actionTitle: CrossStrings.dismiss) {
+                state.copyMessage = nil
+            }
+            Spacer()
+        }
+        .padding(.vertical, Int(DashSpacing.s))
+        .task(id: message) {
+            guard copied else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if state.copyMessage == message { state.copyMessage = nil }
+        }
     }
 }
 
@@ -284,9 +401,11 @@ struct ConfirmationCard: View {
     }
 }
 
-/// The bottom status row: sync, network, height, HD and lock state, notice,
-/// then dash-qt's unit selector (QT-020), the peers button (QT-024) and,
-/// while syncing, the sync details button (QT-027).
+/// The bottom status row (C3, UX-SPEC §4.1): the demo badge, sync text and
+/// bar on the left; on the right, in dash-qt's order, the unit selector
+/// (QT-020), HD (QT-021), the lock state (QT-022), the peers button
+/// (QT-024) and the sync state, with Sync details while syncing (QT-027).
+/// The network is in the window title and the hero capsule, not here.
 struct StatusRow: View {
     let state: CrossAppState
 
@@ -296,36 +415,49 @@ struct StatusRow: View {
         let home = main.home
         let amounts = state.env.amounts
         var items: [StatusBarItem] = []
-        if let notice = state.notice { items.append(StatusBarItem(id: "notice", text: notice)) }
-        items.append(StatusBarItem(id: "network", text: Format.network(main.network)))
-        if let sync = home?.sync, let height = sync.tipHeight {
-            items.append(StatusBarItem(id: "height", text: "#\(height)", help: sync.tipDate.map { Format.date($0) }))
-        }
         if state.shell.hdIconVisible {
-            items.append(StatusBarItem(id: "hd", text: CrossStrings.hd, help: state.shell.hdTooltip))
+            items.append(StatusBarItem(id: "hd", text: CrossStrings.hd, help: state.shell.hdTooltip, tone: .success))
         }
-        items.append(StatusBarItem(
-            id: "lock", text: Format.lockState(main.lockState), help: state.shell.lockIcon?.tooltip))
+        if let lock = state.shell.lockIcon {
+            let tone: BadgeTone =
+                switch lock {
+                case .locked: .success
+                case .unlocked: .danger
+                case .unlockedMixingOnly: .warning
+                }
+            items.append(StatusBarItem(id: "lock", text: Format.lockState(main.lockState), help: lock.tooltip, tone: tone))
+        } else if main.lockState != nil {
+            items.append(StatusBarItem(id: "lock", text: Format.lockState(main.lockState), tone: .danger))
+        }
         let progress = home?.sync.flatMap { $0.isDone ? nil : $0.progress }
-        return StatusBarView(syncText: home?.syncText ?? L10n.Home.notConnected, progress: progress, items: items) {
-            if let sync = home?.sync {
-                if !sync.isDone {
-                    DashButton(CrossStrings.syncDetails, style: .plainBlue, size: .small, help: L10n.SyncOverlay.show) {
-                        main.syncOverlayRequested = true
-                    }
-                }
-                DashButton(
-                    "\(sync.connectedPeers) \(CrossStrings.peers)", style: .plainBlue, size: .small,
-                    help: L10n.Peers.show
-                ) {
-                    state.open(.tools(.peers))
-                }
+        let tipHelp = home?.sync.flatMap { sync in sync.tipHeight.map { "#\($0) · \(Format.date(sync.tipDate))" } }
+        return StatusBarView(
+            syncText: home?.syncText ?? L10n.Home.notConnected, syncHelp: tipHelp, progress: progress, items: items
+        ) {
+            if let notice = state.notice {
+                DashBadge(CrossStrings.demo, tone: .neutral, help: notice)
             }
+        } accessory: {
             if main.network != nil {
                 DashPicker(
                     nil, accessibleName: CrossStrings.unit,
                     options: DisplayUnit.allCases.map { PickerOption($0, amounts.unitName($0)) },
                     selection: bind({ main.settings.display.unit }, { main.settings.setUnit($0) }))
+            }
+            if let sync = home?.sync {
+                DashButton(
+                    "\(sync.connectedPeers) \(CrossStrings.peers)", style: .plainBlue, size: .extraSmall,
+                    help: L10n.Peers.show
+                ) {
+                    state.open(.tools(.peers))
+                }
+                if sync.isDone {
+                    StatusBarText(item: StatusBarItem(id: "sync", text: CrossStrings.synced, tone: .success))
+                } else {
+                    DashButton(CrossStrings.syncDetails, style: .plainBlue, size: .extraSmall, help: L10n.SyncOverlay.show) {
+                        main.syncOverlayRequested = true
+                    }
+                }
             }
         }
     }

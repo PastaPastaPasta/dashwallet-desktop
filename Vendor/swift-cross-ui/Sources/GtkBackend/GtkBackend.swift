@@ -84,10 +84,13 @@ public final class GtkBackend {
         switch font.identifier.kind {
             case .system:
                 properties.append(.fontSize(font.pointSize))
-                // For some reason I had to tweak these a bit to make them match
-                // up with AppKit's font weights. I didn't have to do that for
-                // Gtk3Backend (which matches SwiftUI's text layout and rendering
-                // remarkbly well).
+                // dashwallet-desktop patch P2 (Vendor/PATCHES.md): light,
+                // regular, medium and semibold use the CSS / OpenType weight
+                // numbers, so a face with real Medium and SemiBold files (the
+                // app's bundled Inter) renders each weight with its own file.
+                // Upstream shifted them one step heavier (regular→500,
+                // medium→600, semibold→700) to imitate AppKit with the
+                // default GTK face.
                 let weightNumber =
                     switch font.weight {
                         case .ultraLight:
@@ -95,13 +98,13 @@ public final class GtkBackend {
                         case .thin:
                             300
                         case .light:
-                            400
+                            300
                         case .regular:
-                            500
+                            400
                         case .medium:
-                            600
+                            500
                         case .semibold:
-                            700
+                            600
                         case .bold:
                             700
                         case .heavy:

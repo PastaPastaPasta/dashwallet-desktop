@@ -29,17 +29,6 @@ extension DashColor {
     }
 }
 
-extension DashFontWeight {
-    var crossWeight: Font.Weight {
-        switch self {
-        case .regular: .regular
-        case .medium: .medium
-        case .semibold: .semibold
-        case .bold: .bold
-        }
-    }
-}
-
 extension DashTextStyle {
     /// The style as a system font. Line height and tracking are left to the
     /// toolkit (SwiftCrossUI has no line-height modifier).
@@ -62,4 +51,4 @@ extension View {
 
 /// Integer points for the SwiftCrossUI modifiers that take `Int`.
 @inline(__always)
-func points(_ value: Double) -> Int { Int(value.rounded()) }
+public func points(_ value: Double) -> Int { Int(value.rounded()) }
