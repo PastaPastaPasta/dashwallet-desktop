@@ -2,8 +2,9 @@
 //
 // SwiftCrossUI cannot tie the caption to the field for assistive technology
 // (ADR 0002, gap A3), so each field takes the caption as its accessible name
-// through `accessibleName` (Accessibility.swift), and the placeholder repeats
-// the caption's meaning (GTK exposes it as `placeholder-text`).
+// through `accessibilityLabel` (vendored fork patch P1, Vendor/PATCHES.md),
+// and the placeholder repeats the caption's meaning (GTK exposes it as
+// `placeholder-text`).
 import DesignTokens
 import SwiftCrossUI
 
@@ -27,9 +28,10 @@ public struct DashTextField: View {
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             FieldCaption(caption)
             if let width {
-                TextField(placeholder, text: text).accessibleName(accessibleCaption(caption)).frame(width: Double(width))
+                TextField(placeholder, text: text).accessibilityLabel(accessibleCaption(caption))
+                    .frame(width: Double(width))
             } else {
-                TextField(placeholder, text: text).accessibleName(accessibleCaption(caption))
+                TextField(placeholder, text: text).accessibilityLabel(accessibleCaption(caption))
                     .frame(minWidth: 200, maxWidth: .infinity)
             }
             FieldError(error)
@@ -54,7 +56,7 @@ public struct DashSecureField: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             FieldCaption(caption)
-            SecureField(placeholder, text: text).accessibleName(accessibleCaption(caption))
+            SecureField(placeholder, text: text).accessibilityLabel(accessibleCaption(caption))
                 .frame(minWidth: 200, maxWidth: 420)
             FieldError(error)
         }
@@ -73,7 +75,7 @@ public struct DashToggle: View {
     }
 
     public var body: some View {
-        Toggle(title, isOn: isOn).toggleStyle(.switch).accessibleName(title, afterUpdates: true)
+        Toggle(title, isOn: isOn).toggleStyle(.switch).accessibilityLabel(title)
     }
 }
 
@@ -147,19 +149,18 @@ public struct DashPicker<Value: Hashable & Sendable>: View {
             get: { options.first { $0.value == selection.wrappedValue } },
             set: { if let option = $0 { selection.wrappedValue = option.value } })
         let name = caption.map(accessibleCaption) ?? accessibleName
-        // The name is set from the stack around the picker, after every
-        // update. Set on the Picker itself (onCreate, then also after
-        // updates) it never reached the GtkDropDown: both Xvfb runs of
-        // 2026-10-05 showed the drop-down named after its selected option.
-        // SwiftCrossUI 0.10's GtkBackend notes that Picker inspection is
-        // broken since its PickerStyle refactor, so the widget the Picker's
-        // own inspection gets is presumably not the drop-down.
+        // Fork patch P1 sets the name on the drop-down widget itself. Without
+        // it (upstream 0.10.0 and the inspect-hook workaround) the drop-down
+        // was named after its selected option.
         VStack(alignment: .leading, spacing: points(DashSpacing.xxs)) {
             if let caption {
                 FieldCaption(caption)
             }
-            Picker(of: options, selection: bridged)
+            if let name {
+                Picker(of: options, selection: bridged).accessibilityLabel(name)
+            } else {
+                Picker(of: options, selection: bridged)
+            }
         }
-        .accessibleName(name ?? "", afterUpdates: true, enabled: name != nil)
     }
 }

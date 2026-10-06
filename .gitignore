@@ -1,5 +1,8 @@
 scratch/
 .build/
+# Vendored packages resolve through the root Package.resolved; an editor's
+# indexer may write one inside them.
+Vendor/*/Package.resolved
 target/
 .DS_Store
 .claude/

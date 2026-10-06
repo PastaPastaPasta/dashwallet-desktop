@@ -33,9 +33,9 @@ allowed_for() {
     # MacUI names the WalletRuntime contract value types and DesignTokens
     # spacing; AppKit stays behind PlatformServicesMac.
     MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
-    # Native backends: accessible names set on the native widgets (ADR 0002,
-    # until SwiftCrossUI fork patch P1 adds accessibility modifiers).
-    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
+    # GtkBackend: list-row names set on the native GtkListBox rows (ADR 0002
+    # gap A4, until fork patch P4); controls use the fork's accessibilityLabel.
+    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk" ;;
     # CrossUI names the WalletRuntime value types the view models expose
     # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
     # Observation: the window state (CrossAppState) is @Observable.

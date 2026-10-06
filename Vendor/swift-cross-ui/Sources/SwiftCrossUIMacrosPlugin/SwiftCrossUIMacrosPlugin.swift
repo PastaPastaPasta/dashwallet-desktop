@@ -1,0 +1,13 @@
+import SwiftCompilerPlugin
+import SwiftSyntaxMacros
+
+@main
+struct SwiftCrossUIMacrosPlugin: CompilerPlugin {
+    let providingMacros: [any Macro.Type] = [
+        ObservableObjectMacro.self,
+        HotReloadableAppMacro.self,
+        HotReloadableExprMacro.self,
+        EntryMacro.self,
+        CastBackendMacro.self,
+    ]
+}

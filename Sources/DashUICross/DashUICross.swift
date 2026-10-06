@@ -1,11 +1,13 @@
 // SwiftCrossUI re-implementations of the DashUIKit components (WS-12), plus
 // the bridges from DesignTokens to SwiftCrossUI colours and fonts.
 //
-// Accessibility: SwiftCrossUI 0.10.0 has no accessibility modifiers (ADR 0002,
-// gap A1). Components therefore only use controls whose accessible name comes
-// from their own text: buttons are always created with a string title, text
-// fields carry a descriptive placeholder (GTK exposes it as `placeholder-text`,
-// gap A3), and no control is icon-only.
+// Accessibility: upstream SwiftCrossUI 0.10.0 has no accessibility modifiers
+// (ADR 0002, gap A1); the vendored fork adds `accessibilityLabel(_:)` and
+// `accessibilityHint(_:)` (patch P1, Vendor/PATCHES.md). Fields, toggles and
+// pickers take their caption as the control's name through it, buttons are
+// always created with a string title, text fields also carry a descriptive
+// placeholder (GTK exposes it as `placeholder-text`, gap A3), and no control
+// is icon-only.
 import DesignTokens
 import SwiftCrossUI
 

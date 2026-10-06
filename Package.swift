@@ -6,9 +6,12 @@
 // `swift build`.
 //
 // DWD_HEADLESS=1 drops every SwiftCrossUI-based target. The swift-cross-ui
-// dependency stays declared, so headless resolution keeps its pin in
-// Package.resolved; SwiftPM only builds the targets that remain. Use it for
-// headless CI and Linux containers without GTK.
+// dependency stays declared, so headless resolution keeps its dependencies'
+// pins in Package.resolved; SwiftPM only builds the targets that remain. Use
+// it for headless CI and Linux containers without GTK.
+//
+// SwiftCrossUI is the vendored, patched 0.10.0 in Vendor/swift-cross-ui
+// (Vendor/PATCHES.md), a local package: no fetch of the fork itself.
 import Foundation
 import PackageDescription
 
@@ -20,8 +23,8 @@ let crossUI: [Target.Dependency] = [
 ]
 
 // The native backend of each OS, for code that reaches the native widgets
-// through SwiftCrossUI's `inspect` hooks (accessible names until fork patch
-// P1, the quit hook). Windows has none yet.
+// through SwiftCrossUI's `inspect` hooks (list-row names until fork patch
+// P4, the quit hook, the GTK application name). Windows has none yet.
 let nativeBackend: [Target.Dependency] = [
     .product(name: "GtkBackend", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
     .product(name: "Gtk", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
@@ -38,9 +41,8 @@ var products: [Product] = [
     .library(name: "PlatformServicesMac", targets: ["PlatformServicesMac"]),
 ]
 
-// TODO(fork): switch to the dashpay/swift-cross-ui fork pinned by revision.
 let dependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/stackotter/swift-cross-ui", exact: "0.10.0"),
+    .package(path: "Vendor/swift-cross-ui"),
 ]
 
 var targets: [Target] = [
