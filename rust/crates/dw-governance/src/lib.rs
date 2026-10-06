@@ -11,19 +11,32 @@
 //!
 //! Module layout:
 //! - [`params`]: superblock cycle, maturity window, quorum floor, fees per
-//!   network (works).
-//! - `object`: `CGovernanceObject` serialization and hash, proposal JSON
-//!   with dash-qt's key order, the ≤ 512-byte payload rule.
-//! - `vote`: `CGovernanceVote` serialization, hash, ECDSA signing with a
-//!   voting key and verification against the list's voting key id.
-//! - `sync`: `govsync` full sync and per-object vote sync over `dw-p2p`,
-//!   dedupe, validity, the G7 measurement counters.
-//! - `tally`: weighted Y/N/A (EvoNode weight 4), the passing threshold
-//!   `max(min_quorum, weighted_valid / 10)`, the eight dash-qt statuses in
-//!   dash-qt's evaluation order, the fundable set.
-//! - `clock`: last/next superblock, voting cutoff, ETA, budget committed
-//!   (QT-026, QT-134).
-//! - `proposal`: create (1 DASH `OP_RETURN <hash>` collateral transaction),
-//!   pending proposals, submit at ≥ 1 confirmation (QT-132, QT-133).
+//!   network.
+//! - [`object`]: `CGovernanceObject` serialization and hash.
+//! - [`vote`]: `CGovernanceVote` serialization, hash, what a voting key
+//!   signs, and recovering the signer's key id.
+//! - [`proposal`]: the Create Proposal validation, the data JSON with
+//!   dash-qt's key order and the honoured payment date, parsing synced
+//!   proposal and trigger data.
+//! - [`clock`]: last/next superblock, voting cutoff, ETA, the superblock
+//!   budget (QT-026, QT-134).
+//! - [`tally`]: weighted Y/N/A (EvoNode weight 4), the passing threshold
+//!   `max(min_quorum, weighted_valid / 10)`, the fundable set, the eight
+//!   dash-qt statuses in dash-qt's evaluation order.
+//! - [`store`]: synced objects and current votes in memory.
+//! - [`net`]: the P2P session governance uses (until `dw-p2p` has one).
+//! - [`sync`]: `govsync` objects then current-proposal votes, following
+//!   relays, the G7 counters; relaying the wallet's own objects and votes.
+//!
+//! The engine builds the collateral transaction, keeps pending proposals and
+//! signs votes with the vault (`dw-engine/src/governance.rs`).
 
+pub mod clock;
+pub mod net;
+pub mod object;
 pub mod params;
+pub mod proposal;
+pub mod store;
+pub mod sync;
+pub mod tally;
+pub mod vote;

@@ -10,6 +10,21 @@ publish.workspace = true
 # Owner: R2 (docs/contracts/m3-engine.md §0).
 
 [dependencies]
-dashcore = { workspace = true }
+# `secp-recovery`: votes carry 65-byte compact signatures; the voting key id
+# is recovered from them (Core `CPubKey::RecoverCompact`).
+dashcore = { workspace = true, features = ["secp-recovery"] }
+dw-message = { workspace = true }
 dw-p2p = { workspace = true }
+hex = { workspace = true }
+serde_json = "1"
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
+tracing = { workspace = true }
+
+[features]
+# Exposes `net::test_peer` (an in-process full node) to other crates' tests.
+test-peer = []
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { workspace = true, features = ["test-util"] }
