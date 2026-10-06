@@ -4,7 +4,7 @@
 //! source, post-M3); the mempool rows stay `None` in `NodeInfo` (M2).
 //! Contract: docs/contracts/m3-engine.md §2.6.
 
-use crate::api::common::{ensure_open, not_implemented};
+use crate::api::common::ensure_open;
 use crate::{ChainLockInfo, MasternodeCount, NetworkSession, SyncError};
 
 /// "Credit Pool" (Core `getcreditpoolinfo`): full node only.
@@ -51,16 +51,33 @@ pub struct NetworkStats {
     pub evonodes: Option<MasternodeCount>,
     pub best_chainlock: Option<ChainLockInfo>,
     /// From the quorum list of the synced masternode list; empty before it
-    /// synced.
+    /// synced. platform-wallet's SPV runtime has no quorum-list accessor at
+    /// the pin (only `get_quorum_public_key` for one known quorum), so this
+    /// stays empty until it gains one: hosts show the section as
+    /// unavailable rather than as zero quorums when it is empty.
     pub quorums: Vec<QuorumSummary>,
 }
 
 #[uniffi::export]
 impl NetworkSession {
     /// The Network sub-tab. In-memory read; re-query on `Sync` and
-    /// `Masternodes` events.
+    /// `Masternodes` events. Masternode counts and the best ChainLock come
+    /// from the SPV state (as `NodeInfo`); credit pool and InstantSend
+    /// counters are full-node data and stay `None`.
     pub fn network_stats(&self) -> Result<NetworkStats, SyncError> {
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.network_stats")
+        let i = self.inner.node_info()?;
+        Ok(NetworkStats {
+            credit_pool: None,
+            instantsend: None,
+            masternodes: i.masternodes.map(Into::into),
+            evonodes: i.evonodes.map(Into::into),
+            best_chainlock: i.best_chainlock.map(|c| ChainLockInfo {
+                height: c.height,
+                block_hash: c.block_hash,
+                block_time: c.block_time,
+            }),
+            quorums: Vec::new(),
+        })
     }
 }
