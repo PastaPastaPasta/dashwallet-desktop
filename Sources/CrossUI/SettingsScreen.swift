@@ -30,7 +30,7 @@ struct SettingsScreen: View {
             DashCard {
                 SectionHeader(CrossStrings.network, style: .subheadMedium)
                 DashPicker(
-                    nil,
+                    nil, accessibleName: CrossStrings.network,
                     options: model.availableNetworks.map { PickerOption($0, L10n.Settings.networkName($0)) },
                     selection: bind(
                         { model.network ?? model.availableNetworks[0] },

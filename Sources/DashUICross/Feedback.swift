@@ -73,16 +73,26 @@ public struct StatusBarItem: Sendable, Hashable, Identifiable {
 }
 
 /// The bottom status row: sync text and progress on the left, items on the right.
-public struct StatusBarView: View {
+/// `accessory` sits at the trailing end, after the items (controls such as
+/// dash-qt's unit selector and the peers and sync buttons).
+public struct StatusBarView<Accessory: View>: View {
     let syncText: String
     /// 0...1, or `nil` when unknown (no bar is drawn).
     let progress: Double?
     let items: [StatusBarItem]
+    let accessory: Accessory
 
-    public init(syncText: String, progress: Double?, items: [StatusBarItem]) {
+    public init(
+        syncText: String, progress: Double?, items: [StatusBarItem], @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.init(syncText: syncText, progress: progress, items: items, accessoryView: accessory())
+    }
+
+    init(syncText: String, progress: Double?, items: [StatusBarItem], accessoryView: Accessory) {
         self.syncText = syncText
         self.progress = progress
         self.items = items
+        self.accessory = accessoryView
     }
 
     public var body: some View {
@@ -110,9 +120,16 @@ public struct StatusBarView: View {
                         .lineLimit(1)
                 }
             }
+            accessory
         }
         .padding(.horizontal, points(DashSpacing.m))
         .padding(.vertical, points(DashSpacing.xs))
         .background(DashColor.bottomNavBackground.color)
+    }
+}
+
+extension StatusBarView where Accessory == EmptyView {
+    public init(syncText: String, progress: Double?, items: [StatusBarItem]) {
+        self.init(syncText: syncText, progress: progress, items: items, accessoryView: EmptyView())
     }
 }

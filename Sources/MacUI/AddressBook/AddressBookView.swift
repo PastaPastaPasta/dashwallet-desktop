@@ -95,6 +95,9 @@ struct AddressBookView: View {
         .sheet(item: $editor) { state in
             AddressEditor(book: book, state: state, onClose: { editor = nil })
         }
+        .sheet(isPresented: Binding(get: { book.qrEntry != nil }, set: { if !$0 { book.hideQR() } })) {
+            AddressQRSheet(book: book)
+        }
     }
 
     private var buttons: some View {
@@ -108,6 +111,9 @@ struct AddressBookView: View {
             .disabled(selected == nil)
             Button(MacStrings.Common.edit) { if let selected { editor = EditorState(entry: selected) } }
                 .disabled(selected == nil)
+            Button(MacStrings.AddressBook.showQR, systemImage: "qrcode") { if let selected { book.showQR(for: selected) } }
+                .disabled(selected == nil)
+                .accessibilityIdentifier("addressBook.showQR")
             if book.canDelete {
                 Button(MacStrings.Common.delete, role: .destructive) {
                     if let selected { Task { await book.delete(address: selected.address) } }
@@ -134,6 +140,40 @@ struct AddressBookView: View {
         case .cancelled: exportMessage = nil
         case .failed(let reason): exportMessage = reason
         }
+    }
+}
+
+/// dash-qt's "Show QR code" dialog: the entry's `dash:` URI with its label.
+private struct AddressQRSheet: View {
+    let book: AddressBookViewModel
+
+    var body: some View {
+        VStack(spacing: DashSpacing.m) {
+            if let entry = book.qrEntry {
+                Text(book.labelText(for: entry)).dashFont(.headline)
+            }
+            if let qr = book.qr {
+                QRView(size: qr.size, modules: qr.modules, accessibilityLabel: MacStrings.AddressBook.qrTitle)
+                    .frame(width: 240, height: 240)
+            }
+            if let uri = book.qrURI {
+                Text(uri)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                    .multilineTextAlignment(.center)
+            }
+            HStack {
+                Button(MacStrings.Common.copy, systemImage: "doc.on.doc") {
+                    if let uri = book.qrURI { MacPasteboard.copy(uri) }
+                }
+                Spacer()
+                Button(MacStrings.Common.close) { book.hideQR() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(DashSpacing.xl)
+        .frame(width: 360)
+        .accessibilityIdentifier("addressBook.qr")
     }
 }
 

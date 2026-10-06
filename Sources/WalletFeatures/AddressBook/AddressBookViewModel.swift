@@ -15,6 +15,11 @@ public final class AddressBookViewModel {
     /// The entry chosen in selection mode.
     public private(set) var chosen: AddressBookEntry?
     public private(set) var errorMessage: String?
+    /// The entry whose QR code is shown, its `dash:` URI and the code
+    /// (dash-qt's "Show QR code", QT-095/096).
+    public private(set) var qrEntry: AddressBookEntry?
+    public private(set) var qrURI: String?
+    public private(set) var qr: QRMatrix?
 
     public var header: String {
         purpose == .send ? L10n.AddressBook.sendingHeader : L10n.AddressBook.receivingHeader
@@ -65,6 +70,7 @@ public final class AddressBookViewModel {
 
     public func setPurpose(_ purpose: AddressPurpose) {
         self.purpose = purpose
+        hideQR()
         applyFilter()
     }
 
@@ -135,6 +141,29 @@ public final class AddressBookViewModel {
     public func choose(_ entry: AddressBookEntry) {
         guard selectionMode else { return }
         chosen = entry
+    }
+
+    /// Shows the QR code of `entry`: its `dash:` URI with the label, as
+    /// dash-qt's address book builds it. A URI too long for a QR code
+    /// (QT-084) shows the error instead.
+    public func showQR(for entry: AddressBookEntry) {
+        do {
+            let text = try uri.buildPaymentURI(
+                address: entry.address, amount: nil, label: entry.label.isEmpty ? nil : entry.label, message: nil)
+            qr = try uri.qrMatrix(for: text)
+            qrURI = text
+            qrEntry = entry
+            errorMessage = nil
+        } catch {
+            hideQR()
+            errorMessage = error.code == EngineCode.uriTooLongForQR ? L10n.Receive.uriTooLong : ErrorText.common(error.code)
+        }
+    }
+
+    public func hideQR() {
+        qrEntry = nil
+        qrURI = nil
+        qr = nil
     }
 
     /// CSV with untranslated headers `Label`, `Address` of the visible list.

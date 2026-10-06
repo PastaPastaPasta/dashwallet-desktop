@@ -1,5 +1,6 @@
-// Window content: onboarding, lock screen or the sidebar + page layout, with
-// the lifecycle overlay and the status row (QT-011…014, QT-024, IOS-013, IOS-018).
+// Window content: onboarding, lock screen, the sync overlay or the sidebar +
+// page layout, with the lifecycle overlay and the status row (QT-011…014,
+// QT-020, QT-024, QT-027, IOS-013, IOS-018).
 import DashUICross
 import DesignTokens
 import Foundation
@@ -23,6 +24,9 @@ public struct WalletRootView: View {
         }
         .background(DashColor.primaryBackground.color)
         .preferredColorScheme(colorScheme(main.settings.theme))
+        .onChange(of: main.home?.sync, initial: true) {
+            if let status = main.home?.sync { state.syncRates.record(status) }
+        }
         .task { await main.start() }
     }
 
@@ -36,6 +40,8 @@ public struct WalletRootView: View {
             OnboardingScreen(model: onboarding)
         } else if main.showsLockScreen {
             LockScreen(model: main.lock)
+        } else if state.showsSyncOverlay, let status = main.home?.sync {
+            SyncOverlayScreen(state: state, status: status)
         } else {
             MainSplitView(state: state)
         }
@@ -67,7 +73,9 @@ struct MainSplitView: View {
 
     @ViewBuilder
     private func detail(_ main: MainViewModel) -> some View {
-        if let sheet = main.sheet {
+        if state.showsPeers {
+            PeersScreen(state: state)
+        } else if let sheet = main.sheet {
             toolPage(ToolPage(sheet))
         } else {
             switch main.selection {
@@ -102,12 +110,14 @@ struct Sidebar: View {
     let state: CrossAppState
 
     var body: some View {
+        let state = state
         let main = state.main
         let items = main.visibleSidebarItems
         let selection = bind(
-            { main.sheet == nil ? Optional(main.selection.id) : nil },
+            { main.sheet == nil && !state.showsPeers ? Optional(main.selection.id) : nil },
             { (id: String?) in
                 guard let id, let item = SidebarItem(rawValue: id) else { return }
+                state.showsPeers = false
                 main.sheet = nil
                 main.selection = item
             })
@@ -144,34 +154,56 @@ struct Sidebar: View {
     }
 
     private func toolButton(_ title: String, _ sheet: SheetRoute) -> some View {
+        let state = state
         let main = state.main
-        let active = main.sheet.map { ToolPage($0) } == ToolPage(sheet)
+        let active = !state.showsPeers && main.sheet.map { ToolPage($0) } == ToolPage(sheet)
         return DashButton(title, style: active ? .tintedBlue : .plainBlue, size: .small) {
+            state.showsPeers = false
             main.sheet = sheet
         }
     }
 }
 
-/// The bottom status row: sync, network, peers, lock state, notice.
+/// The bottom status row: sync, network, height, lock state, notice, then
+/// dash-qt's unit selector (QT-020), the peers button (QT-024) and, while
+/// syncing, the sync details button (QT-027).
 struct StatusRow: View {
     let state: CrossAppState
 
     var body: some View {
+        let state = state
         let main = state.main
         let home = main.home
+        let amounts = state.env.amounts
         var items: [StatusBarItem] = []
         if let notice = state.notice { items.append(StatusBarItem(id: "notice", text: notice)) }
         items.append(StatusBarItem(id: "network", text: Format.network(main.network)))
-        if let sync = home?.sync {
-            items.append(StatusBarItem(id: "peers", text: "\(sync.connectedPeers) \(CrossStrings.peers)"))
-            if let height = sync.tipHeight {
-                items.append(
-                    StatusBarItem(id: "height", text: "#\(height)", help: sync.tipDate.map { Format.date($0) }))
-            }
+        if let sync = home?.sync, let height = sync.tipHeight {
+            items.append(StatusBarItem(id: "height", text: "#\(height)", help: sync.tipDate.map { Format.date($0) }))
         }
         items.append(StatusBarItem(id: "lock", text: Format.lockState(main.lockState)))
         let progress = home?.sync.flatMap { $0.isDone ? nil : $0.progress }
-        return StatusBarView(syncText: home?.syncText ?? L10n.Home.notConnected, progress: progress, items: items)
+        return StatusBarView(syncText: home?.syncText ?? L10n.Home.notConnected, progress: progress, items: items) {
+            if let sync = home?.sync {
+                if !sync.isDone {
+                    DashButton(CrossStrings.syncDetails, style: .plainBlue, size: .small, help: L10n.SyncOverlay.show) {
+                        state.syncOverlayRequested = true
+                    }
+                }
+                DashButton(
+                    "\(sync.connectedPeers) \(CrossStrings.peers)", style: .plainBlue, size: .small,
+                    help: L10n.Peers.show
+                ) {
+                    state.showsPeers = true
+                }
+            }
+            if main.network != nil {
+                DashPicker(
+                    nil, accessibleName: CrossStrings.unit,
+                    options: DisplayUnit.allCases.map { PickerOption($0, amounts.unitName($0)) },
+                    selection: bind({ main.settings.display.unit }, { main.settings.setUnit($0) }))
+            }
+        }
     }
 }
 

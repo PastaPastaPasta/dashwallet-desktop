@@ -19,7 +19,7 @@ struct AddressBookScreen: View {
         Page(CrossStrings.addressBook) {
             HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
                 DashPicker(
-                    nil,
+                    nil, accessibleName: CrossStrings.purpose,
                     options: [
                         PickerOption(AddressPurpose.send, CrossStrings.sending),
                         PickerOption(AddressPurpose.receive, CrossStrings.receiving),
@@ -44,11 +44,25 @@ struct AddressBookScreen: View {
                 ForEach(model.entries) { entry in
                     HStack(spacing: Int(DashSpacing.s)) {
                         MenuItem(title: model.labelText(for: entry), subtitle: entry.address)
+                        DashButton(CrossStrings.showQR, style: .plainBlue, size: .small) { model.showQR(for: entry) }
                         if model.canDelete {
                             DashButton(CrossStrings.delete, style: .plainRed, size: .small) {
                                 Task { await model.delete(address: entry.address) }
                             }
                         }
+                    }
+                }
+            }
+            if let entry = model.qrEntry, let qr = model.qr {
+                DashCard {
+                    HStack {
+                        SectionHeader(model.labelText(for: entry), style: .subheadMedium)
+                        Spacer()
+                        DashButton(CrossStrings.hideQR, style: .plainBlue, size: .small) { model.hideQR() }
+                    }
+                    QRCodeView(size: qr.size, modules: qr.modules)
+                    if let uri = model.qrURI {
+                        Text(uri).dashFont(.footnote).textSelectionEnabled()
                     }
                 }
             }

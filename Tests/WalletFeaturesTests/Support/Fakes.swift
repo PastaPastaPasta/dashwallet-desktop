@@ -894,8 +894,26 @@ final class FakeURI: URIHandling, @unchecked Sendable {
         return PaymentURI(address: address, amount: amount, label: label, message: message)
     }
 
+    /// dash-qt `formatBitcoinURI`: amount in DASH without trailing zeros,
+    /// percent-encoded label and message, empty ones left out.
     func buildPaymentURI(address: String, amount: Amount?, label: String?, message: String?) throws(ServiceError) -> String {
-        "dash:\(address)"
+        var query: [String] = []
+        if let amount {
+            var text = String(amount.duffs / 100_000_000)
+            let fraction = amount.duffs % 100_000_000
+            if fraction != 0 {
+                var digits = String(format: "%08lld", fraction)
+                while digits.hasSuffix("0") { digits.removeLast() }
+                text += "." + digits
+            }
+            query.append("amount=\(text)")
+        }
+        let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?#+"))
+        if let label, !label.isEmpty { query.append("label=" + (label.addingPercentEncoding(withAllowedCharacters: allowed) ?? label)) }
+        if let message, !message.isEmpty {
+            query.append("message=" + (message.addingPercentEncoding(withAllowedCharacters: allowed) ?? message))
+        }
+        return "dash:\(address)" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
     }
 
     func qrMatrix(for text: String) throws(ServiceError) -> QRMatrix {

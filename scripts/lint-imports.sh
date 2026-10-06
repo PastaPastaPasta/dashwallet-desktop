@@ -38,7 +38,8 @@ allowed_for() {
     DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     # CrossUI names the WalletRuntime value types the view models expose
     # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
-    CrossUI)                 echo "Foundation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
+    # Observation: the window state (CrossAppState) is @Observable.
+    CrossUI)                 echo "Foundation Observation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
     # Native backends: the quit hook (engine shutdown) and the GTK application name.
     DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesDesktop DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;

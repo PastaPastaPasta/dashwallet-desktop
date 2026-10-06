@@ -2,6 +2,7 @@
 // status-bar tooltips. Feature copy lives in WalletFeatures `L10n`.
 #if os(macOS)
 import Foundation
+import WalletFeatures
 
 enum MacStrings {
     enum App {
@@ -61,34 +62,8 @@ enum MacStrings {
         static func behind(_ text: String) -> String { "\(text) behind" }
     }
 
-    enum SyncOverlay {
-        static let title = "Recent transactions may not yet be visible"
-        static let body =
-            "The wallet is still synchronizing with the Dash network, so its balance may be incorrect. Spending coins from transactions not shown yet will not be accepted by the network."
-        static let status = "Status"
-        static let blocksLeft = "Number of blocks left"
-        static let lastBlockTime = "Last block time"
-        static let progress = "Progress"
-        static let progressPerHour = "Progress increase per hour"
-        static let timeLeft = "Estimated time left until synced"
-        static let hide = "Hide"
-        static let show = "Show synchronization details"
-    }
-
-    enum Peers {
-        static let title = "Peers"
-        static let show = "Show Peers…"
-        static let address = "Address"
-        static let userAgent = "User Agent"
-        static let height = "Height"
-        static let ping = "Ping"
-        static let direction = "Direction"
-        static let inbound = "Inbound"
-        static let outbound = "Outbound"
-        static let none = "Not connected to any peer."
-        static let changePeers = "Change Peers"
-        static let changePeersHelp = "Disconnect from the current peers and connect to others."
-    }
+    typealias SyncOverlay = L10n.SyncOverlay
+    typealias Peers = L10n.Peers
 
     enum Transition {
         static func starting(_ network: String) -> String { "Opening \(network)…" }
@@ -266,6 +241,8 @@ enum MacStrings {
         static let exportName = "addresses.csv"
         static let windowTitle = "Address Book"
         static let empty = "No addresses."
+        static let showQR = "Show QR Code"
+        static let qrTitle = "QR Code"
     }
 
     enum SignVerify {

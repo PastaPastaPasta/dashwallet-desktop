@@ -150,9 +150,8 @@ public final class MacAppModel {
     /// The sync overlay (QT-027): while catching up, when asked for, or by
     /// itself while the tip is more than 25 minutes old unless hidden.
     public var showsSyncOverlay: Bool {
-        guard let main, !main.needsOnboarding, !main.showsLockScreen, let status = main.home?.sync,
-              status.running, !status.isDone else { return false }
-        return syncOverlayRequested || (!syncOverlayHidden && SyncRateTracker.tipIsOld(status))
+        guard let main, !main.needsOnboarding, !main.showsLockScreen else { return false }
+        return SyncRateTracker.showsOverlay(main.home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
     }
 
     public func hideSyncOverlay() {

@@ -65,6 +65,16 @@ public final class SyncRateTracker {
         return target > current ? target - current : 0
     }
 
+    /// Whether the sync overlay shows: while SPV runs and is not done, when
+    /// the user asked for it, or by itself while the tip is old unless the
+    /// user hid it (QT-027).
+    public static func showsOverlay(
+        _ status: SyncStatus?, requested: Bool, hidden: Bool, now: Date = Date()
+    ) -> Bool {
+        guard let status, status.running, !status.isDone else { return false }
+        return requested || (!hidden && tipIsOld(status, now: now))
+    }
+
     /// dash-qt shows the overlay by itself while the tip is more than 25
     /// minutes old (QT-027).
     public static func tipIsOld(_ status: SyncStatus, now: Date = Date()) -> Bool {

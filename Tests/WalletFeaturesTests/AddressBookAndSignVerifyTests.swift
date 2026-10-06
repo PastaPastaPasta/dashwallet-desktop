@@ -92,6 +92,20 @@ struct AddressBookViewModelTests {
         #expect(model.exportCSV() == "\"Label\",\"Address\"\n\"Alice\",\"\(testnetAddress1)\"\n\"bob\",\"\(testnetAddress2)\"\n")
     }
 
+    /// dash-qt "Show QR code": the entry's URI with its label, cleared when
+    /// the list changes purpose.
+    @Test func QT095_QT096_showQRCodeOfAnEntry() async throws {
+        let model = await makeModel()
+        let alice = try #require(model.entries.first { $0.label == "Alice" })
+        model.showQR(for: alice)
+        #expect(model.qrEntry == alice)
+        #expect(model.qrURI == "dash:\(testnetAddress1)?label=Alice")
+        #expect(model.qr?.size == 21)
+        #expect(world.uri.qrRequests.current.last == model.qrURI)
+        model.setPurpose(.receive)
+        #expect(model.qr == nil && model.qrEntry == nil && model.qrURI == nil)
+    }
+
     @Test func QT097_selectionMode() async {
         let picker = await makeModel(selectionMode: true)
         picker.choose(picker.entries[0])

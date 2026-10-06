@@ -123,13 +123,19 @@ public struct PickerOption<Value: Hashable & Sendable>: Hashable, Sendable, Cust
 }
 
 /// Caption plus a picker over `PickerOption`s, bound to the plain value.
+/// The caption is the picker's accessible name; a picker shown without a
+/// caption takes `accessibleName` instead (ADR 0002).
 public struct DashPicker<Value: Hashable & Sendable>: View {
     let caption: String?
+    let accessibleName: String?
     let options: [PickerOption<Value>]
     let selection: Binding<Value>
 
-    public init(_ caption: String?, options: [PickerOption<Value>], selection: Binding<Value>) {
+    public init(
+        _ caption: String?, accessibleName: String? = nil, options: [PickerOption<Value>], selection: Binding<Value>
+    ) {
         self.caption = caption
+        self.accessibleName = accessibleName
         self.options = options
         self.selection = selection
     }
@@ -146,6 +152,8 @@ public struct DashPicker<Value: Hashable & Sendable>: View {
                 // After updates too: the run of 2026-10-05 showed the drop-down
                 // still named after its selected option.
                 Picker(of: options, selection: bridged).accessibleName(accessibleCaption(caption), afterUpdates: true)
+            } else if let accessibleName {
+                Picker(of: options, selection: bridged).accessibleName(accessibleName, afterUpdates: true)
             } else {
                 Picker(of: options, selection: bridged)
             }

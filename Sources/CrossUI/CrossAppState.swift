@@ -2,6 +2,7 @@
 // environment, the main view model and the view models of the tool pages
 // (address book, sign/verify), which MainViewModel does not own.
 import Foundation
+import Observation
 import WalletFeatures
 import WalletRuntime
 
@@ -31,14 +32,23 @@ public enum ToolPage: Sendable, Hashable {
 }
 
 @MainActor
+@Observable
 public final class CrossAppState {
     public let env: AppEnvironment
     public let main: MainViewModel
     /// Shown in the status row (for example the demo-mode notice).
     public let notice: String?
+    /// Sync rates for the overlay, fed from the sync status (QT-027).
+    let syncRates = SyncRateTracker()
+    /// The user hid the sync overlay; it stays hidden until asked for again.
+    var syncOverlayHidden = false
+    /// The user asked for the sync overlay (status row).
+    var syncOverlayRequested = false
+    /// The peers page is open (status row, QT-147).
+    var showsPeers = false
 
-    private var addressBookModel: (network: DashNetwork, model: AddressBookViewModel)?
-    private var signVerifyModel: (network: DashNetwork, model: SignVerifyViewModel)?
+    @ObservationIgnored private var addressBookModel: (network: DashNetwork, model: AddressBookViewModel)?
+    @ObservationIgnored private var signVerifyModel: (network: DashNetwork, model: SignVerifyViewModel)?
 
     public init(env: AppEnvironment, main: MainViewModel, notice: String? = nil) {
         self.env = env
@@ -63,6 +73,18 @@ public final class CrossAppState {
         let model = SignVerifyViewModel(env: env, network: network)
         signVerifyModel = (network, model)
         return model
+    }
+
+    /// The sync overlay (QT-027): as on macOS, over the wallet while it
+    /// catches up, when asked for, or by itself while the tip is old.
+    var showsSyncOverlay: Bool {
+        guard !main.needsOnboarding, !main.showsLockScreen else { return false }
+        return SyncRateTracker.showsOverlay(main.home?.sync, requested: syncOverlayRequested, hidden: syncOverlayHidden)
+    }
+
+    func hideSyncOverlay() {
+        syncOverlayHidden = true
+        syncOverlayRequested = false
     }
 
     /// An amount in the display unit, with the unit name (detail panes).
