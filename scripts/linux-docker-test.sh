@@ -6,7 +6,8 @@
 #
 # The repo is mounted read-only and copied into the container, so Linux
 # builds never touch the host .build/ or Package.resolved. Only Artifacts/
-# is shared.
+# is shared. Every .build/ and .swiftpm/ is left out of the copy, including
+# ones an editor's indexer creates inside Vendor/swift-cross-ui.
 # Cargo caches and build dirs live in named volumes.
 set -euo pipefail
 
@@ -43,7 +44,7 @@ docker run --rm \
   -e DWD_SWIFT_TEST_FILTER="$filter" \
   "$IMAGE" bash -euo pipefail -c '
     mkdir -p /work
-    tar -C /src --exclude=./.build --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=./.swiftpm -cf - . \
+    tar -C /src --exclude=.build --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm -cf - . \
       | tar -C /work -xf -
     cd /work
     start=$(date +%s)

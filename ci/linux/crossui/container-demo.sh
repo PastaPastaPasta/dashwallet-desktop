@@ -7,7 +7,7 @@ OUT=${OUT:-/out}
 
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
   mkdir -p /work
-  tar -C /src --exclude=./.build --exclude=./Artifacts --exclude=./.build-logs --exclude=./.swiftpm \
+  tar -C /src --exclude=.build --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm \
       --exclude=./docs/screenshots -cf - . | tar -C /work -xf -
   cd /work
   start=$(date +%s)
