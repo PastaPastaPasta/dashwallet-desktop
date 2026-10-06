@@ -395,11 +395,10 @@
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [label] "Open Demo wallet on startup" text="Open Demo wallet on startup" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [label] "Open Demo wallet on startup" text="Open Demo wallet on startup" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [check box] "Open Demo wallet on startup" actions=toggle {checked,focusable,sensitive,showing,visible} @(445,178 50x26)
+                                                                                                                                                          [check box] "Open Demo wallet on startup" actions=toggle {checked,focusable,sensitive,showing,visible} @(445,178 50x26)
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -487,21 +486,22 @@
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "Kind" text="Kind" {sensitive,showing,visible}
+                                                                                                                                                    [label] "Kind" text="Kind" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [combo box] "HD seed (hex)" {sensitive,showing,visible}
-                                                                                                                                                      [toggle button] "HD seed (hex)" actions=click {focusable,sensitive,showing,visible}
-                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [combo box] "Kind" {sensitive,showing,visible}
+                                                                                                                                                        [toggle button] "Kind" actions=click {focusable,sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "HD seed (hex)" text="HD seed (hex)" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                    [label] "HD seed (hex)" text="HD seed (hex)" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -510,8 +510,7 @@
                                                                                                                                                 [label] "Key material" text="Key material" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [text] "Key material" actions=activate attrs=placeholder-text:Key material {editable,focusable,sensitive,showing,visible} @(394,422 420x32)
+                                                                                                                                              [text] "Key material" actions=activate attrs=placeholder-text:Key material {editable,focusable,sensitive,showing,visible} @(394,422 420x32)
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -548,8 +547,7 @@
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [text] "Account xpub" actions=activate attrs=placeholder-text:Account xpub {editable,focusable,sensitive,showing,visible} @(251,508 446x32)
+                                                                                                                                                  [text] "Account xpub" actions=activate attrs=placeholder-text:Account xpub {editable,focusable,sensitive,showing,visible} @(251,508 446x32)
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -562,8 +560,7 @@
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [text] "Wallet name" actions=activate attrs=placeholder-text:Wallet name {editable,focusable,sensitive,showing,visible} @(705,508 160x32)
+                                                                                                                                                  [text] "Wallet name" actions=activate attrs=placeholder-text:Wallet name {editable,focusable,sensitive,showing,visible} @(705,508 160x32)
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -576,8 +573,7 @@
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [text] "Birth height" actions=activate attrs=placeholder-text:Birth height {editable,focusable,sensitive,showing,visible} @(873,508 140x32)
+                                                                                                                                                  [text] "Birth height" actions=activate attrs=placeholder-text:Birth height {editable,focusable,sensitive,showing,visible} @(873,508 140x32)
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -621,8 +617,7 @@
                                                                                                                                                   [label] "Backup passphrase" text="Backup passphrase" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [text] "Backup passphrase" actions=activate attrs=placeholder-text:Backup passphrase {editable,focusable,sensitive,showing,visible} @(251,635 420x32)
+                                                                                                                                                [text] "Backup passphrase" actions=activate attrs=placeholder-text:Backup passphrase {editable,focusable,sensitive,showing,visible} @(251,635 420x32)
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -674,21 +669,22 @@
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "Format" text="Format" {sensitive,showing,visible}
+                                                                                                                                                    [label] "Format" text="Format" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [combo box] "dumpwallet file" {sensitive,showing,visible}
-                                                                                                                                                      [toggle button] "dumpwallet file" actions=click {focusable,sensitive,showing,visible}
-                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [combo box] "Format" {sensitive,showing,visible}
+                                                                                                                                                        [toggle button] "Format" actions=click {focusable,sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "dumpwallet file" text="dumpwallet file" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                    [label] "dumpwallet file" text="dumpwallet file" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -787,20 +783,21 @@
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
-                                                                  [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
-                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}

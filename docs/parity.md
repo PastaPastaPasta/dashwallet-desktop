@@ -47,7 +47,8 @@ Gaps that apply to many rows:
 - No GUI has been exercised against a syncing node or with a real send. Only `dwcli` has, in the
   regtest suites. The M2 engine paths that demo mode answers with `not_implemented` (PSBT, imports,
   exports, backups, watch-only, xpub, log export) were not exercised from either app.
-- On Linux, drop-downs are still named after their selected option (needs SwiftCrossUI fork patch P1).
+- On Linux, controls are named through the vendored SwiftCrossUI patch P1 (`Vendor/PATCHES.md`); the
+  2026-10-06 run names every drop-down after its caption (`docs/screenshots/m2/linux/RESULTS.md`).
 - Windows has not been built.
 
 Test references are relative to the repo root; `*` means the whole file.

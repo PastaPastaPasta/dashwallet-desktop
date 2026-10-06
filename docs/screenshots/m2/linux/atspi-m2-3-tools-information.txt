@@ -442,7 +442,7 @@
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [label] "Tue Oct 6 07:51:33 2026" text="Tue Oct 6 07:51:33 2026" {focusable,sensitive,showing,visible}
+                                                                                                                                                                [label] "Tue Oct 6 16:34:59 2026" text="Tue Oct 6 16:34:59 2026" {focusable,sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -528,7 +528,7 @@
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [label] "Tue Oct 6 07:49:58 2026" text="Tue Oct 6 07:49:58 2026" {focusable,sensitive,showing,visible}
+                                                                                                                                                                [label] "Tue Oct 6 16:33:24 2026" text="Tue Oct 6 16:33:24 2026" {focusable,sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -626,7 +626,7 @@
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [label] "1234567, Tue Oct 6 07:49:58 2026, 750b21c00bb6f76fb39671ae90f508063717e93d6883de5a81c18180f2a534a5" text="1234567, Tue Oct 6 07:49:58 2026, 750b21c00bb6f76fb39671ae90f508063717e93d6883de5a81c18180f2a534a5" {focusable,sensitive,showing,visible}
+                                                                                                                                                                [label] "1234567, Tue Oct 6 16:33:24 2026, 750b21c00bb6f76fb39671ae90f508063717e93d6883de5a81c18180f2a534a5" text="1234567, Tue Oct 6 16:33:24 2026, 750b21c00bb6f76fb39671ae90f508063717e93d6883de5a81c18180f2a534a5" {focusable,sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                 [scroll bar] "" {sensitive,showing,visible}
@@ -707,20 +707,21 @@
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
-                                                                  [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
-                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}

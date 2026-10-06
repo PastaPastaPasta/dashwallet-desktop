@@ -280,11 +280,10 @@
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
+                                                                                                                                [label] "Discreet mode" text="Discreet mode" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [label] "Discreet mode" text="Discreet mode" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [check box] "Discreet mode" actions=toggle {focusable,sensitive,showing,visible} @(1032,89 50x26)
+                                                                                                                                [check box] "Discreet mode" actions=toggle {focusable,sensitive,showing,visible} @(1032,89 50x26)
                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -368,7 +367,7 @@
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [list] "" {focusable,sensitive,showing,visible} @(227,309 854x280)
-                                                                                                                                  [list item] "ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 07:44" {focusable,selectable,sensitive,showing,visible} @(227,309 854x56)
+                                                                                                                                  [list item] "ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 16:27" {focusable,selectable,sensitive,showing,visible} @(227,309 854x56)
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -389,7 +388,7 @@
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "2026-10-06 07:44" text="2026-10-06 07:44" {sensitive,showing,visible}
+                                                                                                                                                        [label] "2026-10-06 16:27" text="2026-10-06 16:27" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -397,7 +396,7 @@
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [label] "+0.20000000 tDASH" text="+0.20000000 tDASH" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [list item] "yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 07:14" {focusable,selectable,sensitive,showing,visible} @(227,365 854x56)
+                                                                                                                                  [list item] "yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 15:57" {focusable,selectable,sensitive,showing,visible} @(227,365 854x56)
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -418,7 +417,7 @@
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "2026-10-06 07:14" text="2026-10-06 07:14" {sensitive,showing,visible}
+                                                                                                                                                        [label] "2026-10-06 15:57" text="2026-10-06 15:57" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -431,7 +430,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [label] "InstantSend" text="InstantSend" {sensitive,showing,visible}
-                                                                                                                                  [list item] "Alice, -0.50000226 tDASH, 2026-10-05 11:50" {focusable,selectable,sensitive,showing,visible} @(227,421 854x56)
+                                                                                                                                  [list item] "Alice, -0.50000226 tDASH, 2026-10-05 20:33" {focusable,selectable,sensitive,showing,visible} @(227,421 854x56)
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -452,7 +451,7 @@
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "2026-10-05 11:50" text="2026-10-05 11:50" {sensitive,showing,visible}
+                                                                                                                                                        [label] "2026-10-05 20:33" text="2026-10-05 20:33" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -465,7 +464,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [label] "ChainLocked" text="ChainLocked" {sensitive,showing,visible}
-                                                                                                                                  [list item] "yZbj1bdoh4cDGx74cqRDfMF9jwfgKG9czj, +3.00000000 tDASH, 2026-10-04 11:50" {focusable,selectable,sensitive,showing,visible} @(227,477 854x56)
+                                                                                                                                  [list item] "yZbj1bdoh4cDGx74cqRDfMF9jwfgKG9czj, +3.00000000 tDASH, 2026-10-04 20:33" {focusable,selectable,sensitive,showing,visible} @(227,477 854x56)
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -486,7 +485,7 @@
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "2026-10-04 11:50" text="2026-10-04 11:50" {sensitive,showing,visible}
+                                                                                                                                                        [label] "2026-10-04 20:33" text="2026-10-04 20:33" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -499,7 +498,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [label] "ChainLocked" text="ChainLocked" {sensitive,showing,visible}
-                                                                                                                                  [list item] "Hosting, -0.12000226 tDASH, 2026-10-02 13:50" {focusable,selectable,sensitive,showing,visible} @(227,533 854x56)
+                                                                                                                                  [list item] "Hosting, -0.12000226 tDASH, 2026-10-02 22:33" {focusable,selectable,sensitive,showing,visible} @(227,533 854x56)
                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
@@ -520,7 +519,7 @@
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [label] "2026-10-02 13:50" text="2026-10-02 13:50" {sensitive,showing,visible}
+                                                                                                                                                        [label] "2026-10-02 22:33" text="2026-10-02 22:33" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -610,20 +609,21 @@
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
-                                                                  [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
-                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}

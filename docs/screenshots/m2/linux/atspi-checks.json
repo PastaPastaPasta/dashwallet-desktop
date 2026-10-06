@@ -1,7 +1,7 @@
 [
  {
   "kind": "hard",
-  "name": "app pid 2263 on the AT-SPI bus",
+  "name": "app pid 2015 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -55,7 +55,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2317 on the AT-SPI bus",
+  "name": "app pid 2072 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -63,7 +63,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - Demo wallet']"
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
  },
  {
   "kind": "hard",
@@ -175,7 +175,19 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2399 on the AT-SPI bus",
+  "name": "press 'OK' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "coin selection: OK returns to Send, whose panel shows the pick",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2163 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -259,7 +271,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2468 on the AT-SPI bus",
+  "name": "app pid 2239 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -307,7 +319,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2527 on the AT-SPI bus",
+  "name": "app pid 2300 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -315,7 +327,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet - Demo wallet']"
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
  },
  {
   "kind": "hard",
@@ -344,7 +356,7 @@
  {
   "kind": "hard",
   "name": "security: auto-lock picker",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -409,7 +421,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2611 on the AT-SPI bus",
+  "name": "app pid 2389 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },

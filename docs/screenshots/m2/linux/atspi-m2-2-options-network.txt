@@ -417,11 +417,10 @@
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [label] "Connect through SOCKS5 proxy (default proxy):" text="Connect through SOCKS5 proxy (default proxy):" {sensitive,showing,visible}
                                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "Connect through SOCKS5 proxy (default proxy):" text="Connect through SOCKS5 proxy (default proxy):" {sensitive,showing,visible}
                                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [check box] "Connect through SOCKS5 proxy (default proxy):" actions=toggle {focusable,showing,visible} @(563,240 50x26)
+                                                                                                                                                                [check box] "Connect through SOCKS5 proxy (default proxy):" actions=toggle {focusable,showing,visible} @(563,240 50x26)
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -433,8 +432,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [text] "Proxy IP" text="127.0.0.1" actions=activate attrs=placeholder-text:Proxy IP: {editable,focusable,showing,visible} @(251,294 200x34)
+                                                                                                                                                              [text] "Proxy IP" text="127.0.0.1" actions=activate attrs=placeholder-text:Proxy IP: {editable,focusable,showing,visible} @(251,294 200x34)
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -447,8 +445,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [text] "Port" text="9050" actions=activate attrs=placeholder-text:Port: {editable,focusable,showing,visible} @(459,294 100x34)
+                                                                                                                                                              [text] "Port" text="9050" actions=activate attrs=placeholder-text:Port: {editable,focusable,showing,visible} @(459,294 100x34)
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
@@ -459,11 +456,10 @@
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [label] "Use separate SOCKS5 proxy to reach peers via Tor onion services:" text="Use separate SOCKS5 proxy to reach peers via Tor onion services:" {sensitive,showing,visible}
                                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "Use separate SOCKS5 proxy to reach peers via Tor onion services:" text="Use separate SOCKS5 proxy to reach peers via Tor onion services:" {sensitive,showing,visible}
                                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [check box] "Use separate SOCKS5 proxy to reach peers via Tor onion services:" actions=toggle {focusable,showing,visible} @(683,337 50x26)
+                                                                                                                                                                [check box] "Use separate SOCKS5 proxy to reach peers via Tor onion services:" actions=toggle {focusable,showing,visible} @(683,337 50x26)
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                                                     [panel] "" {sensitive,showing,visible}
@@ -475,8 +471,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [text] "Proxy IP" text="127.0.0.1" actions=activate attrs=placeholder-text:Proxy IP: {editable,focusable,showing,visible} @(251,391 200x34)
+                                                                                                                                                              [text] "Proxy IP" text="127.0.0.1" actions=activate attrs=placeholder-text:Proxy IP: {editable,focusable,showing,visible} @(251,391 200x34)
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                   [panel] "" {sensitive,showing,visible}
@@ -489,8 +484,7 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [text] "Port" text="9050" actions=activate attrs=placeholder-text:Port: {editable,focusable,showing,visible} @(459,391 100x34)
+                                                                                                                                                              [text] "Port" text="9050" actions=activate attrs=placeholder-text:Port: {editable,focusable,showing,visible} @(459,391 100x34)
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -642,20 +636,21 @@
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
-                                                                  [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
-                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}

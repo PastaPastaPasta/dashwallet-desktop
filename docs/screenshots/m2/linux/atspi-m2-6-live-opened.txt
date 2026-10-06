@@ -72,19 +72,20 @@
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [label] "Network" text="Network" {sensitive,showing,visible}
+                                                                                                                                    [label] "Network" text="Network" {sensitive,showing,visible}
+                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                            [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [combo box] "" {sensitive,showing,visible}
-                                                                                                                                      [toggle button] "" actions=click {focusable,sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                      [combo box] "Network" {sensitive,showing,visible}
+                                                                                                                                        [toggle button] "Network" actions=click {focusable,sensitive,showing,visible}
                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [label] "(None)" text="(None)" {sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [label] "(None)" text="(None)" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -92,21 +93,22 @@
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                    [label] "Recovery phrase length" text="Recovery phrase length" {sensitive,showing,visible}
+                                                                                                                                [label] "Recovery phrase length" text="Recovery phrase length" {sensitive,showing,visible}
+                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                        [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                [combo box] "12 words" {sensitive,showing,visible}
-                                                                                                                                  [toggle button] "12 words" actions=click {focusable,sensitive,showing,visible}
-                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                  [combo box] "Recovery phrase length" {sensitive,showing,visible}
+                                                                                                                                    [toggle button] "Recovery phrase length" actions=click {focusable,sensitive,showing,visible}
                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                         [panel] "" {sensitive,showing,visible}
-                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                          [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [label] "12 words" text="12 words" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                            [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [label] "12 words" text="12 words" {sensitive,showing,visible}
                                                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
@@ -227,20 +229,21 @@
                                                                           [panel] "" {sensitive,showing,visible}
                                                                             [panel] "" {sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" {sensitive,showing,visible}
                                                                                   [panel] "" {sensitive,showing,visible}
                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}

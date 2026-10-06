@@ -1,18 +1,13 @@
 info: syncing channel updates for 1.98.1-aarch64-unknown-linux-gnu
 info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
 info: downloading 2 components
-disk-guard: 12 GB free on /target (>= 10 GB)
+disk-guard: 88 GB free on /target (>= 15 GB)
 build-core: cargo rustc -p dw-ffi (aarch64-unknown-linux-gnu, dev) -> /target
 note: link against the following native artifacts when linking against this static library. The order and any duplication can be significant on some platforms
 
 note: native-static-libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
 
-warning: the gold linker is deprecated and has known bugs with Rust
-  |
-  = help: consider using LLD or ld from GNU binutils instead
-
-warning: `dw-ffi` (lib) generated 1 warning
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.00s
 build-core: uniffi-bindgen generate (library mode)
 warning: the gold linker is deprecated and has known bugs with Rust
   |
@@ -20,50 +15,36 @@ warning: the gold linker is deprecated and has known bugs with Rust
 
 build-core: native libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
 build-core: bundle variant linux-aarch64 ready: 501M
-== build-core took 5s; target volume 4.9G
+== build-core took 8s; target volume 5.4G
 warning: prohibited flag(s): -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread
-warning: you may be able to install gtk+-3.0 using your system-packager:
-    apt-get install libgtk-3-dev clang
 warning: prohibited flag(s): -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread
-warning: you may be able to install gtk+-3.0 using your system-packager:
-    apt-get install libgtk-3-dev clang
 [0/1] Planning build
 Building for debugging...
-[0/8] Write sources
-[2/8] Write swift-version-24593BA9C3E375BF.txt
-[4/15] Compiling DashUICross QRCodeView.swift
-[5/15] Compiling DashUICross Feedback.swift
-[6/15] Compiling DashUICross TransactionView.swift
-[7/15] Compiling DashUICross Containers.swift
-[8/15] Compiling DashUICross DashButton.swift
-[9/15] Compiling DashUICross Accessibility.swift
-[10/15] Compiling DashUICross Gallery.swift
-[11/15] Compiling DashUICross DashUICross.swift
-[12/15] Compiling DashUICross Fields.swift
-[13/15] Emitting module DashUICross
-[14/16] Copying libdashwallet_core.a
-[16/18] Emitting module DashWalletCore
-[17/18] Compiling DashWalletCore DashWalletCore.swift
-[19/34] Compiling DashKit EventBus.swift
-[20/34] Compiling DashKit Models.swift
-[21/35] Compiling DashKit SecretBytes.swift
-[22/35] Compiling DashKit SimpleEnums.swift
-[23/35] Compiling DashKit EngineClient.swift
-[24/35] Compiling DashKit Amount.swift
-[25/35] Compiling DashKit CoreFunctions.swift
-[26/35] Compiling DashKit DashKitError+M2.swift
-[27/35] Compiling DashKit EngineProtocol.swift
-[28/35] Compiling DashKit EngineM2Services.swift
-[29/35] Compiling DashKit EngineModels.swift
-[30/35] Emitting module DashKit
-[31/35] Compiling DashKit EngineM2Models.swift
-[32/35] Compiling DashKit Desktop.swift
-[33/35] Compiling DashKit EngineClient+M2.swift
-[34/35] Compiling DashKit DashKitError.swift
-[36/42] Emitting module AppServices
-[37/42] Compiling AppServices AppServices.swift
-[38/44] Compiling PlatformServicesDesktop PlatformServicesDesktop.swift
-[40/87] Compiling PlatformServicesDesktop DesktopOSServices.swift
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+[1/3] Copying libdashwallet_core.a
+[3/5] Compiling DashWalletCore DashWalletCore.swift
+[4/5] Emitting module DashWalletCore
+[6/30] Compiling DashKit Desktop.swift
+[7/31] Compiling DashKit SimpleEnums.swift
+[8/31] Emitting module DashKit
+[9/31] Compiling DashKit EventBus.swift
+[10/31] Compiling DashKit Models.swift
+[11/31] Compiling DashKit SecretBytes.swift
+[12/31] Compiling DashKit Amount.swift
+[13/31] Compiling DashKit CoreFunctions.swift
+[14/31] Compiling DashKit DashKitError+M2.swift
+[15/31] Compiling DashKit DashKitError.swift
+[16/31] Compiling DashKit EngineM2Models.swift
+[17/31] Compiling DashKit EngineClient+M2.swift
+[18/31] Compiling DashKit EngineClient.swift
+[19/31] Compiling DashKit EngineM2Services.swift
+[20/31] Compiling DashKit EngineModels.swift
+[21/31] Compiling DashKit EngineProtocol.swift
+[23/37] Compiling AppServices AppServices.swift
+[24/37] Emitting module AppServices
+[25/38] Compiling PlatformServicesDesktop PlatformServicesDesktop.swift
+[27/81] Compiling PlatformServicesDesktop DesktopDataDirectory.swift
+[28/81] Compiling PlatformServicesDesktop DesktopOSServices.swift
 /work/Sources/PlatformServicesDesktop/DesktopOSServices.swift:426:33: warning: result of call to 'fileExists(atPath:isDirectory:)' is unused [#no-usage]
 424 |             process.executableURL = URL(fileURLWithPath: "/usr/bin/xdg-open")
 425 |             var isDirectory: ObjCBool = false
@@ -71,169 +52,166 @@ Building for debugging...
     |                                 `- warning: result of call to 'fileExists(atPath:isDirectory:)' is unused [#no-usage]
 427 |             process.arguments = [isDirectory.boolValue ? url.path : url.deletingLastPathComponent().path]
 428 |         #else
-[41/87] Compiling PlatformServicesDesktop DesktopDataDirectory.swift
-[42/87] Emitting module PlatformServicesDesktop
-[43/88] Compiling WalletRuntime WalletState.swift
-[44/88] Compiling WalletRuntime LifecycleQueue.swift
-[45/88] Compiling WalletRuntime WalletHost.swift
-[47/91] Compiling WalletRuntime LaunchArgumentsParser.swift
-[48/91] Compiling WalletRuntime PlatformErrors.swift
-[49/91] Compiling WalletRuntime QuickUnlockService.swift
-[50/91] Compiling WalletRuntime Sync.swift
-[51/91] Compiling WalletRuntime Tools.swift
-[52/91] Compiling WalletRuntime Vault.swift
-[53/91] Compiling WalletRuntime QueryServices.swift
-[54/91] Compiling WalletRuntime ToolServices.swift
-[55/91] Compiling WalletRuntime TransactionSender.swift
-[56/91] Compiling WalletRuntime Broadcasters.swift
-[57/91] Compiling WalletRuntime Coalescer.swift
-[58/91] Compiling WalletRuntime RuntimeClock.swift
-[59/91] Compiling WalletRuntime M2WalletLifecycle.swift
-[60/91] Compiling WalletRuntime Receive.swift
-[61/91] Compiling WalletRuntime Send.swift
-[62/91] Compiling WalletRuntime ServiceError.swift
-[63/91] Compiling WalletRuntime TaskBag.swift
-[64/91] Compiling WalletRuntime Watchdog.swift
-[65/91] Compiling WalletRuntime WalletRuntime.swift
-[66/91] Compiling WalletRuntime M2Security.swift
-[67/91] Compiling WalletRuntime M2Shell.swift
-[68/91] Compiling WalletRuntime M2Tools.swift
-[69/91] Compiling WalletRuntime M2Transactions.swift
-[70/91] Compiling WalletRuntime CommonTypes.swift
-[71/91] Compiling WalletRuntime History.swift
-[72/91] Compiling WalletRuntime Lifecycle.swift
-[73/91] Compiling WalletRuntime M2Compat.swift
-[74/91] Compiling WalletRuntime Conversions.swift
-[75/91] Compiling WalletRuntime EnumConversions.swift
-[76/91] Compiling WalletRuntime WalletRuntimeServices.swift
-[77/91] Compiling WalletRuntime CoinsAndLabels.swift
-[78/91] Compiling WalletRuntime VaultService.swift
-[79/91] Compiling WalletRuntime AuthenticationGate.swift
-[80/91] Compiling WalletRuntime SPVCoordinator.swift
-[81/91] Compiling WalletRuntime SettingsStore.swift
-[82/91] Compiling WalletRuntime SyncProgressDamper.swift
-[83/91] Compiling WalletRuntime WalletStateModel.swift
-[84/91] Compiling WalletRuntime Shell.swift
-[85/91] Compiling WalletRuntime TransactionNotifications.swift
-[86/91] Compiling WalletRuntime EngineContext.swift
-[87/91] Emitting module WalletRuntime
-[88/91] Compiling WalletRuntime AutoLockController.swift
-[89/91] Compiling WalletRuntime DesktopRuntime.swift
-[90/91] Compiling WalletRuntime EngineToolAdapters.swift
-[92/151] Compiling WalletFeatures L10n+Transactions.swift
-[93/151] Compiling WalletFeatures L10n+TransactionsM2.swift
-[94/151] Compiling WalletFeatures L10n+Wallets.swift
-[95/151] Compiling WalletFeatures L10n.swift
-[96/151] Compiling WalletFeatures L10n+Settings.swift
-[97/151] Compiling WalletFeatures L10n+Shell.swift
-[98/151] Compiling WalletFeatures L10n+SignVerify.swift
-[99/151] Compiling WalletFeatures L10n+Sync.swift
-[100/151] Compiling WalletFeatures L10n+Tools.swift
-[101/151] Compiling WalletFeatures L10n+CoinControl.swift
-[102/151] Compiling WalletFeatures L10n+Home.swift
-[103/151] Compiling WalletFeatures L10n+HomeM2.swift
-[104/151] Compiling WalletFeatures L10n+Lock.swift
-[105/151] Compiling WalletFeatures L10n+M2Errors.swift
-[106/155] Compiling WalletFeatures L10n+Onboarding.swift
-[107/155] Compiling WalletFeatures L10n+Options.swift
-[108/155] Compiling WalletFeatures L10n+PSBT.swift
-[109/155] Compiling WalletFeatures L10n+Receive.swift
-[110/155] Compiling WalletFeatures L10n+Send.swift
-[111/155] Compiling WalletFeatures SyncRateTracker.swift
-[112/155] Compiling WalletFeatures AppRoute.swift
-[113/155] Compiling WalletFeatures BIP39EnglishWords.swift
-[114/155] Compiling WalletFeatures OnboardingSupport.swift
-[115/155] Compiling WalletFeatures DesktopPreferences.swift
-[116/155] Compiling WalletFeatures EngineCode.swift
-[117/155] Compiling WalletFeatures ErrorText.swift
-[118/155] Compiling WalletFeatures InputValidation.swift
-[119/155] Compiling WalletFeatures M2Services+Live.swift
-[120/155] Compiling WalletFeatures AboutViewModel.swift
-[121/155] Compiling WalletFeatures AddressBookViewModel.swift
-[122/155] Compiling WalletFeatures AmountFormatter.swift
-[123/155] Compiling WalletFeatures AppEnvironment+Runtime.swift
-[124/155] Compiling WalletFeatures AppEnvironment.swift
-[125/155] Compiling WalletFeatures M2Services.swift
-[126/155] Compiling WalletFeatures UIPreferences.swift
-[127/155] Compiling WalletFeatures HomeViewModel.swift
-[128/155] Compiling WalletFeatures ShortcutBarViewModel.swift
-[129/155] Compiling WalletFeatures L10n+AddressBook.swift
-[130/155] Compiling WalletFeatures ShellModel.swift
-[131/155] Compiling WalletFeatures StartupViewModels.swift
-[132/155] Compiling WalletFeatures SignVerifyViewModel.swift
-[133/155] Compiling WalletFeatures ConsoleViewModel.swift
-[134/155] Compiling WalletFeatures TransactionsViewModel.swift
-[135/155] Compiling WalletFeatures WalletFeatures.swift
-[136/155] Compiling WalletFeatures WalletManagementViewModel.swift
-[137/155] Compiling WalletFeatures WalletWiper.swift
-[138/155] Compiling WalletFeatures OnboardingViewModel.swift
-[139/155] Compiling WalletFeatures OptionsViewModel.swift
-[140/155] Compiling WalletFeatures PSBTViewModel.swift
-[141/155] Compiling WalletFeatures ReceiveViewModel.swift
-[142/155] Compiling WalletFeatures SecurityViewModel.swift
-[143/155] Compiling WalletFeatures CoinControlViewModel.swift
-[144/155] Compiling WalletFeatures SendViewModel.swift
-[145/155] Compiling WalletFeatures SettingsViewModel.swift
-[146/155] Compiling WalletFeatures InformationViewModel.swift
-[147/155] Compiling WalletFeatures RepairViewModel.swift
-[148/155] Compiling WalletFeatures TransactionFilters.swift
-[149/155] Compiling WalletFeatures TransactionsViewModel+M2.swift
-[150/155] Compiling WalletFeatures LockViewModel.swift
-[151/155] Compiling WalletFeatures MainViewModel.swift
-[152/155] Compiling WalletFeatures MenuBarCompanionViewModel.swift
-[153/155] Compiling WalletFeatures PeersViewModel.swift
-[154/155] Emitting module WalletFeatures
-[156/178] Compiling CrossUI TransactionDetailViews.swift
-[157/179] Compiling CrossUI TransactionsScreen.swift
-[158/179] Compiling CrossUI ToolsWindowScreen.swift
-[159/179] Compiling CrossUI Support.swift
-[160/179] Compiling CrossUI SyncScreens.swift
-[161/179] Compiling CrossUI ToolScreens.swift
-[162/179] Emitting module CrossUI
-[163/179] Compiling CrossUI AboutScreen.swift
-[164/179] Compiling CrossUI CoinSelectionScreen.swift
-[165/179] Compiling CrossUI CrossAppState.swift
-[166/179] Compiling CrossUI CrossUI.swift
-[167/179] Compiling CrossUI OverviewScreen.swift
-[168/179] Compiling CrossUI PSBTScreen.swift
-[169/179] Compiling CrossUI SendScreen.swift
-[170/179] Compiling CrossUI SettingsScreen.swift
-[171/179] Compiling CrossUI ReceiveScreen.swift
-[172/179] Compiling CrossUI SecurityScreen.swift
-[173/179] Compiling CrossUI OnboardingScreen.swift
-[174/179] Compiling CrossUI OptionsScreen.swift
-[175/179] Compiling CrossUI ShellMenus.swift
-[176/179] Compiling CrossUI StartupScreens.swift
-[177/179] Compiling CrossUI WalletRootView.swift
-[178/179] Compiling CrossUI WalletsScreen.swift
-[179/185] Write sources
-[180/185] Wrapping AST for CrossUI for debugging
-[182/195] Compiling WalletDemo DemoWorld.swift
-[183/195] Compiling WalletDemo DemoSupport.swift
-[184/195] Compiling WalletDemo DemoEnvironment.swift
-[185/195] Emitting module WalletDemo
-[186/195] Compiling WalletDemo DemoLedger.swift
-[187/195] Compiling WalletDemo DemoSending.swift
-[188/195] Compiling WalletDemo DemoM2Services.swift
-[189/195] Compiling WalletDemo DemoQueries.swift
-[190/195] Compiling WalletDemo DemoM2Ledger.swift
-[191/195] Compiling WalletDemo DemoServices.swift
-[193/200] Compiling DashWalletCross OSServices.swift
-[194/200] Compiling DashWalletCross LaunchOptions.swift
-[195/200] Compiling DashWalletCross LiveEnvironment.swift
-[196/200] Emitting module DashWalletCross
-[197/200] Compiling DashWalletCross DashWalletCrossApp.swift
-[198/200] Write Objects.LinkFileList
+[29/81] Emitting module PlatformServicesDesktop
+[31/81] Compiling WalletRuntime LaunchArgumentsParser.swift
+[32/81] Compiling WalletRuntime PlatformErrors.swift
+[33/81] Compiling WalletRuntime QuickUnlockService.swift
+[34/84] Compiling WalletRuntime QueryServices.swift
+[35/84] Compiling WalletRuntime ToolServices.swift
+[36/84] Compiling WalletRuntime TransactionSender.swift
+[37/84] Compiling WalletRuntime Sync.swift
+[38/84] Compiling WalletRuntime Tools.swift
+[39/84] Compiling WalletRuntime Vault.swift
+[40/84] Compiling WalletRuntime WalletState.swift
+[41/84] Compiling WalletRuntime LifecycleQueue.swift
+[42/84] Compiling WalletRuntime WalletHost.swift
+[43/84] Compiling WalletRuntime M2Security.swift
+[44/84] Compiling WalletRuntime M2Shell.swift
+[45/84] Compiling WalletRuntime M2Tools.swift
+[46/84] Compiling WalletRuntime M2Transactions.swift
+[47/84] Compiling WalletRuntime TaskBag.swift
+[48/84] Compiling WalletRuntime Watchdog.swift
+[49/84] Compiling WalletRuntime WalletRuntime.swift
+[50/84] Compiling WalletRuntime Broadcasters.swift
+[51/84] Compiling WalletRuntime Coalescer.swift
+[52/84] Compiling WalletRuntime RuntimeClock.swift
+[53/84] Compiling WalletRuntime M2WalletLifecycle.swift
+[54/84] Compiling WalletRuntime Receive.swift
+[55/84] Compiling WalletRuntime Send.swift
+[56/84] Compiling WalletRuntime ServiceError.swift
+[57/84] Compiling WalletRuntime CommonTypes.swift
+[58/84] Compiling WalletRuntime History.swift
+[59/84] Compiling WalletRuntime Lifecycle.swift
+[60/84] Compiling WalletRuntime M2Compat.swift
+[61/84] Compiling WalletRuntime Conversions.swift
+[62/84] Compiling WalletRuntime EnumConversions.swift
+[63/84] Compiling WalletRuntime WalletRuntimeServices.swift
+[64/84] Compiling WalletRuntime CoinsAndLabels.swift
+[65/84] Compiling WalletRuntime VaultService.swift
+[66/84] Compiling WalletRuntime AuthenticationGate.swift
+[67/84] Compiling WalletRuntime SPVCoordinator.swift
+[68/84] Compiling WalletRuntime SettingsStore.swift
+[69/84] Compiling WalletRuntime SyncProgressDamper.swift
+[70/84] Compiling WalletRuntime WalletStateModel.swift
+[71/84] Compiling WalletRuntime Shell.swift
+[72/84] Compiling WalletRuntime TransactionNotifications.swift
+[73/84] Compiling WalletRuntime EngineContext.swift
+[74/84] Emitting module WalletRuntime
+[75/84] Compiling WalletRuntime AutoLockController.swift
+[76/84] Compiling WalletRuntime DesktopRuntime.swift
+[77/84] Compiling WalletRuntime EngineToolAdapters.swift
+[79/143] Compiling WalletFeatures L10n+CoinControl.swift
+[80/143] Compiling WalletFeatures L10n+Home.swift
+[81/143] Compiling WalletFeatures L10n+HomeM2.swift
+[82/143] Compiling WalletFeatures L10n+Lock.swift
+[83/143] Compiling WalletFeatures L10n+M2Errors.swift
+[84/147] Compiling WalletFeatures L10n+Settings.swift
+[85/147] Compiling WalletFeatures L10n+Shell.swift
+[86/147] Compiling WalletFeatures L10n+SignVerify.swift
+[87/147] Compiling WalletFeatures L10n+Sync.swift
+[88/147] Compiling WalletFeatures L10n+Tools.swift
+[89/147] Compiling WalletFeatures L10n+Onboarding.swift
+[90/147] Compiling WalletFeatures L10n+Options.swift
+[91/147] Compiling WalletFeatures L10n+PSBT.swift
+[92/147] Compiling WalletFeatures L10n+Receive.swift
+[93/147] Compiling WalletFeatures L10n+Send.swift
+[94/147] Compiling WalletFeatures L10n+Transactions.swift
+[95/147] Compiling WalletFeatures L10n+TransactionsM2.swift
+[96/147] Compiling WalletFeatures L10n+Wallets.swift
+[97/147] Compiling WalletFeatures L10n.swift
+[98/147] Compiling WalletFeatures SyncRateTracker.swift
+[99/147] Compiling WalletFeatures AppRoute.swift
+[100/147] Compiling WalletFeatures BIP39EnglishWords.swift
+[101/147] Compiling WalletFeatures OnboardingSupport.swift
+[102/147] Compiling WalletFeatures DesktopPreferences.swift
+[103/147] Compiling WalletFeatures EngineCode.swift
+[104/147] Compiling WalletFeatures ErrorText.swift
+[105/147] Compiling WalletFeatures InputValidation.swift
+[106/147] Compiling WalletFeatures M2Services+Live.swift
+[107/147] Compiling WalletFeatures AboutViewModel.swift
+[108/147] Compiling WalletFeatures AddressBookViewModel.swift
+[109/147] Compiling WalletFeatures AmountFormatter.swift
+[110/147] Compiling WalletFeatures AppEnvironment+Runtime.swift
+[111/147] Compiling WalletFeatures AppEnvironment.swift
+[112/147] Compiling WalletFeatures M2Services.swift
+[113/147] Compiling WalletFeatures UIPreferences.swift
+[114/147] Compiling WalletFeatures HomeViewModel.swift
+[115/147] Compiling WalletFeatures ShortcutBarViewModel.swift
+[116/147] Compiling WalletFeatures L10n+AddressBook.swift
+[117/147] Compiling WalletFeatures InformationViewModel.swift
+[118/147] Compiling WalletFeatures RepairViewModel.swift
+[119/147] Compiling WalletFeatures TransactionFilters.swift
+[120/147] Compiling WalletFeatures TransactionsViewModel+M2.swift
+[121/147] Compiling WalletFeatures TransactionsViewModel.swift
+[122/147] Compiling WalletFeatures WalletFeatures.swift
+[123/147] Compiling WalletFeatures WalletManagementViewModel.swift
+[124/147] Compiling WalletFeatures WalletWiper.swift
+[125/147] Compiling WalletFeatures ShellModel.swift
+[126/147] Compiling WalletFeatures StartupViewModels.swift
+[127/147] Compiling WalletFeatures SignVerifyViewModel.swift
+[128/147] Compiling WalletFeatures ConsoleViewModel.swift
+[129/147] Compiling WalletFeatures OnboardingViewModel.swift
+[130/147] Compiling WalletFeatures OptionsViewModel.swift
+[131/147] Compiling WalletFeatures PSBTViewModel.swift
+[132/147] Compiling WalletFeatures ReceiveViewModel.swift
+[133/147] Compiling WalletFeatures LockViewModel.swift
+[134/147] Compiling WalletFeatures MainViewModel.swift
+[135/147] Compiling WalletFeatures MenuBarCompanionViewModel.swift
+[136/147] Compiling WalletFeatures PeersViewModel.swift
+[137/147] Compiling WalletFeatures SecurityViewModel.swift
+[138/147] Compiling WalletFeatures CoinControlViewModel.swift
+[139/147] Compiling WalletFeatures SendViewModel.swift
+[140/147] Compiling WalletFeatures SettingsViewModel.swift
+[141/147] Emitting module WalletFeatures
+[143/179] Compiling WalletDemo DemoM2Ledger.swift
+[144/179] Compiling WalletDemo DemoWorld.swift
+[145/179] Compiling WalletDemo DemoSupport.swift
+[146/179] Compiling WalletDemo DemoEnvironment.swift
+[147/179] Emitting module WalletDemo
+[148/179] Compiling CrossUI Support.swift
+[149/179] Compiling CrossUI SyncScreens.swift
+[150/180] Emitting module CrossUI
+[151/180] Compiling WalletDemo DemoLedger.swift
+[152/180] Compiling WalletDemo DemoM2Services.swift
+[153/180] Compiling CrossUI ShellMenus.swift
+[154/180] Compiling CrossUI StartupScreens.swift
+[155/180] Compiling CrossUI OverviewScreen.swift
+[156/180] Compiling CrossUI PSBTScreen.swift
+[157/180] Compiling CrossUI ReceiveScreen.swift
+[158/180] Compiling CrossUI SecurityScreen.swift
+[159/180] Compiling CrossUI TransactionDetailViews.swift
+[160/180] Compiling CrossUI ToolsWindowScreen.swift
+[161/180] Compiling CrossUI ToolScreens.swift
+[162/180] Compiling CrossUI WalletRootView.swift
+[163/180] Compiling CrossUI TransactionsScreen.swift
+[164/180] Compiling CrossUI SendScreen.swift
+[165/180] Compiling CrossUI SettingsScreen.swift
+[166/180] Compiling CrossUI WalletsScreen.swift
+[167/180] Compiling CrossUI CrossAppState.swift
+[168/180] Compiling CrossUI CrossUI.swift
+[169/180] Compiling CrossUI OnboardingScreen.swift
+[170/180] Compiling CrossUI OptionsScreen.swift
+[171/180] Compiling CrossUI AboutScreen.swift
+[172/180] Compiling CrossUI CoinSelectionScreen.swift
+[174/180] Compiling WalletDemo DemoQueries.swift
+[175/180] Compiling WalletDemo DemoServices.swift
+[176/180] Compiling WalletDemo DemoSending.swift
+[178/185] Compiling DashWalletCross LiveEnvironment.swift
+[179/185] Compiling DashWalletCross OSServices.swift
+[180/185] Compiling DashWalletCross LaunchOptions.swift
+[181/185] Compiling DashWalletCross DashWalletCrossApp.swift
+[182/185] Emitting module DashWalletCross
+[183/185] Write Objects.LinkFileList
 clang: warning: argument unused during compilation: '-F/swiftpm/.build/aarch64-unknown-linux-gnu/debug' [-Wunused-command-line-argument]
-[199/200] Linking dash-wallet
-Build of product 'dash-wallet' complete! (23.69s)
-== swift build dash-wallet took 25s
+[184/185] Linking dash-wallet
+Build of product 'dash-wallet' complete! (24.23s)
+== swift build dash-wallet took 27s
 == binary: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked
-dbus-daemon[1618]: [session uid=0 pid=1618] Activating service name='org.a11y.Bus' requested by ':1.0' (uid=0 pid=1629 comm="dbus-send --session --print-reply --dest=org.a11y.")
-dbus-daemon[1618]: [session uid=0 pid=1618] Successfully activated service 'org.a11y.Bus'
-dbus-run-session: ignoring unknown child process 1633
-== demo: launched dash-wallet --demo (pid 1646)
-[PASS] hard: app pid 1646 on the AT-SPI bus
+dbus-daemon[1351]: [session uid=0 pid=1351] Activating service name='org.a11y.Bus' requested by ':1.0' (uid=0 pid=1362 comm="dbus-send --session --print-reply --dest=org.a11y.")
+dbus-daemon[1351]: [session uid=0 pid=1351] Successfully activated service 'org.a11y.Bus'
+dbus-run-session: ignoring unknown child process 1365
+== demo: launched dash-wallet --demo (pid 1382)
+[PASS] hard: app pid 1382 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: 1-overview: marker text 'Balances' is exposed
 == 1-overview: dumped 635 nodes
@@ -241,10 +219,10 @@ dbus-run-session: ignoring unknown child process 1633
 [PASS] soft: 1-overview: control naming -- {"list item": {"total": 9, "named": 9, "examples_unnamed": []}, "push button": {"total": 10, "named": 10, "examples_unnamed": []}, "check box": {"total": 1, "named": 1, "examples_unnamed": []}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
 [PASS] hard: 1-overview: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
 [PASS] hard: 1-overview: every entry, switch and picker has an accessible name -- []
-[PASS] hard: 1-overview: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 07:42', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 07:12']
+[PASS] hard: 1-overview: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 16:23', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 15:53']
 [PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
 [PASS] hard: 2-send: marker text 'Pay To:' is exposed
-== 2-send: dumped 615 nodes
+== 2-send: dumped 611 nodes
 == screenshot /tmp/m1-regression/2-send.png (window 0x400004): ok
 [PASS] soft: 2-send: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 16, "named": 16, "examples_unnamed": []}, "text": {"total": 5, "named": 5, "examples_unnamed": []}, "check box": {"total": 1, "named": 1, "examples_unnamed": []}, "combo box": {"total": 2, "named": 2, "examples_unnamed": []}, "toggle button": {"total": 2, "named": 2, "examples_unnamed": []}}
 [PASS] hard: 2-send: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
@@ -257,53 +235,53 @@ dbus-run-session: ignoring unknown child process 1633
 [PASS] hard: send: text named 'Pay To'
 [PASS] hard: send: text named 'Amount'
 [PASS] hard: send: check box named 'Subtract fee from amount'
-[FAIL] hard: send: combo box named 'Confirmation time target'
+[PASS] hard: send: combo box named 'Confirmation time target'
 [PASS] hard: send: address entry exposes placeholder 'Pay to: Dash address'
-== 22 checks, 1 hard failures
-== demo: alive at end (rss 345684 KB)
-== transactions: launched dash-wallet --demo --page transactions (pid 1717)
-[PASS] hard: app pid 1717 on the AT-SPI bus
+== 22 checks, 0 hard failures
+== demo: alive at end (rss 344252 KB)
+== transactions: launched dash-wallet --demo --page transactions (pid 1453)
+[PASS] hard: app pid 1453 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: 3-transactions: marker text 'Export…' is exposed
 == 3-transactions: dumped 1291 nodes
 == screenshot /tmp/m1-regression/3-transactions.png (window 0x400004): ok
 [PASS] soft: 3-transactions: control naming -- {"list item": {"total": 29, "named": 29, "examples_unnamed": []}, "push button": {"total": 14, "named": 14, "examples_unnamed": []}, "combo box": {"total": 3, "named": 3, "examples_unnamed": []}, "toggle button": {"total": 3, "named": 3, "examples_unnamed": []}, "text": {"total": 2, "named": 2, "examples_unnamed": []}, "check box": {"total": 1, "named": 1, "examples_unnamed": []}}
 == 4 checks, 0 hard failures
-== transactions: alive at end (rss 306744 KB)
-== receive: launched dash-wallet --demo --page receive (pid 1771)
-[PASS] hard: app pid 1771 on the AT-SPI bus
+== transactions: alive at end (rss 308264 KB)
+== receive: launched dash-wallet --demo --page receive (pid 1509)
+[PASS] hard: app pid 1509 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: 4-receive: marker text 'Request payment' is exposed
-== 4-receive: dumped 586 nodes
+== 4-receive: dumped 584 nodes
 == screenshot /tmp/m1-regression/4-receive.png (window 0x400004): ok
 [PASS] soft: 4-receive: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 15, "named": 15, "examples_unnamed": []}, "text": {"total": 3, "named": 3, "examples_unnamed": []}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
 == 4 checks, 0 hard failures
-== receive: alive at end (rss 304884 KB)
-== onboarding: launched dash-wallet --demo onboarding (pid 1824)
-[PASS] hard: app pid 1824 on the AT-SPI bus
-[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet']
+== receive: alive at end (rss 306308 KB)
+== onboarding: launched dash-wallet --demo onboarding (pid 1566)
+[PASS] hard: app pid 1566 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
 [PASS] hard: 5-onboarding: marker text 'Create a new wallet' is exposed
-== 5-onboarding: dumped 233 nodes
+== 5-onboarding: dumped 236 nodes
 == screenshot /tmp/m1-regression/5-onboarding.png (window 0x400004): ok
 [PASS] soft: 5-onboarding: control naming -- {"combo box": {"total": 3, "named": 3, "examples_unnamed": []}, "toggle button": {"total": 3, "named": 3, "examples_unnamed": []}, "push button": {"total": 3, "named": 3, "examples_unnamed": []}}
 == 4 checks, 0 hard failures
-== onboarding: alive at end (rss 284956 KB)
-== onboarding-flow: launched dash-wallet --demo onboarding (pid 1877)
-[PASS] hard: app pid 1877 on the AT-SPI bus
-[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet']
+== onboarding: alive at end (rss 285544 KB)
+== onboarding-flow: launched dash-wallet --demo onboarding (pid 1622)
+[PASS] hard: app pid 1622 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
 [PASS] hard: onboarding: welcome page
 [PASS] hard: press 'Create a new wallet' through AT-SPI Action
 [PASS] hard: onboarding: recovery phrase page
-== 6-onboarding-phrase: dumped 275 nodes
+== 6-onboarding-phrase: dumped 276 nodes
 == screenshot /tmp/m1-regression/6-onboarding-phrase.png (window 0x400004): ok
 [PASS] hard: onboarding: the phrase page exposes 12 numbered words -- 12
 [PASS] hard: press 'I wrote it down' through AT-SPI Action
-[PASS] hard: press 'galaxy' through AT-SPI Action
-[PASS] hard: press 'rocket' through AT-SPI Action
+[PASS] hard: press 'harbor' through AT-SPI Action
 [PASS] hard: press 'tiny' through AT-SPI Action
-[PASS] hard: press 'ribbon' through AT-SPI Action
+[PASS] hard: press 'crane' through AT-SPI Action
+[PASS] hard: press 'above' through AT-SPI Action
 [PASS] hard: onboarding: phrase verified, passphrase page shown
-== 6-onboarding-passphrase: dumped 231 nodes
+== 6-onboarding-passphrase: dumped 230 nodes
 == screenshot /tmp/m1-regression/6-onboarding-passphrase.png (window 0x400004): ok
 [PASS] hard: type into the field named 'New passphrase' through AT-SPI EditableText
 [PASS] hard: type into the field named 'Repeat new passphrase' through AT-SPI EditableText
@@ -312,55 +290,55 @@ dbus-run-session: ignoring unknown child process 1633
 == 6-onboarding-done: dumped 653 nodes
 == screenshot /tmp/m1-regression/6-onboarding-done.png (window 0x400004): ok
 == 16 checks, 0 hard failures
-== onboarding-flow: alive at end (rss 308244 KB)
-== send-flow: launched dash-wallet --demo --page send (pid 1951)
-[PASS] hard: app pid 1951 on the AT-SPI bus
+== onboarding-flow: alive at end (rss 309120 KB)
+== send-flow: launched dash-wallet --demo --page send (pid 1699)
+[PASS] hard: app pid 1699 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: send: page shown
 [PASS] hard: type into the field named 'Pay To' through AT-SPI EditableText
 [PASS] hard: type into the field named 'Amount' through AT-SPI EditableText
-== 7-send-filled: dumped 615 nodes
+== 7-send-filled: dumped 611 nodes
 == screenshot /tmp/m1-regression/7-send-filled.png (window 0x400004): ok
 [PASS] hard: press 'Send' through AT-SPI Action
 [PASS] hard: send: review (confirm) panel shown
-== 7-send-review: dumped 702 nodes
+== 7-send-review: dumped 698 nodes
 == screenshot /tmp/m1-regression/7-send-review.png (window 0x400004): ok
 [PASS] hard: send: review lists the recipient address
 [PASS] hard: press 'Send' through AT-SPI Action
-[PASS] hard: send: the sent payment is listed on the Transactions page -- Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 07:49
-== 7-send-done: dumped 1569 nodes
+[PASS] hard: send: the sent payment is listed on the Transactions page -- Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 16:32
+== 7-send-done: dumped 1568 nodes
 == screenshot /tmp/m1-regression/7-send-done.png (window 0x400004): ok
 == 10 checks, 0 hard failures
-== send-flow: alive at end (rss 319912 KB)
-== tools-flow: launched dash-wallet --demo (pid 2029)
-[PASS] hard: app pid 2029 on the AT-SPI bus
+== send-flow: alive at end (rss 331816 KB)
+== tools-flow: launched dash-wallet --demo (pid 1781)
+[PASS] hard: app pid 1781 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: tools: overview shown
-[FAIL] hard: tools: status-row unit selector is a combo box named 'Unit to show amounts in'
+[PASS] hard: tools: status-row unit selector is a combo box named 'Unit to show amounts in'
 [PASS] hard: tools: status-row peers button -- 8 peers
 [PASS] hard: press '8 peers' through AT-SPI Action
 [PASS] hard: tools: peers page with 'Change Peers'
 [PASS] hard: tools: peer rows are named after their address -- 203.0.113.11:19999, User Agent: /Dash Core:23.1.7/  Height: 1234567  Ping: 27 ms  Outbound
-== 9-tools-peers: dumped 664 nodes
+== 9-tools-peers: dumped 665 nodes
 == screenshot /tmp/m1-regression/9-tools-peers.png (window 0x400004): ok
 [PASS] hard: press 'Close' through AT-SPI Action
 [PASS] hard: press 'Address Book' through AT-SPI Action
 [PASS] hard: tools: address book lists entries with 'Show QR'
 [PASS] hard: press 'Show QR' through AT-SPI Action
 [PASS] hard: tools: the entry's QR code and dash: URI are shown -- dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice
-[FAIL] hard: tools: the address-list picker is named 'Address list' -- ['Sending addresses', 'tDASH']
-== 9-tools-qr: dumped 869 nodes
+[PASS] hard: tools: the address-list picker is named 'Address list' -- ['Address list', 'Unit to show amounts in']
+== 9-tools-qr: dumped 868 nodes
 == screenshot /tmp/m1-regression/9-tools-qr.png (window 0x400004): ok
-== 14 checks, 2 hard failures
-== tools-flow: alive at end (rss 311100 KB)
-== overlay-flow: launched dash-wallet --demo offline (pid 2096)
-[PASS] hard: app pid 2096 on the AT-SPI bus
+== 14 checks, 0 hard failures
+== tools-flow: alive at end (rss 313988 KB)
+== overlay-flow: launched dash-wallet --demo offline (pid 1847)
+[PASS] hard: app pid 1847 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: overlay: shown by itself while the tip is old
 [PASS] hard: overlay: row 'Number of blocks left'
 [PASS] hard: overlay: row 'Last block time'
 [PASS] hard: overlay: row 'Progress increase per hour'
-== 10-overlay-shown: dumped 263 nodes
+== 10-overlay-shown: dumped 264 nodes
 == screenshot /tmp/m1-regression/10-overlay-shown.png (window 0x400004): ok
 [PASS] hard: press 'Hide' through AT-SPI Action
 [PASS] hard: overlay: Hide returns to the wallet
@@ -368,27 +346,27 @@ dbus-run-session: ignoring unknown child process 1633
 == 10-overlay-hidden: dumped 718 nodes
 == screenshot /tmp/m1-regression/10-overlay-hidden.png (window 0x400004): ok
 == 9 checks, 0 hard failures
-== overlay-flow: alive at end (rss 302872 KB)
-== live: launched dash-wallet (pid 2157), XDG_DATA_HOME=/tmp/xdg-live
-[PASS] hard: app pid 2157 on the AT-SPI bus
+== overlay-flow: alive at end (rss 303176 KB)
+== live: launched dash-wallet (pid 1907), XDG_DATA_HOME=/tmp/xdg-live
+[PASS] hard: app pid 1907 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet']
 [PASS] hard: onboarding: welcome page
 [PASS] hard: press 'Create a new wallet' through AT-SPI Action
 [PASS] hard: onboarding: recovery phrase page
-== 8-live-phrase: dumped 290 nodes
+== 8-live-phrase: dumped 291 nodes
 [PASS] hard: onboarding: the phrase page exposes 12 numbered words -- 12
 [PASS] hard: press 'I wrote it down' through AT-SPI Action
-[PASS] hard: press 'word #1' through AT-SPI Action
-[PASS] hard: press 'word #3' through AT-SPI Action
+[PASS] hard: press 'word #2' through AT-SPI Action
+[PASS] hard: press 'word #5' through AT-SPI Action
+[PASS] hard: press 'word #7' through AT-SPI Action
 [PASS] hard: press 'word #9' through AT-SPI Action
-[PASS] hard: press 'word #12' through AT-SPI Action
 [PASS] hard: onboarding: phrase verified, passphrase page shown
-== 8-live-passphrase: dumped 246 nodes
+== 8-live-passphrase: dumped 245 nodes
 == screenshot /tmp/m1-regression/8-live-passphrase.png (window 0x400004): ok
 [PASS] hard: type into the field named 'New passphrase' through AT-SPI EditableText
 [PASS] hard: type into the field named 'Repeat new passphrase' through AT-SPI EditableText
 [PASS] hard: press 'Encrypt wallet' through AT-SPI Action
-== 8-live-overlay: dumped 252 nodes
+== 8-live-overlay: dumped 253 nodes
 == screenshot /tmp/m1-regression/8-live-overlay.png (window 0x400004): ok
 [PASS] hard: press 'Hide' through AT-SPI Action
 [PASS] hard: onboarding: the new wallet's Overview is shown
@@ -404,8 +382,8 @@ dbus-run-session: ignoring unknown child process 1633
 close_window: sent WM_DELETE_WINDOW to 0x400004 ('Dash Wallet')
 == live: exit after window close: 0
 == live: PASS engine shut down before exit
-== m2-menus: launched dash-wallet --demo (pid 2263)
-[PASS] hard: app pid 2263 on the AT-SPI bus
+== m2-menus: launched dash-wallet --demo (pid 2015)
+[PASS] hard: app pid 2015 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: menus: overview shown
 [PASS] hard: menus: window title is 'Dash Wallet - … - [testnet]' (QT-011) -- ['Dash Wallet - Demo wallet - [testnet]']
@@ -417,23 +395,23 @@ close_window: sent WM_DELETE_WINDOW to 0x400004 ('Dash Wallet')
 == m2-1-menus-overview: dumped 635 nodes
 == screenshot /out/m2-1-menus-overview.png (window 0x400004): ok
 == 9 checks, 0 hard failures
-== m2-menus: alive at end (rss 297076 KB)
-== m2-options: launched dash-wallet --demo --page options (pid 2317)
-[PASS] hard: app pid 2317 on the AT-SPI bus
-[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet']
+== m2-menus: alive at end (rss 296760 KB)
+== m2-options: launched dash-wallet --demo --page options (pid 2072)
+[PASS] hard: app pid 2072 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: options: page shown
-== m2-2-options-main: dumped 616 nodes
+== m2-2-options-main: dumped 614 nodes
 == screenshot /out/m2-2-options-main.png (window 0x400004): ok
 [PASS] hard: press 'Wallet' through AT-SPI Action
 [PASS] hard: options: Wallet tab shows the coin control switch
-== m2-2-options-wallet: dumped 650 nodes
+== m2-2-options-wallet: dumped 647 nodes
 == screenshot /out/m2-2-options-wallet.png (window 0x400004): ok
 [PASS] hard: toggle 'Enable coin control features' through AT-SPI Action
 [PASS] hard: press 'OK' through AT-SPI Action
 [PASS] hard: options: OK saves ('Options saved.')
 [PASS] hard: press 'Network' through AT-SPI Action
 [PASS] hard: options: Network tab says proxy needs an engine update
-== m2-2-options-network: dumped 667 nodes
+== m2-2-options-network: dumped 662 nodes
 == screenshot /out/m2-2-options-network.png (window 0x400004): ok
 [PASS] hard: press 'Display' through AT-SPI Action
 [PASS] hard: options: Display tab has the third-party URL field
@@ -444,17 +422,21 @@ close_window: sent WM_DELETE_WINDOW to 0x400004 ('Dash Wallet')
 [PASS] hard: press 'Inputs…' through AT-SPI Action
 [PASS] hard: coin selection: page shown
 [PASS] hard: coin selection: 'automatically selected' before a pick
-== m2-2-options-coin-selection: dumped 1252 nodes
+== m2-2-options-coin-selection: dumped 1221 nodes
 == screenshot /out/m2-2-options-coin-selection.png (window 0x400004): ok
 [PASS] hard: coin selection: coins are switches named 'Select <amount> at <address>' -- Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P
 [PASS] hard: toggle 'Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P' through AT-SPI Action
 [PASS] hard: coin selection: the summary shows Quantity after a pick
-== m2-2-options-coin-selected: dumped 1323 nodes
+== m2-2-options-coin-selected: dumped 1293 nodes
 == screenshot /out/m2-2-options-coin-selected.png (window 0x400004): ok
-== 20 checks, 0 hard failures
-== m2-options: alive at end (rss 323624 KB)
-== m2-tools: launched dash-wallet --demo --page tools-console (pid 2399)
-[PASS] hard: app pid 2399 on the AT-SPI bus
+[PASS] hard: press 'OK' through AT-SPI Action
+[PASS] hard: coin selection: OK returns to Send, whose panel shows the pick
+== m2-2-options-send-with-selection: dumped 652 nodes
+== screenshot /out/m2-2-options-send-with-selection.png (window 0x400004): ok
+== 22 checks, 0 hard failures
+== m2-options: alive at end (rss 324912 KB)
+== m2-tools: launched dash-wallet --demo --page tools-console (pid 2163)
+[PASS] hard: app pid 2163 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: console: welcome text
 [PASS] hard: console: anti-scam warning
@@ -466,20 +448,20 @@ close_window: sent WM_DELETE_WINDOW to 0x400004 ('Dash Wallet')
 [PASS] hard: press 'Information' through AT-SPI Action
 [PASS] hard: information: client version row
 [PASS] hard: information: full-node rows say so
-== m2-3-tools-information: dumped 732 nodes
+== m2-3-tools-information: dumped 733 nodes
 == screenshot /out/m2-3-tools-information.png (window 0x400004): ok
 [PASS] hard: press 'Peers' through AT-SPI Action
 [PASS] hard: peers tab: 'Change Peers'
-== m2-3-tools-peers: dumped 664 nodes
+== m2-3-tools-peers: dumped 665 nodes
 == screenshot /out/m2-3-tools-peers.png (window 0x400004): ok
 [PASS] hard: press 'Repair' through AT-SPI Action
 [PASS] hard: repair tab: rescan and reset buttons
 == m2-3-tools-repair: dumped 623 nodes
 == screenshot /out/m2-3-tools-repair.png (window 0x400004): ok
 == 14 checks, 0 hard failures
-== m2-tools: alive at end (rss 303216 KB)
-== m2-psbt: launched dash-wallet --demo --page psbt (pid 2468)
-[PASS] hard: app pid 2468 on the AT-SPI bus
+== m2-tools: alive at end (rss 227220 KB)
+== m2-psbt: launched dash-wallet --demo --page psbt (pid 2239)
+[PASS] hard: app pid 2239 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: psbt: page shown
 == m2-4-psbt-empty: dumped 473 nodes
@@ -492,47 +474,47 @@ close_window: sent WM_DELETE_WINDOW to 0x400004 ('Dash Wallet')
 == m2-4-psbt-load: dumped 485 nodes
 == screenshot /out/m2-4-psbt-load.png (window 0x400004): ok
 == 8 checks, 0 hard failures
-== m2-psbt: alive at end (rss 296836 KB)
-== m2-pages: launched dash-wallet --demo (pid 2527)
-[PASS] hard: app pid 2527 on the AT-SPI bus
-[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet']
+== m2-psbt: alive at end (rss 300312 KB)
+== m2-pages: launched dash-wallet --demo (pid 2300)
+[PASS] hard: app pid 2300 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
 [PASS] hard: pages: overview shown
 [PASS] hard: press 'Wallets' through AT-SPI Action
 [PASS] hard: wallets: import, restore and watch-only controls
-== m2-5-pages-wallets: dumped 812 nodes
+== m2-5-pages-wallets: dumped 809 nodes
 == screenshot /out/m2-5-pages-wallets.png (window 0x400004): ok
 [PASS] hard: press 'Security' through AT-SPI Action
-[FAIL] hard: security: auto-lock picker
+[PASS] hard: security: auto-lock picker
 [PASS] hard: security: says there is no biometric unlock on this system
-== m2-5-pages-security: dumped 563 nodes
+== m2-5-pages-security: dumped 564 nodes
 == screenshot /out/m2-5-pages-security.png (window 0x400004): ok
 [PASS] hard: press 'About' through AT-SPI Action
 [PASS] hard: about: Export Logs
-== m2-5-pages-about: dumped 533 nodes
+== m2-5-pages-about: dumped 534 nodes
 == screenshot /out/m2-5-pages-about.png (window 0x400004): ok
 [PASS] hard: press 'Command-line options' through AT-SPI Action
 [PASS] hard: command-line options: dash-qt options listed
-== m2-5-pages-command-line: dumped 543 nodes
+== m2-5-pages-command-line: dumped 544 nodes
 == screenshot /out/m2-5-pages-command-line.png (window 0x400004): ok
 [PASS] hard: select sidebar 'Transactions' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
 [PASS] hard: transactions: rows listed
 [PASS] hard: transactions: select the first row through AT-SPI Selection
 [PASS] hard: transactions: details show dash-qt's Abandon / Resend actions
 [PASS] hard: transactions: details list 'Net amount'
-== m2-5-pages-transaction-details: dumped 1516 nodes
+== m2-5-pages-transaction-details: dumped 1515 nodes
 == screenshot /out/m2-5-pages-transaction-details.png (window 0x400004): ok
-== 17 checks, 1 hard failures
-== m2-pages: alive at end (rss 323968 KB)
-== live-chooser: launched dash-wallet -choosedatadir (pid 2611)
-[PASS] hard: app pid 2611 on the AT-SPI bus
+== 17 checks, 0 hard failures
+== m2-pages: alive at end (rss 328972 KB)
+== live-chooser: launched dash-wallet -choosedatadir (pid 2389)
+[PASS] hard: app pid 2389 on the AT-SPI bus
 [PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet']
 [PASS] hard: chooser: welcome page
 [PASS] hard: chooser: status line for the default directory
-== m2-6-live-chooser: dumped 125 nodes
+== m2-6-live-chooser: dumped 126 nodes
 == screenshot /out/m2-6-live-chooser.png (window 0x400004): ok
 [PASS] hard: press 'OK' through AT-SPI Action
 [PASS] hard: chooser: OK opens the wallet (onboarding on the new root)
-== m2-6-live-opened: dumped 246 nodes
+== m2-6-live-opened: dumped 249 nodes
 == screenshot /out/m2-6-live-opened.png (window 0x400004): ok
 == 6 checks, 0 hard failures
 == live-chooser: PASS regtest data under the chosen (default) directory

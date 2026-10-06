@@ -1,7 +1,7 @@
 [
  {
   "kind": "hard",
-  "name": "app pid 1646 on the AT-SPI bus",
+  "name": "app pid 1382 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -39,7 +39,7 @@
   "kind": "hard",
   "name": "1-overview: every list row has an accessible name",
   "ok": true,
-  "detail": "['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 07:42', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 07:12']"
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions', 'ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 2026-10-06 16:23', 'yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 2026-10-06 15:53']"
  },
  {
   "kind": "hard",
@@ -122,7 +122,7 @@
  {
   "kind": "hard",
   "name": "send: combo box named 'Confirmation time target'",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -133,7 +133,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 1717 on the AT-SPI bus",
+  "name": "app pid 1453 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -157,7 +157,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 1771 on the AT-SPI bus",
+  "name": "app pid 1509 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -181,7 +181,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 1824 on the AT-SPI bus",
+  "name": "app pid 1566 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -189,7 +189,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet']"
+  "detail": "['Dash Wallet - [testnet]']"
  },
  {
   "kind": "hard",
@@ -205,7 +205,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 1877 on the AT-SPI bus",
+  "name": "app pid 1622 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -213,7 +213,7 @@
   "kind": "hard",
   "name": "window is a frame named \"Dash Wallet\u2026\"",
   "ok": true,
-  "detail": "['Dash Wallet']"
+  "detail": "['Dash Wallet - [testnet]']"
  },
  {
   "kind": "hard",
@@ -247,13 +247,7 @@
  },
  {
   "kind": "hard",
-  "name": "press 'galaxy' through AT-SPI Action",
-  "ok": true,
-  "detail": ""
- },
- {
-  "kind": "hard",
-  "name": "press 'rocket' through AT-SPI Action",
+  "name": "press 'harbor' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
@@ -265,7 +259,13 @@
  },
  {
   "kind": "hard",
-  "name": "press 'ribbon' through AT-SPI Action",
+  "name": "press 'crane' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'above' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
@@ -301,7 +301,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 1951 on the AT-SPI bus",
+  "name": "app pid 1699 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -357,11 +357,11 @@
   "kind": "hard",
   "name": "send: the sent payment is listed on the Transactions page",
   "ok": true,
-  "detail": "Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 07:49"
+  "detail": "Sent to, yPgfYhP6PwdZd8xn1TKDps27nL6kLpvh98, -0.25000226 tDASH, 2026-10-06 16:32"
  },
  {
   "kind": "hard",
-  "name": "app pid 2029 on the AT-SPI bus",
+  "name": "app pid 1781 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -380,7 +380,7 @@
  {
   "kind": "hard",
   "name": "tools: status-row unit selector is a combo box named 'Unit to show amounts in'",
-  "ok": false,
+  "ok": true,
   "detail": ""
  },
  {
@@ -440,12 +440,12 @@
  {
   "kind": "hard",
   "name": "tools: the address-list picker is named 'Address list'",
-  "ok": false,
-  "detail": "['Sending addresses', 'tDASH']"
+  "ok": true,
+  "detail": "['Address list', 'Unit to show amounts in']"
  },
  {
   "kind": "hard",
-  "name": "app pid 2096 on the AT-SPI bus",
+  "name": "app pid 1847 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -499,7 +499,7 @@
  },
  {
   "kind": "hard",
-  "name": "app pid 2157 on the AT-SPI bus",
+  "name": "app pid 1907 on the AT-SPI bus",
   "ok": true,
   "detail": ""
  },
@@ -541,25 +541,25 @@
  },
  {
   "kind": "hard",
-  "name": "press 'word #1' through AT-SPI Action",
+  "name": "press 'word #2' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
-  "name": "press 'word #3' through AT-SPI Action",
+  "name": "press 'word #5' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'word #7' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },
  {
   "kind": "hard",
   "name": "press 'word #9' through AT-SPI Action",
-  "ok": true,
-  "detail": ""
- },
- {
-  "kind": "hard",
-  "name": "press 'word #12' through AT-SPI Action",
   "ok": true,
   "detail": ""
  },

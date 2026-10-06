@@ -67,20 +67,53 @@ screenshots were not kept (they stay in the container).
 - Coin Selection tree mode.
 - x86_64, Wayland, Orca, Windows.
 
-## Review follow-up run (2026-10-06, after the M2 review fixes): not run
+## Stabilize-main run (2026-10-06): all hard checks pass
 
-Sources: `main` at d208b2d (M2 review fixes: coin control as Send's one source of truth 1940691, discreet
-notifications f8890b5, the Coin Selection summary grid d208b2d).
+Sources: `main` after the M2 fix-review Lows, the vendored SwiftCrossUI 0.10.0 with patch P1
+(`Vendor/swift-cross-ui`, `Vendor/PATCHES.md`) and the CrossUI fix below. Same harness and host as
+above (linux/aarch64; x86_64 not run). The files in this directory are now from this run; the
+sections above describe the 6fb2e7e run and stay as its record.
 
 | Run | Result |
 |---|---|
-| `DWD_SWIFT_TEST_FILTER='ContractSurfaceTests\|RealEngineTests\|WalletFeaturesTests' DWD_MIN_FREE_GB=6 scripts/linux-docker-test.sh` | **Not run.** `disk-guard` aborted before the build: 8 GB free on the host, but only 5 GB on the container's `/target` (< 6 GB). |
-| `DWD_CROSSUI_SUITE=m2 scripts/crossui-linux-demo.sh` | **Not run.** It needs at least 8 GB free, and the host disk was at the 8 GB line with the container's `/target` at 5 GB. |
+| `DWD_SWIFT_TEST_FILTER='ContractSurfaceTests\|RealEngineTests\|WalletFeaturesTests' scripts/linux-docker-test.sh` | **PASS**: `build-core.sh --check-bindings` OK (the committed bindings match), 315 tests in 26 suites passed. |
+| `DWD_CROSSUI_SUITE=m2 scripts/crossui-linux-demo.sh` | **PASS** on the last run (earlier runs below): M2 suite 76/76 hard checks, M1 regression 95/95 hard + 5/5 soft. Both live sessions printed `engine shut down`. |
 
-So the following are **not verified on Linux**:
-- the summary-grid layout fix (d208b2d);
-- the new AT-SPI check "coin selection: OK returns to Send, whose panel shows the pick"
-  (`ci/linux/crossui/atspi_demo.py`), and its screenshot `m2-2-options-send-with-selection.png`;
-- the new and changed WalletFeatures tests on Linux. On macOS, `swift test` passed (559 tests in 66 suites).
+Drop-down names (item B, M1 FAIL 1 / L8): **fixed**. Every `combo box` in the AT-SPI tree now has its
+caption as its name, e.g. `combo box "Auto Lock"`, `"Wallet"`, `"Unit to show amounts in"`
+(`atspi-m2-5-pages-security.txt`), `"User Interface language"`, `"Decimal digits"`, `"Local currency"`
+(`atspi-m2-2-options-display.txt`), and the M1 checks "Confirmation time target", "Unit to show amounts
+in" and "Address list" pass. Two parts were needed, both in patch P1:
+- the name is set on the `GtkDropDown` itself (the picker's own commit), not found through an `inspect`
+  hook from a container (the old workaround never reached it);
+- GTK 4.14 takes a name from the labelled-by relation before the label property, and GtkDropDown's
+  template points that relation at its selected item, so the patch also resets labelled-by when it sets
+  a label. With the label alone (run 2 below) the drop-downs were still named "Never", "tDASH".
 
-The screenshots above are still from the 6fb2e7e run.
+Switches and text fields keep their names through the same modifier (`check box "Enable coin control
+features"`, the `Pay To` / `Amount` fields typed into by name).
+
+Found and fixed on the way: since 1940691 the CrossUI composition roots built `MainViewModel` without the
+M2 services, so it had no Coin Selection model and the Send page never showed "Coin Control Features"
+(the first run of this pass failed "coin control: Send shows 'Coin Control Features'" and "press
+'Inputs…'"). `DashWalletCross` now passes `m2`. With it the new check "coin selection: OK returns to
+Send, whose panel shows the pick" passes (`m2-2-options-send-with-selection.png`: "Quantity: 1 Amount:
+4.87999774 tDASH"), and the Coin Selection summary grid of d208b2d renders as two fixed columns
+(`m2-2-options-coin-selected.png`: Fee "≈0.00000192 tDASH" on one line).
+
+Runs before the passing one:
+1. Build failed: `'GObject' is ambiguous` in the GTK patch (fixed: `CGtk.GObject`). Before that, the
+   container copy failed on a `.build/` an editor's indexer wrote inside `Vendor/swift-cross-ui`; both
+   scripts now leave out every `.build/` and `.swiftpm/`.
+2. Drop-downs still named after their selection (fixed: labelled-by reset) and the coin-control checks
+   failing (fixed: `m2` passed to `MainViewModel`).
+3. After both fixes: 2 hard failures, "send: the sent payment is listed on the Transactions page" and
+   "transactions: details show dash-qt's Abandon / Resend actions". Both passed in the run before and the
+   run after; the dump taken right after the second one shows both buttons with those names. They look
+   like harness timing (a full AT-SPI walk of ~1,500 nodes per `wait_for` poll), not app behaviour, but
+   that is not proven.
+4. All hard checks pass (the files here).
+
+Still not verified on Linux: x86_64, Wayland, Orca, keyboard-only use, and the items listed under "Not
+verified on Linux" above. Windows has not been built; WinUIBackend has no P1 implementation (it logs a
+warning when a label is set).

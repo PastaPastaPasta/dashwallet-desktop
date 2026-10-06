@@ -392,11 +392,46 @@
                                                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [label] "Subtract fee from amount by default" text="Subtract fee from amount by default" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [label] "Subtract fee from amount by default" text="Subtract fee from amount by default" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [check box] "Subtract fee from amount by default" actions=toggle {focusable,sensitive,showing,visible} @(492,150 50x26)
+                                                                                                                                                            [check box] "Subtract fee from amount by default" actions=toggle {focusable,sensitive,showing,visible} @(492,150 50x26)
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [label] "Enable coin control features" text="Enable coin control features" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [check box] "Enable coin control features" actions=toggle {focusable,sensitive,showing,visible} @(436,184 50x26)
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [label] "Enable PSBT controls" text="Enable PSBT controls" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [check box] "Enable PSBT controls" actions=toggle {focusable,sensitive,showing,visible} @(391,218 50x26)
+                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [label] "Keep custom change address" text="Keep custom change address" {sensitive,showing,visible}
+                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                            [check box] "Keep custom change address" actions=toggle {focusable,sensitive,showing,visible} @(444,252 50x26)
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
@@ -406,51 +441,11 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [label] "Enable coin control features" text="Enable coin control features" {sensitive,showing,visible}
                                                                                                                                                               [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [label] "Enable dust attack protection" text="Enable dust attack protection" {sensitive,showing,visible}
                                                                                                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [check box] "Enable coin control features" actions=toggle {focusable,sensitive,showing,visible} @(436,184 50x26)
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [label] "Enable PSBT controls" text="Enable PSBT controls" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [check box] "Enable PSBT controls" actions=toggle {focusable,sensitive,showing,visible} @(391,218 50x26)
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [label] "Keep custom change address" text="Keep custom change address" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [check box] "Keep custom change address" actions=toggle {focusable,sensitive,showing,visible} @(444,252 50x26)
-                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                  [panel] "" {sensitive,showing,visible}
-                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                        [panel] "" {sensitive,showing,visible}
-                                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                                            [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "Enable dust attack protection" text="Enable dust attack protection" {sensitive,showing,visible}
                                                                                                                                                                   [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [check box] "Enable dust attack protection" actions=toggle {focusable,sensitive,showing,visible} @(445,286 50x26)
+                                                                                                                                                                [check box] "Enable dust attack protection" actions=toggle {focusable,sensitive,showing,visible} @(445,286 50x26)
                                                                                                                                                 [panel] "" {sensitive,showing,visible}
                                                                                                                                             [panel] "" {sensitive,showing,visible}
                                                                                                                                               [panel] "" {sensitive,showing,visible}
@@ -461,21 +456,22 @@
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                  [label] "Automatic backups to keep" text="Automatic backups to keep" {sensitive,showing,visible}
+                                                                                                                                                              [label] "Automatic backups to keep" text="Automatic backups to keep" {sensitive,showing,visible}
+                                                                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                                                                      [panel] "" {sensitive,showing,visible}
                                                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                                                           [panel] "" {sensitive,showing,visible}
                                                                                                                                                             [panel] "" {sensitive,showing,visible}
-                                                                                                                                                              [combo box] "10" {sensitive,showing,visible}
-                                                                                                                                                                [toggle button] "10" actions=click {focusable,sensitive,showing,visible}
-                                                                                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                [combo box] "Automatic backups to keep" {sensitive,showing,visible}
+                                                                                                                                                                  [toggle button] "Automatic backups to keep" actions=click {focusable,sensitive,showing,visible}
                                                                                                                                                                     [panel] "" {sensitive,showing,visible}
                                                                                                                                                                       [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                      [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                        [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                                                                                                          [panel] "" {sensitive,showing,visible}
-                                                                                                                                                                            [label] "10" text="10" {sensitive,showing,visible}
+                                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                          [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                                                                                              [label] "10" text="10" {sensitive,showing,visible}
                                                                                                                       [panel] "" {sensitive,showing,visible}
                                                                                                                         [panel] "" {sensitive,showing,visible}
                                                                                                                           [panel] "" {sensitive,showing,visible}
@@ -625,20 +621,21 @@
                                                           [panel] "" {sensitive,showing,visible}
                                                             [panel] "" {sensitive,showing,visible}
                                                               [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
                                                                 [panel] "" {sensitive,showing,visible}
-                                                                  [panel] "" {sensitive,showing,visible}
                                                                   [panel] "" {sensitive,showing,visible}
                                                                     [panel] "" {sensitive,showing,visible}
                                                                       [panel] "" {sensitive,showing,visible}
-                                                                        [combo box] "tDASH" {sensitive,showing,visible}
-                                                                          [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
-                                                                            [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [combo box] "Unit to show amounts in" {sensitive,showing,visible}
+                                                                            [toggle button] "Unit to show amounts in" actions=click {focusable,sensitive,showing,visible}
                                                                               [panel] "" {sensitive,showing,visible}
                                                                                 [panel] "" {sensitive,showing,visible}
-                                                                                [panel] "" {sensitive,showing,visible}
-                                                                                  [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
-                                                                                    [panel] "" {sensitive,showing,visible}
-                                                                                      [label] "tDASH" text="tDASH" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [label] "tDASH" text="tDASH" {sensitive,showing,visible}
     [menu bar] "" {sensitive,showing,visible}
       [menu item] "File" {focusable,sensitive,showing,visible}
         [label] "File" text="File" {sensitive,showing,visible}
