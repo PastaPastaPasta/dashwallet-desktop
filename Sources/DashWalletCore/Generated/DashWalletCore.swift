@@ -6483,6 +6483,18 @@ enum CoinsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
 
     
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_coinserror_code(
+            FfiConverterTypeCoinsError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
 
     
 
@@ -6803,6 +6815,18 @@ enum EngineError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_engineerror_code(
+            FfiConverterTypeEngineError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -7431,6 +7455,18 @@ enum HistoryError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
 
     
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_historyerror_code(
+            FfiConverterTypeHistoryError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
 
     
 
@@ -7696,6 +7732,18 @@ enum LabelsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
 
     
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_labelserror_code(
+            FfiConverterTypeLabelsError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
 
     
 
@@ -7901,6 +7949,18 @@ enum MessageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_messageerror_code(
+            FfiConverterTypeMessageError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -8278,6 +8338,12 @@ public enum NoticeCode: Equatable, Hashable {
      * exist yet, so the engine never sends it.
      */
     case backupFailed
+    /**
+     * `remove_wallet` removed the wallet but could not delete its seed from
+     * the vault (e.g. the vault was locked meanwhile). `detail` names the
+     * wallet id.
+     */
+    case walletSecretNotDeleted
 
 
 
@@ -8309,6 +8375,8 @@ public struct FfiConverterTypeNoticeCode: FfiConverterRustBuffer {
         
         case 5: return .backupFailed
         
+        case 6: return .walletSecretNotDeleted
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -8335,6 +8403,10 @@ public struct FfiConverterTypeNoticeCode: FfiConverterRustBuffer {
         
         case .backupFailed:
             writeInt(&buf, Int32(5))
+        
+        
+        case .walletSecretNotDeleted:
+            writeInt(&buf, Int32(6))
         
         }
     }
@@ -8402,6 +8474,18 @@ enum ReceiveError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_receiveerror_code(
+            FfiConverterTypeReceiveError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -8749,6 +8833,18 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case BroadcastUnknown(reason: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_senderror_code(
+            FfiConverterTypeSendError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -9139,6 +9235,18 @@ enum SyncError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_syncerror_code(
+            FfiConverterTypeSyncError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -9803,6 +9911,18 @@ enum UnitsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
 
     
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_unitserror_code(
+            FfiConverterTypeUnitsError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
 
     
 
@@ -9999,6 +10119,18 @@ enum UriError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case NotImplemented(call: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_urierror_code(
+            FfiConverterTypeUriError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -10306,6 +10438,18 @@ enum VaultError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_vaulterror_code(
+            FfiConverterTypeVaultError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     
@@ -10696,6 +10840,18 @@ enum WalletError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Internal(detail: String
     )
 
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_walleterror_code(
+            FfiConverterTypeWalletError_lower(self),uniffiCallStatus
+    )
+})
+}
     
 
     

@@ -120,6 +120,9 @@ public enum NoticeCode: Sendable, Equatable {
     case uncleanShutdown
     case syncStalled
     case backupFailed
+    /// `removeWallet` removed the wallet but its seed is still in the vault;
+    /// `detail` names the wallet id (engine review M8).
+    case walletSecretNotDeleted
 
     init(_ ffi: DashWalletCore.NoticeCode) {
         switch ffi {
@@ -128,6 +131,7 @@ public enum NoticeCode: Sendable, Equatable {
         case .uncleanShutdown: self = .uncleanShutdown
         case .syncStalled: self = .syncStalled
         case .backupFailed: self = .backupFailed
+        case .walletSecretNotDeleted: self = .walletSecretNotDeleted
         }
     }
 }
