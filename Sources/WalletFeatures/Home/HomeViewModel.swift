@@ -31,6 +31,13 @@ public struct RecentTransaction: Sendable, Hashable, Identifiable {
     public let chainLocked: Bool
     public let watchOnly: Bool
     public let isIncoming: Bool
+    /// The record's type, category, status and label, for list-mode titles and
+    /// chips (`TxPresentation`).
+    public let type: TxType
+    public let category: TxCategory
+    public let status: TxStatus
+    public let label: String?
+    public let countsTowardBalance: Bool
 }
 
 @MainActor
@@ -228,7 +235,9 @@ public final class HomeViewModel {
             id: record.id, date: record.date, amount: record.amount, amountText: text,
             title: record.label.flatMap { $0.isEmpty ? nil : $0 } ?? record.address ?? "",
             instantLocked: record.status.instantLocked, chainLocked: record.status.chainLocked,
-            watchOnly: record.involvesWatchOnly, isIncoming: record.amount.duffs >= 0)
+            watchOnly: record.involvesWatchOnly, isIncoming: record.amount.duffs >= 0, type: record.type,
+            category: record.category, status: record.status, label: record.label,
+            countsTowardBalance: record.countsTowardBalance)
     }
 
     private func rebuildRows() {
