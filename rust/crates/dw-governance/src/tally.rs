@@ -102,6 +102,8 @@ pub struct CurrentVote {
     pub time: i64,
     /// The voting key id recovered from the signature.
     pub key_id: [u8; 20],
+    /// The vote's hash (Core `CGovernanceVote::GetHash`), internal order.
+    pub vote_hash: [u8; 32],
 }
 
 /// Weighted funding votes of one proposal.
@@ -303,6 +305,7 @@ mod tests {
             outcome,
             time,
             key_id: [key; 20],
+            vote_hash: [n; 32],
         }
     }
 

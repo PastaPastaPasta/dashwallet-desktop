@@ -8,6 +8,7 @@
 //! of an invented result.
 
 pub mod exec;
+mod m3_governance;
 pub mod json;
 pub mod parse;
 
@@ -148,7 +149,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("getchaintips", "Blockchain", false, ""),
     c("getcoinjoininfo", "CoinJoin", false, ""),
     c("getconnectioncount", "Network", true, "getconnectioncount"),
-    c("getgovernanceinfo", "Governance", false, ""),
+    c("getgovernanceinfo", "Governance", true, "getgovernanceinfo"),
     c("getmemoryinfo", "Control", false, ""),
     c("getmempoolinfo", "Blockchain", false, ""),
     c("getnettotals", "Network", false, ""),
@@ -164,6 +165,12 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("getrawmempool", "Blockchain", false, ""),
     c("getrawtransaction", "Rawtransactions", false, ""),
     c("getrpcinfo", "Control", false, ""),
+    c(
+        "getsuperblockbudget",
+        "Governance",
+        true,
+        "getsuperblockbudget index",
+    ),
     c("gettransaction", "Wallet", true, "gettransaction \"txid\""),
     c("gettxout", "Blockchain", false, ""),
     c(
@@ -173,7 +180,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         "getunconfirmedbalance",
     ),
     c("getwalletinfo", "Wallet", true, "getwalletinfo"),
-    c("gobject", "Governance", false, ""),
+    c(
+        "gobject",
+        "Governance",
+        true,
+        "gobject \"list|count|get|getcurrentvotes|vote-many\" ( ... )",
+    ),
     c("help", "Control", true, "help ( \"command\" )"),
     c("help-console", "Control", true, "help-console"),
     s("importmulti", "Wallet", false, ""),

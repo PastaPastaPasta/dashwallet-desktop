@@ -338,6 +338,45 @@ impl NetworkSession {
             .unwrap_or_else(|p| p.into_inner()) = value;
     }
 
+    /// The network's governance constants.
+    pub fn governance_parameters(&self) -> dw_governance::params::GovernanceParams {
+        self.governance_params()
+    }
+
+    /// Core `getsuperblockbudget`: what the superblock at `height` may pay
+    /// (0 when `height` is not a superblock).
+    pub fn superblock_budget(&self, height: u32) -> u64 {
+        superblock_budget(self.network.core_network(), height)
+    }
+
+    /// Core `gobject getcurrentvotes`: each synced current funding vote on
+    /// `hash` as (vote hash, `txid-n:time:outcome:funding`). In-memory read.
+    pub fn governance_current_votes(&self, hash: &str) -> Result<Vec<(String, String)>, EngineError> {
+        let _op = self.try_enter()?;
+        let key = parse_display_hex(hash)
+            .ok_or_else(|| EngineError::InvalidArgument("hash must be 64 hex characters".into()))?;
+        let store = self.governance.shared.store();
+        if !store.has_object(&key) {
+            return Err(GovernanceFailure::ProposalNotFound(hash.to_string()).into());
+        }
+        let mut out: Vec<(String, String)> = store
+            .votes_on(&key)
+            .map(|v| {
+                (
+                    display_hex(&v.vote_hash),
+                    format!(
+                        "{}:{}:{}:funding",
+                        dw_governance::object::outpoint_short(&v.outpoint),
+                        v.time,
+                        v.outcome.as_str()
+                    ),
+                )
+            })
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
     /// The status-bar clock (QT-026). In-memory read.
     pub fn governance_clock(&self) -> Result<GovernanceClock, EngineError> {
         let _op = self.try_enter()?;

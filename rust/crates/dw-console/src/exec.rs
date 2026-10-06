@@ -340,6 +340,7 @@ impl ConsoleContext {
         }
         let s = Arc::clone(&self.session);
         match method {
+            m if crate::m3_governance::handles(m) => self.governance(method, args).await,
             "help" => {
                 arity(method, args, 0, 1)?;
                 match arg(args, 0) {

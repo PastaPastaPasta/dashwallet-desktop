@@ -140,7 +140,30 @@ impl NetworkSession {
             })
             .await
             .unwrap_or_default();
+            // The ProRegTxs in the wallets' history: platform-wallet keeps
+            // provider records in memory only while the session that saw
+            // them runs (a chainlocked record reloads as a bare txid), the
+            // history store reloads every stored transaction.
+            let mut found = found;
+            for id in &wallets {
+                for entry in self.hub.history.snapshot(id).into_values() {
+                    if let Some(
+                        dashcore::transaction::TransactionPayload::ProviderRegistrationPayloadType(p),
+                    ) = &entry.tx.special_transaction_payload
+                    {
+                        found.push((
+                            entry.tx.txid().to_byte_array(),
+                            p.collateral_outpoint.txid.to_byte_array(),
+                            p.collateral_outpoint.vout,
+                        ));
+                    }
+                }
+            }
             for (pro, txid, vout) in found {
+                // A null collateral hash means the ProRegTx pays its own
+                // collateral (`protx register_fund`): Core's outpoint is
+                // (proTxHash, n).
+                let txid = if txid == [0; 32] { pro } else { txid };
                 collaterals.insert(
                     pro,
                     OutPoint::new(dashcore::Txid::from_byte_array(txid), vout),
@@ -165,6 +188,15 @@ impl NetworkSession {
                 }
             }
         }
+        tracing::debug!(
+            wallets = wallets.len(),
+            voting_keys = keys.len(),
+            list = list.len(),
+            in_list = list.iter().filter(|m| by_key.contains_key(&m.voting_key_id)).count(),
+            wallet_collaterals = collaterals.len(),
+            vote_collaterals = from_votes.len(),
+            "governance: masternodes the wallets vote for"
+        );
         let out: Vec<Controlled> = list
             .iter()
             .filter_map(|m| {
@@ -405,7 +437,11 @@ impl NetworkSession {
         for (i, vote, key_id) in &signed {
             if report.fetched.contains(&vote.hash()) {
                 self.governance.shared.store().record_own_vote(vote, *key_id);
-                results[*i].detail = Some(format!("relayed to {} peer(s)", report.announced_to));
+                results[*i].detail = Some(format!(
+                    "relayed to {} peer(s), vote {}",
+                    report.announced_to,
+                    display_hex(&vote.hash())
+                ));
             } else {
                 results[*i].failure = Some(GovernanceFailure::BroadcastRejected(
                     "no peer requested the vote".into(),

@@ -168,6 +168,7 @@ impl GovernanceStore {
                     outcome,
                     time: vote.time,
                     key_id,
+                    vote_hash: hash,
                 },
             )
             .is_some();
@@ -198,6 +199,7 @@ impl GovernanceStore {
                     outcome,
                     time: vote.time,
                     key_id,
+                    vote_hash: vote.hash(),
                 },
             )
             .is_none()
