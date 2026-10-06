@@ -174,7 +174,7 @@ struct WalletsView: View {
 
 private struct WalletRow: View {
     let state: WalletLoadState
-    let onLoadOnStartup: (Bool) -> Void
+    let onLoadOnStartup: @Sendable (Bool) -> Void
 
     var body: some View {
         HStack(spacing: DashSpacing.m) {
@@ -191,7 +191,7 @@ private struct WalletRow: View {
             if state.watchOnly { Badge(MacStrings.Wallets.watchOnly, tone: .info) }
             Badge(state.loaded ? MacStrings.Wallets.loaded : MacStrings.Wallets.notLoaded,
                   tone: state.loaded ? .success : .neutral)
-            Toggle(MacStrings.Wallets.loadOnStartup, isOn: Binding(get: { state.loadOnStartup }, set: onLoadOnStartup))
+            Toggle(MacStrings.Wallets.loadOnStartup, isOn: Binding(get: { state.loadOnStartup }, set: { onLoadOnStartup($0) }))
                 .toggleStyle(.checkbox)
         }
         .padding(.vertical, DashSpacing.xxxs)
