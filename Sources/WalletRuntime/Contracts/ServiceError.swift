@@ -63,6 +63,9 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sendBroadcastRejected = Self(rawValue: "send.broadcast_rejected")
     public static let sendPreparedTxSpent = Self(rawValue: "send.prepared_tx_spent")
     public static let sendNoPeers = Self(rawValue: "send.no_peers")
+    public static let sendAmountTooSmallAfterFee = Self(rawValue: "send.amount_too_small_after_fee")
+    /// Handed to the network without an acceptance verdict: never abandon (m1-engine.md §2.7).
+    public static let sendBroadcastUnknown = Self(rawValue: "send.broadcast_unknown")
 
     // URI / units / message / labels.
     public static let uriUnparsable = Self(rawValue: "uri.unparsable")

@@ -206,6 +206,8 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .PreparedTxSpent: self = .domain(code: "send.prepared_tx_spent", detail: "")
         case .NoPeers: self = .domain(code: "send.no_peers", detail: "")
         case .BroadcastRejected(let reason): self = .domain(code: "send.broadcast_rejected", detail: reason)
+        case .AmountTooSmallAfterFee(let i): self = .recipient(code: "send.amount_too_small_after_fee", index: Int(i))
+        case .BroadcastUnknown(let reason): self = .domain(code: "send.broadcast_unknown", detail: reason)
         case .InvalidArgument(let d): self = .invalidArgument(detail: d)
         case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
         case .WalletNotFound(let d): self = .walletNotFound(detail: d)

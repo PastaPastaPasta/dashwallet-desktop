@@ -772,11 +772,16 @@ public struct PreparedOutput: Sendable, Hashable {
     public let amount: Amount
     public let isChange: Bool
     public let label: String?
+    /// Pays one of the wallet's addresses; a change output with `false` is a
+    /// foreign custom change address (counts against the spend cap). `nil`
+    /// when not reported.
+    public let isMine: Bool?
 
-    public init(address: String?, amount: Amount, isChange: Bool, label: String?) {
+    public init(address: String?, amount: Amount, isChange: Bool, label: String?, isMine: Bool? = nil) {
         self.address = address
         self.amount = amount
         self.isChange = isChange
+        self.isMine = isMine
         self.label = label
     }
 }
@@ -790,11 +795,15 @@ public struct PreparedTxSummary: Sendable, Hashable {
     public let inputs: [PreparedInput]
     public let outputs: [PreparedOutput]
     public let totalSent: Amount
+    /// Inputs minus outputs back to the wallet (fee included).
     public let totalDebit: Amount
+    /// Paid to scripts the wallet does not own, fee excluded: what a Spend
+    /// grant caps (m1-engine.md §2.7.1). `nil` when not reported.
+    public let externalSent: Amount?
 
     public init(
         txid: String, fee: Amount, feeRatePerKilobyte: Amount, sizeBytes: UInt32, inputs: [PreparedInput],
-        outputs: [PreparedOutput], totalSent: Amount, totalDebit: Amount
+        outputs: [PreparedOutput], totalSent: Amount, totalDebit: Amount, externalSent: Amount? = nil
     ) {
         self.txid = txid
         self.fee = fee
@@ -804,6 +813,7 @@ public struct PreparedTxSummary: Sendable, Hashable {
         self.outputs = outputs
         self.totalSent = totalSent
         self.totalDebit = totalDebit
+        self.externalSent = externalSent
     }
 
     init(_ ffi: DashWalletCore.PreparedTxSummary) throws(DashKitError) {
@@ -813,20 +823,24 @@ public struct PreparedTxSummary: Sendable, Hashable {
         }
         var outputs: [PreparedOutput] = []
         for o in ffi.outputs {
-            outputs.append(PreparedOutput(address: o.address, amount: try Amount(engine: o.amount), isChange: o.isChange, label: o.label))
+            outputs.append(
+                PreparedOutput(
+                    address: o.address, amount: try Amount(engine: o.amount), isChange: o.isChange, label: o.label,
+                    isMine: o.isMine))
         }
         self.init(
             txid: ffi.txid, fee: try Amount(engine: ffi.fee), feeRatePerKilobyte: try Amount(engine: ffi.feeRatePerKb),
             sizeBytes: ffi.sizeBytes, inputs: inputs, outputs: outputs, totalSent: try Amount(engine: ffi.totalSent),
-            totalDebit: try Amount(engine: ffi.totalDebit))
+            totalDebit: try Amount(engine: ffi.totalDebit), externalSent: try Amount(engine: ffi.externalSent))
     }
 }
 
 public struct BroadcastOutcome: Sendable, Hashable {
     public let txid: String
-    public let peersAnnounced: UInt32
+    /// `nil`: dash-spv does not report how many peers it announced to.
+    public let peersAnnounced: UInt32?
 
-    public init(txid: String, peersAnnounced: UInt32) {
+    public init(txid: String, peersAnnounced: UInt32?) {
         self.txid = txid
         self.peersAnnounced = peersAnnounced
     }

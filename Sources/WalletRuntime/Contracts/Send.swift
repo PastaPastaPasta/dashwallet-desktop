@@ -55,12 +55,16 @@ public struct PreparedOutput: Sendable, Hashable {
     public let amount: Amount
     public let isChange: Bool
     public let label: String?
+    /// Pays one of the wallet's addresses. A change output with `false` is a
+    /// foreign custom change address (QT-073 warning). `nil` when not reported.
+    public let isMine: Bool?
 
-    public init(address: String?, amount: Amount, isChange: Bool, label: String?) {
+    public init(address: String?, amount: Amount, isChange: Bool, label: String?, isMine: Bool? = nil) {
         self.address = address
         self.amount = amount
         self.isChange = isChange
         self.label = label
+        self.isMine = isMine
     }
 }
 
@@ -73,11 +77,15 @@ public struct PreparedTxSummary: Sendable, Hashable {
     public let inputCount: Int
     public let outputs: [PreparedOutput]
     public let totalSent: Amount
+    /// Inputs minus outputs back to the wallet (fee included).
     public let totalDebit: Amount
+    /// Paid to scripts the wallet does not own, fee excluded: what a Spend
+    /// grant caps (m1-engine.md §2.7.1). `nil` when not reported.
+    public let externalSent: Amount?
 
     public init(
         txid: String, fee: Amount, feeRatePerKilobyte: Amount, sizeBytes: UInt32, inputCount: Int,
-        outputs: [PreparedOutput], totalSent: Amount, totalDebit: Amount
+        outputs: [PreparedOutput], totalSent: Amount, totalDebit: Amount, externalSent: Amount? = nil
     ) {
         self.txid = txid
         self.fee = fee
@@ -87,6 +95,7 @@ public struct PreparedTxSummary: Sendable, Hashable {
         self.outputs = outputs
         self.totalSent = totalSent
         self.totalDebit = totalDebit
+        self.externalSent = externalSent
     }
 }
 
@@ -104,9 +113,10 @@ public struct PreparedTransaction: Sendable, Hashable {
 
 public struct BroadcastResult: Sendable, Hashable {
     public let txid: String
-    public let peersAnnounced: UInt32
+    /// `nil`: the engine (dash-spv) does not report it.
+    public let peersAnnounced: UInt32?
 
-    public init(txid: String, peersAnnounced: UInt32) {
+    public init(txid: String, peersAnnounced: UInt32?) {
         self.txid = txid
         self.peersAnnounced = peersAnnounced
     }
