@@ -132,6 +132,7 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .VaultLocked: self = .domain(code: "wallet.vault_locked", detail: "")
         case .GrantInvalid: self = .domain(code: "wallet.grant_invalid", detail: "")
         case .NameRejected(let d): self = .domain(code: "wallet.name_rejected", detail: d)
+        case .InvalidXpub(let d): self = .domain(code: "wallet.invalid_xpub", detail: d)
         case .InvalidArgument(let d): self = .invalidArgument(detail: d)
         case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
         case .WalletNotFound(let d): self = .walletNotFound(detail: d)
@@ -161,6 +162,12 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .QuickUnlockUnavailable: self = .domain(code: "vault.quick_unlock_unavailable", detail: "")
         case .OsStoreUnavailable(let d): self = .domain(code: "vault.os_store_unavailable", detail: d)
         case .Corrupt(let d): self = .domain(code: "vault.corrupt", detail: d)
+        case .QuickUnlockLimitExceeded(let limit):
+            self = .parameterized(
+                code: "vault.quick_unlock_limit_exceeded", parameters: ["limit_duffs": Int64(clamping: limit)])
+        case .PassphraseStale: self = .domain(code: "vault.passphrase_stale", detail: "")
+        case .NotEmpty: self = .domain(code: "vault.not_empty", detail: "")
+        case .RecoveryMismatch: self = .domain(code: "vault.recovery_mismatch", detail: "")
         case .InvalidArgument(let d): self = .invalidArgument(detail: d)
         case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
         case .WalletNotFound(let d): self = .walletNotFound(detail: d)
@@ -176,6 +183,9 @@ public enum DashKitError: Error, Sendable, Equatable {
         case .HeightOutOfRange(let h):
             self = .parameterized(code: "sync.height_out_of_range", parameters: ["height": Int64(h)])
         case .Spv(let d): self = .domain(code: "sync.spv", detail: d)
+        case .SpvRunning: self = .domain(code: "sync.spv_running", detail: "")
+        case .RescanInProgress: self = .domain(code: "sync.rescan_in_progress", detail: "")
+        case .PeerNotFound(let address): self = .domain(code: "sync.peer_not_found", detail: address)
         case .InvalidArgument(let d): self = .invalidArgument(detail: d)
         case .NetworkNotOpen(let d): self = .networkNotOpen(detail: d)
         case .WalletNotFound(let d): self = .walletNotFound(detail: d)
@@ -341,6 +351,12 @@ public enum DashKitError: Error, Sendable, Equatable {
         case let e as DashWalletCore.MessageError: DashKitError(e)
         case let e as DashWalletCore.UriError: DashKitError(e)
         case let e as DashWalletCore.UnitsError: DashKitError(e)
+        case let e as DashWalletCore.TxActionError: DashKitError(e)
+        case let e as DashWalletCore.ConsoleError: DashKitError(e)
+        case let e as DashWalletCore.CompatError: DashKitError(e)
+        case let e as DashWalletCore.BackupError: DashKitError(e)
+        case let e as DashWalletCore.PsbtError: DashKitError(e)
+        case let e as DashWalletCore.DesktopError: DashKitError(e)
         default: .internal(detail: String(describing: error))
         }
     }

@@ -503,6 +503,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt32: FfiConverterPrimitive {
+    typealias FfiType = Int32
+    typealias SwiftType = Int32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int32, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
     typealias FfiType = UInt64
     typealias SwiftType = UInt64
@@ -623,7 +639,155 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 
+/**
+ * WinRT toasts on Windows, `org.freedesktop.Notifications` (or the Flatpak
+ * portal) on Linux, timeout 10 s as dash-qt.
+ */
+public protocol DesktopNotifierProtocol: AnyObject, Sendable {
+    
+    func notify(notification: DesktopNotification) throws 
+    
+}
+/**
+ * WinRT toasts on Windows, `org.freedesktop.Notifications` (or the Flatpak
+ * portal) on Linux, timeout 10 s as dash-qt.
+ */
+open class DesktopNotifier: DesktopNotifierProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_desktopnotifier(self.handle, $0) }
+    }
+public convenience init(appId: String, observer: NotificationObserver)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_constructor_desktopnotifier_new(
+        FfiConverterString.lower(appId),
+        FfiConverterTypeNotificationObserver_lower(observer),uniffiCallStatus
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_desktopnotifier(handle, $0) }
+    }
+
+    
+
+    
+open func notify(notification: DesktopNotification)throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_desktopnotifier_notify(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeDesktopNotification_lower(notification),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDesktopNotifier: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = DesktopNotifier
+
+    public static func lift(_ handle: UInt64) throws -> DesktopNotifier {
+        return DesktopNotifier(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: DesktopNotifier) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DesktopNotifier {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: DesktopNotifier, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopNotifier_lift(_ handle: UInt64) throws -> DesktopNotifier {
+    return try FfiConverterTypeDesktopNotifier.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopNotifier_lower(_ value: DesktopNotifier) -> UInt64 {
+    return FfiConverterTypeDesktopNotifier.lower(value)
+}
+
+
+
+
+
+
 public protocol EngineProtocol: AnyObject, Sendable {
+    
+    /**
+     * Detects the kind of a user-chosen file from its content, not its
+     * extension. Reads at most what detection needs; decrypts nothing.
+     */
+    func inspectWalletFile(path: String) async throws  -> WalletFileKind
+    
+    /**
+     * Zips the Rust log files of every network plus `extra_files` (the
+     * Swift log) into `dest_path` (IOS-112). Logs never hold secrets (the
+     * secret-in-log test guards this).
+     */
+    func exportLogs(destPath: String, extraFiles: [String]) async throws  -> LogExport
     
     /**
      * Closes the session for `network`; `false` when none was open.
@@ -644,6 +808,13 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * Closes every session. Call before releasing the engine.
      */
     func shutdown() async throws 
+    
+    /**
+     * Every network that has data under the data root, in `DashNetwork`
+     * order (devnets by name). Reads the file system and the OS secret
+     * store only; opens nothing. Owner R1.
+     */
+    func existingNetworks() async throws  -> [NetworkDataInfo]
     
 }
 open class Engine: EngineProtocol, @unchecked Sendable {
@@ -708,6 +879,47 @@ public convenience init(config: EngineConfig, observer: EngineObserver)throws  {
 
     
 
+    
+    /**
+     * Detects the kind of a user-chosen file from its content, not its
+     * extension. Reads at most what detection needs; decrypts nothing.
+     */
+open func inspectWalletFile(path: String)async throws  -> WalletFileKind  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_engine_inspect_wallet_file(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeWalletFileKind_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Zips the Rust log files of every network plus `extra_files` (the
+     * Swift log) into `dest_path` (IOS-112). Logs never hold secrets (the
+     * secret-in-log test guards this).
+     */
+open func exportLogs(destPath: String, extraFiles: [String])async throws  -> LogExport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_engine_export_logs(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(destPath),FfiConverterSequenceString.lower(extraFiles)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeLogExport_lift,
+            errorHandler: FfiConverterTypeDesktopError_lift
+        )
+}
     
     /**
      * Closes the session for `network`; `false` when none was open.
@@ -775,6 +987,27 @@ open func shutdown()async throws   {
             completeFunc: ffi_dashwallet_core_rust_future_complete_void,
             freeFunc: ffi_dashwallet_core_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeEngineError_lift
+        )
+}
+    
+    /**
+     * Every network that has data under the data root, in `DashNetwork`
+     * order (devnets by name). Reads the file system and the OS secret
+     * store only; opens nothing. Owner R1.
+     */
+open func existingNetworks()async throws  -> [NetworkDataInfo]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_engine_existing_networks(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeNetworkDataInfo.lift,
             errorHandler: FfiConverterTypeEngineError_lift
         )
 }
@@ -1036,9 +1269,377 @@ public func FfiConverterTypeEngineObserver_lower(_ value: EngineObserver) -> UIn
 
 
 /**
+ * Held by the primary instance; releasing it frees the instance key.
+ */
+public protocol InstanceGuardProtocol: AnyObject, Sendable {
+    
+    /**
+     * Stops listening and frees the key. Idempotent; dropping does the same.
+     */
+    func release() 
+    
+}
+/**
+ * Held by the primary instance; releasing it frees the instance key.
+ */
+open class InstanceGuard: InstanceGuardProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_instanceguard(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_instanceguard(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Stops listening and frees the key. Idempotent; dropping does the same.
+     */
+open func release()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_instanceguard_release(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInstanceGuard: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = InstanceGuard
+
+    public static func lift(_ handle: UInt64) throws -> InstanceGuard {
+        return InstanceGuard(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: InstanceGuard) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InstanceGuard {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: InstanceGuard, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstanceGuard_lift(_ handle: UInt64) throws -> InstanceGuard {
+    return try FfiConverterTypeInstanceGuard.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstanceGuard_lower(_ value: InstanceGuard) -> UInt64 {
+    return FfiConverterTypeInstanceGuard.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Receives the arguments a second launch forwarded (URIs, file paths).
+ * Called on a dw-desktop thread; must return quickly.
+ */
+public protocol InstanceObserver: AnyObject, Sendable {
+    
+    func onForwarded(args: [String]) 
+    
+}
+/**
+ * Receives the arguments a second launch forwarded (URIs, file paths).
+ * Called on a dw-desktop thread; must return quickly.
+ */
+open class InstanceObserverImpl: InstanceObserver, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_instanceobserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_instanceobserver(handle, $0) }
+    }
+
+    
+
+    
+open func onForwarded(args: [String])  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_instanceobserver_on_forwarded(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(args),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceInstanceObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceInstanceObserver = UniffiVTableCallbackInterfaceInstanceObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeInstanceObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface InstanceObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeInstanceObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface InstanceObserver: handle missing in uniffiClone")
+            }
+        },
+        onForwarded: { (
+            uniffiHandle: UInt64,
+            args: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeInstanceObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onForwarded(
+                     args: try FfiConverterSequenceString.lift(args)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceInstanceObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceInstanceObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitInstanceObserver() {
+    uniffi_dashwallet_core_fn_init_callback_vtable_instanceobserver(UniffiCallbackInterfaceInstanceObserver.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInstanceObserver: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<InstanceObserver>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = InstanceObserver
+
+    public static func lift(_ handle: UInt64) throws -> InstanceObserver {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return InstanceObserverImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: InstanceObserver) -> UInt64 {
+         if let rustImpl = value as? InstanceObserverImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InstanceObserver {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: InstanceObserver, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstanceObserver_lift(_ handle: UInt64) throws -> InstanceObserver {
+    return try FfiConverterTypeInstanceObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInstanceObserver_lower(_ value: InstanceObserver) -> UInt64 {
+    return FfiConverterTypeInstanceObserver.lower(value)
+}
+
+
+
+
+
+
+/**
  * One open network. Wallet operations are in `wallet.rs`.
  */
 public protocol NetworkSessionProtocol: AnyObject, Sendable {
+    
+    /**
+     * Automatic backups of `wallet_id` (all wallets when `None`), newest
+     * first ("Show Automatic Backups", QT-116). The engine writes one
+     * `<wallet>.YYYY-MM-DD-HH-MM.dwbackup` when a wallet loads or is created
+     * and the data key is available, keeps the newest `keep`, and sends
+     * `Notice{BackupFailed}` when writing fails.
+     */
+    func automaticBackups(walletId: String?) async throws  -> [BackupInfo]
+    
+    func backupPolicy() throws  -> BackupPolicy
+    
+    /**
+     * dash-qt "Backup Wallet…" (QT-110): writes a `.dwbackup` of one wallet
+     * to `dest_path`. Encrypted vault: wraps with the vault passphrase slot
+     * and needs the vault unlocked (`backup_passphrase` must be `None`).
+     * Unencrypted vault: `backup_passphrase` is required and wraps the
+     * bundle. Watch-only wallets carry no vault records.
+     */
+    func backupWallet(walletId: String, destPath: String, backupPassphrase: Data?) async throws  -> BackupInfo
+    
+    /**
+     * Restores the wallets of a `.dwbackup` into this network: re-encrypts
+     * their records under this vault's key (vault unlocked), restores app
+     * metadata and wallet state, and registers them in seed-safety order.
+     * Returns the wallet ids. `passphrase` unwraps the bundle.
+     */
+    func restoreBackup(path: String, passphrase: Data?) async throws  -> [String]
+    
+    /**
+     * `keep` in 0..=10 (`invalid_argument` otherwise). Lowering it deletes
+     * the oldest automatic backups beyond the new count.
+     */
+    func setBackupPolicy(keep: UInt32) async throws  -> BackupPolicy
     
     /**
      * Dust attack protection threshold in duffs; `None` = off (QT-075).
@@ -1069,6 +1670,66 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * is always `None` (unknown).
      */
     func utxos(walletId: String, filter: UtxoFilter) async throws  -> [Utxo]
+    
+    /**
+     * Whether "mnemonic + passphrase + `upgradetohd`" in dash-qt rebuilds
+     * this wallet (QT-109 a). The host reveals the phrase with
+     * `Vault.reveal_mnemonic` and shows the `upgradetohd` instructions only
+     * when `core_compatible`.
+     */
+    func coreMnemonicCompatibility(walletId: String) async throws  -> CoreMnemonicCompatibility
+    
+    /**
+     * Writes the wallet for dash-qt to `dest_path` (QT-109 b/c), mode 0600,
+     * replacing nothing (`compat.destination_unwritable` if it exists).
+     * The file holds private keys: needs a `RevealSecret` grant for the
+     * wallet, redeemed after the checks.
+     */
+    func exportForCore(walletId: String, format: CoreExportFormat, destPath: String, grantId: String) async throws  -> ExportReport
+    
+    /**
+     * Imports a Dash Core `dumpwallet` file (QT-107): rebuilds the HD wallet
+     * from the header (mnemonic + passphrase, else HD seed, else xprv;
+     * counters raise the lookahead), carries labels into the address book
+     * and reports the loose keys left out. Vault seed-safety order as
+     * `import_wallet`. `options.core_compat` is implied for a mnemonic.
+     */
+    func importDumpWallet(path: String, options: ImportOptions) async throws  -> ImportReport
+    
+    /**
+     * Imports a wallet from raw key material (QT-108). An HD seed or xprv
+     * gives a wallet with no phrase (`has_mnemonic = false`); descriptors
+     * must describe BIP44 account 0 of one master key.
+     */
+    func importKeyMaterial(material: KeyMaterial, options: ImportOptions) async throws  -> ImportReport
+    
+    /**
+     * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
+     * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
+     * passphrase, extracts mnemonic and passphrase). Berkeley DB files
+     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6.
+     */
+    func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions) async throws  -> ImportReport
+    
+    /**
+     * Parses and runs one console line (nested calls, `[key]` indexing,
+     * quoting as dash-qt) against `wallet_id` (`None` = no wallet). `line`
+     * is UTF-8 bytes because it may hold a passphrase; it is zeroized.
+     * `grant_id` answers an earlier `AuthorizationRequired`.
+     */
+    func consoleExecute(walletId: String?, line: Data, grantId: String?) async throws  -> ConsoleOutput
+    
+    /**
+     * The coin-control summary for `outpoints` paying `pay_amounts` at
+     * `fee` (QT-072/074). `all_change_to_fee` is the CoinJoin page rule.
+     * Reads the wallet's coins; signs and reserves nothing.
+     */
+    func coinSelectionSummary(walletId: String, outpoints: [OutPoint], payAmounts: [UInt64], fee: FeeMode, allChangeToFee: Bool) async throws  -> CoinSelectionSummary
+    
+    /**
+     * Fee rules for this network (in-memory, constant on SPV).
+     */
+    func feePolicy() throws  -> FeePolicy
     
     /**
      * One page of history records. Hosts call it again after
@@ -1111,6 +1772,69 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * key (QT-099). Needs a `SignMessage` grant.
      */
     func signMessage(walletId: String, address: String, message: String, grantId: String) async throws  -> String
+    
+    /**
+     * The BIP44 account xpub (IOS-111). Public data, no grant; watch-only
+     * wallets return the xpub they were imported from.
+     */
+    func accountXpub(walletId: String, account: UInt32) async throws  -> AccountXpub
+    
+    /**
+     * Registers a watch-only wallet from a BIP44 account xpub (QT-114;
+     * interim for platform-wallet `WatchOnly` registration, DESIGN-opus §2
+     * PSBT row): no vault record, `WalletInfo.watch_only = true`, sends are
+     * `send.watch_only` and PSBTs are created unsigned. Returns the wallet
+     * id. A later `import_wallet` of the matching phrase attaches the keys.
+     */
+    func importWatchOnly(xpub: String, options: WatchOnlyOptions) async throws  -> String
+    
+    /**
+     * dash-qt "Open Wallet": loads a registered, unloaded wallet and resumes
+     * its scan from its last processed height. Idempotent. Emits
+     * `WalletLoadChanged{loaded: true}`.
+     */
+    func loadWallet(walletId: String) async throws 
+    
+    /**
+     * Adds or removes the wallet from the load-on-startup list (dash-qt adds
+     * on Create/Open/Restore and removes on Close; the host calls this with
+     * the same rule). Persisted in dw-appdb.
+     */
+    func setLoadOnStartup(walletId: String, loadOnStartup: Bool) async throws 
+    
+    /**
+     * dash-qt "Close Wallet": stops tracking the wallet and drops it from
+     * memory; its data, vault records and app metadata stay. Prepared,
+     * unsent payments of the wallet are abandoned. Idempotent. Emits
+     * `WalletLoadChanged{loaded: false}`.
+     */
+    func unloadWallet(walletId: String) async throws 
+    
+    /**
+     * Every registered wallet with its load state, in creation order.
+     * In-memory read.
+     */
+    func walletLoadStates() throws  -> [WalletLoadState]
+    
+    /**
+     * The Operations dialog content for `psbt` seen from `wallet_id`
+     * (`None` = "no wallet is loaded").
+     */
+    func analyzePsbt(walletId: String?, psbt: Psbt) async throws  -> PsbtAnalysis
+    
+    /**
+     * "Broadcast Tx": finalizes a complete PSBT, checks the fee rate cap and
+     * broadcasts with `TxDraft.broadcast`'s verdict rules (accepted, never
+     * sent, or unknown). Returns the txid.
+     */
+    func broadcastPsbt(psbt: Psbt) async throws  -> String
+    
+    /**
+     * "Sign Tx": signs every input the wallet owns through `VaultSigner`
+     * and returns the new PSBT. Needs a `Spend{max_duffs}` grant for the
+     * wallet covering `external_sent`; redeemed after the checks.
+     */
+    func signPsbt(walletId: String, psbt: Psbt, grantId: String) async throws  -> Psbt
     
     /**
      * Addresses of the wallet's BIP44 account 0 (QT-096 receiving tab), by
@@ -1201,6 +1925,105 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * Current sync state. In-memory read; also pushed as `EngineEvent::Sync`.
      */
     func syncSnapshot() throws  -> SyncSnapshot
+    
+    /**
+     * Bans the peer's IP for `duration_secs` (dash-qt: 1 h, 1 d, 1 w, 1 y)
+     * and disconnects it. Persisted with the SPV data.
+     */
+    func banPeer(address: String, durationSecs: UInt64) async throws 
+    
+    func bannedPeers() async throws  -> [BannedPeer]
+    
+    /**
+     * dash-qt `abortrescan`: stops the running rescan where it is; the
+     * wallets keep what was found. `false` when no rescan ran.
+     */
+    func cancelRescan() async throws  -> Bool
+    
+    /**
+     * Disconnects one peer (QT-147 "Disconnect"). dash-spv may dial a
+     * replacement.
+     */
+    func disconnectPeer(address: String) async throws 
+    
+    /**
+     * The Information tab. In-memory read; re-query on `Sync` events.
+     */
+    func nodeInfo() throws  -> NodeInfo
+    
+    /**
+     * The running rescan, `None` when none runs. In-memory read.
+     */
+    func rescanProgress() throws  -> RescanProgress?
+    
+    /**
+     * Repair "Rebuild Index" equivalent (QT-148, DESIGN-opus §1.14): deletes
+     * the SPV chain data (`spv/`) and keeps wallets, vault and app data.
+     * SPV must be stopped (`sync.spv_running`); the next `start_spv` syncs
+     * from scratch and rescans every wallet from its birth height.
+     */
+    func resetChainData() async throws 
+    
+    /**
+     * iOS "edit birth height" (IOS-113): stores a new birth height for the
+     * wallet. Lower than the current one: a rescan from it is scheduled.
+     */
+    func setBirthHeight(walletId: String, height: UInt32) async throws 
+    
+    func unbanPeer(subnet: String) async throws 
+    
+    /**
+     * Current node warnings, most severe first. In-memory read; re-query
+     * on `Notice` and `Sync` events.
+     */
+    func warnings() throws  -> [EngineWarning]
+    
+    /**
+     * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
+     * its inputs for new payments and excludes it from balances (status
+     * `Abandoned`, amount in brackets). SPV cannot prove the transaction is
+     * in no mempool, so it may still confirm; the engine then shows it
+     * confirmed again. Emits `HistoryChanged` and `Balances`.
+     */
+    func abandonTransaction(walletId: String, txid: String) async throws 
+    
+    /**
+     * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
+     * unconfirmed, non-InstantSend-locked transaction of `wallet_id` (all
+     * wallets when `None`) that no peer announced since start, then
+     * schedules a rescan from the oldest dropped transaction's first-seen
+     * height. Returns how many were dropped.
+     */
+    func dropUnconfirmed(walletId: String?) async throws  -> UInt32
+    
+    /**
+     * dash-qt CSV export of the filtered view (QT-093, §4.7), exact bytes:
+     * header `Confirmed`, `Watch-only` (only for watch-only wallets), `Date`
+     * (`yyyy-MM-ddTHH:mm:ss`, local time of `utc_offset_secs`), `Type`,
+     * `Label`, `Address`, `Amount (<unit name>)`, `ID`; every field quoted,
+     * quotes doubled, `,` separators, `\n` line ends; amounts signed, no
+     * separators, in `unit`. `type_names` are the 19 `TxType` display strings
+     * in `TxType` order (the host's localization); empty = dash-qt English.
+     */
+    func exportHistoryCsv(walletId: String, filter: HistoryFilter, sort: HistorySort, unit: DisplayUnit, typeNames: [String], utcOffsetSecs: Int32) async throws  -> String
+    
+    /**
+     * dash-qt "Resend transaction" (QT-091): announces the stored
+     * transaction to the connected peers again. Returns once announced;
+     * there is no acceptance verdict (unlike `TxDraft.broadcast`).
+     */
+    func resendTransaction(walletId: String, txid: String) async throws 
+    
+    /**
+     * dash-qt detail fields and action enablement for one transaction.
+     */
+    func txDetailExtras(walletId: String, txid: String) async throws  -> TxDetailExtras
+    
+    /**
+     * Notification rows for transactions named by a `NewTransactions`
+     * event (QT-031). Unknown txids are skipped.
+     */
+    func txNotices(walletId: String, txids: [String]) async throws  -> [TxNotice]
     
     /**
      * The vault for this session's network. Cheap; returns a new handle to
@@ -1303,6 +2126,103 @@ open class NetworkSession: NetworkSessionProtocol, @unchecked Sendable {
 
     
 
+    
+    /**
+     * Automatic backups of `wallet_id` (all wallets when `None`), newest
+     * first ("Show Automatic Backups", QT-116). The engine writes one
+     * `<wallet>.YYYY-MM-DD-HH-MM.dwbackup` when a wallet loads or is created
+     * and the data key is available, keeps the newest `keep`, and sends
+     * `Notice{BackupFailed}` when writing fails.
+     */
+open func automaticBackups(walletId: String?)async throws  -> [BackupInfo]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_automatic_backups(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeBackupInfo.lift,
+            errorHandler: FfiConverterTypeBackupError_lift
+        )
+}
+    
+open func backupPolicy()throws  -> BackupPolicy  {
+    return try  FfiConverterTypeBackupPolicy_lift(try rustCallWithError(FfiConverterTypeBackupError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_backup_policy(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * dash-qt "Backup Wallet…" (QT-110): writes a `.dwbackup` of one wallet
+     * to `dest_path`. Encrypted vault: wraps with the vault passphrase slot
+     * and needs the vault unlocked (`backup_passphrase` must be `None`).
+     * Unencrypted vault: `backup_passphrase` is required and wraps the
+     * bundle. Watch-only wallets carry no vault records.
+     */
+open func backupWallet(walletId: String, destPath: String, backupPassphrase: Data?)async throws  -> BackupInfo  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_backup_wallet(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(destPath),FfiConverterOptionData.lower(backupPassphrase)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBackupInfo_lift,
+            errorHandler: FfiConverterTypeBackupError_lift
+        )
+}
+    
+    /**
+     * Restores the wallets of a `.dwbackup` into this network: re-encrypts
+     * their records under this vault's key (vault unlocked), restores app
+     * metadata and wallet state, and registers them in seed-safety order.
+     * Returns the wallet ids. `passphrase` unwraps the bundle.
+     */
+open func restoreBackup(path: String, passphrase: Data?)async throws  -> [String]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_restore_backup(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(path),FfiConverterOptionData.lower(passphrase)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceString.lift,
+            errorHandler: FfiConverterTypeBackupError_lift
+        )
+}
+    
+    /**
+     * `keep` in 0..=10 (`invalid_argument` otherwise). Lowering it deletes
+     * the oldest automatic backups beyond the new count.
+     */
+open func setBackupPolicy(keep: UInt32)async throws  -> BackupPolicy  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_backup_policy(
+                        self.uniffiCloneHandle(),FfiConverterUInt32.lower(keep)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBackupPolicy_lift,
+            errorHandler: FfiConverterTypeBackupError_lift
+        )
+}
     
     /**
      * Dust attack protection threshold in duffs; `None` = off (QT-075).
@@ -1416,6 +2336,171 @@ open func utxos(walletId: String, filter: UtxoFilter)async throws  -> [Utxo]  {
             liftFunc: FfiConverterSequenceTypeUtxo.lift,
             errorHandler: FfiConverterTypeCoinsError_lift
         )
+}
+    
+    /**
+     * Whether "mnemonic + passphrase + `upgradetohd`" in dash-qt rebuilds
+     * this wallet (QT-109 a). The host reveals the phrase with
+     * `Vault.reveal_mnemonic` and shows the `upgradetohd` instructions only
+     * when `core_compatible`.
+     */
+open func coreMnemonicCompatibility(walletId: String)async throws  -> CoreMnemonicCompatibility  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_core_mnemonic_compatibility(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCoreMnemonicCompatibility_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Writes the wallet for dash-qt to `dest_path` (QT-109 b/c), mode 0600,
+     * replacing nothing (`compat.destination_unwritable` if it exists).
+     * The file holds private keys: needs a `RevealSecret` grant for the
+     * wallet, redeemed after the checks.
+     */
+open func exportForCore(walletId: String, format: CoreExportFormat, destPath: String, grantId: String)async throws  -> ExportReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_export_for_core(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeCoreExportFormat_lower(format),FfiConverterString.lower(destPath),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeExportReport_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Imports a Dash Core `dumpwallet` file (QT-107): rebuilds the HD wallet
+     * from the header (mnemonic + passphrase, else HD seed, else xprv;
+     * counters raise the lookahead), carries labels into the address book
+     * and reports the loose keys left out. Vault seed-safety order as
+     * `import_wallet`. `options.core_compat` is implied for a mnemonic.
+     */
+open func importDumpWallet(path: String, options: ImportOptions)async throws  -> ImportReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_import_dump_wallet(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(path),FfiConverterTypeImportOptions_lower(options)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeImportReport_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Imports a wallet from raw key material (QT-108). An HD seed or xprv
+     * gives a wallet with no phrase (`has_mnemonic = false`); descriptors
+     * must describe BIP44 account 0 of one master key.
+     */
+open func importKeyMaterial(material: KeyMaterial, options: ImportOptions)async throws  -> ImportReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_import_key_material(
+                        self.uniffiCloneHandle(),FfiConverterTypeKeyMaterial_lower(material),FfiConverterTypeImportOptions_lower(options)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeImportReport_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
+     * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
+     * passphrase, extracts mnemonic and passphrase). Berkeley DB files
+     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6.
+     */
+open func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions)async throws  -> ImportReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_import_wallet_dat(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(path),FfiConverterOptionData.lower(walletPassphrase),FfiConverterTypeImportOptions_lower(options)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeImportReport_lift,
+            errorHandler: FfiConverterTypeCompatError_lift
+        )
+}
+    
+    /**
+     * Parses and runs one console line (nested calls, `[key]` indexing,
+     * quoting as dash-qt) against `wallet_id` (`None` = no wallet). `line`
+     * is UTF-8 bytes because it may hold a passphrase; it is zeroized.
+     * `grant_id` answers an earlier `AuthorizationRequired`.
+     */
+open func consoleExecute(walletId: String?, line: Data, grantId: String?)async throws  -> ConsoleOutput  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_console_execute(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(walletId),FfiConverterData.lower(line),FfiConverterOptionString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeConsoleOutput_lift,
+            errorHandler: FfiConverterTypeConsoleError_lift
+        )
+}
+    
+    /**
+     * The coin-control summary for `outpoints` paying `pay_amounts` at
+     * `fee` (QT-072/074). `all_change_to_fee` is the CoinJoin page rule.
+     * Reads the wallet's coins; signs and reserves nothing.
+     */
+open func coinSelectionSummary(walletId: String, outpoints: [OutPoint], payAmounts: [UInt64], fee: FeeMode, allChangeToFee: Bool)async throws  -> CoinSelectionSummary  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_coin_selection_summary(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterSequenceTypeOutPoint.lower(outpoints),FfiConverterSequenceUInt64.lower(payAmounts),FfiConverterTypeFeeMode_lower(fee),FfiConverterBool.lower(allChangeToFee)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCoinSelectionSummary_lift,
+            errorHandler: FfiConverterTypeCoinsError_lift
+        )
+}
+    
+    /**
+     * Fee rules for this network (in-memory, constant on SPV).
+     */
+open func feePolicy()throws  -> FeePolicy  {
+    return try  FfiConverterTypeFeePolicy_lift(try rustCallWithError(FfiConverterTypeSendError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_fee_policy(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -1555,6 +2640,188 @@ open func signMessage(walletId: String, address: String, message: String, grantI
             freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
             liftFunc: FfiConverterString.lift,
             errorHandler: FfiConverterTypeMessageError_lift
+        )
+}
+    
+    /**
+     * The BIP44 account xpub (IOS-111). Public data, no grant; watch-only
+     * wallets return the xpub they were imported from.
+     */
+open func accountXpub(walletId: String, account: UInt32)async throws  -> AccountXpub  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_account_xpub(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterUInt32.lower(account)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeAccountXpub_lift,
+            errorHandler: FfiConverterTypeWalletError_lift
+        )
+}
+    
+    /**
+     * Registers a watch-only wallet from a BIP44 account xpub (QT-114;
+     * interim for platform-wallet `WatchOnly` registration, DESIGN-opus §2
+     * PSBT row): no vault record, `WalletInfo.watch_only = true`, sends are
+     * `send.watch_only` and PSBTs are created unsigned. Returns the wallet
+     * id. A later `import_wallet` of the matching phrase attaches the keys.
+     */
+open func importWatchOnly(xpub: String, options: WatchOnlyOptions)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_import_watch_only(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(xpub),FfiConverterTypeWatchOnlyOptions_lower(options)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeWalletError_lift
+        )
+}
+    
+    /**
+     * dash-qt "Open Wallet": loads a registered, unloaded wallet and resumes
+     * its scan from its last processed height. Idempotent. Emits
+     * `WalletLoadChanged{loaded: true}`.
+     */
+open func loadWallet(walletId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_load_wallet(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeWalletError_lift
+        )
+}
+    
+    /**
+     * Adds or removes the wallet from the load-on-startup list (dash-qt adds
+     * on Create/Open/Restore and removes on Close; the host calls this with
+     * the same rule). Persisted in dw-appdb.
+     */
+open func setLoadOnStartup(walletId: String, loadOnStartup: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_load_on_startup(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterBool.lower(loadOnStartup)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeWalletError_lift
+        )
+}
+    
+    /**
+     * dash-qt "Close Wallet": stops tracking the wallet and drops it from
+     * memory; its data, vault records and app metadata stay. Prepared,
+     * unsent payments of the wallet are abandoned. Idempotent. Emits
+     * `WalletLoadChanged{loaded: false}`.
+     */
+open func unloadWallet(walletId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_unload_wallet(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeWalletError_lift
+        )
+}
+    
+    /**
+     * Every registered wallet with its load state, in creation order.
+     * In-memory read.
+     */
+open func walletLoadStates()throws  -> [WalletLoadState]  {
+    return try  FfiConverterSequenceTypeWalletLoadState.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_wallet_load_states(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The Operations dialog content for `psbt` seen from `wallet_id`
+     * (`None` = "no wallet is loaded").
+     */
+open func analyzePsbt(walletId: String?, psbt: Psbt)async throws  -> PsbtAnalysis  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_analyze_psbt(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(walletId),FfiConverterTypePsbt_lower(psbt)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePsbtAnalysis_lift,
+            errorHandler: FfiConverterTypePsbtError_lift
+        )
+}
+    
+    /**
+     * "Broadcast Tx": finalizes a complete PSBT, checks the fee rate cap and
+     * broadcasts with `TxDraft.broadcast`'s verdict rules (accepted, never
+     * sent, or unknown). Returns the txid.
+     */
+open func broadcastPsbt(psbt: Psbt)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_broadcast_psbt(
+                        self.uniffiCloneHandle(),FfiConverterTypePsbt_lower(psbt)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypePsbtError_lift
+        )
+}
+    
+    /**
+     * "Sign Tx": signs every input the wallet owns through `VaultSigner`
+     * and returns the new PSBT. Needs a `Spend{max_duffs}` grant for the
+     * wallet covering `external_sent`; redeemed after the checks.
+     */
+open func signPsbt(walletId: String, psbt: Psbt, grantId: String)async throws  -> Psbt  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_sign_psbt(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypePsbt_lower(psbt),FfiConverterString.lower(grantId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePsbt_lift,
+            errorHandler: FfiConverterTypePsbtError_lift
         )
 }
     
@@ -1853,6 +3120,308 @@ open func syncSnapshot()throws  -> SyncSnapshot  {
 }
     
     /**
+     * Bans the peer's IP for `duration_secs` (dash-qt: 1 h, 1 d, 1 w, 1 y)
+     * and disconnects it. Persisted with the SPV data.
+     */
+open func banPeer(address: String, durationSecs: UInt64)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_ban_peer(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(address),FfiConverterUInt64.lower(durationSecs)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+open func bannedPeers()async throws  -> [BannedPeer]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_banned_peers(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeBannedPeer.lift,
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+    /**
+     * dash-qt `abortrescan`: stops the running rescan where it is; the
+     * wallets keep what was found. `false` when no rescan ran.
+     */
+open func cancelRescan()async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_cancel_rescan(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_i8,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_i8,
+            freeFunc: ffi_dashwallet_core_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+    /**
+     * Disconnects one peer (QT-147 "Disconnect"). dash-spv may dial a
+     * replacement.
+     */
+open func disconnectPeer(address: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_disconnect_peer(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(address)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+    /**
+     * The Information tab. In-memory read; re-query on `Sync` events.
+     */
+open func nodeInfo()throws  -> NodeInfo  {
+    return try  FfiConverterTypeNodeInfo_lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_node_info(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The running rescan, `None` when none runs. In-memory read.
+     */
+open func rescanProgress()throws  -> RescanProgress?  {
+    return try  FfiConverterOptionTypeRescanProgress.lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_rescan_progress(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Repair "Rebuild Index" equivalent (QT-148, DESIGN-opus §1.14): deletes
+     * the SPV chain data (`spv/`) and keeps wallets, vault and app data.
+     * SPV must be stopped (`sync.spv_running`); the next `start_spv` syncs
+     * from scratch and rescans every wallet from its birth height.
+     */
+open func resetChainData()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_reset_chain_data(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+    /**
+     * iOS "edit birth height" (IOS-113): stores a new birth height for the
+     * wallet. Lower than the current one: a rescan from it is scheduled.
+     */
+open func setBirthHeight(walletId: String, height: UInt32)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_set_birth_height(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterUInt32.lower(height)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+open func unbanPeer(subnet: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_unban_peer(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(subnet)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeSyncError_lift
+        )
+}
+    
+    /**
+     * Current node warnings, most severe first. In-memory read; re-query
+     * on `Notice` and `Sync` events.
+     */
+open func warnings()throws  -> [EngineWarning]  {
+    return try  FfiConverterSequenceTypeEngineWarning.lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_networksession_warnings(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
+     * its inputs for new payments and excludes it from balances (status
+     * `Abandoned`, amount in brackets). SPV cannot prove the transaction is
+     * in no mempool, so it may still confirm; the engine then shows it
+     * confirmed again. Emits `HistoryChanged` and `Balances`.
+     */
+open func abandonTransaction(walletId: String, txid: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_abandon_transaction(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(txid)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeTxActionError_lift
+        )
+}
+    
+    /**
+     * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
+     * unconfirmed, non-InstantSend-locked transaction of `wallet_id` (all
+     * wallets when `None`) that no peer announced since start, then
+     * schedules a rescan from the oldest dropped transaction's first-seen
+     * height. Returns how many were dropped.
+     */
+open func dropUnconfirmed(walletId: String?)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_drop_unconfirmed(
+                        self.uniffiCloneHandle(),FfiConverterOptionString.lower(walletId)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u32,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u32,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeTxActionError_lift
+        )
+}
+    
+    /**
+     * dash-qt CSV export of the filtered view (QT-093, §4.7), exact bytes:
+     * header `Confirmed`, `Watch-only` (only for watch-only wallets), `Date`
+     * (`yyyy-MM-ddTHH:mm:ss`, local time of `utc_offset_secs`), `Type`,
+     * `Label`, `Address`, `Amount (<unit name>)`, `ID`; every field quoted,
+     * quotes doubled, `,` separators, `\n` line ends; amounts signed, no
+     * separators, in `unit`. `type_names` are the 19 `TxType` display strings
+     * in `TxType` order (the host's localization); empty = dash-qt English.
+     */
+open func exportHistoryCsv(walletId: String, filter: HistoryFilter, sort: HistorySort, unit: DisplayUnit, typeNames: [String], utcOffsetSecs: Int32)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_export_history_csv(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeHistoryFilter_lower(filter),FfiConverterTypeHistorySort_lower(sort),FfiConverterTypeDisplayUnit_lower(unit),FfiConverterSequenceString.lower(typeNames),FfiConverterInt32.lower(utcOffsetSecs)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeHistoryError_lift
+        )
+}
+    
+    /**
+     * dash-qt "Resend transaction" (QT-091): announces the stored
+     * transaction to the connected peers again. Returns once announced;
+     * there is no acceptance verdict (unlike `TxDraft.broadcast`).
+     */
+open func resendTransaction(walletId: String, txid: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_resend_transaction(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(txid)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_void,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_void,
+            freeFunc: ffi_dashwallet_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeTxActionError_lift
+        )
+}
+    
+    /**
+     * dash-qt detail fields and action enablement for one transaction.
+     */
+open func txDetailExtras(walletId: String, txid: String)async throws  -> TxDetailExtras  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_tx_detail_extras(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterString.lower(txid)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTxDetailExtras_lift,
+            errorHandler: FfiConverterTypeHistoryError_lift
+        )
+}
+    
+    /**
+     * Notification rows for transactions named by a `NewTransactions`
+     * event (QT-031). Unknown txids are skipped.
+     */
+open func txNotices(walletId: String, txids: [String])async throws  -> [TxNotice]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_networksession_tx_notices(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterSequenceString.lower(txids)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeTxNotice.lift,
+            errorHandler: FfiConverterTypeHistoryError_lift
+        )
+}
+    
+    /**
      * The vault for this session's network. Cheap; returns a new handle to
      * the same engine state each time.
      */
@@ -2020,6 +3589,213 @@ public func FfiConverterTypeNetworkSession_lower(_ value: NetworkSession) -> UIn
 
 
 /**
+ * Clicks on notifications; delivered on a dw-desktop thread.
+ */
+public protocol NotificationObserver: AnyObject, Sendable {
+    
+    func onActivated(id: String, deepLink: String?) 
+    
+}
+/**
+ * Clicks on notifications; delivered on a dw-desktop thread.
+ */
+open class NotificationObserverImpl: NotificationObserver, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_notificationobserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_notificationobserver(handle, $0) }
+    }
+
+    
+
+    
+open func onActivated(id: String, deepLink: String?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_notificationobserver_on_activated(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),
+        FfiConverterOptionString.lower(deepLink),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNotificationObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceNotificationObserver = UniffiVTableCallbackInterfaceNotificationObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeNotificationObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface NotificationObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeNotificationObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface NotificationObserver: handle missing in uniffiClone")
+            }
+        },
+        onActivated: { (
+            uniffiHandle: UInt64,
+            id: RustBuffer,
+            deepLink: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeNotificationObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onActivated(
+                     id: try FfiConverterString.lift(id),
+                     deepLink: try FfiConverterOptionString.lift(deepLink)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceNotificationObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceNotificationObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitNotificationObserver() {
+    uniffi_dashwallet_core_fn_init_callback_vtable_notificationobserver(UniffiCallbackInterfaceNotificationObserver.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNotificationObserver: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<NotificationObserver>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = NotificationObserver
+
+    public static func lift(_ handle: UInt64) throws -> NotificationObserver {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return NotificationObserverImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: NotificationObserver) -> UInt64 {
+         if let rustImpl = value as? NotificationObserverImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NotificationObserver {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NotificationObserver, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNotificationObserver_lift(_ handle: UInt64) throws -> NotificationObserver {
+    return try FfiConverterTypeNotificationObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNotificationObserver_lower(_ value: NotificationObserver) -> UInt64 {
+    return FfiConverterTypeNotificationObserver.lower(value)
+}
+
+
+
+
+
+
+/**
  * A signed transaction held by the engine with its inputs reserved. Only
  * `TxDraft::broadcast` sends it; `TxDraft::abandon`, or releasing the last
  * reference while it is pending, releases the inputs.
@@ -2147,10 +3923,596 @@ public func FfiConverterTypePreparedTx_lower(_ value: PreparedTx) -> UInt64 {
 
 
 /**
+ * A partially signed transaction. Immutable: signing returns a new one.
+ */
+public protocol PsbtProtocol: AnyObject, Sendable {
+    
+    /**
+     * Base64 (clipboard form).
+     */
+    func toBase64() throws  -> String
+    
+    /**
+     * BIP174 binary (the `.psbt` file dash-qt saves).
+     */
+    func toBytes() throws  -> Data
+    
+    /**
+     * Txid of the unsigned transaction.
+     */
+    func unsignedTxid() throws  -> String
+    
+}
+/**
+ * A partially signed transaction. Immutable: signing returns a new one.
+ */
+open class Psbt: PsbtProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_psbt(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_psbt(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Base64 (clipboard form).
+     */
+open func toBase64()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypePsbtError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_psbt_to_base64(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * BIP174 binary (the `.psbt` file dash-qt saves).
+     */
+open func toBytes()throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypePsbtError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_psbt_to_bytes(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Txid of the unsigned transaction.
+     */
+open func unsignedTxid()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypePsbtError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_psbt_unsigned_txid(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbt: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = Psbt
+
+    public static func lift(_ handle: UInt64) throws -> Psbt {
+        return Psbt(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: Psbt) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Psbt {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: Psbt, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbt_lift(_ handle: UInt64) throws -> Psbt {
+    return try FfiConverterTypePsbt.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbt_lower(_ value: Psbt) -> UInt64 {
+    return FfiConverterTypePsbt.lower(value)
+}
+
+
+
+
+
+
+/**
+ * The Windows notification-area icon (`Shell_NotifyIcon` thread) or Linux
+ * StatusNotifierItem (`ksni`).
+ */
+public protocol TrayIconProtocol: AnyObject, Sendable {
+    
+    /**
+     * Replaces the menu (dash-qt disables it while a modal dialog is open).
+     */
+    func setItems(items: [TrayMenuItem]) throws 
+    
+    func setTooltip(tooltip: String) throws 
+    
+    /**
+     * "Show tray icon" off hides it without dropping the object.
+     */
+    func setVisible(visible: Bool) throws 
+    
+}
+/**
+ * The Windows notification-area icon (`Shell_NotifyIcon` thread) or Linux
+ * StatusNotifierItem (`ksni`).
+ */
+open class TrayIcon: TrayIconProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_trayicon(self.handle, $0) }
+    }
+    /**
+     * Shows the icon. `desktop.unsupported` when the session has no tray
+     * host; the host then hides "Show tray icon" / "Minimize to tray".
+     */
+public convenience init(spec: TraySpec, observer: TrayObserver)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_constructor_trayicon_new(
+        FfiConverterTypeTraySpec_lower(spec),
+        FfiConverterTypeTrayObserver_lower(observer),uniffiCallStatus
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_trayicon(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Replaces the menu (dash-qt disables it while a modal dialog is open).
+     */
+open func setItems(items: [TrayMenuItem])throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_trayicon_set_items(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeTrayMenuItem.lower(items),uniffiCallStatus
+    )
+}
+}
+    
+open func setTooltip(tooltip: String)throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_trayicon_set_tooltip(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(tooltip),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * "Show tray icon" off hides it without dropping the object.
+     */
+open func setVisible(visible: Bool)throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_trayicon_set_visible(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrayIcon: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = TrayIcon
+
+    public static func lift(_ handle: UInt64) throws -> TrayIcon {
+        return TrayIcon(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: TrayIcon) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrayIcon {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: TrayIcon, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayIcon_lift(_ handle: UInt64) throws -> TrayIcon {
+    return try FfiConverterTypeTrayIcon.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayIcon_lower(_ value: TrayIcon) -> UInt64 {
+    return FfiConverterTypeTrayIcon.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Tray events, delivered on the tray thread; must return quickly.
+ */
+public protocol TrayObserver: AnyObject, Sendable {
+    
+    /**
+     * Left click: show or hide the main window (not on macOS).
+     */
+    func onActivate() 
+    
+    func onMenuItem(id: String) 
+    
+}
+/**
+ * Tray events, delivered on the tray thread; must return quickly.
+ */
+open class TrayObserverImpl: TrayObserver, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_dashwallet_core_fn_clone_trayobserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_dashwallet_core_fn_free_trayobserver(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Left click: show or hide the main window (not on macOS).
+     */
+open func onActivate()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_trayobserver_on_activate(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+open func onMenuItem(id: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_trayobserver_on_menu_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceTrayObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceTrayObserver = UniffiVTableCallbackInterfaceTrayObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeTrayObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface TrayObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeTrayObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface TrayObserver: handle missing in uniffiClone")
+            }
+        },
+        onActivate: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeTrayObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onActivate(
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onMenuItem: { (
+            uniffiHandle: UInt64,
+            id: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeTrayObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onMenuItem(
+                     id: try FfiConverterString.lift(id)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceTrayObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceTrayObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitTrayObserver() {
+    uniffi_dashwallet_core_fn_init_callback_vtable_trayobserver(UniffiCallbackInterfaceTrayObserver.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrayObserver: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<TrayObserver>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = TrayObserver
+
+    public static func lift(_ handle: UInt64) throws -> TrayObserver {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return TrayObserverImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: TrayObserver) -> UInt64 {
+         if let rustImpl = value as? TrayObserverImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrayObserver {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: TrayObserver, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayObserver_lift(_ handle: UInt64) throws -> TrayObserver {
+    return try FfiConverterTypeTrayObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayObserver_lower(_ value: TrayObserver) -> UInt64 {
+    return FfiConverterTypeTrayObserver.lower(value)
+}
+
+
+
+
+
+
+/**
  * An editable payment for one wallet. Setters validate what they can
  * without the network; `estimate` and `prepare` read the wallet.
  */
 public protocol TxDraftProtocol: AnyObject, Sendable {
+    
+    /**
+     * dash-qt "Create Unsigned" (QT-076/077): plans the draft as `estimate`
+     * does and returns it as a PSBT with the wallet's input data (UTXOs,
+     * derivation paths) filled in. Signs and reserves nothing, needs no
+     * grant, and works for watch-only wallets.
+     */
+    func createUnsigned() async throws  -> Psbt
     
     /**
      * Discards `prepared` and releases its reserved inputs. Idempotent;
@@ -2250,6 +4612,28 @@ open class TxDraft: TxDraftProtocol, @unchecked Sendable {
 
     
 
+    
+    /**
+     * dash-qt "Create Unsigned" (QT-076/077): plans the draft as `estimate`
+     * does and returns it as a PSBT with the wallet's input data (UTXOs,
+     * derivation paths) filled in. Signs and reserves nothing, needs no
+     * grant, and works for watch-only wallets.
+     */
+open func createUnsigned()async throws  -> Psbt  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_txdraft_create_unsigned(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_u64,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_u64,
+            freeFunc: ffi_dashwallet_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypePsbt_lift,
+            errorHandler: FfiConverterTypeSendError_lift
+        )
+}
     
     /**
      * Discards `prepared` and releases its reserved inputs. Idempotent;
@@ -2511,6 +4895,39 @@ public protocol VaultProtocol: AnyObject, Sendable {
      * Unwraps the data key. Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`.
      */
     func unlock(passphrase: Data, scope: UnlockScope) async throws  -> VaultStatus
+    
+    /**
+     * Deletes the vault (files, OS-store key, quick-unlock item) once no
+     * registered wallet has secrets in it (`vault.not_empty`): the last
+     * step of "Delete All" / wipe after every wallet was removed with
+     * `remove_wallet`. `credential` must satisfy the `Wipe` row of the
+     * credential table (passphrase on an encrypted vault). Returns
+     * `NoVault` status.
+     */
+    func destroy(credential: VaultCredential) async throws  -> VaultStatus
+    
+    /**
+     * In-memory read.
+     */
+    func quickUnlockPolicy() throws  -> QuickUnlockPolicy
+    
+    /**
+     * Forgot passphrase (IOS-014, DESIGN-opus §1.8): checks that
+     * `mnemonic` + `bip39_passphrase` derive `wallet_id`
+     * (`vault.recovery_mismatch` otherwise), then replaces the vault with a
+     * new one encrypted with `new_passphrase` holding that wallet's phrase.
+     * Secrets of other wallets cannot be read without the old passphrase:
+     * they are dropped and listed in `wallets_without_secrets`. Resets the
+     * attempt throttle; removes the quick-unlock slot.
+     */
+    func recoverWithMnemonic(walletId: String, mnemonic: Data, bip39Passphrase: Data, newPassphrase: Data) async throws  -> VaultRecovery
+    
+    /**
+     * Sets the biometric spending limit (IOS-016) to one of the iOS options
+     * (`invalid_argument` otherwise). Needs a `ChangeCredential` grant
+     * issued with the passphrase.
+     */
+    func setQuickUnlockSpendLimit(grantId: String, spendLimitDuffs: UInt64) async throws  -> QuickUnlockPolicy
     
 }
 /**
@@ -2776,6 +5193,88 @@ open func unlock(passphrase: Data, scope: UnlockScope)async throws  -> VaultStat
         )
 }
     
+    /**
+     * Deletes the vault (files, OS-store key, quick-unlock item) once no
+     * registered wallet has secrets in it (`vault.not_empty`): the last
+     * step of "Delete All" / wipe after every wallet was removed with
+     * `remove_wallet`. `credential` must satisfy the `Wipe` row of the
+     * credential table (passphrase on an encrypted vault). Returns
+     * `NoVault` status.
+     */
+open func destroy(credential: VaultCredential)async throws  -> VaultStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_vault_destroy(
+                        self.uniffiCloneHandle(),FfiConverterTypeVaultCredential_lower(credential)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeVaultStatus_lift,
+            errorHandler: FfiConverterTypeVaultError_lift
+        )
+}
+    
+    /**
+     * In-memory read.
+     */
+open func quickUnlockPolicy()throws  -> QuickUnlockPolicy  {
+    return try  FfiConverterTypeQuickUnlockPolicy_lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_vault_quick_unlock_policy(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Forgot passphrase (IOS-014, DESIGN-opus §1.8): checks that
+     * `mnemonic` + `bip39_passphrase` derive `wallet_id`
+     * (`vault.recovery_mismatch` otherwise), then replaces the vault with a
+     * new one encrypted with `new_passphrase` holding that wallet's phrase.
+     * Secrets of other wallets cannot be read without the old passphrase:
+     * they are dropped and listed in `wallets_without_secrets`. Resets the
+     * attempt throttle; removes the quick-unlock slot.
+     */
+open func recoverWithMnemonic(walletId: String, mnemonic: Data, bip39Passphrase: Data, newPassphrase: Data)async throws  -> VaultRecovery  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_vault_recover_with_mnemonic(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterData.lower(mnemonic),FfiConverterData.lower(bip39Passphrase),FfiConverterData.lower(newPassphrase)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeVaultRecovery_lift,
+            errorHandler: FfiConverterTypeVaultError_lift
+        )
+}
+    
+    /**
+     * Sets the biometric spending limit (IOS-016) to one of the iOS options
+     * (`invalid_argument` otherwise). Needs a `ChangeCredential` grant
+     * issued with the passphrase.
+     */
+open func setQuickUnlockSpendLimit(grantId: String, spendLimitDuffs: UInt64)async throws  -> QuickUnlockPolicy  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_dashwallet_core_fn_method_vault_set_quick_unlock_spend_limit(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(grantId),FfiConverterUInt64.lower(spendLimitDuffs)
+                )
+            },
+            pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_dashwallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_dashwallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeQuickUnlockPolicy_lift,
+            errorHandler: FfiConverterTypeVaultError_lift
+        )
+}
+    
 
     
 }
@@ -2822,6 +5321,85 @@ public func FfiConverterTypeVault_lower(_ value: Vault) -> UInt64 {
 }
 
 
+
+
+/**
+ * An account-level extended public key (IOS-111).
+ */
+public struct AccountXpub: Equatable, Hashable {
+    /**
+     * BIP44 account index.
+     */
+    public let account: UInt32
+    /**
+     * `m/44'/5'/0'` (mainnet) or `m/44'/1'/0'` (test networks).
+     */
+    public let derivationPath: String
+    /**
+     * `xpub…` on mainnet, `tpub…` elsewhere.
+     */
+    public let xpub: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * BIP44 account index.
+         */account: UInt32, 
+        /**
+         * `m/44'/5'/0'` (mainnet) or `m/44'/1'/0'` (test networks).
+         */derivationPath: String, 
+        /**
+         * `xpub…` on mainnet, `tpub…` elsewhere.
+         */xpub: String) {
+        self.account = account
+        self.derivationPath = derivationPath
+        self.xpub = xpub
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AccountXpub: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAccountXpub: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountXpub {
+        return
+            try AccountXpub(
+                account: FfiConverterUInt32.read(from: &buf), 
+                derivationPath: FfiConverterString.read(from: &buf), 
+                xpub: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AccountXpub, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.account, into: &buf)
+        FfiConverterString.write(value.derivationPath, into: &buf)
+        FfiConverterString.write(value.xpub, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountXpub_lift(_ buf: RustBuffer) throws -> AccountXpub {
+    return try FfiConverterTypeAccountXpub.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountXpub_lower(_ value: AccountXpub) -> RustBuffer {
+    return FfiConverterTypeAccountXpub.lower(value)
+}
 
 
 public struct AddressBookEntry: Equatable, Hashable {
@@ -3128,6 +5706,287 @@ public func FfiConverterTypeAuthGrant_lower(_ value: AuthGrant) -> RustBuffer {
 }
 
 
+/**
+ * "Start on system login" entry: Windows Startup shortcut, Linux XDG
+ * autostart `.desktop` (`dashwallet[-<network>].desktop`), launched with
+ * `args` (dash-qt: `--min --chain=<network>`).
+ */
+public struct AutostartEntry: Equatable, Hashable {
+    public let appId: String
+    public let displayName: String
+    public let execPath: String
+    public let args: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(appId: String, displayName: String, execPath: String, args: [String]) {
+        self.appId = appId
+        self.displayName = displayName
+        self.execPath = execPath
+        self.args = args
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AutostartEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutostartEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutostartEntry {
+        return
+            try AutostartEntry(
+                appId: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf), 
+                execPath: FfiConverterString.read(from: &buf), 
+                args: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AutostartEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.appId, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterString.write(value.execPath, into: &buf)
+        FfiConverterSequenceString.write(value.args, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutostartEntry_lift(_ buf: RustBuffer) throws -> AutostartEntry {
+    return try FfiConverterTypeAutostartEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutostartEntry_lower(_ value: AutostartEntry) -> RustBuffer {
+    return FfiConverterTypeAutostartEntry.lower(value)
+}
+
+
+/**
+ * One backup file.
+ */
+public struct BackupInfo: Equatable, Hashable {
+    public let path: String
+    /**
+     * The wallet it holds.
+     */
+    public let walletId: String
+    public let createdAt: UInt64
+    public let sizeBytes: UInt64
+    /**
+     * Written by the rotation (QT-116), not by the user (QT-110).
+     */
+    public let automatic: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, 
+        /**
+         * The wallet it holds.
+         */walletId: String, createdAt: UInt64, sizeBytes: UInt64, 
+        /**
+         * Written by the rotation (QT-116), not by the user (QT-110).
+         */automatic: Bool) {
+        self.path = path
+        self.walletId = walletId
+        self.createdAt = createdAt
+        self.sizeBytes = sizeBytes
+        self.automatic = automatic
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BackupInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBackupInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackupInfo {
+        return
+            try BackupInfo(
+                path: FfiConverterString.read(from: &buf), 
+                walletId: FfiConverterString.read(from: &buf), 
+                createdAt: FfiConverterUInt64.read(from: &buf), 
+                sizeBytes: FfiConverterUInt64.read(from: &buf), 
+                automatic: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BackupInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterUInt64.write(value.createdAt, into: &buf)
+        FfiConverterUInt64.write(value.sizeBytes, into: &buf)
+        FfiConverterBool.write(value.automatic, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupInfo_lift(_ buf: RustBuffer) throws -> BackupInfo {
+    return try FfiConverterTypeBackupInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupInfo_lower(_ value: BackupInfo) -> RustBuffer {
+    return FfiConverterTypeBackupInfo.lower(value)
+}
+
+
+/**
+ * Automatic backup rotation (dash-qt `-createwalletbackups`, default 10,
+ * max 10; 0 = off).
+ */
+public struct BackupPolicy: Equatable, Hashable {
+    public let keep: UInt32
+    /**
+     * `<network dir>/backups` ("Show Automatic Backups").
+     */
+    public let directory: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(keep: UInt32, 
+        /**
+         * `<network dir>/backups` ("Show Automatic Backups").
+         */directory: String) {
+        self.keep = keep
+        self.directory = directory
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BackupPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBackupPolicy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackupPolicy {
+        return
+            try BackupPolicy(
+                keep: FfiConverterUInt32.read(from: &buf), 
+                directory: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BackupPolicy, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.keep, into: &buf)
+        FfiConverterString.write(value.directory, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupPolicy_lift(_ buf: RustBuffer) throws -> BackupPolicy {
+    return try FfiConverterTypeBackupPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupPolicy_lower(_ value: BackupPolicy) -> RustBuffer {
+    return FfiConverterTypeBackupPolicy.lower(value)
+}
+
+
+/**
+ * A banned peer (QT-147 "Banned peers").
+ */
+public struct BannedPeer: Equatable, Hashable {
+    /**
+     * IP or IP/netmask.
+     */
+    public let subnet: String
+    /**
+     * UNIX seconds.
+     */
+    public let bannedUntil: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * IP or IP/netmask.
+         */subnet: String, 
+        /**
+         * UNIX seconds.
+         */bannedUntil: UInt64) {
+        self.subnet = subnet
+        self.bannedUntil = bannedUntil
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BannedPeer: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBannedPeer: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BannedPeer {
+        return
+            try BannedPeer(
+                subnet: FfiConverterString.read(from: &buf), 
+                bannedUntil: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BannedPeer, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.subnet, into: &buf)
+        FfiConverterUInt64.write(value.bannedUntil, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBannedPeer_lift(_ buf: RustBuffer) throws -> BannedPeer {
+    return try FfiConverterTypeBannedPeer.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBannedPeer_lower(_ value: BannedPeer) -> RustBuffer {
+    return FfiConverterTypeBannedPeer.lower(value)
+}
+
+
 public struct BroadcastOutcome: Equatable, Hashable {
     public let txid: String
     /**
@@ -3187,6 +6046,493 @@ public func FfiConverterTypeBroadcastOutcome_lift(_ buf: RustBuffer) throws -> B
 #endif
 public func FfiConverterTypeBroadcastOutcome_lower(_ value: BroadcastOutcome) -> RustBuffer {
     return FfiConverterTypeBroadcastOutcome.lower(value)
+}
+
+
+/**
+ * The best ChainLock seen.
+ */
+public struct ChainLockInfo: Equatable, Hashable {
+    public let height: UInt32
+    public let blockHash: String
+    /**
+     * Block time of the locked block.
+     */
+    public let blockTime: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(height: UInt32, blockHash: String, 
+        /**
+         * Block time of the locked block.
+         */blockTime: UInt64?) {
+        self.height = height
+        self.blockHash = blockHash
+        self.blockTime = blockTime
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ChainLockInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChainLockInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChainLockInfo {
+        return
+            try ChainLockInfo(
+                height: FfiConverterUInt32.read(from: &buf), 
+                blockHash: FfiConverterString.read(from: &buf), 
+                blockTime: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChainLockInfo, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.height, into: &buf)
+        FfiConverterString.write(value.blockHash, into: &buf)
+        FfiConverterOptionUInt64.write(value.blockTime, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainLockInfo_lift(_ buf: RustBuffer) throws -> ChainLockInfo {
+    return try FfiConverterTypeChainLockInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainLockInfo_lower(_ value: ChainLockInfo) -> RustBuffer {
+    return FfiConverterTypeChainLockInfo.lower(value)
+}
+
+
+/**
+ * dash-qt's coin-control panel values (QT-072, §5.6), computed with its
+ * formula: bytes = 148·inputs + 34·(outputs + 1) + 10, minus 34 without
+ * change. The host prefixes "≈".
+ */
+public struct CoinSelectionSummary: Equatable, Hashable {
+    /**
+     * Selected coins that are still unspent and selectable.
+     */
+    public let quantity: UInt32
+    /**
+     * Their value.
+     */
+    public let amount: UInt64
+    public let bytes: UInt32
+    public let fee: UInt64
+    /**
+     * `amount − fee` ("After Fee").
+     */
+    public let afterFee: UInt64
+    /**
+     * Change, or 0 when dust change went to the fee.
+     */
+    public let change: UInt64
+    /**
+     * Change below the dust threshold was added to the fee (or every change
+     * on the CoinJoin page).
+     */
+    public let changeToFee: Bool
+    /**
+     * The selection does not cover the amounts plus fee ("Insufficient
+     * funds!").
+     */
+    public let insufficientFunds: Bool
+    /**
+     * The fee may vary by this many duffs per input (tooltip "Can vary
+     * +/- %1 duff(s) per input.").
+     */
+    public let feeTolerancePerInput: UInt64
+    /**
+     * Selected coins that are spent or gone (QT-074): the host unselects
+     * them and says "Some coins were unselected because they were spent."
+     */
+    public let unavailable: [OutPoint]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Selected coins that are still unspent and selectable.
+         */quantity: UInt32, 
+        /**
+         * Their value.
+         */amount: UInt64, bytes: UInt32, fee: UInt64, 
+        /**
+         * `amount − fee` ("After Fee").
+         */afterFee: UInt64, 
+        /**
+         * Change, or 0 when dust change went to the fee.
+         */change: UInt64, 
+        /**
+         * Change below the dust threshold was added to the fee (or every change
+         * on the CoinJoin page).
+         */changeToFee: Bool, 
+        /**
+         * The selection does not cover the amounts plus fee ("Insufficient
+         * funds!").
+         */insufficientFunds: Bool, 
+        /**
+         * The fee may vary by this many duffs per input (tooltip "Can vary
+         * +/- %1 duff(s) per input.").
+         */feeTolerancePerInput: UInt64, 
+        /**
+         * Selected coins that are spent or gone (QT-074): the host unselects
+         * them and says "Some coins were unselected because they were spent."
+         */unavailable: [OutPoint]) {
+        self.quantity = quantity
+        self.amount = amount
+        self.bytes = bytes
+        self.fee = fee
+        self.afterFee = afterFee
+        self.change = change
+        self.changeToFee = changeToFee
+        self.insufficientFunds = insufficientFunds
+        self.feeTolerancePerInput = feeTolerancePerInput
+        self.unavailable = unavailable
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoinSelectionSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoinSelectionSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoinSelectionSummary {
+        return
+            try CoinSelectionSummary(
+                quantity: FfiConverterUInt32.read(from: &buf), 
+                amount: FfiConverterUInt64.read(from: &buf), 
+                bytes: FfiConverterUInt32.read(from: &buf), 
+                fee: FfiConverterUInt64.read(from: &buf), 
+                afterFee: FfiConverterUInt64.read(from: &buf), 
+                change: FfiConverterUInt64.read(from: &buf), 
+                changeToFee: FfiConverterBool.read(from: &buf), 
+                insufficientFunds: FfiConverterBool.read(from: &buf), 
+                feeTolerancePerInput: FfiConverterUInt64.read(from: &buf), 
+                unavailable: FfiConverterSequenceTypeOutPoint.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoinSelectionSummary, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.quantity, into: &buf)
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterUInt32.write(value.bytes, into: &buf)
+        FfiConverterUInt64.write(value.fee, into: &buf)
+        FfiConverterUInt64.write(value.afterFee, into: &buf)
+        FfiConverterUInt64.write(value.change, into: &buf)
+        FfiConverterBool.write(value.changeToFee, into: &buf)
+        FfiConverterBool.write(value.insufficientFunds, into: &buf)
+        FfiConverterUInt64.write(value.feeTolerancePerInput, into: &buf)
+        FfiConverterSequenceTypeOutPoint.write(value.unavailable, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinSelectionSummary_lift(_ buf: RustBuffer) throws -> CoinSelectionSummary {
+    return try FfiConverterTypeCoinSelectionSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoinSelectionSummary_lower(_ value: CoinSelectionSummary) -> RustBuffer {
+    return FfiConverterTypeCoinSelectionSummary.lower(value)
+}
+
+
+/**
+ * One console command for `help` and tab completion.
+ */
+public struct ConsoleCommand: Equatable, Hashable {
+    public let name: String
+    /**
+     * Core's help category ("Wallet", "Network", "Control", …).
+     */
+    public let category: String
+    /**
+     * dash-qt redacts its arguments in the echo and history.
+     */
+    public let sensitive: Bool
+    /**
+     * Answered locally; `false` = "Not available in SPV mode."
+     */
+    public let available: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, 
+        /**
+         * Core's help category ("Wallet", "Network", "Control", …).
+         */category: String, 
+        /**
+         * dash-qt redacts its arguments in the echo and history.
+         */sensitive: Bool, 
+        /**
+         * Answered locally; `false` = "Not available in SPV mode."
+         */available: Bool) {
+        self.name = name
+        self.category = category
+        self.sensitive = sensitive
+        self.available = available
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConsoleCommand: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConsoleCommand: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConsoleCommand {
+        return
+            try ConsoleCommand(
+                name: FfiConverterString.read(from: &buf), 
+                category: FfiConverterString.read(from: &buf), 
+                sensitive: FfiConverterBool.read(from: &buf), 
+                available: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConsoleCommand, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.category, into: &buf)
+        FfiConverterBool.write(value.sensitive, into: &buf)
+        FfiConverterBool.write(value.available, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleCommand_lift(_ buf: RustBuffer) throws -> ConsoleCommand {
+    return try FfiConverterTypeConsoleCommand.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleCommand_lower(_ value: ConsoleCommand) -> RustBuffer {
+    return FfiConverterTypeConsoleCommand.lower(value)
+}
+
+
+/**
+ * A command's result as dashd prints it: JSON pretty-printed with 2-space
+ * indent, or plain text for string results (`help`).
+ */
+public struct ConsoleOutput: Equatable, Hashable {
+    public let text: String
+    public let isJson: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(text: String, isJson: Bool) {
+        self.text = text
+        self.isJson = isJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConsoleOutput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConsoleOutput: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConsoleOutput {
+        return
+            try ConsoleOutput(
+                text: FfiConverterString.read(from: &buf), 
+                isJson: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConsoleOutput, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterBool.write(value.isJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleOutput_lift(_ buf: RustBuffer) throws -> ConsoleOutput {
+    return try FfiConverterTypeConsoleOutput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleOutput_lower(_ value: ConsoleOutput) -> RustBuffer {
+    return FfiConverterTypeConsoleOutput.lower(value)
+}
+
+
+/**
+ * Whether the wallet's phrase restores the same wallet in dash-qt through
+ * "mnemonic + passphrase + `upgradetohd`" (QT-109 a).
+ */
+public struct CoreMnemonicCompatibility: Equatable, Hashable {
+    public let coreCompatible: Bool
+    public let warnings: [ExportWarning]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(coreCompatible: Bool, warnings: [ExportWarning]) {
+        self.coreCompatible = coreCompatible
+        self.warnings = warnings
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CoreMnemonicCompatibility: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMnemonicCompatibility: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMnemonicCompatibility {
+        return
+            try CoreMnemonicCompatibility(
+                coreCompatible: FfiConverterBool.read(from: &buf), 
+                warnings: FfiConverterSequenceTypeExportWarning.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMnemonicCompatibility, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.coreCompatible, into: &buf)
+        FfiConverterSequenceTypeExportWarning.write(value.warnings, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMnemonicCompatibility_lift(_ buf: RustBuffer) throws -> CoreMnemonicCompatibility {
+    return try FfiConverterTypeCoreMnemonicCompatibility.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMnemonicCompatibility_lower(_ value: CoreMnemonicCompatibility) -> RustBuffer {
+    return FfiConverterTypeCoreMnemonicCompatibility.lower(value)
+}
+
+
+public struct DesktopNotification: Equatable, Hashable {
+    /**
+     * Replaces an earlier notification with the same id.
+     */
+    public let id: String
+    public let title: String
+    public let body: String
+    /**
+     * Returned in `NotificationObserver::on_activated` (e.g. a txid route).
+     */
+    public let deepLink: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Replaces an earlier notification with the same id.
+         */id: String, title: String, body: String, 
+        /**
+         * Returned in `NotificationObserver::on_activated` (e.g. a txid route).
+         */deepLink: String?) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.deepLink = deepLink
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DesktopNotification: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDesktopNotification: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DesktopNotification {
+        return
+            try DesktopNotification(
+                id: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                body: FfiConverterString.read(from: &buf), 
+                deepLink: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DesktopNotification, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterString.write(value.body, into: &buf)
+        FfiConverterOptionString.write(value.deepLink, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopNotification_lift(_ buf: RustBuffer) throws -> DesktopNotification {
+    return try FfiConverterTypeDesktopNotification.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopNotification_lower(_ value: DesktopNotification) -> RustBuffer {
+    return FfiConverterTypeDesktopNotification.lower(value)
 }
 
 
@@ -3253,6 +6599,293 @@ public func FfiConverterTypeEngineConfig_lift(_ buf: RustBuffer) throws -> Engin
 #endif
 public func FfiConverterTypeEngineConfig_lower(_ value: EngineConfig) -> RustBuffer {
     return FfiConverterTypeEngineConfig.lower(value)
+}
+
+
+public struct EngineWarning: Equatable, Hashable {
+    public let code: WarningCode
+    /**
+     * Diagnostic text for logs only.
+     */
+    public let detail: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(code: WarningCode, 
+        /**
+         * Diagnostic text for logs only.
+         */detail: String) {
+        self.code = code
+        self.detail = detail
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EngineWarning: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEngineWarning: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EngineWarning {
+        return
+            try EngineWarning(
+                code: FfiConverterTypeWarningCode.read(from: &buf), 
+                detail: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EngineWarning, into buf: inout [UInt8]) {
+        FfiConverterTypeWarningCode.write(value.code, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngineWarning_lift(_ buf: RustBuffer) throws -> EngineWarning {
+    return try FfiConverterTypeEngineWarning.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngineWarning_lower(_ value: EngineWarning) -> RustBuffer {
+    return FfiConverterTypeEngineWarning.lower(value)
+}
+
+
+public struct ExportReport: Equatable, Hashable {
+    public let path: String
+    public let format: CoreExportFormat
+    public let keyCount: UInt32
+    public let warnings: [ExportWarning]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, format: CoreExportFormat, keyCount: UInt32, warnings: [ExportWarning]) {
+        self.path = path
+        self.format = format
+        self.keyCount = keyCount
+        self.warnings = warnings
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ExportReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExportReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExportReport {
+        return
+            try ExportReport(
+                path: FfiConverterString.read(from: &buf), 
+                format: FfiConverterTypeCoreExportFormat.read(from: &buf), 
+                keyCount: FfiConverterUInt32.read(from: &buf), 
+                warnings: FfiConverterSequenceTypeExportWarning.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ExportReport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterTypeCoreExportFormat.write(value.format, into: &buf)
+        FfiConverterUInt32.write(value.keyCount, into: &buf)
+        FfiConverterSequenceTypeExportWarning.write(value.warnings, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportReport_lift(_ buf: RustBuffer) throws -> ExportReport {
+    return try FfiConverterTypeExportReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportReport_lower(_ value: ExportReport) -> RustBuffer {
+    return FfiConverterTypeExportReport.lower(value)
+}
+
+
+/**
+ * Fee rules the send page and the Options dialog show (QT-057/058).
+ */
+public struct FeePolicy: Equatable, Hashable {
+    public let source: FeeSource
+    /**
+     * Minimum relay fee, duff/kB (1000); the floor of a custom rate.
+     */
+    public let minRelayPerKb: UInt64
+    /**
+     * Highest custom rate the engine accepts, duff/kB.
+     */
+    public let maxCustomPerKb: UInt64
+    /**
+     * Highest absolute fee (`send.absurd_fee` above it): 0.1 DASH, dash-qt
+     * `-maxtxfee`.
+     */
+    public let maxTxFee: UInt64
+    /**
+     * Highest fee rate `broadcast_psbt` accepts, duff/kB (0.1 DASH/kB, as
+     * dash-qt's PSBT dialog).
+     */
+    public let maxBroadcastRatePerKb: UInt64
+    /**
+     * One row per dash-qt target, ascending.
+     */
+    public let targets: [FeeTarget]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(source: FeeSource, 
+        /**
+         * Minimum relay fee, duff/kB (1000); the floor of a custom rate.
+         */minRelayPerKb: UInt64, 
+        /**
+         * Highest custom rate the engine accepts, duff/kB.
+         */maxCustomPerKb: UInt64, 
+        /**
+         * Highest absolute fee (`send.absurd_fee` above it): 0.1 DASH, dash-qt
+         * `-maxtxfee`.
+         */maxTxFee: UInt64, 
+        /**
+         * Highest fee rate `broadcast_psbt` accepts, duff/kB (0.1 DASH/kB, as
+         * dash-qt's PSBT dialog).
+         */maxBroadcastRatePerKb: UInt64, 
+        /**
+         * One row per dash-qt target, ascending.
+         */targets: [FeeTarget]) {
+        self.source = source
+        self.minRelayPerKb = minRelayPerKb
+        self.maxCustomPerKb = maxCustomPerKb
+        self.maxTxFee = maxTxFee
+        self.maxBroadcastRatePerKb = maxBroadcastRatePerKb
+        self.targets = targets
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FeePolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFeePolicy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeePolicy {
+        return
+            try FeePolicy(
+                source: FfiConverterTypeFeeSource.read(from: &buf), 
+                minRelayPerKb: FfiConverterUInt64.read(from: &buf), 
+                maxCustomPerKb: FfiConverterUInt64.read(from: &buf), 
+                maxTxFee: FfiConverterUInt64.read(from: &buf), 
+                maxBroadcastRatePerKb: FfiConverterUInt64.read(from: &buf), 
+                targets: FfiConverterSequenceTypeFeeTarget.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FeePolicy, into buf: inout [UInt8]) {
+        FfiConverterTypeFeeSource.write(value.source, into: &buf)
+        FfiConverterUInt64.write(value.minRelayPerKb, into: &buf)
+        FfiConverterUInt64.write(value.maxCustomPerKb, into: &buf)
+        FfiConverterUInt64.write(value.maxTxFee, into: &buf)
+        FfiConverterUInt64.write(value.maxBroadcastRatePerKb, into: &buf)
+        FfiConverterSequenceTypeFeeTarget.write(value.targets, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeePolicy_lift(_ buf: RustBuffer) throws -> FeePolicy {
+    return try FfiConverterTypeFeePolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeePolicy_lower(_ value: FeePolicy) -> RustBuffer {
+    return FfiConverterTypeFeePolicy.lower(value)
+}
+
+
+/**
+ * One confirmation target of dash-qt's fee drop-down (QT-057: 2, 4, 6, 12,
+ * 24, 48, 144, 504, 1008 blocks).
+ */
+public struct FeeTarget: Equatable, Hashable {
+    public let targetBlocks: UInt32
+    public let duffsPerKb: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(targetBlocks: UInt32, duffsPerKb: UInt64) {
+        self.targetBlocks = targetBlocks
+        self.duffsPerKb = duffsPerKb
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FeeTarget: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFeeTarget: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeeTarget {
+        return
+            try FeeTarget(
+                targetBlocks: FfiConverterUInt32.read(from: &buf), 
+                duffsPerKb: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FeeTarget, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.targetBlocks, into: &buf)
+        FfiConverterUInt64.write(value.duffsPerKb, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeTarget_lift(_ buf: RustBuffer) throws -> FeeTarget {
+    return try FfiConverterTypeFeeTarget.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeTarget_lower(_ value: FeeTarget) -> RustBuffer {
+    return FfiConverterTypeFeeTarget.lower(value)
 }
 
 
@@ -3609,6 +7242,210 @@ public func FfiConverterTypeImportOptions_lower(_ value: ImportOptions) -> RustB
 
 
 /**
+ * Result of an import (QT-106…108).
+ */
+public struct ImportReport: Equatable, Hashable {
+    public let walletId: String
+    /**
+     * Address-book entries and labels carried over.
+     */
+    public let labelsImported: UInt32
+    /**
+     * Loose WIF keys and scripts left out (no loose-key accounts; sweep is
+     * M5). The host tells the user how many.
+     */
+    public let keysNotImported: UInt32
+    public let scriptsNotImported: UInt32
+    /**
+     * The seed was derived with Dash Core's BIP39 quirks (QT-104).
+     */
+    public let coreCompatSeed: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(walletId: String, 
+        /**
+         * Address-book entries and labels carried over.
+         */labelsImported: UInt32, 
+        /**
+         * Loose WIF keys and scripts left out (no loose-key accounts; sweep is
+         * M5). The host tells the user how many.
+         */keysNotImported: UInt32, scriptsNotImported: UInt32, 
+        /**
+         * The seed was derived with Dash Core's BIP39 quirks (QT-104).
+         */coreCompatSeed: Bool) {
+        self.walletId = walletId
+        self.labelsImported = labelsImported
+        self.keysNotImported = keysNotImported
+        self.scriptsNotImported = scriptsNotImported
+        self.coreCompatSeed = coreCompatSeed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ImportReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeImportReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ImportReport {
+        return
+            try ImportReport(
+                walletId: FfiConverterString.read(from: &buf), 
+                labelsImported: FfiConverterUInt32.read(from: &buf), 
+                keysNotImported: FfiConverterUInt32.read(from: &buf), 
+                scriptsNotImported: FfiConverterUInt32.read(from: &buf), 
+                coreCompatSeed: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ImportReport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterUInt32.write(value.labelsImported, into: &buf)
+        FfiConverterUInt32.write(value.keysNotImported, into: &buf)
+        FfiConverterUInt32.write(value.scriptsNotImported, into: &buf)
+        FfiConverterBool.write(value.coreCompatSeed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeImportReport_lift(_ buf: RustBuffer) throws -> ImportReport {
+    return try FfiConverterTypeImportReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeImportReport_lower(_ value: ImportReport) -> RustBuffer {
+    return FfiConverterTypeImportReport.lower(value)
+}
+
+
+public struct LogExport: Equatable, Hashable {
+    public let path: String
+    public let fileCount: UInt32
+    public let sizeBytes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, fileCount: UInt32, sizeBytes: UInt64) {
+        self.path = path
+        self.fileCount = fileCount
+        self.sizeBytes = sizeBytes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LogExport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLogExport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LogExport {
+        return
+            try LogExport(
+                path: FfiConverterString.read(from: &buf), 
+                fileCount: FfiConverterUInt32.read(from: &buf), 
+                sizeBytes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LogExport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterUInt32.write(value.fileCount, into: &buf)
+        FfiConverterUInt64.write(value.sizeBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogExport_lift(_ buf: RustBuffer) throws -> LogExport {
+    return try FfiConverterTypeLogExport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogExport_lower(_ value: LogExport) -> RustBuffer {
+    return FfiConverterTypeLogExport.lower(value)
+}
+
+
+/**
+ * A count of masternodes from the SML ("Total: X (Enabled: Y)").
+ */
+public struct MasternodeCount: Equatable, Hashable {
+    public let total: UInt32
+    public let enabled: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(total: UInt32, enabled: UInt32) {
+        self.total = total
+        self.enabled = enabled
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MasternodeCount: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasternodeCount: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasternodeCount {
+        return
+            try MasternodeCount(
+                total: FfiConverterUInt32.read(from: &buf), 
+                enabled: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MasternodeCount, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.total, into: &buf)
+        FfiConverterUInt32.write(value.enabled, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeCount_lift(_ buf: RustBuffer) throws -> MasternodeCount {
+    return try FfiConverterTypeMasternodeCount.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasternodeCount_lower(_ value: MasternodeCount) -> RustBuffer {
+    return FfiConverterTypeMasternodeCount.lower(value)
+}
+
+
+/**
  * Word-by-word validation for the restore screen.
  */
 public struct MnemonicCheck: Equatable, Hashable {
@@ -3682,6 +7519,253 @@ public func FfiConverterTypeMnemonicCheck_lift(_ buf: RustBuffer) throws -> Mnem
 #endif
 public func FfiConverterTypeMnemonicCheck_lower(_ value: MnemonicCheck) -> RustBuffer {
     return FfiConverterTypeMnemonicCheck.lower(value)
+}
+
+
+/**
+ * What the data root holds for one network, read without opening it
+ * (IOS-009 existing-wallet detection on first run or reinstall).
+ */
+public struct NetworkDataInfo: Equatable, Hashable {
+    public let network: DashNetwork
+    /**
+     * The network directory.
+     */
+    public let directory: String
+    /**
+     * `wallet.sqlite` exists.
+     */
+    public let hasWalletState: Bool
+    /**
+     * A vault file exists in `vault/`.
+     */
+    public let hasVault: Bool
+    /**
+     * The OS secret store holds slot O of this network's vault (an
+     * unencrypted vault whose files may have been deleted).
+     */
+    public let hasOsStoreKey: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(network: DashNetwork, 
+        /**
+         * The network directory.
+         */directory: String, 
+        /**
+         * `wallet.sqlite` exists.
+         */hasWalletState: Bool, 
+        /**
+         * A vault file exists in `vault/`.
+         */hasVault: Bool, 
+        /**
+         * The OS secret store holds slot O of this network's vault (an
+         * unencrypted vault whose files may have been deleted).
+         */hasOsStoreKey: Bool) {
+        self.network = network
+        self.directory = directory
+        self.hasWalletState = hasWalletState
+        self.hasVault = hasVault
+        self.hasOsStoreKey = hasOsStoreKey
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NetworkDataInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkDataInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkDataInfo {
+        return
+            try NetworkDataInfo(
+                network: FfiConverterTypeDashNetwork.read(from: &buf), 
+                directory: FfiConverterString.read(from: &buf), 
+                hasWalletState: FfiConverterBool.read(from: &buf), 
+                hasVault: FfiConverterBool.read(from: &buf), 
+                hasOsStoreKey: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NetworkDataInfo, into buf: inout [UInt8]) {
+        FfiConverterTypeDashNetwork.write(value.network, into: &buf)
+        FfiConverterString.write(value.directory, into: &buf)
+        FfiConverterBool.write(value.hasWalletState, into: &buf)
+        FfiConverterBool.write(value.hasVault, into: &buf)
+        FfiConverterBool.write(value.hasOsStoreKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkDataInfo_lift(_ buf: RustBuffer) throws -> NetworkDataInfo {
+    return try FfiConverterTypeNetworkDataInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkDataInfo_lower(_ value: NetworkDataInfo) -> RustBuffer {
+    return FfiConverterTypeNetworkDataInfo.lower(value)
+}
+
+
+/**
+ * dash-qt Tools → Information (QT-143, §14.1).
+ */
+public struct NodeInfo: Equatable, Hashable {
+    /**
+     * `core_version()`.
+     */
+    public let clientVersion: String
+    /**
+     * The user agent sent to peers, e.g. `/dashwallet-desktop:0.1.0/`.
+     */
+    public let userAgent: String
+    public let dataDir: String
+    /**
+     * When this session opened, UNIX seconds ("Startup time").
+     */
+    public let startupTime: UInt64
+    public let network: DashNetwork
+    public let connectionsIn: UInt32
+    public let connectionsOut: UInt32
+    /**
+     * SPV does not listen: always empty.
+     */
+    public let localAddresses: [String]
+    public let tipHeight: UInt32?
+    public let tipTime: UInt64?
+    public let tipHash: String?
+    public let bestChainlock: ChainLockInfo?
+    /**
+     * From the synced SML; `None` before the masternode phase finished.
+     */
+    public let masternodes: MasternodeCount?
+    public let evonodes: MasternodeCount?
+    /**
+     * Full node only (mempool, InstantSend counters, credit pool, quorum
+     * health): `None` on SPV.
+     */
+    public let mempoolTxCount: UInt32?
+    public let mempoolUsageBytes: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `core_version()`.
+         */clientVersion: String, 
+        /**
+         * The user agent sent to peers, e.g. `/dashwallet-desktop:0.1.0/`.
+         */userAgent: String, dataDir: String, 
+        /**
+         * When this session opened, UNIX seconds ("Startup time").
+         */startupTime: UInt64, network: DashNetwork, connectionsIn: UInt32, connectionsOut: UInt32, 
+        /**
+         * SPV does not listen: always empty.
+         */localAddresses: [String], tipHeight: UInt32?, tipTime: UInt64?, tipHash: String?, bestChainlock: ChainLockInfo?, 
+        /**
+         * From the synced SML; `None` before the masternode phase finished.
+         */masternodes: MasternodeCount?, evonodes: MasternodeCount?, 
+        /**
+         * Full node only (mempool, InstantSend counters, credit pool, quorum
+         * health): `None` on SPV.
+         */mempoolTxCount: UInt32?, mempoolUsageBytes: UInt64?) {
+        self.clientVersion = clientVersion
+        self.userAgent = userAgent
+        self.dataDir = dataDir
+        self.startupTime = startupTime
+        self.network = network
+        self.connectionsIn = connectionsIn
+        self.connectionsOut = connectionsOut
+        self.localAddresses = localAddresses
+        self.tipHeight = tipHeight
+        self.tipTime = tipTime
+        self.tipHash = tipHash
+        self.bestChainlock = bestChainlock
+        self.masternodes = masternodes
+        self.evonodes = evonodes
+        self.mempoolTxCount = mempoolTxCount
+        self.mempoolUsageBytes = mempoolUsageBytes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NodeInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNodeInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NodeInfo {
+        return
+            try NodeInfo(
+                clientVersion: FfiConverterString.read(from: &buf), 
+                userAgent: FfiConverterString.read(from: &buf), 
+                dataDir: FfiConverterString.read(from: &buf), 
+                startupTime: FfiConverterUInt64.read(from: &buf), 
+                network: FfiConverterTypeDashNetwork.read(from: &buf), 
+                connectionsIn: FfiConverterUInt32.read(from: &buf), 
+                connectionsOut: FfiConverterUInt32.read(from: &buf), 
+                localAddresses: FfiConverterSequenceString.read(from: &buf), 
+                tipHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                tipTime: FfiConverterOptionUInt64.read(from: &buf), 
+                tipHash: FfiConverterOptionString.read(from: &buf), 
+                bestChainlock: FfiConverterOptionTypeChainLockInfo.read(from: &buf), 
+                masternodes: FfiConverterOptionTypeMasternodeCount.read(from: &buf), 
+                evonodes: FfiConverterOptionTypeMasternodeCount.read(from: &buf), 
+                mempoolTxCount: FfiConverterOptionUInt32.read(from: &buf), 
+                mempoolUsageBytes: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NodeInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.clientVersion, into: &buf)
+        FfiConverterString.write(value.userAgent, into: &buf)
+        FfiConverterString.write(value.dataDir, into: &buf)
+        FfiConverterUInt64.write(value.startupTime, into: &buf)
+        FfiConverterTypeDashNetwork.write(value.network, into: &buf)
+        FfiConverterUInt32.write(value.connectionsIn, into: &buf)
+        FfiConverterUInt32.write(value.connectionsOut, into: &buf)
+        FfiConverterSequenceString.write(value.localAddresses, into: &buf)
+        FfiConverterOptionUInt32.write(value.tipHeight, into: &buf)
+        FfiConverterOptionUInt64.write(value.tipTime, into: &buf)
+        FfiConverterOptionString.write(value.tipHash, into: &buf)
+        FfiConverterOptionTypeChainLockInfo.write(value.bestChainlock, into: &buf)
+        FfiConverterOptionTypeMasternodeCount.write(value.masternodes, into: &buf)
+        FfiConverterOptionTypeMasternodeCount.write(value.evonodes, into: &buf)
+        FfiConverterOptionUInt32.write(value.mempoolTxCount, into: &buf)
+        FfiConverterOptionUInt64.write(value.mempoolUsageBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeInfo_lift(_ buf: RustBuffer) throws -> NodeInfo {
+    return try FfiConverterTypeNodeInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeInfo_lower(_ value: NodeInfo) -> RustBuffer {
+    return FfiConverterTypeNodeInfo.lower(value)
 }
 
 
@@ -4162,6 +8246,176 @@ public func FfiConverterTypePreparedTxSummary_lower(_ value: PreparedTxSummary) 
 
 
 /**
+ * PSBT Operations dialog content (QT-079).
+ */
+public struct PsbtAnalysis: Equatable, Hashable {
+    public let outputs: [PsbtOutput]
+    /**
+     * `None` while input values are missing.
+     */
+    public let fee: UInt64?
+    /**
+     * Sum of outputs not paying the wallet plus fee; `None` like `fee`.
+     */
+    public let total: UInt64?
+    /**
+     * "Transaction has %1 unsigned inputs."
+     */
+    public let unsignedInputs: UInt32
+    public let status: PsbtStatus
+    public let signability: PsbtSignability
+    /**
+     * Value paid to scripts the wallet does not own; a signing `Spend`
+     * grant must cover it (same cap as `TxDraft.prepare`).
+     */
+    public let externalSent: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outputs: [PsbtOutput], 
+        /**
+         * `None` while input values are missing.
+         */fee: UInt64?, 
+        /**
+         * Sum of outputs not paying the wallet plus fee; `None` like `fee`.
+         */total: UInt64?, 
+        /**
+         * "Transaction has %1 unsigned inputs."
+         */unsignedInputs: UInt32, status: PsbtStatus, signability: PsbtSignability, 
+        /**
+         * Value paid to scripts the wallet does not own; a signing `Spend`
+         * grant must cover it (same cap as `TxDraft.prepare`).
+         */externalSent: UInt64?) {
+        self.outputs = outputs
+        self.fee = fee
+        self.total = total
+        self.unsignedInputs = unsignedInputs
+        self.status = status
+        self.signability = signability
+        self.externalSent = externalSent
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PsbtAnalysis: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbtAnalysis: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PsbtAnalysis {
+        return
+            try PsbtAnalysis(
+                outputs: FfiConverterSequenceTypePsbtOutput.read(from: &buf), 
+                fee: FfiConverterOptionUInt64.read(from: &buf), 
+                total: FfiConverterOptionUInt64.read(from: &buf), 
+                unsignedInputs: FfiConverterUInt32.read(from: &buf), 
+                status: FfiConverterTypePsbtStatus.read(from: &buf), 
+                signability: FfiConverterTypePsbtSignability.read(from: &buf), 
+                externalSent: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PsbtAnalysis, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypePsbtOutput.write(value.outputs, into: &buf)
+        FfiConverterOptionUInt64.write(value.fee, into: &buf)
+        FfiConverterOptionUInt64.write(value.total, into: &buf)
+        FfiConverterUInt32.write(value.unsignedInputs, into: &buf)
+        FfiConverterTypePsbtStatus.write(value.status, into: &buf)
+        FfiConverterTypePsbtSignability.write(value.signability, into: &buf)
+        FfiConverterOptionUInt64.write(value.externalSent, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtAnalysis_lift(_ buf: RustBuffer) throws -> PsbtAnalysis {
+    return try FfiConverterTypePsbtAnalysis.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtAnalysis_lower(_ value: PsbtAnalysis) -> RustBuffer {
+    return FfiConverterTypePsbtAnalysis.lower(value)
+}
+
+
+/**
+ * One output line of the PSBT Operations dialog (" * Sends %1 to %2").
+ */
+public struct PsbtOutput: Equatable, Hashable {
+    public let address: String?
+    public let amount: UInt64
+    /**
+     * " (own address)".
+     */
+    public let isMine: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(address: String?, amount: UInt64, 
+        /**
+         * " (own address)".
+         */isMine: Bool) {
+        self.address = address
+        self.amount = amount
+        self.isMine = isMine
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PsbtOutput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbtOutput: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PsbtOutput {
+        return
+            try PsbtOutput(
+                address: FfiConverterOptionString.read(from: &buf), 
+                amount: FfiConverterUInt64.read(from: &buf), 
+                isMine: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PsbtOutput, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.address, into: &buf)
+        FfiConverterUInt64.write(value.amount, into: &buf)
+        FfiConverterBool.write(value.isMine, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtOutput_lift(_ buf: RustBuffer) throws -> PsbtOutput {
+    return try FfiConverterTypePsbtOutput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtOutput_lower(_ value: PsbtOutput) -> RustBuffer {
+    return FfiConverterTypePsbtOutput.lower(value)
+}
+
+
+/**
  * QR code modules, row-major: `modules[y * size + x]`, `true` = dark.
  * Error correction level L; no quiet zone.
  */
@@ -4216,6 +8470,94 @@ public func FfiConverterTypeQrMatrix_lift(_ buf: RustBuffer) throws -> QrMatrix 
 #endif
 public func FfiConverterTypeQrMatrix_lower(_ value: QrMatrix) -> RustBuffer {
     return FfiConverterTypeQrMatrix.lower(value)
+}
+
+
+/**
+ * Biometric quick-unlock rules, enforced by `Vault.authorize` (DESIGN-opus
+ * §1.8): a `QuickUnlock` credential issues a `Spend` grant only up to
+ * `spend_limit_duffs` (`vault.quick_unlock_limit_exceeded` above) and only
+ * while the passphrase was entered within `passphrase_max_age_secs`
+ * (`vault.passphrase_stale` after). Never for `RevealSecret`,
+ * `ChangeCredential` or `Wipe` (`vault.credential_required`).
+ */
+public struct QuickUnlockPolicy: Equatable, Hashable {
+    public let enrolled: Bool
+    /**
+     * iOS options 0, 0.1, 0.5 (default), 1 and 5 DASH, in duffs.
+     */
+    public let spendLimitDuffs: UInt64
+    /**
+     * 7 days.
+     */
+    public let passphraseMaxAgeSecs: UInt64
+    /**
+     * Last successful passphrase entry (unlock or passphrase grant).
+     */
+    public let lastPassphraseAt: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(enrolled: Bool, 
+        /**
+         * iOS options 0, 0.1, 0.5 (default), 1 and 5 DASH, in duffs.
+         */spendLimitDuffs: UInt64, 
+        /**
+         * 7 days.
+         */passphraseMaxAgeSecs: UInt64, 
+        /**
+         * Last successful passphrase entry (unlock or passphrase grant).
+         */lastPassphraseAt: UInt64?) {
+        self.enrolled = enrolled
+        self.spendLimitDuffs = spendLimitDuffs
+        self.passphraseMaxAgeSecs = passphraseMaxAgeSecs
+        self.lastPassphraseAt = lastPassphraseAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension QuickUnlockPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeQuickUnlockPolicy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> QuickUnlockPolicy {
+        return
+            try QuickUnlockPolicy(
+                enrolled: FfiConverterBool.read(from: &buf), 
+                spendLimitDuffs: FfiConverterUInt64.read(from: &buf), 
+                passphraseMaxAgeSecs: FfiConverterUInt64.read(from: &buf), 
+                lastPassphraseAt: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: QuickUnlockPolicy, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.enrolled, into: &buf)
+        FfiConverterUInt64.write(value.spendLimitDuffs, into: &buf)
+        FfiConverterUInt64.write(value.passphraseMaxAgeSecs, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastPassphraseAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuickUnlockPolicy_lift(_ buf: RustBuffer) throws -> QuickUnlockPolicy {
+    return try FfiConverterTypeQuickUnlockPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuickUnlockPolicy_lower(_ value: QuickUnlockPolicy) -> RustBuffer {
+    return FfiConverterTypeQuickUnlockPolicy.lower(value)
 }
 
 
@@ -4404,6 +8746,77 @@ public func FfiConverterTypeRecipient_lift(_ buf: RustBuffer) throws -> Recipien
 #endif
 public func FfiConverterTypeRecipient_lower(_ value: Recipient) -> RustBuffer {
     return FfiConverterTypeRecipient.lower(value)
+}
+
+
+/**
+ * A running rescan (QT-117 progress dialog, IOS-113).
+ */
+public struct RescanProgress: Equatable, Hashable {
+    public let fromHeight: UInt32
+    /**
+     * Last filter height scanned.
+     */
+    public let currentHeight: UInt32?
+    public let targetHeight: UInt32?
+    public let startedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fromHeight: UInt32, 
+        /**
+         * Last filter height scanned.
+         */currentHeight: UInt32?, targetHeight: UInt32?, startedAt: UInt64) {
+        self.fromHeight = fromHeight
+        self.currentHeight = currentHeight
+        self.targetHeight = targetHeight
+        self.startedAt = startedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RescanProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRescanProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RescanProgress {
+        return
+            try RescanProgress(
+                fromHeight: FfiConverterUInt32.read(from: &buf), 
+                currentHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                targetHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                startedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RescanProgress, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.fromHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.currentHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.targetHeight, into: &buf)
+        FfiConverterUInt64.write(value.startedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRescanProgress_lift(_ buf: RustBuffer) throws -> RescanProgress {
+    return try FfiConverterTypeRescanProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRescanProgress_lower(_ value: RescanProgress) -> RustBuffer {
+    return FfiConverterTypeRescanProgress.lower(value)
 }
 
 
@@ -4742,6 +9155,154 @@ public func FfiConverterTypeSyncSnapshot_lower(_ value: SyncSnapshot) -> RustBuf
 }
 
 
+public struct TrayMenuItem: Equatable, Hashable {
+    /**
+     * Reported back in `TrayObserver::on_menu_item`; empty for separators.
+     */
+    public let id: String
+    /**
+     * Localized by the host.
+     */
+    public let title: String
+    public let enabled: Bool
+    public let separator: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Reported back in `TrayObserver::on_menu_item`; empty for separators.
+         */id: String, 
+        /**
+         * Localized by the host.
+         */title: String, enabled: Bool, separator: Bool) {
+        self.id = id
+        self.title = title
+        self.enabled = enabled
+        self.separator = separator
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TrayMenuItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrayMenuItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrayMenuItem {
+        return
+            try TrayMenuItem(
+                id: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                enabled: FfiConverterBool.read(from: &buf), 
+                separator: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrayMenuItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterBool.write(value.separator, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayMenuItem_lift(_ buf: RustBuffer) throws -> TrayMenuItem {
+    return try FfiConverterTypeTrayMenuItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrayMenuItem_lower(_ value: TrayMenuItem) -> RustBuffer {
+    return FfiConverterTypeTrayMenuItem.lower(value)
+}
+
+
+public struct TraySpec: Equatable, Hashable {
+    public let appId: String
+    /**
+     * "Dash Wallet client" + network text.
+     */
+    public let tooltip: String
+    /**
+     * PNG, network-tinted by the host.
+     */
+    public let iconPng: Data
+    public let items: [TrayMenuItem]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(appId: String, 
+        /**
+         * "Dash Wallet client" + network text.
+         */tooltip: String, 
+        /**
+         * PNG, network-tinted by the host.
+         */iconPng: Data, items: [TrayMenuItem]) {
+        self.appId = appId
+        self.tooltip = tooltip
+        self.iconPng = iconPng
+        self.items = items
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TraySpec: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTraySpec: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TraySpec {
+        return
+            try TraySpec(
+                appId: FfiConverterString.read(from: &buf), 
+                tooltip: FfiConverterString.read(from: &buf), 
+                iconPng: FfiConverterData.read(from: &buf), 
+                items: FfiConverterSequenceTypeTrayMenuItem.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TraySpec, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.appId, into: &buf)
+        FfiConverterString.write(value.tooltip, into: &buf)
+        FfiConverterData.write(value.iconPng, into: &buf)
+        FfiConverterSequenceTypeTrayMenuItem.write(value.items, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTraySpec_lift(_ buf: RustBuffer) throws -> TraySpec {
+    return try FfiConverterTypeTraySpec.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTraySpec_lower(_ value: TraySpec) -> RustBuffer {
+    return FfiConverterTypeTraySpec.lower(value)
+}
+
+
 /**
  * Transaction details dialog (QT-092, IOS-031).
  */
@@ -4852,6 +9413,170 @@ public func FfiConverterTypeTxDetail_lift(_ buf: RustBuffer) throws -> TxDetail 
 #endif
 public func FfiConverterTypeTxDetail_lower(_ value: TxDetail) -> RustBuffer {
     return FfiConverterTypeTxDetail.lower(value)
+}
+
+
+/**
+ * The dash-qt details-dialog fields `TxDetail` lacks (QT-092 §4.6, QT-091
+ * enablement, IOS-031).
+ */
+public struct TxDetailExtras: Equatable, Hashable {
+    public let txid: String
+    public let isCoinbase: Bool
+    /**
+     * Sum of outputs paying this wallet ("Total credit").
+     */
+    public let totalCredit: UInt64
+    /**
+     * Sum of this wallet's inputs ("Total debit"); `None` when an input
+     * value is unknown.
+     */
+    public let totalDebit: UInt64?
+    /**
+     * "Net amount".
+     */
+    public let net: Int64
+    /**
+     * Immature coinbase: blocks until mature ("matures in %n more block(s)").
+     */
+    public let maturesIn: UInt32?
+    /**
+     * Whether a peer has the transaction in its mempool. SPV cannot see
+     * mempools: `None` unless the engine saw an announcement since start
+     * (DESIGN-opus §1.14). Never guessed.
+     */
+    public let inMempool: Bool?
+    public let abandoned: Bool
+    /**
+     * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
+     * unconfirmed, no InstantSend lock, and not known to be in a mempool.
+     */
+    public let canAbandon: Bool
+    /**
+     * dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
+     * not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
+     */
+    public let canResend: Bool
+    /**
+     * Dust-locked outputs of this transaction ("Unlock dust UTXO" on
+     * DustReceive rows, QT-075); release with `unlock_outpoints`.
+     */
+    public let dustLockedOutputs: [OutPoint]
+    /**
+     * When this engine last announced the transaction (send or resend).
+     */
+    public let lastAnnouncedAt: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(txid: String, isCoinbase: Bool, 
+        /**
+         * Sum of outputs paying this wallet ("Total credit").
+         */totalCredit: UInt64, 
+        /**
+         * Sum of this wallet's inputs ("Total debit"); `None` when an input
+         * value is unknown.
+         */totalDebit: UInt64?, 
+        /**
+         * "Net amount".
+         */net: Int64, 
+        /**
+         * Immature coinbase: blocks until mature ("matures in %n more block(s)").
+         */maturesIn: UInt32?, 
+        /**
+         * Whether a peer has the transaction in its mempool. SPV cannot see
+         * mempools: `None` unless the engine saw an announcement since start
+         * (DESIGN-opus §1.14). Never guessed.
+         */inMempool: Bool?, abandoned: Bool, 
+        /**
+         * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
+         * unconfirmed, no InstantSend lock, and not known to be in a mempool.
+         */canAbandon: Bool, 
+        /**
+         * dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
+         * not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
+         */canResend: Bool, 
+        /**
+         * Dust-locked outputs of this transaction ("Unlock dust UTXO" on
+         * DustReceive rows, QT-075); release with `unlock_outpoints`.
+         */dustLockedOutputs: [OutPoint], 
+        /**
+         * When this engine last announced the transaction (send or resend).
+         */lastAnnouncedAt: UInt64?) {
+        self.txid = txid
+        self.isCoinbase = isCoinbase
+        self.totalCredit = totalCredit
+        self.totalDebit = totalDebit
+        self.net = net
+        self.maturesIn = maturesIn
+        self.inMempool = inMempool
+        self.abandoned = abandoned
+        self.canAbandon = canAbandon
+        self.canResend = canResend
+        self.dustLockedOutputs = dustLockedOutputs
+        self.lastAnnouncedAt = lastAnnouncedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TxDetailExtras: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTxDetailExtras: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxDetailExtras {
+        return
+            try TxDetailExtras(
+                txid: FfiConverterString.read(from: &buf), 
+                isCoinbase: FfiConverterBool.read(from: &buf), 
+                totalCredit: FfiConverterUInt64.read(from: &buf), 
+                totalDebit: FfiConverterOptionUInt64.read(from: &buf), 
+                net: FfiConverterInt64.read(from: &buf), 
+                maturesIn: FfiConverterOptionUInt32.read(from: &buf), 
+                inMempool: FfiConverterOptionBool.read(from: &buf), 
+                abandoned: FfiConverterBool.read(from: &buf), 
+                canAbandon: FfiConverterBool.read(from: &buf), 
+                canResend: FfiConverterBool.read(from: &buf), 
+                dustLockedOutputs: FfiConverterSequenceTypeOutPoint.read(from: &buf), 
+                lastAnnouncedAt: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TxDetailExtras, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.txid, into: &buf)
+        FfiConverterBool.write(value.isCoinbase, into: &buf)
+        FfiConverterUInt64.write(value.totalCredit, into: &buf)
+        FfiConverterOptionUInt64.write(value.totalDebit, into: &buf)
+        FfiConverterInt64.write(value.net, into: &buf)
+        FfiConverterOptionUInt32.write(value.maturesIn, into: &buf)
+        FfiConverterOptionBool.write(value.inMempool, into: &buf)
+        FfiConverterBool.write(value.abandoned, into: &buf)
+        FfiConverterBool.write(value.canAbandon, into: &buf)
+        FfiConverterBool.write(value.canResend, into: &buf)
+        FfiConverterSequenceTypeOutPoint.write(value.dustLockedOutputs, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastAnnouncedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxDetailExtras_lift(_ buf: RustBuffer) throws -> TxDetailExtras {
+    return try FfiConverterTypeTxDetailExtras.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxDetailExtras_lower(_ value: TxDetailExtras) -> RustBuffer {
+    return FfiConverterTypeTxDetailExtras.lower(value)
 }
 
 
@@ -5007,6 +9732,102 @@ public func FfiConverterTypeTxInputDetail_lift(_ buf: RustBuffer) throws -> TxIn
 #endif
 public func FfiConverterTypeTxInputDetail_lower(_ value: TxInputDetail) -> RustBuffer {
     return FfiConverterTypeTxInputDetail.lower(value)
+}
+
+
+/**
+ * One row of a transaction notification (QT-031): one per dash-qt record,
+ * so a payment to two recipients gives two rows.
+ */
+public struct TxNotice: Equatable, Hashable {
+    public let txid: String
+    public let recordIndex: UInt32
+    /**
+     * `amount > 0` = "Incoming transaction", otherwise "Sent transaction".
+     */
+    public let amount: Int64
+    public let timestamp: UInt64?
+    public let txType: TxType
+    public let address: String?
+    public let label: String?
+    /**
+     * A CoinJoin mixing, denomination or collateral transaction; hidden
+     * unless "show CoinJoin popups" is on (QT-033).
+     */
+    public let coinjoinInternal: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(txid: String, recordIndex: UInt32, 
+        /**
+         * `amount > 0` = "Incoming transaction", otherwise "Sent transaction".
+         */amount: Int64, timestamp: UInt64?, txType: TxType, address: String?, label: String?, 
+        /**
+         * A CoinJoin mixing, denomination or collateral transaction; hidden
+         * unless "show CoinJoin popups" is on (QT-033).
+         */coinjoinInternal: Bool) {
+        self.txid = txid
+        self.recordIndex = recordIndex
+        self.amount = amount
+        self.timestamp = timestamp
+        self.txType = txType
+        self.address = address
+        self.label = label
+        self.coinjoinInternal = coinjoinInternal
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TxNotice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTxNotice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxNotice {
+        return
+            try TxNotice(
+                txid: FfiConverterString.read(from: &buf), 
+                recordIndex: FfiConverterUInt32.read(from: &buf), 
+                amount: FfiConverterInt64.read(from: &buf), 
+                timestamp: FfiConverterOptionUInt64.read(from: &buf), 
+                txType: FfiConverterTypeTxType.read(from: &buf), 
+                address: FfiConverterOptionString.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf), 
+                coinjoinInternal: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TxNotice, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.txid, into: &buf)
+        FfiConverterUInt32.write(value.recordIndex, into: &buf)
+        FfiConverterInt64.write(value.amount, into: &buf)
+        FfiConverterOptionUInt64.write(value.timestamp, into: &buf)
+        FfiConverterTypeTxType.write(value.txType, into: &buf)
+        FfiConverterOptionString.write(value.address, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+        FfiConverterBool.write(value.coinjoinInternal, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxNotice_lift(_ buf: RustBuffer) throws -> TxNotice {
+    return try FfiConverterTypeTxNotice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxNotice_lower(_ value: TxNotice) -> RustBuffer {
+    return FfiConverterTypeTxNotice.lower(value)
 }
 
 
@@ -5523,6 +10344,71 @@ public func FfiConverterTypeUtxoFilter_lower(_ value: UtxoFilter) -> RustBuffer 
 
 
 /**
+ * Outcome of `recover_with_mnemonic`.
+ */
+public struct VaultRecovery: Equatable, Hashable {
+    public let status: VaultStatus
+    /**
+     * Wallets whose secrets were in the old vault and are now watch-only:
+     * re-import their phrases to restore their keys.
+     */
+    public let walletsWithoutSecrets: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(status: VaultStatus, 
+        /**
+         * Wallets whose secrets were in the old vault and are now watch-only:
+         * re-import their phrases to restore their keys.
+         */walletsWithoutSecrets: [String]) {
+        self.status = status
+        self.walletsWithoutSecrets = walletsWithoutSecrets
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VaultRecovery: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVaultRecovery: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultRecovery {
+        return
+            try VaultRecovery(
+                status: FfiConverterTypeVaultStatus.read(from: &buf), 
+                walletsWithoutSecrets: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VaultRecovery, into buf: inout [UInt8]) {
+        FfiConverterTypeVaultStatus.write(value.status, into: &buf)
+        FfiConverterSequenceString.write(value.walletsWithoutSecrets, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultRecovery_lift(_ buf: RustBuffer) throws -> VaultRecovery {
+    return try FfiConverterTypeVaultRecovery.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultRecovery_lower(_ value: VaultRecovery) -> RustBuffer {
+    return FfiConverterTypeVaultRecovery.lower(value)
+}
+
+
+/**
  * Snapshot of the vault. Pure in-memory read.
  */
 public struct VaultStatus: Equatable, Hashable {
@@ -5816,6 +10702,171 @@ public func FfiConverterTypeWalletInfo_lift(_ buf: RustBuffer) throws -> WalletI
 #endif
 public func FfiConverterTypeWalletInfo_lower(_ value: WalletInfo) -> RustBuffer {
     return FfiConverterTypeWalletInfo.lower(value)
+}
+
+
+/**
+ * Load state of one registered wallet (QT-101). Unloaded wallets keep their
+ * data but are absent from `wallet_infos` and every wallet-scoped call
+ * returns `wallet_not_found` for them, as a closed dash-qt wallet is not
+ * in the wallet selector.
+ */
+public struct WalletLoadState: Equatable, Hashable {
+    public let walletId: String
+    /**
+     * The wallet's display name (dw-appdb), so the "Open Wallet" menu can
+     * list unloaded wallets.
+     */
+    public let name: String
+    public let loaded: Bool
+    /**
+     * Loaded when the network opens (dash-qt settings.json `"wallet"` list).
+     */
+    public let loadOnStartup: Bool
+    public let watchOnly: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(walletId: String, 
+        /**
+         * The wallet's display name (dw-appdb), so the "Open Wallet" menu can
+         * list unloaded wallets.
+         */name: String, loaded: Bool, 
+        /**
+         * Loaded when the network opens (dash-qt settings.json `"wallet"` list).
+         */loadOnStartup: Bool, watchOnly: Bool) {
+        self.walletId = walletId
+        self.name = name
+        self.loaded = loaded
+        self.loadOnStartup = loadOnStartup
+        self.watchOnly = watchOnly
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension WalletLoadState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWalletLoadState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WalletLoadState {
+        return
+            try WalletLoadState(
+                walletId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                loaded: FfiConverterBool.read(from: &buf), 
+                loadOnStartup: FfiConverterBool.read(from: &buf), 
+                watchOnly: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WalletLoadState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.walletId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterBool.write(value.loaded, into: &buf)
+        FfiConverterBool.write(value.loadOnStartup, into: &buf)
+        FfiConverterBool.write(value.watchOnly, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletLoadState_lift(_ buf: RustBuffer) throws -> WalletLoadState {
+    return try FfiConverterTypeWalletLoadState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletLoadState_lower(_ value: WalletLoadState) -> RustBuffer {
+    return FfiConverterTypeWalletLoadState.lower(value)
+}
+
+
+/**
+ * Options for `import_watch_only` (QT-114).
+ */
+public struct WatchOnlyOptions: Equatable, Hashable {
+    /**
+     * 1–64 characters after trimming; `None` = "Wallet N".
+     */
+    public let name: String?
+    /**
+     * First block to scan; `None` = genesis (an xpub has no birth date).
+     */
+    public let birthHeight: UInt32?
+    /**
+     * Gap limit of the watched chains, 1..=1000; `None` = 30.
+     */
+    public let lookahead: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 1–64 characters after trimming; `None` = "Wallet N".
+         */name: String?, 
+        /**
+         * First block to scan; `None` = genesis (an xpub has no birth date).
+         */birthHeight: UInt32?, 
+        /**
+         * Gap limit of the watched chains, 1..=1000; `None` = 30.
+         */lookahead: UInt32?) {
+        self.name = name
+        self.birthHeight = birthHeight
+        self.lookahead = lookahead
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension WatchOnlyOptions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWatchOnlyOptions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WatchOnlyOptions {
+        return
+            try WatchOnlyOptions(
+                name: FfiConverterOptionString.read(from: &buf), 
+                birthHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                lookahead: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WatchOnlyOptions, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionUInt32.write(value.birthHeight, into: &buf)
+        FfiConverterOptionUInt32.write(value.lookahead, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWatchOnlyOptions_lift(_ buf: RustBuffer) throws -> WatchOnlyOptions {
+    return try FfiConverterTypeWatchOnlyOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWatchOnlyOptions_lower(_ value: WatchOnlyOptions) -> RustBuffer {
+    return FfiConverterTypeWatchOnlyOptions.lower(value)
 }
 
 
@@ -6297,6 +11348,252 @@ public func FfiConverterTypeAmountStyle_lower(_ value: AmountStyle) -> RustBuffe
 
 
 
+public 
+enum BackupError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `backup.vault_locked`: writing or restoring needs the data key.
+     */
+    case VaultLocked
+    /**
+     * Code `backup.passphrase_required`: the vault is unencrypted, so the
+     * backup needs its own passphrase (`backup_passphrase`); restoring an
+     * encrypted backup needs it too.
+     */
+    case PassphraseRequired
+    /**
+     * Code `backup.wrong_passphrase`.
+     */
+    case WrongPassphrase
+    /**
+     * Code `backup.corrupt`: the MAC or the container failed to verify.
+     */
+    case Corrupt(detail: String
+    )
+    /**
+     * Code `backup.unsupported_version`: written by a newer app.
+     */
+    case UnsupportedVersion(version: UInt32
+    )
+    /**
+     * Code `backup.network_mismatch`: a backup of another network.
+     */
+    case NetworkMismatch
+    /**
+     * Code `backup.already_exists`: the wallet is registered with keys.
+     */
+    case AlreadyExists(walletId: String
+    )
+    /**
+     * Code `backup.destination_unwritable`: the file could not be written
+     * (or exists; backups replace nothing).
+     */
+    case DestinationUnwritable(detail: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_backuperror_code(
+            FfiConverterTypeBackupError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension BackupError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBackupError: FfiConverterRustBuffer {
+    typealias SwiftType = BackupError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackupError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .VaultLocked
+        case 2: return .PassphraseRequired
+        case 3: return .WrongPassphrase
+        case 4: return .Corrupt(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .UnsupportedVersion(
+            version: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 6: return .NetworkMismatch
+        case 7: return .AlreadyExists(
+            walletId: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .DestinationUnwritable(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 11: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 12: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 13: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 14: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BackupError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .PassphraseRequired:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .WrongPassphrase:
+            writeInt(&buf, Int32(3))
+        
+        
+        case let .Corrupt(detail):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .UnsupportedVersion(version):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt32.write(version, into: &buf)
+            
+        
+        case .NetworkMismatch:
+            writeInt(&buf, Int32(6))
+        
+        
+        case let .AlreadyExists(walletId):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(walletId, into: &buf)
+            
+        
+        case let .DestinationUnwritable(detail):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(11))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(12))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupError_lift(_ buf: RustBuffer) throws -> BackupError {
+    return try FfiConverterTypeBackupError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackupError_lower(_ value: BackupError) -> RustBuffer {
+    return FfiConverterTypeBackupError.lower(value)
+}
+
+
 
 public enum ChangePolicy: Equatable, Hashable {
     
@@ -6631,6 +11928,619 @@ public func FfiConverterTypeCoinsError_lower(_ value: CoinsError) -> RustBuffer 
 }
 
 
+public 
+enum CompatError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `compat.file_unreadable`: missing, unreadable or a directory.
+     */
+    case FileUnreadable(detail: String
+    )
+    /**
+     * Code `compat.unsupported_format`: not a format this call imports.
+     */
+    case UnsupportedFormat(detail: String
+    )
+    /**
+     * Code `compat.corrupt`: the file parses only partly.
+     */
+    case Corrupt(detail: String
+    )
+    /**
+     * Code `compat.passphrase_required`: an encrypted wallet.dat needs its
+     * passphrase.
+     */
+    case PassphraseRequired
+    /**
+     * Code `compat.wrong_passphrase`: the wallet.dat passphrase is wrong.
+     */
+    case WrongPassphrase
+    /**
+     * Code `compat.no_hd_chain`: a non-HD wallet; only loose keys (sweep, M5).
+     */
+    case NoHdChain
+    /**
+     * Code `compat.network_mismatch`: keys of another network.
+     */
+    case NetworkMismatch(found: DashNetwork
+    )
+    /**
+     * Code `compat.invalid_key_material`: bad seed length, xprv or JSON.
+     */
+    case InvalidKeyMaterial(detail: String
+    )
+    /**
+     * Code `compat.already_exists`: the wallet is already registered with keys.
+     */
+    case AlreadyExists(walletId: String
+    )
+    /**
+     * Code `compat.no_vault`: create the vault first.
+     */
+    case NoVault
+    /**
+     * Code `compat.vault_locked`: imports store keys; unlock first.
+     */
+    case VaultLocked
+    /**
+     * Code `compat.grant_invalid`: exports need a `RevealSecret` grant for
+     * the wallet.
+     */
+    case GrantInvalid
+    /**
+     * Code `compat.watch_only`: a watch-only wallet has no keys to export.
+     */
+    case WatchOnly
+    /**
+     * Code `compat.destination_unwritable`: the export file could not be
+     * written.
+     */
+    case DestinationUnwritable(detail: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_compaterror_code(
+            FfiConverterTypeCompatError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension CompatError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompatError: FfiConverterRustBuffer {
+    typealias SwiftType = CompatError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompatError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .FileUnreadable(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .UnsupportedFormat(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Corrupt(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .PassphraseRequired
+        case 5: return .WrongPassphrase
+        case 6: return .NoHdChain
+        case 7: return .NetworkMismatch(
+            found: try FfiConverterTypeDashNetwork.read(from: &buf)
+            )
+        case 8: return .InvalidKeyMaterial(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .AlreadyExists(
+            walletId: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .NoVault
+        case 11: return .VaultLocked
+        case 12: return .GrantInvalid
+        case 13: return .WatchOnly
+        case 14: return .DestinationUnwritable(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 15: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 16: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 17: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 18: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 19: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 20: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CompatError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .FileUnreadable(detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .UnsupportedFormat(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Corrupt(detail):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case .PassphraseRequired:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .WrongPassphrase:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .NoHdChain:
+            writeInt(&buf, Int32(6))
+        
+        
+        case let .NetworkMismatch(found):
+            writeInt(&buf, Int32(7))
+            FfiConverterTypeDashNetwork.write(found, into: &buf)
+            
+        
+        case let .InvalidKeyMaterial(detail):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .AlreadyExists(walletId):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(walletId, into: &buf)
+            
+        
+        case .NoVault:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .WatchOnly:
+            writeInt(&buf, Int32(13))
+        
+        
+        case let .DestinationUnwritable(detail):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(16))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(17))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(18))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(19))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(20))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompatError_lift(_ buf: RustBuffer) throws -> CompatError {
+    return try FfiConverterTypeCompatError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompatError_lower(_ value: CompatError) -> RustBuffer {
+    return FfiConverterTypeCompatError.lower(value)
+}
+
+
+public 
+enum ConsoleError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `console.parse_error`: dash-qt "Error: Invalid command line".
+     */
+    case ParseError(detail: String
+    )
+    /**
+     * Code `console.rpc_error`: shown as "message (code N)"; `code` and
+     * `message` are Core's for the same failure.
+     */
+    case RpcError(code: Int32, message: String
+    )
+    /**
+     * Code `console.not_available`: the command needs a full node
+     * ("Not available in SPV mode.").
+     */
+    case NotAvailable(command: String
+    )
+    /**
+     * Code `console.authorization_required`: the command spends, signs or
+     * reveals. The host authorizes `purpose` for `wallet_id` and runs the
+     * same line again with the grant.
+     */
+    case AuthorizationRequired(purpose: GrantPurpose, walletId: String?
+    )
+    /**
+     * Code `console.wallet_required`: a wallet command with no wallet
+     * selected ("Executing command without any wallet").
+     */
+    case WalletRequired
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_consoleerror_code(
+            FfiConverterTypeConsoleError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension ConsoleError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConsoleError: FfiConverterRustBuffer {
+    typealias SwiftType = ConsoleError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConsoleError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .ParseError(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .RpcError(
+            code: try FfiConverterInt32.read(from: &buf), 
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .NotAvailable(
+            command: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .AuthorizationRequired(
+            purpose: try FfiConverterTypeGrantPurpose.read(from: &buf), 
+            walletId: try FfiConverterOptionString.read(from: &buf)
+            )
+        case 5: return .WalletRequired
+        case 6: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 11: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ConsoleError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .ParseError(detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .RpcError(code,message):
+            writeInt(&buf, Int32(2))
+            FfiConverterInt32.write(code, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .NotAvailable(command):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(command, into: &buf)
+            
+        
+        case let .AuthorizationRequired(purpose,walletId):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeGrantPurpose.write(purpose, into: &buf)
+            FfiConverterOptionString.write(walletId, into: &buf)
+            
+        
+        case .WalletRequired:
+            writeInt(&buf, Int32(5))
+        
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(11))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleError_lift(_ buf: RustBuffer) throws -> ConsoleError {
+    return try FfiConverterTypeConsoleError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConsoleError_lower(_ value: ConsoleError) -> RustBuffer {
+    return FfiConverterTypeConsoleError.lower(value)
+}
+
+
+/**
+ * Formats "Export for dash-qt" writes (QT-109).
+ */
+
+public enum CoreExportFormat: Equatable, Hashable {
+    
+    /**
+     * Core's `dumpwallet` format, byte for byte (`importwallet` on a legacy
+     * dashd wallet).
+     */
+    case dumpWallet
+    /**
+     * `importdescriptors` JSON for a dashd descriptor wallet.
+     */
+    case importDescriptorsJson
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreExportFormat: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreExportFormat: FfiConverterRustBuffer {
+    typealias SwiftType = CoreExportFormat
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreExportFormat {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .dumpWallet
+        
+        case 2: return .importDescriptorsJson
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreExportFormat, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .dumpWallet:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .importDescriptorsJson:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreExportFormat_lift(_ buf: RustBuffer) throws -> CoreExportFormat {
+    return try FfiConverterTypeCoreExportFormat.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreExportFormat_lower(_ value: CoreExportFormat) -> RustBuffer {
+    return FfiConverterTypeCoreExportFormat.lower(value)
+}
+
+
+
 
 public enum DashNetwork: Equatable, Hashable {
     
@@ -6712,6 +12622,172 @@ public func FfiConverterTypeDashNetwork_lower(_ value: DashNetwork) -> RustBuffe
     return FfiConverterTypeDashNetwork.lower(value)
 }
 
+
+
+public 
+enum DesktopError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `desktop.unsupported`: this OS (or desktop session) does not
+     * offer the feature, e.g. no StatusNotifierItem host on GNOME without
+     * the AppIndicator extension. `feature` names it for the log.
+     */
+    case Unsupported(feature: String
+    )
+    /**
+     * Code `desktop.os_error`: the OS call failed.
+     */
+    case OsError(detail: String
+    )
+    /**
+     * Code `desktop.no_qr_code`: the image holds no readable QR code.
+     */
+    case NoQrCode
+    /**
+     * Code `desktop.image_unreadable`: not a PNG/JPEG/BMP the decoder reads.
+     */
+    case ImageUnreadable(detail: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_desktoperror_code(
+            FfiConverterTypeDesktopError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension DesktopError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDesktopError: FfiConverterRustBuffer {
+    typealias SwiftType = DesktopError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DesktopError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Unsupported(
+            feature: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .OsError(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .NoQrCode
+        case 4: return .ImageUnreadable(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DesktopError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Unsupported(feature):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(feature, into: &buf)
+            
+        
+        case let .OsError(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case .NoQrCode:
+            writeInt(&buf, Int32(3))
+        
+        
+        case let .ImageUnreadable(detail):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopError_lift(_ buf: RustBuffer) throws -> DesktopError {
+    return try FfiConverterTypeDesktopError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDesktopError_lower(_ value: DesktopError) -> RustBuffer {
+    return FfiConverterTypeDesktopError.lower(value)
+}
 
 
 /**
@@ -7068,6 +13144,24 @@ public enum EngineEvent: Equatable, Hashable {
      */
     case lockState(network: DashNetwork, state: VaultLockState
     )
+    /**
+     * M2 (QT-031…033, IOS-116): transactions of the wallet seen for the
+     * first time, batched over 100 ms as dash-qt batches its popups. Sent
+     * once per transaction, never for status changes (those are
+     * `HistoryChanged`). `catch_up` is true while SPV is not caught up
+     * (dash-qt shows no popups during initial block download). The host
+     * reads the rows with `NetworkSession::tx_notices`. Owner R1; not sent
+     * yet.
+     */
+    case newTransactions(network: DashNetwork, walletId: String, txids: [String], catchUp: Bool
+    )
+    /**
+     * M2 (QT-101): a wallet was loaded (opened) or unloaded (closed) without
+     * being removed. Reload the wallet list and `wallet_load_states`.
+     * Owner R1; not sent yet.
+     */
+    case walletLoadChanged(network: DashNetwork, walletId: String, loaded: Bool
+    )
 
 
 
@@ -7117,6 +13211,12 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
         )
         
         case 10: return .lockState(network: try FfiConverterTypeDashNetwork.read(from: &buf), state: try FfiConverterTypeVaultLockState.read(from: &buf)
+        )
+        
+        case 11: return .newTransactions(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), txids: try FfiConverterSequenceString.read(from: &buf), catchUp: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 12: return .walletLoadChanged(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletId: try FfiConverterString.read(from: &buf), loaded: try FfiConverterBool.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -7187,6 +13287,21 @@ public struct FfiConverterTypeEngineEvent: FfiConverterRustBuffer {
             FfiConverterTypeDashNetwork.write(network, into: &buf)
             FfiConverterTypeVaultLockState.write(state, into: &buf)
             
+        
+        case let .newTransactions(network,walletId,txids,catchUp):
+            writeInt(&buf, Int32(11))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
+            FfiConverterString.write(walletId, into: &buf)
+            FfiConverterSequenceString.write(txids, into: &buf)
+            FfiConverterBool.write(catchUp, into: &buf)
+            
+        
+        case let .walletLoadChanged(network,walletId,loaded):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
+            FfiConverterString.write(walletId, into: &buf)
+            FfiConverterBool.write(loaded, into: &buf)
+            
         }
     }
 }
@@ -7204,6 +13319,83 @@ public func FfiConverterTypeEngineEvent_lift(_ buf: RustBuffer) throws -> Engine
 #endif
 public func FfiConverterTypeEngineEvent_lower(_ value: EngineEvent) -> RustBuffer {
     return FfiConverterTypeEngineEvent.lower(value)
+}
+
+
+
+/**
+ * Why an export may not reproduce the wallet in dash-qt.
+ */
+
+public enum ExportWarning: Equatable, Hashable {
+    
+    /**
+     * The phrase is not English or fails Dash Core's check: `upgradetohd`
+     * with it gives another wallet. The file still carries the keys.
+     */
+    case mnemonicNotCoreCompatible
+    /**
+     * CoinJoin funds sit on the DIP9 account, which dash-qt legacy wallets
+     * do not scan (descriptor wallets do).
+     */
+    case coinJoinAccountNotScannedByLegacyCore
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ExportWarning: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExportWarning: FfiConverterRustBuffer {
+    typealias SwiftType = ExportWarning
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExportWarning {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .mnemonicNotCoreCompatible
+        
+        case 2: return .coinJoinAccountNotScannedByLegacyCore
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ExportWarning, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .mnemonicNotCoreCompatible:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .coinJoinAccountNotScannedByLegacyCore:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportWarning_lift(_ buf: RustBuffer) throws -> ExportWarning {
+    return try FfiConverterTypeExportWarning.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportWarning_lower(_ value: ExportWarning) -> RustBuffer {
+    return FfiConverterTypeExportWarning.lower(value)
 }
 
 
@@ -7283,6 +13475,82 @@ public func FfiConverterTypeFeeMode_lift(_ buf: RustBuffer) throws -> FeeMode {
 #endif
 public func FfiConverterTypeFeeMode_lower(_ value: FeeMode) -> RustBuffer {
     return FfiConverterTypeFeeMode.lower(value)
+}
+
+
+
+/**
+ * Where the recommended rates come from (DESIGN-opus §1.14).
+ */
+
+public enum FeeSource: Equatable, Hashable {
+    
+    /**
+     * SPV: every target pays the minimum relay fee. The host shows "Dash
+     * blocks are rarely full; all targets use the minimum relay fee."
+     */
+    case minimumRelay
+    /**
+     * The optional dashd RPC data source (`estimatesmartfee`); not in M2.
+     */
+    case nodeEstimate
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FeeSource: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFeeSource: FfiConverterRustBuffer {
+    typealias SwiftType = FeeSource
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeeSource {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .minimumRelay
+        
+        case 2: return .nodeEstimate
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FeeSource, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .minimumRelay:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .nodeEstimate:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSource_lift(_ buf: RustBuffer) throws -> FeeSource {
+    return try FfiConverterTypeFeeSource.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFeeSource_lower(_ value: FeeSource) -> RustBuffer {
+    return FfiConverterTypeFeeSource.lower(value)
 }
 
 
@@ -7692,6 +13960,102 @@ public func FfiConverterTypeHistorySort_lift(_ buf: RustBuffer) throws -> Histor
 #endif
 public func FfiConverterTypeHistorySort_lower(_ value: HistorySort) -> RustBuffer {
     return FfiConverterTypeHistorySort.lower(value)
+}
+
+
+
+/**
+ * Key material for "Import from hdseed / xprv / listdescriptors" (QT-108).
+ * Every payload is bytes and is zeroized.
+ */
+
+public enum KeyMaterial: Equatable, Hashable {
+    
+    /**
+     * Raw BIP32 seed, 16..=64 bytes (dashd `dumphdinfo` `hdseed` hex,
+     * decoded by the host).
+     */
+    case hdSeed(seed: Data
+    )
+    /**
+     * Master extended private key, base58 text as UTF-8 bytes.
+     */
+    case xprv(xprv: Data
+    )
+    /**
+     * dashd `listdescriptors true` JSON as UTF-8 bytes.
+     */
+    case descriptors(json: Data
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension KeyMaterial: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeKeyMaterial: FfiConverterRustBuffer {
+    typealias SwiftType = KeyMaterial
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> KeyMaterial {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .hdSeed(seed: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 2: return .xprv(xprv: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 3: return .descriptors(json: try FfiConverterData.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: KeyMaterial, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .hdSeed(seed):
+            writeInt(&buf, Int32(1))
+            FfiConverterData.write(seed, into: &buf)
+            
+        
+        case let .xprv(xprv):
+            writeInt(&buf, Int32(2))
+            FfiConverterData.write(xprv, into: &buf)
+            
+        
+        case let .descriptors(json):
+            writeInt(&buf, Int32(3))
+            FfiConverterData.write(json, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeyMaterial_lift(_ buf: RustBuffer) throws -> KeyMaterial {
+    return try FfiConverterTypeKeyMaterial.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeyMaterial_lower(_ value: KeyMaterial) -> RustBuffer {
+    return FfiConverterTypeKeyMaterial.lower(value)
 }
 
 
@@ -8447,6 +14811,556 @@ public func FfiConverterTypeNoticeCode_lift(_ buf: RustBuffer) throws -> NoticeC
 #endif
 public func FfiConverterTypeNoticeCode_lower(_ value: NoticeCode) -> RustBuffer {
     return FfiConverterTypeNoticeCode.lower(value)
+}
+
+
+
+public 
+enum PsbtError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `psbt.invalid`: not a PSBT (binary or base64).
+     */
+    case Invalid(detail: String
+    )
+    /**
+     * Code `psbt.too_large`: over `MAX_PSBT_BYTES`.
+     */
+    case TooLarge(sizeBytes: UInt64
+    )
+    /**
+     * Code `psbt.network_mismatch`: outputs or keys of another network.
+     */
+    case NetworkMismatch
+    /**
+     * Code `psbt.not_complete`: broadcast before every input is signed.
+     */
+    case NotComplete
+    /**
+     * Code `psbt.fee_rate_too_high`: above 0.1 DASH/kB (dash-qt's broadcast cap).
+     */
+    case FeeRateTooHigh(duffsPerKb: UInt64
+    )
+    /**
+     * Code `psbt.watch_only`: the wallet has no keys.
+     */
+    case WatchOnly
+    /**
+     * Code `psbt.vault_locked`.
+     */
+    case VaultLocked
+    /**
+     * Code `psbt.grant_invalid`: missing, expired, other wallet or purpose.
+     */
+    case GrantInvalid
+    /**
+     * Code `psbt.grant_exceeded`: `external_sent` above the grant's cap.
+     */
+    case GrantExceeded(maxDuffs: UInt64
+    )
+    /**
+     * Code `psbt.no_peers`: not sent; nothing reached the network.
+     */
+    case NoPeers
+    /**
+     * Code `psbt.broadcast_rejected`: a peer rejected it.
+     */
+    case BroadcastRejected(reason: String
+    )
+    /**
+     * Code `psbt.broadcast_unknown`: announced without a verdict; it may be
+     * on the network.
+     */
+    case BroadcastUnknown(reason: String
+    )
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_psbterror_code(
+            FfiConverterTypePsbtError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension PsbtError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbtError: FfiConverterRustBuffer {
+    typealias SwiftType = PsbtError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PsbtError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Invalid(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .TooLarge(
+            sizeBytes: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 3: return .NetworkMismatch
+        case 4: return .NotComplete
+        case 5: return .FeeRateTooHigh(
+            duffsPerKb: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 6: return .WatchOnly
+        case 7: return .VaultLocked
+        case 8: return .GrantInvalid
+        case 9: return .GrantExceeded(
+            maxDuffs: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 10: return .NoPeers
+        case 11: return .BroadcastRejected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 12: return .BroadcastUnknown(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 13: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 14: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 15: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 16: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 17: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 18: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PsbtError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Invalid(detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .TooLarge(sizeBytes):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(sizeBytes, into: &buf)
+            
+        
+        case .NetworkMismatch:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .NotComplete:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .FeeRateTooHigh(duffsPerKb):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt64.write(duffsPerKb, into: &buf)
+            
+        
+        case .WatchOnly:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .VaultLocked:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .GrantInvalid:
+            writeInt(&buf, Int32(8))
+        
+        
+        case let .GrantExceeded(maxDuffs):
+            writeInt(&buf, Int32(9))
+            FfiConverterUInt64.write(maxDuffs, into: &buf)
+            
+        
+        case .NoPeers:
+            writeInt(&buf, Int32(10))
+        
+        
+        case let .BroadcastRejected(reason):
+            writeInt(&buf, Int32(11))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .BroadcastUnknown(reason):
+            writeInt(&buf, Int32(12))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(16))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(17))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(18))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtError_lift(_ buf: RustBuffer) throws -> PsbtError {
+    return try FfiConverterTypePsbtError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtError_lower(_ value: PsbtError) -> RustBuffer {
+    return FfiConverterTypePsbtError.lower(value)
+}
+
+
+/**
+ * The suffix of "needs signature(s)" for the selected wallet.
+ */
+
+public enum PsbtSignability: Equatable, Hashable {
+    
+    /**
+     * "(But no wallet is loaded.)"
+     */
+    case noWallet
+    /**
+     * "(But this wallet cannot sign transactions.)" — watch-only.
+     */
+    case watchOnly
+    /**
+     * "(But this wallet does not have the right keys.)"
+     */
+    case noMatchingKeys
+    case canSign
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PsbtSignability: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbtSignability: FfiConverterRustBuffer {
+    typealias SwiftType = PsbtSignability
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PsbtSignability {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .noWallet
+        
+        case 2: return .watchOnly
+        
+        case 3: return .noMatchingKeys
+        
+        case 4: return .canSign
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PsbtSignability, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .noWallet:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .watchOnly:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .noMatchingKeys:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .canSign:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtSignability_lift(_ buf: RustBuffer) throws -> PsbtSignability {
+    return try FfiConverterTypePsbtSignability.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtSignability_lower(_ value: PsbtSignability) -> RustBuffer {
+    return FfiConverterTypePsbtSignability.lower(value)
+}
+
+
+
+/**
+ * dash-qt's status line.
+ */
+
+public enum PsbtStatus: Equatable, Hashable {
+    
+    /**
+     * "Transaction is missing some information about inputs."
+     */
+    case missingInputInfo
+    /**
+     * "Transaction still needs signature(s)."
+     */
+    case needsSignatures
+    /**
+     * "Transaction is fully signed and ready for broadcast."
+     */
+    case complete
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PsbtStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePsbtStatus: FfiConverterRustBuffer {
+    typealias SwiftType = PsbtStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PsbtStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .missingInputInfo
+        
+        case 2: return .needsSignatures
+        
+        case 3: return .complete
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PsbtStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .missingInputInfo:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .needsSignatures:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .complete:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtStatus_lift(_ buf: RustBuffer) throws -> PsbtStatus {
+    return try FfiConverterTypePsbtStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePsbtStatus_lower(_ value: PsbtStatus) -> RustBuffer {
+    return FfiConverterTypePsbtStatus.lower(value)
+}
+
+
+
+/**
+ * The OS biometric provider for vault slot B on this host.
+ */
+
+public enum QuickUnlockProvider: Equatable, Hashable {
+    
+    /**
+     * macOS: implemented in Swift (`PlatformServicesMac`), not here.
+     */
+    case touchId
+    /**
+     * Windows Hello `KeyCredential` (M6).
+     */
+    case windowsHello
+    /**
+     * Linux and hosts without biometrics: quick unlock is hidden.
+     */
+    case unavailable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension QuickUnlockProvider: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeQuickUnlockProvider: FfiConverterRustBuffer {
+    typealias SwiftType = QuickUnlockProvider
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> QuickUnlockProvider {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .touchId
+        
+        case 2: return .windowsHello
+        
+        case 3: return .unavailable
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: QuickUnlockProvider, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .touchId:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .windowsHello:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .unavailable:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuickUnlockProvider_lift(_ buf: RustBuffer) throws -> QuickUnlockProvider {
+    return try FfiConverterTypeQuickUnlockProvider.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQuickUnlockProvider_lower(_ value: QuickUnlockProvider) -> RustBuffer {
+    return FfiConverterTypeQuickUnlockProvider.lower(value)
 }
 
 
@@ -9227,6 +16141,22 @@ enum SyncError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Spv(detail: String
     )
     /**
+     * Code `sync.spv_running` (M2, QT-148): the call needs SPV stopped
+     * (resetting chain data).
+     */
+    case SpvRunning
+    /**
+     * Code `sync.rescan_in_progress` (M2, QT-117): a rescan is already
+     * running (dash-qt "Wallet is currently rescanning").
+     */
+    case RescanInProgress
+    /**
+     * Code `sync.peer_not_found` (M2, QT-147): no connected or banned peer
+     * with that address.
+     */
+    case PeerNotFound(address: String
+    )
+    /**
      * Code `invalid_argument`.
      */
     case InvalidArgument(detail: String
@@ -9304,22 +16234,27 @@ public struct FfiConverterTypeSyncError: FfiConverterRustBuffer {
         case 3: return .Spv(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 4: return .InvalidArgument(
+        case 4: return .SpvRunning
+        case 5: return .RescanInProgress
+        case 6: return .PeerNotFound(
+            address: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 5: return .NetworkNotOpen(
+        case 8: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 6: return .WalletNotFound(
+        case 9: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 7: return .Storage(
+        case 10: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 8: return .NotImplemented(
+        case 11: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 9: return .Internal(
+        case 12: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -9348,33 +16283,46 @@ public struct FfiConverterTypeSyncError: FfiConverterRustBuffer {
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .InvalidArgument(detail):
+        case .SpvRunning:
             writeInt(&buf, Int32(4))
-            FfiConverterString.write(detail, into: &buf)
-            
         
-        case let .NetworkNotOpen(detail):
+        
+        case .RescanInProgress:
             writeInt(&buf, Int32(5))
-            FfiConverterString.write(detail, into: &buf)
-            
         
-        case let .WalletNotFound(detail):
+        
+        case let .PeerNotFound(address):
             writeInt(&buf, Int32(6))
-            FfiConverterString.write(detail, into: &buf)
+            FfiConverterString.write(address, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .InvalidArgument(detail):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(12))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -9476,6 +16424,308 @@ public func FfiConverterTypeSyncPhase_lift(_ buf: RustBuffer) throws -> SyncPhas
 #endif
 public func FfiConverterTypeSyncPhase_lower(_ value: SyncPhase) -> RustBuffer {
     return FfiConverterTypeSyncPhase.lower(value)
+}
+
+
+
+public 
+enum TxActionError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Code `tx_action.tx_not_found`.
+     */
+    case TxNotFound(txid: String
+    )
+    /**
+     * Code `tx_action.refused`: the transaction's state forbids the action.
+     */
+    case Refused(refusal: TxActionRefusal
+    )
+    /**
+     * Code `tx_action.spv_not_running`: resend needs a running SPV client.
+     */
+    case SpvNotRunning
+    /**
+     * Code `tx_action.no_peers`: no connected peer to announce to.
+     */
+    case NoPeers
+    /**
+     * Code `invalid_argument`.
+     */
+    case InvalidArgument(detail: String
+    )
+    /**
+     * Code `network_not_open`.
+     */
+    case NetworkNotOpen(detail: String
+    )
+    /**
+     * Code `wallet_not_found`.
+     */
+    case WalletNotFound(detail: String
+    )
+    /**
+     * Code `storage`.
+     */
+    case Storage(detail: String
+    )
+    /**
+     * Code `not_implemented`.
+     */
+    case NotImplemented(call: String
+    )
+    /**
+     * Code `internal`.
+     */
+    case Internal(detail: String
+    )
+
+    
+    /**
+     * Stable code (docs/contracts/m1-engine.md §4).
+     */
+public func code() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_method_txactionerror_code(
+            FfiConverterTypeTxActionError_lower(self),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension TxActionError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTxActionError: FfiConverterRustBuffer {
+    typealias SwiftType = TxActionError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxActionError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .TxNotFound(
+            txid: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .Refused(
+            refusal: try FfiConverterTypeTxActionRefusal.read(from: &buf)
+            )
+        case 3: return .SpvNotRunning
+        case 4: return .NoPeers
+        case 5: return .InvalidArgument(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .NetworkNotOpen(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .WalletNotFound(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .NotImplemented(
+            call: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .Internal(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TxActionError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .TxNotFound(txid):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(txid, into: &buf)
+            
+        
+        case let .Refused(refusal):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeTxActionRefusal.write(refusal, into: &buf)
+            
+        
+        case .SpvNotRunning:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .NoPeers:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NetworkNotOpen(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .WalletNotFound(detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Storage(detail):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(call, into: &buf)
+            
+        
+        case let .Internal(detail):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxActionError_lift(_ buf: RustBuffer) throws -> TxActionError {
+    return try FfiConverterTypeTxActionError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxActionError_lower(_ value: TxActionError) -> RustBuffer {
+    return FfiConverterTypeTxActionError.lower(value)
+}
+
+
+/**
+ * Why `abandon_transaction` / `resend_transaction` refused.
+ */
+
+public enum TxActionRefusal: Equatable, Hashable {
+    
+    case confirmed
+    case instantLocked
+    case alreadyAbandoned
+    case coinbase
+    /**
+     * A peer announced it after the last send: it may still confirm.
+     */
+    case inMempool
+    /**
+     * The wallet did not fund it (resend only).
+     */
+    case notSentByWallet
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TxActionRefusal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = TxActionRefusal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxActionRefusal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .confirmed
+        
+        case 2: return .instantLocked
+        
+        case 3: return .alreadyAbandoned
+        
+        case 4: return .coinbase
+        
+        case 5: return .inMempool
+        
+        case 6: return .notSentByWallet
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TxActionRefusal, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .confirmed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .instantLocked:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .alreadyAbandoned:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .coinbase:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .inMempool:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .notSentByWallet:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxActionRefusal_lift(_ buf: RustBuffer) throws -> TxActionRefusal {
+    return try FfiConverterTypeTxActionRefusal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTxActionRefusal_lower(_ value: TxActionRefusal) -> RustBuffer {
+    return FfiConverterTypeTxActionRefusal.lower(value)
 }
 
 
@@ -10439,6 +17689,29 @@ enum VaultError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case Corrupt(detail: String
     )
     /**
+     * Code `vault.quick_unlock_limit_exceeded` (M2, IOS-016): a quick-unlock
+     * `Spend` grant asked for more than the biometric spending limit; the
+     * host asks for the passphrase instead.
+     */
+    case QuickUnlockLimitExceeded(limitDuffs: UInt64
+    )
+    /**
+     * Code `vault.passphrase_stale` (M2, IOS-011): quick unlock refused
+     * because the passphrase was last entered more than the policy's
+     * maximum age ago (7 days); the host asks for the passphrase.
+     */
+    case PassphraseStale
+    /**
+     * Code `vault.not_empty` (M2, IOS-009/109): `destroy` while the vault
+     * still holds secrets of registered wallets.
+     */
+    case NotEmpty
+    /**
+     * Code `vault.recovery_mismatch` (M2, IOS-014): the recovery phrase does
+     * not derive the wallet it was entered for.
+     */
+    case RecoveryMismatch
+    /**
      * Code `invalid_argument`.
      */
     case InvalidArgument(detail: String
@@ -10536,22 +17809,28 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
         case 16: return .Corrupt(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 17: return .InvalidArgument(
+        case 17: return .QuickUnlockLimitExceeded(
+            limitDuffs: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 18: return .PassphraseStale
+        case 19: return .NotEmpty
+        case 20: return .RecoveryMismatch
+        case 21: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 18: return .NetworkNotOpen(
+        case 22: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 19: return .WalletNotFound(
+        case 23: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 20: return .Storage(
+        case 24: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 21: return .NotImplemented(
+        case 25: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 22: return .Internal(
+        case 26: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -10636,33 +17915,50 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .InvalidArgument(detail):
+        case let .QuickUnlockLimitExceeded(limitDuffs):
             writeInt(&buf, Int32(17))
+            FfiConverterUInt64.write(limitDuffs, into: &buf)
+            
+        
+        case .PassphraseStale:
+            writeInt(&buf, Int32(18))
+        
+        
+        case .NotEmpty:
+            writeInt(&buf, Int32(19))
+        
+        
+        case .RecoveryMismatch:
+            writeInt(&buf, Int32(20))
+        
+        
+        case let .InvalidArgument(detail):
+            writeInt(&buf, Int32(21))
             FfiConverterString.write(detail, into: &buf)
             
         
         case let .NetworkNotOpen(detail):
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(22))
             FfiConverterString.write(detail, into: &buf)
             
         
         case let .WalletNotFound(detail):
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(23))
             FfiConverterString.write(detail, into: &buf)
             
         
         case let .Storage(detail):
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(24))
             FfiConverterString.write(detail, into: &buf)
             
         
         case let .NotImplemented(call):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(25))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(26))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -10846,6 +18142,12 @@ enum WalletError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case NameRejected(detail: String
     )
     /**
+     * Code `wallet.invalid_xpub` (M2, QT-114): not an extended public key of
+     * this network, or not at an account level the engine can watch.
+     */
+    case InvalidXpub(detail: String
+    )
+    /**
      * Code `invalid_argument`.
      */
     case InvalidArgument(detail: String
@@ -10934,22 +18236,25 @@ public struct FfiConverterTypeWalletError: FfiConverterRustBuffer {
         case 8: return .NameRejected(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 9: return .InvalidArgument(
+        case 9: return .InvalidXpub(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 10: return .NetworkNotOpen(
+        case 10: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 11: return .WalletNotFound(
+        case 11: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 12: return .Storage(
+        case 12: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 13: return .NotImplemented(
+        case 13: return .Storage(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 14: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 14: return .Internal(
+        case 15: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -11001,33 +18306,38 @@ public struct FfiConverterTypeWalletError: FfiConverterRustBuffer {
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .InvalidArgument(detail):
+        case let .InvalidXpub(detail):
             writeInt(&buf, Int32(9))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NetworkNotOpen(detail):
+        case let .InvalidArgument(detail):
             writeInt(&buf, Int32(10))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .WalletNotFound(detail):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(11))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(12))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .Storage(detail):
             writeInt(&buf, Int32(13))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(14))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(15))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -11048,6 +18358,254 @@ public func FfiConverterTypeWalletError_lift(_ buf: RustBuffer) throws -> Wallet
 public func FfiConverterTypeWalletError_lower(_ value: WalletError) -> RustBuffer {
     return FfiConverterTypeWalletError.lower(value)
 }
+
+
+/**
+ * What a user-chosen file is (QT-106/107/110 "Restore" and "Import").
+ */
+
+public enum WalletFileKind: Equatable, Hashable {
+    
+    /**
+     * Dash Core `dumpwallet` text (§18.5).
+     */
+    case dumpWallet(
+        /**
+         * The network of its keys (from the WIF/xprv prefixes).
+         */network: DashNetwork?, hasMnemonic: Bool, hasHdSeed: Bool, hasXprv: Bool, 
+        /**
+         * Loose (non-HD) WIF keys: swept in M5, not imported.
+         */looseKeyCount: UInt32, scriptCount: UInt32, labelCount: UInt32
+    )
+    /**
+     * Dash Core v21+ SQLite descriptor `wallet.dat` (§18.1).
+     */
+    case walletDatSqlite(encrypted: Bool, hasMnemonic: Bool
+    )
+    /**
+     * Legacy Berkeley DB `wallet.dat`: detected; import lands in M6.
+     */
+    case walletDatBdb(encrypted: Bool?
+    )
+    /**
+     * Our `.dwbackup` bundle (`restore_backup`).
+     */
+    case dwBackup(network: DashNetwork, walletCount: UInt32, createdAt: UInt64, formatVersion: UInt32
+    )
+    /**
+     * A binary or base64 PSBT (`parse_psbt`).
+     */
+    case psbt
+    case unknown
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WalletFileKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWalletFileKind: FfiConverterRustBuffer {
+    typealias SwiftType = WalletFileKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WalletFileKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .dumpWallet(network: try FfiConverterOptionTypeDashNetwork.read(from: &buf), hasMnemonic: try FfiConverterBool.read(from: &buf), hasHdSeed: try FfiConverterBool.read(from: &buf), hasXprv: try FfiConverterBool.read(from: &buf), looseKeyCount: try FfiConverterUInt32.read(from: &buf), scriptCount: try FfiConverterUInt32.read(from: &buf), labelCount: try FfiConverterUInt32.read(from: &buf)
+        )
+        
+        case 2: return .walletDatSqlite(encrypted: try FfiConverterBool.read(from: &buf), hasMnemonic: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 3: return .walletDatBdb(encrypted: try FfiConverterOptionBool.read(from: &buf)
+        )
+        
+        case 4: return .dwBackup(network: try FfiConverterTypeDashNetwork.read(from: &buf), walletCount: try FfiConverterUInt32.read(from: &buf), createdAt: try FfiConverterUInt64.read(from: &buf), formatVersion: try FfiConverterUInt32.read(from: &buf)
+        )
+        
+        case 5: return .psbt
+        
+        case 6: return .unknown
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: WalletFileKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .dumpWallet(network,hasMnemonic,hasHdSeed,hasXprv,looseKeyCount,scriptCount,labelCount):
+            writeInt(&buf, Int32(1))
+            FfiConverterOptionTypeDashNetwork.write(network, into: &buf)
+            FfiConverterBool.write(hasMnemonic, into: &buf)
+            FfiConverterBool.write(hasHdSeed, into: &buf)
+            FfiConverterBool.write(hasXprv, into: &buf)
+            FfiConverterUInt32.write(looseKeyCount, into: &buf)
+            FfiConverterUInt32.write(scriptCount, into: &buf)
+            FfiConverterUInt32.write(labelCount, into: &buf)
+            
+        
+        case let .walletDatSqlite(encrypted,hasMnemonic):
+            writeInt(&buf, Int32(2))
+            FfiConverterBool.write(encrypted, into: &buf)
+            FfiConverterBool.write(hasMnemonic, into: &buf)
+            
+        
+        case let .walletDatBdb(encrypted):
+            writeInt(&buf, Int32(3))
+            FfiConverterOptionBool.write(encrypted, into: &buf)
+            
+        
+        case let .dwBackup(network,walletCount,createdAt,formatVersion):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeDashNetwork.write(network, into: &buf)
+            FfiConverterUInt32.write(walletCount, into: &buf)
+            FfiConverterUInt64.write(createdAt, into: &buf)
+            FfiConverterUInt32.write(formatVersion, into: &buf)
+            
+        
+        case .psbt:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletFileKind_lift(_ buf: RustBuffer) throws -> WalletFileKind {
+    return try FfiConverterTypeWalletFileKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWalletFileKind_lower(_ value: WalletFileKind) -> RustBuffer {
+    return FfiConverterTypeWalletFileKind.lower(value)
+}
+
+
+
+/**
+ * Node warnings for the alert banner (QT-040).
+ */
+
+public enum WarningCode: Equatable, Hashable {
+    
+    /**
+     * The engine is a pre-release build ("This is a pre-release test build
+     * - use at your own risk").
+     */
+    case prereleaseBuild
+    /**
+     * The previous session did not close cleanly.
+     */
+    case uncleanShutdown
+    /**
+     * SPV made no progress for 45 s (same rule as `Notice{SyncStalled}`).
+     */
+    case syncStalled
+    /**
+     * Peers' timestamps differ from the local clock by more than 70 min
+     * (dash-qt "Please check that your computer's date and time are
+     * correct").
+     */
+    case clockSkew
+    /**
+     * The trusted quorum service is unreachable; Platform features wait.
+     */
+    case platformContextUnavailable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WarningCode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWarningCode: FfiConverterRustBuffer {
+    typealias SwiftType = WarningCode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WarningCode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .prereleaseBuild
+        
+        case 2: return .uncleanShutdown
+        
+        case 3: return .syncStalled
+        
+        case 4: return .clockSkew
+        
+        case 5: return .platformContextUnavailable
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: WarningCode, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .prereleaseBuild:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .uncleanShutdown:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .syncStalled:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .clockSkew:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .platformContextUnavailable:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWarningCode_lift(_ buf: RustBuffer) throws -> WarningCode {
+    return try FfiConverterTypeWarningCode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWarningCode_lower(_ value: WarningCode) -> RustBuffer {
+    return FfiConverterTypeWarningCode.lower(value)
+}
+
 
 
 /**
@@ -11272,6 +18830,102 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeInstanceGuard: FfiConverterRustBuffer {
+    typealias SwiftType = InstanceGuard?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeInstanceGuard.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeInstanceGuard.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeChainLockInfo: FfiConverterRustBuffer {
+    typealias SwiftType = ChainLockInfo?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeChainLockInfo.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeChainLockInfo.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMasternodeCount: FfiConverterRustBuffer {
+    typealias SwiftType = MasternodeCount?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMasternodeCount.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMasternodeCount.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeRescanProgress: FfiConverterRustBuffer {
+    typealias SwiftType = RescanProgress?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeRescanProgress.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeRescanProgress.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeWalletBalances: FfiConverterRustBuffer {
     typealias SwiftType = WalletBalances?
 
@@ -11441,6 +19095,31 @@ fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt64]
+
+    public static func write(_ value: [UInt64], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt64.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt64] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt64]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt64.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceBool: FfiConverterRustBuffer {
     typealias SwiftType = [Bool]
 
@@ -11533,6 +19212,156 @@ fileprivate struct FfiConverterSequenceTypeAddressInfo: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeAddressInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeBackupInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [BackupInfo]
+
+    public static func write(_ value: [BackupInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBackupInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BackupInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BackupInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBackupInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeBannedPeer: FfiConverterRustBuffer {
+    typealias SwiftType = [BannedPeer]
+
+    public static func write(_ value: [BannedPeer], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBannedPeer.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BannedPeer] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BannedPeer]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBannedPeer.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeConsoleCommand: FfiConverterRustBuffer {
+    typealias SwiftType = [ConsoleCommand]
+
+    public static func write(_ value: [ConsoleCommand], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeConsoleCommand.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConsoleCommand] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ConsoleCommand]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeConsoleCommand.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeEngineWarning: FfiConverterRustBuffer {
+    typealias SwiftType = [EngineWarning]
+
+    public static func write(_ value: [EngineWarning], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEngineWarning.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EngineWarning] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EngineWarning]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEngineWarning.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFeeTarget: FfiConverterRustBuffer {
+    typealias SwiftType = [FeeTarget]
+
+    public static func write(_ value: [FeeTarget], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFeeTarget.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FeeTarget] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FeeTarget]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFeeTarget.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNetworkDataInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [NetworkDataInfo]
+
+    public static func write(_ value: [NetworkDataInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNetworkDataInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NetworkDataInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NetworkDataInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNetworkDataInfo.read(from: &buf))
         }
         return seq
     }
@@ -11641,6 +19470,31 @@ fileprivate struct FfiConverterSequenceTypePreparedOutput: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypePsbtOutput: FfiConverterRustBuffer {
+    typealias SwiftType = [PsbtOutput]
+
+    public static func write(_ value: [PsbtOutput], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePsbtOutput.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PsbtOutput] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PsbtOutput]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePsbtOutput.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeReceiveRequest: FfiConverterRustBuffer {
     typealias SwiftType = [ReceiveRequest]
 
@@ -11716,6 +19570,31 @@ fileprivate struct FfiConverterSequenceTypeSyncPhaseProgress: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeTrayMenuItem: FfiConverterRustBuffer {
+    typealias SwiftType = [TrayMenuItem]
+
+    public static func write(_ value: [TrayMenuItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTrayMenuItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TrayMenuItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TrayMenuItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTrayMenuItem.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeTxInputDetail: FfiConverterRustBuffer {
     typealias SwiftType = [TxInputDetail]
 
@@ -11733,6 +19612,31 @@ fileprivate struct FfiConverterSequenceTypeTxInputDetail: FfiConverterRustBuffer
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeTxInputDetail.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTxNotice: FfiConverterRustBuffer {
+    typealias SwiftType = [TxNotice]
+
+    public static func write(_ value: [TxNotice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTxNotice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TxNotice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TxNotice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTxNotice.read(from: &buf))
         }
         return seq
     }
@@ -11833,6 +19737,56 @@ fileprivate struct FfiConverterSequenceTypeWalletInfo: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeWalletInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeWalletLoadState: FfiConverterRustBuffer {
+    typealias SwiftType = [WalletLoadState]
+
+    public static func write(_ value: [WalletLoadState], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeWalletLoadState.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [WalletLoadState] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [WalletLoadState]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeWalletLoadState.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeExportWarning: FfiConverterRustBuffer {
+    typealias SwiftType = [ExportWarning]
+
+    public static func write(_ value: [ExportWarning], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeExportWarning.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ExportWarning] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ExportWarning]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeExportWarning.read(from: &buf))
         }
         return seq
     }
@@ -11961,6 +19915,141 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
+ * Every console command, sorted by name (tab completion, `help`).
+ */
+public func consoleCommands()throws  -> [ConsoleCommand]  {
+    return try  FfiConverterSequenceTypeConsoleCommand.lift(try rustCallWithError(FfiConverterTypeConsoleError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_console_commands(uniffiCallStatus
+    )
+})
+}
+/**
+ * dash-qt history redaction: the arguments of a sensitive command
+ * (`walletpassphrase`, `importprivkey`, `upgradetohd`, …) become `(…)`.
+ * The host echoes and stores only this text. `line` is UTF-8 bytes and is
+ * zeroized.
+ */
+public func consoleRedact(line: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeConsoleError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_console_redact(
+        FfiConverterData.lower(line),uniffiCallStatus
+    )
+})
+}
+/**
+ * Becomes the primary instance for `key` (`DashWallet-<network>`; a local
+ * socket on Windows, an abstract Unix socket on Linux) and delivers later
+ * launches' forwarded arguments to `observer`. `None`: another instance
+ * holds the key; the caller forwards with `forward_to_primary` and exits 0.
+ */
+public func acquireSingleInstance(key: String, observer: InstanceObserver)throws  -> InstanceGuard?  {
+    return try  FfiConverterOptionTypeInstanceGuard.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_acquire_single_instance(
+        FfiConverterString.lower(key),
+        FfiConverterTypeInstanceObserver_lower(observer),uniffiCallStatus
+    )
+})
+}
+public func autostartEnabled(appId: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_autostart_enabled(
+        FfiConverterString.lower(appId),uniffiCallStatus
+    )
+})
+}
+/**
+ * Decodes every QR code in an image file's bytes (PNG, JPEG, BMP) or a
+ * clipboard image, in reading order. Works on every OS (pure Rust).
+ */
+public func decodeQrCodes(image: Data)throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_decode_qr_codes(
+        FfiConverterData.lower(image),uniffiCallStatus
+    )
+})
+}
+/**
+ * Which provider the Rust side offers on this host. Windows Hello lands in
+ * M6: until then this returns `Unavailable` on Windows too.
+ */
+public func desktopQuickUnlockProvider() -> QuickUnlockProvider  {
+    return try!  FfiConverterTypeQuickUnlockProvider_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_desktop_quick_unlock_provider(uniffiCallStatus
+    )
+})
+}
+/**
+ * Sends `args` to the primary instance for `key`. `false` when none
+ * listens (the caller becomes primary instead).
+ */
+public func forwardToPrimary(key: String, args: [String])throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_forward_to_primary(
+        FfiConverterString.lower(key),
+        FfiConverterSequenceString.lower(args),uniffiCallStatus
+    )
+})
+}
+/**
+ * Registers the URI schemes (`dash`, `pay`, `dashwallet`, …) for the
+ * current user where the installer did not (Linux tarball:
+ * `x-scheme-handler` in a user `.desktop` file; Windows: HKCU). Packaged
+ * builds (Flatpak, MSI, macOS bundle) register at install time.
+ */
+public func registerUriSchemes(appId: String, execPath: String, schemes: [String])throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_register_uri_schemes(
+        FfiConverterString.lower(appId),
+        FfiConverterString.lower(execPath),
+        FfiConverterSequenceString.lower(schemes),uniffiCallStatus
+    )
+}
+}
+/**
+ * Writes (`enabled`) or deletes the entry. Idempotent.
+ */
+public func setAutostart(entry: AutostartEntry, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_set_autostart(
+        FfiConverterTypeAutostartEntry_lower(entry),
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
+}
+/**
+ * Windows `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the window
+ * `hwnd` while a phrase is visible. Returns whether exclusion is in effect;
+ * `desktop.unsupported` on Linux (the host shows a warning banner).
+ */
+public func setWindowCaptureExcluded(hwnd: UInt64, excluded: Bool)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_set_window_capture_excluded(
+        FfiConverterUInt64.lower(hwnd),
+        FfiConverterBool.lower(excluded),uniffiCallStatus
+    )
+})
+}
+/**
+ * Windows Hello: signs the vault's fixed challenge and derives the slot B
+ * wrap key (HKDF of the signature). M6.
+ */
+public func windowsHelloWrapKey(challenge: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_windows_hello_wrap_key(
+        FfiConverterData.lower(challenge),uniffiCallStatus
+    )
+})
+}
+/**
  * Version string of the Rust core (crate version).
  */
 public func coreVersion() -> String  {
@@ -11983,6 +20072,18 @@ public func verifyMessage(network: DashNetwork, address: String, message: String
         FfiConverterString.lower(signature),uniffiCallStatus
     )
 }
+}
+/**
+ * Parses a PSBT from a file (binary or base64) or the clipboard (base64),
+ * at most `MAX_PSBT_BYTES`.
+ */
+public func parsePsbt(data: Data)throws  -> Psbt  {
+    return try  FfiConverterTypePsbt_lift(try rustCallWithError(FfiConverterTypePsbtError_lift) {
+        uniffiCallStatus in
+    uniffi_dashwallet_core_fn_func_parse_psbt(
+        FfiConverterData.lower(data),uniffiCallStatus
+    )
+})
 }
 /**
  * Formats `amount` duffs. `network` picks `DASH` or `tDASH` names.
@@ -12121,10 +20222,46 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_dashwallet_core_checksum_func_console_commands() != 22839) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_console_redact() != 62069) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_acquire_single_instance() != 15321) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_autostart_enabled() != 59823) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_decode_qr_codes() != 60075) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_desktop_quick_unlock_provider() != 32335) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_forward_to_primary() != 41835) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_register_uri_schemes() != 2730) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_set_autostart() != 28072) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_set_window_capture_excluded() != 31305) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_windows_hello_wrap_key() != 30326) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_func_core_version() != 56472) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_verify_message() != 59039) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_func_parse_psbt() != 45402) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_format_amount() != 47102) {
@@ -12154,6 +20291,39 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_func_generate_mnemonic() != 44903) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_desktopnotifier_notify() != 65376) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_instanceguard_release() != 53384) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_instanceobserver_on_forwarded() != 5631) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_notificationobserver_on_activated() != 55492) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_trayicon_set_items() != 37674) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_trayicon_set_tooltip() != 21008) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_trayicon_set_visible() != 22272) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_trayobserver_on_activate() != 23661) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_trayobserver_on_menu_item() != 36655) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_engine_inspect_wallet_file() != 18941) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_engine_export_logs() != 4043) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_engine_close_network() != 4202) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12166,10 +20336,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_engine_shutdown() != 51753) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_engine_existing_networks() != 9831) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_engineobserver_on_event() != 60320) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_psbt_to_base64() != 32481) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_psbt_to_bytes() != 995) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_psbt_unsigned_txid() != 10272) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_preparedtx_summary() != 31536) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_txdraft_create_unsigned() != 30550) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_txdraft_abandon() != 22246) {
@@ -12199,6 +20384,21 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_txdraft_wallet_id() != 10075) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_networksession_automatic_backups() != 26739) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_backup_policy() != 54170) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_backup_wallet() != 53740) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_restore_backup() != 15567) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_backup_policy() != 8617) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_networksession_dust_protection() != 9690) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12215,6 +20415,30 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_utxos() != 23422) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_core_mnemonic_compatibility() != 30337) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_export_for_core() != 13494) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_dump_wallet() != 45258) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_key_material() != 31232) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 42863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 20533) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_coin_selection_summary() != 17210) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_fee_policy() != 15470) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_history_page() != 62490) {
@@ -12236,6 +20460,33 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_sign_message() != 58632) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_account_xpub() != 12449) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_watch_only() != 14228) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_load_wallet() != 6178) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_load_on_startup() != 10874) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_unload_wallet() != 16297) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_wallet_load_states() != 38144) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_analyze_psbt() != 30907) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_broadcast_psbt() != 26392) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_sign_psbt() != 36678) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_addresses() != 57714) {
@@ -12292,6 +20543,54 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_sync_snapshot() != 45870) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_networksession_ban_peer() != 31322) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_banned_peers() != 48060) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_cancel_rescan() != 59995) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_disconnect_peer() != 45225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_node_info() != 52996) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_rescan_progress() != 22307) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_reset_chain_data() != 44327) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_birth_height() != 10677) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_unban_peer() != 22474) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 15391) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 54211) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 45022) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_export_history_csv() != 61293) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_resend_transaction() != 63671) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_tx_detail_extras() != 24578) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_networksession_tx_notices() != 9969) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_method_networksession_vault() != 18573) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12346,11 +20645,32 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_unlock() != 63057) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dashwallet_core_checksum_method_vault_destroy() != 9189) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_vault_quick_unlock_policy() != 16476) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_vault_recover_with_mnemonic() != 60714) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_method_vault_set_quick_unlock_spend_limit() != 50360) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_constructor_desktopnotifier_new() != 23158) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dashwallet_core_checksum_constructor_trayicon_new() != 49329) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dashwallet_core_checksum_constructor_engine_new() != 61262) {
         return InitializationResult.apiChecksumMismatch
     }
 
     uniffiCallbackInitEngineObserver()
+    uniffiCallbackInitInstanceObserver()
+    uniffiCallbackInitNotificationObserver()
+    uniffiCallbackInitTrayObserver()
     return InitializationResult.ok
 }()
 

@@ -151,6 +151,12 @@ public enum EngineEvent: Sendable, Hashable {
     case historyChanged(DashNetwork, WalletID, txids: [String])
     case walletRemoved(DashNetwork, WalletID)
     case lockStateChanged(DashNetwork)
+    /// M2: transactions seen for the first time (m2-engine.md §3). Carries
+    /// the txids because notification rows cannot be re-derived from a
+    /// later re-query; `catchUp` = SPV was not caught up.
+    case newTransactions(DashNetwork, WalletID, txids: [String], catchUp: Bool)
+    /// M2: a wallet was loaded (opened) or unloaded (closed) without removal.
+    case walletLoadChanged(DashNetwork, WalletID, loaded: Bool)
     /// Not from the engine: `EventBus` dropped signals for a slow consumer.
     /// Re-query everything (sync, balances, history, wallets).
     case resynchronize
@@ -169,6 +175,10 @@ public enum EngineEvent: Sendable, Hashable {
             self = .historyChanged(DashNetwork(n), WalletID(engine: id), txids: txids)
         case .walletRemoved(let n, let id): self = .walletRemoved(DashNetwork(n), WalletID(engine: id))
         case .lockState(let n, _): self = .lockStateChanged(DashNetwork(n))
+        case .newTransactions(let n, let id, let txids, let catchUp):
+            self = .newTransactions(DashNetwork(n), WalletID(engine: id), txids: txids, catchUp: catchUp)
+        case .walletLoadChanged(let n, let id, let loaded):
+            self = .walletLoadChanged(DashNetwork(n), WalletID(engine: id), loaded: loaded)
         }
     }
 
@@ -177,7 +187,8 @@ public enum EngineEvent: Sendable, Hashable {
         switch self {
         case .sessionOpened(let n), .sessionClosed(let n), .walletCreated(let n, _),
              .spvStateChanged(let n, _), .syncChanged(let n), .balancesChanged(let n, _), .historyChanged(let n, _, _),
-             .walletRemoved(let n, _), .lockStateChanged(let n):
+             .walletRemoved(let n, _), .lockStateChanged(let n), .newTransactions(let n, _, _, _),
+             .walletLoadChanged(let n, _, _):
             n
         case .notice(let n, _, _):
             n
@@ -187,11 +198,12 @@ public enum EngineEvent: Sendable, Hashable {
     }
 
     /// Lifecycle events are never dropped or merged by `EventBus`; the rest
-    /// are "re-query" signals.
+    /// are "re-query" signals. `newTransactions` counts as lifecycle because
+    /// its txids cannot be re-queried.
     public var isLifecycle: Bool {
         switch self {
         case .sessionOpened, .sessionClosed, .walletCreated, .walletRemoved, .spvStateChanged, .lockStateChanged,
-             .notice:
+             .notice, .newTransactions, .walletLoadChanged:
             true
         case .syncChanged, .balancesChanged, .historyChanged, .resynchronize:
             false
