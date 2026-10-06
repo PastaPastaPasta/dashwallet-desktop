@@ -51,7 +51,8 @@ screenshots were not kept (they stay in the container).
 
 - **Coin Selection summary layout.** After a pick (`m2-2-options-coin-selected.png`) the summary grid
   gives the Fee and Change values a column one character wide, so "≈ 0.00000192 tDASH" wraps one character
-  per line. The values are right; the layout is not. Not fixed (no second Linux run in this pass).
+  per line. The values are right; the layout is not. Fixed in d208b2d (fixed-width two-column grid), **not yet
+  confirmed on Linux**. See "Review follow-up run" below.
 - The coin switches show their accessible name ("Select 4.87999774 at …") as visible text next to the
   amount and address, which repeats the row.
 
@@ -65,3 +66,21 @@ screenshots were not kept (they stay in the container).
   export for Dash Core, rename/remove, forgot passphrase, wipe, Abandon/Resend presses.
 - Coin Selection tree mode.
 - x86_64, Wayland, Orca, Windows.
+
+## Review follow-up run (2026-10-06, after the M2 review fixes): not run
+
+Sources: `main` at d208b2d (M2 review fixes: coin control as Send's one source of truth 1940691, discreet
+notifications f8890b5, the Coin Selection summary grid d208b2d).
+
+| Run | Result |
+|---|---|
+| `DWD_SWIFT_TEST_FILTER='ContractSurfaceTests\|RealEngineTests\|WalletFeaturesTests' DWD_MIN_FREE_GB=6 scripts/linux-docker-test.sh` | **Not run.** `disk-guard` aborted before the build: 8 GB free on the host, but only 5 GB on the container's `/target` (< 6 GB). |
+| `DWD_CROSSUI_SUITE=m2 scripts/crossui-linux-demo.sh` | **Not run.** It needs at least 8 GB free, and the host disk was at the 8 GB line with the container's `/target` at 5 GB. |
+
+So the following are **not verified on Linux**:
+- the summary-grid layout fix (d208b2d);
+- the new AT-SPI check "coin selection: OK returns to Send, whose panel shows the pick"
+  (`ci/linux/crossui/atspi_demo.py`), and its screenshot `m2-2-options-send-with-selection.png`;
+- the new and changed WalletFeatures tests on Linux. On macOS, `swift test` passed (559 tests in 66 suites).
+
+The screenshots above are still from the 6fb2e7e run.
