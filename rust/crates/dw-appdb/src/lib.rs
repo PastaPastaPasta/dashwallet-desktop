@@ -205,11 +205,12 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// `(wallet_id, name, created_at)` for every named wallet, oldest first.
+    /// `(wallet_id, name, created_at)` for every named wallet, in the order
+    /// the rows were added (oldest first, insertion order within a second).
     pub fn wallets(&self) -> Result<Vec<(String, String, u64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT wallet_id, name, created_at FROM wallets ORDER BY created_at, wallet_id",
+            "SELECT wallet_id, name, created_at FROM wallets ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64))

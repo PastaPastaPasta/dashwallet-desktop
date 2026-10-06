@@ -163,6 +163,8 @@ impl WalletState {
 pub(crate) struct WalletName {
     pub name: String,
     pub created_at: Option<u64>,
+    /// Position in the order wallets were added (ties within a second).
+    pub order: u64,
 }
 
 /// In-memory state of one session, updated from SPV and wallet callbacks.
@@ -225,6 +227,17 @@ impl SessionHub {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, name);
+    }
+
+    /// The `order` a newly named wallet gets: after every known one.
+    pub(crate) fn next_name_order(&self) -> u64 {
+        self.names
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .map(|n| n.order + 1)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Forgets everything about a removed wallet.

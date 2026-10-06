@@ -71,8 +71,8 @@ impl NetworkSession {
         }
     }
 
-    /// Every registered wallet, in creation order (wallets without a stored
-    /// creation time last, by id). In-memory read.
+    /// Every registered wallet, in the order they were added (wallets
+    /// without a stored name last, by id). In-memory read.
     pub fn wallet_infos(&self) -> Result<Vec<WalletInfo>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
@@ -81,13 +81,9 @@ impl NetworkSession {
             .into_iter()
             .map(|id| self.info_of(WalletId(id)))
             .collect();
-        infos.sort_by(|a, b| {
-            (a.created_at.is_none(), a.created_at, a.wallet_id).cmp(&(
-                b.created_at.is_none(),
-                b.created_at,
-                b.wallet_id,
-            ))
-        });
+        // Named wallets in the order they were added, then the rest by id.
+        let order = |w: &WalletInfo| self.hub.name_of(&w.wallet_id).map(|n| n.order);
+        infos.sort_by_key(|w| (order(w).is_none(), order(w), w.wallet_id));
         Ok(infos)
     }
 
@@ -129,6 +125,10 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let appdb = self.live()?.appdb;
         let now = unix_now();
+        let order = match self.hub.name_of(&id) {
+            Some(existing) => existing.order,
+            None => self.hub.next_name_order(),
+        };
         let stored = name.clone();
         tokio::task::spawn_blocking(move || appdb.set_wallet_name(&id.to_string(), &stored, now))
             .await?
@@ -139,6 +139,7 @@ impl NetworkSession {
                 name,
                 // The row keeps its first creation time.
                 created_at: Some(keep_created_at.unwrap_or(now)),
+                order,
             },
         );
         Ok(())

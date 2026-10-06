@@ -217,13 +217,14 @@ impl NetworkSession {
         );
 
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
-        for (id, name, created_at) in names {
+        for (order, (id, name, created_at)) in (0u64..).zip(names) {
             match id.parse::<WalletId>() {
                 Ok(id) => hub.set_name(
                     id,
                     WalletName {
                         name,
                         created_at: Some(created_at),
+                        order,
                     },
                 ),
                 Err(_) => tracing::warn!(wallet_id = %id, "ignoring a malformed wallet name row"),
