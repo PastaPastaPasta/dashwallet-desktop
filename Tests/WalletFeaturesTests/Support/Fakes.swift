@@ -156,8 +156,17 @@ final class FakeLifecycle: LifecycleQueueing, @unchecked Sendable {
         return id
     }
 
+    /// `nil` = not configured (not_implemented); else the error to throw or success.
+    let removeResult = Locked<Result<Void, ServiceError>?>(nil)
+    let removals = Locked<[(WalletID, AuthGrant)]>([])
+    /// Called after a successful removal, e.g. to update a fake wallet state.
+    let onRemove = Locked<(@Sendable (WalletID) -> Void)?>(nil)
+
     func removeWallet(_ id: WalletID, grant: AuthGrant) async throws(ServiceError) {
-        throw notConfigured("removeWallet")
+        guard let result = removeResult.current else { throw notConfigured("removeWallet") }
+        removals.withLock { $0.append((id, grant)) }
+        try result.get()
+        onRemove.current?(id)
     }
 }
 
@@ -215,8 +224,14 @@ final class FakeSync: SyncStatusProviding {
         if let rotateError { throw rotateError }
     }
 
+    var rescans: [RescanStart] = []
+    /// `nil` = not configured (not_implemented).
+    var rescanResult: Result<Void, ServiceError>?
+
     func rescan(from start: RescanStart) async throws(ServiceError) {
-        throw notConfigured("rescan")
+        guard let rescanResult else { throw notConfigured("rescan") }
+        rescans.append(start)
+        try rescanResult.get()
     }
 
     static func synced(peers: UInt32 = 8) -> SyncStatus {
@@ -714,7 +729,10 @@ final class FakeHistory: HistoryProviding, @unchecked Sendable {
             s.queries.append(query)
             if !s.pageErrors.isEmpty { throw s.pageErrors.removeFirst() }
             if let error = s.failAtQuery.removeValue(forKey: s.queries.count) { throw error }
-            let filtered = s.records.filter { query.filter.types.isEmpty || query.filter.types.contains($0.type) }
+            let filtered = s.records.filter {
+                (query.filter.types.isEmpty || query.filter.types.contains($0.type))
+                    && (query.filter.categories.isEmpty || query.filter.categories.contains($0.category))
+            }
             let start = query.cursor.flatMap(Int.init) ?? 0
             let end = min(filtered.count, start + query.limit)
             let slice = start < end ? Array(filtered[start..<end]) : []
@@ -744,6 +762,8 @@ final class FakeReceive: ReceiveProviding, @unchecked Sendable {
         var nextRequestID: UInt64 = 1
         var nextAddressLabels: [String?] = []
         var createError: ServiceError?
+        /// Further addresses of the wallet (change chain, used ones).
+        var others: [AddressInfo] = []
     }
 
     let state: Locked<State>
@@ -770,7 +790,8 @@ final class FakeReceive: ReceiveProviding, @unchecked Sendable {
     }
 
     func addresses(wallet: WalletID, filter: AddressFilter) async throws(ServiceError) -> [AddressInfo] {
-        [state.current.current]
+        let s = state.current
+        return [s.current] + s.others
     }
 
     func createRequest(wallet: WalletID, amount: Amount?, label: String?, message: String?) async throws(ServiceError)
@@ -800,11 +821,48 @@ final class FakeReceive: ReceiveProviding, @unchecked Sendable {
     }
 }
 
+/// Coins and locks as the engine's coins.rs: locking an unknown outpoint is
+/// `coins.outpoint_not_found`; unlocking is idempotent. Unconfigured
+/// (`coins == nil`) every call is not_implemented.
 final class FakeCoinControl: CoinControlProviding, @unchecked Sendable {
-    func utxos(wallet: WalletID, filter: UtxoFilter) async throws(ServiceError) -> [Utxo] { throw notConfigured("utxos") }
-    func lock(wallet: WalletID, outpoints: [OutPoint]) async throws(ServiceError) { throw notConfigured("lock") }
-    func unlock(wallet: WalletID, outpoints: [OutPoint]) async throws(ServiceError) { throw notConfigured("unlock") }
-    func lockedOutpoints(wallet: WalletID) async throws(ServiceError) -> [OutPoint] { throw notConfigured("locked") }
+    let coins = Locked<[Utxo]?>(nil)
+    let locked = Locked<Set<OutPoint>>([])
+    let unlockCalls = Locked<[[OutPoint]]>([])
+
+    func utxos(wallet: WalletID, filter: UtxoFilter) async throws(ServiceError) -> [Utxo] {
+        guard let coins = coins.current else { throw notConfigured("utxos") }
+        let locked = locked.current
+        return coins.compactMap { coin in
+            let isLocked = locked.contains(coin.outpoint)
+            if isLocked && !filter.includeLocked { return nil }
+            return Utxo(
+                outpoint: coin.outpoint, address: coin.address, amount: coin.amount,
+                confirmations: coin.confirmations, date: coin.date, instantLocked: coin.instantLocked,
+                chainLocked: coin.chainLocked, userLocked: isLocked, reserved: coin.reserved, label: coin.label,
+                isChange: coin.isChange, coinJoinDenominated: coin.coinJoinDenominated,
+                coinJoinRounds: coin.coinJoinRounds, spendable: coin.spendable && !isLocked)
+        }
+    }
+
+    func lock(wallet: WalletID, outpoints: [OutPoint]) async throws(ServiceError) {
+        guard let coins = coins.current else { throw notConfigured("lock") }
+        let known = Set(coins.map(\.outpoint))
+        if let missing = outpoints.first(where: { !known.contains($0) }) {
+            throw ServiceError(code: .coinsOutpointNotFound, detail: missing.txid)
+        }
+        locked.withLock { $0.formUnion(outpoints) }
+    }
+
+    func unlock(wallet: WalletID, outpoints: [OutPoint]) async throws(ServiceError) {
+        guard coins.current != nil else { throw notConfigured("unlock") }
+        unlockCalls.withLock { $0.append(outpoints) }
+        locked.withLock { $0.subtract(outpoints) }
+    }
+
+    func lockedOutpoints(wallet: WalletID) async throws(ServiceError) -> [OutPoint] {
+        guard coins.current != nil else { throw notConfigured("locked") }
+        return locked.current.sorted { ($0.txid, $0.vout) < ($1.txid, $1.vout) }
+    }
 }
 
 final class FakeAddressBook: AddressBookProviding, @unchecked Sendable {

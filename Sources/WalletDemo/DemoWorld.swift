@@ -123,8 +123,12 @@ final class DemoWorld {
         current.selected.flatMap { current.ledgers[$0]?.balances }
     }
 
+    /// A loaded wallet's ledger; unloaded wallets are `wallet_not_found`, as
+    /// the engine answers for them (m2-engine.md §2.1).
     func ledger(_ id: WalletID) throws(ServiceError) -> DemoLedger {
-        guard let ledger = current.ledgers[id] else { throw .demo(.walletNotFound) }
+        guard current.wallets.contains(where: { $0.id == id }), let ledger = current.ledgers[id] else {
+            throw .demo(.walletNotFound)
+        }
         return ledger
     }
 
@@ -141,8 +145,8 @@ final class DemoWorld {
         guard let index = current.wallets.firstIndex(where: { $0.id == id }), let ledger = current.ledgers[id] else { return }
         let old = current.wallets[index]
         current.wallets[index] = WalletInfo(
-            id: id, name: old.name, watchOnly: false, hasMnemonic: true, hd: true, birthHeight: old.birthHeight,
-            createdAt: old.createdAt, balances: ledger.balances)
+            id: id, name: old.name, watchOnly: old.watchOnly, hasMnemonic: old.hasMnemonic, hd: true,
+            birthHeight: old.birthHeight, createdAt: old.createdAt, balances: ledger.balances)
         walletChanges.send(())
     }
 
@@ -242,7 +246,7 @@ final class DemoWorld {
         VaultStatus(
             state: vault.state, encrypted: vault.encrypted, quickUnlockEnrolled: false,
             failedAttempts: vault.failedAttempts, retryAfterSeconds: retryAfter(),
-            walletsWithSecrets: current.wallets.map(\.id))
+            walletsWithSecrets: current.wallets.map(\.id).filter { current.phrases[$0] != nil })
     }
 
     private func setVault(_ change: (inout DemoVaultState) -> Void) {
@@ -331,6 +335,49 @@ final class DemoWorld {
             throw .demo(.vaultWrongPassphrase, retryAfter: wait, parameters: parameters)
         }
         if vault.failedAttempts > 0 { setVault { $0.failedAttempts = 0; $0.lastFailure = nil } }
+    }
+
+    // MARK: Recovery and destroy (M2)
+
+    /// `Vault.recover_with_mnemonic`: the phrase must be `wallet`'s. The new
+    /// vault, encrypted with `newPassphrase` and unlocked, holds only that
+    /// phrase; the other wallets lose their secrets and become watch-only.
+    func recoverVault(wallet: WalletID, phrase: String, newPassphrase: String) throws(ServiceError)
+        -> VaultRecoveryResult
+    {
+        guard current.wallets.contains(where: { $0.id == wallet }) else { throw .demo(.walletNotFound) }
+        guard current.phrases[wallet] == phrase else { throw .demo(.vaultRecoveryMismatch) }
+        guard !newPassphrase.isEmpty else { throw .demo(.vaultPassphraseRejected) }
+        grants = [:]
+        let others = current.wallets.map(\.id).filter { $0 != wallet && current.phrases[$0] != nil }
+        var state = current
+        for id in others { state.phrases[id] = nil }
+        state.wallets = state.wallets.map { info in
+            guard others.contains(info.id) else { return info }
+            return WalletInfo(
+                id: info.id, name: info.name, watchOnly: true, hasMnemonic: false, hd: info.hd,
+                birthHeight: info.birthHeight, createdAt: info.createdAt, balances: info.balances)
+        }
+        current = state
+        setVault { $0 = DemoVaultState(state: .unlocked, passphrase: newPassphrase) }
+        walletChanges.send(())
+        return VaultRecoveryResult(status: vaultStatus, walletsWithoutSecrets: others)
+    }
+
+    /// `Vault.destroy`: only once no wallet remains (`vault.not_empty`); an
+    /// encrypted vault needs its passphrase (the Wipe row of §2.2).
+    func destroyVault(passphrase: String?, remainingWallets: Int) throws(ServiceError) -> VaultStatus {
+        guard vault.state != .noVault else { throw .demo(.vaultNoVault) }
+        guard remainingWallets == 0 else { throw .demo(.vaultNotEmpty) }
+        if vault.encrypted {
+            guard let passphrase else { throw .demo(.vaultCredentialRequired) }
+            try checkPassphrase(passphrase)
+        } else if passphrase != nil {
+            throw .demo(.vaultNotEncrypted)
+        }
+        grants = [:]
+        setVault { $0 = DemoVaultState() }
+        return vaultStatus
     }
 
     // MARK: Grants

@@ -24,8 +24,18 @@ public final class TransactionsViewModel {
     public private(set) var totalMatching: Int?
     public private(set) var selection: Set<TxRecord.ID> = []
     public private(set) var detail: TransactionDetail?
-    public private(set) var errorMessage: String?
+    public internal(set) var errorMessage: String?
     public private(set) var isLoading = false
+
+    // M2 (QT-075, QT-090…093, IOS-027…034): see TransactionsViewModel+M2.swift.
+    /// dash-qt details fields and action enablement of `detail`; `nil` until
+    /// loaded or when the engine does not provide them yet.
+    public internal(set) var extras: TransactionDetailExtras?
+    public internal(set) var actionState: TransactionActionState = .idle
+    /// iOS filter chips (IOS-028); all offered chips selected = no filter.
+    public internal(set) var selectedChips: Set<HistoryChip> = Set(HistoryChip.allCases)
+    /// Rewards and Masternode chips appear only when such history exists.
+    public internal(set) var offeredChips: [HistoryChip] = [.sent, .received]
 
     /// The query filter the page shows.
     public var filter: HistoryFilter {
@@ -33,8 +43,9 @@ public final class TransactionsViewModel {
             now: timing.now(), calendar: timing.calendar, rangeFrom: rangeFrom, rangeUntil: rangeUntil)
         let text = searchText.trimmingCharacters(in: .whitespaces)
         return HistoryFilter(
-            types: typePreset.types, from: bounds.from, until: bounds.until, text: text.isEmpty ? nil : text,
-            minimumAmount: minimumAmount, watchOnly: showsWatchOnly ? watchOnly : .all)
+            types: typePreset.types, categories: chipCategories, from: bounds.from, until: bounds.until,
+            text: text.isEmpty ? nil : text, minimumAmount: minimumAmount,
+            watchOnly: showsWatchOnly ? watchOnly : .all)
     }
 
     /// Watch-only filter and column appear only for wallets that have
@@ -52,13 +63,17 @@ public final class TransactionsViewModel {
 
     public var typeMenu: [TypeFilterPreset] { TypeFilterPreset.menu(coinJoinEnabled: features.coinJoin) }
 
-    private let walletState: any WalletStateProviding
-    private let history: any HistoryProviding
-    private let amounts: any AmountFormatting
-    private let settings: any SettingsProviding
+    let walletState: any WalletStateProviding
+    let history: any HistoryProviding
+    let amounts: any AmountFormatting
+    let settings: any SettingsProviding
     private let preferences: any UIPreferencesStoring
-    private let timing: Timing
+    let timing: Timing
     private let features: FeatureFlags
+    let actions: (any TransactionActing)?
+    let coinControl: (any CoinControlProviding)?
+    let desktopPreferences: (any DesktopPreferencesStoring)?
+    let network: DashNetwork?
     private var minimumAmount: Amount?
     private var nextCursor: String?
     private var searchTask: Task<Void, Never>?
@@ -68,8 +83,14 @@ public final class TransactionsViewModel {
     public init(
         walletState: any WalletStateProviding, history: any HistoryProviding, amounts: any AmountFormatting,
         settings: any SettingsProviding, preferences: any UIPreferencesStoring, timing: Timing,
-        features: FeatureFlags = .m1
+        features: FeatureFlags = .m1, actions: (any TransactionActing)? = nil,
+        coinControl: (any CoinControlProviding)? = nil, desktopPreferences: (any DesktopPreferencesStoring)? = nil,
+        network: DashNetwork? = nil
     ) {
+        self.actions = actions
+        self.coinControl = coinControl
+        self.desktopPreferences = desktopPreferences
+        self.network = network
         self.walletState = walletState
         self.history = history
         self.amounts = amounts
@@ -89,6 +110,14 @@ public final class TransactionsViewModel {
         self.init(
             walletState: env.walletState, history: env.history, amounts: env.amounts, settings: env.settings,
             preferences: env.preferences, timing: env.timing, features: features)
+    }
+
+    /// With the M2 services: abandon/resend, extras, engine CSV, third-party links.
+    public convenience init(env: AppEnvironment, m2: M2Services, network: DashNetwork?, features: FeatureFlags = .m1) {
+        self.init(
+            walletState: env.walletState, history: env.history, amounts: env.amounts, settings: env.settings,
+            preferences: env.preferences, timing: env.timing, features: features, actions: m2.transactionActions,
+            coinControl: env.coinControl, desktopPreferences: m2.desktopPreferences, network: network)
     }
 
     // MARK: Loading
@@ -236,6 +265,7 @@ public final class TransactionsViewModel {
 
     public func clearDetail() {
         detail = nil
+        extras = nil
     }
 
     public func setLabel(_ label: String?, txid: String) async {
@@ -282,6 +312,7 @@ public final class TransactionsViewModel {
         guard let wallet = walletState.selectedWalletID else {
             throw ServiceError(code: .walletNotFound, detail: "no wallet selected")
         }
+        if let csv = try await engineCSV(wallet: wallet) { return csv }
         let records = try await allRecords(wallet: wallet, attemptsLeft: Self.exportAttempts)
         return TransactionCSV.make(
             records: records, unit: settings.display.unit, amounts: amounts, watchOnlyColumn: showsWatchOnly,
@@ -310,14 +341,17 @@ public final class TransactionsViewModel {
         HistoryQuery(filter: filter, sort: .newestFirst, cursor: cursor, limit: Self.pageSize)
     }
 
-    private func loadDetail(txid: String) async {
+    func loadDetail(txid: String) async {
         guard let wallet = walletState.selectedWalletID else { return }
         do {
             detail = try await history.detail(wallet: wallet, txid: txid)
         } catch {
             detail = nil
+            extras = nil
             errorMessage = ErrorText.common(error.code)
+            return
         }
+        await loadExtras(wallet: wallet, txid: txid)
     }
 
     private func persist() {
