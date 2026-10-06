@@ -28,6 +28,11 @@ struct SendView: View {
                             onRemove: { send.removeRecipient(entry.id) })
                     }
                     FeeSection(send: send, unitName: model.unitName, amounts: model.env?.amounts)
+                    if let features = model.features, features.options.wallet.coinControl {
+                        SendCoinControlPanel(
+                            coinControl: features.coinControl, send: send,
+                            openInputs: { model.windowOpener?(id: SceneID.coinControl) })
+                    }
                 }
                 // Read-only while broadcasting and while the outcome is
                 // unknown: "Broadcast again" sends what was reviewed (L6).
@@ -39,6 +44,13 @@ struct SendView: View {
         }
         .accessibilityIdentifier("send")
         .overlay { progressOverlay }
+        .task(id: CoinControlInputs(send: send)) {
+            // The coin-control labels follow the recipients and the fee (QT-072).
+            guard let features = model.features, features.options.wallet.coinControl, let amounts = model.env?.amounts
+            else { return }
+            let parsed = send.entries.compactMap { try? amounts.parse($0.amountText, unit: send.unit) }
+            await features.coinControl.updatePayment(amounts: parsed, fee: send.fee)
+        }
         .sheet(isPresented: confirmBinding) { SendConfirmSheet(send: send) }
         .sheet(isPresented: authorizeBinding) { SendAuthorizeSheet(send: send) }
         .sheet(item: Binding(get: { choosingFor.map(ChooserItem.init) }, set: { choosingFor = $0?.id })) { item in
@@ -95,10 +107,19 @@ struct SendView: View {
             Button(MacStrings.Send.clearAll) { send.clearAll() }
                 .disabled(!send.isEditable)
                 .accessibilityIdentifier("send.clearAll")
-            // Coin control needs a coin-selection view model (QT-068…075), not in M1.
-            Button(MacStrings.Send.coinControl) {}
-                .disabled(true)
-                .help(MacStrings.Send.coinControlUnavailable)
+            if let features = model.features, features.options.wallet.psbtControls {
+                // QT-076: an unsigned PSBT of this form, copied to the
+                // clipboard and shown in the PSBT Operations window.
+                Button(L10n.PSBT.createUnsigned) {
+                    Task {
+                        guard let draft = await send.makeUnsignedDraft() else { return }
+                        await features.psbt.createUnsigned(draft: draft)
+                        model.windowOpener?(id: SceneID.psbt)
+                    }
+                }
+                .disabled(send.phase != .editing)
+                .accessibilityIdentifier("send.createUnsigned")
+            }
             Spacer()
             if let estimate = send.estimate {
                 Text("\(MacStrings.Send.estimate): \(model.formatAmount(estimate.fee))")
@@ -162,6 +183,18 @@ struct SendView: View {
 
     private var failedBinding: Binding<Bool> {
         Binding(get: { if case .failed = send.phase { true } else { false } }, set: { _ in })
+    }
+}
+
+/// What the coin-control summary depends on.
+private struct CoinControlInputs: Hashable {
+    let amounts: [String]
+    let fee: FeeChoice
+
+    @MainActor
+    init(send: SendViewModel) {
+        amounts = send.entries.map(\.amountText)
+        fee = send.fee
     }
 }
 

@@ -8,8 +8,9 @@ import WalletFeatures
 import WalletRuntime
 
 struct MainWindowView: View {
-    let model: MacAppModel
+    @Bindable var model: MacAppModel
     @Bindable var main: MainViewModel
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         ZStack {
@@ -51,6 +52,25 @@ struct MainWindowView: View {
         .sheet(isPresented: Binding(get: { model.isPeersPresented }, set: { model.isPeersPresented = $0 })) {
             if let sync = model.env?.sync { PeersSheet(sync: sync) }
         }
+        .sheet(isPresented: $model.isUnlockPresented) {
+            UnlockSheet(lock: main.lock, onClose: { model.isUnlockPresented = false })
+        }
+        .sheet(isPresented: $model.isBackupPresented) {
+            if let wallets = model.features?.wallets {
+                BackupWalletSheet(
+                    wallets: wallets, walletID: main.selectedWalletID,
+                    walletName: main.wallets?.first { $0.id == main.selectedWalletID }?.name ?? "",
+                    onClose: { model.isBackupPresented = false })
+            }
+        }
+        .sheet(isPresented: existingDataBinding) {
+            if let wallets = model.features?.wallets { ExistingDataSheet(wallets: wallets) }
+        }
+        .task(id: main.needsOnboarding) {
+            // IOS-009: wallet data from an earlier install while no wallet is open.
+            if main.needsOnboarding { await model.features?.wallets.loadExistingData() }
+        }
+        .modifier(ShellAlerts(model: model))
         .onChange(of: main.home?.sync) { _, status in
             if let status { main.syncRates.record(status) }
         }
@@ -68,6 +88,12 @@ struct MainWindowView: View {
             Task { await model.open(uri: text) }
             return true
         }
+    }
+
+    private var existingDataBinding: Binding<Bool> {
+        Binding(
+            get: { main.needsOnboarding && (model.features?.wallets.showsExistingDataPrompt ?? false) },
+            set: { if !$0 { model.features?.wallets.keepExistingData() } })
     }
 
     private var walletView: some View {
@@ -106,7 +132,20 @@ struct MainWindowView: View {
         switch main.selection {
         case .overview:
             if let home = main.home {
-                OverviewView(home: home, toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) })
+                VStack(spacing: 0) {
+                    if let features = model.features, let network = main.network {
+                        VStack(spacing: DashSpacing.m) {
+                            BackupReminderBanner(
+                                reminder: features.backupReminder, backUp: { model.perform(.showRecoveryPhrase) })
+                            ShortcutBarView(
+                                bar: features.shortcutBar(for: network),
+                                perform: { route in model.perform(route, openURL: openURL) })
+                        }
+                        .padding([.horizontal, .top], DashSpacing.xxl)
+                    }
+                    OverviewView(
+                        home: home, toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) })
+                }
             } else {
                 LoadingPage()
             }
@@ -124,6 +163,42 @@ struct MainWindowView: View {
             // Hidden in M1 (FeatureFlags.m1); not reachable from the sidebar.
             LoadingPage()
         }
+    }
+}
+
+/// The shell's questions (Close Wallet, Close All Wallets) and errors.
+struct ShellAlerts: ViewModifier {
+    let model: MacAppModel
+    /// The shell keeps its last error until the next command; the alert
+    /// shows each message once.
+    @State private var dismissedError: String?
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                model.shell?.confirmation?.title ?? "",
+                isPresented: Binding(
+                    get: { model.shell?.confirmation != nil }, set: { if !$0 { model.shell?.cancelConfirmation() } })
+            ) {
+                Button(MacStrings.Common.no, role: .cancel) { model.shell?.cancelConfirmation() }
+                Button(MacStrings.Common.yes) { Task { await model.shell?.confirm() } }
+                    .accessibilityIdentifier("shell.confirm.yes")
+            } message: {
+                Text(model.shell?.confirmation?.message ?? "")
+            }
+            .alert(
+                MacStrings.Common.error,
+                isPresented: Binding(
+                    get: {
+                        guard let error = model.shell?.errorMessage else { return false }
+                        return error != dismissedError && model.shell?.confirmation == nil
+                    },
+                    set: { if !$0 { dismissedError = model.shell?.errorMessage } })
+            ) {
+                Button(MacStrings.Common.ok) { dismissedError = model.shell?.errorMessage }
+            } message: {
+                Text(model.shell?.errorMessage ?? "")
+            }
     }
 }
 

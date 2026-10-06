@@ -1,5 +1,8 @@
-// Transactions (QT-086…094, IOS-027…031): dash-qt filter row, sortable
-// table, selected-amount footer, details sheet and CSV export.
+// Transactions (QT-086…094, IOS-027…032): dash-qt filter row, sortable
+// table with dash-qt's context menu (copy, abandon, resend, unlock dust,
+// third-party links), selected-amount footer, details sheet and CSV export;
+// or the iOS history: category chips and day groups with one CoinJoin
+// mixing row per day.
 #if os(macOS)
 import DashUIMac
 import DesignTokens
@@ -18,29 +21,36 @@ struct TransactionsView: View {
     @State private var showsDetail = false
     @State private var editingLabel: String?
     @State private var exportMessage: String?
+    /// dash-qt's table or the iOS day-grouped history (IOS-027).
+    @State var layout: TransactionsLayout = .table
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(spacing: 0) {
-            TransactionFilterBar(transactions: transactions)
+            TransactionFilterBar(transactions: transactions, layout: $layout)
             Divider()
             if let error = transactions.errorMessage {
                 SystemNotice(text: error, tone: .error).padding(DashSpacing.m)
             }
-            DataTable(
-                rows: transactions.rows, columns: columns, selection: $selection, sortOrder: $sortOrder,
-                emptyText: MacStrings.Transactions.empty,
-                onActivate: { id in
-                    Task {
-                        await transactions.select(id)
-                        showsDetail = transactions.detail != nil
-                    }
-                },
-                contextMenu: contextMenu)
-            .accessibilityIdentifier("transactions.table")
+            switch layout {
+            case .table:
+                DataTable(
+                    rows: transactions.rows, columns: columns, selection: $selection, sortOrder: $sortOrder,
+                    emptyText: MacStrings.Transactions.empty,
+                    onActivate: { id in showDetail(id) },
+                    contextMenu: contextMenu)
+                .accessibilityIdentifier("transactions.table")
+            case .history:
+                HistoryList(
+                    transactions: transactions, formatAmount: formatAmount, onOpen: { id in showDetail(id) },
+                    contextMenu: contextMenu)
+            }
             Divider()
             footer
         }
         .accessibilityIdentifier("transactions")
+        .task { await transactions.refreshChips() }
+        .modifier(TransactionActionAlerts(transactions: transactions))
         .onChange(of: selection) { old, new in syncSelection(old: old, new: new) }
         .onChange(of: transactions.selection) { _, new in if new != selection { selection = new } }
         .sheet(isPresented: $showsDetail) {
@@ -102,26 +112,69 @@ struct TransactionsView: View {
         ]
     }
 
+    private func showDetail(_ id: TxRecord.ID) {
+        Task {
+            await transactions.select(id)
+            showsDetail = transactions.detail != nil
+        }
+    }
+
+    /// dash-qt's transaction context menu (QT-090, QT-091, QT-094). Abandon,
+    /// resend and unlock-dust follow the selected transaction's extras.
     private func contextMenu(_ ids: Set<TxRecord.ID>) -> [DataTableMenuAction] {
         let record = ids.count == 1 ? transactions.rows.first { ids.contains($0.id) } : nil
-        return [
-            DataTableMenuAction(title: MacStrings.Transactions.copyAddress, isEnabled: record?.address != nil) {
-                if let address = record?.address { MacPasteboard.copy(address) }
+        let selectedOne = record != nil && transactions.selection == ids
+        var actions = [
+            DataTableMenuAction(title: L10n.TransactionsM2.copyAddress, isEnabled: record?.address != nil) {
+                if let record { MacPasteboard.copy(transactions.copyAddress(record)) }
             },
-            DataTableMenuAction(title: MacStrings.Transactions.copyTxid, isEnabled: record != nil) {
-                if let txid = record?.id.txid { MacPasteboard.copy(txid) }
+            DataTableMenuAction(title: L10n.TransactionsM2.copyLabel, isEnabled: record?.label != nil) {
+                if let record { MacPasteboard.copy(transactions.copyLabel(record)) }
             },
-            DataTableMenuAction(title: MacStrings.Transactions.editLabel, isEnabled: record != nil) {
-                editingLabel = record?.label ?? ""
+            DataTableMenuAction(title: L10n.TransactionsM2.copyAmount, isEnabled: record != nil) {
+                if let record { MacPasteboard.copy(transactions.copyAmount(record)) }
             },
-            DataTableMenuAction(title: MacStrings.Transactions.showDetails, isEnabled: record != nil) {
+            DataTableMenuAction(title: L10n.TransactionsM2.copyTransactionID, isEnabled: record != nil) {
+                if let record { MacPasteboard.copy(transactions.copyTransactionID(record)) }
+            },
+            DataTableMenuAction(title: L10n.TransactionsM2.copyRawTransaction, isEnabled: record != nil) {
                 guard let record else { return }
                 Task {
                     await transactions.select(record.id)
-                    showsDetail = transactions.detail != nil
+                    if let hex = transactions.copyRawTransaction() { MacPasteboard.copy(hex) }
                 }
             },
+            DataTableMenuAction(title: L10n.TransactionsM2.copyFullDetails, isEnabled: record != nil) {
+                if let record { MacPasteboard.copy(transactions.copyFullDetails(record)) }
+            },
+            DataTableMenuAction(title: L10n.TransactionsM2.editLabel, isEnabled: record != nil) {
+                editingLabel = record?.label ?? ""
+            },
+            DataTableMenuAction(title: L10n.TransactionsM2.showDetails, isEnabled: record != nil) {
+                if let record { showDetail(record.id) }
+            },
+            DataTableMenuAction(
+                title: L10n.TransactionsM2.abandon, isEnabled: selectedOne && transactions.canAbandon
+            ) {
+                transactions.requestAbandon()
+            },
+            DataTableMenuAction(
+                title: L10n.TransactionsM2.resend, isEnabled: selectedOne && transactions.canResend
+            ) {
+                Task { await transactions.resend() }
+            },
         ]
+        if selectedOne && transactions.canUnlockDust {
+            actions.append(DataTableMenuAction(title: L10n.TransactionsM2.unlockDust) {
+                Task { await transactions.unlockDust() }
+            })
+        }
+        if let record {
+            for link in transactions.thirdPartyLinks(for: record.id.txid) {
+                actions.append(DataTableMenuAction(id: link.url.absoluteString, title: link.title) { openURL(link.url) })
+            }
+        }
+        return actions
     }
 
     private var footer: some View {
@@ -177,9 +230,11 @@ struct TransactionsView: View {
     }
 }
 
-/// Date, type, search, minimum amount and watch-only filters (QT-089).
+/// Date, type, search, minimum amount and watch-only filters (QT-089);
+/// in the history layout, iOS's category chips (IOS-028).
 private struct TransactionFilterBar: View {
     let transactions: TransactionsViewModel
+    @Binding var layout: TransactionsLayout
     @State private var search = ""
     @State private var minimum = ""
     @State private var from = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
@@ -236,6 +291,18 @@ private struct TransactionFilterBar: View {
                     }
                     .frame(width: 140)
                 }
+                Picker("", selection: $layout) {
+                    Image(systemName: "tablecells").help(MacStrings.Transactions.tableLayout).tag(TransactionsLayout.table)
+                    Image(systemName: "calendar.day.timeline.left").help(MacStrings.Transactions.historyLayout)
+                        .tag(TransactionsLayout.history)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 90)
+                .accessibilityIdentifier("transactions.layout")
+            }
+            if layout == .history {
+                HistoryChips(transactions: transactions)
             }
             if transactions.datePreset == .range {
                 HStack(spacing: DashSpacing.m) {

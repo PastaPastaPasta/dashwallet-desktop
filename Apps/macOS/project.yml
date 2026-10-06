@@ -36,6 +36,8 @@ targets:
         product: WalletFeatures
       - package: DashWalletDesktop
         product: WalletRuntime
+      - package: DashWalletDesktop
+        product: PlatformServicesMac
     info:
       path: DashWallet/Info.plist
       properties:

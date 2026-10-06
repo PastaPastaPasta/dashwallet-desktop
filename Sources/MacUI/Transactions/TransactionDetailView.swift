@@ -1,5 +1,7 @@
-// Transaction details sheet (QT-092, IOS-031): status, amounts, inputs,
-// outputs, label editing and the raw transaction.
+// Transaction details sheet (QT-091, QT-092, QT-094, IOS-031, IOS-032):
+// dash-qt's details fields (status without "not in memory pool" guesses on
+// SPV), label editing, inputs and outputs, the raw transaction with copy,
+// abandon / resend / unlock dust, and block-explorer links.
 #if os(macOS)
 import DashUIMac
 import DesignTokens
@@ -14,6 +16,7 @@ struct TransactionDetailView: View {
     let formatAmount: (Amount) -> String
     let onClose: () -> Void
     @State private var label = ""
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,45 +32,40 @@ struct TransactionDetailView: View {
             ScrollView {
                 Form {
                     Section {
-                        LabeledContent(MacStrings.Transactions.status) {
-                            HStack {
-                                TransactionStatusIcon(status: detail.status)
-                                Text(L10n.Transactions.statusText(detail.status))
-                            }
+                        HStack {
+                            TransactionStatusIcon(status: detail.status)
+                            Text(L10n.Transactions.statusText(detail.status)).dashFont(.subheadMedium)
                         }
-                        if let date = detail.date {
-                            LabeledContent(MacStrings.Transactions.date, value: date.formatted(date: .long, time: .standard))
-                        }
-                        ForEach(detail.records) { record in
-                            LabeledContent(transactions.typeText(for: record)) {
-                                Text(transactions.amountText(for: record))
-                                    .font(.system(.body, design: .monospaced))
-                            }
-                        }
-                        if let fee = detail.fee {
-                            LabeledContent(MacStrings.Transactions.fee) {
-                                Text(formatAmount(fee))
-                            }
-                        }
-                        LabeledContent(MacStrings.Transactions.size, value: MacStrings.Transactions.bytes(detail.sizeBytes))
-                        LabeledContent(MacStrings.Transactions.txid) {
-                            HStack {
-                                Text(detail.txid)
-                                    .font(.system(.footnote, design: .monospaced))
+                        ForEach(transactions.detailFields) { field in
+                            LabeledContent(field.title) {
+                                Text(field.value)
                                     .textSelection(.enabled)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Button {
-                                    MacPasteboard.copy(detail.txid)
-                                } label: {
-                                    Image(systemName: "doc.on.doc")
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel(MacStrings.Transactions.copyTxid)
+                                    .multilineTextAlignment(.trailing)
+                                    .font(field.title == L10n.TransactionsM2.transactionID
+                                        ? .system(.footnote, design: .monospaced) : .body)
                             }
+                            .accessibilityIdentifier("transactionDetail.field.\(field.title)")
                         }
                         if let height = detail.blockHeight {
                             LabeledContent(MacStrings.Transactions.block, value: "\(height)")
+                        }
+                    }
+                    Section {
+                        HStack {
+                            Button(L10n.TransactionsM2.abandon) { transactions.requestAbandon() }
+                                .disabled(!transactions.canAbandon)
+                                .accessibilityIdentifier("transactionDetail.abandon")
+                            Button(L10n.TransactionsM2.resend) { Task { await transactions.resend() } }
+                                .disabled(!transactions.canResend)
+                                .accessibilityIdentifier("transactionDetail.resend")
+                            if transactions.canUnlockDust {
+                                Button(L10n.TransactionsM2.unlockDust) { Task { await transactions.unlockDust() } }
+                            }
+                            Spacer()
+                            ForEach(transactions.explorerLinks(for: detail.txid) + transactions.thirdPartyLinks(for: detail.txid)) {
+                                link in
+                                Button(link.title) { openURL(link.url) }
+                            }
                         }
                     }
                     Section(MacStrings.Transactions.label) {
@@ -98,18 +96,25 @@ struct TransactionDetailView: View {
                                 isChange: output.isChange)
                         }
                     }
-                    Section(MacStrings.Transactions.rawHex) {
+                    Section {
                         Text(detail.rawHex)
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .lineLimit(4)
+                        Button(L10n.TransactionsM2.copyRawTransaction) {
+                            if let hex = transactions.copyRawTransaction() { MacPasteboard.copy(hex) }
+                        }
+                        .accessibilityIdentifier("transactionDetail.copyRaw")
+                    } header: {
+                        Text(MacStrings.Transactions.rawHex)
                     }
                 }
                 .formStyle(.grouped)
             }
         }
-        .frame(width: 620, height: 600)
+        .frame(width: 620, height: 640)
         .onAppear { label = detail.label ?? "" }
+        .modifier(TransactionActionAlerts(transactions: transactions))
         .accessibilityIdentifier("transactionDetail")
     }
 }
