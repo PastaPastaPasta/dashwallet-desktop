@@ -254,6 +254,17 @@ public final class BackupReminderViewModel {
         return !state.backedUp
     }
 
+    /// Records that `id`'s phrase was shown or exported, from flows that do
+    /// not hold this view model (Show Recovery Phrase, export for dash-qt).
+    static func recordBackup(_ id: WalletID, in store: any DesktopPreferencesStoring) {
+        var stored = store.desktop
+        var state = stored.backupReminders[id.hex] ?? BackupReminderState()
+        guard !state.backedUp else { return }
+        state.backedUp = true
+        stored.backupReminders[id.hex] = state
+        try? store.update(stored)
+    }
+
     /// Follows balance changes until `stop()`.
     public func start() {
         stop()
