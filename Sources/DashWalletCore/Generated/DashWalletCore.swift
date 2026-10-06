@@ -1623,7 +1623,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * to `dest_path`. Encrypted vault: wraps with the vault passphrase slot
      * and needs the vault unlocked (`backup_passphrase` must be `None`).
      * Unencrypted vault: `backup_passphrase` is required and wraps the
-     * bundle. Watch-only wallets carry no vault records.
+     * bundle. Watch-only wallets carry no vault records:
+     * `NotImplemented{call: "backup_wallet.watch_only"}`.
      */
     func backupWallet(walletId: String, destPath: String, backupPassphrase: Data?) async throws  -> BackupInfo
     
@@ -1689,17 +1690,24 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * Imports a Dash Core `dumpwallet` file (QT-107): rebuilds the HD wallet
-     * from the header (mnemonic + passphrase, else HD seed, else xprv;
+     * from the header (mnemonic + passphrase with Core's BIP39 rules, else
+     * the 64-byte HD seed, checked against the header's master key;
      * counters raise the lookahead), carries labels into the address book
      * and reports the loose keys left out. Vault seed-safety order as
-     * `import_wallet`. `options.core_compat` is implied for a mnemonic.
+     * `import_wallet`; the birth height defaults to 0 (a restore).
+     * A header with only an xprv returns
+     * `NotImplemented{call: "import_dump_wallet.xprv"}`: platform-wallet
+     * registers wallets from seeds.
      */
     func importDumpWallet(path: String, options: ImportOptions) async throws  -> ImportReport
     
     /**
-     * Imports a wallet from raw key material (QT-108). An HD seed or xprv
+     * Imports a wallet from raw key material (QT-108). A 64-byte HD seed
      * gives a wallet with no phrase (`has_mnemonic = false`); descriptors
-     * must describe BIP44 account 0 of one master key.
+     * must describe BIP44 account 0 of one master key and carry the phrase
+     * dashd lists with them. Shorter seeds and xprvs (and descriptors
+     * without a phrase) are valid input platform-wallet cannot register:
+     * `NotImplemented{call: "import_key_material.seed_length" | ".xprv"}`.
      */
     func importKeyMaterial(material: KeyMaterial, options: ImportOptions) async throws  -> ImportReport
     
@@ -1707,7 +1715,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
      * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
      * passphrase, extracts mnemonic and passphrase). Berkeley DB files
-     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6.
+     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
+     * descriptor wallets without a phrase
+     * `NotImplemented{call: "import_wallet_dat.xprv"}`.
      */
     func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions) async throws  -> ImportReport
     
@@ -2164,7 +2174,8 @@ open func backupPolicy()throws  -> BackupPolicy  {
      * to `dest_path`. Encrypted vault: wraps with the vault passphrase slot
      * and needs the vault unlocked (`backup_passphrase` must be `None`).
      * Unencrypted vault: `backup_passphrase` is required and wraps the
-     * bundle. Watch-only wallets carry no vault records.
+     * bundle. Watch-only wallets carry no vault records:
+     * `NotImplemented{call: "backup_wallet.watch_only"}`.
      */
 open func backupWallet(walletId: String, destPath: String, backupPassphrase: Data?)async throws  -> BackupInfo  {
     return
@@ -2384,10 +2395,14 @@ open func exportForCore(walletId: String, format: CoreExportFormat, destPath: St
     
     /**
      * Imports a Dash Core `dumpwallet` file (QT-107): rebuilds the HD wallet
-     * from the header (mnemonic + passphrase, else HD seed, else xprv;
+     * from the header (mnemonic + passphrase with Core's BIP39 rules, else
+     * the 64-byte HD seed, checked against the header's master key;
      * counters raise the lookahead), carries labels into the address book
      * and reports the loose keys left out. Vault seed-safety order as
-     * `import_wallet`. `options.core_compat` is implied for a mnemonic.
+     * `import_wallet`; the birth height defaults to 0 (a restore).
+     * A header with only an xprv returns
+     * `NotImplemented{call: "import_dump_wallet.xprv"}`: platform-wallet
+     * registers wallets from seeds.
      */
 open func importDumpWallet(path: String, options: ImportOptions)async throws  -> ImportReport  {
     return
@@ -2406,9 +2421,12 @@ open func importDumpWallet(path: String, options: ImportOptions)async throws  ->
 }
     
     /**
-     * Imports a wallet from raw key material (QT-108). An HD seed or xprv
+     * Imports a wallet from raw key material (QT-108). A 64-byte HD seed
      * gives a wallet with no phrase (`has_mnemonic = false`); descriptors
-     * must describe BIP44 account 0 of one master key.
+     * must describe BIP44 account 0 of one master key and carry the phrase
+     * dashd lists with them. Shorter seeds and xprvs (and descriptors
+     * without a phrase) are valid input platform-wallet cannot register:
+     * `NotImplemented{call: "import_key_material.seed_length" | ".xprv"}`.
      */
 open func importKeyMaterial(material: KeyMaterial, options: ImportOptions)async throws  -> ImportReport  {
     return
@@ -2430,7 +2448,9 @@ open func importKeyMaterial(material: KeyMaterial, options: ImportOptions)async 
      * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
      * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
      * passphrase, extracts mnemonic and passphrase). Berkeley DB files
-     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6.
+     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
+     * descriptor wallets without a phrase
+     * `NotImplemented{call: "import_wallet_dat.xprv"}`.
      */
 open func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions)async throws  -> ImportReport  {
     return
@@ -7158,11 +7178,10 @@ public struct ImportOptions: Equatable, Hashable {
      */
     public let coreCompat: Bool
     /**
-     * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
-     * for the restore scan; `None` = the default (30), or 1000 with
-     * `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
-     * memory only: a restart before the scan finishes continues with the
-     * default gap beyond the addresses already derived.
+     * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains;
+     * `None` = the default (30), or 1000 with `core_compat` (dash-qt
+     * restores, QT-105). A raised gap is stored with the wallet and applied
+     * again each time the session opens.
      */
     public let lookahead: UInt32?
 
@@ -7182,11 +7201,10 @@ public struct ImportOptions: Equatable, Hashable {
          * salt cut at 256 bytes) via dw-compat (QT-104).
          */coreCompat: Bool, 
         /**
-         * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
-         * for the restore scan; `None` = the default (30), or 1000 with
-         * `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
-         * memory only: a restart before the scan finishes continues with the
-         * default gap beyond the addresses already derived.
+         * Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains;
+         * `None` = the default (30), or 1000 with `core_compat` (dash-qt
+         * restores, QT-105). A raised gap is stored with the wallet and applied
+         * again each time the session opens.
          */lookahead: UInt32?) {
         self.name = name
         self.birthHeight = birthHeight
@@ -8255,7 +8273,8 @@ public struct PsbtAnalysis: Equatable, Hashable {
      */
     public let fee: UInt64?
     /**
-     * Sum of outputs not paying the wallet plus fee; `None` like `fee`.
+     * What leaves the wallet: outputs not paying it plus the fee (every
+     * output plus the fee without a wallet); `None` like `fee`.
      */
     public let total: UInt64?
     /**
@@ -8277,7 +8296,8 @@ public struct PsbtAnalysis: Equatable, Hashable {
          * `None` while input values are missing.
          */fee: UInt64?, 
         /**
-         * Sum of outputs not paying the wallet plus fee; `None` like `fee`.
+         * What leaves the wallet: outputs not paying it plus the fee (every
+         * output plus the fee without a wallet); `None` like `fee`.
          */total: UInt64?, 
         /**
          * "Transaction has %1 unsigned inputs."
@@ -14720,8 +14740,8 @@ public enum NoticeCode: Equatable, Hashable {
      */
     case syncStalled
     /**
-     * An automatic wallet backup failed (QT-116). Automatic backups do not
-     * exist yet, so the engine never sends it.
+     * An automatic wallet backup failed (QT-116); `detail` names the wallet
+     * and the cause.
      */
     case backupFailed
     /**
@@ -20390,7 +20410,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_backup_policy() != 54170) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_backup_wallet() != 53740) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_backup_wallet() != 21849) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_restore_backup() != 15567) {
@@ -20423,13 +20443,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_export_for_core() != 13494) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_dump_wallet() != 45258) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_dump_wallet() != 3151) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_key_material() != 31232) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_key_material() != 46906) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 42863) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 60912) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 20533) {
