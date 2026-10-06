@@ -43,11 +43,18 @@ public final class TransactionSender: TransactionSending {
 /// - Any setter first abandons the prepared transactions that were never
 ///   broadcast, so an edit after "Review" never leaves inputs reserved for a
 ///   transaction the user will not confirm.
-/// - A broadcast that fails after it may have reached a peer (any failure
-///   except `send.no_peers`, `send.prepared_tx_spent`,
-///   `send.broadcast_rejected` and argument/session errors) marks the transaction "outcome unknown". `abandon` then refuses
-///   with `send.broadcast_outcome_unknown` and keeps the inputs reserved;
-///   `broadcast` may be retried (same signed transaction, same txid).
+/// - `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
+///   mean the engine released the inputs and spent its `PreparedTx`
+///   (m1-engine.md §2.7): the transaction is forgotten, `abandon` is a no-op
+///   and `broadcast` fails with `send.prepared_tx_unknown`. Sending again
+///   needs a new `prepare` and a new grant.
+/// - Argument and session errors (`invalid_argument`, `network_not_open`,
+///   `wallet_not_found`, `not_implemented`) mean nothing was dispatched: the
+///   transaction keeps the state it had before the call.
+/// - Any other failure may have reached a peer and marks the transaction
+///   "outcome unknown". `abandon` then refuses with
+///   `send.broadcast_outcome_unknown` and keeps the inputs reserved;
+///   `broadcast` may be called again (same signed transaction, same txid).
 /// - While a broadcast is in flight the transaction is neither abandoned (by
 ///   `abandon` or an edit) nor broadcast again: the actor is reentrant across
 ///   the engine call, and releasing inputs of a transaction that may be in
@@ -129,11 +136,11 @@ public actor TransactionDraft: TransactionDrafting {
             return BroadcastResult(txid: outcome.txid, peersAnnounced: outcome.peersAnnounced)
         } catch {
             switch error.code {
-            case .sendNoPeers, .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound:
-                // Nothing left the engine. A transaction that was uncertain
-                // before this retry stays uncertain.
+            case .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound:
+                // Not dispatched. A transaction that was uncertain before
+                // this call stays uncertain.
                 prepared[transaction.id]?.state = entry.state
-            case .sendPreparedTxSpent, .sendBroadcastRejected:
+            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected:
                 // The engine released the inputs and spent the PreparedTx
                 // (m1-engine.md §2.7): nothing is left to abandon or retry.
                 prepared[transaction.id] = nil

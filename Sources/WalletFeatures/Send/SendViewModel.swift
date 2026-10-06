@@ -3,7 +3,7 @@
 // Flow: editing → [confirmDuplicates] → [authorizing] → preparing → confirm
 // (3 s countdown) → broadcasting → done | failed | broadcastUnknown.
 // `prepare` signs and reserves inputs but never broadcasts; only `confirm()`
-// (or `retryBroadcast()` after `send.no_peers`) broadcasts (iOS rule 4).
+// (or `broadcastAgain()` after an unknown outcome) broadcasts (iOS rule 4).
 //
 // Releasing reserved inputs (review M-7):
 // - Cancel, or any edit of entries, fee or source while a payment is under
@@ -11,11 +11,17 @@
 //   abandons the prepared transaction and revokes a grant `prepare` has not
 //   redeemed. A prepare that finishes after such an edit is abandoned on
 //   arrival.
-// - A broadcast the network definitely did not take ends in `.failed`;
-//   dismissing it abandons the transaction.
+// - A broadcast the network definitely did not take ends in `.failed`. After
+//   `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
+//   the engine has already released the inputs and spent the prepared
+//   transaction, so sending again means a new review: new grant, new
+//   prepare (review M1). After the other definite failures dismissing
+//   abandons the transaction.
 // - A broadcast whose outcome is unknown (any other error) ends in
 //   `.broadcastUnknown` and is never abandoned: its inputs may already be in
 //   the mempool, and releasing them would let the next send double-spend.
+//   The prepared transaction is kept so `broadcastAgain()` can send the same
+//   signed transaction (same txid) again (review M3).
 import Foundation
 import Observation
 import WalletRuntime
@@ -77,7 +83,9 @@ public enum SendPhase: Sendable, Equatable {
     case done(txid: String)
     case failed(SendFailure)
     /// The broadcast failed in a way that does not tell whether peers got the
-    /// transaction. Its inputs stay reserved; the user checks Transactions.
+    /// transaction. Its inputs stay reserved; the user checks Transactions
+    /// or broadcasts it again (`canBroadcastAgain`). `failure` is the last
+    /// attempt's error.
     case broadcastUnknown(txid: String, failure: SendFailure)
 }
 
@@ -132,10 +140,10 @@ public final class SendViewModel {
         return false
     }
 
-    /// The broadcast found no peers; `retryBroadcast()` sends the same
-    /// signed transaction again.
-    public var canRetryBroadcast: Bool {
-        if case .failed(let failure) = phase { return failure.code == .sendNoPeers && prepared != nil }
+    /// After an unknown broadcast outcome, while the engine still holds the
+    /// signed transaction: `broadcastAgain()` sends it again (same txid).
+    public var canBroadcastAgain: Bool {
+        if case .broadcastUnknown = phase { return prepared != nil }
         return false
     }
 
@@ -169,7 +177,6 @@ public final class SendViewModel {
     private let timing: Timing
     private var draft: (any TransactionDrafting)?
     private var prepared: PreparedTransaction?
-    private var duplicatesAcknowledged = false
     private var spendLimit: Amount?
     /// A grant issued for this payment that `prepare` has not redeemed.
     private var pendingGrant: AuthGrant?
@@ -320,23 +327,34 @@ public final class SendViewModel {
             phase = .editing
             return
         }
-        if !duplicatesAcknowledged, Set(recipients.map(\.address)).count < recipients.count {
+        if Set(recipients.map(\.address)).count < recipients.count {
             phase = .confirmDuplicates
             return
         }
         await buildDraft(recipients)
     }
 
-    /// Yes on "Confirm duplicate recipients".
+    /// Yes on "Confirm duplicate recipients" (QT-060). The engine refuses an
+    /// address twice (`send.duplicate_address`), so the entries that pay the
+    /// same address are merged into the first of them: amounts summed,
+    /// subtract-fee if any of them had it, the first non-empty label, their
+    /// distinct messages joined by newlines. The form shows the merged entry,
+    /// then the review continues.
     public func acknowledgeDuplicates() async {
         guard phase == .confirmDuplicates else { return }
-        duplicatesAcknowledged = true
+        guard mergeDuplicateEntries() else {
+            phase = .editing
+            return
+        }
         await review()
     }
 
-    /// Passphrase for the spend grant, while `phase == .authorizing`.
+    /// Passphrase for the spend grant, while `phase == .authorizing`. The
+    /// phase moves to `.preparing` before the vault is asked, so a second call
+    /// while the passphrase is being checked does nothing.
     public func authorize(passphrase: String) async {
         guard phase == .authorizing, let spendLimit else { return }
+        phase = .preparing
         let secret = vault.makeSecret(utf8: passphrase)
         let started = generation
         do {
@@ -358,9 +376,12 @@ public final class SendViewModel {
         await broadcast()
     }
 
-    /// Sends the same signed transaction again after `send.no_peers`.
-    public func retryBroadcast() async {
-        guard canRetryBroadcast else { return }
+    /// "Broadcast again" after an unknown outcome: sends the same signed
+    /// transaction (same txid), which the engine allows only in that state.
+    /// Whatever this attempt's error, the first attempt's outcome stays
+    /// unknown, so the phase stays `.broadcastUnknown` unless it succeeds.
+    public func broadcastAgain() async {
+        guard canBroadcastAgain else { return }
         await broadcast()
     }
 
@@ -378,9 +399,12 @@ public final class SendViewModel {
         }
     }
 
-    /// Leaves a final phase. After a failure it abandons like `cancel()`;
-    /// after `.done` and `.broadcastUnknown` it clears the form and abandons
-    /// nothing.
+    /// Leaves a final phase. After a failure it abandons like `cancel()` and
+    /// keeps the form, so Review starts a new grant and prepare. After
+    /// `.done` and `.broadcastUnknown` it clears the form and abandons
+    /// nothing: the engine refuses to release a transaction whose broadcast
+    /// outcome is unknown (`send.prepared_tx_spent`), so its inputs stay
+    /// reserved and the handle is dropped.
     public func dismiss() async {
         switch phase {
         case .failed:
@@ -391,7 +415,6 @@ public final class SendViewModel {
             draft = nil
             withInternalEdits { entries = [RecipientEntry()] }
             estimate = nil
-            duplicatesAcknowledged = false
             phase = .editing
         case .editing, .confirmDuplicates, .authorizing, .preparing, .confirm, .broadcasting:
             break
@@ -426,20 +449,32 @@ public final class SendViewModel {
         return lines
     }
 
-    /// The spend cap requested for `recipients`: their amounts plus the
-    /// maximum fee (`-maxtxfee`). The final fee is only known after signing,
-    /// so a cap of amounts + estimated fee could fail whenever the signed size
-    /// differs from the estimate (review H-4); fees above the maximum are
-    /// refused as absurd anyway (QT-058).
+    /// The spend cap requested for `recipients`: the sum of their amounts.
+    /// The engine caps `external_sent`, the value paid to scripts the wallet
+    /// does not own, fee excluded (m1-engine.md §2.7.1); with subtract-fee or
+    /// recipients the wallet owns that is at most this sum. The fee is bounded
+    /// separately (`send.absurd_fee`, QT-058). This view model never sets a
+    /// change address, so change always returns to the wallet and adds
+    /// nothing; a host that sets a change address the wallet does not own
+    /// must add the change amount.
     public static func spendLimit(for recipients: [PaymentRecipient]) -> Amount {
-        Amount(duffs: recipients.reduce(Int64(0)) { $0 + $1.amount.duffs } + maximumFee.duffs)
+        Amount(duffs: recipients.reduce(Int64(0)) { $0 + $1.amount.duffs })
     }
 
     /// Broadcast errors after which peers certainly do not have the
-    /// transaction, so its inputs may be released.
+    /// transaction.
     public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
         .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendPreparedTxUnknown, .networkNotOpen,
         .walletNotFound, .invalidArgument, .notImplemented,
+    ]
+
+    /// Broadcast errors after which the prepared transaction no longer
+    /// exists: the engine released its inputs (`send.no_peers`,
+    /// `send.broadcast_rejected`, `send.prepared_tx_spent`) or the draft does
+    /// not hold it (`send.prepared_tx_unknown`). Nothing is left to abandon or
+    /// broadcast; sending needs a new prepare and grant.
+    static let preparedGoneAfter: Set<ServiceErrorCode> = [
+        .sendNoPeers, .sendBroadcastRejected, .sendPreparedTxSpent, .sendPreparedTxUnknown,
     ]
 
     // MARK: Private
@@ -573,8 +608,11 @@ public final class SendViewModel {
         }
     }
 
+    /// Broadcasts `prepared` from `.confirm` or, again, from `.broadcastUnknown`.
     private func broadcast() async {
         guard let draft, let prepared else { return }
+        let isRetry: Bool
+        if case .broadcastUnknown = phase { isRetry = true } else { isRetry = false }
         stopCountdown()
         phase = .broadcasting
         do {
@@ -582,21 +620,25 @@ public final class SendViewModel {
             self.prepared = nil
             self.draft = nil
             let sent = entries
-            await rememberRecipients(sent)
             withInternalEdits { entries = [RecipientEntry()] }
             estimate = nil
-            duplicatesAcknowledged = false
             phase = .done(txid: result.txid)
             route = .transaction(txid: result.txid)
+            await rememberUnlabelledRecipients(sent)
         } catch {
             let failure = failure(for: error)
-            if Self.definiteBroadcastFailures.contains(error.code) {
-                // Not announced: keep it so dismiss abandons it or a retry sends it.
+            if Self.preparedGoneAfter.contains(error.code) {
+                self.prepared = nil
+            }
+            let txid = prepared.summary.txid
+            if isRetry {
+                // The first attempt may still have reached a peer.
+                phase = .broadcastUnknown(txid: txid, failure: failure)
+            } else if Self.definiteBroadcastFailures.contains(error.code) {
                 phase = .failed(failure)
             } else {
-                let txid = prepared.summary.txid
-                self.prepared = nil
-                self.draft = nil
+                // Keep the draft and the prepared transaction: the engine
+                // refuses to abandon it but may broadcast it again.
                 phase = .broadcastUnknown(txid: txid, failure: failure)
                 route = .transaction(txid: txid)
             }
@@ -606,7 +648,6 @@ public final class SendViewModel {
     /// A user change of entries, fee or source.
     private func userEdited() {
         estimate = nil
-        duplicatesAcknowledged = false
         switch phase {
         case .confirmDuplicates, .authorizing, .preparing, .confirm, .failed:
             let draft = draft
@@ -636,7 +677,6 @@ public final class SendViewModel {
         let prepared = prepared
         self.prepared = nil
         self.draft = nil
-        duplicatesAcknowledged = false
         if let draft, let prepared {
             try? await draft.abandon(prepared)
         }
@@ -693,6 +733,7 @@ public final class SendViewModel {
 
     private static let amountCodes: Set<ServiceErrorCode> = [
         .sendInvalidAmount, .sendDustAmount, .sendAmountExceedsBalance, .sendAmountWithFeeExceedsBalance,
+        .sendAmountTooSmallAfterFee,
     ]
 
     func failure(for error: ServiceError) -> SendFailure {
@@ -705,7 +746,11 @@ public final class SendViewModel {
         case .sendDustAmount: message = L10n.Send.dustAmount
         case .sendAmountExceedsBalance: message = L10n.Send.amountExceedsBalance
         case .sendAmountWithFeeExceedsBalance:
-            message = L10n.Send.amountWithFeeExceedsBalance(estimate.map { amounts.format($0.fee, unit: unit, style: withUnit) })
+            // The engine reports the fee with the error (review M6); no
+            // estimate exists when `estimate()` itself failed this way.
+            let fee = error.parameters["fee"].map { Amount(duffs: $0) } ?? estimate?.fee
+            message = L10n.Send.amountWithFeeExceedsBalance(fee.map { amounts.format($0, unit: unit, style: withUnit) })
+        case .sendAmountTooSmallAfterFee: message = L10n.Send.amountTooSmallAfterFee
         case .sendAbsurdFee:
             message = L10n.Send.absurdFee(amounts.format(Self.maximumFee, unit: unit, style: withUnit))
         case .sendDuplicateAddress: message = L10n.Send.duplicateText
@@ -745,24 +790,69 @@ public final class SendViewModel {
         }
     }
 
-    /// Adds sent-to addresses to the sending address book (QT-063). A label
-    /// from the send form only fills an empty label and never overwrites an
-    /// existing one or a receiving entry (dash-qt quirk #6 fixed). Best
-    /// effort: a failure here does not undo the sent transaction.
-    private func rememberRecipients(_ sent: [RecipientEntry]) async {
-        guard let addressBook, let wallet = walletState.selectedWalletID else { return }
-        let existing = (try? await addressBook.entries(wallet: wallet, purpose: nil, search: nil)) ?? []
-        let byAddress = Dictionary(existing.map { ($0.address, $0) }, uniquingKeysWith: { first, _ in first })
-        var seen = Set<String>()
-        for entry in sent where seen.insert(entry.address).inserted {
-            if let current = byAddress[entry.address] {
-                guard current.purpose == .send, current.label.isEmpty, !entry.label.isEmpty else { continue }
-                _ = try? await addressBook.save(
-                    wallet: wallet, address: entry.address, label: entry.label, purpose: .send, replace: true)
-            } else {
-                _ = try? await addressBook.save(
-                    wallet: wallet, address: entry.address, label: entry.label, purpose: .send, replace: false)
+    /// Merges entries that pay the same address (see `acknowledgeDuplicates`).
+    /// The first entry of each address keeps its place and id; a merged
+    /// amount is re-formatted in the display unit. Returns `false`, leaving
+    /// the entries as they are, when an amount does not parse.
+    private func mergeDuplicateEntries() -> Bool {
+        var merged: [RecipientEntry] = []
+        var totals: [Int64] = []
+        var counts: [Int] = []
+        var indexByAddress: [String: Int] = [:]
+        for entry in entries {
+            guard case .success(let amount) = AmountInput.parsePayment(entry.amountText, unit: unit, formatter: amounts)
+            else { return false }
+            let address = AddressInput.clean(entry.address)
+            guard let index = indexByAddress[address] else {
+                indexByAddress[address] = merged.count
+                var first = entry
+                first.address = address
+                merged.append(first)
+                totals.append(amount.duffs)
+                counts.append(1)
+                continue
             }
+            // Saturates instead of trapping; validation then reports the
+            // amount as larger than 21 million DASH.
+            let (sum, overflow) = totals[index].addingReportingOverflow(amount.duffs)
+            totals[index] = overflow ? Int64.max : sum
+            counts[index] += 1
+            merged[index].subtractFee = merged[index].subtractFee || entry.subtractFee
+            if merged[index].label.isEmpty { merged[index].label = entry.label }
+            if let message = entry.message, !message.isEmpty {
+                let current = merged[index].message ?? ""
+                if current.isEmpty {
+                    merged[index].message = message
+                } else if !current.split(separator: "\n", omittingEmptySubsequences: false).contains(Substring(message)) {
+                    merged[index].message = current + "\n" + message
+                }
+            }
+        }
+        for index in merged.indices where counts[index] > 1 {
+            merged[index].amountText = amounts.format(
+                Amount(duffs: totals[index]), unit: unit, style: .plain(plusSign: false, separators: .never))
+            merged[index].error = nil
+            merged[index].addressError = nil
+            merged[index].amountError = nil
+        }
+        withInternalEdits { entries = merged }
+        return true
+    }
+
+    /// Adds sent-to addresses without a label to the sending address book
+    /// (QT-063). The engine's broadcast owns every label from the send form
+    /// (it adds a labelled recipient or fills an empty label); this only adds
+    /// the unlabelled recipients it does not record, and never touches an
+    /// address already in the book. Best effort: a failure here does not undo
+    /// the sent transaction.
+    private func rememberUnlabelledRecipients(_ sent: [RecipientEntry]) async {
+        guard let addressBook, let wallet = walletState.selectedWalletID else { return }
+        let unlabelled = sent.filter { $0.label.isEmpty && !$0.address.isEmpty }
+        guard !unlabelled.isEmpty else { return }
+        guard let existing = try? await addressBook.entries(wallet: wallet, purpose: nil, search: nil) else { return }
+        var known = Set(existing.map(\.address))
+        for entry in unlabelled where known.insert(entry.address).inserted {
+            _ = try? await addressBook.save(wallet: wallet, address: entry.address, label: "", purpose: .send, replace: false)
         }
     }
 }

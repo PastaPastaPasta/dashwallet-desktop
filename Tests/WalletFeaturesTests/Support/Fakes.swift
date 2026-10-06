@@ -342,6 +342,9 @@ final class FakeAuth: AuthenticationGating {
     var unlockErrors: [ServiceError] = []
     var revoked: [AuthGrant] = []
     var lockCount = 0
+    /// When set, `authorize` waits for this gate after recording the call
+    /// (the engine's passphrase check takes about a second).
+    var authorizeGate: Gate?
     private var grantCounter = 0
 
     init(lockState: VaultLockState? = .unencrypted) {
@@ -379,6 +382,7 @@ final class FakeAuth: AuthenticationGating {
         case .unencrypted: passphrase = nil
         }
         authorizeCalls.append(AuthorizeCall(purpose: purpose, passphrase: passphrase))
+        if let authorizeGate { await authorizeGate.wait() }
         if !authorizeErrors.isEmpty { throw authorizeErrors.removeFirst() }
         grantCounter += 1
         return AuthGrant(
@@ -404,9 +408,35 @@ final class FakeAuth: AuthenticationGating {
 
 // MARK: Sending
 
+/// A `TransactionDrafting` that follows the live `TransactionDraft` adapter
+/// over the engine's `TxDraft` (rust/crates/dw-engine/src/send/mod.rs):
+/// - `setRecipients` validates like the engine's `validate_recipients`, in
+///   its order per recipient: address (`FakeURI` rules; Platform refused),
+///   amount 1…21M DASH, dust (546 duffs P2PKH, 540 P2SH), no address twice
+///   (`send.duplicate_address{index}`); then the total. A failure leaves the
+///   recipients unchanged. Every setter first abandons the prepared
+///   transactions that were never broadcast.
+/// - `estimate` and `prepare` refuse an empty draft (`send.no_recipients`);
+///   fee, size and change are scripted.
+/// - A prepared transaction is held until it is sent, released or the draft
+///   forgets it. `broadcast` of one the draft does not hold fails with
+///   `send.prepared_tx_unknown`, of one in flight with
+///   `send.broadcast_outcome_unknown`. Success forgets it. `send.no_peers`,
+///   `send.broadcast_rejected` and `send.prepared_tx_spent` release its inputs
+///   and forget it. Argument and session errors leave it as it was. Any other
+///   error marks the outcome unknown: it may be broadcast again but not
+///   abandoned (`send.broadcast_outcome_unknown`).
+/// - `abandon` releases a ready transaction and is a no-op for one the draft
+///   does not hold.
 final class FakeDraft: TransactionDrafting, @unchecked Sendable {
+    enum Held: Equatable {
+        case ready, broadcasting, outcomeUnknown
+    }
+
     struct State {
         var recipients: [PaymentRecipient] = []
+        /// Every list handed to `setRecipients`, accepted or not.
+        var submittedRecipients: [[PaymentRecipient]] = []
         var source: CoinSourceChoice?
         var fee: FeeChoice?
         var change: ChangeChoice?
@@ -415,34 +445,81 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
         var prepareGrants: [AuthGrant] = []
         var prepareError: ServiceError?
         var estimateError: ServiceError?
+        /// Thrown by the next broadcasts, in order, before `broadcastError`.
+        var broadcastErrors: [ServiceError] = []
+        /// Thrown by every broadcast once `broadcastErrors` is empty.
         var broadcastError: ServiceError?
         var broadcasts: [PreparedTransaction] = []
+        /// Released by `abandon` (or by a setter abandoning unsent ones).
         var abandoned: [PreparedTransaction] = []
+        /// Every transaction whose inputs were released: abandoned, or a
+        /// broadcast the network certainly did not take.
+        var released: [PreparedTransaction] = []
         var issued: [PreparedTransaction] = []
+        var held: [UUID: Held] = [:]
     }
+
+    static let maxMoney: Int64 = 21_000_000 * 100_000_000
 
     let state = Locked(State())
     /// When set, `prepare` waits for this gate before answering.
     let prepareGate = Locked<Gate?>(nil)
+    /// When set, `broadcast` waits for this gate before answering.
+    let broadcastGate = Locked<Gate?>(nil)
+    private let addresses: any URIHandling
+
+    init(addresses: any URIHandling) {
+        self.addresses = addresses
+    }
 
     func setRecipients(_ recipients: [PaymentRecipient]) async throws(ServiceError) {
+        abandonUnsent()
+        state.withLock { $0.submittedRecipients.append(recipients) }
+        try validate(recipients)
         state.withLock { $0.recipients = recipients }
     }
 
+    private func validate(_ recipients: [PaymentRecipient]) throws(ServiceError) {
+        func refuse(_ code: ServiceErrorCode, _ index: Int) -> ServiceError {
+            ServiceError(code: code, recipientIndex: index, parameters: ["index": Int64(index)])
+        }
+        guard !recipients.isEmpty else { throw ServiceError(code: .sendNoRecipients) }
+        var seen = Set<String>()
+        var total: Int64 = 0
+        for (index, recipient) in recipients.enumerated() {
+            let scriptHash: Bool
+            switch addresses.classifyAddress(recipient.address) {
+            case .core(let p2sh): scriptHash = p2sh
+            case .platform: throw refuse(.sendPlatformAddress, index)
+            case .shielded, .invalid: throw refuse(.sendInvalidAddress, index)
+            }
+            let amount = recipient.amount.duffs
+            guard amount > 0, amount <= Self.maxMoney else { throw refuse(.sendInvalidAmount, index) }
+            guard amount >= (scriptHash ? 540 : 546) else { throw refuse(.sendDustAmount, index) }
+            guard seen.insert(recipient.address).inserted else { throw refuse(.sendDuplicateAddress, index) }
+            total += amount
+        }
+        guard total <= Self.maxMoney else { throw refuse(.sendInvalidAmount, recipients.count - 1) }
+    }
+
     func setSource(_ source: CoinSourceChoice) async throws(ServiceError) {
+        abandonUnsent()
         state.withLock { $0.source = source }
     }
 
     func setFee(_ fee: FeeChoice) async throws(ServiceError) {
+        abandonUnsent()
         state.withLock { $0.fee = fee }
     }
 
     func setChange(_ change: ChangeChoice) async throws(ServiceError) {
+        abandonUnsent()
         state.withLock { $0.change = change }
     }
 
     func estimate() async throws(ServiceError) -> TxEstimate {
         try state.withLock { (s) throws(ServiceError) -> TxEstimate in
+            if s.recipients.isEmpty { throw ServiceError(code: .sendNoRecipients) }
             if let error = s.estimateError { throw error }
             let sent = s.recipients.reduce(Int64(0)) { $0 + $1.amount.duffs }
             return TxEstimate(
@@ -455,6 +532,7 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
         if let gate = prepareGate.current { await gate.wait() }
         return try state.withLock { (s) throws(ServiceError) -> PreparedTransaction in
             s.prepareGrants.append(grant)
+            if s.recipients.isEmpty { throw ServiceError(code: .sendNoRecipients) }
             if let error = s.prepareError { throw error }
             let sent = s.recipients.reduce(Int64(0)) { $0 + $1.amount.duffs }
             let outputs = s.recipients.map {
@@ -466,20 +544,57 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
                 totalSent: Amount(duffs: sent), totalDebit: Amount(duffs: sent + s.estimate.fee.duffs))
             let prepared = PreparedTransaction(id: UUID(), summary: summary)
             s.issued.append(prepared)
+            s.held[prepared.id] = .ready
             return prepared
         }
     }
 
     func broadcast(_ prepared: PreparedTransaction) async throws(ServiceError) -> BroadcastResult {
-        try state.withLock { (s) throws(ServiceError) -> BroadcastResult in
+        let previous = try state.withLock { (s) throws(ServiceError) -> Held in
+            guard let held = s.held[prepared.id] else { throw ServiceError(code: .sendPreparedTxUnknown) }
+            if held == .broadcasting { throw ServiceError(code: .sendBroadcastOutcomeUnknown) }
+            s.held[prepared.id] = .broadcasting
             s.broadcasts.append(prepared)
-            if let error = s.broadcastError { throw error }
-            return BroadcastResult(txid: prepared.summary.txid, peersAnnounced: 3)
+            return held
+        }
+        if let gate = broadcastGate.current { await gate.wait() }
+        return try state.withLock { (s) throws(ServiceError) -> BroadcastResult in
+            let error = s.broadcastErrors.isEmpty ? s.broadcastError : s.broadcastErrors.removeFirst()
+            guard let error else {
+                s.held[prepared.id] = nil
+                return BroadcastResult(txid: prepared.summary.txid, peersAnnounced: 3)
+            }
+            switch error.code {
+            case .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound:
+                s.held[prepared.id] = previous
+            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected:
+                s.held[prepared.id] = nil
+                s.released.append(prepared)
+            default:
+                s.held[prepared.id] = .outcomeUnknown
+            }
+            throw error
         }
     }
 
     func abandon(_ prepared: PreparedTransaction) async throws(ServiceError) {
-        state.withLock { $0.abandoned.append(prepared) }
+        try state.withLock { (s) throws(ServiceError) in
+            guard let held = s.held[prepared.id] else { return }
+            guard held == .ready else { throw ServiceError(code: .sendBroadcastOutcomeUnknown) }
+            s.held[prepared.id] = nil
+            s.abandoned.append(prepared)
+            s.released.append(prepared)
+        }
+    }
+
+    private func abandonUnsent() {
+        state.withLock { s in
+            for prepared in s.issued where s.held[prepared.id] == .ready {
+                s.held[prepared.id] = nil
+                s.abandoned.append(prepared)
+                s.released.append(prepared)
+            }
+        }
     }
 }
 
@@ -489,9 +604,15 @@ final class FakeSender: TransactionSending, @unchecked Sendable {
     let maxCalls = Locked<[(CoinSourceChoice, FeeChoice)]>([])
     /// Configures each new draft before it is returned.
     let configure = Locked<(@Sendable (FakeDraft) -> Void)?>(nil)
+    private let addresses: any URIHandling
+
+    /// - Parameter addresses: the address rules drafts validate recipients with.
+    init(addresses: any URIHandling) {
+        self.addresses = addresses
+    }
 
     func makeDraft(wallet: WalletID) async throws(ServiceError) -> any TransactionDrafting {
-        let draft = FakeDraft()
+        let draft = FakeDraft(addresses: addresses)
         configure.current?(draft)
         drafts.withLock { $0.append(draft) }
         return draft

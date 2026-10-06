@@ -66,17 +66,26 @@ private final class Latch: @unchecked Sendable {
         try h.services.settings.setRequireAuthenticationForEveryPayment(false)
         #expect(auth.requirement(for: spend) == .none)
         #expect(auth.requirement(for: .signMessage) == .none)
+        // The vault refuses these without the passphrase whenever it is
+        // encrypted, even while unlocked (dw-vault `Vault::authorize`).
         #expect(auth.requirement(for: .revealSecret) == .passphrase)
         #expect(auth.requirement(for: .wipe) == .passphrase)
+        #expect(auth.requirement(for: .changeCredential) == .passphrase)
 
         try await auth.lock()
         #expect(auth.requirement(for: spend) == .passphrase)
+        try await auth.unlock(passphrase: h.services.vault.makeSecret(utf8: "correct"), scope: .mixingOnly)
+        #expect(auth.requirement(for: .revealSecret) == .passphrase)
+        #expect(auth.requirement(for: spend) == .passphrase)
 
+        // Unencrypted (no passphrase slot): nothing to ask for.
         let unencrypted = Harness {
             $0.with { $0.vault = Fixtures.vault(.unencrypted, encrypted: false) }
         }
         try await unencrypted.start()
         #expect(unencrypted.services.auth.requirement(for: .revealSecret) == .none)
+        #expect(unencrypted.services.auth.requirement(for: .changeCredential) == .none)
+        #expect(unencrypted.services.auth.requirement(for: .wipe) == .none)
     }
 
     @Test func unlockReportsAttemptsAndUpdatesState() async throws {
@@ -206,7 +215,7 @@ private final class Latch: @unchecked Sendable {
         h.engine.with { $0.nextDraft = fake }
         let draft = try await h.services.sender.makeDraft(wallet: WalletRuntime.WalletID(Fixtures.walletA))
         try await draft.setRecipients([
-            PaymentRecipient(address: "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr", amount: WalletRuntime.Amount(duffs: 1000))
+            PaymentRecipient(address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n", amount: WalletRuntime.Amount(duffs: 1000))
         ])
         return (draft, fake)
     }
@@ -262,17 +271,92 @@ private final class Latch: @unchecked Sendable {
         #expect(result.txid == prepared.summary.txid)
     }
 
-    @Test func noPeersLeavesTheTransactionAbandonable() async throws {
+    /// The engine releases the inputs on `send.no_peers` and spends its
+    /// `PreparedTx` (review M1): the adapter forgets it, so neither a retry
+    /// nor an abandon reaches the engine; sending needs a new prepare.
+    @Test func noPeersReleasesTheTransaction() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
         let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
         fake.with { $0.broadcastErrors = [.domain(code: "send.no_peers", detail: "")] }
+        do {
+            _ = try await draft.broadcast(prepared)
+            Issue.record("broadcast must fail")
+        } catch {
+            #expect(error.code == .sendNoPeers)
+        }
+        #expect(fake.phase(of: prepared.summary.txid) == .released)
+        #expect(fake.with { $0.released } == [prepared.summary.txid])
+        do {
+            _ = try await draft.broadcast(prepared)
+            Issue.record("a retry after send.no_peers must fail")
+        } catch {
+            #expect(error.code == .sendPreparedTxUnknown)
+        }
+        try await draft.abandon(prepared)
+        #expect(fake.with { $0.abandoned }.isEmpty)
+        #expect(fake.calls.filter { $0.hasPrefix("broadcast") }.count == 1)
+
+        // A new prepare can be sent.
+        let again = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000)), id: "g2"))
+        let result = try await draft.broadcast(again)
+        #expect(result.txid == again.summary.txid)
+    }
+
+    /// After an unknown outcome the engine still holds the transaction; a
+    /// second broadcast that finds no peers releases it there, and the
+    /// adapter forgets it too.
+    @Test func noPeersAfterAnUnknownOutcomeForgetsTheTransaction() async throws {
+        let h = Harness()
+        let (draft, fake) = try await draft(h)
+        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        fake.with {
+            $0.broadcastErrors = [
+                .domain(code: "send.broadcast_unknown", detail: "timeout"), .domain(code: "send.no_peers", detail: ""),
+            ]
+        }
         await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
+        #expect(fake.phase(of: prepared.summary.txid) == .unknown)
+        await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
+        #expect(fake.phase(of: prepared.summary.txid) == .released)
+        do {
+            _ = try await draft.broadcast(prepared)
+            Issue.record("the forgotten transaction must not be broadcast")
+        } catch {
+            #expect(error.code == .sendPreparedTxUnknown)
+        }
+    }
+
+    @Test func sessionErrorsKeepTheTransactionPending() async throws {
+        let h = Harness()
+        let (draft, fake) = try await draft(h)
+        let prepared = try await draft.prepare(grant: grant(.spend(max: WalletRuntime.Amount(duffs: 2000))))
+        fake.with { $0.broadcastErrors = [.networkNotOpen(detail: "closed")] }
+        await #expect(throws: ServiceError.self) { _ = try await draft.broadcast(prepared) }
+        #expect(fake.phase(of: prepared.summary.txid) == .pending)
         try await draft.abandon(prepared)
         #expect(fake.with { $0.abandoned } == [prepared.summary.txid])
         // Idempotent.
         try await draft.abandon(prepared)
         #expect(fake.with { $0.abandoned }.count == 1)
+    }
+
+    @Test func duplicateRecipientsAreRefusedWithTheirIndex() async throws {
+        let h = Harness()
+        let (draft, fake) = try await draft(h)
+        let address = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n"
+        do {
+            try await draft.setRecipients([
+                PaymentRecipient(address: address, amount: WalletRuntime.Amount(duffs: 1000)),
+                PaymentRecipient(address: address, amount: WalletRuntime.Amount(duffs: 2000)),
+            ])
+            Issue.record("duplicates must be refused")
+        } catch {
+            #expect(error.code == .sendDuplicateAddress)
+            #expect(error.recipientIndex == 1)
+        }
+        // The earlier recipients stay.
+        #expect(fake.with { $0.recipients.map(\.amount.duffs) } == [1000])
     }
 
     @Test func inFlightBroadcastIsNeverAbandoned() async throws {
@@ -320,20 +404,23 @@ private final class Latch: @unchecked Sendable {
 
     /// The adapter hands signed amounts to DashKit unchanged; DashKit's FFI
     /// conversion turns a negative one into `send.invalid_amount{index}`
-    /// (DashKitTests.ExactConversionTests), and the index survives the
-    /// mapping to `ServiceError`.
+    /// (DashKitTests.ExactConversionTests), as the engine does for zero, and
+    /// the index survives the mapping to `ServiceError`.
     @Test func negativeAmountsReachDashKitUnconvertedAndMapToRecipientErrors() async throws {
         let h = Harness()
         let (draft, fake) = try await draft(h)
-        try await draft.setRecipients([
-            PaymentRecipient(address: "a", amount: WalletRuntime.Amount(duffs: 1)),
-            PaymentRecipient(address: "b", amount: WalletRuntime.Amount(duffs: -1)),
-        ])
-        #expect(fake.with { $0.recipients.map(\.amount.duffs) } == [1, -1])
-        let error = ServiceError(DashKitError.recipient(code: "send.invalid_amount", index: 1))
-        #expect(error.code == .sendInvalidAmount)
-        #expect(error.recipientIndex == 1)
-        #expect(error.parameters["index"] == 1)
+        do {
+            try await draft.setRecipients([
+                PaymentRecipient(address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n", amount: WalletRuntime.Amount(duffs: 1000)),
+                PaymentRecipient(address: "ybt3gVM6cM9WprG7bRTMst1YR2GnAbWGLr", amount: WalletRuntime.Amount(duffs: -1)),
+            ])
+            Issue.record("a negative amount must be refused")
+        } catch {
+            #expect(error.code == .sendInvalidAmount)
+            #expect(error.recipientIndex == 1)
+            #expect(error.parameters["index"] == 1)
+        }
+        #expect(fake.with { $0.submitted.last?.map(\.amount.duffs) } == [1000, -1])
     }
 
     @Test func balanceErrorsCarryTheirNumbers() {

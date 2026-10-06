@@ -69,9 +69,9 @@ unoptimised wipe of one owned allocation).
 | `LifecycleQueueing` | `Host/LifecycleQueue` (actor) | Start: host → observers → SPV; stop: reverse; `shutdown()` releases the engine. |
 | `WalletStateProviding` | `State/WalletStateModel` → `WalletState` | `wallets` `nil` until `wallet_infos` succeeds (`lastError` otherwise); `Balances` events re-read one wallet. |
 | `SyncStatusProviding` | `State/SPVCoordinator` + `SyncProgressDamper` | 10 % max step, monotonic per SPV run, `isDone` after 3.25 s of `caught_up`, stall at 45 s or `SyncStalled`. |
-| `AuthenticationGating` | `State/AuthenticationGate` | Lock state from `Vault.status` + `LockState` events; `authorize` under a 60 s watchdog (`auth.timed_out`, late grant revoked). `requirement(for:)`: none for no-vault/unencrypted; passphrase when locked; when unlocked, passphrase for reveal/credential change/wipe and, while "require authentication for every payment" is on (default), for spend/sign. |
+| `AuthenticationGating` | `State/AuthenticationGate` | Lock state from `Vault.status` + `LockState` events; `authorize` under a 60 s watchdog (`auth.timed_out`, late grant revoked). `requirement(for:)`: none for no-vault/no-keys/unencrypted (no passphrase slot); passphrase when locked or mixing-only; when unlocked, passphrase for reveal/credential change/wipe (dw-vault refuses those grants without it whenever the vault has a passphrase slot) and, while "require authentication for every payment" is on (default), for spend/sign. |
 | `VaultProviding` | `Services/VaultService` | Grant purpose checked before the engine; every returned status is forwarded to the gate. `SecretBuffer` = DashKit `SecretBytes` (zeroed on deinit); foreign buffers are copied into one. |
-| `TransactionSending` / `TransactionDrafting` | `Services/TransactionSender`, `TransactionDraft` (actor) | Holds engine `PreparedTx` handles by `PreparedTransaction.id`. Setters abandon unsent prepared txs (M-7). A broadcast failure that may have reached a peer marks the tx "outcome unknown": `abandon` then throws `send.broadcast_outcome_unknown` and keeps the inputs reserved; `broadcast` may be retried. |
+| `TransactionSending` / `TransactionDrafting` | `Services/TransactionSender`, `TransactionDraft` (actor) | Holds engine `PreparedTx` handles by `PreparedTransaction.id`. Setters abandon unsent prepared txs (M-7). After `send.no_peers`, `send.broadcast_rejected` or `send.prepared_tx_spent` the engine has released the inputs and the handle is dropped (`abandon` no-op, `broadcast` → `send.prepared_tx_unknown`). Argument/session errors (`invalid_argument`, `network_not_open`, `wallet_not_found`, `not_implemented`) keep the tx's previous state. Any other failure may have reached a peer and marks the tx "outcome unknown": `abandon` then throws `send.broadcast_outcome_unknown` and keeps the inputs reserved; `broadcast` may be called again. |
 | `HistoryProviding` | `Services/HistoryService` | `changes(wallet:)` merges pending txid lists; `.resynchronize` yields `[]`. |
 | `ReceiveProviding`, `CoinControlProviding`, `AddressBookProviding` | `Services/QueryServices` | Thin; engine stubs surface as `not_implemented`. |
 | `MessageSigning`, `URIHandling`, `AmountFormatting` | `Services/ToolServices` (`MessageService`, `URIService`, `EngineAmountFormatter`) | Pure engine functions on the open network, else the last one, else the composition's fallback network. |
@@ -158,30 +158,50 @@ var estimate: TxEstimate?
 func addRecipient(); func removeRecipient(_ id: RecipientEntry.ID)
 func paste(_ text: String)                 // URIHandling.parsePaymentURI fills an entry (QT-054)
 func useMax(for id: RecipientEntry.ID) async  // maxSpendable − other entries, and subtractFee = true (M-4)
-func review() async                        // validate → authorize(.spend(max: Σ amounts [+ foreign change])) → prepare → .confirm
+func review() async                        // validate → [confirmDuplicates] → authorize(.spend(max: Σ amounts)) → prepare → .confirm
+func acknowledgeDuplicates() async         // "Yes": merge entries paying the same address, then review
+func authorize(passphrase: String) async   // only in .authorizing; moves to .preparing before the vault answers
 func confirm() async                       // broadcast ONLY here (iOS rule 4)
-func retryBroadcast() async                // the same signed tx again, only after send.no_peers
+var canBroadcastAgain: Bool                // .broadcastUnknown and the engine still holds the signed tx
+func broadcastAgain() async                // the same signed tx (same txid) again, only after an unknown outcome
 func cancel() async                        // abandon the prepared tx, revoke an unredeemed grant; ignored once broadcast
-func dismiss() async                       // leave done / failed (abandons) / broadcastUnknown (never abandons)
+func dismiss() async                       // leave done / failed (abandons, keeps the form) / broadcastUnknown (never abandons)
 ```
 
-Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4):
+Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, M3, M6, M7, Lows):
 - The engine caps `external_sent` (value paid to scripts the wallet does not own), not the fee. The view model
-  asks for `authorize(.spend(max:))` with `max = Σ recipient amounts + -maxtxfee` (0.1 DASH): the final size is
-  known only after signing, and the fee is bounded separately by `send.absurd_fee`. A host that sets a custom
-  change address the wallet does not own must add `estimate.change` (that change counts as external).
+  asks for `authorize(.spend(max:))` with `max = Σ recipient amounts`, no slack: subtract-fee shares and recipients
+  the wallet owns only lower `external_sent`, and the fee is bounded separately by `send.absurd_fee`. The view
+  model never sets a change address; a host that sets one the wallet does not own must add the change amount.
+- Duplicates (QT-060): the engine refuses an address twice (`send.duplicate_address{index}`). `review()` asks
+  first (`.confirmDuplicates`); "Yes" (`acknowledgeDuplicates()`) merges the entries with the same cleaned address
+  into the first of them — amounts summed and re-formatted, subtract-fee if any had it, the first non-empty label,
+  distinct messages joined by newlines — then reviews the merged form; "No" is `cancel()`. A merged amount above
+  21 M DASH is an amount error on the merged entry.
+- `authorize(passphrase:)` moves to `.preparing` before awaiting the vault, so a second submission while the
+  passphrase is checked is ignored (one grant, one prepare).
 - Any edit of entries, fee or source in confirmDuplicates / authorizing / preparing / confirm / failed returns to
   `.editing`, abandons the prepared tx and revokes an unredeemed grant; a prepare that finishes later is abandoned.
 - Broadcast errors `send.broadcast_rejected`, `send.prepared_tx_spent`, `send.no_peers`, `send.prepared_tx_unknown`,
-  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented` are definite (`.failed`); any
-  other error, including the engine's `send.broadcast_unknown`, is `.broadcastUnknown`: never abandon, the inputs
-  stay reserved and the user is routed to the transaction. The engine releases the inputs on `send.no_peers` /
-  `send.broadcast_rejected` and marks the `PreparedTx` spent, so a retry after `send.no_peers` currently ends in
-  `send.prepared_tx_spent`; the engine allows re-broadcasting only after `send.broadcast_unknown`, which the view
-  model does not offer yet.
+  `network_not_open`, `wallet_not_found`, `invalid_argument`, `not_implemented` are definite (`.failed`). After the
+  first four the engine has released the inputs and spent the `PreparedTx`: the view model drops it, there is no
+  retry, and `dismiss()` returns to `.editing` with the form kept so Review runs a new grant and prepare (M1).
+  After the session/argument errors the tx is still pending and `dismiss()` abandons it.
+- Any other broadcast error, including the engine's `send.broadcast_unknown`, is `.broadcastUnknown`: the user is
+  routed to the transaction, the inputs stay reserved and the view model keeps the draft and prepared tx so
+  `broadcastAgain()` can send the same signed tx (M3). A failed second attempt keeps `.broadcastUnknown` (the first
+  attempt may still have reached a peer) with that attempt's failure; if the engine released the tx on it
+  (`send.no_peers` etc.) `canBroadcastAgain` turns false. `cancel()` is ignored; `dismiss()` clears the form and
+  drops the handles without abandoning (the engine refuses: `send.prepared_tx_spent`), so the inputs stay
+  reserved in this session.
+- Address book (QT-063, M7): the engine's broadcast owns the labels from the send form. After a successful send
+  the view model only adds recipients without a label that are not in the address book yet (purpose send,
+  `replace: false`, best effort); it never relabels.
 - `ServiceError` needs the numeric context of a code (review M-5): `parameters: [String: Int64]` with `index`,
-  `fee`, `available`, `max_duffs` as the engine reports them (dash-qt's AmountWithFeeExceedsBalance text shows
-  the fee).
+  `fee`, `available`, `max_duffs` as the engine reports them. `send.amount_with_fee_exceeds_balance` shows
+  `parameters["fee"]` (the estimate is nil when `estimate()` itself failed this way; M6).
+  `send.amount_too_small_after_fee{index}` marks that entry's amount with Dash Core's "The transaction amount is
+  too small to pay the fee".
 - Integer conversions to the engine use `UInt64(exactly:)` / `UInt8(exactly:)` and map a failure to
   `send.invalid_amount{index}` (amounts) or `invalid_argument` (counts, digits); never a trapping `UInt64(x)`
   (review M-8).

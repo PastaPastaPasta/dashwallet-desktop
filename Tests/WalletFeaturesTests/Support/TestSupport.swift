@@ -116,7 +116,7 @@ final class FakeWorld {
     let sync: FakeSync
     let vault = FakeVault()
     let auth: FakeAuth
-    let sender = FakeSender()
+    let sender: FakeSender
     let history = FakeHistory()
     let receive = FakeReceive()
     let coinControl = FakeCoinControl()
@@ -137,6 +137,7 @@ final class FakeWorld {
         sync = FakeSync(status: FakeSync.synced())
         auth = FakeAuth(lockState: .unencrypted)
         uri = FakeURI(network: network)
+        sender = FakeSender(addresses: uri)
         amounts = AmountFormatter(network: network)
     }
 

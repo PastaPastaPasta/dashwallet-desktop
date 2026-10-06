@@ -56,9 +56,11 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
     /// - no vault, no keys, or an unencrypted vault: nothing (`.unencrypted`
     ///   credential); an unencrypted vault has no passphrase to ask for;
     /// - locked or unlocked for mixing only: the passphrase;
-    /// - unlocked: the passphrase for reveal, credential change and wipe;
-    ///   for spending, signing and the M3/M4 operations only while "require
-    ///   authentication for every payment" is on;
+    /// - unlocked: the passphrase for reveal, credential change and wipe
+    ///   (dw-vault `Vault::authorize` refuses these without it whenever the
+    ///   vault has a passphrase slot, unlocked or not); for spending, signing
+    ///   and the M3/M4 operations only while "require authentication for every
+    ///   payment" is on;
     /// - unknown state: the passphrase.
     /// `.quickUnlockOrPassphrase` replaces `.passphrase` once quick unlock is
     /// enrolled (M2).
