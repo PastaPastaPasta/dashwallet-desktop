@@ -76,7 +76,23 @@ DWD_REGTEST_BACKEND=local DASHCORE_DIR=/path/to/dashcore .venv/bin/python -m pyt
 
 Environment: `DWD_REGTEST_BACKEND` (`docker`|`local`), `DWD_REGTEST_BUILD=0` (Docker: skip `--build`),
 `DASHCORE_DIR` (local), `DWD_KEEP_DATADIR=1` (local: keep the temp datadir). The Docker backend uses a
-unique compose project and free loopback ports per session, so runs do not collide.
+unique compose project and free loopback ports per session, so runs do not collide;
+`DWD_COMPOSE_PROJECT=<name>` fixes the project name instead.
+
+### L1 suites (engine against dashd)
+
+`tests/test_l1_sync.py` (`l1-sync`) drives the `dwcli` binary: vault + import of a known mnemonic,
+SPV sync, a dashd payment, history type/amount/status and balance, and a restart that keeps the
+history. It is skipped unless `DWCLI` points at a built `dwcli`:
+
+```sh
+(cd rust && cargo build -p dwcli)
+DWCLI=$CARGO_TARGET_DIR/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py
+```
+
+On a single node dash-spv never reports `caught_up`: there are no quorums, so its masternode phase
+stalls on `getqrinfo` ("Cannot find quorum snapshot"). The suite waits on scanned heights and txids
+instead (`dwcli sync --min-height` / `--txid`).
 
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.

@@ -273,7 +273,11 @@ def node_from_env() -> RegtestNode:
     """Pick the backend from DWD_REGTEST_BACKEND (`docker`, the default, or `local`)."""
     backend = os.environ.get("DWD_REGTEST_BACKEND", "docker")
     if backend == "docker":
-        return DockerComposeNode(build=os.environ.get("DWD_REGTEST_BUILD", "1") != "0")
+        node = DockerComposeNode(build=os.environ.get("DWD_REGTEST_BUILD", "1") != "0")
+        # A fixed compose project name (e.g. one per agent or CI job) instead of the unique default.
+        if os.environ.get("DWD_COMPOSE_PROJECT"):
+            node.project = os.environ["DWD_COMPOSE_PROJECT"]
+        return node
     if backend == "local":
         return LocalBinaryNode()
     raise ValueError(f"unknown DWD_REGTEST_BACKEND={backend!r} (expected 'docker' or 'local')")
