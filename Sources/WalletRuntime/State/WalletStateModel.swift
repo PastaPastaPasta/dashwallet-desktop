@@ -12,7 +12,7 @@ import Observation
 ///   selected or its balances have not been read (iOS rule 7).
 /// - The selection survives reloads while the wallet exists; otherwise the
 ///   first wallet (engine creation order) is selected.
-/// - Engine events: `WalletCreated` / `WalletRemoved` / `WalletChanged` /
+/// - Engine events: `WalletCreated` / `WalletRemoved` /
 ///   `SessionOpened` / `.resynchronize` reload the list (coalesced);
 ///   `Balances` re-reads that wallet's buckets only.
 @MainActor
@@ -118,7 +118,7 @@ public final class WalletState: WalletStateProviding, SessionObserving {
         guard let network else { return }
         switch event {
         case .walletCreated(let n, _) where n == network, .walletRemoved(let n, _) where n == network,
-             .walletChanged(let n, _) where n == network, .sessionOpened(let n) where n == network:
+             .sessionOpened(let n) where n == network:
             reloader.request()
         case .balancesChanged(let n, let id) where n == network:
             staleBalances.insert(WalletID(id))
@@ -164,7 +164,8 @@ public final class WalletState: WalletStateProviding, SessionObserving {
         var changed = false
         for id in pending {
             guard let wallet = try? id.kit else { continue }
-            let kitBalances: DashKit.WalletBalances
+            // `nil` until the wallet's scan has passed its birth height.
+            let kitBalances: DashKit.WalletBalances?
             do {
                 kitBalances = try await engine.balances(on: network, wallet: wallet)
             } catch {
@@ -174,7 +175,7 @@ public final class WalletState: WalletStateProviding, SessionObserving {
                 continue
             }
             guard self.network == network else { return }
-            let fresh = WalletBalances(kitBalances)
+            let fresh = kitBalances.map(WalletBalances.init)
             if let index = wallets?.firstIndex(where: { $0.id == id }), let old = wallets?[index] {
                 wallets?[index] = WalletInfo(
                     id: old.id, name: old.name, watchOnly: old.watchOnly, hasMnemonic: old.hasMnemonic, hd: old.hd,
