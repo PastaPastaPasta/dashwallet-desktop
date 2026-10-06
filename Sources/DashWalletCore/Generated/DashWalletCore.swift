@@ -822,7 +822,9 @@ public protocol EngineProtocol: AnyObject, Sendable {
     /**
      * Every network that has data under the data root, in `DashNetwork`
      * order (devnets by name). Reads the file system and the OS secret
-     * store only; opens nothing. Owner R1.
+     * store only; opens nothing. `has_os_store_key` is `false` when the
+     * vault file is gone (its OS-store address is in the file) or the
+     * store cannot be reached.
      */
     func existingNetworks() async throws  -> [NetworkDataInfo]
     
@@ -1008,7 +1010,9 @@ open func shutdown()async throws   {
     /**
      * Every network that has data under the data root, in `DashNetwork`
      * order (devnets by name). Reads the file system and the OS secret
-     * store only; opens nothing. Owner R1.
+     * store only; opens nothing. `has_os_store_key` is `false` when the
+     * vault file is gone (its OS-store address is in the file) or the
+     * store cannot be reached.
      */
 open func existingNetworks()async throws  -> [NetworkDataInfo]  {
     return
@@ -1739,7 +1743,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * Parses and runs one console line (nested calls, `[key]` indexing,
      * quoting as dash-qt) against `wallet_id` (`None` = no wallet). `line`
      * is UTF-8 bytes because it may hold a passphrase; it is zeroized.
-     * `grant_id` answers an earlier `AuthorizationRequired`.
+     * `grant_id` answers an earlier `AuthorizationRequired` and is spent by
+     * the first command that needs one.
      */
     func consoleExecute(walletId: String?, line: Data, grantId: String?) async throws  -> ConsoleOutput
     
@@ -1807,8 +1812,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * Registers a watch-only wallet from a BIP44 account xpub (QT-114;
      * interim for platform-wallet `WatchOnly` registration, DESIGN-opus §2
      * PSBT row): no vault record, `WalletInfo.watch_only = true`, sends are
-     * `send.watch_only` and PSBTs are created unsigned. Returns the wallet
-     * id. A later `import_wallet` of the matching phrase attaches the keys.
+     * `send.watch_only`. Returns the wallet id, a digest of the account key
+     * (a seed wallet's id digests its root key, so importing the matching
+     * phrase later adds a separate wallet).
      */
     func importWatchOnly(xpub: String, options: WatchOnlyOptions) async throws  -> String
     
@@ -1829,7 +1835,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     /**
      * dash-qt "Close Wallet": stops tracking the wallet and drops it from
      * memory; its data, vault records and app metadata stay. Prepared,
-     * unsent payments of the wallet are abandoned. Idempotent. Emits
+     * unsent payments of the wallet lose their input reservations (they can
+     * no longer be broadcast: `wallet_not_found`). Idempotent. Emits
      * `WalletLoadChanged{loaded: false}`.
      */
     func unloadWallet(walletId: String) async throws 
@@ -1952,10 +1959,13 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * Bans the peer's IP for `duration_secs` (dash-qt: 1 h, 1 d, 1 w, 1 y)
-     * and disconnects it. Persisted with the SPV data.
+     * and disconnects it. Needs upstream U2: `NotImplemented` until then.
      */
     func banPeer(address: String, durationSecs: UInt64) async throws 
     
+    /**
+     * Needs upstream U2: `NotImplemented` until then.
+     */
     func bannedPeers() async throws  -> [BannedPeer]
     
     /**
@@ -1965,8 +1975,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func cancelRescan() async throws  -> Bool
     
     /**
-     * Disconnects one peer (QT-147 "Disconnect"). dash-spv may dial a
-     * replacement.
+     * Disconnects one peer (QT-147 "Disconnect"). Needs dash-spv's network
+     * manager through platform-wallet (upstream U2): `NotImplemented`
+     * until then.
      */
     func disconnectPeer(address: String) async throws 
     
@@ -1990,33 +2001,40 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * iOS "edit birth height" (IOS-113): stores a new birth height for the
-     * wallet. Lower than the current one: a rescan from it is scheduled.
+     * wallet. Lower than the current scan checkpoint: a rescan from it is
+     * scheduled.
      */
     func setBirthHeight(walletId: String, height: UInt32) async throws 
     
+    /**
+     * Needs upstream U2: `NotImplemented` until then.
+     */
     func unbanPeer(subnet: String) async throws 
     
     /**
      * Current node warnings, most severe first. In-memory read; re-query
-     * on `Notice` and `Sync` events.
+     * on `Notice` and `Sync` events. `ClockSkew` is never reported: dash-spv
+     * does not expose peer time offsets.
      */
     func warnings() throws  -> [EngineWarning]
     
     /**
      * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
      * its inputs for new payments and excludes it from balances (status
-     * `Abandoned`, amount in brackets). SPV cannot prove the transaction is
-     * in no mempool, so it may still confirm; the engine then shows it
-     * confirmed again. Emits `HistoryChanged` and `Balances`.
+     * `Abandoned`, amount in brackets). Its recorded descendants are
+     * abandoned with it. SPV cannot prove the transaction is in no mempool,
+     * so it may still confirm; the engine then shows it confirmed again.
+     * The spent coins return through a rescan of their funding blocks.
+     * Emits `HistoryChanged` and `Balances`.
      */
     func abandonTransaction(walletId: String, txid: String) async throws 
     
     /**
      * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-     * unconfirmed, non-InstantSend-locked transaction of `wallet_id` (all
-     * wallets when `None`) that no peer announced since start, then
-     * schedules a rescan from the oldest dropped transaction's first-seen
-     * height. Returns how many were dropped.
+     * unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
+     * `wallet_id` (all wallets when `None`), then rescans from the lowest
+     * funding height of the coins they spent. Needs a running SPV client.
+     * Returns how many transactions were dropped.
      */
     func dropUnconfirmed(walletId: String?) async throws  -> UInt32
     
@@ -2032,9 +2050,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func exportHistoryCsv(walletId: String, filter: HistoryFilter, sort: HistorySort, unit: DisplayUnit, typeNames: [String], utcOffsetSecs: Int32) async throws  -> String
     
     /**
-     * dash-qt "Resend transaction" (QT-091): announces the stored
-     * transaction to the connected peers again. Returns once announced;
-     * there is no acceptance verdict (unlike `TxDraft.broadcast`).
+     * dash-qt "Resend transaction" (QT-091): hands the stored transaction
+     * to the SPV client again. Returns once handed over; there is no
+     * acceptance verdict (unlike `TxDraft.broadcast`).
      */
     func resendTransaction(walletId: String, txid: String) async throws 
     
@@ -2486,7 +2504,8 @@ open func importWalletDat(path: String, walletPassphrase: Data?, options: Import
      * Parses and runs one console line (nested calls, `[key]` indexing,
      * quoting as dash-qt) against `wallet_id` (`None` = no wallet). `line`
      * is UTF-8 bytes because it may hold a passphrase; it is zeroized.
-     * `grant_id` answers an earlier `AuthorizationRequired`.
+     * `grant_id` answers an earlier `AuthorizationRequired` and is spent by
+     * the first command that needs one.
      */
 open func consoleExecute(walletId: String?, line: Data, grantId: String?)async throws  -> ConsoleOutput  {
     return
@@ -2701,8 +2720,9 @@ open func accountXpub(walletId: String, account: UInt32)async throws  -> Account
      * Registers a watch-only wallet from a BIP44 account xpub (QT-114;
      * interim for platform-wallet `WatchOnly` registration, DESIGN-opus §2
      * PSBT row): no vault record, `WalletInfo.watch_only = true`, sends are
-     * `send.watch_only` and PSBTs are created unsigned. Returns the wallet
-     * id. A later `import_wallet` of the matching phrase attaches the keys.
+     * `send.watch_only`. Returns the wallet id, a digest of the account key
+     * (a seed wallet's id digests its root key, so importing the matching
+     * phrase later adds a separate wallet).
      */
 open func importWatchOnly(xpub: String, options: WatchOnlyOptions)async throws  -> String  {
     return
@@ -2765,7 +2785,8 @@ open func setLoadOnStartup(walletId: String, loadOnStartup: Bool)async throws   
     /**
      * dash-qt "Close Wallet": stops tracking the wallet and drops it from
      * memory; its data, vault records and app metadata stay. Prepared,
-     * unsent payments of the wallet are abandoned. Idempotent. Emits
+     * unsent payments of the wallet lose their input reservations (they can
+     * no longer be broadcast: `wallet_not_found`). Idempotent. Emits
      * `WalletLoadChanged{loaded: false}`.
      */
 open func unloadWallet(walletId: String)async throws   {
@@ -3155,7 +3176,7 @@ open func syncSnapshot()throws  -> SyncSnapshot  {
     
     /**
      * Bans the peer's IP for `duration_secs` (dash-qt: 1 h, 1 d, 1 w, 1 y)
-     * and disconnects it. Persisted with the SPV data.
+     * and disconnects it. Needs upstream U2: `NotImplemented` until then.
      */
 open func banPeer(address: String, durationSecs: UInt64)async throws   {
     return
@@ -3173,6 +3194,9 @@ open func banPeer(address: String, durationSecs: UInt64)async throws   {
         )
 }
     
+    /**
+     * Needs upstream U2: `NotImplemented` until then.
+     */
 open func bannedPeers()async throws  -> [BannedPeer]  {
     return
         try  await uniffiRustCallAsync(
@@ -3210,8 +3234,9 @@ open func cancelRescan()async throws  -> Bool  {
 }
     
     /**
-     * Disconnects one peer (QT-147 "Disconnect"). dash-spv may dial a
-     * replacement.
+     * Disconnects one peer (QT-147 "Disconnect"). Needs dash-spv's network
+     * manager through platform-wallet (upstream U2): `NotImplemented`
+     * until then.
      */
 open func disconnectPeer(address: String)async throws   {
     return
@@ -3277,7 +3302,8 @@ open func resetChainData()async throws   {
     
     /**
      * iOS "edit birth height" (IOS-113): stores a new birth height for the
-     * wallet. Lower than the current one: a rescan from it is scheduled.
+     * wallet. Lower than the current scan checkpoint: a rescan from it is
+     * scheduled.
      */
 open func setBirthHeight(walletId: String, height: UInt32)async throws   {
     return
@@ -3295,6 +3321,9 @@ open func setBirthHeight(walletId: String, height: UInt32)async throws   {
         )
 }
     
+    /**
+     * Needs upstream U2: `NotImplemented` until then.
+     */
 open func unbanPeer(subnet: String)async throws   {
     return
         try  await uniffiRustCallAsync(
@@ -3313,7 +3342,8 @@ open func unbanPeer(subnet: String)async throws   {
     
     /**
      * Current node warnings, most severe first. In-memory read; re-query
-     * on `Notice` and `Sync` events.
+     * on `Notice` and `Sync` events. `ClockSkew` is never reported: dash-spv
+     * does not expose peer time offsets.
      */
 open func warnings()throws  -> [EngineWarning]  {
     return try  FfiConverterSequenceTypeEngineWarning.lift(try rustCallWithError(FfiConverterTypeSyncError_lift) {
@@ -3327,9 +3357,11 @@ open func warnings()throws  -> [EngineWarning]  {
     /**
      * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
      * its inputs for new payments and excludes it from balances (status
-     * `Abandoned`, amount in brackets). SPV cannot prove the transaction is
-     * in no mempool, so it may still confirm; the engine then shows it
-     * confirmed again. Emits `HistoryChanged` and `Balances`.
+     * `Abandoned`, amount in brackets). Its recorded descendants are
+     * abandoned with it. SPV cannot prove the transaction is in no mempool,
+     * so it may still confirm; the engine then shows it confirmed again.
+     * The spent coins return through a rescan of their funding blocks.
+     * Emits `HistoryChanged` and `Balances`.
      */
 open func abandonTransaction(walletId: String, txid: String)async throws   {
     return
@@ -3349,10 +3381,10 @@ open func abandonTransaction(walletId: String, txid: String)async throws   {
     
     /**
      * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-     * unconfirmed, non-InstantSend-locked transaction of `wallet_id` (all
-     * wallets when `None`) that no peer announced since start, then
-     * schedules a rescan from the oldest dropped transaction's first-seen
-     * height. Returns how many were dropped.
+     * unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
+     * `wallet_id` (all wallets when `None`), then rescans from the lowest
+     * funding height of the coins they spent. Needs a running SPV client.
+     * Returns how many transactions were dropped.
      */
 open func dropUnconfirmed(walletId: String?)async throws  -> UInt32  {
     return
@@ -3396,9 +3428,9 @@ open func exportHistoryCsv(walletId: String, filter: HistoryFilter, sort: Histor
 }
     
     /**
-     * dash-qt "Resend transaction" (QT-091): announces the stored
-     * transaction to the connected peers again. Returns once announced;
-     * there is no acceptance verdict (unlike `TxDraft.broadcast`).
+     * dash-qt "Resend transaction" (QT-091): hands the stored transaction
+     * to the SPV client again. Returns once handed over; there is no
+     * acceptance verdict (unlike `TxDraft.broadcast`).
      */
 open func resendTransaction(walletId: String, txid: String)async throws   {
     return
@@ -13224,15 +13256,13 @@ public enum EngineEvent: Equatable, Hashable {
      * once per transaction, never for status changes (those are
      * `HistoryChanged`). `catch_up` is true while SPV is not caught up
      * (dash-qt shows no popups during initial block download). The host
-     * reads the rows with `NetworkSession::tx_notices`. Owner R1; not sent
-     * yet.
+     * reads the rows with `NetworkSession::tx_notices`.
      */
     case newTransactions(network: DashNetwork, walletId: String, txids: [String], catchUp: Bool
     )
     /**
      * M2 (QT-101): a wallet was loaded (opened) or unloaded (closed) without
      * being removed. Reload the wallet list and `wallet_load_states`.
-     * Owner R1; not sent yet.
      */
     case walletLoadChanged(network: DashNetwork, walletId: String, loaded: Bool
     )
@@ -20420,7 +20450,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_engine_shutdown() != 51753) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_engine_existing_networks() != 9831) {
+    if (uniffi_dashwallet_core_checksum_method_engine_existing_networks() != 41980) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_engineobserver_on_event() != 60320) {
@@ -20516,7 +20546,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 60912) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 20533) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 60587) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_coin_selection_summary() != 17210) {
@@ -20549,7 +20579,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_account_xpub() != 12449) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_watch_only() != 14228) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_watch_only() != 60794) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_load_wallet() != 6178) {
@@ -20558,7 +20588,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_set_load_on_startup() != 10874) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_unload_wallet() != 16297) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_unload_wallet() != 9384) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_load_states() != 38144) {
@@ -20627,16 +20657,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_sync_snapshot() != 45870) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_ban_peer() != 31322) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_ban_peer() != 832) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_banned_peers() != 48060) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_banned_peers() != 15866) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_cancel_rescan() != 59995) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_disconnect_peer() != 45225) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_disconnect_peer() != 12220) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_node_info() != 52996) {
@@ -20648,25 +20678,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_reset_chain_data() != 44327) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_set_birth_height() != 10677) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_set_birth_height() != 47888) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_unban_peer() != 22474) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_unban_peer() != 26235) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 15391) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 33150) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 54211) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 19253) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 45022) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 29646) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_export_history_csv() != 61293) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_resend_transaction() != 63671) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_resend_transaction() != 23047) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_tx_detail_extras() != 24578) {
