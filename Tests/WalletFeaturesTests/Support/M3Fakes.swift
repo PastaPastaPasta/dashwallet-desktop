@@ -203,6 +203,7 @@ final class FakeGovernance: GovernanceProviding, GovernanceVoting, ProposalCreat
     func cast(_ outcome: VoteOutcome, on hash: String, with proTxHashes: [String], grant: AuthGrant)
         async throws(ServiceError) -> [VoteResult]
     {
+        try errors.check("cast")
         guard grant.purpose == .governance else { throw ServiceError(code: .governanceGrantInvalid) }
         guard let voters = voters.current else { throw notConfigured("cast") }
         casts.withLock { $0.append((outcome, hash, proTxHashes, grant)) }

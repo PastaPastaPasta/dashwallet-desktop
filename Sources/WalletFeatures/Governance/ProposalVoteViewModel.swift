@@ -151,6 +151,7 @@ public final class ProposalVoteViewModel {
             results = try await voting.cast(outcome, on: proposal.hash, with: hashes, grant: grant)
             phase = .done
         } catch {
+            grants.revoke(grant)
             errorMessage = ErrorText.m3(error, amount: { "\($0.duffs)" })
             phase = .ready
         }

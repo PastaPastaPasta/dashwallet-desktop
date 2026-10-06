@@ -243,6 +243,7 @@ public final class MasternodeMaintenanceViewModel {
                 step = .review(transaction.summary)
             }
         } catch {
+            grants.revoke(grant)
             errorMessage = errorText(error)
             step = error.isNotImplemented ? .unavailable : .editing
         }

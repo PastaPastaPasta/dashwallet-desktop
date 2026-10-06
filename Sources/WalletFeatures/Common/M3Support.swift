@@ -30,6 +30,27 @@ struct GrantRequester {
                 purpose, wallet: wallet, credential: .passphrase(vault.makeSecret(utf8: passphrase)))
         }
     }
+
+    /// Withdraws a grant the failed call did not redeem (the engine ignores
+    /// ids it already redeemed).
+    func revoke(_ grant: AuthGrant) {
+        auth.revoke(grant)
+    }
+
+    /// Issues a grant (or returns `nil` when a passphrase is needed), runs
+    /// `body` with it, and withdraws the grant when `body` fails.
+    func with<T>(
+        _ purpose: GrantPurpose, wallet: WalletID, passphrase: String?,
+        _ body: (AuthGrant) async throws(ServiceError) -> T
+    ) async throws(ServiceError) -> T? {
+        guard let grant = try await authorize(purpose, wallet: wallet, passphrase: passphrase) else { return nil }
+        do {
+            return try await body(grant)
+        } catch {
+            revoke(grant)
+            throw error
+        }
+    }
 }
 
 /// Amounts in the display unit (dash-qt `formatWithUnit`).

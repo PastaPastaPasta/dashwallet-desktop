@@ -40,7 +40,6 @@ public final class MasternodeKeychainViewModel {
 
     private let keychain: any MasternodeKeychainProviding
     private let walletState: any WalletStateProviding
-    private let auth: any AuthenticationGating
     private let grants: GrantRequester
     private let clipboard: any ClipboardProviding
 
@@ -50,7 +49,6 @@ public final class MasternodeKeychainViewModel {
     ) {
         self.keychain = keychain
         self.walletState = walletState
-        self.auth = auth
         grants = GrantRequester(auth: auth, vault: vault)
         self.clipboard = clipboard
     }
@@ -87,13 +85,15 @@ public final class MasternodeKeychainViewModel {
         guard let wallet = walletState.selectedWalletID else { return }
         errorMessage = nil
         do {
-            guard let grant = try await grants.authorize(.revealSecret, wallet: wallet, passphrase: passphrase) else {
+            guard let secret = try await grants.with(.revealSecret, wallet: wallet, passphrase: passphrase, {
+                grant async throws(ServiceError) in
+                try await self.keychain.reveal(wallet: wallet, role: key.role, index: key.index, grant: grant)
+            }) else {
                 pendingReveal = key
                 return
             }
             pendingReveal = nil
-            revealed[key.derivationPath] = try await keychain.reveal(
-                wallet: wallet, role: key.role, index: key.index, grant: grant)
+            revealed[key.derivationPath] = secret
         } catch {
             errorMessage = ErrorText.m3(error, amount: { "\($0.duffs)" })
             if error.code != .vaultWrongPassphrase { pendingReveal = nil }
@@ -303,12 +303,8 @@ public final class TrackedMasternodesViewModel {
         _ body: (AuthGrant) async throws(ServiceError) -> Void
     ) async {
         await run { () async throws(ServiceError) in
-            guard let grant = try await self.grants.authorize(purpose, wallet: wallet, passphrase: passphrase) else {
-                self.needsPassphrase = true
-                return
-            }
-            self.needsPassphrase = false
-            try await body(grant)
+            let done: Void? = try await self.grants.with(purpose, wallet: wallet, passphrase: passphrase, body)
+            self.needsPassphrase = done == nil
         }
     }
 }

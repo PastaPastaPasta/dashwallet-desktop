@@ -385,21 +385,16 @@ public final class SharedMasternodeViewModel {
         do {
             try await body()
         } catch {
-            if error.isNotImplemented { mode = .unavailable }
-            errorMessage = errorText(error)
+            // One step the engine does not offer yet: the session stays open.
+            errorMessage = error.isNotImplemented ? L10n.Masternodes.notAvailableYet : errorText(error)
         }
     }
 
     private func authorized(_ passphrase: String?, _ body: (AuthGrant) async throws(ServiceError) -> Void) async {
         guard let wallet = walletState.selectedWalletID else { return }
         await run { () async throws(ServiceError) in
-            guard let grant = try await self.grants.authorize(.masternodeOperation, wallet: wallet, passphrase: passphrase)
-            else {
-                self.needsPassphrase = true
-                return
-            }
-            self.needsPassphrase = false
-            try await body(grant)
+            let done: Void? = try await self.grants.with(.masternodeOperation, wallet: wallet, passphrase: passphrase, body)
+            self.needsPassphrase = done == nil
         }
     }
 }

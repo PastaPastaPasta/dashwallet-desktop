@@ -408,13 +408,14 @@ public final class RegisterMasternodeWizardViewModel {
         isWorking = true
         defer { isWorking = false }
         do {
-            guard let grant = try await grants.authorize(.masternodeOperation, wallet: wallet, passphrase: passphrase)
-            else {
+            guard let reference = try await grants.with(.masternodeOperation, wallet: wallet, passphrase: passphrase, {
+                grant async throws(ServiceError) in try await self.registration.prepare(request, grant: grant)
+            }) else {
                 needsPassphrase = true
                 return
             }
             needsPassphrase = false
-            prepared = try await registration.prepare(request, grant: grant)
+            prepared = reference
             page = .review
         } catch {
             needsPassphrase = error.code == .vaultWrongPassphrase

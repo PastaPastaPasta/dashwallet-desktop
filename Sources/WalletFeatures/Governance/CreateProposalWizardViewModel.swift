@@ -216,6 +216,7 @@ public final class CreateProposalWizardViewModel {
         do {
             step = .created(try await proposals.create(wallet: wallet, draft: draft, grant: grant))
         } catch {
+            grants.revoke(grant)
             errorMessage = "\(L10n.Governance.creationFailed): \(ErrorText.m3(error, amount: format))"
             if error.code == .governanceInvalidProposal, let index = error.parameters["field"],
                 index >= 0, index < Int64(ProposalField.allCases.count)

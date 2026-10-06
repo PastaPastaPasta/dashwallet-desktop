@@ -153,6 +153,7 @@ public final class MixedCoinsViewModel {
             }
             flow = .moved(result)
         } catch {
+            grants.revoke(grant)
             fail(error)
         }
     }

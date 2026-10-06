@@ -216,6 +216,20 @@ struct GovernanceViewModelTests {
         #expect(world.auth.authorizeCalls.last?.passphrase == "pw")
     }
 
+    @Test func QT131_failedCastWithdrawsTheGrant() async {
+        m3.governance.voters.withLock { $0 = voters() }
+        m3.governance.errors.set(ServiceError(code: .governanceNoPeers), for: "cast")
+        let list = makeList()
+        await list.reload()
+        await list.openVote(list.rows[0].hash)
+        let vote = try! #require(list.vote)
+        await vote.vote()
+        #expect(vote.phase == .ready)
+        #expect(vote.errorMessage?.hasPrefix("No peers are connected") == true)
+        #expect(world.auth.revoked.count == 1)
+        #expect(world.auth.revoked.first?.purpose == .governance)
+    }
+
     @Test func QT131_noVotingKeysSaysSo() async {
         m3.governance.voters.withLock { $0 = [] }
         let list = makeList()
