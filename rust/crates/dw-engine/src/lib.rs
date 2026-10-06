@@ -28,11 +28,13 @@ pub mod history;
 mod history_ops;
 mod keys;
 mod labels;
+mod multiwallet;
 mod network;
 mod pump;
 mod receive;
 pub(crate) mod send;
 mod session;
+mod store;
 pub mod sync;
 mod tools;
 mod tx_actions;
@@ -61,6 +63,7 @@ pub use send::{
 };
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
+pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use tools::{
     ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
     USER_AGENT, WarningCode,

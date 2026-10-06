@@ -25,7 +25,7 @@ use crate::fsutil::create_private_dir;
 use crate::gate::{OpGate, OpGuard};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
-pub(crate) type Manager = PlatformWalletManager<SqlitePersister>;
+pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
 
 /// File name of the platform-wallet SQLite database inside a network dir.
 pub const WALLET_DB_FILE: &str = "wallet.sqlite";
@@ -117,6 +117,8 @@ pub struct SessionOptions {
 pub(crate) struct Live {
     pub manager: Arc<Manager>,
     pub persister: Arc<SqlitePersister>,
+    /// The persister platform-wallet uses; knows which wallets are closed.
+    pub store: Arc<crate::store::WalletStore>,
     pub appdb: Arc<AppDb>,
 }
 
@@ -150,6 +152,8 @@ pub struct NetworkSession {
     /// The previous session of this network did not close cleanly (its
     /// marker file was still there at open).
     pub(crate) unclean_previous: bool,
+    /// dash-qt's load-on-startup wallet list; `None` = load every wallet.
+    pub(crate) startup_list: Mutex<Option<std::collections::BTreeSet<WalletId>>>,
 }
 
 impl NetworkSession {
@@ -224,6 +228,31 @@ impl NetworkSession {
             })
             .await??,
         );
+        // dash-qt loads only the wallets of its settings list; an empty or
+        // missing list loads every wallet.
+        let startup_list = {
+            let appdb = Arc::clone(&appdb);
+            tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
+                .await??
+        };
+        let unloaded = match &startup_list {
+            Some(list) => {
+                let db_path = data_dir.join(WALLET_DB_FILE);
+                let registered =
+                    tokio::task::spawn_blocking(move || crate::store::registered_wallet_ids(&db_path))
+                        .await?
+                        .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
+                registered
+                    .into_iter()
+                    .filter(|id| !list.contains(&WalletId(*id)))
+                    .collect()
+            }
+            None => Default::default(),
+        };
+        let store = Arc::new(crate::store::WalletStore::new(
+            Arc::clone(&persister),
+            unloaded,
+        ));
 
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
         for (order, (id, name, created_at)) in (0u64..).zip(names) {
@@ -241,7 +270,7 @@ impl NetworkSession {
         }
         let manager = Arc::new(PlatformWalletManager::new(
             Arc::new(sdk),
-            Arc::clone(&persister),
+            Arc::clone(&store),
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
         if let Err(e) = manager.load_from_persistor().await {
@@ -265,12 +294,14 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
+                store,
                 appdb: Arc::clone(&appdb),
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
+            startup_list: Mutex::new(startup_list),
         });
         if let Err(e) = std::fs::write(&marker, b"") {
             tracing::warn!(error = %e, "could not write the open-session marker");
@@ -520,6 +551,7 @@ impl NetworkSession {
             }
         }
         drop(manager);
+        drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         self.sink.emit(EngineEvent::SessionClosed {

@@ -312,6 +312,11 @@ impl PendingSpends {
 
     /// Drops entries whose coin is no longer unspent (a broadcast whose
     /// outcome was unknown has since been seen spent).
+    /// Drops every reservation of an unloaded wallet.
+    pub(crate) fn forget_wallet(&self, wallet: &WalletId) {
+        self.map().remove(wallet);
+    }
+
     pub(crate) fn retain_unspent(&self, wallet: &WalletId, unspent: &HashSet<OutPoint>) {
         let mut map = self.map();
         if let Some(set) = map.get_mut(wallet) {

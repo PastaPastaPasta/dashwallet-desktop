@@ -3,7 +3,7 @@
 //! export and the per-network data inventory. Owner: R1 (engine-tools).
 //! Contract: docs/contracts/m2-engine.md §2.1.
 
-use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::parse_wallet_id;
 use crate::{DashNetwork, Engine, EngineError, NetworkSession, WalletError};
 
 /// Load state of one registered wallet (QT-101). Unloaded wallets keep their
@@ -60,15 +60,33 @@ pub struct NetworkDataInfo {
     pub has_os_store_key: bool,
 }
 
+impl From<dw_engine::NetworkDataInfo> for NetworkDataInfo {
+    fn from(i: dw_engine::NetworkDataInfo) -> Self {
+        Self {
+            network: i.network.into(),
+            directory: i.directory,
+            has_wallet_state: i.has_wallet_state,
+            has_vault: i.has_vault,
+            has_os_store_key: i.has_os_store_key,
+        }
+    }
+}
+
 #[uniffi::export]
 impl Engine {
     /// Every network that has data under the data root, in `DashNetwork`
     /// order (devnets by name). Reads the file system and the OS secret
-    /// store only; opens nothing. Owner R1.
+    /// store only; opens nothing. `has_os_store_key` is `false` when the
+    /// vault file is gone (its OS-store address is in the file) or the
+    /// store cannot be reached.
     pub async fn existing_networks(&self) -> Result<Vec<NetworkDataInfo>, EngineError> {
-        Err(EngineError::NotImplemented {
-            detail: "Engine.existing_networks".into(),
-        })
+        Ok(self
+            .inner
+            .existing_networks()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 }
 
@@ -77,27 +95,36 @@ impl NetworkSession {
     /// Every registered wallet with its load state, in creation order.
     /// In-memory read.
     pub fn wallet_load_states(&self) -> Result<Vec<WalletLoadState>, WalletError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.wallet_load_states")
+        Ok(self
+            .inner
+            .wallet_load_states()?
+            .into_iter()
+            .map(|w| WalletLoadState {
+                wallet_id: w.wallet_id.to_string(),
+                name: w.name,
+                loaded: w.loaded,
+                load_on_startup: w.load_on_startup,
+                watch_only: w.watch_only,
+            })
+            .collect())
     }
 
     /// dash-qt "Open Wallet": loads a registered, unloaded wallet and resumes
     /// its scan from its last processed height. Idempotent. Emits
     /// `WalletLoadChanged{loaded: true}`.
     pub async fn load_wallet(&self, wallet_id: String) -> Result<(), WalletError> {
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.load_wallet")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.load_wallet(id).await?)
     }
 
     /// dash-qt "Close Wallet": stops tracking the wallet and drops it from
     /// memory; its data, vault records and app metadata stay. Prepared,
-    /// unsent payments of the wallet are abandoned. Idempotent. Emits
+    /// unsent payments of the wallet lose their input reservations (they can
+    /// no longer be broadcast: `wallet_not_found`). Idempotent. Emits
     /// `WalletLoadChanged{loaded: false}`.
     pub async fn unload_wallet(&self, wallet_id: String) -> Result<(), WalletError> {
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.unload_wallet")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.unload_wallet(id).await?)
     }
 
     /// Adds or removes the wallet from the load-on-startup list (dash-qt adds
@@ -108,25 +135,33 @@ impl NetworkSession {
         wallet_id: String,
         load_on_startup: bool,
     ) -> Result<(), WalletError> {
-        let _ = load_on_startup;
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_load_on_startup")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self.inner.set_load_on_startup(id, load_on_startup).await?)
     }
 
     /// Registers a watch-only wallet from a BIP44 account xpub (QT-114;
     /// interim for platform-wallet `WatchOnly` registration, DESIGN-opus §2
     /// PSBT row): no vault record, `WalletInfo.watch_only = true`, sends are
-    /// `send.watch_only` and PSBTs are created unsigned. Returns the wallet
-    /// id. A later `import_wallet` of the matching phrase attaches the keys.
+    /// `send.watch_only`. Returns the wallet id, a digest of the account key
+    /// (a seed wallet's id digests its root key, so importing the matching
+    /// phrase later adds a separate wallet).
     pub async fn import_watch_only(
         &self,
         xpub: String,
         options: WatchOnlyOptions,
     ) -> Result<String, WalletError> {
-        let _ = (xpub, options);
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.import_watch_only")
+        let id = self
+            .inner
+            .import_watch_only(
+                xpub,
+                dw_engine::WatchOnlyOptions {
+                    name: options.name,
+                    birth_height: options.birth_height,
+                    lookahead: options.lookahead,
+                },
+            )
+            .await?;
+        Ok(id.to_string())
     }
 
     /// The BIP44 account xpub (IOS-111). Public data, no grant; watch-only
@@ -136,9 +171,12 @@ impl NetworkSession {
         wallet_id: String,
         account: u32,
     ) -> Result<AccountXpub, WalletError> {
-        let _ = account;
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.account_xpub")
+        let id = parse_wallet_id(&wallet_id)?;
+        let x = self.inner.account_xpub(id, account).await?;
+        Ok(AccountXpub {
+            account: x.account,
+            derivation_path: x.derivation_path,
+            xpub: x.xpub,
+        })
     }
 }

@@ -300,6 +300,19 @@ impl SessionHub {
             .unwrap_or(0)
     }
 
+    /// Forgets the in-memory state of an unloaded wallet; its name stays
+    /// (the "Open Wallet" menu lists it).
+    pub(crate) fn unload_wallet(&self, id: &WalletId) {
+        self.wallets
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        self.history.remove_wallet(id);
+        if let Some(rescan) = self.rescan().as_mut() {
+            rescan.wallets.remove(id);
+        }
+    }
+
     /// Forgets everything about a removed wallet.
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
         self.wallets

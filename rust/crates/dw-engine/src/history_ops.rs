@@ -121,13 +121,18 @@ impl NetworkSession {
     /// include chainlocked transactions platform-wallet no longer keeps in
     /// memory), then the in-memory records, then first-seen times.
     pub(crate) async fn load_history(&self) -> Result<(), EngineError> {
-        let live = self.live()?;
-        let ids: Vec<WalletId> = live
-            .manager
+        let ids: Vec<WalletId> = self
+            .manager()?
             .list_wallet_ids_blocking()
             .into_iter()
             .map(WalletId)
             .collect();
+        self.load_history_for(ids).await
+    }
+
+    /// [`Self::load_history`] for some wallets (a wallet just loaded).
+    pub(crate) async fn load_history_for(&self, ids: Vec<WalletId>) -> Result<(), EngineError> {
+        let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let wallet_ids = ids.clone();

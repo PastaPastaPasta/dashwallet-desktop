@@ -140,6 +140,15 @@ impl Engine {
             .await?
     }
 
+    /// Runs blocking file-system work on the engine's blocking pool.
+    pub(crate) async fn run_blocking<T, F>(&self, f: F) -> Result<T, EngineError>
+    where
+        F: FnOnce() -> Result<T, EngineError> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.handle.spawn_blocking(f).await?
+    }
+
     /// Runs `fut` to completion on the engine runtime from a non-async thread
     /// (CLI, tests). Panics if called from inside an async context.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {

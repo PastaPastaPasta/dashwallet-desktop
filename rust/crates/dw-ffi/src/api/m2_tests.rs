@@ -105,27 +105,21 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     let rt = &f.rt;
 
     // Multiwallet (R1).
-    assert_code!(s.wallet_load_states(), not_implemented: "NetworkSession.wallet_load_states");
+    assert!(s.wallet_load_states().unwrap().is_empty());
     assert_code!(
         rt.block_on(s.load_wallet("AB".repeat(32))),
         "invalid_argument"
     );
-    assert_code!(
-        rt.block_on(s.unload_wallet(WALLET.into())),
-        not_implemented: "NetworkSession.unload_wallet"
-    );
+    assert_code!(rt.block_on(s.unload_wallet(WALLET.into())), "wallet_not_found");
     assert_code!(
         rt.block_on(s.import_watch_only("tpub".into(), WatchOnlyOptions::default())),
-        not_implemented: "NetworkSession.import_watch_only"
+        "wallet.invalid_xpub"
     );
     assert_code!(
         rt.block_on(s.account_xpub(WALLET.into(), 0)),
-        not_implemented: "NetworkSession.account_xpub"
+        "wallet_not_found"
     );
-    assert_code!(
-        rt.block_on(f.engine.existing_networks()),
-        not_implemented: "Engine.existing_networks"
-    );
+    assert_eq!(rt.block_on(f.engine.existing_networks()).unwrap().len(), 1);
 
     // Transaction actions (R1).
     assert_code!(
@@ -268,6 +262,10 @@ fn stubs_report_a_closed_session() {
             .unwrap()
     );
     assert_code!(f.session.wallet_load_states(), "network_not_open");
+    assert_code!(
+        f.rt.block_on(f.session.load_wallet(WALLET.into())),
+        "network_not_open"
+    );
     assert_code!(f.session.node_info(), "network_not_open");
     assert_code!(
         f.rt.block_on(f.session.drop_unconfirmed(None)),
