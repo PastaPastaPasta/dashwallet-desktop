@@ -235,9 +235,22 @@ for each wallet, then `destroy`.
 - **Settings.** `SettingsStore.resetToDefaults()` backs up both files to `.bak` and resets them. It serves QT-007
   Reset, `-resetguisettings` and Options "Reset". `LaunchOptions` gained `showHelp` and `showVersion`
   (`-help`, `-version`).
-- **Still `not_implemented` in the engine.** The adapters for R1/R2's calls (lifecycle, transactions, fees,
-  compat, backup, PSBT, tools, console) are not written yet. `tx_notices` (R1) is one of them: until it lands,
-  the notification feed records the error and shows nothing.
+- **R1/R2 adapters (added at the M2 integration merge).** `DashKit/EngineClient+M2.swift` wraps every R1/R2
+  engine call; `WalletRuntime/M2/EngineToolAdapters.swift` implements `WalletLifecycleManaging`,
+  `TransactionActing`, `FeeAndCoinSelectionProviding`, `WalletFileImporting`, `CoreExporting`, `BackupProviding`,
+  `PSBTHandling`, `NodeInformationProviding`, `PeerModerating`, `RepairProviding`, `ConsoleExecuting` and a
+  `DustProtectionService` (V1's `DustProtectionControlling`). `DesktopRuntimeServices` builds them, and
+  `WalletFeatures.M2Services.live(desktop:launchOptions:clipboard:)` composes the live `M2Services`
+  (`SettingsStore` serves `OptionsResetting` and `PaymentAuthenticationSetting`).
+  - Open/close wallet, Dash Core imports, watch-only import and `.dwbackup` restore run on the lifecycle queue
+    (`LifecycleQueue.runWalletOperation`) and reload the wallet list; imports and restore show `.addingWallet`.
+  - `RepairService.resetChainData` stops SPV, resets and starts SPV again on the queue, even when the reset fails.
+  - `exportCSV` writes dates at the time zone's current UTC offset: the engine takes one offset per file, so
+    dates on the other side of a DST change are an hour off dash-qt's local time.
+  - Peer moderation answers `not_implemented` until upstream U2. `tx_notices` is implemented (R1), so the
+  notification feed now shows rows.
+  - The app composition roots (MacUI, DashWalletCross) do not build `DesktopRuntimeServices`/`M2Services` yet;
+    that is U's wiring with the screens.
 - **macOS (`PlatformServicesMac`).**
   - `MacSingleInstance`: the app delegate feeds `application(_:open:)` to `deliver(urls:)`.
   - `MacNotifier` (UserNotifications): `.unavailable` outside an `.app` bundle.
