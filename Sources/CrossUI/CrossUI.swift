@@ -1,8 +1,6 @@
-// SwiftCrossUI screens for Linux/Windows (WS-12).
-// Placeholder until the first screen lands.
+// SwiftCrossUI screens for Linux/Windows (WS-12): WalletRootView and the
+// pages it hosts, all driven by the WalletFeatures view models.
 import SwiftCrossUI
-import DashUICross
-import WalletFeatures
 
 public enum CrossUIModule {
     public static let name = "CrossUI"

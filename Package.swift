@@ -19,6 +19,15 @@ let crossUI: [Target.Dependency] = [
     .product(name: "DefaultBackend", package: "swift-cross-ui"),
 ]
 
+// The native backend of each OS, for code that reaches the native widgets
+// through SwiftCrossUI's `inspect` hooks (accessible names until fork patch
+// P1, the quit hook). Windows has none yet.
+let nativeBackend: [Target.Dependency] = [
+    .product(name: "GtkBackend", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
+    .product(name: "Gtk", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
+    .product(name: "AppKitBackend", package: "swift-cross-ui", condition: .when(platforms: [.macOS])),
+]
+
 var products: [Product] = [
     .library(name: "DashKit", targets: ["DashKit"]),
     .library(name: "WalletRuntime", targets: ["WalletRuntime"]),
@@ -99,21 +108,32 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "RepoChecksTests"),
+    .testTarget(name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop"]),
 ]
 
 if !headless {
     products.append(.executable(name: "dash-wallet", targets: ["DashWalletCross"]))
     targets += [
-        .target(name: "DashUICross", dependencies: ["DesignTokens"] + crossUI),
+        .target(name: "DashUICross", dependencies: ["DesignTokens"] + crossUI + nativeBackend),
         .target(
             name: "CrossUI",
             dependencies: [
                 "DashUICross",
+                "DesignTokens",
                 "WalletFeatures",
+                // Value types the view models expose (Amount, TxRecord, DashNetwork, ...).
+                "WalletRuntime",
                 .target(name: "PlatformServicesDesktop", condition: .when(platforms: [.linux, .windows])),
             ] + crossUI
         ),
-        .executableTarget(name: "DashWalletCross", dependencies: ["CrossUI"] + crossUI),
+        // Composition root: live runtime over the engine, or --demo fakes.
+        .executableTarget(
+            name: "DashWalletCross",
+            dependencies: [
+                "CrossUI", "DashUICross", "WalletFeatures", "WalletRuntime", "PlatformServices",
+                "PlatformServicesDesktop", "DashKit", "DashWalletCore", "DesignTokens",
+            ] + crossUI + nativeBackend
+        ),
     ]
 }
 

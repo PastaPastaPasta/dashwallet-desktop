@@ -31,9 +31,16 @@ allowed_for() {
     # MacUI names the WalletRuntime contract value types and DesignTokens
     # spacing; AppKit stays behind PlatformServicesMac.
     MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
-    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens" ;;
-    CrossUI)                 echo "Foundation SwiftCrossUI DashUICross WalletFeatures PlatformServicesDesktop" ;;
-    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DesignTokens" ;;
+    # Native backends: accessible names set on the native widgets (ADR 0002,
+    # until SwiftCrossUI fork patch P1 adds accessibility modifiers).
+    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
+    # CrossUI names the WalletRuntime value types the view models expose
+    # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
+    CrossUI)                 echo "Foundation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
+    # DashWalletCore: the --demo services call the pure Rust functions
+    # (units, URIs, QR, mnemonics) directly.
+    # Native backends: the quit hook (engine shutdown) and the GTK application name.
+    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletFeatures WalletRuntime AppServices PlatformServices PlatformServicesDesktop DashKit DashWalletCore DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
     DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
     # Renders MacUI screens offscreen (NSHostingView) for the screenshots.

@@ -85,8 +85,8 @@ declared, so `Package.resolved` is unchanged), so no GTK is needed.
 
 ## Running the app
 
-There is no runnable wallet UI yet. The M1 screens (onboarding, lock, home, send, receive, transactions)
-had not landed on `main` at the M1 integration point; see [`docs/parity.md`](docs/parity.md).
+The SwiftCrossUI app runs the M1 screens (onboarding, lock, home, send, receive, transactions, address
+book, sign/verify, settings). [`docs/parity.md`](docs/parity.md) has not been updated for them yet.
 
 - **macOS.** `Apps/macOS/project.yml` is the XcodeGen spec for the SwiftUI app (`MacUI`); the
   generated `DashWallet.xcodeproj` is gitignored. It needs the Rust bundle in `Artifacts/`.
@@ -108,13 +108,17 @@ had not landed on `main` at the M1 integration point; see [`docs/parity.md`](doc
   DWD_WRITE_SCREENSHOTS=1 swift test --filter MacUITests` renders every screen offscreen into
   `docs/screenshots/m1/`.
 - **Linux (and macOS, for development).** `swift run dash-wallet` builds and runs the SwiftCrossUI
-  executable (`DashWalletCross`). Today it only prints `the SwiftCrossUI app is not implemented yet`
-  and exits; it proves the target graph links. Building it on Linux needs GTK 4 development packages
-  and must not set `DWD_HEADLESS=1` (headless mode removes the target). The G2 probe image has them:
-  `docker build -f ci/linux/Dockerfile.swift-gtk -t dwd-linux-swift-gtk ci/linux`. Running the
-  executable on Linux was not tried at the M1 integration point.
-- **Demo mode.** Not implemented. DESIGN-opus §4.2 plans a fixture mode that powers the demo
-  (IOS-001, milestone M5).
+  app (`DashWalletCross`; GtkBackend on Linux, AppKitBackend on macOS). It opens the engine through
+  WalletRuntime on the data root (`$XDG_DATA_HOME/dashwallet` on Linux, `%APPDATA%\Dash\DashWallet` on
+  Windows, `--datadir` overrides) and reopens the last network (first run: mainnet; `--network`
+  picks one). Regtest and devnets need `--dapi URL`; `--connect HOST:PORT` sets SPV peers.
+  `dash-wallet --help` lists the options. Building it on Linux needs GTK 4 development packages and must
+  not set `DWD_HEADLESS=1`. `scripts/crossui-linux-demo.sh` builds the core and the app in Docker, runs
+  them under Xvfb and drives them through AT-SPI (results in `docs/screenshots/m1/linux/RESULTS.md`).
+- **Demo mode.** `dash-wallet --demo [funded|locked|onboarding]` runs the SwiftCrossUI screens on
+  in-memory sample data (units, URIs, address checks, message verification and QR codes use the real
+  Rust functions; nothing is sent; the demo passphrase is `demo`). DESIGN-opus §4.2's fixture-mode
+  engine (IOS-001, milestone M5) is not built yet.
 - **CLI.** `dwcli` (above) is the only way to drive the engine today.
 
 ## Parity
