@@ -58,8 +58,8 @@ pub enum NoticeCode {
     /// engine owns the rule and sends one notice per stall; the host may
     /// offer `rotate_peers`.
     SyncStalled,
-    /// An automatic wallet backup failed (QT-116). Automatic backups do not
-    /// exist yet, so the engine never sends it.
+    /// An automatic wallet backup failed (QT-116); `detail` names the wallet
+    /// and the cause.
     BackupFailed,
     /// `remove_wallet` removed the wallet but could not delete its seed from
     /// the vault (e.g. the vault was locked meanwhile). `detail` names the
@@ -227,7 +227,7 @@ pub trait EngineObserver: Send + Sync {
     fn on_event(&self, event: EngineEvent);
 }
 
-struct ObserverSink(Arc<dyn EngineObserver>);
+pub(crate) struct ObserverSink(pub(crate) Arc<dyn EngineObserver>);
 
 impl dw_engine::EventSink for ObserverSink {
     fn emit(&self, event: dw_engine::EngineEvent) {

@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use crate::api::common::{domain_error_common, ensure_open, not_implemented, parse_wallet_id};
+use dw_psbt::PartiallySignedTransaction;
+
+use crate::api::common::{domain_error_common, parse_wallet_id};
 use crate::{NetworkSession, SendError, TxDraft};
 
 /// Largest PSBT accepted from a file (dash-qt: under 100 MiB).
@@ -13,25 +15,30 @@ pub const MAX_PSBT_BYTES: u64 = 100 * 1024 * 1024;
 /// A partially signed transaction. Immutable: signing returns a new one.
 #[derive(Debug, uniffi::Object)]
 pub struct Psbt {
-    // Filled by R2 with the `dw-psbt` value.
-    _private: (),
+    inner: PartiallySignedTransaction,
+}
+
+impl Psbt {
+    fn wrap(inner: PartiallySignedTransaction) -> Arc<Self> {
+        Arc::new(Self { inner })
+    }
 }
 
 #[uniffi::export]
 impl Psbt {
     /// Base64 (clipboard form).
     pub fn to_base64(&self) -> Result<String, PsbtError> {
-        not_implemented("Psbt.to_base64")
+        Ok(dw_psbt::to_base64(&self.inner))
     }
 
     /// BIP174 binary (the `.psbt` file dash-qt saves).
     pub fn to_bytes(&self) -> Result<Vec<u8>, PsbtError> {
-        not_implemented("Psbt.to_bytes")
+        Ok(dw_psbt::to_bytes(&self.inner))
     }
 
     /// Txid of the unsigned transaction.
     pub fn unsigned_txid(&self) -> Result<String, PsbtError> {
-        not_implemented("Psbt.unsigned_txid")
+        Ok(dw_psbt::unsigned_txid(&self.inner).to_string())
     }
 }
 
@@ -44,7 +51,14 @@ pub fn parse_psbt(data: Vec<u8>) -> Result<Arc<Psbt>, PsbtError> {
             size_bytes: data.len() as u64,
         });
     }
-    not_implemented("parse_psbt")
+    dw_psbt::parse(&data).map(Psbt::wrap).map_err(|e| match e {
+        dw_psbt::PsbtError::TooLarge(n) => PsbtError::TooLarge {
+            size_bytes: n as u64,
+        },
+        other => PsbtError::Invalid {
+            detail: other.to_string(),
+        },
+    })
 }
 
 /// One output line of the PSBT Operations dialog (" * Sends %1 to %2").
@@ -85,7 +99,8 @@ pub struct PsbtAnalysis {
     pub outputs: Vec<PsbtOutput>,
     /// `None` while input values are missing.
     pub fee: Option<u64>,
-    /// Sum of outputs not paying the wallet plus fee; `None` like `fee`.
+    /// What leaves the wallet: outputs not paying it plus the fee (every
+    /// output plus the fee without a wallet); `None` like `fee`.
     pub total: Option<u64>,
     /// "Transaction has %1 unsigned inputs."
     pub unsigned_inputs: u32,
@@ -155,8 +170,43 @@ pub enum PsbtError {
     Internal { detail: String },
 }
 
-domain_error_common!(PsbtError);
+domain_error_common!(@not_implemented PsbtError);
 crate::api::common::export_error_code!(PsbtError);
+
+impl From<dw_engine::EngineError> for PsbtError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        use dw_engine::PsbtFailure as F;
+        use dw_engine::SendFailure as S;
+        use dw_vault::VaultError as V;
+        let detail = e.to_string();
+        match e {
+            E::Psbt(f) => match f {
+                F::Invalid(detail) => Self::Invalid { detail },
+                F::TooLarge(size_bytes) => Self::TooLarge { size_bytes },
+                F::NotComplete => Self::NotComplete,
+                F::FeeRateTooHigh { duffs_per_kb } => Self::FeeRateTooHigh { duffs_per_kb },
+                F::WatchOnly => Self::WatchOnly,
+                F::GrantExceeded { max_duffs } => Self::GrantExceeded { max_duffs },
+                F::NoPeers => Self::NoPeers,
+                F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
+                F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },
+            },
+            // The send flow's grant and vault mapping, shared by sign_psbt.
+            E::Send(S::VaultLocked) => Self::VaultLocked,
+            E::Send(S::GrantInvalid) => Self::GrantInvalid,
+            E::Send(S::WatchOnly) => Self::WatchOnly,
+            E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
+            E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
 
 impl PsbtError {
     /// Stable code (docs/contracts/m2-engine.md §4).
@@ -191,7 +241,7 @@ impl TxDraft {
     /// derivation paths) filled in. Signs and reserves nothing, needs no
     /// grant, and works for watch-only wallets.
     pub async fn create_unsigned(&self) -> Result<Arc<Psbt>, SendError> {
-        not_implemented("TxDraft.create_unsigned")
+        Ok(Psbt::wrap(self.inner.create_unsigned().await?))
     }
 }
 
@@ -204,12 +254,34 @@ impl NetworkSession {
         wallet_id: Option<String>,
         psbt: Arc<Psbt>,
     ) -> Result<PsbtAnalysis, PsbtError> {
-        let _ = psbt;
-        if let Some(id) = &wallet_id {
-            parse_wallet_id(id)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.analyze_psbt")
+        let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        let a = self.inner.analyze_psbt(id, psbt.inner.clone()).await?;
+        Ok(PsbtAnalysis {
+            outputs: a
+                .outputs
+                .into_iter()
+                .map(|o| PsbtOutput {
+                    address: o.address,
+                    amount: o.amount,
+                    is_mine: o.is_mine,
+                })
+                .collect(),
+            fee: a.fee,
+            total: a.total,
+            unsigned_inputs: a.unsigned_inputs,
+            status: match a.status {
+                dw_psbt::Status::MissingInputInfo => PsbtStatus::MissingInputInfo,
+                dw_psbt::Status::NeedsSignatures => PsbtStatus::NeedsSignatures,
+                dw_psbt::Status::Complete => PsbtStatus::Complete,
+            },
+            signability: match a.signability {
+                dw_engine::PsbtSignability::NoWallet => PsbtSignability::NoWallet,
+                dw_engine::PsbtSignability::WatchOnly => PsbtSignability::WatchOnly,
+                dw_engine::PsbtSignability::NoMatchingKeys => PsbtSignability::NoMatchingKeys,
+                dw_engine::PsbtSignability::CanSign => PsbtSignability::CanSign,
+            },
+            external_sent: a.external_sent,
+        })
     }
 
     /// "Sign Tx": signs every input the wallet owns through `VaultSigner`
@@ -221,18 +293,22 @@ impl NetworkSession {
         psbt: Arc<Psbt>,
         grant_id: String,
     ) -> Result<Arc<Psbt>, PsbtError> {
-        let _ = (psbt, grant_id);
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.sign_psbt")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(Psbt::wrap(
+            self.inner
+                .sign_psbt(id, psbt.inner.clone(), grant_id)
+                .await?,
+        ))
     }
 
     /// "Broadcast Tx": finalizes a complete PSBT, checks the fee rate cap and
     /// broadcasts with `TxDraft.broadcast`'s verdict rules (accepted, never
     /// sent, or unknown). Returns the txid.
     pub async fn broadcast_psbt(&self, psbt: Arc<Psbt>) -> Result<String, PsbtError> {
-        let _ = psbt;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.broadcast_psbt")
+        Ok(self
+            .inner
+            .broadcast_psbt(psbt.inner.clone())
+            .await?
+            .to_string())
     }
 }

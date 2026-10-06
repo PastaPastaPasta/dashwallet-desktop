@@ -29,6 +29,8 @@ pub mod fees;
 mod m2_tests;
 pub mod multiwallet;
 pub mod psbt;
+#[cfg(test)]
+mod r2_tests;
 pub mod tools;
 pub mod tx_actions;
 pub mod vault_m2;

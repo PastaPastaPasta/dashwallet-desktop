@@ -224,6 +224,9 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::Send(_)
             | E::Labels(_)
             | E::OutpointNotFound(_)
+            | E::Compat(_)
+            | E::Backup(_)
+            | E::Psbt(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

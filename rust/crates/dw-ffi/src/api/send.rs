@@ -376,7 +376,7 @@ impl PreparedTx {
 /// without the network; `estimate` and `prepare` read the wallet.
 #[derive(Debug, uniffi::Object)]
 pub struct TxDraft {
-    inner: Arc<dw_engine::TxDraft>,
+    pub(crate) inner: Arc<dw_engine::TxDraft>,
 }
 
 #[uniffi::export]

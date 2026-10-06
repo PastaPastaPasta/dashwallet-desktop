@@ -363,7 +363,7 @@ impl NetworkSession {
             this.require_wallet(&wallet_id)?;
             if !this.vault.has_wallet_secret(&wallet_id.0) {
                 return Err(EngineError::NotImplemented(
-                    "backup_wallet.watch_only (a watch-only wallet has no vault records)".into(),
+                    "backup_wallet.watch_only".into(),
                 ));
             }
             if dest.as_os_str().is_empty() {
@@ -433,6 +433,16 @@ impl NetworkSession {
         passphrase: Option<Zeroizing<Vec<u8>>>,
     ) -> Result<Vec<WalletId>, EngineError> {
         drop(self.try_enter()?);
+        let this = Arc::clone(self);
+        self.on_runtime(async move { this.restore_backup_inner(path, passphrase).await })
+            .await
+    }
+
+    async fn restore_backup_inner(
+        self: &Arc<Self>,
+        path: PathBuf,
+        passphrase: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Vec<WalletId>, EngineError> {
         let tag = self.network.dir_name();
         let vault = self.vault.clone();
         // Read and open every bundle before anything is stored.

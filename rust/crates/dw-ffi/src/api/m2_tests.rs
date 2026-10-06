@@ -201,17 +201,18 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
         not_implemented: "console_redact"
     );
 
-    // Compat, backups, PSBT (R2).
+    // Compat, backups, PSBT (R2): implemented; the calls check their
+    // arguments and preconditions (r2_tests.rs covers the behaviour).
     assert_code!(
         rt.block_on(s.import_dump_wallet("/nonexistent".into(), ImportOptions::default())),
-        not_implemented: "NetworkSession.import_dump_wallet"
+        "compat.file_unreadable"
     );
     assert_code!(
         rt.block_on(s.import_key_material(
-            KeyMaterial::HdSeed { seed: vec![0; 32] },
+            KeyMaterial::HdSeed { seed: vec![0; 8] },
             ImportOptions::default()
         )),
-        not_implemented: "NetworkSession.import_key_material"
+        "compat.invalid_key_material"
     );
     assert_code!(
         rt.block_on(s.export_for_core(
@@ -220,18 +221,18 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
             "/x".into(),
             "g".into()
         )),
-        not_implemented: "NetworkSession.export_for_core"
+        "wallet_not_found"
     );
     assert_code!(
-        rt.block_on(f.engine.inspect_wallet_file("/x".into())),
-        not_implemented: "Engine.inspect_wallet_file"
+        rt.block_on(f.engine.inspect_wallet_file("/nonexistent".into())),
+        "compat.file_unreadable"
     );
     assert_code!(
         rt.block_on(s.backup_wallet(WALLET.into(), "/x".into(), None)),
-        not_implemented: "NetworkSession.backup_wallet"
+        "wallet_not_found"
     );
-    assert_code!(s.backup_policy(), not_implemented: "NetworkSession.backup_policy");
-    assert_code!(crate::parse_psbt(b"cHNidP8=".to_vec()), not_implemented: "parse_psbt");
+    assert_eq!(s.backup_policy().unwrap().keep, 10);
+    assert_code!(crate::parse_psbt(b"cHNidP8=".to_vec()), "psbt.invalid");
     // No wallet is registered, so the draft `create_unsigned` hangs off is
     // refused first.
     assert!(matches!(

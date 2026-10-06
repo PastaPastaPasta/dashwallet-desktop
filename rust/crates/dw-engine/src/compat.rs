@@ -450,10 +450,7 @@ impl NetworkSession {
                     .map_err(|_| CompatFailure::Corrupt("HD seed is not hex".into()))?,
             );
             let arr: [u8; 64] = raw[..].try_into().map_err(|_| {
-                EngineError::NotImplemented(
-                    "import_dump_wallet.seed_length (platform-wallet registers 64-byte seeds)"
-                        .into(),
-                )
+                EngineError::NotImplemented("import_dump_wallet.seed_length".into())
             })?;
             Some(Zeroizing::new(arr))
         };
@@ -465,8 +462,7 @@ impl NetworkSession {
         });
         if phrase.is_none() && seed.is_none() {
             return Err(EngineError::NotImplemented(
-                "import_dump_wallet.xprv (platform-wallet cannot register a wallet without its seed)"
-                    .into(),
+                "import_dump_wallet.xprv".into(),
             ));
         }
         // The xprv in the header must be the master key of the seed.
@@ -557,11 +553,7 @@ impl NetworkSession {
                         .into());
                     }
                     let Some(phrase) = root.mnemonic else {
-                        return Err(EngineError::NotImplemented(
-                            "import_wallet_dat.xprv (descriptor wallet without a phrase: \
-                             platform-wallet cannot register a wallet without its seed)"
-                                .into(),
-                        ));
+                        return Err(EngineError::NotImplemented("import_wallet_dat.xprv".into()));
                     };
                     let labels = wallet
                         .address_book
@@ -615,10 +607,7 @@ impl NetworkSession {
                     .into());
                 }
                 let arr: [u8; 64] = seed[..].try_into().map_err(|_| {
-                    EngineError::NotImplemented(
-                        "import_key_material.seed_length (platform-wallet registers 64-byte seeds)"
-                            .into(),
-                    )
+                    EngineError::NotImplemented("import_key_material.seed_length".into())
                 })?;
                 CoreRoot {
                     phrase: None,
@@ -642,8 +631,7 @@ impl NetworkSession {
                     .into());
                 }
                 return Err(EngineError::NotImplemented(
-                    "import_key_material.xprv (platform-wallet cannot register a wallet without its seed)"
-                        .into(),
+                    "import_key_material.xprv".into(),
                 ));
             }
             KeyMaterial::Descriptors(json) => {
@@ -661,9 +649,7 @@ impl NetworkSession {
                 }
                 let Some((phrase, pass)) = listed.mnemonic else {
                     return Err(EngineError::NotImplemented(
-                        "import_key_material.xprv (descriptors without a phrase: \
-                         platform-wallet cannot register a wallet without its seed)"
-                            .into(),
+                        "import_key_material.xprv".into(),
                     ));
                 };
                 CoreRoot {

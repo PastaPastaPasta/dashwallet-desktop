@@ -92,7 +92,8 @@ pub enum PsbtSignability {
 pub struct PsbtAnalysis {
     pub outputs: Vec<PsbtOutputInfo>,
     pub fee: Option<u64>,
-    /// Sum of every output, as dash-qt's "Total Amount".
+    /// What leaves the wallet: outputs not paying it plus the fee (every
+    /// output plus the fee without a wallet); `None` like `fee`.
     pub total: Option<u64>,
     pub unsigned_inputs: u32,
     pub status: Status,
@@ -273,7 +274,7 @@ impl NetworkSession {
                         })
                         .collect(),
                     fee: base.fee,
-                    total: base.total,
+                    total: base.total.zip(base.fee).map(|(outs, fee)| outs + fee),
                     unsigned_inputs: base.unsigned_inputs,
                     status: base.status,
                     signability: PsbtSignability::NoWallet,
@@ -291,7 +292,7 @@ impl NetworkSession {
                 .zip(&owned.outputs_mine)
                 .filter(|(_, mine)| !**mine)
                 .map(|(o, _)| o.amount)
-                .sum();
+                .sum::<u64>();
             let signable = owned
                 .paths
                 .keys()
@@ -315,8 +316,8 @@ impl NetworkSession {
                         is_mine,
                     })
                     .collect(),
+                total: base.fee.map(|fee| fee + external_sent),
                 fee: base.fee,
-                total: base.total,
                 unsigned_inputs: base.unsigned_inputs,
                 status: base.status,
                 signability,

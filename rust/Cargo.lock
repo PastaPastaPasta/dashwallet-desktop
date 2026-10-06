@@ -1596,6 +1596,7 @@ dependencies = [
  "dashcore",
  "dw-engine",
  "dw-message",
+ "dw-psbt",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1690,7 +1691,9 @@ dependencies = [
  "dashcore",
  "dw-engine",
  "dw-message",
+ "dw-psbt",
  "dw-vault",
+ "hex",
  "tempfile",
  "zeroize",
 ]

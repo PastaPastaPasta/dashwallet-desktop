@@ -1,6 +1,7 @@
 //! `dwcli` — headless driver over dw-engine. Grows into the regtest test driver
 //! and console host (DESIGN-opus §1.4).
 
+mod compat;
 mod pay;
 
 use std::io::Read;
@@ -112,6 +113,8 @@ enum Command {
     },
     #[command(flatten)]
     Pay(pay::PayCommand),
+    #[command(flatten)]
+    Compat(compat::CompatCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -403,6 +406,14 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Pay(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = pay::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
+        Command::Compat(cmd) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
             engine
                 .block_on(engine.shutdown())
                 .map_err(|e| e.to_string())?;
