@@ -527,6 +527,8 @@ fn m2_error_codes_match_the_contract() {
             PsbtError::NetworkMismatch,
             PsbtError::NotComplete,
             PsbtError::FeeRateTooHigh { duffs_per_kb: 0 },
+            PsbtError::AbsurdFee { fee: 0 },
+            PsbtError::FeeUnknown,
             PsbtError::WatchOnly,
             PsbtError::VaultLocked,
             PsbtError::GrantInvalid,

@@ -98,7 +98,8 @@ pub enum CompatCommand {
     PsbtSign {
         wallet: String,
         path: PathBuf,
-        /// Grant cap in duffs (default: the PSBT's external outputs).
+        /// Grant cap in duffs (default: what the PSBT takes from the wallet,
+        /// fee included — the analysis total the engine caps).
         #[arg(long)]
         max_duffs: Option<u64>,
     },
@@ -393,7 +394,7 @@ pub fn run(
                 None => engine
                     .block_on(session.analyze_psbt(Some(id), psbt.clone()))
                     .map_err(e)?
-                    .external_sent
+                    .total
                     .unwrap_or(0),
             };
             let g = grant(
