@@ -4,14 +4,17 @@
 """dwd_coinjoin_client.py — regtest suite `coinjoin` (M3 R1, QT-041…051, QT-112).
 
 Our CoinJoin client (`dwcli`, built on dw-engine/dw-coinjoin) mixes against 4 regtest
-masternodes with two dashd wallets as counterparties (regtest needs 2 participants per
-session, chainparams.cpp `nPoolMinParticipants`; with one dashd wallet most queues expire
-because a dashd client skips masternodes it already holds a connection to).
+masternodes. Regtest needs 2 participants per session (chainparams.cpp
+`nPoolMinParticipants`). Counterparties: two dashd wallets and a second dwcli wallet. A dashd
+client stops finding masternodes after its first sessions on a small regtest network: it keeps
+the masternode connections it opened for mixing (CMasternodeUtils::DoMaintenance does not
+disconnect them while it has fewer than its maximum outbound peers) and then skips every
+masternode it is connected to (IsMasternodeOrDisconnectRequested). The second dwcli wallet keeps
+sessions going; the dashd wallets show the protocol works with Core clients too.
 
 Network: node0 controller/miner and the SPV peer of dwcli (BIP157 filters), nodes 1..2 the dashd
-mixing counterparties (8 rounds, so they keep mixing for the whole test), nodes 3..6
-masternodes. Real time (no mocktime): our client checks `dsq` timestamps against the wall clock
-as Core checks them against adjusted time.
+mixing counterparties, nodes 3..6 masternodes. Real time (no mocktime): our client checks
+`dsq` timestamps against the wall clock as Core checks them against adjusted time.
 
 Checks, in order:
  1. stop releases reservations: mixing stops while a session holds coins and no coin stays
@@ -162,17 +165,23 @@ class DwdCoinJoinClient(DashTestFramework):
         if len(controller.quorum("list")["llmq_test"]) == 0:
             self.mine_quorum(llmq_type_name="llmq_test", llmq_type=100)
 
-        datadir = os.path.join(self.options.tmpdir, "dwcli")
-        self.dw = Dwcli(os.environ["DWCLI"], datadir, p2p_port(0), self.log)
-        self.dw.run("init-vault")
-        created = self.dw.run("create").stdout
-        self.wallet = re.search(r"wallet_id (\w+)", created).group(1)
-        self.dw.run("coinjoin-settings", "--set", "rounds=2", "--set", "amount=4",
-                     "--set", "goal=10", "--set", "multi=0")
+        def new_client(name, rounds):
+            dw = Dwcli(os.environ["DWCLI"], os.path.join(self.options.tmpdir, name), p2p_port(0), self.log)
+            dw.run("init-vault")
+            wallet = re.search(r"wallet_id (\w+)", dw.run("create").stdout).group(1)
+            dw.run("coinjoin-settings", "--set", f"rounds={rounds}", "--set", "amount=4",
+                   "--set", "goal=10", "--set", "multi=0")
+            return dw, wallet
 
-        # Fund our wallet and the dashd counterparties.
-        address = self.dw.run("address", self.wallet).stdout.split()[1]
-        funding = [controller.sendtoaddress(address, Decimal("3.3")) for _ in range(3)]
+        self.dw, self.wallet = new_client("dwcli", 2)
+        # The second dwcli wallet mixes 8 rounds so it keeps going all test long.
+        helper, helper_wallet = new_client("dwcli-helper", 8)
+
+        # Fund both dwcli wallets and the dashd counterparties.
+        funding = []
+        for dw, wallet in ((self.dw, self.wallet), (helper, helper_wallet)):
+            address = dw.run("address", wallet).stdout.split()[1]
+            funding += [controller.sendtoaddress(address, Decimal("3.3")) for _ in range(3)]
         for idx in MIXERS:
             mixer = self.nodes[idx]
             funding += [controller.sendtoaddress(mixer.getnewaddress(), Decimal("3.3")) for _ in range(3)]
@@ -184,6 +193,19 @@ class DwdCoinJoinClient(DashTestFramework):
         status = self.dw.run("coinjoin-status", self.wallet).stdout
         self.log.info(status)
         self.start_miner()
+        helper_log = os.path.join(self.options.tmpdir, "dwcli-helper.log")
+        helper_proc = helper.popen(
+            "coinjoin-mix", helper_wallet, "--mixing-only", "--sync-height", str(controller.getblockcount()),
+            "--timeout-secs", "5400", "--until-rounds", "99", stderr_path=helper_log,
+        )
+
+        def drain():
+            with open(helper_log + ".out", "a", encoding="utf8") as out:
+                for line in helper_proc.stdout:
+                    out.write(line)
+                    out.flush()
+
+        threading.Thread(target=drain, daemon=True).start()
         try:
             def progress(lines):
                 return [float(field(l, "progress")) for l in lines if l.startswith("cjstatus")]
@@ -207,6 +229,8 @@ class DwdCoinJoinClient(DashTestFramework):
             assert int(field(final, "fully_mixed")) > 0, final
             assert_greater_than(max(progress(lines)), denominated_only)
         finally:
+            helper_proc.terminate()
+            helper_proc.wait(timeout=60)
             self.stop_miner()
         self.generate(controller, 2)
 
@@ -220,18 +244,28 @@ class DwdCoinJoinClient(DashTestFramework):
         assert_greater_than(mixed_spendable, 0)
         payee = controller.getnewaddress()
         too_much = any_spendable + 1
-        if too_much <= any_spendable + mixed_spendable:
-            p = self.dw.run("send", self.wallet, "--to", f"{payee}:{too_much}", check=False)
-            assert p.returncode != 0, "an ordinary payment must not spend mixed coins"
+        height = str(controller.getblockcount())
+        assert too_much <= any_spendable + mixed_spendable
+        p = self.dw.run("send", self.wallet, "--sync-height", height, "--to", f"{payee}:{too_much}", check=False)
+        assert p.returncode != 0, "an ordinary payment must not spend mixed coins"
+        assert "exceeds" in p.stderr, p.stderr
         coins = self.dw.run("coinjoin-utxos", self.wallet, "--fully-mixed").stdout
         values = sorted(int(l.split()[2]) for l in coins.splitlines() if l.startswith("cjutxo"))
         amount = values[0] - 2000
-        out = self.dw.run("send", self.wallet, "--coinjoin", "--to", f"{payee}:{amount}").stdout
+        # dash-spv accepts a broadcast once it sees it in a block (it cannot verify regtest
+        # InstantSend locks of the rotating quorum), so blocks keep coming while dwcli waits.
+        self.start_miner()
+        try:
+            out = self.dw.run(
+                "send", self.wallet, "--sync-height", height, "--coinjoin", "--to", f"{payee}:{amount}"
+            ).stdout
+        finally:
+            self.stop_miner()
         txid = re.search(r"broadcast (\w+)", out).group(1)
         assert "change=1" not in out, "the CoinJoin page pays no change"
-        self.wait_for_instantlock(txid, timeout=60)
         tx = controller.getrawtransaction(txid, True)
         assert_equal(len(tx["vout"]), 1)
+        assert_equal(tx["vout"][0]["valueSat"], amount)
         self.generate(controller, 1)
         self.dw.run("sync-wallet", self.wallet, "--height", str(controller.getblockcount()))
         history = self.dw.run("history").stdout
