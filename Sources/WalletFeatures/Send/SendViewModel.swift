@@ -208,6 +208,21 @@ public final class SendViewModel {
         }
     }
 
+    /// The CoinJoin page's balance header (QT-051): what it may spend, the
+    /// fully mixed balance; `nil` on the regular page.
+    public var mixedBalance: Amount? {
+        guard page == .coinJoin else { return nil }
+        return walletState.balances?.coinjoin ?? .zero
+    }
+
+    /// "CoinJoin Balance: <amount>", hidden in discreet mode.
+    public var mixedBalanceText: String? {
+        guard let mixedBalance else { return nil }
+        let text = amounts.format(
+            mixedBalance, unit: unit, style: .privacy(separators: .standard, hidden: settings.display.hideBalances))
+        return "\(L10n.CoinJoin.mixedBalance): \(text)"
+    }
+
     public var sendButtonTitle: String {
         let base = page == .coinJoin ? L10n.Send.sendMixedFunds : L10n.Send.send
         if case .confirm = phase, confirmCountdown > 0 { return L10n.Send.sendCountdown(confirmCountdown) }

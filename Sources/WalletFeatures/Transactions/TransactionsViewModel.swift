@@ -26,6 +26,9 @@ public final class TransactionsViewModel {
     public private(set) var detail: TransactionDetail?
     public internal(set) var errorMessage: String?
     public private(set) var isLoading = false
+    /// The UI shows `coinJoinWithdrawals` as one row, so `dayGroups` leaves
+    /// those records out (IOS-030). Off until a screen draws the group.
+    public var groupsCoinJoinWithdrawals = false
 
     // M2 (QT-075, QT-090…093, IOS-027…034): see TransactionsViewModel+M2.swift.
     /// dash-qt details fields and action enablement of `detail`; `nil` until
