@@ -44,9 +44,7 @@ struct AmountText {
 
     /// Without decimals (dash-qt strips them from the CoinJoin target).
     func whole(_ amount: Amount) -> String {
-        let unit = settings.display.unit
-        return amounts.format(amount, unit: unit, style: .gui(signed: false, truncate: 0)) + " "
-            + amounts.unitName(unit)
+        amounts.format(amount, unit: settings.display.unit, style: .gui(signed: false, truncate: 0))
     }
 
     /// Hidden in discreet mode (dash-qt `#` placeholders).
