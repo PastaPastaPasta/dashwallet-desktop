@@ -265,9 +265,21 @@ pub struct BroadcastOutcome {
     pub txid: String,
 }
 
-/// Inputs of prepared transactions that are neither broadcast nor
-/// released, per wallet. Coin listings mark them `reserved` and automatic
-/// selection skips them (key-wallet keeps its own reservations private).
+/// Inputs of prepared transactions that are neither accepted by the network
+/// nor released, per wallet and per session (in memory). Coin listings mark
+/// them `reserved` and selection skips them (key-wallet keeps its own
+/// reservations private).
+///
+/// An entry goes when its transaction is accepted, released (abandoned,
+/// dropped while pending, or never sent), or when the wallet no longer
+/// holds the coin unspent: every coin read ([`NetworkSession::coin_snapshot`])
+/// drops entries whose coin the wallet has seen spent, by the transaction
+/// itself (SPV injects a broadcast into the wallet's own mempool view, so
+/// that is immediate) or by a conflicting one. Nothing that merely elapses
+/// releases the inputs of a transaction whose outcome is unknown, matching
+/// platform-wallet's pending-spend fence: re-selecting them could sign a
+/// second spend of coins the first transaction may still take. A session
+/// close drops them all.
 #[derive(Debug, Default)]
 pub(crate) struct PendingSpends {
     inner: Mutex<HashMap<WalletId, HashSet<OutPoint>>>,
@@ -426,6 +438,51 @@ struct Resolved {
     recipients: Vec<ValidRecipient>,
     change: ChangeTarget,
     fee_rate: FeeRate,
+    /// The wallet's processed height the plan was made at (coinbase
+    /// maturity in key-wallet's selector).
+    height: u32,
+}
+
+impl Resolved {
+    /// key-wallet's builder for exactly this plan: the planned inputs, the
+    /// recipient outputs and the change as an explicit output paying
+    /// `change`. The builder always budgets a change output; without change
+    /// any P2PKH address keeps its estimate equal to the plan's.
+    fn builder(&self, change: &Address) -> TransactionBuilder {
+        let mut builder = TransactionBuilder::new()
+            .set_fee_rate(self.fee_rate)
+            .set_current_height(self.height)
+            .set_selection_strategy(SelectionStrategy::LargestFirst)
+            .set_change_address(change.clone())
+            .add_inputs(self.plan.inputs.clone());
+        for (rc, amount) in self.recipients.iter().zip(&self.plan.amounts) {
+            builder = builder.add_output(&rc.address, *amount);
+        }
+        if let Some(value) = self.plan.change {
+            builder = builder.add_output(change, value);
+        }
+        builder
+    }
+
+    /// Builds the plan unsigned with no reservation set attached (nothing is
+    /// reserved) and checks that key-wallet keeps it: its selector leaves
+    /// out a planned input worth no more than its own input fee, which coin
+    /// control must not do. Runs before a grant is redeemed, so such a plan
+    /// fails without consuming the grant. The change script is the custom
+    /// change address, or for `Auto` the first input's P2PKH address, which
+    /// has the length of the fresh change address `prepare` derives.
+    fn dry_run(&self) -> Result<(), EngineError> {
+        let change = match (&self.change, self.plan.inputs.first()) {
+            (ChangeTarget::Address(a), _) => a.clone(),
+            (ChangeTarget::Auto, Some(first)) => first.address.clone(),
+            (ChangeTarget::Auto, None) => return Ok(()),
+        };
+        let (tx, _, _) = self
+            .builder(&change)
+            .build_unsigned_reserved()
+            .map_err(|e| EngineError::Internal(format!("key-wallet cannot build the plan: {e}")))?;
+        check_against_plan(&tx, &self.plan, &change).map_err(Mismatch::into_error)
+    }
 }
 
 impl NetworkSession {
@@ -435,6 +492,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         wallet_id: WalletId,
     ) -> Result<Arc<TxDraft>, EngineError> {
+        let _op = self.try_enter()?;
         let manager = self.manager()?;
         if manager.get_wallet_blocking(&wallet_id.0).is_none() {
             return Err(EngineError::WalletNotFound(wallet_id.to_string()));
@@ -467,6 +525,7 @@ impl NetworkSession {
         fee.rate()?;
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            let _op = this.enter().await?;
             let wallet = this.wallet(&wallet_id).await?;
             let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
             let coins = candidates(&snapshot, &source)?;
@@ -610,12 +669,15 @@ impl TxDraft {
         if plan.fee > MAX_TX_FEE {
             return Err(SendFailure::AbsurdFee { fee: plan.fee }.into());
         }
-        Ok(Resolved {
+        let resolved = Resolved {
             plan,
             recipients: state.recipients,
             change: state.change,
             fee_rate: state.fee,
-        })
+            height: snapshot.height,
+        };
+        resolved.dry_run()?;
+        Ok(resolved)
     }
 
     /// Coin selection and fee for the current draft. Nothing is signed or
@@ -624,6 +686,7 @@ impl TxDraft {
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move {
+                let _op = this.session.enter().await?;
                 let r = this.resolve().await?;
                 Ok(TxEstimate {
                     fee: r.plan.fee,
@@ -638,14 +701,18 @@ impl TxDraft {
 
     /// Plans, signs through the vault with a `Spend` grant and reserves the
     /// inputs. Never broadcasts. The grant is redeemed only after the plan
-    /// succeeded, so a balance error does not consume it.
+    /// and an unsigned dry-run build of it succeeded, so a balance error or
+    /// an unbuildable coin-control choice does not consume it.
     pub async fn prepare(
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let this = Arc::clone(self);
         self.session
-            .on_runtime(async move { this.prepare_inner(grant_id).await })
+            .on_runtime(async move {
+                let _op = this.session.enter().await?;
+                this.prepare_inner(grant_id).await
+            })
             .await
     }
 
@@ -718,31 +785,21 @@ impl TxDraft {
             }
             (ChangeTarget::Auto, None) => r.plan.inputs[0].address.clone(),
         };
-        let mut builder = TransactionBuilder::new()
-            .set_fee_rate(r.fee_rate)
-            .set_selection_strategy(SelectionStrategy::LargestFirst)
-            .set_change_address(change_address.clone())
-            .add_inputs(r.plan.inputs.clone());
-        for (rc, amount) in r.recipients.iter().zip(&r.plan.amounts) {
-            builder = builder.add_output(&rc.address, *amount);
-        }
-        if let Some(change) = r.plan.change {
-            builder = builder.add_output(&change_address, change);
-        }
         let signed = wallet
             .core()
-            .finalize_transaction_with_options(builder, &SEND_FUNDING_SOURCES, 0, &signer, true)
+            .finalize_transaction_with_options(
+                r.builder(&change_address),
+                &SEND_FUNDING_SOURCES,
+                0,
+                &signer,
+                true,
+            )
             .await
             .map_err(finalize_failure)?;
 
         if let Err(detail) = check_against_plan(signed.transaction(), &r.plan, &change_address) {
             wallet.core().abandon_transaction(&signed).await;
-            return Err(match detail {
-                Mismatch::MissingInput(o) => SendFailure::OutpointUnavailable(o).into(),
-                Mismatch::Other(d) => {
-                    EngineError::Internal(format!("built transaction differs from the plan: {d}"))
-                }
-            });
+            return Err(detail.into_error());
         }
 
         let summary = summarize(
@@ -787,16 +844,29 @@ impl TxDraft {
     }
 
     /// Announces `prepared` and waits for dash-spv's acceptance verdict.
-    /// Metadata (message, address-book labels) is written first, so the
-    /// history shows it as soon as the transaction appears.
     ///
+    /// First broadcast of a pending transaction:
     /// - accepted: `Ok`, the transaction is done;
     /// - never sent (SPV stopped, no peers, rejected before dispatch):
-    ///   `NoPeers` / `BroadcastRejected`; the inputs are released and the
-    ///   prepared transaction is spent, so a new `prepare` is needed;
-    /// - outcome unknown: `BroadcastUnknown`; the inputs stay reserved and
-    ///   `broadcast` may be called again (same transaction, same txid), but
-    ///   never `abandon` (review M-7).
+    ///   `NoPeers` / `BroadcastRejected`; the inputs are released (as
+    ///   platform-wallet releases key-wallet's reservation on such a
+    ///   rejection, for an immediate rebuild) and the prepared transaction is
+    ///   spent, so the host prepares again with a new grant;
+    /// - outcome unknown: `BroadcastUnknown`; the inputs stay reserved.
+    ///
+    /// Once a broadcast ended `BroadcastUnknown` the transaction may be on
+    /// the network, so it is never released again (review M3): `broadcast`
+    /// may be called again with the same handle (same transaction, same
+    /// txid), and every outcome of such a repeat other than acceptance is
+    /// `BroadcastUnknown`, its reason saying what this attempt saw (no
+    /// peers, rejected before dispatch, no verdict). `abandon` is refused.
+    /// The inputs stay reserved until the wallet sees them spent, by this
+    /// transaction or a conflicting one (see [`PendingSpends`]), or the
+    /// session closes.
+    ///
+    /// The payment's message and address-book entries are written once the
+    /// broadcast was accepted or its outcome is unknown, never for a payment
+    /// that was not sent (review M7).
     pub async fn broadcast(
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
@@ -804,7 +874,10 @@ impl TxDraft {
         self.check_mine(&prepared)?;
         let this = Arc::clone(self);
         self.session
-            .on_runtime(async move { this.broadcast_inner(prepared).await })
+            .on_runtime(async move {
+                let _op = this.session.enter().await?;
+                this.broadcast_inner(prepared).await
+            })
             .await
     }
 
@@ -812,42 +885,46 @@ impl TxDraft {
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
-        {
+        let first = {
             let mut phase = prepared.phase();
-            match *phase {
-                Phase::Pending | Phase::Unknown => *phase = Phase::Broadcasting,
-                _ => return Err(SendFailure::PreparedTxSpent.into()),
-            }
-        }
-        let outcome = self.dispatch(&prepared).await;
-        let next = match &outcome {
-            Ok(_) => Phase::Sent,
-            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => Phase::Unknown,
-            Err(EngineError::Send(
-                SendFailure::NoPeers
-                | SendFailure::BroadcastRejected { .. }
-                | SendFailure::PreparedTxSpent,
-            )) => Phase::Released,
-            // Not dispatched (session closed, wallet gone): still pending.
-            Err(_) => Phase::Pending,
+            let first = match *phase {
+                Phase::Pending => true,
+                Phase::Unknown => false,
+                Phase::Broadcasting | Phase::Sent | Phase::Released => {
+                    return Err(SendFailure::PreparedTxSpent.into());
+                }
+            };
+            *phase = Phase::Broadcasting;
+            first
         };
+        let outcome = self.dispatch(&prepared, first).await;
+        let next = settle(first, &outcome);
         *prepared.phase() = next;
-        if next == Phase::Sent {
-            self.session
+        match next {
+            Phase::Sent => self
+                .session
                 .spends
-                .remove(&self.wallet_id, prepared.inputs.iter().copied());
-        }
-        if next == Phase::Released {
+                .remove(&self.wallet_id, prepared.inputs.iter().copied()),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
-            prepared.release(&self.session).await;
+            Phase::Released => prepared.release(&self.session).await,
+            Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
-        if outcome.is_ok()
-            || matches!(
-                outcome,
-                Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
-            )
-        {
+        let dispatched = matches!(
+            outcome,
+            Ok(_) | Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+        );
+        if dispatched {
+            if let Err(e) = self
+                .session
+                .record_send_metadata(self.wallet_id, &prepared)
+                .await
+            {
+                // The payment went out; losing its message or address-book
+                // entries must not turn that into an error.
+                tracing::warn!(error = %e, txid = %prepared.summary.txid,
+                    "storing the payment's message and address-book entries failed");
+            }
             // The spent coins and the new transaction change what the
             // wallet shows: re-read its state and let the pump announce it.
             if let Ok(manager) = self.session.manager() {
@@ -861,40 +938,69 @@ impl TxDraft {
         outcome
     }
 
-    async fn dispatch(&self, prepared: &PreparedTx) -> Result<BroadcastOutcome, EngineError> {
+    /// One broadcast attempt. `first`: the transaction was never handed to
+    /// the network before. A repeat goes through platform-wallet's plain
+    /// broadcast: its inputs are already held by the first dispatch's
+    /// pending-spend fence, and re-sending the same transaction cannot spend
+    /// them twice, so the finalized handle's reservation-age guard (which
+    /// would refuse a repeat hours later) does not apply.
+    async fn dispatch(
+        &self,
+        prepared: &PreparedTx,
+        first: bool,
+    ) -> Result<BroadcastOutcome, EngineError> {
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let manager = self.session.manager()?;
         if !manager.spv().is_started() {
             // Nothing to send to; handled like dash-spv's never-sent
-            // rejection (inputs released, prepare again).
-            return Err(SendFailure::NoPeers.into());
+            // rejection.
+            return Err(if first {
+                SendFailure::NoPeers
+            } else {
+                SendFailure::BroadcastUnknown {
+                    reason: "SPV is not running".into(),
+                }
+            }
+            .into());
         }
-        self.session
-            .record_send_metadata(self.wallet_id, prepared)
-            .await?;
         // `Phase::Broadcasting` keeps abandon and drop away while the
         // broadcast awaits the network (up to about a minute).
         let Some(signed) = prepared.signed().clone() else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
-        match wallet.core().broadcast_finalized_transaction(&signed).await {
-            Ok(txid) => Ok(BroadcastOutcome {
-                txid: txid.to_string(),
-            }),
+        let sent = if first {
+            wallet.core().broadcast_finalized_transaction(&signed).await
+        } else {
+            wallet
+                .core()
+                .broadcast_transaction(signed.transaction())
+                .await
+        };
+        let failure = match sent {
+            Ok(txid) => {
+                return Ok(BroadcastOutcome {
+                    txid: txid.to_string(),
+                });
+            }
             Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
-                Err(SendFailure::BroadcastUnknown { reason }.into())
+                SendFailure::BroadcastUnknown { reason }
+            }
+            Err(PlatformWalletError::TransactionBroadcast(reason)) if !first => {
+                SendFailure::BroadcastUnknown {
+                    reason: format!("not sent this time: {reason}"),
+                }
             }
             Err(PlatformWalletError::TransactionBroadcast(reason)) => {
-                Err(if reason_means_no_peers(&reason) {
+                if reason_means_no_peers(&reason) {
                     SendFailure::NoPeers
                 } else {
                     SendFailure::BroadcastRejected { reason }
                 }
-                .into())
             }
-            Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
-            Err(other) => Err(other.into()),
-        }
+            Err(PlatformWalletError::StaleReservation) => SendFailure::PreparedTxSpent,
+            Err(other) => return Err(other.into()),
+        };
+        Err(failure.into())
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or
@@ -905,6 +1011,7 @@ impl TxDraft {
         let session = Arc::clone(&self.session);
         self.session
             .on_runtime(async move {
+                let _op = session.enter().await?;
                 {
                     let mut phase = prepared.phase();
                     match *phase {
@@ -919,6 +1026,22 @@ impl TxDraft {
                 Ok(())
             })
             .await
+    }
+}
+
+/// The phase one broadcast attempt leaves a transaction in. `first`: it had
+/// never been handed to the network before this attempt. A transaction that
+/// may be on the network (a previous outcome was unknown) is never released.
+fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase {
+    match outcome {
+        Ok(_) => Phase::Sent,
+        Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => Phase::Unknown,
+        Err(EngineError::Send(
+            SendFailure::NoPeers | SendFailure::BroadcastRejected { .. } | SendFailure::PreparedTxSpent,
+        )) if first => Phase::Released,
+        // Not dispatched (session closed, wallet gone): as before.
+        Err(_) if first => Phase::Pending,
+        Err(_) => Phase::Unknown,
     }
 }
 
@@ -950,6 +1073,17 @@ fn finalize_failure(e: PlatformWalletError) -> EngineError {
 enum Mismatch {
     MissingInput(OutPoint),
     Other(String),
+}
+
+impl Mismatch {
+    fn into_error(self) -> EngineError {
+        match self {
+            Mismatch::MissingInput(o) => SendFailure::OutpointUnavailable(o).into(),
+            Mismatch::Other(d) => {
+                EngineError::Internal(format!("built transaction differs from the plan: {d}"))
+            }
+        }
+    }
 }
 
 /// Checks that key-wallet built exactly the planned transaction.
@@ -1135,6 +1269,10 @@ impl PreparedTx {
     }
 }
 
+/// Dropping a pending transaction releases its inputs. Dropping one whose
+/// outcome is unknown releases nothing: it may be on the network, so its
+/// inputs stay reserved until the wallet sees them spent or the session
+/// closes (platform-wallet's pending-spend fence holds them the same way).
 impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
@@ -1148,6 +1286,11 @@ impl Drop for PreparedTx {
         let Some(signed) = signed else { return };
         let rt = session.rt.clone();
         rt.spawn(async move {
+            // Admitted like any operation, so a close in progress is not
+            // raced; after the close there is no wallet left to release in.
+            let Ok(_op) = session.enter().await else {
+                return;
+            };
             if let Ok(wallet) = session.wallet(&wallet_id).await {
                 wallet.core().abandon_transaction(&signed).await;
             }
@@ -1156,10 +1299,14 @@ impl Drop for PreparedTx {
 }
 
 impl NetworkSession {
-    /// Stores the payment's messages and recipient labels (dash-qt
-    /// `WalletModel::sendCoins`): a labelled recipient not in the address
-    /// book is added (Send, or Receive for one of the wallet's addresses); a
-    /// listed one is relabelled.
+    /// Stores the payment's messages and adds its recipients to the address
+    /// book, as dash-qt's `WalletModel::sendCoins` does after a send, with
+    /// one difference (review M7, dash-qt quirk #6): a label is never
+    /// replaced. A recipient not yet listed is added (Send, or Receive for
+    /// one of the wallet's own addresses) with its label, or unlabelled; a
+    /// listed entry without a label gets the recipient's label; a listed
+    /// entry with a label, of either purpose, is left as it is. Called once
+    /// a broadcast was accepted or its outcome is unknown.
     async fn record_send_metadata(
         &self,
         wallet_id: WalletId,
@@ -1185,11 +1332,11 @@ impl NetworkSession {
                 })
                 .collect()
         };
-        let labels: Vec<(String, String, bool)> = prepared
+        let entries: Vec<(String, Option<String>, bool)> = prepared
             .records
             .iter()
             .zip(owned)
-            .filter_map(|((a, l, _), mine)| l.clone().map(|l| (a.clone(), l, mine)))
+            .map(|((a, l, _), mine)| (a.clone(), l.clone(), mine))
             .collect();
         let txid = prepared.summary.txid.clone();
         let id = wallet_id.to_string();
@@ -1198,13 +1345,27 @@ impl NetworkSession {
             if let Some(m) = &message {
                 db.set_tx_message(&id, &txid, Some(m), now)?;
             }
-            for (address, label, mine) in &labels {
-                let purpose = match db.book_entry(&id, address)? {
-                    Some(entry) => entry.purpose,
-                    None if *mine => dw_appdb::BookPurpose::Receive,
-                    None => dw_appdb::BookPurpose::Send,
-                };
-                db.upsert_book_entry(&id, address, purpose, label, now)?;
+            for (address, label, mine) in &entries {
+                // The address's current label, whether or not it is listed.
+                let current = db
+                    .label(&id, dw_appdb::LabelKind::Address, address)?
+                    .filter(|l| !l.is_empty());
+                match db.book_entry(&id, address)? {
+                    Some(entry) => {
+                        if let (None, Some(label)) = (&current, label) {
+                            db.upsert_book_entry(&id, address, entry.purpose, label, now)?;
+                        }
+                    }
+                    None => {
+                        let purpose = if *mine {
+                            dw_appdb::BookPurpose::Receive
+                        } else {
+                            dw_appdb::BookPurpose::Send
+                        };
+                        let label = current.as_deref().or(label.as_deref()).unwrap_or("");
+                        db.upsert_book_entry(&id, address, purpose, label, now)?;
+                    }
+                }
             }
             Ok(())
         })
