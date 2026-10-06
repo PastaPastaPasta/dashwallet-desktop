@@ -175,20 +175,11 @@ public final class WalletManagementViewModel {
 
     /// dash-qt Close: unloads and drops the wallet from load-on-startup.
     public func close(_ id: WalletID) async {
-        await run(.closing) { () async throws(ServiceError) in
-            try await self.walletLifecycle.unload(id)
-            try await self.walletLifecycle.setLoadOnStartup(id, false)
-        }
+        await closeWallets([id])
     }
 
     public func closeAll() async {
-        let loaded = wallets.filter(\.loaded).map(\.walletID)
-        await run(.closing) { () async throws(ServiceError) in
-            for id in loaded {
-                try await self.walletLifecycle.unload(id)
-                try await self.walletLifecycle.setLoadOnStartup(id, false)
-            }
-        }
+        await closeWallets(wallets.filter(\.loaded).map(\.walletID))
     }
 
     public func setLoadOnStartup(_ id: WalletID, _ value: Bool) async {
@@ -483,6 +474,15 @@ public final class WalletManagementViewModel {
         } catch {
             automaticBackups = []
             if error.code != .notImplemented { errorMessage = ErrorText.m2(error.code) }
+        }
+    }
+
+    private func closeWallets(_ ids: [WalletID]) async {
+        await run(.closing) { () async throws(ServiceError) in
+            for id in ids {
+                try await self.walletLifecycle.unload(id)
+                try await self.walletLifecycle.setLoadOnStartup(id, false)
+            }
         }
     }
 

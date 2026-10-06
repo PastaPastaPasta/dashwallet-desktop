@@ -341,9 +341,7 @@ public final class CoinControlViewModel {
     public func setCustomChange(_ text: String?) async {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmed, !trimmed.isEmpty else {
-            customChange = nil
-            customChangeWarning = nil
-            rememberCustomChange(nil)
+            rejectCustomChange()
             return
         }
         customChange = trimmed
@@ -368,7 +366,7 @@ public final class CoinControlViewModel {
     public func source() -> CoinSourceChoice {
         if coinJoinPage, selected.isEmpty { return .fullyMixed }
         guard !selected.isEmpty else { return .any }
-        return .outpoints(selected.sorted { ($0.txid, $0.vout) < ($1.txid, $1.vout) })
+        return .outpoints(sortedSelection)
     }
 
     /// Where change goes: a valid (and, if foreign, confirmed) custom
@@ -412,6 +410,11 @@ public final class CoinControlViewModel {
         }
     }
 
+    /// The selected outpoints in a stable order (txid, then vout).
+    private var sortedSelection: [OutPoint] {
+        selected.sorted { ($0.txid, $0.vout) < ($1.txid, $1.vout) }
+    }
+
     private func rememberCustomChange(_ address: String?) {
         guard desktopPreferences.desktop.options.keepCustomChangeAddress, !coinJoinPage else { return }
         persist { $0.options.customChangeAddress = address }
@@ -423,10 +426,9 @@ public final class CoinControlViewModel {
             return
         }
         for _ in 0..<2 {
-            let outpoints = selected.sorted { ($0.txid, $0.vout) < ($1.txid, $1.vout) }
             do {
                 let result = try await fees.summary(
-                    wallet: wallet, outpoints: outpoints, payAmounts: payAmounts, fee: fee,
+                    wallet: wallet, outpoints: sortedSelection, payAmounts: payAmounts, fee: fee,
                     allChangeToFee: coinJoinPage)
                 summaryUnavailable = false
                 guard !result.unavailable.isEmpty else {
