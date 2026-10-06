@@ -19,7 +19,7 @@
 //! writes next to the user's file (no `-wal`/`-shm`/journal).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -331,10 +331,7 @@ impl SqliteWallet {
             Some(m) => {
                 let plain = crypter::decrypt_secret(m, &key.secret, &key.pubkey)
                     .ok_or(WalletDatError::WrongPassphrase)?;
-                let arr: [u8; 32] = plain[..]
-                    .try_into()
-                    .map_err(|_| WalletDatError::WrongPassphrase)?;
-                Zeroizing::new(arr)
+                crypter::secret32(&plain).ok_or(WalletDatError::WrongPassphrase)?
             }
             None => der_secret(&key.secret).ok_or_else(|| corrupt("private key DER"))?,
         };
@@ -393,7 +390,7 @@ impl SqliteWallet {
                 continue;
             };
             let opens = crypter::decrypt_secret(&master, &probe.secret, &probe.pubkey)
-                .and_then(|s| <[u8; 32]>::try_from(&s[..]).ok().map(Zeroizing::new))
+                .and_then(|s| crypter::secret32(&s))
                 .and_then(|s| pubkey_of(&s))
                 .is_some_and(|pk| pk[..] == probe.pubkey[..]);
             if opens {
@@ -409,17 +406,56 @@ fn pubkey_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
     Some(PublicKey::from_secret_key(&Secp256k1::signing_only(), &sk).serialize())
 }
 
+/// `file://` URI of `path` for SQLite (review L5): the absolute,
+/// canonical path with every byte outside the URI path characters
+/// percent-encoded, so `?`, `#`, `%` and a leading `//` (which would become
+/// a URI authority) stay part of the path. Opened `mode=ro` and
+/// `immutable=1`: nothing in the user's file or directory is written.
+fn sqlite_uri(path: &Path) -> Result<String, WalletDatError> {
+    use std::os::unix::ffi::OsStrExt;
+    let abs = std::fs::canonicalize(path).map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+    let mut uri = String::from("file://");
+    for &b in abs.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(char::from(b));
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri.push_str("?mode=ro&immutable=1");
+    Ok(uri)
+}
+
+/// A wallet whose last writes are still in a `-wal` (or a hot rollback
+/// `-journal`) next to it: Dash Core is running or did not shut down
+/// cleanly. Read immutable, the file alone would be stale or torn, so the
+/// import is refused with the reason (review L5).
+fn pending_log(path: &Path) -> Option<PathBuf> {
+    ["-wal", "-journal"].into_iter().find_map(|suffix| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let log = PathBuf::from(name);
+        std::fs::metadata(&log)
+            .is_ok_and(|m| m.len() > 0)
+            .then_some(log)
+    })
+}
+
 /// Opens `path` read-only and immutable and reads the records an import
-/// needs. Fails with `Unsupported` for a SQLite file that is not a wallet.
+/// needs. Fails with `Unsupported` for a SQLite file that is not a wallet,
+/// and with `Unreadable` while a non-empty `-wal` or `-journal` file sits
+/// next to it (close Dash Core first).
 pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
-    let uri = format!(
-        "file:{}?immutable=1",
-        path.to_str()
-            .ok_or_else(|| WalletDatError::Unreadable("path is not UTF-8".into()))?
-            .replace('%', "%25")
-            .replace('?', "%3f")
-            .replace('#', "%23")
-    );
+    if let Some(log) = pending_log(path) {
+        return Err(WalletDatError::Unreadable(format!(
+            "{} holds changes not yet written to the wallet file; close Dash Core (or let it shut \
+             down cleanly) and import again",
+            log.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        )));
+    }
+    let uri = sqlite_uri(path)?;
     let conn = rusqlite::Connection::open_with_flags(
         uri,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
@@ -539,6 +575,12 @@ fn parse_record(
             let salt = v.bytes().ok_or_else(|| bad("mkey"))?.to_vec();
             let derivation_method = v.u32().ok_or_else(|| bad("mkey"))?;
             let rounds = v.u32().ok_or_else(|| bad("mkey"))?;
+            if rounds > crypter::MAX_ROUNDS {
+                return Err(corrupt(format!(
+                    "mkey record asks for {rounds} key derivation rounds (at most {})",
+                    crypter::MAX_ROUNDS
+                )));
+            }
             let other_params = v.bytes().ok_or_else(|| bad("mkey"))?.to_vec();
             w.master_keys.push(MasterKeyRecord {
                 crypted_key,
@@ -637,5 +679,70 @@ mod tests {
         assert!(!w.has_mnemonic());
         let root = w.hd_root(None).unwrap();
         assert!(root.mnemonic.is_none());
+    }
+
+    /// Review M1: an `mkey` record asking for more than 10^7 rounds is
+    /// corrupt instead of hanging the import.
+    #[test]
+    fn crafted_mkey_rounds_are_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+        std::fs::copy(vector("desc_encrypted.dat"), &path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let mut stmt = conn.prepare("SELECT key, value FROM main").unwrap();
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let (key, mut value) = rows
+                .into_iter()
+                .find(|(k, _)| Reader::new(k).bytes() == Some(b"mkey".as_slice()))
+                .unwrap();
+            let mut r = Reader::new(&value);
+            r.bytes().unwrap();
+            r.bytes().unwrap();
+            r.u32().unwrap();
+            let at = value.len() - r.buf.len();
+            value[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            conn.execute(
+                "UPDATE main SET value = ?1 WHERE key = ?2",
+                rusqlite::params![value, key],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            read_sqlite(&path),
+            Err(WalletDatError::Corrupt(d)) if d.contains("rounds")
+        ));
+    }
+
+    /// Review L5: odd characters and a leading `//` stay in the path; a
+    /// pending `-wal` is reported instead of being read stale.
+    #[test]
+    fn sqlite_paths_are_uri_safe_and_pending_logs_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("we?ird #dir %41");
+        std::fs::create_dir(&odd).unwrap();
+        let path = odd.join("wallet.dat");
+        std::fs::copy(vector("desc_plain.dat"), &path).unwrap();
+        assert!(read_sqlite(&path).unwrap().is_descriptor_wallet());
+        let slashes = PathBuf::from(format!("/{}", path.display()));
+        assert!(slashes.to_string_lossy().starts_with("//"));
+        assert!(read_sqlite(&slashes).unwrap().is_descriptor_wallet());
+        let uri = sqlite_uri(&path).unwrap();
+        assert!(uri.starts_with("file:///"), "{uri}");
+        assert!(uri.contains("we%3Fird%20%23dir%20%2541"), "{uri}");
+
+        // An empty -wal is harmless; a non-empty one is reported.
+        let wal = odd.join("wallet.dat-wal");
+        std::fs::write(&wal, b"").unwrap();
+        assert!(read_sqlite(&path).is_ok());
+        std::fs::write(&wal, [1u8; 32]).unwrap();
+        match read_sqlite(&path) {
+            Err(WalletDatError::Unreadable(d)) => assert!(d.contains("wallet.dat-wal"), "{d}"),
+            other => panic!("expected the -wal to be reported, got {other:?}"),
+        }
     }
 }

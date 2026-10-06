@@ -19,6 +19,11 @@ use zeroize::Zeroizing;
 
 /// `WALLET_CRYPTO_SALT_SIZE`.
 pub const SALT_LEN: usize = 8;
+/// Most `BytesToKeySHA512AES` rounds accepted from a file (review M1). Core
+/// calibrates `nDeriveIterations` to about 0.1 s per passphrase change
+/// (25 000 minimum, a few million on fast machines); a crafted `mkey`
+/// near `u32::MAX` would hang the import for hours.
+pub const MAX_ROUNDS: u32 = 10_000_000;
 
 /// A decoded `CMasterKey` (`mkey` record value).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,23 +37,26 @@ pub struct MasterKeyRecord {
 }
 
 /// `CCrypter::BytesToKeySHA512AES` → (key, iv). `None` for zero rounds or a
-/// salt that is not 8 bytes, as `SetKeyFromPassphrase` refuses them.
+/// salt that is not 8 bytes, as `SetKeyFromPassphrase` refuses them, and
+/// for more than [`MAX_ROUNDS`]. Every intermediate hash is written straight
+/// into one zeroized buffer (no `GenericArray` temporaries, review L4).
 pub fn key_from_passphrase(
     passphrase: &[u8],
     salt: &[u8],
     rounds: u32,
 ) -> Option<(Zeroizing<[u8; 32]>, [u8; 16])> {
-    if rounds == 0 || salt.len() != SALT_LEN {
+    if rounds == 0 || rounds > MAX_ROUNDS || salt.len() != SALT_LEN {
         return None;
     }
     let mut buf = Zeroizing::new([0u8; 64]);
     let mut h = Sha512::new();
     h.update(passphrase);
     h.update(salt);
-    buf.copy_from_slice(&h.finalize());
+    h.finalize_into((&mut buf[..]).into());
     for _ in 1..rounds {
-        let next = Sha512::digest(&buf[..]);
-        buf.copy_from_slice(&next);
+        let mut h = Sha512::new();
+        h.update(&buf[..]);
+        h.finalize_into((&mut buf[..]).into());
     }
     let mut key = Zeroizing::new([0u8; 32]);
     key.copy_from_slice(&buf[..32]);
@@ -89,8 +97,18 @@ pub fn decrypt_master_key(
     }
     let (key, iv) = key_from_passphrase(passphrase, &record.salt, record.rounds)?;
     let plain = aes_cbc_decrypt(&key, &iv, &record.crypted_key)?;
-    let arr: [u8; 32] = plain[..].try_into().ok()?;
-    Some(Zeroizing::new(arr))
+    secret32(&plain)
+}
+
+/// A 32-byte secret copied straight into a zeroized buffer (a
+/// `<[u8; 32]>::try_from` would leave an unwiped copy on the stack).
+pub fn secret32(bytes: &[u8]) -> Option<Zeroizing<[u8; 32]>> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut out = Zeroizing::new([0u8; 32]);
+    out.copy_from_slice(bytes);
+    Some(out)
 }
 
 /// The IV Core uses for a secret bound to `pubkey`: `Hash(pubkey)[..16]`.
@@ -140,5 +158,23 @@ mod tests {
         assert!(decrypt_master_key(&record, b"wrong").is_none());
         assert!(key_from_passphrase(b"pass", &[0u8; 7], 1).is_none());
         assert!(key_from_passphrase(b"pass", &salt, 0).is_none());
+        assert!(key_from_passphrase(b"pass", &salt, MAX_ROUNDS + 1).is_none());
+        assert!(key_from_passphrase(b"pass", &salt, u32::MAX).is_none());
+    }
+
+    /// The in-place rewrite matches the definition: SHA-512 iterated.
+    #[test]
+    fn bytes_to_key_matches_iterated_sha512() {
+        let salt = [3u8; 8];
+        let mut d = Sha512::new();
+        d.update(b"pw");
+        d.update(salt);
+        let mut x = d.finalize();
+        for _ in 1..3 {
+            x = Sha512::digest(x);
+        }
+        let (key, iv) = key_from_passphrase(b"pw", &salt, 3).unwrap();
+        assert_eq!(&key[..], &x[..32]);
+        assert_eq!(&iv[..], &x[32..48]);
     }
 }
