@@ -332,6 +332,12 @@ def m2_options_flow(report, app, out_dir, step):
     report.check("hard", "coin selection: the summary shows Quantity after a pick",
                  bool(wait_for(app, has_text("Quantity:"), 10)))
     record(app, out_dir, f"{step}-coin-selected")
+    # One source of truth (review M3): back on Send, the panel shows the pick.
+    if not press(report, app, "OK"):
+        return
+    report.check("hard", "coin selection: OK returns to Send, whose panel shows the pick",
+                 bool(wait_for(app, has_text_prefix("Quantity: 1"), 10)))
+    record(app, out_dir, f"{step}-send-with-selection")
 
 
 def m2_tools_flow(report, app, out_dir, step):

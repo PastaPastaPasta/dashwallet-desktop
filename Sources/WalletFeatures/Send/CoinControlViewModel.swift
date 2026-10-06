@@ -1,6 +1,12 @@
 // dash-qt coin control (QT-068…074): the Send-page panel values and the Coin
 // Selection dialog (list/tree, sort, CoinJoin filter, locks, copy menu),
 // custom change address checks and the spent-coin notice.
+//
+// The selection is the one source of truth for the Send page it is attached
+// to (`SendViewModel.attach`, review M3): Send reads `source()` when it builds
+// its draft, a user change of the selection ends a review in progress, and
+// while the payment is broadcasting (or its outcome is unknown) a change is
+// refused with `errorMessage` instead of being dropped silently.
 import Foundation
 import Observation
 import WalletRuntime
@@ -71,6 +77,8 @@ public final class CoinControlViewModel {
     public private(set) var summaryUnavailable = false
     /// The CoinJoin send page: list mode only, all change goes to the fee.
     public let coinJoinPage: Bool
+    /// The Send page spending this selection; set by `SendViewModel.attach`.
+    @ObservationIgnored weak var send: SendViewModel?
 
     /// Coins the dialog lists, in the chosen order.
     public var coins: [Utxo] {
@@ -199,19 +207,31 @@ public final class CoinControlViewModel {
     /// Space / checkbox. Locked and reserved coins cannot be picked.
     public func toggle(_ outpoint: OutPoint) async {
         guard let coin = allCoins.first(where: { $0.outpoint == outpoint }), isSelectable(coin) else { return }
-        if selected.contains(outpoint) { selected.remove(outpoint) } else { selected.insert(outpoint) }
+        guard editSelection({ selected in
+            if selected.contains(outpoint) { selected.remove(outpoint) } else { selected.insert(outpoint) }
+        }) else { return }
         await refreshSummary()
     }
 
     /// "(un)select all": clears a full selection, else selects every listed coin.
     public func selectAll() async {
         let selectable = Set(coins.filter(isSelectable).map(\.outpoint))
-        if !selectable.isEmpty, selectable.isSubset(of: selected) {
-            selected.subtract(selectable)
-        } else {
-            selected.formUnion(selectable)
-        }
+        guard editSelection({ selected in
+            if !selectable.isEmpty, selectable.isSubset(of: selected) {
+                selected.subtract(selectable)
+            } else {
+                selected.formUnion(selectable)
+            }
+        }) else { return }
         await refreshSummary()
+    }
+
+    /// Empties the selection (dash-qt `UnSelectAll`): Send's Clear All and a
+    /// sent payment. Not a user edit of a review.
+    public func clearSelection() {
+        selected = []
+        summary = nil
+        unselectedNotice = false
     }
 
     /// "(un)lock all": flips the lock of every listed coin; newly locked ones
@@ -224,7 +244,7 @@ public final class CoinControlViewModel {
         do {
             if !toUnlock.isEmpty { try await coinControl.unlock(wallet: wallet, outpoints: toUnlock) }
             if !toLock.isEmpty { try await coinControl.lock(wallet: wallet, outpoints: toLock) }
-            selected.subtract(toLock)
+            noteSelectionEdit { $0.subtract(toLock) }
         } catch {
             errorMessage = ErrorText.m2(error.code)
         }
@@ -235,7 +255,7 @@ public final class CoinControlViewModel {
         guard let wallet = walletState.selectedWalletID else { return }
         do {
             try await coinControl.lock(wallet: wallet, outpoints: [outpoint])
-            selected.remove(outpoint)
+            noteSelectionEdit { $0.remove(outpoint) }
         } catch {
             errorMessage = ErrorText.m2(error.code)
         }
@@ -276,14 +296,16 @@ public final class CoinControlViewModel {
         persist { $0.coinSort = sort }
     }
 
+    /// Hiding CoinJoin coins unselects them, so it is refused like any
+    /// selection change while the payment cannot change.
     public func setShowCoinJoinCoins(_ show: Bool) async {
-        showCoinJoinCoins = show
-        if !show {
-            let hidden = Set(allCoins.filter(\.coinJoinDenominated).map(\.outpoint))
-            if !selected.isDisjoint(with: hidden) {
-                selected.subtract(hidden)
-                await refreshSummary()
-            }
+        let hidden = Set(allCoins.filter(\.coinJoinDenominated).map(\.outpoint))
+        if !show, !selected.isDisjoint(with: hidden) {
+            guard editSelection({ $0.subtract(hidden) }) else { return }
+            showCoinJoinCoins = show
+            await refreshSummary()
+        } else {
+            showCoinJoinCoins = show
         }
     }
 
@@ -362,10 +384,16 @@ public final class CoinControlViewModel {
         rememberCustomChange(nil)
     }
 
-    /// What the draft spends: the picked coins, or any coins.
+    /// Whether the selection is used: Options ▸ Wallet ▸ "Enable coin
+    /// control features" (dash-qt ignores the selection while it is off).
+    public var isEnabled: Bool { desktopPreferences.desktop.options.coinControl }
+
+    /// What the draft spends: the picked coins, or any coins (fully mixed
+    /// ones on the CoinJoin page) while nothing is picked or coin control
+    /// features are off.
     public func source() -> CoinSourceChoice {
-        if coinJoinPage, selected.isEmpty { return .fullyMixed }
-        guard !selected.isEmpty else { return .any }
+        let automatic: CoinSourceChoice = coinJoinPage ? .fullyMixed : .any
+        guard isEnabled, !selected.isEmpty else { return automatic }
         return .outpoints(sortedSelection)
     }
 
@@ -380,6 +408,29 @@ public final class CoinControlViewModel {
     }
 
     // MARK: Private
+
+    /// Applies a user change of the selection. While the Send page cannot
+    /// change (broadcasting, outcome unknown) nothing changes and
+    /// `errorMessage` says why; returns whether the change was applied.
+    private func editSelection(_ change: (inout Set<OutPoint>) -> Void) -> Bool {
+        if let send, !send.isEditable {
+            var proposed = selected
+            change(&proposed)
+            if proposed != selected { errorMessage = L10n.CoinControl.selectionLockedWhileSending }
+            return false
+        }
+        if errorMessage == L10n.CoinControl.selectionLockedWhileSending { errorMessage = nil }
+        noteSelectionEdit(change)
+        return true
+    }
+
+    /// A selection change the user caused (a pick, or a lock that unselects):
+    /// the Send page treats it as an edit.
+    private func noteSelectionEdit(_ change: (inout Set<OutPoint>) -> Void) {
+        let before = selected
+        change(&selected)
+        if selected != before { send?.coinSelectionEdited() }
+    }
 
     private func validateCustomChange(_ address: String, keepConfirmation: Bool) async {
         guard case .core = uri.classifyAddress(address) else {

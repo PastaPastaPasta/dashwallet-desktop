@@ -1,7 +1,9 @@
 // Coin Selection window (QT-068…074): dash-qt's coin control dialog with
 // list and tree modes, (un)select all, (un)lock all, the CoinJoin coin
 // toggle, per-coin context menu and the summary labels; plus the Send page's
-// "Coin Control Features" panel that opens it and passes the selection on.
+// "Coin Control Features" panel that opens it. The window edits the main
+// model's `coinControl`, whose selection Send reads when it builds its draft
+// (review M3), so Send pays from what is ticked even while this is open.
 #if os(macOS)
 import DashUIMac
 import DesignTokens
@@ -15,12 +17,10 @@ struct CoinControlWindow: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        if let coinControl = model.features?.coinControl {
+        if model.features != nil, let coinControl = model.main?.coinControl {
             CoinControlView(coinControl: coinControl, formatAmount: model.formatAmount, onDone: {
                 dismissWindow(id: SceneID.coinControl)
             })
-            // OK or the close button: Send pays from the selection (or any coins).
-            .onDisappear { model.main?.send?.setSource(coinControl.source()) }
         } else {
             Text(model.unavailableReason ?? L10n.Options.unavailable).padding(DashSpacing.xl)
         }

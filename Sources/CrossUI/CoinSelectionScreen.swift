@@ -1,7 +1,8 @@
 // dash-qt's Coin Selection dialog as a page (QT-068…074): list and tree
 // mode, sorting by dash-qt's columns, the CoinJoin filter, (un)select all,
 // (un)lock all, per-coin lock and copy, the summary values with copy, and
-// the spent-coin notice. OK hands the selection to the Send page.
+// the spent-coin notice. Send reads the selection when it builds its draft
+// (review M3), so the page has no Cancel (as in dash-qt); OK goes back to Send.
 import DashUICross
 import DesignTokens
 import Foundation
@@ -77,11 +78,6 @@ struct CoinSelectionScreen: View {
             customChange(model)
             HStack(spacing: Int(DashSpacing.s)) {
                 DashButton(CrossStrings.ok, style: .filledBlue, size: .small) {
-                    state.main.send?.setSource(model.source())
-                    state.closePage()
-                    state.main.selection = .send
-                }
-                DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
                     state.closePage()
                     state.main.selection = .send
                 }

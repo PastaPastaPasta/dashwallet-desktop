@@ -69,7 +69,11 @@ struct M2ScreenTests {
     @Test(arguments: [ColorScheme.light, .dark])
     func QT069_coinSelectionListAndTree(_ scheme: ColorScheme) async throws {
         let model = try await Self.model(.funded, scheme)
-        let coinControl = try #require(model.features?.coinControl)
+        let coinControl = try #require(model.main?.coinControl)
+        // Send reads the selection only with coin control features on.
+        let features = try #require(model.features)
+        features.options.wallet.coinControl = true
+        try await features.options.apply()
         await coinControl.load()
         #expect(!coinControl.coins.isEmpty)
         #expect(coinControl.isAutomatic)
@@ -87,6 +91,8 @@ struct M2ScreenTests {
             CGSize(width: 900, height: 560), scheme, "coin-control-tree")
         coinControl.setMode(.list)
         #expect(coinControl.source() == .outpoints([first.outpoint]))
+        // The window is still open: Send already pays from the ticked coin.
+        #expect(model.main?.send?.source == .outpoints([first.outpoint]))
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -97,7 +103,7 @@ struct M2ScreenTests {
         features.options.wallet.coinControl = true
         features.options.wallet.psbtControls = true
         try await features.options.apply()
-        await features.coinControl.load()
+        await send.coinControl?.load()
         model.main?.selection = .send
         send.entries[0].address = ScreenTests.payTo
         send.entries[0].amountText = "0.1"

@@ -28,9 +28,11 @@ struct SendView: View {
                             onRemove: { send.removeRecipient(entry.id) })
                     }
                     FeeSection(send: send, unitName: model.unitName, amounts: model.env?.amounts)
-                    if let features = model.features, features.options.wallet.coinControl {
+                    if let features = model.features, features.options.wallet.coinControl,
+                        let coinControl = send.coinControl
+                    {
                         SendCoinControlPanel(
-                            coinControl: features.coinControl, send: send,
+                            coinControl: coinControl, send: send,
                             openInputs: { model.windowOpener?(id: SceneID.coinControl) })
                     }
                 }
@@ -46,8 +48,10 @@ struct SendView: View {
         .overlay { progressOverlay }
         .task(id: CoinControlInputs(send: send)) {
             // The coin-control labels follow the recipients and the fee (QT-072).
-            guard let features = model.features, features.options.wallet.coinControl else { return }
-            await features.coinControl.updatePayment(amounts: send.coinControlAmounts, fee: send.fee)
+            guard let features = model.features, features.options.wallet.coinControl,
+                let coinControl = send.coinControl
+            else { return }
+            await coinControl.updatePayment(amounts: send.coinControlAmounts, fee: send.fee)
         }
         .sheet(isPresented: confirmBinding) { SendConfirmSheet(send: send) }
         .sheet(isPresented: authorizeBinding) { SendAuthorizeSheet(send: send) }

@@ -166,8 +166,25 @@ var customChange: String?; var customChangeWarning: CustomChangeWarning?   // in
 var unselectedNotice: Bool                               // "Some coins were unselected because they were spent."
 func toggle(_ outpoint: OutPoint); func selectAll(); func lockAll() async; func lock(_:) async; func unlock(_:) async
 func copy(_ field: CoinCopyField, of outpoint: OutPoint) -> String
-func source() -> CoinSourceChoice                         // .outpoints(selected) or .any
+func clearSelection()                                     // dash-qt UnSelectAll
+var isEnabled: Bool                                       // Options ▸ Wallet ▸ coin control features
+func source() -> CoinSourceChoice                         // .outpoints(selected); .any (.fullyMixed on the
+                                                          // CoinJoin page) when nothing is picked or !isEnabled
 ```
+**One source of truth with Send (review M3).** `MainViewModel` builds one `CoinControlViewModel` per network
+(`main.coinControl`, with M2 services) and calls `SendViewModel.attach(_:)`; MacUI's Coin Selection window and
+CrossUI's Coin Selection page both edit that instance. Rules:
+- `SendViewModel.source` is `coinControl.source()`, read when the draft is built (`review()`,
+  `makeUnsignedDraft()`, `useMax(for:)`), never copied when a window closes. Ticking a coin with the window
+  open and pressing Send spends that coin.
+- A user change of the selection (`toggle`, `selectAll`, a lock that unselects, hiding CoinJoin coins) is a
+  Send edit: a review in progress is abandoned (review M-7).
+- While Send is not editable (broadcasting, outcome unknown) such a change is refused and `errorMessage`
+  says why (`L10n.CoinControl.selectionLockedWhileSending`).
+- `clearAll()`, a successful broadcast and dismissing an unknown outcome call `clearSelection()`; so does a
+  change of the selected wallet.
+- `SendViewModel.setSource(_:)` is for a page without a dialog. It `throws(SendSourceRefusal)` with the
+  reason (`.coinJoinPage`, `.coinControlAttached`, `.notEditable`) instead of ignoring the call.
 
 ### PSBTViewModel (QT-076…079)
 `createUnsigned(draft:)` (copies base64 to the clipboard and offers Save), `load(file:)`, `loadFromClipboard()`,

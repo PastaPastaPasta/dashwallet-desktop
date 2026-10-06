@@ -42,6 +42,8 @@ extension L10n {
         public static let confirmQuestion = "Do you want to create this transaction?"
         public static let confirmReview = "Please, review your transaction."
         public static let usingAnyFunds = "using any available funds"
+        public static let sourceFixedOnCoinJoinPage = "The CoinJoin page always spends fully mixed coins."
+        public static let sourceOwnedByCoinControl = "Choose the coins to spend in the Coin Selection window."
         public static let usingCoinJoinFunds = "using CoinJoin funds only"
         public static let coinJoinFeeNote =
             "(CoinJoin transactions have higher fees usually due to no change output being allowed)"

@@ -275,6 +275,7 @@ struct CoinControlViewModelTests {
     }
 
     @Test func QT074_spentSelectionsAreUnselectedWithTheNotice() async {
+        m2.desktopPreferences.desktop.options.coinControl = true
         let model = make(coins: [utxo(1, amount: 10_000_000), utxo(2, amount: 5_000_000)])
         await model.load()
         await model.selectAll()

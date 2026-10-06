@@ -22,6 +22,9 @@ public final class MainViewModel {
     // Page view models of the active network; rebuilt when it changes.
     public private(set) var home: HomeViewModel?
     public private(set) var send: SendViewModel?
+    /// The Coin Selection dialog of `send` (with M2 services): its selection
+    /// is what Send spends (review M3), so every window shares this one.
+    public private(set) var coinControl: CoinControlViewModel?
     public private(set) var receive: ReceiveViewModel?
     public private(set) var transactions: TransactionsViewModel?
     public let lock: LockViewModel
@@ -206,6 +209,8 @@ public final class MainViewModel {
         } else if case .done = onboarding?.step {
             onboarding = nil
         }
+        // Coins of another wallet cannot pay from this one.
+        if previous != selectedWalletID { coinControl?.clearSelection() }
         if forceRefresh || previous != selectedWalletID { await refreshPages() }
     }
 
@@ -214,12 +219,16 @@ public final class MainViewModel {
         guard let network else {
             home = nil
             send = nil
+            coinControl = nil
             receive = nil
             transactions = nil
             return
         }
         home = HomeViewModel(env: env, network: network, features: features)
-        send = SendViewModel(env: env, network: network)
+        let send = SendViewModel(env: env, network: network)
+        coinControl = m2.map { CoinControlViewModel(env: env, m2: $0) }
+        if let coinControl { send.attach(coinControl) }
+        self.send = send
         receive = ReceiveViewModel(env: env)
         transactions = m2.map { TransactionsViewModel(env: env, m2: $0, network: network, features: features) }
             ?? TransactionsViewModel(env: env, features: features)

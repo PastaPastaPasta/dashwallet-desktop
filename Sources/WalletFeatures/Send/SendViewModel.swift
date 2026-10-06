@@ -28,6 +28,12 @@
 // - The engine records the recipients in the address book once a broadcast
 //   was accepted or its outcome is unknown (m1-engine.md §2.7.1 "Address
 //   book"); this view model writes no address-book entries.
+//
+// Coin control (review M3): with a `CoinControlViewModel` attached, its
+// selection is the only source of truth. The draft reads it when it is
+// built (review, Create Unsigned, Use available balance), a selection edit
+// counts as a user edit, and Clear All and a broadcast (sent, or outcome
+// unknown and dismissed) clear it, as dash-qt's `UnSelectAll` does.
 import Foundation
 import Observation
 import WalletRuntime
@@ -68,6 +74,24 @@ public struct RecipientEntry: Sendable, Hashable, Identifiable {
     /// The fields the user edits; validation results are left out.
     var userFields: [String] {
         [address, amountText, subtractFee ? "1" : "0", label, message ?? "\u{0}"]
+    }
+}
+
+/// Why `SendViewModel.setSource` refused a source; the text is for the user.
+public enum SendSourceRefusal: Error, Sendable, Equatable {
+    /// The CoinJoin page always spends fully mixed coins (QT-051).
+    case coinJoinPage
+    /// Broadcasting, or a broadcast's outcome is unknown: dismiss it first.
+    case notEditable
+    /// The Coin Selection dialog owns the selection; change it there.
+    case coinControlAttached
+
+    public var message: String {
+        switch self {
+        case .coinJoinPage: L10n.Send.sourceFixedOnCoinJoinPage
+        case .notEditable: L10n.CoinControl.selectionLockedWhileSending
+        case .coinControlAttached: L10n.Send.sourceOwnedByCoinControl
+        }
     }
 }
 
@@ -140,7 +164,11 @@ public final class SendViewModel {
     }
     public private(set) var phase: SendPhase = .editing
     public let page: SendPage
-    public private(set) var source: CoinSourceChoice
+    /// What the draft spends: the attached Coin Selection dialog's selection
+    /// (read now, never cached), else the source set with `setSource`.
+    public var source: CoinSourceChoice { coinControl?.source() ?? chosenSource }
+    /// The Coin Selection dialog this page spends from (`attach`).
+    public private(set) var coinControl: CoinControlViewModel?
     public private(set) var fee: FeeChoice = .recommended(targetBlocks: ConfirmationTarget.defaultBlocks)
     public private(set) var customFeeWarning = false
     public private(set) var estimate: TxEstimate?
@@ -209,6 +237,9 @@ public final class SendViewModel {
     /// Non-zero while the view model itself changes `entries`.
     private var internalEdits = 0
     private var countdownTask: Task<Void, Never>?
+    /// The source without a Coin Selection dialog: `.any`, `.fullyMixed` on
+    /// the CoinJoin page, or what `setSource` chose.
+    private var chosenSource: CoinSourceChoice
 
     public init(
         walletState: any WalletStateProviding, sender: any TransactionSending, auth: any AuthenticationGating,
@@ -227,7 +258,7 @@ public final class SendViewModel {
         self.network = network
         self.timing = timing
         self.page = page
-        self.source = page == .coinJoin ? .fullyMixed : .any
+        self.chosenSource = page == .coinJoin ? .fullyMixed : .any
     }
 
     public convenience init(env: AppEnvironment, network: DashNetwork, page: SendPage = .regular) {
@@ -250,11 +281,22 @@ public final class SendViewModel {
         if entries.isEmpty { entries = [RecipientEntry()] }
     }
 
+    /// Makes `coinControl`'s selection the coins this page spends (review
+    /// M3). Its page must match: the CoinJoin dialog for the CoinJoin page.
+    public func attach(_ coinControl: CoinControlViewModel) {
+        precondition(coinControl.coinJoinPage == (page == .coinJoin), "coin control of another send page")
+        self.coinControl?.send = nil
+        self.coinControl = coinControl
+        coinControl.send = self
+    }
+
     /// Clear All: entries, coin selection, fee warning (QT-052).
     public func clearAll() {
         guard isEditable else { return }
-        withInternalEdits { entries = [RecipientEntry()] }
-        if page == .regular { source = .any }
+        withInternalEdits {
+            entries = [RecipientEntry()]
+            clearCoinSelection()
+        }
         userEdited()
     }
 
@@ -286,9 +328,21 @@ public final class SendViewModel {
         apply(paymentURI, at: targetIndex(nil))
     }
 
-    public func setSource(_ source: CoinSourceChoice) {
-        guard page == .regular, source != self.source, isEditable else { return }
-        self.source = source
+    /// The coins to spend on a page without a Coin Selection dialog. A
+    /// refusal says why, so a host never drops a selection silently.
+    public func setSource(_ source: CoinSourceChoice) throws(SendSourceRefusal) {
+        guard page == .regular else { throw .coinJoinPage }
+        guard coinControl == nil else { throw .coinControlAttached }
+        guard source != chosenSource else { return }
+        guard isEditable else { throw .notEditable }
+        chosenSource = source
+        userEdited()
+    }
+
+    /// The attached dialog's selection changed by the user: like any edit,
+    /// it ends a review in progress (review M-7).
+    func coinSelectionEdited() {
+        guard internalEdits == 0 else { return }
         userEdited()
     }
 
@@ -456,7 +510,10 @@ public final class SendViewModel {
             generation += 1
             prepared = nil
             draft = nil
-            withInternalEdits { entries = [RecipientEntry()] }
+            withInternalEdits {
+                entries = [RecipientEntry()]
+                clearCoinSelection()
+            }
             estimate = nil
             phase = .editing
         case .editing, .confirmDuplicates, .authorizing, .preparing, .confirm, .broadcasting:
@@ -668,7 +725,11 @@ public final class SendViewModel {
             let result = try await draft.broadcast(prepared)
             self.prepared = nil
             self.draft = nil
-            withInternalEdits { entries = [RecipientEntry()] }
+            // dash-qt `UnSelectAll` after a send: the spent coins are gone.
+            withInternalEdits {
+                entries = [RecipientEntry()]
+                clearCoinSelection()
+            }
             estimate = nil
             phase = .done(txid: result.txid)
             route = .transaction(txid: result.txid)
@@ -727,6 +788,12 @@ public final class SendViewModel {
         if let draft, let prepared {
             try? await draft.abandon(prepared)
         }
+    }
+
+    /// Empties the attached dialog's selection, or resets `setSource`.
+    private func clearCoinSelection() {
+        coinControl?.clearSelection()
+        if page == .regular { chosenSource = .any }
     }
 
     private func revokePendingGrant() {

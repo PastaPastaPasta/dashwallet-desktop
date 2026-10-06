@@ -50,6 +50,8 @@ extension L10n {
             duffs == 1 ? "Can vary +/- 1 duff per input." : "Can vary +/- \(duffs) duffs per input."
         }
         public static let coinsUnselected = "Some coins were unselected because they were spent."
+        public static let selectionLockedWhileSending =
+            "The coin selection cannot change while a payment is being sent. Dismiss the payment first."
 
         public static let customChange = "Custom change address"
         public static let invalidChangeAddress = "Warning: Invalid Dash address"

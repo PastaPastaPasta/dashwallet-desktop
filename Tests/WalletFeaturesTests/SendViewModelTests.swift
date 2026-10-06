@@ -756,7 +756,7 @@ struct SendViewModelTests {
 
     // MARK: Entries, paste, max, fee, source (QT-051…054, QT-057)
 
-    @Test func QT052_addRemoveAndClearAll() {
+    @Test func QT052_addRemoveAndClearAll() throws {
         let model = makeModel()
         model.addRecipient()
         #expect(model.entries.count == 2)
@@ -765,7 +765,7 @@ struct SendViewModelTests {
         model.removeRecipient(model.entries[0].id)
         #expect(model.entries.count == 1 && model.entries[0].isBlank)
         fillValid(model)
-        model.setSource(.outpoints([OutPoint(txid: txid(1), vout: 0)]))
+        try model.setSource(.outpoints([OutPoint(txid: txid(1), vout: 0)]))
         model.clearAll()
         #expect(model.entries[0].isBlank)
         #expect(model.source == .any)
@@ -819,7 +819,7 @@ struct SendViewModelTests {
     @Test func QT051_coinJoinPageSpendsFullyMixedCoinsOnly() async {
         let model = makeModel(page: .coinJoin)
         #expect(model.source == .fullyMixed)
-        model.setSource(.any)
+        #expect(throws: SendSourceRefusal.coinJoinPage) { try model.setSource(.any) }
         #expect(model.source == .fullyMixed)
         #expect(model.sendButtonTitle == L10n.Send.sendMixedFunds)
         fillValid(model)

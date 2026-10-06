@@ -14,7 +14,6 @@ public final class MacFeatureModels {
     public let startup: StartupViewModel
     public let shutdown: ShutdownViewModel
     public let options: OptionsViewModel
-    public let coinControl: CoinControlViewModel
     public let psbt: PSBTViewModel
     public let information: InformationViewModel
     public let console: ConsoleViewModel
@@ -37,7 +36,6 @@ public final class MacFeatureModels {
         startup = StartupViewModel(m2: m2)
         shutdown = ShutdownViewModel(coordinator: m2.shutdown)
         options = OptionsViewModel(env: env, m2: m2)
-        coinControl = CoinControlViewModel(env: env, m2: m2)
         psbt = PSBTViewModel(env: env, m2: m2)
         information = InformationViewModel(env: env, m2: m2)
         console = ConsoleViewModel(env: env, m2: m2)

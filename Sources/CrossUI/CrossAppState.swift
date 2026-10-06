@@ -102,7 +102,6 @@ public final class CrossAppState {
     @ObservationIgnored private var addressBookModel: (network: DashNetwork, model: AddressBookViewModel)?
     @ObservationIgnored private var signVerifyModel: (network: DashNetwork, model: SignVerifyViewModel)?
     @ObservationIgnored private var transactionsModel: (network: DashNetwork, model: TransactionsViewModel)?
-    @ObservationIgnored private var coinControlModel: (network: DashNetwork, model: CoinControlViewModel)?
     @ObservationIgnored private var onboardingModel: OnboardingViewModel?
     @ObservationIgnored private(set) lazy var options = OptionsViewModel(env: env, m2: m2)
     @ObservationIgnored private(set) lazy var psbt = PSBTViewModel(env: env, m2: m2)
@@ -181,13 +180,10 @@ public final class CrossAppState {
     }
 
     /// Coin control of the active network (QT-068…074), shared by the Send
-    /// page's panel and the Coin Selection page.
+    /// page's panel and the Coin Selection page. Its selection is what Send
+    /// spends (review M3): `MainViewModel` attaches it to `main.send`.
     func coinControl() -> CoinControlViewModel? {
-        guard let network = main.network else { return nil }
-        if let cached = coinControlModel, cached.network == network { return cached.model }
-        let model = CoinControlViewModel(env: env, m2: m2)
-        coinControlModel = (network, model)
-        return model
+        main.coinControl
     }
 
     /// File ▸ Create Wallet: the onboarding flow for one more wallet.
