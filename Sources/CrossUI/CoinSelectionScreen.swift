@@ -185,16 +185,12 @@ struct SummaryPanel: View {
             if model.isAutomatic {
                 Text(L10n.CoinControl.automaticallySelected).dashFont(.footnote).dashForeground(.secondaryText)
             } else if let text = model.summaryText {
-                HStack(spacing: Int(DashSpacing.l)) {
-                    KeyValueRow(L10n.CoinControl.quantity, text.quantity)
-                    KeyValueRow(L10n.CoinControl.amount, text.amount)
-                    KeyValueRow(L10n.CoinControl.fee, text.fee)
-                }
-                HStack(spacing: Int(DashSpacing.l)) {
-                    KeyValueRow(L10n.CoinControl.afterFee, text.afterFee)
-                    KeyValueRow(L10n.CoinControl.bytes, text.bytes)
-                    KeyValueRow(L10n.CoinControl.change, text.change)
-                }
+                // A two-column grid of fixed-width cells: three flexible
+                // `KeyValueRow`s side by side left GTK one character per
+                // line for the longer values (M2 Linux run).
+                SummaryGridRow(L10n.CoinControl.quantity, text.quantity, L10n.CoinControl.bytes, text.bytes)
+                SummaryGridRow(L10n.CoinControl.amount, text.amount, L10n.CoinControl.fee, text.fee)
+                SummaryGridRow(L10n.CoinControl.afterFee, text.afterFee, L10n.CoinControl.change, text.change)
                 Text(text.tolerance).dashFont(.caption1).dashForeground(.secondaryText)
                 if model.insufficientFunds {
                     Text(L10n.CoinControl.insufficientFunds).dashFont(.footnoteMedium).dashForeground(.red)
@@ -213,6 +209,44 @@ struct SummaryPanel: View {
                 Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
             }
         }
+    }
+}
+
+/// One row of the summary grid: two label/value pairs in fixed columns.
+/// Values keep their natural width (`fixedSize`), so they never wrap.
+private struct SummaryGridRow: View {
+    static let labelWidth: Double = 90
+    static let valueWidth: Double = 200
+    let key1: String, value1: String, key2: String, value2: String
+
+    init(_ key1: String, _ value1: String, _ key2: String, _ value2: String) {
+        (self.key1, self.value1, self.key2, self.value2) = (key1, value1, key2, value2)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Int(DashSpacing.s)) {
+            label(key1)
+            value(value1)
+            label(key2)
+            value(value2)
+            Spacer()
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .dashFont(.footnoteMedium)
+            .dashForeground(.secondaryText)
+            .frame(width: Self.labelWidth, alignment: .leading)
+    }
+
+    private func value(_ text: String) -> some View {
+        Text(text)
+            .dashFont(.footnote)
+            .dashForeground(.primaryText)
+            .textSelectionEnabled()
+            .fixedSize()
+            .frame(width: Self.valueWidth, alignment: .leading)
     }
 }
 
