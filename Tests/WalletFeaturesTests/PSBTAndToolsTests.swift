@@ -68,7 +68,7 @@ struct PSBTViewModelTests {
     }
 
     @Test func QT079_signNeedsASpendGrantCoveringExternalSent() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .unlocked
         m2.psbt.loadAnalysis.withLock { $0 = psbtAnalysis(status: .needsSignatures) }
         m2.psbt.signedAnalysis.withLock { $0 = psbtAnalysis(status: .complete, unsigned: 0) }
         let model = make()
@@ -188,7 +188,7 @@ struct ToolsViewModelTests {
     }
 
     @Test func QT145_authorizationRequiredAsksAndRunsTheLineAgain() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .unlocked
         let model = console()
         await model.load()
         await model.run(line: "sendtoaddress \(testnetAddress2) 1")

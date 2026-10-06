@@ -41,7 +41,7 @@ struct WalletManagementViewModelTests {
     }
 
     @Test func IOS110_removeNeedsAWipeGrant() async {
-        world.auth.defaultRequirement = .passphrase
+        world.auth.lockState = .unlocked
         world.lifecycle.removeResult.withLock { $0 = .success(()) }
         let model = make()
         await model.load()
@@ -240,7 +240,6 @@ struct SecurityViewModelTests {
                 walletsWithSecrets: [walletA])
         }
         world.auth.lockState = .unlocked
-        world.auth.defaultRequirement = .passphrase
     }
 
     @Test func IOS011_quickUnlockEnrollsWithAChangeCredentialGrantAndDefaultLimit() async {
