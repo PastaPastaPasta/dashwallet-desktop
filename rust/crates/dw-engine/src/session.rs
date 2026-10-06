@@ -307,11 +307,17 @@ impl NetworkSession {
         if let Err(e) = std::fs::write(&marker, b"") {
             tracing::warn!(error = %e, "could not write the open-session marker");
         }
+        session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);
+        // dash-qt backs a wallet up when it loads (QT-116); skipped while
+        // the data key is not available.
+        for id in manager.list_wallet_ids_blocking() {
+            session.schedule_automatic_backup(WalletId(id));
+        }
         Ok(session)
     }
 

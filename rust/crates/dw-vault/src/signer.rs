@@ -154,7 +154,9 @@ impl Signer for VaultSigner {
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
         self.with_key(path, |secp, x| {
-            let sig = secp.sign_ecdsa(&Message::from_digest(sighash), &x.private_key);
+            // Low-R grinding, as Dash Core's `CKey::Sign`: one byte smaller on
+            // average, and the same signature dashd makes for the sighash.
+            let sig = secp.sign_ecdsa_low_r(&Message::from_digest(sighash), &x.private_key);
             (sig, PublicKey::from_secret_key(secp, &x.private_key))
         })
     }

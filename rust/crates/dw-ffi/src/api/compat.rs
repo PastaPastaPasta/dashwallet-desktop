@@ -4,9 +4,11 @@
 //! §2.6. Secrets cross only as bytes and are zeroized; exports that contain
 //! keys are written by Rust straight to the chosen file.
 
+use std::path::PathBuf;
+
 use zeroize::Zeroizing;
 
-use crate::api::common::{domain_error_common, ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 use crate::{DashNetwork, Engine, ImportOptions, NetworkSession};
 
 /// What a user-chosen file is (QT-106/107/110 "Restore" and "Import").
@@ -187,8 +189,134 @@ pub enum CompatError {
     Internal { detail: String },
 }
 
-domain_error_common!(CompatError);
+domain_error_common!(@not_implemented CompatError);
 crate::api::common::export_error_code!(CompatError);
+
+impl From<dw_engine::EngineError> for CompatError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::CompatFailure as F;
+        use dw_engine::EngineError as E;
+        use dw_vault::VaultError as V;
+        let detail = e.to_string();
+        match e {
+            E::Compat(f) => match f {
+                F::FileUnreadable(detail) => Self::FileUnreadable { detail },
+                F::UnsupportedFormat(detail) => Self::UnsupportedFormat { detail },
+                F::Corrupt(detail) => Self::Corrupt { detail },
+                F::PassphraseRequired => Self::PassphraseRequired,
+                F::WrongPassphrase => Self::WrongPassphrase,
+                F::NoHdChain => Self::NoHdChain,
+                F::NetworkMismatch { mainnet } => Self::NetworkMismatch {
+                    found: if mainnet {
+                        DashNetwork::Mainnet
+                    } else {
+                        DashNetwork::Testnet
+                    },
+                },
+                F::InvalidKeyMaterial(detail) => Self::InvalidKeyMaterial { detail },
+                F::WatchOnly => Self::WatchOnly,
+                F::DestinationUnwritable(detail) => Self::DestinationUnwritable { detail },
+            },
+            // A phrase in a Core file that no BIP39 rule accepts.
+            E::InvalidMnemonic(_) => Self::Corrupt { detail },
+            E::WalletAlreadyExists(wallet_id) => Self::AlreadyExists { wallet_id },
+            E::Vault(V::NoVault) => Self::NoVault,
+            E::Vault(V::Locked | V::MixingOnly) => Self::VaultLocked,
+            E::Vault(V::GrantInvalid | V::GrantPurposeMismatch | V::CredentialRequired) => {
+                Self::GrantInvalid
+            }
+            E::Vault(V::NoSecret) => Self::WatchOnly,
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) => {
+                Self::InvalidArgument { detail }
+            }
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+fn engine_options(o: ImportOptions) -> dw_engine::ImportOptions {
+    dw_engine::ImportOptions {
+        birth_height: o.birth_height,
+        core_compat: o.core_compat,
+        name: o.name,
+        lookahead: o.lookahead,
+    }
+}
+
+impl From<dw_engine::ImportReport> for ImportReport {
+    fn from(r: dw_engine::ImportReport) -> Self {
+        Self {
+            wallet_id: r.wallet_id.to_string(),
+            labels_imported: r.labels_imported,
+            keys_not_imported: r.keys_not_imported,
+            scripts_not_imported: r.scripts_not_imported,
+            core_compat_seed: r.core_compat_seed,
+        }
+    }
+}
+
+impl From<dw_engine::ExportWarning> for ExportWarning {
+    fn from(w: dw_engine::ExportWarning) -> Self {
+        match w {
+            dw_engine::ExportWarning::MnemonicNotCoreCompatible => Self::MnemonicNotCoreCompatible,
+            dw_engine::ExportWarning::CoinJoinAccountNotScannedByLegacyCore => {
+                Self::CoinJoinAccountNotScannedByLegacyCore
+            }
+        }
+    }
+}
+
+impl From<dw_engine::WalletFileKind> for WalletFileKind {
+    fn from(k: dw_engine::WalletFileKind) -> Self {
+        use dw_engine::WalletFileKind as K;
+        match k {
+            K::DumpWallet {
+                network,
+                has_mnemonic,
+                has_hd_seed,
+                has_xprv,
+                loose_key_count,
+                script_count,
+                label_count,
+            } => Self::DumpWallet {
+                network: network.map(Into::into),
+                has_mnemonic,
+                has_hd_seed,
+                has_xprv,
+                loose_key_count,
+                script_count,
+                label_count,
+            },
+            K::WalletDatSqlite {
+                encrypted,
+                has_mnemonic,
+            } => Self::WalletDatSqlite {
+                encrypted,
+                has_mnemonic,
+            },
+            K::WalletDatBdb { encrypted } => Self::WalletDatBdb { encrypted },
+            K::DwBackup {
+                network: Some(network),
+                wallet_count,
+                created_at,
+                format_version,
+            } => Self::DwBackup {
+                network: network.into(),
+                wallet_count,
+                created_at,
+                format_version,
+            },
+            // A backup naming a network this build does not know.
+            K::DwBackup { network: None, .. } => Self::Unknown,
+            K::Psbt => Self::Psbt,
+            K::Unknown => Self::Unknown,
+        }
+    }
+}
 
 impl CompatError {
     /// Stable code (docs/contracts/m2-engine.md §4).
@@ -223,60 +351,85 @@ impl Engine {
     /// Detects the kind of a user-chosen file from its content, not its
     /// extension. Reads at most what detection needs; decrypts nothing.
     pub async fn inspect_wallet_file(&self, path: String) -> Result<WalletFileKind, CompatError> {
-        let _ = path;
-        not_implemented("Engine.inspect_wallet_file")
+        if path.is_empty() {
+            return Err(CompatError::InvalidArgument {
+                detail: "empty path".into(),
+            });
+        }
+        Ok(self
+            .inner
+            .inspect_wallet_file(PathBuf::from(path))
+            .await?
+            .into())
     }
 }
 
 #[uniffi::export]
 impl NetworkSession {
     /// Imports a Dash Core `dumpwallet` file (QT-107): rebuilds the HD wallet
-    /// from the header (mnemonic + passphrase, else HD seed, else xprv;
+    /// from the header (mnemonic + passphrase with Core's BIP39 rules, else
+    /// the 64-byte HD seed, checked against the header's master key;
     /// counters raise the lookahead), carries labels into the address book
     /// and reports the loose keys left out. Vault seed-safety order as
-    /// `import_wallet`. `options.core_compat` is implied for a mnemonic.
+    /// `import_wallet`; the birth height defaults to 0 (a restore).
+    /// A header with only an xprv returns
+    /// `NotImplemented{call: "import_dump_wallet.xprv"}`: platform-wallet
+    /// registers wallets from seeds.
     pub async fn import_dump_wallet(
         &self,
         path: String,
         options: ImportOptions,
     ) -> Result<ImportReport, CompatError> {
-        let _ = (path, options);
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.import_dump_wallet")
+        Ok(self
+            .inner
+            .import_dump_wallet(PathBuf::from(path), engine_options(options))
+            .await?
+            .into())
     }
 
     /// Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
     /// wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
     /// passphrase, extracts mnemonic and passphrase). Berkeley DB files
-    /// return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6.
+    /// return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
+    /// descriptor wallets without a phrase
+    /// `NotImplemented{call: "import_wallet_dat.xprv"}`.
     pub async fn import_wallet_dat(
         &self,
         path: String,
         wallet_passphrase: Option<Vec<u8>>,
         options: ImportOptions,
     ) -> Result<ImportReport, CompatError> {
-        let _passphrase = wallet_passphrase.map(Zeroizing::new);
-        let _ = (path, options);
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.import_wallet_dat")
+        let passphrase = wallet_passphrase.map(Zeroizing::new);
+        Ok(self
+            .inner
+            .import_wallet_dat(PathBuf::from(path), passphrase, engine_options(options))
+            .await?
+            .into())
     }
 
-    /// Imports a wallet from raw key material (QT-108). An HD seed or xprv
+    /// Imports a wallet from raw key material (QT-108). A 64-byte HD seed
     /// gives a wallet with no phrase (`has_mnemonic = false`); descriptors
-    /// must describe BIP44 account 0 of one master key.
+    /// must describe BIP44 account 0 of one master key and carry the phrase
+    /// dashd lists with them. Shorter seeds and xprvs (and descriptors
+    /// without a phrase) are valid input platform-wallet cannot register:
+    /// `NotImplemented{call: "import_key_material.seed_length" | ".xprv"}`.
     pub async fn import_key_material(
         &self,
         material: KeyMaterial,
         options: ImportOptions,
     ) -> Result<ImportReport, CompatError> {
-        let _material = match material {
-            KeyMaterial::HdSeed { seed } => Zeroizing::new(seed),
-            KeyMaterial::Xprv { xprv } => Zeroizing::new(xprv),
-            KeyMaterial::Descriptors { json } => Zeroizing::new(json),
+        let material = match material {
+            KeyMaterial::HdSeed { seed } => dw_engine::KeyMaterial::HdSeed(Zeroizing::new(seed)),
+            KeyMaterial::Xprv { xprv } => dw_engine::KeyMaterial::Xprv(Zeroizing::new(xprv)),
+            KeyMaterial::Descriptors { json } => {
+                dw_engine::KeyMaterial::Descriptors(Zeroizing::new(json))
+            }
         };
-        let _ = options;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.import_key_material")
+        Ok(self
+            .inner
+            .import_key_material(material, engine_options(options))
+            .await?
+            .into())
     }
 
     /// Writes the wallet for dash-qt to `dest_path` (QT-109 b/c), mode 0600,
@@ -290,10 +443,23 @@ impl NetworkSession {
         dest_path: String,
         grant_id: String,
     ) -> Result<ExportReport, CompatError> {
-        let _ = (format, dest_path, grant_id);
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.export_for_core")
+        let id = parse_wallet_id(&wallet_id)?;
+        let engine_format = match format {
+            CoreExportFormat::DumpWallet => dw_engine::CoreExportFormat::DumpWallet,
+            CoreExportFormat::ImportDescriptorsJson => {
+                dw_engine::CoreExportFormat::ImportDescriptorsJson
+            }
+        };
+        let r = self
+            .inner
+            .export_for_core(id, engine_format, PathBuf::from(dest_path), grant_id)
+            .await?;
+        Ok(ExportReport {
+            path: r.path.to_string_lossy().into_owned(),
+            format,
+            key_count: r.key_count,
+            warnings: r.warnings.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Whether "mnemonic + passphrase + `upgradetohd`" in dash-qt rebuilds
@@ -304,8 +470,11 @@ impl NetworkSession {
         &self,
         wallet_id: String,
     ) -> Result<CoreMnemonicCompatibility, CompatError> {
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.core_mnemonic_compatibility")
+        let id = parse_wallet_id(&wallet_id)?;
+        let c = self.inner.core_mnemonic_compatibility(id).await?;
+        Ok(CoreMnemonicCompatibility {
+            core_compatible: c.core_compatible,
+            warnings: c.warnings.into_iter().map(Into::into).collect(),
+        })
     }
 }

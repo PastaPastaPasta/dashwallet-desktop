@@ -149,6 +149,17 @@ impl Engine {
         self.handle.spawn_blocking(f).await?
     }
 
+    /// What a user-chosen file is (QT-106/107/110), detected from its
+    /// content on the blocking pool. Opens no session.
+    pub async fn inspect_wallet_file(
+        &self,
+        path: PathBuf,
+    ) -> Result<crate::WalletFileKind, EngineError> {
+        self.handle
+            .spawn_blocking(move || crate::compat::inspect_wallet_file(&path))
+            .await?
+    }
+
     /// Runs `fut` to completion on the engine runtime from a non-async thread
     /// (CLI, tests). Panics if called from inside an async context.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {

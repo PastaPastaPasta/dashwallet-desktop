@@ -92,6 +92,9 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Internal(_) => Self::Internal { detail },
             E::Send(_) | E::Labels(_) => Self::Wallet { detail },
             E::OutpointNotFound(_) => Self::InvalidArgument { detail },
+            // Their domains (CompatError, BackupError, PsbtError) carry the
+            // codes; M0 calls never produce them.
+            E::Compat(_) | E::Backup(_) | E::Psbt(_) => Self::Wallet { detail },
         }
     }
 }

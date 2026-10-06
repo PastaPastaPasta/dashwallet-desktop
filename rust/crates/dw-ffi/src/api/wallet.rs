@@ -82,11 +82,10 @@ pub struct ImportOptions {
     /// Derive the seed with Dash Core's BIP39 quirks (weak checksum, no NFKD,
     /// salt cut at 256 bytes) via dw-compat (QT-104).
     pub core_compat: bool,
-    /// Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains
-    /// for the restore scan; `None` = the default (30), or 1000 with
-    /// `core_compat` (dash-qt restores, QT-105). The raised gap is kept in
-    /// memory only: a restart before the scan finishes continues with the
-    /// default gap beyond the addresses already derived.
+    /// Address lookahead (gap limit, 1..=1000) of the BIP44 account's chains;
+    /// `None` = the default (30), or 1000 with `core_compat` (dash-qt
+    /// restores, QT-105). A raised gap is stored with the wallet and applied
+    /// again each time the session opens.
     pub lookahead: Option<u32>,
 }
 
@@ -229,6 +228,9 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::Send(_)
             | E::Labels(_)
             | E::OutpointNotFound(_)
+            | E::Compat(_)
+            | E::Backup(_)
+            | E::Psbt(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

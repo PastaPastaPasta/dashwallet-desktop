@@ -1,0 +1,759 @@
+//! Wallet backups (QT-110, QT-116): `.dwbackup` files written on request
+//! and rotated automatic backups. Format: docs/contracts/dwbackup-v1.md.
+//!
+//! ```text
+//! DWBACKUP 1\n
+//! <header JSON>\n      network, created_at, wallet ids, automatic (plain, authenticated)
+//! <body JSON>\n        {"bundles": [dw-vault WalletBackupBundle, …]}
+//! ```
+//!
+//! Each bundle carries the wallet's vault records as stored, a slot that
+//! unwraps the vault's data key (dw-vault) and a payload sealed under a key
+//! derived from that data key, with the header line as AAD. The payload is
+//! JSON: the wallet's name, birth height and creation time, its app.sqlite
+//! rows, and an online backup of wallet.sqlite.
+//!
+//! Restoring registers the wallet from its stored seed in seed-safety order
+//! with the backup's birth height and name, then inserts its app.sqlite
+//! rows. Wallet state is rebuilt by the scan from the birth height; the
+//! wallet.sqlite snapshot is carried for offline recovery tooling and not
+//! read back by v1.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use base64::Engine as _;
+use dw_appdb::{SqlValue, TableRows};
+use dw_vault::{LockState, VaultError, WalletBackupBundle};
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+use crate::compat::write_new_private;
+use crate::events::unix_now;
+use crate::{
+    DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
+};
+
+/// First bytes of every `.dwbackup` file.
+pub const MAGIC: &[u8] = b"DWBACKUP ";
+/// The format this engine writes and reads.
+pub const FORMAT_VERSION: u32 = 1;
+/// Automatic backups kept per wallet by default and at most (dash-qt
+/// `-createwalletbackups`).
+pub const DEFAULT_KEEP: u32 = 10;
+pub const MAX_KEEP: u32 = 10;
+/// Directory of automatic backups inside the network directory.
+pub const BACKUP_DIR: &str = "backups";
+/// File extension.
+pub const EXTENSION: &str = "dwbackup";
+/// Largest backup file read back.
+const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+/// dw-appdb setting holding the automatic backup count.
+const KEEP_SETTING: &str = "backup.keep";
+
+/// Why a backup call failed (`backup.*` codes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupFailure {
+    /// The data key is not available (locked, mixing-only or no vault).
+    VaultLocked,
+    /// An unencrypted vault needs a backup passphrase; a backup with a
+    /// passphrase slot needs it to restore.
+    PassphraseRequired,
+    WrongPassphrase,
+    Corrupt(String),
+    UnsupportedVersion(u32),
+    NetworkMismatch,
+    AlreadyExists(WalletId),
+    DestinationUnwritable(String),
+}
+
+impl std::fmt::Display for BackupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VaultLocked => f.write_str("vault locked"),
+            Self::PassphraseRequired => f.write_str("passphrase required"),
+            Self::WrongPassphrase => f.write_str("wrong passphrase"),
+            Self::Corrupt(d) => write!(f, "corrupt: {d}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported version {v}"),
+            Self::NetworkMismatch => f.write_str("backup is for another network"),
+            Self::AlreadyExists(id) => write!(f, "wallet {id} already exists"),
+            Self::DestinationUnwritable(d) => write!(f, "cannot write: {d}"),
+        }
+    }
+}
+
+impl From<BackupFailure> for EngineError {
+    fn from(f: BackupFailure) -> Self {
+        EngineError::Backup(f)
+    }
+}
+
+/// One backup file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupInfo {
+    pub path: PathBuf,
+    pub wallet_id: WalletId,
+    pub created_at: u64,
+    pub size_bytes: u64,
+    pub automatic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupPolicy {
+    pub keep: u32,
+    pub directory: PathBuf,
+}
+
+/// The plain header line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupHeader {
+    pub format: String,
+    pub format_version: u32,
+    /// Network directory name (`mainnet`, `testnet`, `regtest`, `devnet-<name>`).
+    pub network: String,
+    pub created_at: u64,
+    /// Hex wallet ids, in bundle order.
+    pub wallet_ids: Vec<String>,
+    pub automatic: bool,
+    pub app_version: String,
+}
+
+impl BackupHeader {
+    /// The network the header names, when it is one this engine knows.
+    pub fn network(&self) -> Option<DashNetwork> {
+        match self.network.as_str() {
+            "mainnet" => Some(DashNetwork::Mainnet),
+            "testnet" => Some(DashNetwork::Testnet),
+            "regtest" => Some(DashNetwork::Regtest),
+            other => other
+                .strip_prefix("devnet-")
+                .map(|n| DashNetwork::Devnet { name: n.to_owned() }),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Body {
+    bundles: Vec<WalletBackupBundle>,
+}
+
+/// Plaintext of a bundle's payload.
+#[derive(Serialize, Deserialize)]
+struct Payload {
+    name: Option<String>,
+    birth_height: Option<u32>,
+    created_at: Option<u64>,
+    app_rows: Vec<JsonTable>,
+    /// Base64 of a SQLite online backup of wallet.sqlite.
+    wallet_sqlite: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsonTable {
+    table: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+}
+
+fn to_json(v: &SqlValue) -> serde_json::Value {
+    use serde_json::json;
+    match v {
+        SqlValue::Null => serde_json::Value::Null,
+        SqlValue::Integer(i) => json!({ "i": i }),
+        SqlValue::Real(r) => json!({ "r": r }),
+        SqlValue::Text(t) => json!({ "t": t }),
+        SqlValue::Blob(b) => json!({ "b": base64::engine::general_purpose::STANDARD.encode(b) }),
+    }
+}
+
+fn from_json(v: &serde_json::Value) -> Result<SqlValue, EngineError> {
+    let bad = || BackupFailure::Corrupt("app row value".into());
+    if v.is_null() {
+        return Ok(SqlValue::Null);
+    }
+    let obj = v.as_object().ok_or_else(bad)?;
+    let (k, val) = obj.iter().next().ok_or_else(bad)?;
+    Ok(match k.as_str() {
+        "i" => SqlValue::Integer(val.as_i64().ok_or_else(bad)?),
+        "r" => SqlValue::Real(val.as_f64().ok_or_else(bad)?),
+        "t" => SqlValue::Text(val.as_str().ok_or_else(bad)?.to_owned()),
+        "b" => SqlValue::Blob(
+            base64::engine::general_purpose::STANDARD
+                .decode(val.as_str().ok_or_else(bad)?)
+                .map_err(|_| bad())?,
+        ),
+        _ => return Err(bad().into()),
+    })
+}
+
+/// The header of a `.dwbackup` file (no decryption).
+pub fn read_header(path: &Path) -> Result<BackupHeader, EngineError> {
+    let mut start = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(64 * 1024).read_to_end(&mut start))
+        .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
+    let (header, _) = split_header(&start)?;
+    Ok(header)
+}
+
+/// Splits `bytes` after the header line: (header, header line bytes, rest).
+fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8]), EngineError> {
+    let corrupt = |d: &str| EngineError::from(BackupFailure::Corrupt(d.into()));
+    let rest = bytes
+        .strip_prefix(MAGIC)
+        .ok_or_else(|| corrupt("not a .dwbackup file"))?;
+    let nl = rest
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| corrupt("magic line"))?;
+    let version: u32 = std::str::from_utf8(&rest[..nl])
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .ok_or_else(|| corrupt("version"))?;
+    if version != FORMAT_VERSION {
+        return Err(BackupFailure::UnsupportedVersion(version).into());
+    }
+    let rest = &rest[nl + 1..];
+    let nl = rest
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| corrupt("header line"))?;
+    let header: BackupHeader =
+        serde_json::from_slice(&rest[..nl]).map_err(|e| corrupt(&format!("header: {e}")))?;
+    if header.format != "dwbackup" || header.format_version != version {
+        return Err(corrupt("header format"));
+    }
+    Ok((header, &rest[..nl]))
+}
+
+/// `<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), dash-qt's automatic name
+/// with the wallet id for the wallet name.
+fn automatic_name(id: &WalletId, at: u64) -> String {
+    let iso = dw_compat::dump::format_iso8601(at as i64);
+    // "YYYY-MM-DDTHH:MM:SSZ" → "YYYY-MM-DD-HH-MM"
+    let stamp = format!("{}-{}-{}", &iso[..10], &iso[11..13], &iso[14..16]);
+    format!("{id}.{stamp}.{EXTENSION}")
+}
+
+/// The wallet id of an automatic backup file name.
+fn automatic_wallet(name: &str) -> Option<WalletId> {
+    let stem = name.strip_suffix(&format!(".{EXTENSION}"))?;
+    let (id, stamp) = stem.split_once('.')?;
+    (stamp.len() == 16).then_some(())?;
+    id.parse().ok()
+}
+
+fn vault_failure(e: VaultError) -> EngineError {
+    match e {
+        VaultError::Locked | VaultError::MixingOnly | VaultError::NoVault => {
+            BackupFailure::VaultLocked.into()
+        }
+        VaultError::NotEncrypted => BackupFailure::PassphraseRequired.into(),
+        VaultError::WrongPassphrase { .. } => BackupFailure::WrongPassphrase.into(),
+        VaultError::Corrupt(d) => BackupFailure::Corrupt(d).into(),
+        other => EngineError::Vault(other),
+    }
+}
+
+impl NetworkSession {
+    /// `<network dir>/backups`.
+    pub fn backup_directory(&self) -> PathBuf {
+        self.data_dir().join(BACKUP_DIR)
+    }
+
+    fn backup_keep(&self) -> Result<u32, EngineError> {
+        let appdb = self.live()?.appdb;
+        Ok(appdb
+            .setting("", KEEP_SETTING)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_KEEP)
+            .min(MAX_KEEP))
+    }
+
+    /// Builds the file bytes of a backup of `id`. Reads app.sqlite and
+    /// wallet.sqlite; needs the data key.
+    async fn backup_bytes(
+        &self,
+        id: WalletId,
+        backup_passphrase: Option<Zeroizing<Vec<u8>>>,
+        automatic: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, EngineError> {
+        let live = self.live()?;
+        let name = self.hub.name_of(&id);
+        let birth_height = self.hub.wallet_state(&id).map(|s| s.birth_height);
+        let tmp = self
+            .data_dir()
+            .join(format!(".backup-{id}-{}.sqlite", std::process::id()));
+        let header = BackupHeader {
+            format: "dwbackup".into(),
+            format_version: FORMAT_VERSION,
+            network: self.network.dir_name(),
+            created_at: unix_now(),
+            wallet_ids: vec![id.to_string()],
+            automatic,
+            app_version: env!("CARGO_PKG_VERSION").into(),
+        };
+        let header_line = serde_json::to_vec(&header)
+            .map_err(|e| EngineError::Internal(format!("backup header: {e}")))?;
+        let vault = self.vault.clone();
+        tokio::task::spawn_blocking(move || -> Result<Zeroizing<Vec<u8>>, EngineError> {
+            let rows = live.appdb.export_wallet_rows(&id.to_string())?;
+            let _ = std::fs::remove_file(&tmp);
+            live.persister.backup_to(&tmp)?;
+            let db = std::fs::read(&tmp);
+            let _ = std::fs::remove_file(&tmp);
+            let db = db?;
+            let payload = Payload {
+                name: name.as_ref().map(|n| n.name.clone()),
+                birth_height,
+                created_at: name.and_then(|n| n.created_at),
+                app_rows: rows
+                    .iter()
+                    .map(|t| JsonTable {
+                        table: t.table.clone(),
+                        columns: t.columns.clone(),
+                        rows: t
+                            .rows
+                            .iter()
+                            .map(|r| r.iter().map(to_json).collect())
+                            .collect(),
+                    })
+                    .collect(),
+                wallet_sqlite: base64::engine::general_purpose::STANDARD.encode(&db),
+            };
+            let plain = Zeroizing::new(
+                serde_json::to_vec(&payload)
+                    .map_err(|e| EngineError::Internal(format!("backup payload: {e}")))?,
+            );
+            let bundle = vault
+                .backup_bundle(
+                    &id.0,
+                    backup_passphrase.as_deref().map(|p| &p[..]),
+                    &plain,
+                    &header_line,
+                )
+                .map_err(vault_failure)?;
+            let body = serde_json::to_vec(&Body {
+                bundles: vec![bundle],
+            })
+            .map_err(|e| EngineError::Internal(format!("backup body: {e}")))?;
+            let mut out = Zeroizing::new(Vec::with_capacity(body.len() + header_line.len() + 16));
+            out.extend_from_slice(MAGIC);
+            out.extend_from_slice(format!("{FORMAT_VERSION}\n").as_bytes());
+            out.extend_from_slice(&header_line);
+            out.push(b'\n');
+            out.extend_from_slice(&body);
+            out.push(b'\n');
+            Ok(out)
+        })
+        .await?
+    }
+
+    /// dash-qt "Backup Wallet…" (QT-110). See docs/contracts/m2-engine.md §2.7.
+    pub async fn backup_wallet(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        dest: PathBuf,
+        backup_passphrase: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<BackupInfo, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet_id)?;
+            if !this.vault.has_wallet_secret(&wallet_id.0) {
+                return Err(EngineError::NotImplemented(
+                    "backup_wallet.watch_only".into(),
+                ));
+            }
+            if dest.as_os_str().is_empty() {
+                return Err(EngineError::InvalidArgument(
+                    "empty destination path".into(),
+                ));
+            }
+            if dest.exists() {
+                return Err(BackupFailure::DestinationUnwritable(format!(
+                    "{} exists; backups replace no file",
+                    dest.display()
+                ))
+                .into());
+            }
+            let encrypted = this.vault.status().encrypted;
+            match (encrypted, &backup_passphrase) {
+                (true, Some(_)) => {
+                    return Err(EngineError::InvalidArgument(
+                        "an encrypted vault's backups use the vault passphrase".into(),
+                    ));
+                }
+                (false, None) => return Err(BackupFailure::PassphraseRequired.into()),
+                (false, Some(p)) if p.is_empty() => {
+                    return Err(EngineError::InvalidArgument(
+                        "empty backup passphrase".into(),
+                    ));
+                }
+                _ => {}
+            }
+            if !matches!(
+                this.vault.lock_state(),
+                LockState::Unlocked | LockState::Unencrypted | LockState::NoKeys
+            ) {
+                return Err(BackupFailure::VaultLocked.into());
+            }
+            let bytes = this
+                .backup_bytes(wallet_id, backup_passphrase, false)
+                .await?;
+            let created_at = unix_now();
+            let size_bytes = bytes.len() as u64;
+            let path = dest.clone();
+            tokio::task::spawn_blocking(move || write_new_private(&path, &bytes))
+                .await?
+                .map_err(|e| match e {
+                    EngineError::Compat(f) => {
+                        BackupFailure::DestinationUnwritable(f.to_string()).into()
+                    }
+                    other => other,
+                })?;
+            Ok(BackupInfo {
+                path: dest,
+                wallet_id,
+                created_at,
+                size_bytes,
+                automatic: false,
+            })
+        })
+        .await
+    }
+
+    /// Restores the wallets of a `.dwbackup` (QT-110): verifies it, stores
+    /// each wallet's secrets under this vault's key (seed-safety order),
+    /// registers it and inserts its app metadata. Returns the wallet ids.
+    pub async fn restore_backup(
+        self: &Arc<Self>,
+        path: PathBuf,
+        passphrase: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Vec<WalletId>, EngineError> {
+        drop(self.try_enter()?);
+        let this = Arc::clone(self);
+        self.on_runtime(async move { this.restore_backup_inner(path, passphrase).await })
+            .await
+    }
+
+    async fn restore_backup_inner(
+        self: &Arc<Self>,
+        path: PathBuf,
+        passphrase: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Vec<WalletId>, EngineError> {
+        let tag = self.network.dir_name();
+        let vault = self.vault.clone();
+        // Read and open every bundle before anything is stored.
+        let opened = self
+            .on_runtime(async move {
+                tokio::task::spawn_blocking(move || -> Result<Vec<_>, EngineError> {
+                    let meta = std::fs::metadata(&path)
+                        .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
+                    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+                        return Err(BackupFailure::Corrupt("not a backup file".into()).into());
+                    }
+                    let bytes = Zeroizing::new(
+                        std::fs::read(&path).map_err(|e| BackupFailure::Corrupt(e.to_string()))?,
+                    );
+                    let (header, header_line) = split_header(&bytes)?;
+                    if header.network != tag {
+                        return Err(BackupFailure::NetworkMismatch.into());
+                    }
+                    let body_start =
+                        MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
+                    let body: Body = serde_json::from_slice(&bytes[body_start..])
+                        .map_err(|e| BackupFailure::Corrupt(format!("body: {e}")))?;
+                    if body.bundles.len() != header.wallet_ids.len() {
+                        return Err(BackupFailure::Corrupt("bundle count".into()).into());
+                    }
+                    let mut out = Vec::new();
+                    for (bundle, id_hex) in body.bundles.iter().zip(&header.wallet_ids) {
+                        let id: WalletId = id_hex.parse()?;
+                        if bundle.wallet_id() != Some(id.0) || bundle.network() != tag {
+                            return Err(BackupFailure::Corrupt(
+                                "bundle does not match header".into(),
+                            )
+                            .into());
+                        }
+                        let (secret, plain) = vault
+                            .open_backup_bundle(
+                                bundle,
+                                passphrase.as_deref().map(|p| &p[..]),
+                                header_line,
+                            )
+                            .map_err(vault_failure)?;
+                        let payload: Payload = serde_json::from_slice(&plain)
+                            .map_err(|e| BackupFailure::Corrupt(format!("payload: {e}")))?;
+                        out.push((id, secret, payload));
+                    }
+                    Ok(out)
+                })
+                .await?
+            })
+            .await?;
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted | LockState::NoKeys
+        ) {
+            return Err(BackupFailure::VaultLocked.into());
+        }
+        let network = self.network.core_network();
+        let mut ids = Vec::new();
+        for (id, secret, payload) in opened {
+            let derived = dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, network)
+                .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
+            if derived != id.0 {
+                return Err(BackupFailure::Corrupt("the seed is not the wallet's".into()).into());
+            }
+            let options = ImportOptions {
+                birth_height: Some(payload.birth_height.unwrap_or(0)),
+                core_compat: false,
+                name: payload.name.clone(),
+                lookahead: None,
+            };
+            match self.import_secret_with(options, move || Ok(secret)).await {
+                Ok(_) => {}
+                Err(EngineError::WalletAlreadyExists(_)) => {
+                    return Err(BackupFailure::AlreadyExists(id).into());
+                }
+                Err(EngineError::Vault(e)) => return Err(vault_failure(e)),
+                Err(e) => return Err(e),
+            }
+            let tables = payload
+                .app_rows
+                .iter()
+                .map(|t| {
+                    Ok(TableRows {
+                        table: t.table.clone(),
+                        columns: t.columns.clone(),
+                        rows: t
+                            .rows
+                            .iter()
+                            .map(|r| r.iter().map(from_json).collect::<Result<_, _>>())
+                            .collect::<Result<_, EngineError>>()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, EngineError>>()?;
+            let appdb = self.live()?.appdb;
+            let wid = id.to_string();
+            let inserted =
+                tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables))
+                    .await??;
+            tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// Automatic backups of `wallet` (every wallet when `None`), newest
+    /// first (QT-116 "Show Automatic Backups").
+    pub async fn automatic_backups(
+        self: &Arc<Self>,
+        wallet: Option<WalletId>,
+    ) -> Result<Vec<BackupInfo>, EngineError> {
+        drop(self.try_enter()?);
+        let dir = self.backup_directory();
+        self.on_runtime(async move {
+            tokio::task::spawn_blocking(move || list_automatic(&dir, wallet)).await?
+        })
+        .await
+    }
+
+    pub fn backup_policy(&self) -> Result<BackupPolicy, EngineError> {
+        let _op = self.try_enter()?;
+        Ok(BackupPolicy {
+            keep: self.backup_keep()?,
+            directory: self.backup_directory(),
+        })
+    }
+
+    /// Sets how many automatic backups to keep per wallet (0..=10) and
+    /// deletes the oldest beyond the new count.
+    pub async fn set_backup_policy(
+        self: &Arc<Self>,
+        keep: u32,
+    ) -> Result<BackupPolicy, EngineError> {
+        if keep > MAX_KEEP {
+            return Err(EngineError::InvalidArgument(format!(
+                "keep {keep} outside 0..={MAX_KEEP}"
+            )));
+        }
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let appdb = this.live()?.appdb;
+            let dir = this.backup_directory();
+            tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+                appdb.set_setting("", KEEP_SETTING, Some(&keep.to_string()))?;
+                prune(&dir, None, keep)
+            })
+            .await??;
+            Ok(BackupPolicy {
+                keep,
+                directory: this.backup_directory(),
+            })
+        })
+        .await
+    }
+
+    /// Writes an automatic backup of `id` when the policy keeps any and the
+    /// data key is available, then rotates. A failure sends
+    /// `Notice{BackupFailed}`; a missing data key skips quietly (dash-qt
+    /// backs up when the wallet loads; here the key may not be there yet).
+    pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) {
+        let keep = match self.backup_keep() {
+            Ok(0) | Err(_) => return,
+            Ok(k) => k,
+        };
+        if !self.vault.has_wallet_secret(&id.0)
+            || !matches!(
+                self.vault.lock_state(),
+                LockState::Unlocked | LockState::Unencrypted
+            )
+        {
+            return;
+        }
+        let dir = self.backup_directory();
+        let path = dir.join(automatic_name(&id, unix_now()));
+        if path.exists() {
+            return;
+        }
+        let result = async {
+            let bytes = self.backup_bytes(id, None, true).await?;
+            let d = dir.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+                crate::fsutil::create_private_dir(&d)?;
+                write_new_private(&path, &bytes)?;
+                prune(&d, Some(id), keep)
+            })
+            .await?
+        }
+        .await;
+        match result {
+            Ok(()) => {}
+            Err(EngineError::Backup(BackupFailure::VaultLocked)) => {}
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "automatic backup failed");
+                self.sink.emit(EngineEvent::Notice {
+                    network: Some(self.network.clone()),
+                    code: NoticeCode::BackupFailed,
+                    detail: format!("wallet {id}: {e}"),
+                });
+            }
+        }
+    }
+
+    /// Starts an automatic backup of `id` in the background.
+    pub(crate) fn schedule_automatic_backup(self: &Arc<Self>, id: WalletId) {
+        let this = Arc::clone(self);
+        self.rt.spawn(async move {
+            let Ok(_op) = this.enter().await else { return };
+            this.automatic_backup(id).await;
+        });
+    }
+}
+
+fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo>, EngineError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = automatic_wallet(&name) else {
+            continue;
+        };
+        if wallet.is_some_and(|w| w != id) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(header) = read_header(&path) else {
+            continue;
+        };
+        out.push(BackupInfo {
+            size_bytes: entry.metadata().map(|m| m.len()).unwrap_or(0),
+            path,
+            wallet_id: id,
+            created_at: header.created_at,
+            automatic: true,
+        });
+    }
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.path.cmp(&a.path)));
+    Ok(out)
+}
+
+/// Deletes automatic backups beyond the newest `keep` of each wallet (of
+/// `wallet` only, when given).
+fn prune(dir: &Path, wallet: Option<WalletId>, keep: u32) -> Result<(), EngineError> {
+    let all = list_automatic(dir, wallet)?;
+    let mut seen: std::collections::HashMap<WalletId, u32> = std::collections::HashMap::new();
+    for b in all {
+        let n = seen.entry(b.wallet_id).or_default();
+        *n += 1;
+        if *n > keep
+            && let Err(e) = std::fs::remove_file(&b.path)
+        {
+            tracing::warn!(path = %b.path.display(), error = %e, "could not delete an old automatic backup");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_names_round_trip() {
+        let id = WalletId([0xab; 32]);
+        let name = automatic_name(&id, 1_417_713_337);
+        assert_eq!(name, format!("{id}.2014-12-04-17-15.dwbackup"));
+        assert_eq!(automatic_wallet(&name), Some(id));
+        assert_eq!(automatic_wallet("x.2014-12-04-17-15.dwbackup"), None);
+        assert_eq!(automatic_wallet(&format!("{id}.dwbackup")), None);
+    }
+
+    #[test]
+    fn header_parsing_checks_magic_and_version() {
+        let h = BackupHeader {
+            format: "dwbackup".into(),
+            format_version: 1,
+            network: "devnet-x".into(),
+            created_at: 5,
+            wallet_ids: vec![],
+            automatic: false,
+            app_version: "0".into(),
+        };
+        let mut bytes = b"DWBACKUP 1\n".to_vec();
+        bytes.extend(serde_json::to_vec(&h).unwrap());
+        bytes.extend(b"\n{}\n");
+        let (parsed, _) = split_header(&bytes).unwrap();
+        assert_eq!(parsed, h);
+        assert_eq!(
+            parsed.network(),
+            Some(DashNetwork::Devnet { name: "x".into() })
+        );
+        assert!(matches!(
+            split_header(b"DWBACKUP 2\n{}\n"),
+            Err(EngineError::Backup(BackupFailure::UnsupportedVersion(2)))
+        ));
+        assert!(split_header(b"SQLite format 3").is_err());
+    }
+
+    #[test]
+    fn json_values_round_trip() {
+        for v in [
+            SqlValue::Null,
+            SqlValue::Integer(-3),
+            SqlValue::Real(1.5),
+            SqlValue::Text("é".into()),
+            SqlValue::Blob(vec![0, 255]),
+        ] {
+            assert_eq!(from_json(&to_json(&v)).unwrap(), v);
+        }
+    }
+}

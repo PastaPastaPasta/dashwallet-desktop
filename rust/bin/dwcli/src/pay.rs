@@ -117,7 +117,7 @@ pub(crate) fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
 }
 
 /// `address:duffs[:subtract]`.
-fn recipient(
+pub(crate) fn recipient(
     s: &str,
     label: &Option<String>,
     message: &Option<String>,

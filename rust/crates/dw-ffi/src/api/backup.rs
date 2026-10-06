@@ -7,10 +7,12 @@
 //! `app.sqlite` rows of the wallet and an online backup of `wallet.sqlite`,
 //! authenticated with a MAC under the data key (DESIGN-opus §2 backups row).
 
+use std::path::PathBuf;
+
 use zeroize::Zeroizing;
 
 use crate::NetworkSession;
-use crate::api::common::{domain_error_common, ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{domain_error_common, parse_wallet_id};
 
 /// One backup file.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -82,8 +84,62 @@ pub enum BackupError {
     Internal { detail: String },
 }
 
-domain_error_common!(BackupError);
+domain_error_common!(@not_implemented BackupError);
 crate::api::common::export_error_code!(BackupError);
+
+impl From<dw_engine::EngineError> for BackupError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::BackupFailure as F;
+        use dw_engine::EngineError as E;
+        use dw_vault::VaultError as V;
+        let detail = e.to_string();
+        match e {
+            E::Backup(f) => match f {
+                F::VaultLocked => Self::VaultLocked,
+                F::PassphraseRequired => Self::PassphraseRequired,
+                F::WrongPassphrase => Self::WrongPassphrase,
+                F::Corrupt(detail) => Self::Corrupt { detail },
+                F::UnsupportedVersion(version) => Self::UnsupportedVersion { version },
+                F::NetworkMismatch => Self::NetworkMismatch,
+                F::AlreadyExists(id) => Self::AlreadyExists {
+                    wallet_id: id.to_string(),
+                },
+                F::DestinationUnwritable(detail) => Self::DestinationUnwritable { detail },
+            },
+            E::WalletAlreadyExists(wallet_id) => Self::AlreadyExists { wallet_id },
+            E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) => {
+                Self::InvalidArgument { detail }
+            }
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_engine::BackupInfo> for BackupInfo {
+    fn from(b: dw_engine::BackupInfo) -> Self {
+        Self {
+            path: b.path.to_string_lossy().into_owned(),
+            wallet_id: b.wallet_id.to_string(),
+            created_at: b.created_at,
+            size_bytes: b.size_bytes,
+            automatic: b.automatic,
+        }
+    }
+}
+
+impl From<dw_engine::BackupPolicy> for BackupPolicy {
+    fn from(p: dw_engine::BackupPolicy) -> Self {
+        Self {
+            keep: p.keep,
+            directory: p.directory.to_string_lossy().into_owned(),
+        }
+    }
+}
 
 impl BackupError {
     /// Stable code (docs/contracts/m2-engine.md §4).
@@ -113,18 +169,21 @@ impl NetworkSession {
     /// to `dest_path`. Encrypted vault: wraps with the vault passphrase slot
     /// and needs the vault unlocked (`backup_passphrase` must be `None`).
     /// Unencrypted vault: `backup_passphrase` is required and wraps the
-    /// bundle. Watch-only wallets carry no vault records.
+    /// bundle. Watch-only wallets carry no vault records:
+    /// `NotImplemented{call: "backup_wallet.watch_only"}`.
     pub async fn backup_wallet(
         &self,
         wallet_id: String,
         dest_path: String,
         backup_passphrase: Option<Vec<u8>>,
     ) -> Result<BackupInfo, BackupError> {
-        let _passphrase = backup_passphrase.map(Zeroizing::new);
-        let _ = dest_path;
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.backup_wallet")
+        let passphrase = backup_passphrase.map(Zeroizing::new);
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .backup_wallet(id, PathBuf::from(dest_path), passphrase)
+            .await?
+            .into())
     }
 
     /// Restores the wallets of a `.dwbackup` into this network: re-encrypts
@@ -136,10 +195,14 @@ impl NetworkSession {
         path: String,
         passphrase: Option<Vec<u8>>,
     ) -> Result<Vec<String>, BackupError> {
-        let _passphrase = passphrase.map(Zeroizing::new);
-        let _ = path;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.restore_backup")
+        let passphrase = passphrase.map(Zeroizing::new);
+        Ok(self
+            .inner
+            .restore_backup(PathBuf::from(path), passphrase)
+            .await?
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect())
     }
 
     /// Automatic backups of `wallet_id` (all wallets when `None`), newest
@@ -151,23 +214,23 @@ impl NetworkSession {
         &self,
         wallet_id: Option<String>,
     ) -> Result<Vec<BackupInfo>, BackupError> {
-        if let Some(id) = &wallet_id {
-            parse_wallet_id(id)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.automatic_backups")
+        let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        Ok(self
+            .inner
+            .automatic_backups(id)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub fn backup_policy(&self) -> Result<BackupPolicy, BackupError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.backup_policy")
+        Ok(self.inner.backup_policy()?.into())
     }
 
     /// `keep` in 0..=10 (`invalid_argument` otherwise). Lowering it deletes
     /// the oldest automatic backups beyond the new count.
     pub async fn set_backup_policy(&self, keep: u32) -> Result<BackupPolicy, BackupError> {
-        let _ = keep;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_backup_policy")
+        Ok(self.inner.set_backup_policy(keep).await?.into())
     }
 }

@@ -33,6 +33,9 @@ use crate::types::{
 };
 use crate::{SignerError, VaultError};
 
+mod compat;
+pub use compat::{CoreMnemonicCheck, WalletBackupBundle};
+
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
 
@@ -121,6 +124,7 @@ fn encode_seed(secret: &WalletSecret) -> Zeroizing<Vec<u8>> {
         SeedDerivation::DashCore { weak_checksum } => {
             v.extend_from_slice(&[1, weak_checksum as u8])
         }
+        SeedDerivation::RawSeed => v.extend_from_slice(&[2, 0]),
     }
     v.extend_from_slice(&secret.seed[..]);
     v
@@ -135,6 +139,7 @@ fn decode_seed(payload: &[u8]) -> Result<(Zeroizing<[u8; 64]>, SeedDerivation), 
         (1, w @ (0 | 1)) => SeedDerivation::DashCore {
             weak_checksum: w == 1,
         },
+        (2, 0) => SeedDerivation::RawSeed,
         _ => return Err(VaultError::Corrupt("seed record derivation".into())),
     };
     let mut seed = Zeroizing::new([0u8; 64]);
@@ -949,13 +954,18 @@ impl Vault {
     ) -> Result<(), VaultError> {
         let dek = self.full_dek()?;
         let seed = encode_seed(secret);
+        // A raw seed has no phrase: its wallet stores the seed record only.
+        let phrase = secret.derivation != SeedDerivation::RawSeed;
         self.commit_records(
             &dek,
             &[
-                (record_id(wallet, REC_MNEMONIC), Some(&secret.mnemonic[..])),
+                (
+                    record_id(wallet, REC_MNEMONIC),
+                    phrase.then_some(&secret.mnemonic[..]),
+                ),
                 (
                     record_id(wallet, REC_PASSPHRASE),
-                    Some(&secret.mnemonic_passphrase[..]),
+                    phrase.then_some(&secret.mnemonic_passphrase[..]),
                 ),
                 (record_id(wallet, REC_SEED), Some(&seed[..])),
             ],

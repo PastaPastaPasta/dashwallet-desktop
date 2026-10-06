@@ -1544,11 +1544,16 @@ dependencies = [
 name = "dw-compat"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cbc",
  "dashcore",
  "dw-uri",
  "key-wallet",
  "proptest",
+ "rusqlite",
+ "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "zeroize",
 ]
@@ -1574,13 +1579,16 @@ dependencies = [
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dash-context-provider",
  "dash-sdk",
  "dash-spv",
  "dashcore",
  "dpp",
  "dw-appdb",
+ "dw-compat",
  "dw-message",
+ "dw-psbt",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1590,6 +1598,7 @@ dependencies = [
  "platform-wallet-storage",
  "rs-sdk-trusted-context-provider",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -1606,6 +1615,7 @@ dependencies = [
  "dw-console",
  "dw-engine",
  "dw-message",
+ "dw-psbt",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1627,6 +1637,20 @@ dependencies = [
  "proptest",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "dw-psbt"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "dashcore",
+ "dw-compat",
+ "key-wallet",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -1687,9 +1711,12 @@ dependencies = [
  "dw-console",
  "dw-engine",
  "dw-message",
+ "dw-psbt",
  "dw-units",
  "dw-vault",
+ "hex",
  "tempfile",
+ "tracing-subscriber",
  "zeroize",
 ]
 

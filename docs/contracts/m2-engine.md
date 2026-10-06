@@ -115,7 +115,7 @@ screen. Checklist text: research 02 §22 (QT) and research 03 §4 (IOS).
 ## 2. Calls
 
 Status of every call below: **stub** (typed `NotImplemented` after the argument and session checks), except
-where noted.
+where noted. **R2 (§2.6–2.8) works**: see the status notes under those tables.
 
 ### 2.1 Wallet lifecycle (`multiwallet.rs`) — owner R1
 
@@ -191,14 +191,46 @@ shows as is. Error copy still comes from the code.
 Warnings: `MnemonicNotCoreCompatible`, `CoinJoinAccountNotScannedByLegacyCore` (the DIP9 account; DESIGN.md R2).
 Release-blocking checks are DESIGN-opus §4.3 `restore` and §4.4 items 1–3, in `regtest/` (R2).
 
+**Status (R2): works.** Notes on what the implementation does beyond the table:
+
+- Every Core import derives a phrase with Core's BIP39 rules and checks the seed against the file's
+  master key (dumpwallet header xprv, wallet.dat descriptor key, listdescriptors key) before
+  storing it. Birth height defaults to 0. The lookahead is Core's 1000 (more when the file says
+  more addresses were handed out, up to 1000); a raised lookahead is stored with the wallet and
+  applied again whenever the session opens.
+- Valid input platform-wallet cannot register stays `NotImplemented` with a stable `call`:
+  `import_wallet_dat.bdb` (M6), `import_wallet_dat.xprv` / `import_dump_wallet.xprv` /
+  `import_key_material.xprv` (a master key without its seed or phrase; platform-wallet registers
+  wallets from 64-byte seeds), `import_dump_wallet.seed_length` / `import_key_material.seed_length`
+  (BIP32 seeds other than 64 bytes). A 64-byte HD seed becomes a wallet with `has_mnemonic = false`
+  (vault records `SeedDerivation::RawSeed`).
+- `import_*` maps "the wallet exists with keys" to `compat.already_exists` and a phrase no BIP39
+  rule accepts to `compat.corrupt`. Labels the wallet cannot hold (addresses outside its derived
+  range) are skipped and not counted.
+- `export_for_core(DumpWallet)` writes Core's layout (`dw-compat::dump::write`) with every derived
+  BIP44 account 0 key, `label=` for address-book entries, `change=1` on the change chain and
+  `reserve=1` for unused receive keys; key times are `1970-01-01T00:00:01Z` (Core's "no metadata",
+  so `importwallet` rescans from genesis) and the best-block hash is written as `unknown` (the
+  engine stores no block hashes). `ImportDescriptorsJson` writes the receive and change chains
+  (active, range ≥ 1000, `next_index` = used count) and the CoinJoin chain (inactive), timestamp 0.
+- `core_mnemonic_compatibility` needs the data key (unlocked or unencrypted vault) and compares
+  Core's seed of the stored phrase with the stored seed.
+
 ### 2.7 Backups (`backup.rs`) — owner R2
 
 | Call | Kind | Semantics | Errors | Serves |
 |---|---|---|---|---|
 | `backup_wallet(id, dest_path, backup_passphrase?)` | async | Writes a `.dwbackup` (vault records still under the data key, a passphrase wrap slot, the wallet's app.sqlite rows, an online backup of wallet.sqlite, MAC under the data key). Encrypted vault: uses the vault passphrase slot, needs the vault unlocked, `backup_passphrase` must be `None`. Unencrypted vault: `backup_passphrase` is required. Replaces no file. `BackupInfo { path, wallet_id, created_at, size_bytes, automatic }`. | `backup.vault_locked`, `backup.passphrase_required`, `backup.destination_unwritable`, `invalid_argument` | QT-110 |
 | `restore_backup(path, passphrase?)` | async | Verifies the MAC, re-encrypts the records under this vault's key (vault unlocked) and registers the wallets in seed-safety order. Returns their ids. | `backup.wrong_passphrase`, `backup.corrupt`, `backup.unsupported_version`, `backup.network_mismatch`, `backup.already_exists`, `backup.vault_locked` | QT-110 |
-| `automatic_backups(id?)` | async | Newest first. The engine writes `backups/<wallet>.YYYY-MM-DD-HH-MM.dwbackup` when a wallet loads or is created and the data key is available (vault unlocked or unencrypted), keeps the newest `keep`, and sends `Notice{BackupFailed}` on failure. CoinJoin is not gated on backups (dash-qt quirk #10). | — | QT-116 |
+| `automatic_backups(id?)` | async | Newest first. Format: [`dwbackup-v1.md`](dwbackup-v1.md). The engine writes `backups/<wallet>.YYYY-MM-DD-HH-MM.dwbackup` when a wallet loads or is created and the data key is available (vault unlocked or unencrypted), keeps the newest `keep`, and sends `Notice{BackupFailed}` on failure. CoinJoin is not gated on backups (dash-qt quirk #10). | — | QT-116 |
 | `backup_policy()` / `set_backup_policy(keep)` | sync / async | `BackupPolicy { keep (0..=10, default 10), directory }`. Lowering `keep` deletes the oldest automatic backups. | `invalid_argument` | QT-116 |
+
+**Status (R2): works**, format [`dwbackup-v1.md`](dwbackup-v1.md). An encrypted vault's backups
+open with the vault passphrase of backup time; an unencrypted vault's user backups need a backup
+passphrase; its automatic backups open only in the vault that wrote them (no passphrase to wrap
+with). `restore_backup` registers the wallet from its seed and restores its app.sqlite rows; wallet
+state comes from the rescan (the wallet.sqlite snapshot is carried, not read back, in v1).
+Watch-only wallets: `NotImplemented{call: "backup_wallet.watch_only"}`.
 
 ### 2.8 PSBT (`psbt.rs`) — owner R2 (`dw-psbt`)
 
@@ -207,11 +239,18 @@ Release-blocking checks are DESIGN-opus §4.3 `restore` and §4.4 items 1–3, i
 | `TxDraft.create_unsigned()` | async | dash-qt "Create Unsigned": plans as `estimate` does and returns a PSBT with UTXO and derivation data. Signs and reserves nothing, needs no grant, works for watch-only wallets. The host copies `to_base64()` to the clipboard and offers Save (`to_bytes()`). | `SendError` codes of `estimate` | QT-076, QT-077 |
 | `parse_psbt(data)` | sync, free | Binary or base64, at most 100 MiB. **Works now** for the size check. | `psbt.too_large`, `psbt.invalid` | QT-078 |
 | `Psbt.to_base64()` / `to_bytes()` / `unsigned_txid()` | sync | Encodings. | — | QT-077…079 |
-| `NetworkSession.analyze_psbt(wallet_id?, psbt)` | async | `PsbtAnalysis { outputs[{address, amount, is_mine}], fee, total, unsigned_inputs, status: MissingInputInfo\|NeedsSignatures\|Complete, signability: NoWallet\|WatchOnly\|NoMatchingKeys\|CanSign, external_sent }` (dash-qt's dialog lines). | `psbt.network_mismatch` | QT-079 |
+| `NetworkSession.analyze_psbt(wallet_id?, psbt)` | async | `PsbtAnalysis { outputs[{address, amount, is_mine}], fee, total, unsigned_inputs, status: MissingInputInfo\|NeedsSignatures\|Complete, signability: NoWallet\|WatchOnly\|NoMatchingKeys\|CanSign, external_sent }` (dash-qt's dialog lines). `total` = external outputs + fee (every output + fee without a wallet). | `psbt.network_mismatch` | QT-079 |
 | `sign_psbt(id, psbt, grant_id)` | async | Signs the wallet's inputs through `VaultSigner` and returns a new `Psbt`. Needs a `Spend{max_duffs}` grant for the wallet with `max_duffs ≥ external_sent`, redeemed after the checks. | `psbt.watch_only`, `psbt.vault_locked`, `psbt.grant_invalid`, `psbt.grant_exceeded{max_duffs}` | QT-079 |
 | `broadcast_psbt(psbt)` | async | Finalizes, refuses rates above 0.1 DASH/kB and broadcasts with `TxDraft.broadcast`'s verdict rules (m1-engine.md §2.7.1). Returns the txid. | `psbt.not_complete`, `psbt.fee_rate_too_high`, `psbt.no_peers`, `psbt.broadcast_rejected{reason}`, `psbt.broadcast_unknown{reason}` | QT-079 |
 
-### 2.9 Vault additions (`vault_m2.rs`, `vault.rs`) — owner S1
+#**Status (R2): works.** dw-psbt implements Dash Core's PSBT subset (BIP174 v0, legacy inputs with
+`non_witness_utxo`; P2PKH signing and finalizing; other scripts carried, not signed). Signatures are
+low-R like Core's `CKey::Sign` (the vault signer grinds), so signing dashd's PSBT gives
+`walletprocesspsbt`'s exact signatures. `create_unsigned` adds BIP32 derivations when the wallet's
+master fingerprint is known (stored at import for wallets added from M2 on). `psbt.network_mismatch`
+is not produced: a PSBT carries no network marker the engine can check honestly.
+
+### 2.9 Vault additions Vault additions (`vault_m2.rs`, `vault.rs`) — owner S1
 
 | Call | Kind | Semantics | Errors | Serves |
 |---|---|---|---|---|
@@ -288,6 +327,9 @@ them adds a code. Parameters that the UI shows (review M-5 rule): `limit_duffs`,
 - **Vault (S1).** `VaultCredential::QuickUnlock` is accepted (§2.9); `enroll_quick_unlock` stops returning
   `NotImplemented` on macOS.
 - **Notices.** `BackupFailed` is sent by the backup rotation (R2).
+- **Import lookahead (R2).** `ImportOptions.lookahead` (and the `core_compat` default of 1000) is
+  stored with the wallet and applied again when a session opens; M1 kept it in memory only.
+- **Vault signatures (R2).** `VaultSigner` signs low-R (Core's `CKey::Sign`).
 
 ## 6. Full-node-only features (DESIGN-opus §1.14)
 
@@ -309,8 +351,7 @@ them adds a code. Parameters that the UI shows (review M-5 rule): `limit_duffs`,
 - **R1**: the watch-only wallet needs a key-wallet account built from an xpub. If platform-wallet cannot register
   one without a seed, fall back to U7 and keep `import_watch_only` `NotImplemented`. The vault must not hold a
   fake seed.
-- **R2**: `.dwbackup` format version 1 is specified in the R2 PR (`docs/contracts/dwbackup-v1.md`) before any
-  writer lands.
+- **R2** (resolved): `.dwbackup` format version 1 is [`dwbackup-v1.md`](dwbackup-v1.md).
 - **S1**: decide whether quick unlock on Windows ships in M2 (DESIGN-opus §5.1 says M6) and keep
   `desktop_quick_unlock_provider` truthful either way.
 - **S1**: the DashKit `EngineProtocol` grows by these calls in S1's adapter PRs, one domain per PR. `FakeEngine`

@@ -16,6 +16,7 @@ dashcore = { workspace = true }
 dw-console = { workspace = true }
 dw-engine = { workspace = true }
 dw-message = { workspace = true }
+dw-psbt = { workspace = true }
 dw-units = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
@@ -30,5 +31,7 @@ zeroize = { workspace = true }
 openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
+# Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
+dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }

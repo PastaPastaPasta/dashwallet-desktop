@@ -1,6 +1,7 @@
 //! `dwcli` — headless driver over dw-engine. Grows into the regtest test driver
 //! and console host (DESIGN-opus §1.4).
 
+mod compat;
 mod pay;
 mod tools;
 
@@ -76,6 +77,10 @@ enum Command {
         /// Address lookahead of the restore scan (1..=1000).
         #[arg(long)]
         lookahead: Option<u32>,
+        /// File holding the BIP39 passphrase ("25th word"), first line, as
+        /// bytes.
+        #[arg(long)]
+        bip39_passphrase_file: Option<PathBuf>,
     },
     /// List wallets with names and balances (duffs; `unknown` before the
     /// first scan).
@@ -115,6 +120,8 @@ enum Command {
     Pay(pay::PayCommand),
     #[command(flatten)]
     Tools(tools::ToolsCommand),
+    #[command(flatten)]
+    Compat(compat::CompatCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -355,7 +362,13 @@ fn run(cli: Cli) -> Result<(), String> {
             core_compat,
             name,
             lookahead,
+            bip39_passphrase_file,
         } => {
+            let bip39_passphrase = bip39_passphrase_file
+                .as_deref()
+                .map(read_passphrase)
+                .transpose()?
+                .unwrap_or_default();
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let mut phrase = Zeroizing::new(String::new());
             std::io::stdin()
@@ -365,7 +378,7 @@ fn run(cli: Cli) -> Result<(), String> {
             engine
                 .block_on(session.import_wallet(
                     phrase,
-                    Zeroizing::new(Vec::new()),
+                    bip39_passphrase,
                     ImportOptions {
                         birth_height,
                         core_compat,
@@ -441,6 +454,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             return result;
         }
+        Command::Compat(cmd) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
+            engine
+                .block_on(engine.shutdown())
+                .map_err(|e| e.to_string())?;
+            return result;
+        }
     };
     engine
         .block_on(engine.shutdown())
@@ -449,6 +470,13 @@ fn run(cli: Cli) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
+    if let Ok(filter) = std::env::var("DWCLI_LOG") {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(std::io::stderr)
+            .init();
+    }
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

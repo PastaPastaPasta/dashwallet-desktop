@@ -13,8 +13,12 @@ dw-console = { workspace = true }
 dw-engine = { workspace = true }
 dw-units = { workspace = true }
 dw-message = { workspace = true }
+dw-psbt = { workspace = true }
+hex = { workspace = true }
 dw-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+# Engine and dash-spv logs on stderr when DWCLI_LOG is set (regtest debugging).
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
