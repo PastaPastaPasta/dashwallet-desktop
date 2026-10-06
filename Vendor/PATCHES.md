@@ -48,6 +48,11 @@ Change:
 - GtkBackend (`Features/Accessibility.swift`): `GTK_ACCESSIBLE_PROPERTY_LABEL` (AT-SPI name) and
   `GTK_ACCESSIBLE_PROPERTY_DESCRIPTION`. The value set last is kept as object data, so an
   unchanged value is not set again on every commit, and `nil` resets only what the patch set.
+  GTK 4.14 computes a name from the labelled-by relation before the label property, and
+  GtkDropDown's template points that relation at its selected item (`button_item`); setting a
+  label therefore also resets the widget's labelled-by relation. That is why the label alone
+  (and the app's old workaround) left drop-downs named after their selection. Removing the label
+  later does not restore the template's relation: the drop-down is then unnamed.
 - AppKitBackend (`Features/Accessibility.swift`): `setAccessibilityLabel` /
   `setAccessibilityHelp`; `NSCustomButton.accessibilityLabel()` returns the explicit label first.
 - WinUIBackend: not implemented (no Windows build yet); it logs the warning.
