@@ -61,6 +61,10 @@ pub enum NoticeCode {
     /// An automatic wallet backup failed (QT-116). Automatic backups do not
     /// exist yet, so the engine never sends it.
     BackupFailed,
+    /// `remove_wallet` removed the wallet but could not delete its seed from
+    /// the vault (e.g. the vault was locked meanwhile). `detail` names the
+    /// wallet id.
+    WalletSecretNotDeleted,
 }
 
 impl From<dw_engine::NoticeCode> for NoticeCode {
@@ -71,6 +75,7 @@ impl From<dw_engine::NoticeCode> for NoticeCode {
             dw_engine::NoticeCode::UncleanShutdown => Self::UncleanShutdown,
             dw_engine::NoticeCode::SyncStalled => Self::SyncStalled,
             dw_engine::NoticeCode::BackupFailed => Self::BackupFailed,
+            dw_engine::NoticeCode::WalletSecretNotDeleted => Self::WalletSecretNotDeleted,
         }
     }
 }
