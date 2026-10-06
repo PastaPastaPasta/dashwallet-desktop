@@ -26,9 +26,8 @@ public struct DataDirectoryChooserScreen: View {
 
     public var body: some View {
         let model = model
-        Page(L10n.Shell.welcomeTitle) {
-            Text(L10n.Shell.welcome).dashFont(.headline)
-            Text(L10n.Shell.welcomeDetail).dashFont(.footnote).dashForeground(.secondaryText)
+        Page(L10n.Shell.welcomeTitle, subtitle: L10n.Shell.welcome, width: .form) {
+            Text(L10n.Shell.welcomeDetail).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
             DashCard {
                 DashPicker(
                     CrossStrings.dataDirectory,
@@ -60,25 +59,26 @@ public struct DataDirectoryChooserScreen: View {
                     }
                 }
                 if let status = model.statusText {
-                    Text(status).dashFont(.footnote).dashForeground(model.canAccept ? .primaryText : .red)
+                    Text(status).dashFont(.footnote).dashForeground(model.canAccept ? CrossRole.textPrimary : CrossRole.danger)
                 }
                 if let space = model.freeSpaceText {
-                    Text(space).dashFont(.footnote).dashForeground(.secondaryText)
+                    Text(space).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
                 }
                 if let error = model.errorMessage {
                     Toast(error, kind: .error)
                 }
             }
             HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(CrossStrings.ok, style: .filledBlue, size: .small, isEnabled: model.canAccept) {
+                Spacer()
+                DashButton(CrossStrings.cancel, style: .tintedGray) {
+                    model.cancel()
+                    onDone(model.outcome)
+                }
+                DashButton(CrossStrings.ok, style: .filledBlue, isEnabled: model.canAccept) {
                     Task {
                         await model.accept()
                         if case .accepted = model.outcome { onDone(model.outcome) }
                     }
-                }
-                DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
-                    model.cancel()
-                    onDone(model.outcome)
                 }
             }
         }
@@ -97,15 +97,17 @@ public struct SplashScreen: View {
 
     public var body: some View {
         let model = model
-        VStack(spacing: Int(DashSpacing.m)) {
+        // UX-SPEC §4.2: the wordmark carries the name; an accent bar 240 wide.
+        VStack(spacing: Int(DashSpacing.l)) {
             Spacer()
-            Text(L10n.Navigation.appName).dashFont(.title1).dashForeground(.primaryText)
-            Text(model.statusText).dashFont(.callout).dashForeground(.secondaryText)
-            ProgressView(value: model.progress).frame(width: 320)
-            DashButton(CrossStrings.quit, style: .strokeGray, size: .small, help: L10n.Shell.pressQToQuit) { model.quit() }
+            DashIcon(.dashLogo, size: 32)
+            ProgressView(value: model.progress).frame(width: 240)
+            Text(model.statusText).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
+            DashButton(CrossStrings.quit, style: .tintedGray, size: .small, help: L10n.Shell.pressQToQuit) { model.quit() }
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CrossRole.canvas.color)
     }
 }
 
@@ -131,19 +133,22 @@ public struct SettingsUnreadableScreen: View {
         let model = model
         let onReset = onReset
         let onAbort = onAbort
-        Page(L10n.Shell.settingsUnreadable) {
-            Text(L10n.Shell.settingsResetQuestion).dashFont(.footnote)
-            ForEach(files, id: \.self) { url in
-                Text(url.path).dashFont(.caption1).textSelectionEnabled()
+        Page(L10n.Shell.settingsUnreadable, width: .form) {
+            Toast(L10n.Shell.settingsResetQuestion, kind: .error)
+            DashCard(spacing: Int(DashSpacing.xs)) {
+                ForEach(files, id: \.self) { url in
+                    Text(url.path).dashFont(.footnote).dashForeground(CrossRole.textSecondary).textSelectionEnabled()
+                }
             }
             HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(CrossStrings.reset, style: .filledBlue, size: .small) {
-                    model.resetSettings()
-                    onReset()
-                }
-                DashButton(CrossStrings.abort, style: .strokeGray, size: .small) {
+                Spacer()
+                DashButton(CrossStrings.abort, style: .tintedGray) {
                     model.abortSettings()
                     onAbort()
+                }
+                DashButton(CrossStrings.reset, style: .filledBlue) {
+                    model.resetSettings()
+                    onReset()
                 }
             }
         }
@@ -155,13 +160,15 @@ struct ShutdownScreen: View {
     let model: ShutdownViewModel
 
     var body: some View {
-        VStack(spacing: Int(DashSpacing.m)) {
+        VStack(spacing: Int(DashSpacing.l)) {
             Spacer()
+            DashIcon(.dashLogo, size: 32)
             ProgressView()
-            Text(model.title).dashFont(.headline).dashForeground(.primaryText)
-            Text(model.message).dashFont(.footnote).dashForeground(.secondaryText)
+            Text(model.title).dashFont(.subheadMedium).dashForeground(CrossRole.textPrimary)
+            Text(model.message).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CrossRole.canvas.color)
     }
 }

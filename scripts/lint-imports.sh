@@ -35,7 +35,9 @@ allowed_for() {
     MacUI)                   echo "Foundation Observation SwiftUI DashUIMac DesignTokens WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;
     # GtkBackend: list-row names set on the native GtkListBox rows (ADR 0002
     # gap A4, until fork patch P4); controls use the fork's accessibilityLabel.
-    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk" ;;
+    # ImageFormats (SwiftCrossUI's own image dependency): the exported PNG
+    # icons are decoded and tinted before they reach `Image` (UX-SPEC §2.7).
+    DashUICross)             echo "Foundation SwiftCrossUI DesignTokens GtkBackend Gtk CGtk ImageFormats" ;;
     # CrossUI names the WalletRuntime value types the view models expose
     # (Amount, TxRecord, DashNetwork, ...) and lays out with DesignTokens.
     # Observation: the window state (CrossAppState) is @Observable.

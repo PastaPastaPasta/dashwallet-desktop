@@ -33,6 +33,9 @@ struct AppLaunchOptions: Sendable, Equatable {
     var dataDirectory: String?
     /// `--page <name>`: the page shown first (screenshots, smoke tests).
     var page: String?
+    /// `--appearance light|dark`: forces the window's appearance over the
+    /// Theme setting (screenshots of both appearances).
+    var appearance: AppTheme?
     var showHelp = false
     var problems: [String] = []
     /// dash-qt's options, as WalletRuntime parsed them.
@@ -42,6 +45,7 @@ struct AppLaunchOptions: Sendable, Equatable {
         Usage: dash-wallet [--demo [funded|locked|onboarding|offline]] [--gallery]
                            [--network mainnet|testnet|regtest|devnet-NAME] [--datadir PATH]
                            [--connect HOST:PORT]... [--dapi URL]... [--page NAME]
+                           [--appearance light|dark]
                            [dash-qt options] [URI]
           --demo       run on in-memory sample data (DWD_DEMO=1 does the same);
                        locked asks for the passphrase "demo", onboarding starts
@@ -54,6 +58,7 @@ struct AppLaunchOptions: Sendable, Equatable {
           --connect    SPV peer to use instead of DNS seeds (repeatable)
           --dapi       DAPI endpoint (repeatable; needed for regtest and devnets)
           --page       first page: \(pages.joined(separator: ", "))
+          --appearance light or dark, over the Theme setting (default: the setting)
           dash-qt options: -testnet -regtest -devnet=NAME -chain=CHAIN -datadir=DIR
                        -choosedatadir -windowtitle=NAME -splash=0 -resetguisettings
                        -min -lang=LANG (see Help ▸ Command-line options)
@@ -97,6 +102,12 @@ struct AppLaunchOptions: Sendable, Equatable {
                     page = value
                 } else {
                     problems.append("--page needs one of: \(Self.pages.joined(separator: ", "))")
+                }
+            case "--appearance":
+                switch next() {
+                case "light": appearance = .light
+                case "dark": appearance = .dark
+                default: problems.append("--appearance needs light or dark")
                 }
             case "--help", "-h":
                 showHelp = true

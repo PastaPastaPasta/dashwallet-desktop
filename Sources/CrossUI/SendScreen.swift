@@ -17,23 +17,28 @@ struct SendScreen: View {
 
     var body: some View {
         let model = model
-        Page(L10n.Navigation.send) {
+        Page(L10n.Navigation.send, subtitle: CrossStrings.sendSubtitle, width: .form) {
             phasePanel(model)
             ForEach(model.entries) { entry in
                 RecipientEditor(model: model, id: entry.id, canRemove: model.entries.count > 1)
+            }
+            DashButton(CrossStrings.addRecipient, style: .tintedBlue, isEnabled: model.phase == .editing) {
+                model.addRecipient()
             }
             // The form is read-only while broadcasting and while the outcome
             // is unknown: "Broadcast again" sends what was reviewed (L6).
             // `disabled` covers the fields; each button gets `isEnabled`
             // because its own `disabled(false)` would re-enable it.
-            HStack(spacing: Int(DashSpacing.s)) {
-                DashTextField(CrossStrings.pasteCaption, placeholder: CrossStrings.pasteURI, text: $pasteText)
-                DashButton(
-                    CrossStrings.pasteCaption, style: .tintedBlue, size: .small,
-                    isEnabled: model.isEditable && !pasteText.isEmpty
-                ) {
-                    model.paste(pasteText)
-                    pasteText = ""
+            DashCard {
+                HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
+                    DashTextField(CrossStrings.pasteCaption, placeholder: CrossStrings.pasteURI, text: $pasteText)
+                    DashButton(
+                        CrossStrings.pasteCaption, style: .tintedBlue, size: .small,
+                        isEnabled: model.isEditable && !pasteText.isEmpty
+                    ) {
+                        model.paste(pasteText)
+                        pasteText = ""
+                    }
                 }
             }
             .disabled(!model.isEditable)
@@ -56,15 +61,23 @@ struct SendScreen: View {
                     }
                 }
             }
-            HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(L10n.Send.send, style: .filledBlue, isEnabled: model.phase == .editing) {
-                    Task { await model.review() }
-                }
-                DashButton(CrossStrings.addRecipient, style: .tintedBlue, isEnabled: model.phase == .editing) {
-                    model.addRecipient()
-                }
-                DashButton(CrossStrings.clearAll, style: .strokeGray, isEnabled: model.phase == .editing) {
-                    model.clearAll()
+            // The footer bar (UX-SPEC §4.7): balance, Clear All, Send.
+            DashCard {
+                HStack(spacing: Int(DashSpacing.s)) {
+                    if let available = state.main.home?.rows.first(where: { $0.kind == .available }) {
+                        let presenter = state.amountPresenter
+                        Text(CrossStrings.balanceLabel).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
+                        AmountText(
+                            available.amount == nil ? L10n.Common.unknown : presenter.number(fromFormatted: available.text),
+                            unit: available.amount == nil ? .none : presenter.unitDisplay, style: .footnoteMedium)
+                    }
+                    Spacer()
+                    DashButton(CrossStrings.clearAll, style: .tintedGray, isEnabled: model.phase == .editing) {
+                        model.clearAll()
+                    }
+                    DashButton(L10n.Send.send, style: .filledBlue, size: .large, isEnabled: model.phase == .editing) {
+                        Task { await model.review() }
+                    }
                 }
             }
         }
@@ -73,6 +86,7 @@ struct SendScreen: View {
     @ViewBuilder
     private func feeSection(_ model: SendViewModel) -> some View {
         DashCard {
+            SectionHeader(CrossStrings.transactionFeeTitle, style: .headline)
             DashPicker(
                 CrossStrings.feeTarget,
                 options: ConfirmationTarget.all.map { PickerOption($0.blocks, $0.label) },
@@ -101,7 +115,7 @@ struct SendScreen: View {
                 }
             }
             if model.customFeeWarning {
-                Text(L10n.Send.customFeeTooLow).dashFont(.caption1).dashForeground(.orange)
+                Text(L10n.Send.customFeeTooLow).dashFont(.caption1).dashForeground(CrossRole.warning)
             }
         }
     }
@@ -118,7 +132,7 @@ struct SendScreen: View {
                 Text(L10n.Send.duplicateMergeText).dashFont(.footnote)
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(L10n.Send.combine) { Task { await model.acknowledgeDuplicates() } }
-                    DashButton(CrossStrings.cancel, style: .strokeGray) { Task { await model.cancel() } }
+                    DashButton(CrossStrings.cancel, style: .tintedGray) { Task { await model.cancel() } }
                 }
             }
         case .authorizing:
@@ -131,7 +145,7 @@ struct SendScreen: View {
                         passphrase = ""
                         Task { await model.authorize(passphrase: text) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray) {
                         passphrase = ""
                         Task { await model.cancel() }
                     }
@@ -139,14 +153,27 @@ struct SendScreen: View {
             }
         case .preparing:
             Toast(CrossStrings.preparing)
-        case .confirm:
-            DashCard {
-                SectionHeader(L10n.Send.confirmTitle)
-                ForEach(Array(model.confirmLines.enumerated()), id: \.offset) { line in
-                    Text(line.element).dashFont(.footnote).dashForeground(.primaryText).textSelectionEnabled()
+        case .confirm(let summary):
+            // The confirm sheet (UX-SPEC §4.7): total at full precision, then
+            // dash-qt's lines in a card, Cancel and the counting-down Send.
+            DashCard(padding: Int(DashSpacing.xl)) {
+                VStack(spacing: Int(DashSpacing.xs)) {
+                    SectionHeader(L10n.Send.confirmTitle, style: .headline)
+                    AmountText(
+                        state.amountPresenter.full(summary.totalDebit), unit: state.amountPresenter.unitDisplay,
+                        style: .title1, weight: .bold)
+                }
+                .frame(maxWidth: .infinity)
+                DashCard(padding: Int(DashSpacing.m), spacing: Int(DashSpacing.xs), fill: CrossRole.cardRaised) {
+                    ForEach(Array(model.confirmLines.enumerated()), id: \.offset) { line in
+                        Text(line.element).dashFont(.footnote).dashForeground(CrossRole.textPrimary).textSelectionEnabled()
+                    }
                 }
                 HStack(spacing: Int(DashSpacing.s)) {
-                    DashButton(model.sendButtonTitle, isEnabled: model.canConfirm) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .large, fillsWidth: true) {
+                        Task { await model.cancel() }
+                    }
+                    DashButton(model.sendButtonTitle, size: .large, isEnabled: model.canConfirm, fillsWidth: true) {
                         Task {
                             await model.confirm()
                             let route = model.route
@@ -154,17 +181,19 @@ struct SendScreen: View {
                             await state.follow(route)
                         }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray) { Task { await model.cancel() } }
                 }
             }
         case .broadcasting:
             Toast(CrossStrings.broadcasting)
         case .done(let txid):
-            Toast(CrossStrings.sent(txid), kind: .success, actionTitle: CrossStrings.done) {
+            ResultCard(
+                icon: .toastSuccess, title: CrossStrings.transactionSent, detail: txid, monospacedDetail: true,
+                buttonTitle: CrossStrings.done
+            ) {
                 Task { await model.dismiss() }
             }
         case .failed(let failure):
-            Toast(failure.message, kind: .error, actionTitle: CrossStrings.back) {
+            ResultCard(icon: .toastError, title: failure.message, detail: nil, buttonTitle: CrossStrings.back) {
                 Task { await model.dismiss() }
             }
         case .broadcastUnknown(let txid, let failure):
@@ -179,7 +208,7 @@ struct SendScreen: View {
                             Task { await model.broadcastAgain() }
                         }
                     }
-                    DashButton(CrossStrings.done, style: .strokeGray) { Task { await model.dismiss() } }
+                    DashButton(CrossStrings.done, style: .tintedGray) { Task { await model.dismiss() } }
                 }
             }
         }
@@ -198,6 +227,15 @@ struct RecipientEditor: View {
         let entry = model.entries.first { $0.id == id } ?? RecipientEntry(id: id)
         let editable = model.isEditable
         DashCard {
+            HStack {
+                SectionHeader(CrossStrings.recipient, style: .headline)
+                Spacer()
+                if canRemove {
+                    DashButton(CrossStrings.removeRecipient, style: .plainRed, size: .small, isEnabled: editable) {
+                        model.removeRecipient(id)
+                    }
+                }
+            }
             DashTextField(
                 CrossStrings.payTo, placeholder: CrossStrings.payToPlaceholder,
                 text: field(\.address), error: entry.addressError)
@@ -217,11 +255,6 @@ struct RecipientEditor: View {
                 .disabled(!editable)
             if let message = entry.message {
                 KeyValueRow(CrossStrings.message, message)
-            }
-            if canRemove {
-                DashButton(CrossStrings.removeRecipient, style: .plainRed, size: .small, isEnabled: editable) {
-                    model.removeRecipient(id)
-                }
             }
         }
     }

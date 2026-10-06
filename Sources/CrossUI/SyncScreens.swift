@@ -17,11 +17,15 @@ struct SyncOverlayScreen: View {
     var body: some View {
         let state = state
         let rates = state.main.syncRates
+        // UX-SPEC §4.6: a centred card on the scrim.
         VStack(alignment: .leading, spacing: Int(DashSpacing.m)) {
             Spacer()
-            DashCard {
-                SectionHeader(L10n.SyncOverlay.title, style: .title3)
-                Text(L10n.SyncOverlay.body).dashFont(.footnote).dashForeground(.secondaryText)
+            DashCard(padding: Int(DashSpacing.xxl)) {
+                SectionHeader(L10n.SyncOverlay.title, style: .title2)
+                Text(L10n.SyncOverlay.body).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
+                if let progress = status.progress {
+                    ProgressView(value: progress)
+                }
                 KeyValueRow(L10n.SyncOverlay.status, state.main.home?.syncText ?? L10n.Common.unknown)
                 KeyValueRow(L10n.SyncOverlay.blocksLeft, SyncRateTracker.blocksLeft(status).map { "\($0)" } ?? L10n.Common.unknown)
                 KeyValueRow(L10n.SyncOverlay.lastBlockTime, Format.date(status.tipDate))
@@ -30,14 +34,15 @@ struct SyncOverlayScreen: View {
                 KeyValueRow(L10n.SyncOverlay.timeLeft, rates.remaining(for: status).map(Self.duration) ?? L10n.Common.unknown)
                 HStack {
                     Spacer()
-                    DashButton(L10n.SyncOverlay.hide, style: .tintedBlue) { state.main.hideSyncOverlay() }
+                    DashButton(L10n.SyncOverlay.hide, style: .tintedGray) { state.main.hideSyncOverlay() }
                 }
             }
-            .frame(maxWidth: 560)
+            .frame(maxWidth: 600)
             Spacer()
         }
         .padding(Int(DashSpacing.xxl))
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CrossRole.overlay.color)
     }
 
     static func percent(_ value: Double) -> String {

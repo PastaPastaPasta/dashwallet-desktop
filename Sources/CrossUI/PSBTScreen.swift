@@ -21,9 +21,9 @@ struct PSBTScreen: View {
     var body: some View {
         let model = model
         let state = state
-        Page(L10n.PSBT.dialogTitle) {
+        Page(L10n.PSBT.dialogTitle, width: .form) {
             DashCard {
-                SectionHeader(CrossStrings.loadPSBT, style: .subheadMedium)
+                SectionHeader(CrossStrings.loadPSBT, style: .headline)
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(L10n.Shell.loadPSBTFromFile, style: .tintedBlue, size: .small) { loadFile(model) }
                     DashButton(L10n.Shell.loadPSBTFromClipboard, style: .tintedBlue, size: .small) {
@@ -38,11 +38,11 @@ struct PSBTScreen: View {
                     }
                 }
                 if !state.capabilities.clipboard {
-                    Text(CrossStrings.noClipboardTool).dashFont(.caption1).dashForeground(.secondaryText)
+                    Text(CrossStrings.noClipboardTool).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
                 }
             }
             if model.step == .loading {
-                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
@@ -53,10 +53,10 @@ struct PSBTScreen: View {
             if model.analysis != nil {
                 DashCard {
                     ForEach(Array(model.descriptionLines.enumerated()), id: \.offset) { line in
-                        Text(line.element).dashFont(.footnote).dashForeground(.primaryText).textSelectionEnabled()
+                        Text(line.element).dashFont(.footnote).dashForeground(CrossRole.textPrimary).textSelectionEnabled()
                     }
                     if let status = model.statusLine {
-                        Text(status).dashFont(.footnoteMedium).dashForeground(.primaryText)
+                        Text(status).dashFont(.footnoteMedium).dashForeground(CrossRole.textPrimary)
                     }
                 }
                 if model.step == .needsPassphrase {
@@ -68,7 +68,7 @@ struct PSBTScreen: View {
                                 passphrase = ""
                                 Task { await model.sign(passphrase: text) }
                             }
-                            DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                            DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                                 passphrase = ""
                                 model.cancelPassphrase()
                             }
@@ -87,7 +87,7 @@ struct PSBTScreen: View {
                 }
             }
             HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(L10n.PSBT.close, style: .strokeGray, size: .small) {
+                DashButton(L10n.PSBT.close, style: .tintedGray, size: .small) {
                     model.close()
                     pasted = ""
                     state.closePage()

@@ -15,18 +15,50 @@ struct OnboardingScreen: View {
     @State var restoreText = ""
     @State var bip39Passphrase = ""
     @State var birthHeightText = ""
+    @State var showsAdvanced = false
 
     var body: some View {
         let model = model
-        Page(L10n.Onboarding.welcomeTitle) {
-            step(model)
+        // UX-SPEC §4.3: canvas, a centred 560 pt column under the wordmark.
+        ScrollView {
+            VStack(alignment: .leading, spacing: Int(DashSpacing.l)) {
+                HStack {
+                    Spacer()
+                    DashIcon(.dashLogo, size: 32)
+                    Spacer()
+                }
+                .padding(.bottom, Int(DashSpacing.s))
+                step(model)
+            }
+            .frame(maxWidth: 560, alignment: .topLeading)
+            .padding(.horizontal, CrossLayout.pagePaddingH)
+            .padding(.top, 60)
+            .padding(.bottom, CrossLayout.sectionGap)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
+        .background(CrossRole.canvas.color)
     }
 
     @ViewBuilder
     private func step(_ model: OnboardingViewModel) -> some View {
         switch model.step {
         case .welcome:
+            VStack(spacing: Int(DashSpacing.s)) {
+                Text(L10n.Onboarding.welcomeTitle).dashFont(.title1).dashForeground(CrossRole.textPrimary)
+                Text(CrossStrings.welcomeSubtitle).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            DashButton(L10n.Onboarding.createWallet, size: .large, fillsWidth: true) { Task { await model.startCreate() } }
+            DashButton(L10n.Onboarding.restoreWallet, style: .tintedGray, size: .large, fillsWidth: true) {
+                restoreText = ""
+                model.startRestore()
+            }
+            // The network and phrase length are demoted behind "Advanced options".
+            DashButton(
+                showsAdvanced ? CrossStrings.hideAdvancedOptions : CrossStrings.advancedOptions, style: .plainBlue,
+                size: .small
+            ) { showsAdvanced.toggle() }
+            if showsAdvanced {
             DashCard {
                 if !model.availableNetworks.isEmpty {
                     DashPicker(
@@ -40,15 +72,10 @@ struct OnboardingScreen: View {
                     CrossStrings.wordCount,
                     options: MnemonicWords.createCounts.map { PickerOption($0, CrossStrings.words($0)) },
                     selection: bind({ model.wordCount }, { model.setWordCount($0) }))
-                HStack(spacing: Int(DashSpacing.s)) {
-                    DashButton(L10n.Onboarding.createWallet, size: .large) { Task { await model.startCreate() } }
-                    DashButton(L10n.Onboarding.restoreWallet, style: .tintedBlue, size: .large) {
-                        restoreText = ""
-                        model.startRestore()
-                    }
-                }
+            }
             }
         case .showPhrase:
+            TopIntro(CrossStrings.recoveryPhrase)
             DashCard {
                 Toast(L10n.Onboarding.showPhraseWarning, kind: .warning)
                 if model.captureWarning {
@@ -65,20 +92,20 @@ struct OnboardingScreen: View {
             DashCard {
                 Text(L10n.Onboarding.verifyPrompt).dashFont(.footnote)
                 if model.verifiedCount < model.verifyChallenge.count {
-                    SectionHeader(CrossStrings.selectWord(model.verifyChallenge[model.verifiedCount] + 1), style: .subheadMedium)
+                    SectionHeader(CrossStrings.selectWord(model.verifyChallenge[model.verifiedCount] + 1), style: .headline)
                 }
                 HStack(spacing: Int(DashSpacing.s)) {
                     ForEach(model.verifyChips) { chip in
-                        DashButton(chip.word, style: .tintedGray, size: .small, isEnabled: !chip.used) {
+                        DashButton(chip.word, style: .filledBlue, size: .small, isEnabled: !chip.used) {
                             Task { await model.select(chip: chip.id) }
                         }
                     }
                 }
                 if model.verifyMistake {
-                    Text(L10n.Onboarding.verifyWrongWord).dashFont(.caption1).dashForeground(.errorText)
+                    Text(L10n.Onboarding.verifyWrongWord).dashFont(.caption1).dashForeground(CrossRole.danger)
                 }
                 if model.isVerified {
-                    Text(L10n.Onboarding.verifiedSuccessfully).dashFont(.caption1).dashForeground(.green)
+                    Text(L10n.Onboarding.verifiedSuccessfully).dashFont(.caption1).dashForeground(CrossRole.success)
                 }
                 navigation(model) { EmptyView() }
             }
@@ -124,7 +151,7 @@ struct OnboardingScreen: View {
                     error: model.restoreProblem)
                 if !model.wordSuggestions.isEmpty {
                     Text("\(CrossStrings.suggestions) \(model.wordSuggestions.joined(separator: ", "))")
-                        .dashFont(.caption1).dashForeground(.secondaryText)
+                        .dashFont(.caption1).dashForeground(CrossRole.textSecondary)
                 }
                 if model.coreOnlyWarning {
                     Toast(L10n.Onboarding.coreOnlyChecksumWarning, kind: .warning)
@@ -166,7 +193,7 @@ struct OnboardingScreen: View {
                 Text(CrossStrings.unlockVaultPrompt).dashFont(.footnote)
                 DashSecureField(CrossStrings.passphrase, placeholder: CrossStrings.walletPassphrase, text: $passphrase)
                 if let error = model.unlockError {
-                    Text(error).dashFont(.caption1).dashForeground(.errorText)
+                    Text(error).dashFont(.caption1).dashForeground(CrossRole.danger)
                 }
                 navigation(model) {
                     DashButton(CrossStrings.unlock, isEnabled: !passphrase.isEmpty) {
@@ -179,56 +206,85 @@ struct OnboardingScreen: View {
         case .working:
             CenteredMessage(text: CrossStrings.creatingWallet, busy: true)
         case .done:
-            CenteredMessage(text: CrossStrings.walletReady, busy: false)
+            DashCard(padding: Int(DashSpacing.xxl)) {
+                VStack(spacing: Int(DashSpacing.m)) {
+                    DashIcon(.toastSuccess, size: 60, width: 60)
+                    Text(CrossStrings.walletReady).dashFont(.title2).dashForeground(CrossRole.textPrimary)
+                }
+                .frame(maxWidth: .infinity)
+            }
         case .failed(let failure):
             DashCard {
                 Toast(failure.message, kind: .error)
-                DashButton(CrossStrings.back, style: .strokeGray) { model.back() }
+                DashButton(CrossStrings.back, style: .tintedGray) { model.back() }
             }
         }
     }
 
-    /// Back plus the step's own buttons.
+    /// Back (plain blue, iOS navigation style) plus the step's own buttons.
     private func navigation(_ model: OnboardingViewModel, @ViewBuilder _ actions: () -> some View) -> some View {
         HStack(spacing: Int(DashSpacing.s)) {
-            DashButton(CrossStrings.back, style: .strokeGray) {
+            DashButton(CrossStrings.back, style: .plainBlue) {
                 passphrase = ""
                 confirmation = ""
                 model.back()
             }
+            Spacer()
             actions()
         }
     }
 }
 
+/// The lock screen (UX-SPEC §4.4): the whole window on the hero blue with
+/// the white wordmark, the network capsule off mainnet, dash-qt's passphrase
+/// text in white and a white Unlock button.
 struct LockScreen: View {
     let model: LockViewModel
+    let network: DashNetwork?
 
     @State var passphrase = ""
 
     var body: some View {
         let model = model
-        VStack(alignment: .leading, spacing: Int(DashSpacing.l)) {
-            SectionHeader(L10n.Lock.title, style: .title2)
-            Text(L10n.Lock.prompt).dashFont(.footnote)
-            DashSecureField(CrossStrings.passphrase, placeholder: CrossStrings.walletPassphrase, text: $passphrase)
-            if let message = model.message {
-                Toast(message, kind: .error)
+        VStack(spacing: Int(DashSpacing.l)) {
+            Spacer()
+            DashIcon(.dashLogo, size: 36, tint: .color(CrossRole.white))
+            if let network, network != .mainnet {
+                NetworkCapsule(L10n.Settings.networkName(network))
             }
-            if model.isDisabled {
-                Toast(L10n.Lock.disabled, kind: .error)
+            Text(L10n.Lock.title).dashFont(.title2).foregroundColor(CrossRole.textOnHero.color)
+            Text(L10n.Lock.prompt)
+                .dashFont(.subhead)
+                .foregroundColor(CrossRole.white.opacity(0.8).color)
+            VStack(alignment: .leading, spacing: Int(DashSpacing.s)) {
+                SecureField(CrossStrings.walletPassphrase, text: $passphrase)
+                    .accessibilityLabel(CrossStrings.passphrase)
+                    .frame(width: 360)
+                    .onSubmit { unlock(model) }
+                if let message = model.message {
+                    Text(message).dashFont(.footnoteMedium).foregroundColor(CrossRole.white.color)
+                }
+                if model.isDisabled {
+                    Text(L10n.Lock.disabled).dashFont(.footnoteMedium).foregroundColor(CrossRole.white.color)
+                }
             }
             DashButton(
-                CrossStrings.unlock, size: .large,
+                CrossStrings.unlock, style: .filledWhite, size: .large,
                 isEnabled: !model.isWorking && !model.isDisabled && model.retryAfter == nil && !passphrase.isEmpty
             ) {
-                let text = passphrase
-                passphrase = ""
-                Task { await model.unlock(passphrase: text, mixingOnly: false) }
+                unlock(model)
             }
             Spacer()
         }
         .padding(Int(DashSpacing.xxxl))
-        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CrossRole.hero.color)
+    }
+
+    private func unlock(_ model: LockViewModel) {
+        guard !passphrase.isEmpty, !model.isWorking, !model.isDisabled, model.retryAfter == nil else { return }
+        let text = passphrase
+        passphrase = ""
+        Task { await model.unlock(passphrase: text, mixingOnly: false) }
     }
 }

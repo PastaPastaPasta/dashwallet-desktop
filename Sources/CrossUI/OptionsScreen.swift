@@ -23,13 +23,7 @@ struct OptionsScreen: View {
         let tabs = model.tabs
         let current = tabs.contains(tab) ? tab : tabs[0]
         Page(CrossStrings.optionsPage) {
-            HStack(spacing: Int(DashSpacing.xs)) {
-                ForEach(tabs, id: \.self) { item in
-                    DashButton(item.title, style: item == current ? .tintedBlue : .plainBlue, size: .small) {
-                        tab = item
-                    }
-                }
-            }
+            SegmentedControl(options: tabs.map { PickerOption($0, $0.title) }, selection: current) { tab = $0 }
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
             }
@@ -39,7 +33,7 @@ struct OptionsScreen: View {
             if applied, model.errorMessage == nil {
                 Toast(CrossStrings.optionsSaved, kind: .success)
             }
-            DashCard {
+            DashCard(spacing: Int(DashSpacing.l)) {
                 switch current {
                 case .main: mainTab(model)
                 case .wallet: walletTab(model)
@@ -49,9 +43,27 @@ struct OptionsScreen: View {
                 case .notifications: notificationsTab(model)
                 }
             }
-            resetSection(model)
+            if current == .network || current == .wallet {
+                // SPV-only note at the bottom of the affected tabs (UX-SPEC §4.12).
+                Toast(
+                    "\(L10n.Options.spvFootnote) \(L10n.Options.spvOnlyOptions.joined(separator: ", "))", kind: .info)
+            }
+            if model.resetFlow != .idle {
+                resetSection(model)
+            }
+            // dash-qt's button bar: Reset Options, then Cancel and OK.
             HStack(spacing: Int(DashSpacing.s)) {
-                DashButton(CrossStrings.ok, style: .filledBlue, size: .small) {
+                if model.resetFlow == .idle {
+                    resetSection(model)
+                }
+                Spacer()
+                DashButton(CrossStrings.cancel, style: .tintedGray) {
+                    model.discard()
+                    dustText = String(model.wallet.dustThreshold)
+                    applied = false
+                    state.closePage()
+                }
+                DashButton(CrossStrings.ok, style: .filledBlue) {
                     if model.wallet.dustProtectionEnabled, let value = Int64(dustText) { model.wallet.dustThreshold = value }
                     Task {
                         do throws(ServiceError) {
@@ -63,17 +75,6 @@ struct OptionsScreen: View {
                         }
                     }
                 }
-                DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
-                    model.discard()
-                    dustText = String(model.wallet.dustThreshold)
-                    applied = false
-                    state.closePage()
-                }
-            }
-            DashCard {
-                Text(L10n.Options.spvFootnote).dashFont(.footnoteMedium).dashForeground(.secondaryText)
-                Text(L10n.Options.spvOnlyOptions.joined(separator: ", ")).dashFont(.footnote)
-                    .dashForeground(.secondaryText)
             }
         }
         .task {
@@ -203,7 +204,7 @@ struct OptionsScreen: View {
                 options: currencyOptions(model),
                 selection: bind({ model.display.localCurrency ?? model.defaultCurrency }, { model.display.localCurrency = $0 }))
         }
-        Text(CrossStrings.currencyListOnly).dashFont(.caption1).dashForeground(.secondaryText)
+        Text(CrossStrings.currencyListOnly).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
     }
 
     private func currencyOptions(_ model: OptionsViewModel) -> [PickerOption<String>] {
@@ -230,7 +231,7 @@ struct OptionsScreen: View {
             L10n.Options.notificationsEnabled,
             isOn: bind({ model.notifications.enabled }, { model.notifications.enabled = $0 }))
         if let status = model.notificationStatusText {
-            Text(status).dashFont(.footnote).dashForeground(.secondaryText)
+            Text(status).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
         }
         DashToggle(
             L10n.Options.showCoinJoinNotifications,
@@ -245,7 +246,7 @@ struct OptionsScreen: View {
         let state = state
         switch model.resetFlow {
         case .idle:
-            DashButton(L10n.Options.resetOptions, style: .plainRed, size: .small) { model.requestReset() }
+            DashButton(L10n.Options.resetOptions, style: .plainRed) { model.requestReset() }
         case .confirming:
             ConfirmationCard(
                 title: L10n.Options.resetTitle, message: L10n.Options.resetQuestion, confirmTitle: CrossStrings.yes,

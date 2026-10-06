@@ -43,6 +43,9 @@ var products: [Product] = [
 
 let dependencies: [Package.Dependency] = [
     .package(path: "Vendor/swift-cross-ui"),
+    // Already a dependency of SwiftCrossUI (same pin in Package.resolved); DashUICross decodes and
+    // tints the exported PNG icons with it before handing them to `Image`.
+    .package(url: "https://github.com/stackotter/swift-image-formats", .upToNextMinor(from: "0.5.0")),
 ]
 
 var targets: [Target] = [
@@ -134,7 +137,14 @@ var targets: [Target] = [
 if !headless {
     products.append(.executable(name: "dash-wallet", targets: ["DashWalletCross"]))
     targets += [
-        .target(name: "DashUICross", dependencies: ["DesignTokens"] + crossUI + nativeBackend),
+        // Sources/DashUICross/Resources/Icons is a symlink to the exported icon set (as for
+        // DashUIMac); Resources/Fonts holds Inter (OFL), the Linux/Windows UI face (UX-SPEC §2.2).
+        .target(
+            name: "DashUICross",
+            dependencies: ["DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats")]
+                + crossUI + nativeBackend,
+            resources: [.process("Resources/Icons"), .copy("Resources/Fonts")]
+        ),
         .target(
             name: "CrossUI",
             dependencies: [
@@ -145,6 +155,13 @@ if !headless {
                 "WalletRuntime",
                 .target(name: "PlatformServicesDesktop", condition: .when(platforms: [.linux, .windows])),
             ] + crossUI
+        ),
+        // Colour roles, text rules, icon tinting and bundled resources of DashUICross.
+        .testTarget(
+            name: "DashUICrossTests",
+            dependencies: [
+                "DashUICross", "DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats"),
+            ]
         ),
         // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(

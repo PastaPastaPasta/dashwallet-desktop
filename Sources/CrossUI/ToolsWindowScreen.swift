@@ -15,22 +15,20 @@ struct ToolsWindowScreen: View {
 
     var body: some View {
         let state = state
-        Page(L10n.Tools.windowTitle) {
-            HStack(spacing: Int(DashSpacing.xs)) {
-                ForEach(ToolsTab.allCases, id: \.self) { item in
-                    DashButton(
-                        item.title, style: item == tab ? .tintedBlue : .plainBlue, size: .small,
-                        isEnabled: item != .networkTraffic,
-                        help: item == .networkTraffic ? L10n.Shell.networkTrafficUnavailable : nil
-                    ) { state.open(.tools(item)) }
-                }
+        Page(L10n.Tools.windowTitle, width: .full) {
+            HStack(spacing: Int(DashSpacing.s)) {
+                SegmentedControl(
+                    options: ToolsTab.allCases.map { PickerOption($0, $0.title) }, selection: tab,
+                    disabled: [.networkTraffic], help: [.networkTraffic: L10n.Shell.networkTrafficUnavailable]
+                ) { state.open(.tools($0)) }
                 Spacer()
-                DashButton(CrossStrings.close, style: .strokeGray, size: .small) { state.closePage() }
+                DashButton(CrossStrings.close, style: .tintedGray, size: .small) { state.closePage() }
             }
             switch tab {
             case .information: InformationTab(model: state.information)
             case .console: ConsoleTab(model: state.console)
-            case .networkTraffic: Toast(L10n.Shell.networkTrafficUnavailable, kind: .info)
+            case .networkTraffic:
+                DashCard { EmptyState(icon: .networkMonitor, title: L10n.Shell.networkTrafficUnavailable) }
             case .peers: PeersTab(model: state.peers)
             case .repair: RepairTab(model: state.repair)
             }
@@ -55,18 +53,25 @@ struct InformationTab: View {
                 Toast(warning.text, kind: .warning)
             }
             if model.sections.isEmpty, model.errorMessage == nil {
-                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
+                LoadingState(CrossStrings.loading)
             }
             ForEach(model.sections) { section in
-                DashCard {
-                    SectionHeader(section.title, style: .subheadMedium)
+                DashCard(spacing: Int(DashSpacing.xs)) {
+                    SectionHeader(section.title, style: .headline)
                     ForEach(section.rows) { row in
-                        KeyValueRow(row.title, row.note.map { "\(row.value)  (\($0))" } ?? row.value)
+                        KeyValueRow(
+                            row.title, row.note.map { "\(row.value)  (\($0))" } ?? row.value, help: row.note,
+                            monospaced: InformationTab.isTechnical(row.title))
                     }
                 }
             }
         }
         .task { await model.load() }
+    }
+
+    /// Hashes are technical values (UX-SPEC §5.6): monospaced.
+    static func isTechnical(_ title: String) -> Bool {
+        title.localizedCaseInsensitiveContains("hash")
     }
 }
 
@@ -96,11 +101,12 @@ struct ConsoleTab: View {
                 Spacer()
                 DashButton(CrossStrings.fontSmaller, style: .tintedGray, size: .small) { model.decreaseFontSize() }
                 DashButton(CrossStrings.fontBigger, style: .tintedGray, size: .small) { model.increaseFontSize() }
-                DashButton(CrossStrings.clearConsole, style: .strokeGray, size: .small) { model.clear() }
+                DashButton(CrossStrings.clearConsole, style: .tintedGray, size: .small) { model.clear() }
             }
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
             }
+            // Console output: the technical monospaced view (UX-SPEC §4.16, §5.6).
             ScrollView {
                 VStack(alignment: .leading, spacing: Int(DashSpacing.xs)) {
                     ForEach(model.entries) { entry in
@@ -111,9 +117,10 @@ struct ConsoleTab: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(Int(DashSpacing.s))
+                .padding(Int(DashSpacing.m))
             }
             .frame(height: 300)
+            .cardBackground(radius: Int(DashRadius.standard))
             if case .awaitingPassphrase = model.state {
                 DashCard {
                     Text(CrossStrings.consoleNeedsPassphrase).dashFont(.footnote)
@@ -124,7 +131,7 @@ struct ConsoleTab: View {
                             passphrase = ""
                             Task { await model.authorize(passphrase: text) }
                         }
-                        DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                        DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                             passphrase = ""
                             model.cancelAuthorization()
                         }
@@ -149,11 +156,11 @@ struct ConsoleTab: View {
                 }
             }
             if model.state == .executing {
-                Text(L10n.Tools.executing).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.Tools.executing).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
             let matches = line.isEmpty || line.contains(" ") ? [] : model.completions(for: line)
             if matches.count > 1 {
-                Text(matches.prefix(12).joined(separator: "  ")).dashFont(.caption1).dashForeground(.secondaryText)
+                Text(matches.prefix(12).joined(separator: "  ")).dashFont(.caption1).dashForeground(CrossRole.textSecondary)
             }
         }
         .task { await model.load() }
@@ -174,10 +181,10 @@ struct ConsoleTab: View {
 
     static func color(_ kind: ConsoleEntryKind) -> DashColor {
         switch kind {
-        case .warning, .error: .red
-        case .command: .blue
-        case .welcome, .info: .secondaryText
-        case .reply: .primaryText
+        case .warning, .error: CrossRole.danger
+        case .command: CrossRole.textLink
+        case .welcome, .info: CrossRole.textSecondary
+        case .reply: CrossRole.textPrimary
         }
     }
 }
@@ -208,17 +215,19 @@ struct PeersTab: View {
             }
             if let peers = model.peers {
                 if peers.isEmpty {
-                    Text(L10n.Peers.none).dashFont(.footnote).dashForeground(.secondaryText)
+                    Text(L10n.Peers.none).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
                 } else {
                     let names = peers.map(Self.rowName)
                     // ADR 0002: the list scrolls inside a fixed-height ScrollView.
                     ScrollView {
                         List(peers.map(PeerRow.init), selection: bind({ selected }, { selected = $0 })) { row in
-                            MenuItem(title: row.peer.address, subtitle: Self.details(row.peer))
+                            MenuItem(icon: .connections, title: row.peer.address, subtitle: Self.details(row.peer))
+                                .padding(.horizontal, Int(DashSpacing.m))
                         }
                         .accessibleRowNames(names)
                     }
-                    .frame(height: 260)
+                    .frame(height: 300)
+                    .cardBackground(radius: CrossLayout.groupRadius)
                     if model.canModerate, let address = selected {
                         HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
                             Text(address).dashFont(.footnoteMedium)
@@ -237,11 +246,11 @@ struct PeersTab: View {
                     }
                 }
             } else if model.error == nil {
-                Text(CrossStrings.loading).dashFont(.footnote).dashForeground(.secondaryText)
+                LoadingState(CrossStrings.loading)
             }
             if model.showsBannedList {
                 DashCard {
-                    SectionHeader(L10n.Tools.bannedPeers, style: .subheadMedium)
+                    SectionHeader(L10n.Tools.bannedPeers, style: .headline)
                     ForEach(model.banned, id: \.subnet) { peer in
                         HStack(spacing: Int(DashSpacing.s)) {
                             MenuItem(
@@ -302,7 +311,7 @@ struct RepairTab: View {
                     destructive: true, onConfirm: { Task { await model.confirm() } },
                     onCancel: { model.cancelConfirmation() })
             case .working:
-                Text(CrossStrings.working).dashFont(.footnote).dashForeground(.secondaryText)
+                LoadingState(CrossStrings.working)
             case .done(let text):
                 Toast(text, kind: .success, actionTitle: CrossStrings.dismiss) { model.dismissResult() }
             case .failed(let text):
@@ -311,7 +320,7 @@ struct RepairTab: View {
                 EmptyView()
             }
             DashCard {
-                SectionHeader(L10n.Tools.rescan, style: .subheadMedium)
+                MenuItem(icon: .rescanBlockchain, title: L10n.Tools.rescan)
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(L10n.Tools.rescan, style: .tintedBlue, size: .small, isEnabled: !model.isRescanning) {
                         Task { await model.rescan(.walletBirth) }
@@ -320,7 +329,7 @@ struct RepairTab: View {
                         Task { await model.rescan(.genesis) }
                     }
                     if model.isRescanning {
-                        DashButton(L10n.Tools.cancelRescan, style: .strokeGray, size: .small) {
+                        DashButton(L10n.Tools.cancelRescan, style: .tintedGray, size: .small) {
                             Task { await model.cancelRescan() }
                         }
                     }
@@ -333,7 +342,7 @@ struct RepairTab: View {
                 }
             }
             DashCard {
-                SectionHeader(L10n.Tools.resetChainData, style: .subheadMedium)
+                MenuItem(icon: .resetWallet, title: L10n.Tools.resetChainData, destructive: true)
                 HStack(spacing: Int(DashSpacing.s)) {
                     DashButton(L10n.Tools.resetChainData, style: .plainRed, size: .small) {
                         model.requestResetChainData()
@@ -344,7 +353,7 @@ struct RepairTab: View {
                 }
             }
             DashCard {
-                SectionHeader(L10n.Tools.birthHeight, style: .subheadMedium)
+                MenuItem(icon: .settings, title: L10n.Tools.birthHeight)
                 HStack(alignment: .bottom, spacing: Int(DashSpacing.s)) {
                     DashTextField(L10n.Tools.birthHeight, placeholder: CrossStrings.blockHeight, text: $birthHeight, width: 200)
                     DashButton(CrossStrings.save, style: .tintedBlue, size: .small, isEnabled: !birthHeight.isEmpty) {

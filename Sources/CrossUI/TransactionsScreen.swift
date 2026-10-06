@@ -19,41 +19,49 @@ struct TransactionsScreen: View {
     @State var labelText = ""
     @State var exportMessage: String?
     @State var exportFailed = false
-    @State var groupByDay = false
+    /// List mode (iOS day cards) is the default; table mode is the dash-qt view.
+    @State var tableMode = false
 
     var body: some View {
         let model = model
-        Page(L10n.Navigation.transactions) {
-            filters(model)
+        Page(L10n.Navigation.transactions, width: tableMode ? .full : .content) {
+            HStack(spacing: Int(DashSpacing.s)) {
+                SegmentedControl(
+                    options: [PickerOption(false, CrossStrings.listMode), PickerOption(true, CrossStrings.tableMode)],
+                    selection: tableMode
+                ) { tableMode = $0 }
+                Spacer()
+                DashButton(CrossStrings.exportCSV, style: .tintedBlue, size: .small, icon: .csvExport) { export(model) }
+            }
+            DashCard(spacing: Int(DashSpacing.s)) {
+                filters(model)
+                chips(model)
+            }
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
-            }
-            HStack(spacing: Int(DashSpacing.s)) {
-                if let total = model.totalMatching {
-                    Text(CrossStrings.matching(total)).dashFont(.footnote).dashForeground(.secondaryText)
-                }
-                if let selected = model.selectedTotal, model.selection.count > 1 {
-                    Text("\(L10n.Transactions.selectedAmount) \(state.format(selected))")
-                        .dashFont(.footnote).dashForeground(.secondaryText)
-                }
-                Spacer()
-                DashButton(CrossStrings.exportCSV, style: .tintedBlue, size: .small) { export(model) }
             }
             if let exportMessage {
                 Toast(exportMessage, kind: exportFailed ? .error : .success)
             }
-            chips(model)
-            if groupByDay {
-                DayGroupList(model: model, state: state)
-            } else {
-                recordList(model)
-            }
-            if model.hasMore {
-                DashButton(CrossStrings.loadMore, style: .strokeGray, size: .small) { Task { await model.loadMore() } }
-            }
             TransactionActionBanner(model: model)
-            if let detail = model.detail {
-                TransactionDetailCard(model: model, state: state, detail: detail, labelText: $labelText)
+            TransactionDetailHost(model: model, state: state, labelText: $labelText)
+            if tableMode {
+                recordList(model)
+            } else {
+                DayGroupList(model: model, state: state)
+            }
+            HStack(spacing: Int(DashSpacing.s)) {
+                if let total = model.totalMatching {
+                    Text(CrossStrings.matching(total)).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
+                }
+                if let selected = model.selectedTotal, model.selection.count > 1 {
+                    Text("\(L10n.Transactions.selectedAmount) \(state.format(selected))")
+                        .dashFont(.footnote).dashForeground(CrossRole.textSecondary)
+                }
+                Spacer()
+                if model.hasMore {
+                    DashButton(CrossStrings.loadMore, style: .tintedGray, size: .small) { Task { await model.loadMore() } }
+                }
             }
         }
         .task {
@@ -70,16 +78,15 @@ struct TransactionsScreen: View {
         HStack(spacing: Int(DashSpacing.xs)) {
             DashButton(
                 L10n.TransactionsM2.all,
-                style: Set(model.offeredChips).isSubset(of: model.selectedChips) ? .tintedBlue : .plainBlue,
+                style: Set(model.offeredChips).isSubset(of: model.selectedChips) ? .tintedBlue : .tintedGray,
                 size: .small
             ) { Task { await model.selectAllChips() } }
             ForEach(model.offeredChips, id: \.self) { chip in
                 DashButton(
-                    chip.title, style: model.selectedChips.contains(chip) ? .tintedBlue : .plainBlue, size: .small
+                    chip.title, style: model.selectedChips.contains(chip) ? .tintedBlue : .tintedGray, size: .small
                 ) { Task { await model.toggleChip(chip) } }
             }
             Spacer()
-            DashToggle(CrossStrings.groupByDay, isOn: $groupByDay)
         }
     }
 
@@ -135,8 +142,7 @@ struct TransactionsScreen: View {
     @ViewBuilder
     private func recordList(_ model: TransactionsViewModel) -> some View {
         if model.rows.isEmpty {
-            Text(model.isLoading ? CrossStrings.loading : CrossStrings.noTransactions)
-                .dashFont(.footnote).dashForeground(.secondaryText)
+            HistoryEmpty(loading: model.isLoading)
         } else {
             let selection = bind(
                 { model.selection.count == 1 ? model.selection.first : nil },
@@ -146,19 +152,22 @@ struct TransactionsScreen: View {
                 })
             // ADR 0002: the List scrolls inside a fixed-height ScrollView and
             // rows are single-line, so the window cannot outgrow X11's limit.
+            // Table mode keeps dash-qt's phrasing ("Received with" + address),
+            // the full-precision amount with its unit and the status text.
             ScrollView {
                 List(model.rows, selection: selection) { record in
                     TransactionView(
-                        direction: Format.direction(record.category, amount: record.amount),
+                        direction: TxPresentation.direction(record),
                         title: "\(model.typeText(for: record))  \(model.addressText(for: record))",
-                        subtitle: "\(Format.date(record.date))  \(model.statusText(for: record))",
+                        subtitle: "\(Format.date(record.date))  ·  \(model.statusText(for: record))",
                         amount: model.amountText(for: record))
                 }
                 .accessibleRowNames(model.rows.map { record in
                     "\(model.typeText(for: record)), \(model.addressText(for: record)), \(model.amountText(for: record)), \(Format.date(record.date))"
                 })
             }
-            .frame(height: 360)
+            .frame(height: 440)
+            .cardBackground(radius: CrossLayout.groupRadius)
         }
     }
 

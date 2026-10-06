@@ -30,20 +30,31 @@ struct SecurityScreen: View {
             if let error = model.errorMessage {
                 Toast(error, kind: .error)
             }
+            // iOS SecurityMenuScreen order (UX-SPEC §4.13), as menu cards.
+            DashCard(padding: Int(DashSpacing.sm), spacing: Int(DashSpacing.xxxs)) {
+                MenuItem(
+                    icon: .security, title: CrossStrings.vaultStatus, trailing: Format.lockState(state.main.lockState))
+            }
             quickUnlock(model)
-            DashCard {
-                DashPicker(
-                    L10n.Security.autoLock,
-                    options: model.autoLockOptions.map { PickerOption($0, L10n.Security.autoLockName($0)) },
-                    selection: bind({ model.autoLockInterval }, { model.setAutoLock($0) }))
-                DashToggle(
-                    L10n.Security.requireAuthentication,
-                    isOn: bind({ model.requireAuthenticationForEveryPayment }, {
-                        model.setRequireAuthenticationForEveryPayment($0)
-                    }))
-                DashToggle(
-                    L10n.Security.autohideBalance,
-                    isOn: bind({ model.autohideBalance }, { model.setAutohideBalance($0) }))
+            DashCard(padding: Int(DashSpacing.sm), spacing: Int(DashSpacing.xxxs)) {
+                MenuRow(icon: .advancedSecurity, title: L10n.Security.autoLock) {
+                    DashPicker(
+                        nil, accessibleName: L10n.Security.autoLock,
+                        options: model.autoLockOptions.map { PickerOption($0, L10n.Security.autoLockName($0)) },
+                        selection: bind({ model.autoLockInterval }, { model.setAutoLock($0) }))
+                }
+                MenuRow(icon: .spendingConfirmation, title: L10n.Security.requireAuthentication) {
+                    DashSwitch(
+                        L10n.Security.requireAuthentication,
+                        isOn: bind({ model.requireAuthenticationForEveryPayment }, {
+                            model.setRequireAuthenticationForEveryPayment($0)
+                        }))
+                }
+                MenuRow(icon: .autohideBalance, title: L10n.Security.autohideBalance) {
+                    DashSwitch(
+                        L10n.Security.autohideBalance,
+                        isOn: bind({ model.autohideBalance }, { model.setAutohideBalance($0) }))
+                }
             }
             recoveryPhraseCard(model)
             forgotPassphraseCard(model)
@@ -56,13 +67,13 @@ struct SecurityScreen: View {
 
     @ViewBuilder
     private func quickUnlock(_ model: SecurityViewModel) -> some View {
-        DashCard {
-            SectionHeader(CrossStrings.quickUnlock, style: .subheadMedium)
+        DashCard(padding: Int(DashSpacing.sm), spacing: Int(DashSpacing.xxxs)) {
             if model.provider == .unavailable {
-                Text(CrossStrings.quickUnlockUnavailable).dashFont(.footnote).dashForeground(.secondaryText)
+                MenuItem(icon: .biometrics, title: CrossStrings.quickUnlock, subtitle: CrossStrings.quickUnlockUnavailable)
             } else if !model.showsQuickUnlock {
-                Text(CrossStrings.quickUnlockNeedsEncryption).dashFont(.footnote).dashForeground(.secondaryText)
+                MenuItem(icon: .biometrics, title: CrossStrings.quickUnlock, subtitle: CrossStrings.quickUnlockNeedsEncryption)
             } else if let policy = model.policy {
+                MenuItem(icon: .biometrics, title: model.providerName ?? CrossStrings.quickUnlock)
                 DashToggle(
                     model.providerName ?? CrossStrings.quickUnlock,
                     isOn: bind({ policy.enrolled }, { on in
@@ -80,7 +91,7 @@ struct SecurityScreen: View {
                             passphrase = ""
                             Task { await model.provideQuickUnlockPassphrase(text) }
                         }
-                        DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                        DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                             passphrase = ""
                             model.cancelQuickUnlockChange()
                         }
@@ -99,7 +110,7 @@ struct SecurityScreen: View {
     private func recoveryPhraseCard(_ model: SecurityViewModel) -> some View {
         let wallets = model.wallets
         DashCard {
-            SectionHeader(CrossStrings.showRecoveryPhrase, style: .subheadMedium)
+            MenuItem(icon: .recoveryPhrase, title: CrossStrings.showRecoveryPhrase)
             if let first = wallets.first {
                 DashPicker(
                     CrossStrings.wallet, options: wallets.map { PickerOption($0.id, $0.name) },
@@ -108,7 +119,7 @@ struct SecurityScreen: View {
                     if model.revealNeedsPassphrase || state.main.lockState == .locked || state.main.lockState == .unlocked {
                         DashSecureField(CrossStrings.passphrase, placeholder: CrossStrings.walletPassphrase, text: $revealPassphrase)
                     }
-                    DashButton(CrossStrings.showRecoveryPhrase, style: .strokeGray, size: .small) {
+                    DashButton(CrossStrings.showRecoveryPhrase, style: .tintedGray, size: .small) {
                         let text = revealPassphrase
                         let wallet = revealWallet ?? first.id
                         revealPassphrase = ""
@@ -119,10 +130,10 @@ struct SecurityScreen: View {
                     }
                 } else {
                     PhraseGrid(words: revealedWords)
-                    DashButton(CrossStrings.hideRecoveryPhrase, style: .strokeGray, size: .small) { revealedWords = [] }
+                    DashButton(CrossStrings.hideRecoveryPhrase, style: .tintedGray, size: .small) { revealedWords = [] }
                 }
             } else {
-                Text(L10n.Shell.noWalletsAvailable).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(L10n.Shell.noWalletsAvailable).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             }
         }
     }
@@ -133,7 +144,7 @@ struct SecurityScreen: View {
     private func forgotPassphraseCard(_ model: SecurityViewModel) -> some View {
         let wallets = model.wallets
         DashCard {
-            SectionHeader(L10n.Security.recoverTitle, style: .subheadMedium)
+            MenuItem(icon: .pin, title: L10n.Security.recoverTitle)
             switch model.forgotPassphrase {
             case .idle:
                 DashButton(L10n.Security.forgotPassphrase, style: .plainBlue, size: .small) { model.startForgotPassphrase() }
@@ -152,7 +163,7 @@ struct SecurityScreen: View {
                         guard let wallet = recoveryWallet ?? wallets.first?.id else { return }
                         Task { await model.submitRecoveryPhrase(phrase, wallet: wallet) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                         recoveryPhrase = ""
                         model.cancelForgotPassphrase()
                     }
@@ -167,10 +178,10 @@ struct SecurityScreen: View {
                         repeatPassphrase = ""
                         Task { await model.chooseNewPassphrase(new, confirmation: repeated) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) { model.cancelForgotPassphrase() }
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) { model.cancelForgotPassphrase() }
                 }
             case .recovering:
-                Text(CrossStrings.working).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(CrossStrings.working).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             case .done:
                 Toast(L10n.Security.passphraseReset, kind: .success)
                 if let text = model.walletsWithoutSecretsText {
@@ -188,7 +199,7 @@ struct SecurityScreen: View {
     @ViewBuilder
     private func wipeCard(_ model: SecurityViewModel) -> some View {
         DashCard {
-            SectionHeader(L10n.Security.wipeTitle, style: .subheadMedium)
+            MenuItem(icon: .resetWallet, title: L10n.Security.wipeTitle, destructive: true)
             switch model.wipeStep {
             case .idle:
                 DashButton(L10n.Security.wipeTitle, style: .plainRed, size: .small) { model.requestWipe() }
@@ -205,14 +216,14 @@ struct SecurityScreen: View {
                         wipePassphrase = ""
                         Task { await model.wipe(confirmation: sentence, passphrase: secret.isEmpty ? nil : secret) }
                     }
-                    DashButton(CrossStrings.cancel, style: .strokeGray, size: .small) {
+                    DashButton(CrossStrings.cancel, style: .tintedGray, size: .small) {
                         wipeSentence = ""
                         wipePassphrase = ""
                         model.cancelWipe()
                     }
                 }
             case .wiping:
-                Text(CrossStrings.working).dashFont(.footnote).dashForeground(.secondaryText)
+                Text(CrossStrings.working).dashFont(.footnote).dashForeground(CrossRole.textSecondary)
             case .done:
                 Toast(L10n.Security.wiped, kind: .success)
             case .failed(let text):

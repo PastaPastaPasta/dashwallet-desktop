@@ -130,7 +130,33 @@ live_chooser() {
     || { echo "== live-chooser: FAIL no engine shutdown message"; status=2; }
 }
 
-if [[ "${DWD_CROSSUI_SUITE:-m1}" == m2 ]]; then
+# UX restyle (DWD_CROSSUI_SUITE=ux, UX-SPEC §7): every restyled screen in
+# light and dark, plus onboarding, lock, sync overlay and the gallery.
+ux_sessions() {
+  for appearance in light dark; do
+    session "ux-$appearance-main" "ux-$appearance=flow:ux-main" --demo --appearance "$appearance"
+    session "ux-$appearance-onboarding" "ux-$appearance-onboarding=flow:ux-single" --demo onboarding --appearance "$appearance"
+    session "ux-$appearance-lock" "ux-$appearance-lock=flow:ux-single" --demo locked --appearance "$appearance"
+    session "ux-$appearance-overlay" "ux-$appearance-overlay=flow:ux-single" --demo offline --appearance "$appearance"
+  done
+  session ux-gallery "ux-light-gallery=flow:ux-single" --gallery
+}
+
+if [[ "${DWD_CROSSUI_SUITE:-m1}" == ux ]]; then
+  # The M1 flows and the M2 menus/options/pages first, as a regression
+  # check; their screenshots stay in the container, their checks are kept.
+  ux_out=$OUT
+  OUT=/tmp/regression
+  mkdir -p "$OUT"
+  m1_sessions
+  session m2-menus "m2-1-menus=flow:m2-menus" --demo
+  session m2-options "m2-2-options=flow:m2-options" --demo --page options
+  session m2-tools "m2-3-tools=flow:m2-tools" --demo --page tools-console
+  session m2-pages "m2-5-pages=flow:m2-pages" --demo
+  cp "$OUT/atspi-checks.json" "$ux_out/regression-checks.json"
+  OUT=$ux_out
+  ux_sessions
+elif [[ "${DWD_CROSSUI_SUITE:-m1}" == m2 ]]; then
   # The M1 flows run first as a regression check; their screenshots stay in
   # the container and only their checks are kept.
   m2_out=$OUT

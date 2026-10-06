@@ -103,6 +103,13 @@ public final class CrossAppState {
     @ObservationIgnored private var signVerifyModel: (network: DashNetwork, model: SignVerifyViewModel)?
     @ObservationIgnored private var transactionsModel: (network: DashNetwork, model: TransactionsViewModel)?
     @ObservationIgnored private var onboardingModel: OnboardingViewModel?
+    @ObservationIgnored private var shortcutModel: (network: DashNetwork, model: ShortcutBarViewModel)?
+    @ObservationIgnored private var backupReminderModel: BackupReminderViewModel?
+    /// The records behind the Overview's recent rows, by id.
+    var overviewRecords: [TxRecord.ID: TxRecord] = [:]
+    /// Forces the window's appearance (`--appearance`, screenshots); `nil`
+    /// follows the Theme setting.
+    public var appearanceOverride: AppTheme?
     @ObservationIgnored private(set) lazy var options: OptionsViewModel = {
         let model = OptionsViewModel(env: env, m2: m2)
         model.onCoinControlFeatureChanged = { [weak main = self.main] in main?.coinControlFeatureChanged() }
@@ -182,6 +189,58 @@ public final class CrossAppState {
         transactionsModel = (network, model)
         return model
     }
+
+    /// The Overview's shortcut card (IOS-025), per network.
+    func shortcuts() -> ShortcutBarViewModel? {
+        guard let network = main.network else { return nil }
+        if let cached = shortcutModel, cached.network == network { return cached.model }
+        shortcutModel?.model.stop()
+        let model = ShortcutBarViewModel(env: env, m2: m2, network: network)
+        model.start()
+        shortcutModel = (network, model)
+        return model
+    }
+
+    /// The 24-hour backup reminder on the Overview (IOS-005).
+    func backupReminder() -> BackupReminderViewModel {
+        if let backupReminderModel { return backupReminderModel }
+        let model = BackupReminderViewModel(env: env, m2: m2)
+        model.start()
+        backupReminderModel = model
+        return model
+    }
+
+    /// Loads the history records behind the Overview's recent rows, with
+    /// HomeViewModel's own query, so the rows can show a type title and a
+    /// status chip instead of the raw address (UX-SPEC §5.4).
+    func loadOverviewRecords() async {
+        guard let wallet = env.walletState.selectedWalletID else {
+            overviewRecords = [:]
+            return
+        }
+        let filter = HistoryFilter(
+            types: Set(TxType.allCases).subtracting(HomeViewModel.hiddenRecentTypes),
+            statuses: Set(TxStatusKind.allCases).subtracting([.conflicted]))
+        let query = HistoryQuery(
+            filter: filter, sort: .newestFirst, limit: HomeViewModel.recentLimit(coinJoin: main.features.coinJoin))
+        guard let page = try? await env.history.page(wallet: wallet, query: query) else { return }
+        overviewRecords = Dictionary(page.records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Performs a shortcut-card route. Cross has no QR image decoder: Scan QR
+    /// opens Send, whose Paste field takes a `dash:` URI.
+    func perform(shortcut route: ShortcutRoute, openURL: (URL) -> Void) async {
+        switch route {
+        case .section(let item): await perform(.section(item))
+        case .shell(let command): await perform(command)
+        case .scanQR: await perform(.section(.send))
+        case .openURL(let url): openURL(url)
+        case .switchWallet: open(.wallets)
+        }
+    }
+
+    /// Amount text for `AmountText` in the current display unit.
+    var amountPresenter: AmountPresenter { AmountPresenter(env: env) }
 
     /// Coin control of the active network (QT-068…074), shared by the Send
     /// page's panel and the Coin Selection page. Its selection is what Send

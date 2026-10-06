@@ -43,6 +43,10 @@ struct DashWalletCrossApp: App {
             // name (ADR 0002, gap A7).
             g_set_application_name(L10n.Navigation.appName)
         #endif
+        // Inter, the Linux/Windows UI face (UX-SPEC §2.2), before GTK builds its font map.
+        if ToolkitTheme.registerFonts() == 0, ProcessInfo.processInfo.environment["DWD_FONT_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data("dash-wallet: bundled fonts not registered\n".utf8))
+        }
         if case .demo(let scenario) = options.mode {
             let network = options.networkName.flatMap(Self.runtimeNetwork) ?? .testnet
             let clipboard = AppOSServices.clipboard
@@ -54,6 +58,7 @@ struct DashWalletCrossApp: App {
                 capabilities: CrossPlatformCapabilities(clipboard: clipboard.available, tray: false),
                 notice: CrossDemoText.notice)
             state.appUsage = AppLaunchOptions.usage
+            state.appearanceOverride = options.appearance
             Self.open(page: options.page, in: state)
             host.state = state
         }
@@ -287,6 +292,7 @@ struct LiveStartView: View {
             return
         }
         quitHook.session = session
+        session.state.appearanceOverride = options.appearance
         DashWalletCrossApp.open(page: options.page, in: session.state)
         self.session = session
         host.state = session.state
