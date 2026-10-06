@@ -1037,7 +1037,9 @@ fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase
         Ok(_) => Phase::Sent,
         Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => Phase::Unknown,
         Err(EngineError::Send(
-            SendFailure::NoPeers | SendFailure::BroadcastRejected { .. } | SendFailure::PreparedTxSpent,
+            SendFailure::NoPeers
+            | SendFailure::BroadcastRejected { .. }
+            | SendFailure::PreparedTxSpent,
         )) if first => Phase::Released,
         // Not dispatched (session closed, wallet gone): as before.
         Err(_) if first => Phase::Pending,
@@ -1442,6 +1444,43 @@ mod tests {
         assert!(FeeMode::PerKb(999).rate().is_err());
         assert_eq!(FeeMode::PerKb(1000).rate().unwrap(), FeeRate::new(1000));
         assert!(FeeMode::PerKb(MAX_FEE_PER_KB + 1).rate().is_err());
+    }
+
+    #[test]
+    fn a_transaction_that_may_be_on_the_network_is_never_released() {
+        let accepted: Result<BroadcastOutcome, EngineError> = Ok(BroadcastOutcome {
+            txid: "ab".repeat(32),
+        });
+        let unknown = || {
+            Err(SendFailure::BroadcastUnknown {
+                reason: "no verdict".into(),
+            }
+            .into())
+        };
+        let never_sent = [
+            SendFailure::NoPeers,
+            SendFailure::BroadcastRejected {
+                reason: "not connected".into(),
+            },
+            SendFailure::PreparedTxSpent,
+        ];
+        let closed = || Err(EngineError::NetworkNotOpen("regtest".into()));
+
+        // First broadcast of a pending transaction.
+        assert_eq!(settle(true, &accepted), Phase::Sent);
+        assert_eq!(settle(true, &unknown()), Phase::Unknown);
+        for f in &never_sent {
+            assert_eq!(settle(true, &Err(f.clone().into())), Phase::Released);
+        }
+        assert_eq!(settle(true, &closed()), Phase::Pending);
+
+        // A repeat after an unknown outcome.
+        assert_eq!(settle(false, &accepted), Phase::Sent);
+        assert_eq!(settle(false, &unknown()), Phase::Unknown);
+        for f in &never_sent {
+            assert_eq!(settle(false, &Err(f.clone().into())), Phase::Unknown);
+        }
+        assert_eq!(settle(false, &closed()), Phase::Unknown);
     }
 
     #[test]

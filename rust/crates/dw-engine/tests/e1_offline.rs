@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     AddressChain, AddressFilter, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent,
-    EventSink, HistoryFilter, HistoryQuery, HistorySort, ImportOptions, NetworkSession, RescanFrom,
-    SessionOptions, WalletId,
+    EventSink, HistoryFilter, HistoryQuery, HistorySort, ImportOptions, NetworkSession, NoticeCode,
+    RescanFrom, SessionOptions, WalletId,
 };
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -219,6 +219,68 @@ fn names_rename_and_remove() {
     let again = import(&engine, &s, LEGAL_12, genesis()).unwrap();
     assert_eq!(again, b);
     assert_eq!(s.wallet_info(&b).unwrap().name, "Wallet 2");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
+    // Encrypted and locked: refused before the grant is looked at, nothing
+    // removed.
+    let dir = tempfile::tempdir().unwrap();
+    let rec = Arc::new(Recorder::default());
+    let engine = new_engine(&dir.path().join("data"), Arc::clone(&rec));
+    let s = open(&engine);
+    engine
+        .block_on(s.vault_op(|v| v.create(Some(b"remove passphrase"))))
+        .unwrap();
+    let a = import(&engine, &s, ABANDON_12, genesis()).unwrap();
+    s.lock_vault().unwrap();
+    let r = engine.block_on(s.remove_wallet(a, "not-a-grant".into()));
+    assert!(
+        matches!(r, Err(EngineError::Vault(dw_vault::VaultError::Locked))),
+        "{r:?}"
+    );
+    assert!(s.wallet_info(&a).is_ok());
+    assert!(s.vault().has_wallet_secret(&a.0));
+    engine.block_on(engine.shutdown()).unwrap();
+
+    // The vault file cannot be rewritten when the records are deleted: the
+    // wallet is removed and announced, the leftover seed is a notice.
+    let dir = tempfile::tempdir().unwrap();
+    let rec = Arc::new(Recorder::default());
+    let engine = new_engine(&dir.path().join("data"), Arc::clone(&rec));
+    let s = open(&engine);
+    unencrypted_vault(&engine, &s);
+    let a = import(&engine, &s, ABANDON_12, genesis()).unwrap();
+    let wipe = engine
+        .block_on(s.vault_op(|v| v.authorize(GrantPurpose::Wipe, Credential::None)))
+        .unwrap();
+    // A directory where the vault writes its temporary file before the
+    // atomic rename (dw-vault `file::write`) makes that write fail.
+    let obstruction = s.vault().dir().join("vault.dwv.tmp");
+    std::fs::create_dir(&obstruction).unwrap();
+    engine.block_on(s.remove_wallet(a, wipe.id)).unwrap();
+    assert!(s.wallet_infos().unwrap().is_empty());
+    assert!(
+        s.vault().has_wallet_secret(&a.0),
+        "the seed was left behind"
+    );
+    let events = rec.events();
+    let removed = events.iter().position(|e| {
+        *e == EngineEvent::WalletRemoved {
+            network: DashNetwork::Regtest,
+            wallet_id: a,
+        }
+    });
+    let notice = events.iter().position(|e| {
+        matches!(e, EngineEvent::Notice { code: NoticeCode::WalletSecretNotDeleted, detail, .. }
+            if detail.contains(&a.to_string()))
+    });
+    assert!(
+        matches!((removed, notice), (Some(r), Some(n)) if r < n),
+        "{events:?}"
+    );
+    std::fs::remove_dir(&obstruction).unwrap();
     engine.block_on(engine.shutdown()).unwrap();
 }
 

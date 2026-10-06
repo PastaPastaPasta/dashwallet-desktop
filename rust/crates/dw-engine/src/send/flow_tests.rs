@@ -124,6 +124,52 @@ impl Fixture {
         })
     }
 
+    /// Removes a coin from key-wallet's unspent set, as when the wallet sees
+    /// a transaction spending it (SPV feeds a broadcast back into the
+    /// wallet's mempool view, or a block confirms it).
+    fn see_spent(&self, outpoint: OutPoint) {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(async move {
+                session
+                    .on_runtime(async move {
+                        let wallet = inner.wallet(&id).await?;
+                        let mut state = wallet.state_mut().await;
+                        state
+                            .core_wallet
+                            .accounts
+                            .standard_bip44_accounts
+                            .get_mut(&0)
+                            .expect("BIP44 account 0")
+                            .utxos
+                            .remove(&outpoint);
+                        Ok(())
+                    })
+                    .await
+            })
+            .unwrap();
+    }
+
+    /// A fresh receive address of the wallet.
+    fn own_address(&self) -> String {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(async move {
+                session
+                    .on_runtime(async move {
+                        let w = inner.wallet(&id).await?;
+                        Ok(w.core().next_receive_address_for_account(0).await?)
+                    })
+                    .await
+            })
+            .unwrap()
+            .to_string()
+    }
+
     fn spend_grant(&self, max_duffs: u64) -> String {
         self.session
             .vault()
@@ -602,4 +648,224 @@ fn address_book_follows_dash_qt_rules() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn close_waits_for_in_flight_prepare_and_broadcast() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.credit(2, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .unwrap();
+    let grant = f.spend_grant(10_000_000);
+    let wallet = {
+        let session = Arc::clone(&f.session);
+        let inner = Arc::clone(&session);
+        let id = f.wallet;
+        f.engine
+            .block_on(session.on_runtime(async move { inner.wallet(&id).await }))
+            .unwrap()
+    };
+    f.engine.block_on(async {
+        // Holding the wallet manager's write lock parks both calls once they
+        // are admitted: prepare reading the coins, broadcast (SPV stopped:
+        // never sent) releasing key-wallet's reservation.
+        let held = wallet.state_mut().await;
+        let prepare = tokio::spawn({
+            let draft = Arc::clone(&draft);
+            async move { draft.prepare(grant).await }
+        });
+        let broadcast = tokio::spawn({
+            let draft = Arc::clone(&draft);
+            async move { draft.broadcast(prepared).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let mut close = Box::pin(f.engine.close_network(DashNetwork::Regtest));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), &mut close)
+                .await
+                .is_err(),
+            "close finished while a prepare and a broadcast were in flight"
+        );
+        assert!(!prepare.is_finished() && !broadcast.is_finished());
+        drop(held);
+
+        // Both complete against the open session, then the close does.
+        let second = prepare.await.unwrap().expect("admitted before the close");
+        assert_eq!(send_failure(broadcast.await.unwrap()), SendFailure::NoPeers);
+        assert!(close.await.unwrap());
+        assert!(!f.session.is_open());
+        // Calls after the close are refused.
+        assert!(matches!(
+            draft.broadcast(second).await,
+            Err(EngineError::NetworkNotOpen(_))
+        ));
+    });
+}
+
+#[test]
+fn unknown_outcome_stays_reserved_and_rebroadcastable() {
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000)))
+        .unwrap();
+    // What a dispatch without an acceptance verdict leaves behind; the
+    // regtest suite (test_l1_send.py) drives a real one.
+    *p.phase() = Phase::Unknown;
+
+    // A repeat with SPV stopped reaches nobody, but the first dispatch may
+    // have: the outcome is still unknown and the coin stays reserved.
+    for _ in 0..2 {
+        match send_failure(f.engine.block_on(draft.broadcast(Arc::clone(&p)))) {
+            SendFailure::BroadcastUnknown { reason } => {
+                assert!(reason.contains("SPV"), "{reason}")
+            }
+            other => panic!("expected broadcast_unknown, got {other:?}"),
+        }
+        assert_eq!(f.reserved(), vec![a]);
+    }
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.abandon(Arc::clone(&p)))),
+        SendFailure::PreparedTxSpent
+    );
+    // Dropping the handle releases nothing, and selection still skips it.
+    drop(p);
+    assert_eq!(f.reserved(), vec![a]);
+    let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert_eq!(
+        send_failure(f.engine.block_on(other.estimate())),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    );
+
+    // Once the wallet sees the coin spent, the reservation goes with it.
+    f.see_spent(a);
+    assert!(f.reserved().is_empty());
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+}
+
+#[test]
+fn coin_control_choice_the_builder_would_drop_fails_before_the_grant() {
+    let f = fixture(false);
+    let big = f.credit(1, COIN);
+    // At 10 duff/byte an input costs 1,480 duffs × 1000 / 1000 = 1.48M
+    // duffs; this coin is worth less, so key-wallet's selector covers the
+    // payment without it.
+    let tiny = f.credit(2, 1_000_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    draft
+        .set_source(CoinSource::Outpoints(vec![big, tiny]))
+        .unwrap();
+    draft.set_fee(FeeMode::PerKb(MAX_FEE_PER_KB)).unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.estimate())),
+        SendFailure::OutpointUnavailable(tiny)
+    );
+    let grant = f.spend_grant(10_000_000);
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.prepare(grant.clone()))),
+        SendFailure::OutpointUnavailable(tiny)
+    );
+    assert!(f.reserved().is_empty());
+    // The grant was not redeemed: it pays for the payment without the coin.
+    draft.set_source(CoinSource::Outpoints(vec![big])).unwrap();
+    let p = f.engine.block_on(draft.prepare(grant)).unwrap();
+    assert_eq!(p.summary().inputs.len(), 1);
+}
+
+#[test]
+fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let own = f.own_address();
+    let listed_unlabelled = other_foreign();
+    let new = Address::new(
+        dashcore::Network::Regtest,
+        Payload::PubkeyHash(PubkeyHash::from_byte_array([6; 20])),
+    )
+    .to_string();
+    let save = |address: &str, label: &str, purpose| {
+        f.engine
+            .block_on(f.session.save_address_book_entry(
+                f.wallet,
+                address.into(),
+                label.into(),
+                purpose,
+                false,
+            ))
+            .unwrap();
+    };
+    save(FOREIGN, "Alice", BookPurpose::Send);
+    save(&own, "Savings", BookPurpose::Receive);
+    save(&listed_unlabelled, "", BookPurpose::Send);
+    let labelled = |address: &str, label: &str| Recipient {
+        label: Some(label.into()),
+        message: Some("rent".into()),
+        ..pay(address, 1_000_000)
+    };
+    let draft = f.draft(vec![
+        labelled(FOREIGN, "Bob"),
+        labelled(&own, "Mine"),
+        labelled(&listed_unlabelled, "Carol"),
+        pay(&new, 1_000_000),
+    ]);
+    let book = || {
+        let mut entries: Vec<(String, String, BookPurpose)> = f
+            .engine
+            .block_on(f.session.address_book(f.wallet, None, None))
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.address, e.label, e.purpose))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    };
+    let before = book();
+
+    // Never sent (SPV stopped): nothing is written.
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(3_000_000)))
+        .unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.broadcast(Arc::clone(&p)))),
+        SendFailure::NoPeers
+    );
+    assert_eq!(book(), before);
+    let txid = p.summary().txid.clone();
+    let message = || {
+        f.engine
+            .block_on(f.session.tx_message(f.wallet, txid.clone()))
+            .unwrap()
+    };
+    assert_eq!(message(), None);
+
+    // What an accepted (or unknown) broadcast writes.
+    f.engine
+        .block_on(f.session.record_send_metadata(f.wallet, &p))
+        .unwrap();
+    let mut want = vec![
+        (FOREIGN.to_string(), "Alice".to_string(), BookPurpose::Send),
+        (own.clone(), "Savings".to_string(), BookPurpose::Receive),
+        (
+            listed_unlabelled.clone(),
+            "Carol".to_string(),
+            BookPurpose::Send,
+        ),
+        (new.clone(), String::new(), BookPurpose::Send),
+    ];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(book(), want);
+    assert_eq!(message().as_deref(), Some("rent\nrent\nrent"));
+    // Writing it again (a repeated broadcast) changes nothing.
+    f.engine
+        .block_on(f.session.record_send_metadata(f.wallet, &p))
+        .unwrap();
+    assert_eq!(book(), want);
 }
