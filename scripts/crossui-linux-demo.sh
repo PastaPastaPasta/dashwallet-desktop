@@ -32,4 +32,5 @@ docker run --rm \
   -e CARGO_TARGET_DIR=/target \
   -e CARGO_BUILD_JOBS="${DWD_LINUX_JOBS:-8}" \
   -e DWD_MIN_FREE_GB="${DWD_MIN_FREE_GB:-15}" \
+  -e DWD_CROSSUI_SUITE="${DWD_CROSSUI_SUITE:-m1}" \
   "$IMAGE" bash /src/ci/linux/crossui/container-demo.sh 2>&1 | tee "$OUT/run.log"

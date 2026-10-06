@@ -58,7 +58,8 @@ def screenshot(out_dir, step):
     tree = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True, text=True).stdout
     window = None
     for line in tree.splitlines():
-        if '"Dash Wallet"' in line:
+        # "Dash Wallet", or "Dash Wallet - <wallet> - [network]" (QT-011).
+        if '"Dash Wallet' in line:
             window = line.split()[0]
             break
     source = f"xwd -id {window} -silent" if window else "xwd -root -silent"
@@ -242,6 +243,196 @@ def overlay_flow(report, app, out_dir, step):
     record(app, out_dir, f"{step}-hidden")
 
 
+# --- M2 flows -------------------------------------------------------------
+
+def toggle(report, app, title, timeout=15):
+    """Flips the switch named `title` through its AT-SPI Action (GtkSwitch 'toggle')."""
+    hits = wait_for(app, lambda n, i: i["role"] in ("check box", "toggle button", "switch") and i["name"] == title
+                    and "sensitive" in i["states"], timeout=timeout)
+    action = safe(lambda: hits[0][0].queryAction()) if hits else None
+    ok = action is not None and action.nActions > 0 and bool(safe(lambda: action.doAction(0), False))
+    report.check("hard", f"toggle '{title}' through AT-SPI Action", ok,
+                 "" if hits else "no sensitive switch with that name")
+    return ok
+
+
+def select_sidebar(report, app, item):
+    listbox, texts = sidebar(app)
+    ok = False
+    if listbox is not None and item in texts:
+        selection = safe(lambda: listbox.querySelection())
+        ok = selection is not None and bool(safe(lambda: selection.selectChild(texts.index(item)), False))
+    report.check("hard", f"select sidebar '{item}' through AT-SPI Selection", ok, str(texts))
+    return ok
+
+
+def named(role_names, title):
+    def predicate(_n, info):
+        return info["role"] in role_names and info["name"] == title
+    return predicate
+
+
+def m2_menus_flow(report, app, out_dir, step):
+    """`--demo`: dash-qt's menu bar (File, Settings, Window, Help) from the
+    shell model, and the window title with the network tag (QT-011)."""
+    report.check("hard", "menus: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    frames = [c for c in children(app) if role(c) == "frame"]
+    titles = [name(f) for f in frames]
+    report.check("hard", "menus: window title is 'Dash Wallet - … - [testnet]' (QT-011)",
+                 any(t.startswith("Dash Wallet - ") and t.endswith("[testnet]") for t in titles), str(titles))
+    bar = wait_for(app, lambda n, i: i["role"] == "menu bar", 10)
+    report.check("hard", "menus: the window has a menu bar", bool(bar))
+    _lines, nodes = walk(app)
+    items = [i["name"] for _n, i, _d in nodes if i["role"] in ("menu item", "menu")]
+    for title in ("File", "Settings", "Window", "Help"):
+        report.check("hard", f"menus: top-level menu '{title}'", title in items, str(items[:12]))
+    record(app, out_dir, f"{step}-overview")
+
+
+def m2_options_flow(report, app, out_dir, step):
+    """`--demo --page options`: the tabs, Wallet ▸ coin control on, OK; then
+    Send shows Coin Control Features, Inputs… opens Coin Selection, and
+    selecting a coin fills the summary (QT-068…074, QT-135…141)."""
+    report.check("hard", "options: page shown", bool(wait_for(app, has_text("Reset Options"), 30)))
+    record(app, out_dir, f"{step}-main")
+    if not press(report, app, "Wallet"):
+        return
+    report.check("hard", "options: Wallet tab shows the coin control switch",
+                 bool(wait_for(app, named(("check box", "toggle button", "switch"), "Enable coin control features"), 10)))
+    record(app, out_dir, f"{step}-wallet")
+    if not toggle(report, app, "Enable coin control features"):
+        return
+    if not press(report, app, "OK"):
+        return
+    report.check("hard", "options: OK saves ('Options saved.')", bool(wait_for(app, has_text("Options saved."), 10)))
+    if press(report, app, "Network"):
+        report.check("hard", "options: Network tab says proxy needs an engine update",
+                     bool(wait_for(app, has_text_prefix("Proxy support requires an engine update"), 10)))
+        record(app, out_dir, f"{step}-network")
+    if press(report, app, "Display"):
+        report.check("hard", "options: Display tab has the third-party URL field",
+                     bool(wait_for(app, named(("text", "entry"), "Third-party transaction URLs"), 10)))
+        record(app, out_dir, f"{step}-display")
+    if not select_sidebar(report, app, "Send"):
+        return
+    report.check("hard", "coin control: Send shows 'Coin Control Features'",
+                 bool(wait_for(app, has_text("Coin Control Features"), 15)))
+    if not press(report, app, "Inputs…"):
+        return
+    report.check("hard", "coin selection: page shown", bool(wait_for(app, has_text("Coin Selection"), 15)))
+    report.check("hard", "coin selection: 'automatically selected' before a pick",
+                 bool(wait_for(app, has_text("automatically selected"), 10)))
+    record(app, out_dir, f"{step}-coin-selection")
+    coin = wait_for(app, lambda n, i: i["role"] in ("check box", "toggle button", "switch")
+                    and (i["name"] or "").startswith("Select ") and "sensitive" in i["states"], 10)
+    report.check("hard", "coin selection: coins are switches named 'Select <amount> at <address>'", bool(coin),
+                 coin[0][1]["name"] if coin else "")
+    if not coin or not toggle(report, app, coin[0][1]["name"]):
+        return
+    report.check("hard", "coin selection: the summary shows Quantity after a pick",
+                 bool(wait_for(app, has_text("Quantity:"), 10)))
+    record(app, out_dir, f"{step}-coin-selected")
+
+
+def m2_tools_flow(report, app, out_dir, step):
+    """`--demo --page tools-console`: run getblockcount in the console, then
+    the Information, Peers and Repair tabs (QT-143…148)."""
+    report.check("hard", "console: welcome text", bool(wait_for(
+        app, has_text_prefix("Welcome to the Dash Wallet RPC console."), 30)))
+    report.check("hard", "console: anti-scam warning", bool(wait_for(app, has_text_prefix("WARNING: Scammers"), 5)))
+    if not (type_into(report, app, "Console command", "getblockcount") and press(report, app, "Run")):
+        return
+    echoed = wait_for(app, has_text("> getblockcount"), 10)
+    reply = wait_for(app, lambda n, i: i["role"] == "label" and re.fullmatch(r"\d+", i.get("text") or i["name"] or ""), 10)
+    report.check("hard", "console: the command is echoed and answered with a block count", bool(echoed and reply),
+                 (reply[0][1].get("text") or reply[0][1]["name"]) if reply else "")
+    record(app, out_dir, f"{step}-console")
+    if press(report, app, "Information"):
+        report.check("hard", "information: client version row", bool(wait_for(app, has_text("Client version"), 10)))
+        report.check("hard", "information: full-node rows say so",
+                     bool(wait_for(app, lambda n, i: "Requires full-node data source" in (i.get("text") or i["name"] or ""), 10)))
+        record(app, out_dir, f"{step}-information")
+    if press(report, app, "Peers"):
+        report.check("hard", "peers tab: 'Change Peers'", bool(wait_for(app, named(("push button",), "Change Peers"), 10)))
+        record(app, out_dir, f"{step}-peers")
+    if press(report, app, "Repair"):
+        report.check("hard", "repair tab: rescan and reset buttons",
+                     bool(wait_for(app, named(("push button",), "Rescan Chain (full)"), 10))
+                     and bool(wait_for(app, named(("push button",), "Reset chain data and resync"), 5)))
+        record(app, out_dir, f"{step}-repair")
+
+
+def m2_psbt_flow(report, app, out_dir, step):
+    """`--demo --page psbt`: load from the clipboard (empty) and from pasted
+    base64; the demo has no PSBT parser, so it says the feature is not
+    available instead of inventing an analysis (QT-076, QT-078)."""
+    report.check("hard", "psbt: page shown", bool(wait_for(app, has_text("Load a partially signed transaction"), 30)))
+    record(app, out_dir, f"{step}-empty")
+    if press(report, app, "Load PSBT from clipboard…"):
+        report.check("hard", "psbt: an empty clipboard is refused with dash-qt's text",
+                     bool(wait_for(app, has_text("Unable to decode PSBT from clipboard (invalid base64)"), 10)))
+    if not (type_into(report, app, "PSBT (base64)", "cHNidP8BAAoCAAAAAAAAAAAAAAAA") and press(report, app, "Load")):
+        return
+    report.check("hard", "psbt: the demo answers 'not available yet' (no fake analysis)",
+                 bool(wait_for(app, has_text("This feature is not available yet."), 10)))
+    record(app, out_dir, f"{step}-load")
+
+
+def m2_pages_flow(report, app, out_dir, step):
+    """`--demo`: Wallets, Security, About, Command-line options from the
+    sidebar, then a transaction's details with dash-qt's actions."""
+    report.check("hard", "pages: overview shown", bool(wait_for(app, has_text("Balances"), 30)))
+    if press(report, app, "Wallets"):
+        report.check("hard", "wallets: import, restore and watch-only controls",
+                     bool(wait_for(app, named(("push button",), "Import File…"), 10))
+                     and bool(wait_for(app, named(("text", "entry"), "Account xpub"), 5)))
+        record(app, out_dir, f"{step}-wallets")
+    if press(report, app, "Security"):
+        report.check("hard", "security: auto-lock picker", bool(wait_for(app, named(("combo box",), "Auto Lock"), 10)))
+        report.check("hard", "security: says there is no biometric unlock on this system",
+                     bool(wait_for(app, has_text_prefix("This computer has no biometric unlock"), 10)))
+        record(app, out_dir, f"{step}-security")
+    if press(report, app, "About"):
+        report.check("hard", "about: Export Logs", bool(wait_for(app, named(("push button",), "Export Logs"), 10)))
+        record(app, out_dir, f"{step}-about")
+        if press(report, app, "Command-line options"):
+            report.check("hard", "command-line options: dash-qt options listed",
+                         bool(wait_for(app, has_text("-choosedatadir"), 10)))
+            record(app, out_dir, f"{step}-command-line")
+    if not select_sidebar(report, app, "Transactions"):
+        return
+    rows = wait_for(app, lambda n, i: i["role"] == "list item" and ("Received" in (i["name"] or "") or "Sent" in (i["name"] or "")), 15)
+    report.check("hard", "transactions: rows listed", bool(rows))
+    lists = [n for n, info in find_all(app, lambda n, i: is_list_container(i)) if len(list_items(n)) > 0]
+    target = max(lists, key=lambda n: len(list_items(n))) if lists else None
+    selection = safe(lambda: target.querySelection()) if target is not None else None
+    ok = selection is not None and bool(safe(lambda: selection.selectChild(0), False))
+    report.check("hard", "transactions: select the first row through AT-SPI Selection", ok)
+    if not ok:
+        return
+    report.check("hard", "transactions: details show dash-qt's Abandon / Resend actions",
+                 bool(wait_for(app, named(("push button",), "Abandon transaction"), 15))
+                 and bool(wait_for(app, named(("push button",), "Resend transaction"), 5)))
+    report.check("hard", "transactions: details list 'Net amount'", bool(wait_for(app, has_text("Net amount"), 5)))
+    record(app, out_dir, f"{step}-transaction-details")
+
+
+def m2_chooser_flow(report, app, out_dir, step):
+    """Live `-choosedatadir`: dash-qt's Intro page (QT-004), OK with the
+    default directory, then the wallet opens (onboarding on a new root)."""
+    report.check("hard", "chooser: welcome page", bool(wait_for(app, has_text("Welcome to Dash Wallet."), 60)))
+    report.check("hard", "chooser: status line for the default directory",
+                 bool(wait_for(app, lambda n, i: (i.get("text") or i["name"] or "") in (
+                     "A new data directory will be created.",
+                     "Directory already exists. Add /name if you intend to create a new directory here."), 15)))
+    record(app, out_dir, f"{step}-chooser")
+    if not press(report, app, "OK"):
+        return
+    report.check("hard", "chooser: OK opens the wallet (onboarding on the new root)",
+                 bool(wait_for(app, has_text("Create a new wallet"), 300)))
+    record(app, out_dir, f"{step}-opened")
+
+
 def sidebar(app):
     for node, _info in find_all(app, lambda n, i: is_list_container(i)):
         items = list_items(node)
@@ -284,16 +475,18 @@ def main():
     frames = []
     while time.monotonic() < deadline:
         frames = [c for c in children(app) if role(c) == "frame"]
-        if any(name(f) == "Dash Wallet" for f in frames):
+        if any(name(f).startswith("Dash Wallet") for f in frames):
             break
         time.sleep(0.25)
-    report.check("hard", 'window is a frame named "Dash Wallet"', any(name(f) == "Dash Wallet" for f in frames),
+    report.check("hard", 'window is a frame named "Dash Wallet…"', any(name(f).startswith("Dash Wallet") for f in frames),
                  str([name(f) for f in frames]))
 
     for step in args.steps.split(","):
         step_name, _, action = step.partition("=")
         if action.startswith("flow:"):
-            flows = {"onboarding": onboarding_flow, "send": send_flow, "tools": tools_flow, "overlay": overlay_flow}
+            flows = {"onboarding": onboarding_flow, "send": send_flow, "tools": tools_flow, "overlay": overlay_flow,
+                     "m2-menus": m2_menus_flow, "m2-options": m2_options_flow, "m2-tools": m2_tools_flow,
+                     "m2-psbt": m2_psbt_flow, "m2-pages": m2_pages_flow, "m2-chooser": m2_chooser_flow}
             flows[action[len("flow:"):]](report, app, args.out, step_name)
             continue
         if action.startswith("select:"):

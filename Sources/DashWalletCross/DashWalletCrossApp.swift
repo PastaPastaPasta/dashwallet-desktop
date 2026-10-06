@@ -229,16 +229,18 @@ struct LiveStartView: View {
             await open(root: URL(fileURLWithPath: directory, isDirectory: true), fixed: true)
             return
         }
+        if options.shell.chooseDataDirectory || options.shell.resetGUISettings {
+            // QT-004: the default is offered as it is (not created yet); the
+            // choice applies to this run, pass --datadir to reuse it.
+            chooser = DataDirectoryChooserViewModel(
+                defaultDirectory: DesktopDataDirectory.root(), inspector: FileSystemDataDirectoryInspector())
+            return
+        }
         let root: URL
         do {
             root = try DesktopDataLocation().defaultDataRoot()
         } catch {
             failure = "Could not create the data directory: \(error.localizedDescription)"
-            return
-        }
-        if options.shell.chooseDataDirectory || options.shell.resetGUISettings {
-            // QT-004: the choice applies to this run; pass --datadir to reuse it.
-            chooser = DataDirectoryChooserViewModel(defaultDirectory: root, inspector: FileSystemDataDirectoryInspector())
             return
         }
         await open(root: root, fixed: false)

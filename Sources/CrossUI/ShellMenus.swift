@@ -71,10 +71,7 @@ public enum ShellMenus {
         }
         if let checked = model.isChecked {
             let toggle = Toggle(
-                model.title,
-                isOn: Binding(
-                    get: { checked },
-                    set: { _ in MainActor.assumeIsolated { Task { await state.perform(command) } } }))
+                model.title, isOn: bind({ checked }, { _ in Task { await state.perform(command) } }))
             return model.isEnabled ? .toggle(toggle) : .toggle(toggle).disabled()
         }
         let button = SwiftCrossUI.MenuItem.button(Button(model.title) { Task { await state.perform(command) } })
@@ -104,7 +101,7 @@ extension SwiftCrossUI.MenuItem {
 struct ShellMenuItems: View {
     let items: [SwiftCrossUI.MenuItem]
 
-    var body: EmptyView { EmptyView() }
+    var body: some View { EmptyView() }
 
     var _asMenuItems: [SwiftCrossUI.MenuItem] { items }
 }

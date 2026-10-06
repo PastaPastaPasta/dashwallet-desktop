@@ -63,7 +63,7 @@ struct AppLaunchOptions: Sendable, Equatable {
 
     init() {}
 
-    init(arguments: [String], environment: [String: String], parser: some LaunchArgumentsParsing = LaunchArgumentsParser()) {
+    init(arguments: [String], environment: [String: String], parser: any LaunchArgumentsParsing = LaunchArgumentsParser()) {
         if environment["DWD_DEMO"] == "1" { mode = .demo(.funded) }
         var iterator = arguments.dropFirst().makeIterator()
         var pending: String?

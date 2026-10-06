@@ -35,13 +35,13 @@ struct TransactionDetailCard: View {
             HStack(spacing: Int(DashSpacing.s)) {
                 Menu(CrossStrings.copyMenu) {
                     Button(L10n.TransactionsM2.copyAddress) {
-                        state.copy(record.map(model.copyAddress) ?? "", what: CrossStrings.addressWord)
+                        state.copy(record.map { model.copyAddress($0) } ?? "", what: CrossStrings.addressWord)
                     }
                     Button(L10n.TransactionsM2.copyLabel) {
-                        state.copy(record.map(model.copyLabel) ?? "", what: CrossStrings.labelWord)
+                        state.copy(record.map { model.copyLabel($0) } ?? "", what: CrossStrings.labelWord)
                     }
                     Button(L10n.TransactionsM2.copyAmount) {
-                        state.copy(record.map(model.copyAmount) ?? "", what: CrossStrings.amountWord)
+                        state.copy(record.map { model.copyAmount($0) } ?? "", what: CrossStrings.amountWord)
                     }
                     Button(L10n.TransactionsM2.copyTransactionID) {
                         state.copy(detail.txid, what: CrossStrings.transactionID)
@@ -50,7 +50,7 @@ struct TransactionDetailCard: View {
                         state.copy(model.copyRawTransaction() ?? "", what: CrossStrings.rawTransactionWord)
                     }
                     Button(L10n.TransactionsM2.copyFullDetails) {
-                        state.copy(record.map(model.copyFullDetails) ?? "", what: CrossStrings.detailsWord)
+                        state.copy(record.map { model.copyFullDetails($0) } ?? "", what: CrossStrings.detailsWord)
                     }
                 }
                 DashButton(L10n.TransactionsM2.abandon, style: .plainRed, size: .small, isEnabled: model.canAbandon) {
