@@ -1615,6 +1615,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-psbt"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "dashcore",
+ "dw-compat",
+ "key-wallet",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "dw-units"
 version = "0.1.0"
 dependencies = [
