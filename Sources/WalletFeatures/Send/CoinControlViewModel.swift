@@ -449,6 +449,8 @@ public final class CoinControlViewModel {
                 return
             }
         }
+        // Coins kept vanishing between two answers: show no stale values.
+        summary = nil
     }
 
     private func persist(_ change: (inout DesktopPreferences) -> Void) {

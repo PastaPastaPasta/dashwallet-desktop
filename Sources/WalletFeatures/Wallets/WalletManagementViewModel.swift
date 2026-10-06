@@ -272,13 +272,14 @@ public final class WalletManagementViewModel {
     public func provideFilePassphrase(_ passphrase: String) async {
         guard case .needsFilePassphrase(let url, let kind) = flow else { return }
         let secret = vault.makeSecret(utf8: passphrase)
-        switch kind {
-        case .dwBackup:
-            await restore(url, passphrase: secret)
-        default:
+        // Only an encrypted wallet.dat goes to the importer; every other file
+        // that asked for a passphrase is a backup being restored.
+        if case .walletDatSQLite = kind {
             await runImport(.importing) { () async throws(ServiceError) in
                 try await self.importer.importWalletDat(url, passphrase: secret, options: WalletImportOptions())
             }
+        } else {
+            await restore(url, passphrase: secret)
         }
     }
 
