@@ -640,8 +640,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
- * WinRT toasts on Windows, `org.freedesktop.Notifications` (or the Flatpak
- * portal) on Linux, timeout 10 s as dash-qt.
+ * Linux: `notify-send` (libnotify, D-Bus `org.freedesktop.Notifications`),
+ * timeout 10 s as dash-qt, clicks reported where `notify-send` supports
+ * `--action`/`--wait`; `desktop.unsupported` without `notify-send`.
+ * Windows: a toast through PowerShell, clicks not reported (unverified).
+ * macOS: `desktop.unsupported` (UserNotifications in Swift).
  */
 public protocol DesktopNotifierProtocol: AnyObject, Sendable {
     
@@ -649,8 +652,11 @@ public protocol DesktopNotifierProtocol: AnyObject, Sendable {
     
 }
 /**
- * WinRT toasts on Windows, `org.freedesktop.Notifications` (or the Flatpak
- * portal) on Linux, timeout 10 s as dash-qt.
+ * Linux: `notify-send` (libnotify, D-Bus `org.freedesktop.Notifications`),
+ * timeout 10 s as dash-qt, clicks reported where `notify-send` supports
+ * `--action`/`--wait`; `desktop.unsupported` without `notify-send`.
+ * Windows: a toast through PowerShell, clicks not reported (unverified).
+ * macOS: `desktop.unsupported` (UserNotifications in Swift).
  */
 open class DesktopNotifier: DesktopNotifierProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -783,9 +789,13 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func inspectWalletFile(path: String) async throws  -> WalletFileKind
     
     /**
-     * Zips the Rust log files of every network plus `extra_files` (the
-     * Swift log) into `dest_path` (IOS-112). Logs never hold secrets (the
-     * secret-in-log test guards this).
+     * Zips the log files of the data root (`logs/` and `<network>/logs/`)
+     * plus `extra_files` (the Swift log) and a `manifest.txt` into
+     * `dest_path`, which must be absolute and must not exist (IOS-112).
+     * Missing extra files are listed in the manifest as skipped. Logs never
+     * hold secrets (the secret-in-log test guards this). The engine writes
+     * no log files yet, so today the zip holds the host's files and the
+     * manifest.
      */
     func exportLogs(destPath: String, extraFiles: [String]) async throws  -> LogExport
     
@@ -901,9 +911,13 @@ open func inspectWalletFile(path: String)async throws  -> WalletFileKind  {
 }
     
     /**
-     * Zips the Rust log files of every network plus `extra_files` (the
-     * Swift log) into `dest_path` (IOS-112). Logs never hold secrets (the
-     * secret-in-log test guards this).
+     * Zips the log files of the data root (`logs/` and `<network>/logs/`)
+     * plus `extra_files` (the Swift log) and a `manifest.txt` into
+     * `dest_path`, which must be absolute and must not exist (IOS-112).
+     * Missing extra files are listed in the manifest as skipped. Logs never
+     * hold secrets (the secret-in-log test guards this). The engine writes
+     * no log files yet, so today the zip holds the host's files and the
+     * manifest.
      */
 open func exportLogs(destPath: String, extraFiles: [String])async throws  -> LogExport  {
     return
@@ -4107,7 +4121,11 @@ public func FfiConverterTypePsbt_lower(_ value: Psbt) -> UInt64 {
 
 /**
  * The Windows notification-area icon (`Shell_NotifyIcon` thread) or Linux
- * StatusNotifierItem (`ksni`).
+ * StatusNotifierItem. Neither backend is built yet (the SNI needs a D-Bus
+ * stack, the Windows icon a Win32 message loop), so `new` reports
+ * `desktop.unsupported` on every OS and the host keeps the window: "Show
+ * tray icon" and "Minimize to tray" are hidden, as on a session without a
+ * tray host.
  */
 public protocol TrayIconProtocol: AnyObject, Sendable {
     
@@ -4126,7 +4144,11 @@ public protocol TrayIconProtocol: AnyObject, Sendable {
 }
 /**
  * The Windows notification-area icon (`Shell_NotifyIcon` thread) or Linux
- * StatusNotifierItem (`ksni`).
+ * StatusNotifierItem. Neither backend is built yet (the SNI needs a D-Bus
+ * stack, the Windows icon a Win32 message loop), so `new` reports
+ * `desktop.unsupported` on every OS and the host keeps the window: "Show
+ * tray icon" and "Minimize to tray" are hidden, as on a session without a
+ * tray host.
  */
 open class TrayIcon: TrayIconProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -4169,7 +4191,7 @@ open class TrayIcon: TrayIconProtocol, @unchecked Sendable {
     }
     /**
      * Shows the icon. `desktop.unsupported` when the session has no tray
-     * host; the host then hides "Show tray icon" / "Minimize to tray".
+     * host, and in this build on every OS (see the type doc).
      */
 public convenience init(spec: TraySpec, observer: TrayObserver)throws  {
     let handle =
@@ -4853,8 +4875,12 @@ public protocol VaultProtocol: AnyObject, Sendable {
      *
      * A passphrase credential does not change the lock state: on a locked
      * or mixing-only vault the unwrapped key serves this grant only.
+     * A quick-unlock credential (slot B, M2) issues `Spend` grants up to
+     * the spending limit and `SignMessage` grants while the passphrase was
+     * entered within 7 days; everything else needs the passphrase.
      * Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
-     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
+     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`,
+     * `QuickUnlockLimitExceeded`, `PassphraseStale`.
      */
     func authorize(purpose: GrantPurpose, walletId: String?, credential: VaultCredential) async throws  -> AuthGrant
     
@@ -4879,8 +4905,13 @@ public protocol VaultProtocol: AnyObject, Sendable {
     func encrypt(newPassphrase: Data, grantId: String) async throws  -> VaultStatus
     
     /**
-     * Enrols the biometric slot (M2): returns the wrap key the host stores in
-     * the OS biometric store. Needs a `ChangeCredential` grant.
+     * Enrols the biometric slot B (IOS-011): returns the 32-byte wrap key
+     * the host stores in the OS biometric store (macOS: a keychain item
+     * with `.biometryCurrentSet`); the vault keeps only the data key sealed
+     * under it. Needs an encrypted vault and a `ChangeCredential` grant.
+     * Re-enrolling replaces the key. Only macOS has a biometric store the
+     * host can use (Touch ID); elsewhere `vault.quick_unlock_unavailable`
+     * (Windows Hello is M6, Linux has none).
      */
     func enrollQuickUnlock(grantId: String) async throws  -> Data
     
@@ -4890,7 +4921,8 @@ public protocol VaultProtocol: AnyObject, Sendable {
     func lock() throws  -> VaultStatus
     
     /**
-     * Deletes the biometric slot (M2). Idempotent.
+     * Deletes the biometric slot (M2). Idempotent; the spending limit is
+     * kept for a later enrolment. The host deletes its OS item.
      */
     func removeQuickUnlock() async throws  -> VaultStatus
     
@@ -4917,17 +4949,18 @@ public protocol VaultProtocol: AnyObject, Sendable {
     func unlock(passphrase: Data, scope: UnlockScope) async throws  -> VaultStatus
     
     /**
-     * Deletes the vault (files, OS-store key, quick-unlock item) once no
-     * registered wallet has secrets in it (`vault.not_empty`): the last
-     * step of "Delete All" / wipe after every wallet was removed with
-     * `remove_wallet`. `credential` must satisfy the `Wipe` row of the
-     * credential table (passphrase on an encrypted vault). Returns
-     * `NoVault` status.
+     * Deletes the vault (files, OS-store key) once it holds no secrets
+     * (`vault.not_empty`): the last step of "Delete All" / wipe after every
+     * wallet was removed with `remove_wallet`. The host deletes its
+     * quick-unlock item. `credential` must satisfy the `Wipe` row of the
+     * credential table: the passphrase on an encrypted vault
+     * (`vault.credential_required` otherwise), nothing on an unencrypted
+     * one. Returns `NoVault` status; idempotent.
      */
     func destroy(credential: VaultCredential) async throws  -> VaultStatus
     
     /**
-     * In-memory read.
+     * In-memory read; works while locked.
      */
     func quickUnlockPolicy() throws  -> QuickUnlockPolicy
     
@@ -4937,8 +4970,10 @@ public protocol VaultProtocol: AnyObject, Sendable {
      * (`vault.recovery_mismatch` otherwise), then replaces the vault with a
      * new one encrypted with `new_passphrase` holding that wallet's phrase.
      * Secrets of other wallets cannot be read without the old passphrase:
-     * they are dropped and listed in `wallets_without_secrets`. Resets the
-     * attempt throttle; removes the quick-unlock slot.
+     * they are dropped and listed in `wallets_without_secrets` (the old
+     * vault file is kept as `vault.dwv.replaced-<time>`). Resets the
+     * attempt throttle; removes the quick-unlock slot. The new vault is
+     * unlocked. `wallet_not_found` when `wallet_id` is not registered.
      */
     func recoverWithMnemonic(walletId: String, mnemonic: Data, bip39Passphrase: Data, newPassphrase: Data) async throws  -> VaultRecovery
     
@@ -5017,8 +5052,12 @@ open class Vault: VaultProtocol, @unchecked Sendable {
      *
      * A passphrase credential does not change the lock state: on a locked
      * or mixing-only vault the unwrapped key serves this grant only.
+     * A quick-unlock credential (slot B, M2) issues `Spend` grants up to
+     * the spending limit and `SignMessage` grants while the passphrase was
+     * entered within 7 days; everything else needs the passphrase.
      * Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
-     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
+     * `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`,
+     * `QuickUnlockLimitExceeded`, `PassphraseStale`.
      */
 open func authorize(purpose: GrantPurpose, walletId: String?, credential: VaultCredential)async throws  -> AuthGrant  {
     return
@@ -5099,8 +5138,13 @@ open func encrypt(newPassphrase: Data, grantId: String)async throws  -> VaultSta
 }
     
     /**
-     * Enrols the biometric slot (M2): returns the wrap key the host stores in
-     * the OS biometric store. Needs a `ChangeCredential` grant.
+     * Enrols the biometric slot B (IOS-011): returns the 32-byte wrap key
+     * the host stores in the OS biometric store (macOS: a keychain item
+     * with `.biometryCurrentSet`); the vault keeps only the data key sealed
+     * under it. Needs an encrypted vault and a `ChangeCredential` grant.
+     * Re-enrolling replaces the key. Only macOS has a biometric store the
+     * host can use (Touch ID); elsewhere `vault.quick_unlock_unavailable`
+     * (Windows Hello is M6, Linux has none).
      */
 open func enrollQuickUnlock(grantId: String)async throws  -> Data  {
     return
@@ -5131,7 +5175,8 @@ open func lock()throws  -> VaultStatus  {
 }
     
     /**
-     * Deletes the biometric slot (M2). Idempotent.
+     * Deletes the biometric slot (M2). Idempotent; the spending limit is
+     * kept for a later enrolment. The host deletes its OS item.
      */
 open func removeQuickUnlock()async throws  -> VaultStatus  {
     return
@@ -5214,12 +5259,13 @@ open func unlock(passphrase: Data, scope: UnlockScope)async throws  -> VaultStat
 }
     
     /**
-     * Deletes the vault (files, OS-store key, quick-unlock item) once no
-     * registered wallet has secrets in it (`vault.not_empty`): the last
-     * step of "Delete All" / wipe after every wallet was removed with
-     * `remove_wallet`. `credential` must satisfy the `Wipe` row of the
-     * credential table (passphrase on an encrypted vault). Returns
-     * `NoVault` status.
+     * Deletes the vault (files, OS-store key) once it holds no secrets
+     * (`vault.not_empty`): the last step of "Delete All" / wipe after every
+     * wallet was removed with `remove_wallet`. The host deletes its
+     * quick-unlock item. `credential` must satisfy the `Wipe` row of the
+     * credential table: the passphrase on an encrypted vault
+     * (`vault.credential_required` otherwise), nothing on an unencrypted
+     * one. Returns `NoVault` status; idempotent.
      */
 open func destroy(credential: VaultCredential)async throws  -> VaultStatus  {
     return
@@ -5238,7 +5284,7 @@ open func destroy(credential: VaultCredential)async throws  -> VaultStatus  {
 }
     
     /**
-     * In-memory read.
+     * In-memory read; works while locked.
      */
 open func quickUnlockPolicy()throws  -> QuickUnlockPolicy  {
     return try  FfiConverterTypeQuickUnlockPolicy_lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
@@ -5255,8 +5301,10 @@ open func quickUnlockPolicy()throws  -> QuickUnlockPolicy  {
      * (`vault.recovery_mismatch` otherwise), then replaces the vault with a
      * new one encrypted with `new_passphrase` holding that wallet's phrase.
      * Secrets of other wallets cannot be read without the old passphrase:
-     * they are dropped and listed in `wallets_without_secrets`. Resets the
-     * attempt throttle; removes the quick-unlock slot.
+     * they are dropped and listed in `wallets_without_secrets` (the old
+     * vault file is kept as `vault.dwv.replaced-<time>`). Resets the
+     * attempt throttle; removes the quick-unlock slot. The new vault is
+     * unlocked. `wallet_not_found` when `wallet_id` is not registered.
      */
 open func recoverWithMnemonic(walletId: String, mnemonic: Data, bip39Passphrase: Data, newPassphrase: Data)async throws  -> VaultRecovery  {
     return
@@ -5727,9 +5775,9 @@ public func FfiConverterTypeAuthGrant_lower(_ value: AuthGrant) -> RustBuffer {
 
 
 /**
- * "Start on system login" entry: Windows Startup shortcut, Linux XDG
- * autostart `.desktop` (`dashwallet[-<network>].desktop`), launched with
- * `args` (dash-qt: `--min --chain=<network>`).
+ * "Start on system login" entry: Windows `Run` value, Linux XDG
+ * autostart `.desktop` (`<app_id>.desktop`), launched with `args`
+ * (dash-qt: `--min --chain=<network>`).
  */
 public struct AutostartEntry: Equatable, Hashable {
     public let appId: String
@@ -6484,7 +6532,7 @@ public func FfiConverterTypeCoreMnemonicCompatibility_lower(_ value: CoreMnemoni
 
 public struct DesktopNotification: Equatable, Hashable {
     /**
-     * Replaces an earlier notification with the same id.
+     * Identifies the notification in `NotificationObserver::on_activated`.
      */
     public let id: String
     public let title: String
@@ -6498,7 +6546,7 @@ public struct DesktopNotification: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Replaces an earlier notification with the same id.
+         * Identifies the notification in `NotificationObserver::on_activated`.
          */id: String, title: String, body: String, 
         /**
          * Returned in `NotificationObserver::on_activated` (e.g. a txid route).
@@ -7350,12 +7398,18 @@ public func FfiConverterTypeImportReport_lower(_ value: ImportReport) -> RustBuf
 
 public struct LogExport: Equatable, Hashable {
     public let path: String
+    /**
+     * Log files in the zip, not counting its `manifest.txt`.
+     */
     public let fileCount: UInt32
     public let sizeBytes: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(path: String, fileCount: UInt32, sizeBytes: UInt64) {
+    public init(path: String, 
+        /**
+         * Log files in the zip, not counting its `manifest.txt`.
+         */fileCount: UInt32, sizeBytes: UInt64) {
         self.path = path
         self.fileCount = fileCount
         self.sizeBytes = sizeBytes
@@ -19959,10 +20013,12 @@ public func consoleRedact(line: Data)throws  -> String  {
 })
 }
 /**
- * Becomes the primary instance for `key` (`DashWallet-<network>`; a local
- * socket on Windows, an abstract Unix socket on Linux) and delivers later
- * launches' forwarded arguments to `observer`. `None`: another instance
- * holds the key; the caller forwards with `forward_to_primary` and exits 0.
+ * Becomes the primary instance for `key` (`DashWallet-<network>`; Linux: a
+ * lock file and socket in `$XDG_RUNTIME_DIR`; Windows: a named mutex and
+ * pipe) and delivers later launches' forwarded arguments to `observer`.
+ * `None`: another instance holds the key; the caller forwards with
+ * `forward_to_primary` and exits 0. macOS: `desktop.unsupported`
+ * (LaunchServices keeps one instance).
  */
 public func acquireSingleInstance(key: String, observer: InstanceObserver)throws  -> InstanceGuard?  {
     return try  FfiConverterOptionTypeInstanceGuard.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
@@ -19973,6 +20029,10 @@ public func acquireSingleInstance(key: String, observer: InstanceObserver)throws
     )
 })
 }
+/**
+ * Whether the entry exists and is enabled. `desktop.unsupported` on
+ * macOS and inside Flatpak (Background portal not implemented).
+ */
 public func autostartEnabled(appId: String)throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
         uniffiCallStatus in
@@ -19983,7 +20043,8 @@ public func autostartEnabled(appId: String)throws  -> Bool  {
 }
 /**
  * Decodes every QR code in an image file's bytes (PNG, JPEG, BMP) or a
- * clipboard image, in reading order. Works on every OS (pure Rust).
+ * clipboard image, in reading order. Works on every OS (pure Rust). At
+ * most 32 MiB and 40 megapixels (`desktop.image_unreadable` above).
  */
 public func decodeQrCodes(image: Data)throws  -> [String]  {
     return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
@@ -20006,7 +20067,8 @@ public func desktopQuickUnlockProvider() -> QuickUnlockProvider  {
 }
 /**
  * Sends `args` to the primary instance for `key`. `false` when none
- * listens (the caller becomes primary instead).
+ * listens (the caller becomes primary instead). Waits up to 3 s for a
+ * primary that is still starting.
  */
 public func forwardToPrimary(key: String, args: [String])throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
@@ -20020,8 +20082,9 @@ public func forwardToPrimary(key: String, args: [String])throws  -> Bool  {
 /**
  * Registers the URI schemes (`dash`, `pay`, `dashwallet`, …) for the
  * current user where the installer did not (Linux tarball:
- * `x-scheme-handler` in a user `.desktop` file; Windows: HKCU). Packaged
- * builds (Flatpak, MSI, macOS bundle) register at install time.
+ * `x-scheme-handler` in a user `.desktop` file plus `mimeapps.list`
+ * defaults; Windows: HKCU). Packaged builds (Flatpak, MSI, macOS bundle)
+ * register at install time; macOS returns `desktop.unsupported`.
  */
 public func registerUriSchemes(appId: String, execPath: String, schemes: [String])throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
         uniffiCallStatus in
@@ -20046,7 +20109,8 @@ public func setAutostart(entry: AutostartEntry, enabled: Bool)throws   {try rust
 /**
  * Windows `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the window
  * `hwnd` while a phrase is visible. Returns whether exclusion is in effect;
- * `desktop.unsupported` on Linux (the host shows a warning banner).
+ * `desktop.unsupported` on Linux (the host shows a warning banner) and
+ * macOS (`NSWindow.sharingType` in Swift).
  */
 public func setWindowCaptureExcluded(hwnd: UInt64, excluded: Bool)throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDesktopError_lift) {
@@ -20248,28 +20312,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_func_console_redact() != 62069) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_acquire_single_instance() != 15321) {
+    if (uniffi_dashwallet_core_checksum_func_acquire_single_instance() != 10428) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_autostart_enabled() != 59823) {
+    if (uniffi_dashwallet_core_checksum_func_autostart_enabled() != 12204) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_decode_qr_codes() != 60075) {
+    if (uniffi_dashwallet_core_checksum_func_decode_qr_codes() != 62315) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_desktop_quick_unlock_provider() != 32335) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_forward_to_primary() != 41835) {
+    if (uniffi_dashwallet_core_checksum_func_forward_to_primary() != 14140) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_register_uri_schemes() != 2730) {
+    if (uniffi_dashwallet_core_checksum_func_register_uri_schemes() != 25056) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_set_autostart() != 28072) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_set_window_capture_excluded() != 31305) {
+    if (uniffi_dashwallet_core_checksum_func_set_window_capture_excluded() != 19800) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_windows_hello_wrap_key() != 30326) {
@@ -20341,7 +20405,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_engine_inspect_wallet_file() != 18941) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_engine_export_logs() != 4043) {
+    if (uniffi_dashwallet_core_checksum_method_engine_export_logs() != 58228) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_engine_close_network() != 4202) {
@@ -20632,7 +20696,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_wallet_infos() != 60873) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 56663) {
+    if (uniffi_dashwallet_core_checksum_method_vault_authorize() != 23787) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_change_passphrase() != 65154) {
@@ -20644,13 +20708,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 49372) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_enroll_quick_unlock() != 51599) {
+    if (uniffi_dashwallet_core_checksum_method_vault_enroll_quick_unlock() != 31048) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_lock() != 2472) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_remove_quick_unlock() != 53682) {
+    if (uniffi_dashwallet_core_checksum_method_vault_remove_quick_unlock() != 43675) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_reveal_mnemonic() != 31325) {
@@ -20665,13 +20729,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_unlock() != 63057) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_destroy() != 9189) {
+    if (uniffi_dashwallet_core_checksum_method_vault_destroy() != 47652) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_quick_unlock_policy() != 16476) {
+    if (uniffi_dashwallet_core_checksum_method_vault_quick_unlock_policy() != 25466) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_recover_with_mnemonic() != 60714) {
+    if (uniffi_dashwallet_core_checksum_method_vault_recover_with_mnemonic() != 30524) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_set_quick_unlock_spend_limit() != 50360) {
@@ -20680,7 +20744,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_constructor_desktopnotifier_new() != 23158) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_constructor_trayicon_new() != 49329) {
+    if (uniffi_dashwallet_core_checksum_constructor_trayicon_new() != 14368) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_constructor_engine_new() != 61262) {

@@ -356,3 +356,48 @@ them adds a code. Parameters that the UI shows (review M-5 rule): `limit_duffs`,
   `desktop_quick_unlock_provider` truthful either way.
 - **S1**: the DashKit `EngineProtocol` grows by these calls in S1's adapter PRs, one domain per PR. `FakeEngine`
   and `WalletDemo.DemoEngine` follow the engine's rules for each call they implement (no fake success).
+
+## 8. S1 implementation status (2026-10-06, branch `m2/s1-desktop-services`)
+
+Calls that no longer return `NotImplemented`, with the decisions the open points above asked for:
+
+- **Vault (§2.9)**, in `dw-vault`:
+  - Slot B is the DEK sealed (XChaCha20-Poly1305, AAD `dw-vault/slot-b/v1` ‖ vault id ‖ network) under a random
+    256-bit wrap key. `enroll_quick_unlock` returns that key and does not keep it. Re-enrolling replaces it.
+  - The policy (spend limit, last passphrase time) is in the file twice: a plain copy for display while locked,
+    and a copy sealed under the DEK that `authorize` checks. Editing the plain copy makes `authorize` fail with
+    `vault.corrupt`; it cannot raise the limit or reset the 7-day clock.
+  - `QuickUnlock` issues `Spend` up to the limit and `SignMessage`. Every other purpose is
+    `vault.credential_required`. A wrong key is `vault.quick_unlock_unavailable` and does not count toward the
+    passphrase throttle. The lock state does not change: on a locked vault the grant carries its own key, as a
+    passphrase grant does.
+  - Every successful passphrase check records the time. It is persisted (sealed) while slot B exists.
+  - `recover_with_mnemonic` accepts a phrase that derives the wallet with standard BIP39 or with Core's
+    derivation. It copies the old file to `vault/vault.dwv.replaced-<unix time>` before it writes the new vault,
+    so the old secrets stay recoverable with the old passphrase. It returns `wallet_not_found` for an
+    unregistered id.
+  - `destroy` deletes `vault.dwv`, its temp file, every replaced copy and the slot O key. On an encrypted vault it
+    needs the passphrase. It is idempotent.
+- **Windows quick unlock**: not in M2. `desktop_quick_unlock_provider` stays `Unavailable`. `enroll_quick_unlock`
+  answers `vault.quick_unlock_unavailable` off macOS, because there is no biometric store the host can use there.
+- **Desktop (§2.10)**, in the new crate `dw-desktop`:
+  - Single instance: a `flock` on `$XDG_RUNTIME_DIR/<key>.lock` decides which process is primary, and a 0600 Unix
+    socket `<key>.sock` carries a bounded frame (at most 64 arguments of 8 KiB each). The fallback directory is
+    `<tmp>/dashwallet-<uid>` (0700, owner checked). A stale socket never blocks a new primary.
+  - Linux autostart, URI schemes and notifications:
+    - Autostart writes `$XDG_CONFIG_HOME/autostart/<app_id>.desktop`. Inside Flatpak it is `desktop.unsupported`
+      (the Background portal is not built).
+    - URI schemes: `$XDG_DATA_HOME/applications/<app_id>.desktop` plus the `mimeapps.list` defaults, then
+      `update-desktop-database` when it is installed.
+    - Notifications use `notify-send`. Clicks are reported where it has `--action`/`--wait`. Without
+      `notify-send`, `DesktopNotifier.new` is `desktop.unsupported`.
+  - **Tray: no backend is built** (StatusNotifierItem needs a D-Bus stack, the Windows icon needs a Win32 message
+    loop). `TrayIcon.new` is `desktop.unsupported` on every OS, so hosts hide the tray options and keep the
+    window.
+  - Windows code paths are written but not compiled or run (UNVERIFIED): a named mutex plus a named pipe, the
+    `HKCU\…\Run` value via `reg.exe` (instead of a Startup shortcut, which needs COM), `HKCU\Software\Classes`
+    schemes, a toast through PowerShell (clicks not reported) and `WDA_EXCLUDEFROMCAPTURE`.
+  - `decode_qr_codes`: `rqrr` over PNG/JPEG/BMP, at most 32 MiB and 40 MP. Works on every OS.
+  - `Engine.export_logs`: zips `logs/*` and `<network>/logs/*` of the data root, the host's files under `app/`,
+    and a `manifest.txt` (included and skipped files). It never replaces a file. The engine writes no log files
+    yet, so today the zip holds the host's files and the manifest.

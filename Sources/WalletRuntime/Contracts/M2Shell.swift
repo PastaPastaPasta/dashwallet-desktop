@@ -25,11 +25,16 @@ public struct LaunchOptions: Sendable, Hashable {
     public var windowTitleSuffix: String?
     /// `dash:` (and other registered scheme) URIs; options may not follow one.
     public var uris: [String]
+    /// `-help`: show the command-line options dialog (QT-153) and quit.
+    public var showHelp: Bool
+    /// `-version`: show the version and quit.
+    public var showVersion: Bool
 
     public init(
         startMinimized: Bool = false, showSplash: Bool = true, resetGUISettings: Bool = false,
         chooseDataDirectory: Bool = false, dataDirectory: URL? = nil, network: DashNetwork? = nil,
-        language: String? = nil, windowTitleSuffix: String? = nil, uris: [String] = []
+        language: String? = nil, windowTitleSuffix: String? = nil, uris: [String] = [], showHelp: Bool = false,
+        showVersion: Bool = false
     ) {
         self.startMinimized = startMinimized
         self.showSplash = showSplash
@@ -40,6 +45,8 @@ public struct LaunchOptions: Sendable, Hashable {
         self.language = language
         self.windowTitleSuffix = windowTitleSuffix
         self.uris = uris
+        self.showHelp = showHelp
+        self.showVersion = showVersion
     }
 }
 

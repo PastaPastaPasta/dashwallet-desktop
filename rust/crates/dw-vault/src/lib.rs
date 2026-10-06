@@ -6,7 +6,8 @@
 //!   record id;
 //! - wrap slots unwrap the DEK: **P** (passphrase → Argon2id, calibrated
 //!   ≥ 0.5 s, m ≥ 256 MiB, t ≥ 3), **O** (the DEK itself in the OS secret
-//!   store, only while unencrypted), **B** (biometric, TODO(biometric) M2);
+//!   store, only while unencrypted), **B** (quick unlock: the DEK under a
+//!   random 256-bit key the OS keeps behind biometrics; spend-limited);
 //! - lock states `NoVault/NoKeys/Unencrypted/Locked/UnlockedMixingOnly/Unlocked`;
 //! - single-use, expiring [`AuthGrant`]s checked here, so a buggy view
 //!   cannot sign, reveal or wipe without one;
@@ -36,9 +37,10 @@ pub use error::{MnemonicError, SignerError, VaultError};
 pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
 pub use signer::{SignerScope, VaultSigner, WalletSigner, is_coinjoin_path};
 pub use types::{
-    AuthGrant, Clock, Credential, DEFAULT_GRANT_TTL_SECS, GrantKind, GrantPurpose, GrantToken,
-    LockState, RevealedMnemonic, SeedDerivation, SystemClock, UnlockScope, VaultConfig,
-    VaultStatus, WalletId, WalletSecret,
+    AuthGrant, Clock, Credential, DEFAULT_GRANT_TTL_SECS, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+    GrantKind, GrantPurpose, GrantToken, LockState, PASSPHRASE_MAX_AGE_SECS,
+    QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, SystemClock,
+    UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 pub use vault::{
     CoreMnemonicCheck, MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle, throttle_wait_secs,

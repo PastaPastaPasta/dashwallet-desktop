@@ -245,28 +245,146 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
         Err(SendError::WalletNotFound { .. })
     ));
 
-    // Vault (S1).
+    // Vault (S1): implemented; see `vault_m2_calls_on_a_network_without_a_vault`.
     let vault = s.vault();
-    assert_code!(vault.quick_unlock_policy(), not_implemented: "Vault.quick_unlock_policy");
     assert_code!(
         rt.block_on(vault.recover_with_mnemonic("x".into(), vec![], vec![], vec![])),
         "invalid_argument"
     );
-    assert_code!(
-        rt.block_on(vault.destroy(VaultCredential::Unencrypted)),
-        not_implemented: "Vault.destroy"
-    );
 
-    // Desktop (S1).
-    assert_code!(crate::decode_qr_codes(vec![]), not_implemented: "decode_qr_codes");
-    assert_code!(
-        rt.block_on(f.engine.export_logs("/x.zip".into(), vec![])),
-        not_implemented: "Engine.export_logs"
-    );
+    // Desktop (S1): implemented; see `desktop_calls`.
     assert_eq!(
         crate::desktop_quick_unlock_provider(),
         crate::QuickUnlockProvider::Unavailable
     );
+    assert_code!(
+        crate::windows_hello_wrap_key(vec![]),
+        not_implemented: "windows_hello_wrap_key"
+    );
+}
+
+/// The S1 vault calls before a vault exists: the policy reads defaults,
+/// `destroy` is idempotent, and the calls that need a vault say so.
+#[test]
+fn vault_m2_calls_on_a_network_without_a_vault() {
+    let f = fixture();
+    let vault = f.session.vault();
+    let policy = vault.quick_unlock_policy().unwrap();
+    assert!(!policy.enrolled);
+    assert_eq!(policy.spend_limit_duffs, 50_000_000);
+    assert_eq!(policy.passphrase_max_age_secs, 604_800);
+    assert_eq!(policy.last_passphrase_at, None);
+
+    assert_eq!(
+        f.rt.block_on(vault.destroy(VaultCredential::Unencrypted))
+            .unwrap()
+            .state,
+        crate::VaultLockState::NoVault
+    );
+    assert_code!(
+        f.rt.block_on(vault.set_quick_unlock_spend_limit("g".into(), 12)),
+        "invalid_argument"
+    );
+    assert_code!(
+        f.rt.block_on(vault.set_quick_unlock_spend_limit("g".into(), 10_000_000)),
+        "vault.no_vault"
+    );
+    // A well-formed id of a wallet that is not registered.
+    assert_code!(
+        f.rt.block_on(vault.recover_with_mnemonic(
+            WALLET.into(),
+            b"abandon".to_vec(),
+            vec![],
+            b"new".to_vec()
+        )),
+        "wallet_not_found"
+    );
+    if cfg!(target_os = "macos") {
+        assert_code!(
+            f.rt.block_on(vault.enroll_quick_unlock("g".into())),
+            "vault.no_vault"
+        );
+    } else {
+        assert_code!(
+            f.rt.block_on(vault.enroll_quick_unlock("g".into())),
+            "vault.quick_unlock_unavailable"
+        );
+    }
+}
+
+#[test]
+fn desktop_calls() {
+    let f = fixture();
+    assert_code!(crate::decode_qr_codes(vec![]), "desktop.image_unreadable");
+    assert_code!(
+        crate::decode_qr_codes(b"not an image".to_vec()),
+        "desktop.image_unreadable"
+    );
+
+    let out = tempfile::tempdir().unwrap();
+    let dest = out.path().join("logs.zip");
+    let export =
+        f.rt.block_on(
+            f.engine
+                .export_logs(dest.to_string_lossy().into_owned(), vec![]),
+        )
+        .unwrap();
+    assert_eq!(export.file_count, 0);
+    assert!(export.size_bytes > 0);
+    assert_code!(
+        f.rt.block_on(
+            f.engine
+                .export_logs(dest.to_string_lossy().into_owned(), vec![])
+        ),
+        "desktop.os_error"
+    );
+
+    struct NoTray;
+    impl crate::TrayObserver for NoTray {
+        fn on_activate(&self) {}
+        fn on_menu_item(&self, _: String) {}
+    }
+    let spec = crate::TraySpec {
+        app_id: "org.dash.DashWallet".into(),
+        tooltip: "Dash Wallet".into(),
+        icon_png: vec![],
+        items: vec![],
+    };
+    assert_code!(
+        crate::TrayIcon::new(spec, Arc::new(NoTray)),
+        "desktop.unsupported"
+    );
+
+    if cfg!(target_os = "macos") {
+        struct Ignore;
+        impl crate::InstanceObserver for Ignore {
+            fn on_forwarded(&self, _: Vec<String>) {}
+        }
+        assert_code!(
+            crate::acquire_single_instance("DashWallet-regtest".into(), Arc::new(Ignore)),
+            "desktop.unsupported"
+        );
+        assert_code!(
+            crate::forward_to_primary("DashWallet-regtest".into(), vec![]),
+            "desktop.unsupported"
+        );
+        assert_code!(
+            crate::autostart_enabled("org.dash.DashWallet".into()),
+            "desktop.unsupported"
+        );
+        assert_code!(
+            crate::register_uri_schemes(
+                "org.dash.DashWallet".into(),
+                "/x".into(),
+                vec!["dash".into()]
+            ),
+            "desktop.unsupported"
+        );
+        assert_code!(
+            crate::set_window_capture_excluded(1, true),
+            "desktop.unsupported"
+        );
+    }
 }
 
 #[test]

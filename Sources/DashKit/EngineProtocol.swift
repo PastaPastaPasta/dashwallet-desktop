@@ -60,6 +60,33 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func revealMnemonic(on network: DashNetwork, wallet: WalletID, grantID: String) async throws(DashKitError)
         -> RevealedMnemonic
 
+    // MARK: Vault (M2: slot B, recovery, destroy)
+
+    /// In-memory read; works while locked.
+    func quickUnlockPolicy(on network: DashNetwork) async throws(DashKitError) -> QuickUnlockPolicy
+    /// Adds slot B and returns its wrap key for the OS biometric store.
+    /// Needs a `.changeCredential` grant; macOS only.
+    func enrollQuickUnlock(on network: DashNetwork, grantID: String) async throws(DashKitError) -> SecretBytes
+    func removeQuickUnlock(on network: DashNetwork) async throws(DashKitError) -> VaultStatus
+    /// One of the iOS options; `.changeCredential` grant.
+    func setQuickUnlockSpendLimit(on network: DashNetwork, grantID: String, limit: Amount)
+        async throws(DashKitError) -> QuickUnlockPolicy
+    /// Forgot passphrase (IOS-014).
+    func recoverVault(
+        on network: DashNetwork, wallet: WalletID, mnemonic: SecretBytes, bip39Passphrase: SecretBytes,
+        newPassphrase: SecretBytes
+    ) async throws(DashKitError) -> VaultRecovery
+    /// Deletes an empty vault (IOS-009/109).
+    func destroyVault(on network: DashNetwork, credential: VaultCredential) async throws(DashKitError) -> VaultStatus
+
+    // MARK: Notifications and logs (M2)
+
+    /// Rows of a `newTransactions` event; unknown txids are skipped.
+    func txNotices(on network: DashNetwork, wallet: WalletID, txids: [String]) async throws(DashKitError)
+        -> [TxNotice]
+    /// Zips the log files plus `extraFiles` into `file` (IOS-112).
+    func exportLogs(to file: URL, extraFiles: [URL]) async throws(DashKitError) -> LogExport
+
     // MARK: Sync
 
     func syncSnapshot(on network: DashNetwork) async throws(DashKitError) -> SyncSnapshot

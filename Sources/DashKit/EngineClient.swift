@@ -14,7 +14,7 @@ import Foundation
 public actor EngineClient: EngineProtocol {
     public nonisolated let events: EventBus
     public nonisolated let dataRoot: URL
-    private nonisolated let core: EngineCell
+    nonisolated let core: EngineCell
     /// Cached session objects. An entry is dropped as soon as the engine
     /// reports it closed (review M2).
     private var sessions: [DashNetwork: DashWalletCore.NetworkSession] = [:]
@@ -454,7 +454,7 @@ public actor EngineClient: EngineProtocol {
     /// The open session for `network`. A cached session the engine has
     /// closed in the meantime is dropped, so callers see `network_not_open`
     /// rather than a dead handle (review M2).
-    private func session(_ network: DashNetwork) throws(DashKitError) -> DashWalletCore.NetworkSession {
+    func session(_ network: DashNetwork) throws(DashKitError) -> DashWalletCore.NetworkSession {
         guard let session = sessions[network] else { throw .networkNotOpen(detail: network.description) }
         guard session.isOpen() else {
             sessions[network] = nil
@@ -467,7 +467,7 @@ public actor EngineClient: EngineProtocol {
 /// Holds the engine object so `shutdown()` can take it out and release it on
 /// the actor's executor while nonisolated readers (`directory(for:)`) still
 /// see it until then.
-private final class EngineCell: @unchecked Sendable {
+final class EngineCell: @unchecked Sendable {
     // `lock` guards `engine`.
     private let lock = NSLock()
     private var engine: DashWalletCore.Engine?

@@ -49,6 +49,35 @@ pub(crate) struct VaultFile {
     pub throttle: Throttle,
     pub manifest: Sealed,
     pub records: BTreeMap<String, Sealed>,
+    /// Slot B (quick unlock, M2). Absent in files written before M2 and
+    /// while quick unlock is not enrolled; omitted from the file when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_b: Option<QuickUnlockSlot>,
+    /// Quick-unlock policy (M2). Kept when slot B is removed, so the
+    /// spending limit survives re-enrolment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_unlock: Option<QuickUnlockSettings>,
+}
+
+/// Slot B: the DEK sealed under a 256-bit wrap key that only the OS
+/// biometric store holds (macOS keychain item with `.biometryCurrentSet`).
+/// AAD = "dw-vault/slot-b/v1" ‖ vault_id ‖ network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct QuickUnlockSlot {
+    pub wrapped_dek: Sealed,
+    pub enrolled_at: u64,
+}
+
+/// The quick-unlock policy. The plain fields are for display while the
+/// vault is locked; `sealed` holds the same two values under the DEK and is
+/// the copy `authorize` enforces, so editing the file cannot raise the limit
+/// or refresh the passphrase time. AAD = "dw-vault/quick-unlock/v1" ‖
+/// vault_id ‖ network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct QuickUnlockSettings {
+    pub spend_limit_duffs: u64,
+    pub last_passphrase_at: Option<u64>,
+    pub sealed: Sealed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +134,20 @@ pub(crate) fn record_aad(vault_id: &[u8], network: &str, record_id: &str) -> Vec
 
 pub(crate) fn manifest_aad(vault_id: &[u8], network: &str) -> Vec<u8> {
     let mut a = b"dw-vault/manifest/v1".to_vec();
+    push_field(&mut a, vault_id);
+    push_field(&mut a, network.as_bytes());
+    a
+}
+
+pub(crate) fn slot_b_aad(vault_id: &[u8], network: &str) -> Vec<u8> {
+    let mut a = b"dw-vault/slot-b/v1".to_vec();
+    push_field(&mut a, vault_id);
+    push_field(&mut a, network.as_bytes());
+    a
+}
+
+pub(crate) fn quick_unlock_aad(vault_id: &[u8], network: &str) -> Vec<u8> {
+    let mut a = b"dw-vault/quick-unlock/v1".to_vec();
     push_field(&mut a, vault_id);
     push_field(&mut a, network.as_bytes());
     a
@@ -182,6 +225,75 @@ pub(crate) fn write(dir: &Path, file: &VaultFile) -> Result<(), VaultError> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, file_path(dir))?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+/// Prefix of the copies `Vault::recover_with_mnemonic` keeps of a replaced
+/// vault file (`vault.dwv.replaced-<unix seconds>`).
+pub(crate) const REPLACED_PREFIX: &str = "vault.dwv.replaced-";
+
+/// Copies the current vault file to `vault.dwv.replaced-<now>` (mode 0600;
+/// `-<now>-<n>` when that name is taken, so no earlier copy is replaced)
+/// and returns the copy's path.
+pub(crate) fn keep_replaced_copy(dir: &Path, now: u64) -> Result<PathBuf, VaultError> {
+    let source = std::fs::read(file_path(dir))?;
+    let mut n = 0u32;
+    let copy = loop {
+        let name = if n == 0 {
+            format!("{REPLACED_PREFIX}{now}")
+        } else {
+            format!("{REPLACED_PREFIX}{now}-{n}")
+        };
+        let path = dir.join(name);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut f) => {
+                f.write_all(&source)?;
+                f.sync_all()?;
+                break path;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(e) => return Err(e.into()),
+        }
+    };
+    Ok(copy)
+}
+
+/// Deletes the vault file, its temp file and every replaced copy, then
+/// fsyncs the directory. Missing files are not an error.
+pub(crate) fn remove_all(dir: &Path) -> Result<(), VaultError> {
+    let mut doomed = vec![file_path(dir), dir.join(TMP_NAME)];
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(REPLACED_PREFIX)
+                {
+                    doomed.push(entry.path());
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    }
+    for path in doomed {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())

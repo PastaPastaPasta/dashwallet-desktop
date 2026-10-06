@@ -40,6 +40,7 @@ dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c
 dw-appdb = { path = "crates/dw-appdb" }
 dw-compat = { path = "crates/dw-compat" }
 dw-console = { path = "crates/dw-console" }
+dw-desktop = { path = "crates/dw-desktop" }
 dw-engine = { path = "crates/dw-engine" }
 dw-message = { path = "crates/dw-message" }
 dw-psbt = { path = "crates/dw-psbt" }

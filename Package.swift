@@ -91,7 +91,7 @@ var targets: [Target] = [
     .testTarget(name: "DashKitTests", dependencies: ["DashKit"]),
     // The demo services against the engine's rules (grants, sends, addresses).
     .testTarget(name: "WalletDemoTests", dependencies: ["WalletDemo", "WalletFeatures", "WalletRuntime"]),
-    .testTarget(name: "WalletRuntimeTests", dependencies: ["WalletRuntime", "DashKit"]),
+    .testTarget(name: "WalletRuntimeTests", dependencies: ["WalletRuntime", "DashKit", "PlatformServices"]),
     .testTarget(name: "DesignTokensTests", dependencies: ["DesignTokens"]),
     // View-model flows against in-memory fakes of the WalletRuntime contracts.
     // testdata/amount_format.json is read by path, not bundled.
@@ -116,7 +116,15 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "RepoChecksTests"),
-    .testTarget(name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop"]),
+    .testTarget(name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop", "PlatformServices"]),
+    // macOS-only: the sources compile to nothing elsewhere. The keychain test
+    // skips itself without Touch ID or outside a signed app.
+    .testTarget(
+        name: "PlatformServicesMacTests",
+        dependencies: [
+            "PlatformServices", .target(name: "PlatformServicesMac", condition: .when(platforms: [.macOS])),
+        ]
+    ),
 ]
 
 if !headless {

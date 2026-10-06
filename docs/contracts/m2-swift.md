@@ -221,3 +221,32 @@ for each wallet, then `destroy`.
   CoinJoin-internal rows unless enabled, and shows one summary for ≥ 100 rows. Titles "Incoming transaction" /
   "Sent transaction"; the body has Date, Amount, Wallet (multiwallet only), Type, and Label or Address.
 - **MenuBarCompanionViewModel** (IOS-117): the M1 companion plus a request amount and pay-from-clipboard.
+
+## 4. S1 implementation status (2026-10-06, branch `m2/s1-desktop-services`)
+
+- **Composition.** `WalletRuntime/M2/DesktopRuntime.swift`: `DesktopRuntimeServices(runtime:platform:…)` builds
+  every S1 service over one `WalletRuntimeServices` and a `DesktopPlatform`. `DesktopPlatform` is the OS services
+  the app's `@main` picks: `PlatformServicesMac` or `PlatformServicesDesktop`.
+- **Done.** `QuickUnlockService`, `VaultRecoveryService`, `AutoLockController` (setting in `settings.json`
+  section `autoLock`), `ShellSettingsStore` (`global.json` section `shell`), `TransactionNotificationFeed` +
+  `NotificationPresenter` (dash-qt's rules and English texts, localizable through `TransactionNotificationText`),
+  `StartupProgress`, `ShutdownCoordinator`, `IncomingURIRouter`, `LaunchArgumentsParser`, `LogExportService` and
+  `QRImageImport`.
+- **Settings.** `SettingsStore.resetToDefaults()` backs up both files to `.bak` and resets them. It serves QT-007
+  Reset, `-resetguisettings` and Options "Reset". `LaunchOptions` gained `showHelp` and `showVersion`
+  (`-help`, `-version`).
+- **Still `not_implemented` in the engine.** The adapters for R1/R2's calls (lifecycle, transactions, fees,
+  compat, backup, PSBT, tools, console) are not written yet. `tx_notices` (R1) is one of them: until it lands,
+  the notification feed records the error and shows nothing.
+- **macOS (`PlatformServicesMac`).**
+  - `MacSingleInstance`: the app delegate feeds `application(_:open:)` to `deliver(urls:)`.
+  - `MacNotifier` (UserNotifications): `.unavailable` outside an `.app` bundle.
+  - `MacBiometricKeyStore` (keychain `.biometryCurrentSet`, LAContext prompt first): needs a signed app with
+    keychain-access-groups.
+  - `MacQRImageDecoder` (Vision), `MacStatusItemTray`, `MacIdleMonitor`, `MacClipboard`, `MacFileRevealer`, and
+    `MacLaunchAtLogin` (`isSupported == false` by default, as dash-qt).
+- **Windows/Linux (`PlatformServicesDesktop`).** Wrappers over dw-desktop.
+  - `DesktopTray.isAvailable == false`: there is no tray backend.
+  - `DesktopIdleMonitor` has no OS source yet, so auto-lock uses only its inactivity timer there.
+  - `DesktopBiometricKeyStore.kind == .none`.
+  - `CommandLineClipboard` (wl-clipboard / xclip) is Linux only.

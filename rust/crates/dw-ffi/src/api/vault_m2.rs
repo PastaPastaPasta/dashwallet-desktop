@@ -1,11 +1,13 @@
 //! M2 vault calls: quick-unlock policy (slot B, IOS-011/016), recovery with
 //! the phrase (IOS-014) and destroying an empty vault (IOS-009/109). Owner:
 //! S1 (dw-vault slot B). `enroll_quick_unlock` / `remove_quick_unlock` are in
-//! `vault.rs`. Contract: docs/contracts/m2-engine.md §2.9.
+//! `vault.rs`. Contract: docs/contracts/m2-engine.md §2.9. Every call runs on
+//! the session's dw-vault vault; the rules live there.
 
 use zeroize::Zeroizing;
 
-use crate::api::common::{not_implemented, parse_wallet_id};
+use crate::api::common::parse_wallet_id;
+use crate::api::vault::OwnedCredential;
 use crate::{Vault, VaultCredential, VaultError, VaultStatus};
 
 /// Biometric quick-unlock rules, enforced by `Vault.authorize` (DESIGN-opus
@@ -34,12 +36,23 @@ pub struct VaultRecovery {
     pub wallets_without_secrets: Vec<String>,
 }
 
+impl From<dw_vault::QuickUnlockPolicy> for QuickUnlockPolicy {
+    fn from(p: dw_vault::QuickUnlockPolicy) -> Self {
+        Self {
+            enrolled: p.enrolled,
+            spend_limit_duffs: p.spend_limit_duffs,
+            passphrase_max_age_secs: p.passphrase_max_age_secs,
+            last_passphrase_at: p.last_passphrase_at,
+        }
+    }
+}
+
 #[uniffi::export]
 impl Vault {
-    /// In-memory read.
+    /// In-memory read; works while locked.
     pub fn quick_unlock_policy(&self) -> Result<QuickUnlockPolicy, VaultError> {
         self.check_open()?;
-        not_implemented("Vault.quick_unlock_policy")
+        Ok(self.session.vault().quick_unlock_policy().into())
     }
 
     /// Sets the biometric spending limit (IOS-016) to one of the iOS options
@@ -50,9 +63,10 @@ impl Vault {
         grant_id: String,
         spend_limit_duffs: u64,
     ) -> Result<QuickUnlockPolicy, VaultError> {
-        let _ = (grant_id, spend_limit_duffs);
         self.check_open()?;
-        not_implemented("Vault.set_quick_unlock_spend_limit")
+        self.op(move |v| v.set_quick_unlock_spend_limit(&grant_id, spend_limit_duffs))
+            .await
+            .map(Into::into)
     }
 
     /// Forgot passphrase (IOS-014, DESIGN-opus §1.8): checks that
@@ -60,8 +74,10 @@ impl Vault {
     /// (`vault.recovery_mismatch` otherwise), then replaces the vault with a
     /// new one encrypted with `new_passphrase` holding that wallet's phrase.
     /// Secrets of other wallets cannot be read without the old passphrase:
-    /// they are dropped and listed in `wallets_without_secrets`. Resets the
-    /// attempt throttle; removes the quick-unlock slot.
+    /// they are dropped and listed in `wallets_without_secrets` (the old
+    /// vault file is kept as `vault.dwv.replaced-<time>`). Resets the
+    /// attempt throttle; removes the quick-unlock slot. The new vault is
+    /// unlocked. `wallet_not_found` when `wallet_id` is not registered.
     pub async fn recover_with_mnemonic(
         &self,
         wallet_id: String,
@@ -69,25 +85,35 @@ impl Vault {
         bip39_passphrase: Vec<u8>,
         new_passphrase: Vec<u8>,
     ) -> Result<VaultRecovery, VaultError> {
-        let _secrets = (
-            Zeroizing::new(mnemonic),
-            Zeroizing::new(bip39_passphrase),
-            Zeroizing::new(new_passphrase),
-        );
-        parse_wallet_id(&wallet_id)?;
+        let mnemonic = Zeroizing::new(mnemonic);
+        let bip39_passphrase = Zeroizing::new(bip39_passphrase);
+        let new_passphrase = Zeroizing::new(new_passphrase);
+        let id = parse_wallet_id(&wallet_id)?;
         self.check_open()?;
-        not_implemented("Vault.recover_with_mnemonic")
+        self.session.wallet_info(&id)?;
+        let lost = self
+            .op(move |v| {
+                v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
+            })
+            .await?;
+        Ok(VaultRecovery {
+            status: self.session.vault().status().into(),
+            wallets_without_secrets: lost.iter().map(hex::encode).collect(),
+        })
     }
 
-    /// Deletes the vault (files, OS-store key, quick-unlock item) once no
-    /// registered wallet has secrets in it (`vault.not_empty`): the last
-    /// step of "Delete All" / wipe after every wallet was removed with
-    /// `remove_wallet`. `credential` must satisfy the `Wipe` row of the
-    /// credential table (passphrase on an encrypted vault). Returns
-    /// `NoVault` status.
+    /// Deletes the vault (files, OS-store key) once it holds no secrets
+    /// (`vault.not_empty`): the last step of "Delete All" / wipe after every
+    /// wallet was removed with `remove_wallet`. The host deletes its
+    /// quick-unlock item. `credential` must satisfy the `Wipe` row of the
+    /// credential table: the passphrase on an encrypted vault
+    /// (`vault.credential_required` otherwise), nothing on an unencrypted
+    /// one. Returns `NoVault` status; idempotent.
     pub async fn destroy(&self, credential: VaultCredential) -> Result<VaultStatus, VaultError> {
-        let _credential = crate::api::vault::OwnedCredential::from(credential);
+        let credential = OwnedCredential::from(credential);
         self.check_open()?;
-        not_implemented("Vault.destroy")
+        self.op(move |v| v.destroy(credential.as_credential()))
+            .await
+            .map(Into::into)
     }
 }

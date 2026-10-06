@@ -2,12 +2,15 @@
 //! Linux (DESIGN-opus §1.13): single instance + URI hand-off, autostart,
 //! tray, notifications, URI scheme registration, capture exclusion, QR
 //! decoding from images, log export. macOS uses AppKit/SwiftUI for the same
-//! protocols; there these calls return `desktop.unsupported` unless noted.
+//! protocols; there these calls return `desktop.unsupported` except
+//! `decode_qr_codes` and `Engine.export_logs`, which work everywhere.
 //! Owner: S1 (desktop services). Contract: docs/contracts/m2-engine.md §2.10.
 //!
 //! The surface is the same on every OS so the generated bindings do not
-//! depend on the build host.
+//! depend on the build host. Windows code paths in dw-desktop are written
+//! but not built or run yet (no Windows runner).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::Engine;
@@ -61,6 +64,19 @@ impl From<dw_engine::EngineError> for DesktopError {
     }
 }
 
+impl From<dw_desktop::DesktopError> for DesktopError {
+    fn from(e: dw_desktop::DesktopError) -> Self {
+        use dw_desktop::DesktopError as D;
+        match e {
+            D::Unsupported(feature) => Self::Unsupported { feature },
+            D::OsError(detail) => Self::OsError { detail },
+            D::NoQrCode => Self::NoQrCode,
+            D::ImageUnreadable(detail) => Self::ImageUnreadable { detail },
+            D::InvalidArgument(detail) => Self::InvalidArgument { detail },
+        }
+    }
+}
+
 crate::api::common::export_error_code!(DesktopError);
 
 impl DesktopError {
@@ -78,6 +94,16 @@ impl DesktopError {
     }
 }
 
+/// `desktop.unsupported` on macOS, where the Swift side serves `feature`.
+fn refuse_on_macos(feature: &str) -> Result<(), DesktopError> {
+    if cfg!(target_os = "macos") {
+        return Err(DesktopError::Unsupported {
+            feature: format!("{feature} (served by PlatformServicesMac on macOS)"),
+        });
+    }
+    Ok(())
+}
+
 // ---- Single instance and URI hand-off (QT-001, QT-150) ----
 
 /// Receives the arguments a second launch forwarded (URIs, file paths).
@@ -90,55 +116,67 @@ pub trait InstanceObserver: Send + Sync {
 /// Held by the primary instance; releasing it frees the instance key.
 #[derive(Debug, uniffi::Object)]
 pub struct InstanceGuard {
-    _private: (),
+    inner: dw_desktop::instance::InstanceGuard,
 }
 
 #[uniffi::export]
 impl InstanceGuard {
     /// Stops listening and frees the key. Idempotent; dropping does the same.
-    pub fn release(&self) {}
+    pub fn release(&self) {
+        self.inner.release();
+    }
 }
 
-/// Becomes the primary instance for `key` (`DashWallet-<network>`; a local
-/// socket on Windows, an abstract Unix socket on Linux) and delivers later
-/// launches' forwarded arguments to `observer`. `None`: another instance
-/// holds the key; the caller forwards with `forward_to_primary` and exits 0.
+/// Becomes the primary instance for `key` (`DashWallet-<network>`; Linux: a
+/// lock file and socket in `$XDG_RUNTIME_DIR`; Windows: a named mutex and
+/// pipe) and delivers later launches' forwarded arguments to `observer`.
+/// `None`: another instance holds the key; the caller forwards with
+/// `forward_to_primary` and exits 0. macOS: `desktop.unsupported`
+/// (LaunchServices keeps one instance).
 #[uniffi::export]
 pub fn acquire_single_instance(
     key: String,
     observer: Arc<dyn InstanceObserver>,
 ) -> Result<Option<Arc<InstanceGuard>>, DesktopError> {
-    let _ = (key, observer);
-    not_implemented("acquire_single_instance")
+    refuse_on_macos("single instance")?;
+    let handler: dw_desktop::instance::ForwardHandler =
+        Arc::new(move |args| observer.on_forwarded(args));
+    Ok(
+        dw_desktop::instance::acquire(&key, handler)?
+            .map(|inner| Arc::new(InstanceGuard { inner })),
+    )
 }
 
 /// Sends `args` to the primary instance for `key`. `false` when none
-/// listens (the caller becomes primary instead).
+/// listens (the caller becomes primary instead). Waits up to 3 s for a
+/// primary that is still starting.
 #[uniffi::export]
 pub fn forward_to_primary(key: String, args: Vec<String>) -> Result<bool, DesktopError> {
-    let _ = (key, args);
-    not_implemented("forward_to_primary")
+    refuse_on_macos("single instance")?;
+    Ok(dw_desktop::instance::forward(&key, &args)?)
 }
 
 /// Registers the URI schemes (`dash`, `pay`, `dashwallet`, …) for the
 /// current user where the installer did not (Linux tarball:
-/// `x-scheme-handler` in a user `.desktop` file; Windows: HKCU). Packaged
-/// builds (Flatpak, MSI, macOS bundle) register at install time.
+/// `x-scheme-handler` in a user `.desktop` file plus `mimeapps.list`
+/// defaults; Windows: HKCU). Packaged builds (Flatpak, MSI, macOS bundle)
+/// register at install time; macOS returns `desktop.unsupported`.
 #[uniffi::export]
 pub fn register_uri_schemes(
     app_id: String,
     exec_path: String,
     schemes: Vec<String>,
 ) -> Result<(), DesktopError> {
-    let _ = (app_id, exec_path, schemes);
-    not_implemented("register_uri_schemes")
+    Ok(dw_desktop::uri_schemes::register(
+        &app_id, &exec_path, &schemes,
+    )?)
 }
 
 // ---- Autostart (QT-009) ----
 
-/// "Start on system login" entry: Windows Startup shortcut, Linux XDG
-/// autostart `.desktop` (`dashwallet[-<network>].desktop`), launched with
-/// `args` (dash-qt: `--min --chain=<network>`).
+/// "Start on system login" entry: Windows `Run` value, Linux XDG
+/// autostart `.desktop` (`<app_id>.desktop`), launched with `args`
+/// (dash-qt: `--min --chain=<network>`).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AutostartEntry {
     pub app_id: String,
@@ -147,17 +185,23 @@ pub struct AutostartEntry {
     pub args: Vec<String>,
 }
 
+/// Whether the entry exists and is enabled. `desktop.unsupported` on
+/// macOS and inside Flatpak (Background portal not implemented).
 #[uniffi::export]
 pub fn autostart_enabled(app_id: String) -> Result<bool, DesktopError> {
-    let _ = app_id;
-    not_implemented("autostart_enabled")
+    Ok(dw_desktop::autostart::enabled(&app_id)?)
 }
 
 /// Writes (`enabled`) or deletes the entry. Idempotent.
 #[uniffi::export]
 pub fn set_autostart(entry: AutostartEntry, enabled: bool) -> Result<(), DesktopError> {
-    let _ = (entry, enabled);
-    not_implemented("set_autostart")
+    let entry = dw_desktop::autostart::AutostartEntry {
+        app_id: entry.app_id,
+        display_name: entry.display_name,
+        exec_path: entry.exec_path,
+        args: entry.args,
+    };
+    Ok(dw_desktop::autostart::set(&entry, enabled)?)
 }
 
 // ---- Tray (QT-028…030, IOS-117) ----
@@ -191,37 +235,51 @@ pub trait TrayObserver: Send + Sync {
 }
 
 /// The Windows notification-area icon (`Shell_NotifyIcon` thread) or Linux
-/// StatusNotifierItem (`ksni`).
+/// StatusNotifierItem. Neither backend is built yet (the SNI needs a D-Bus
+/// stack, the Windows icon a Win32 message loop), so `new` reports
+/// `desktop.unsupported` on every OS and the host keeps the window: "Show
+/// tray icon" and "Minimize to tray" are hidden, as on a session without a
+/// tray host.
 #[derive(Debug, uniffi::Object)]
 pub struct TrayIcon {
     _private: (),
 }
 
+const TRAY_UNBUILT: &str = "tray icon (no StatusNotifierItem / Shell_NotifyIcon backend yet)";
+
 #[uniffi::export]
 impl TrayIcon {
     /// Shows the icon. `desktop.unsupported` when the session has no tray
-    /// host; the host then hides "Show tray icon" / "Minimize to tray".
+    /// host, and in this build on every OS (see the type doc).
     #[uniffi::constructor]
     pub fn new(spec: TraySpec, observer: Arc<dyn TrayObserver>) -> Result<Arc<Self>, DesktopError> {
         let _ = (spec, observer);
-        not_implemented("TrayIcon.new")
+        Err(DesktopError::Unsupported {
+            feature: TRAY_UNBUILT.into(),
+        })
     }
 
     pub fn set_tooltip(&self, tooltip: String) -> Result<(), DesktopError> {
         let _ = tooltip;
-        not_implemented("TrayIcon.set_tooltip")
+        Err(DesktopError::Unsupported {
+            feature: TRAY_UNBUILT.into(),
+        })
     }
 
     /// Replaces the menu (dash-qt disables it while a modal dialog is open).
     pub fn set_items(&self, items: Vec<TrayMenuItem>) -> Result<(), DesktopError> {
         let _ = items;
-        not_implemented("TrayIcon.set_items")
+        Err(DesktopError::Unsupported {
+            feature: TRAY_UNBUILT.into(),
+        })
     }
 
     /// "Show tray icon" off hides it without dropping the object.
     pub fn set_visible(&self, visible: bool) -> Result<(), DesktopError> {
         let _ = visible;
-        not_implemented("TrayIcon.set_visible")
+        Err(DesktopError::Unsupported {
+            feature: TRAY_UNBUILT.into(),
+        })
     }
 }
 
@@ -229,7 +287,7 @@ impl TrayIcon {
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DesktopNotification {
-    /// Replaces an earlier notification with the same id.
+    /// Identifies the notification in `NotificationObserver::on_activated`.
     pub id: String,
     pub title: String,
     pub body: String,
@@ -243,11 +301,14 @@ pub trait NotificationObserver: Send + Sync {
     fn on_activated(&self, id: String, deep_link: Option<String>);
 }
 
-/// WinRT toasts on Windows, `org.freedesktop.Notifications` (or the Flatpak
-/// portal) on Linux, timeout 10 s as dash-qt.
+/// Linux: `notify-send` (libnotify, D-Bus `org.freedesktop.Notifications`),
+/// timeout 10 s as dash-qt, clicks reported where `notify-send` supports
+/// `--action`/`--wait`; `desktop.unsupported` without `notify-send`.
+/// Windows: a toast through PowerShell, clicks not reported (unverified).
+/// macOS: `desktop.unsupported` (UserNotifications in Swift).
 #[derive(Debug, uniffi::Object)]
 pub struct DesktopNotifier {
-    _private: (),
+    inner: dw_desktop::notify::Notifier,
 }
 
 #[uniffi::export]
@@ -257,13 +318,20 @@ impl DesktopNotifier {
         app_id: String,
         observer: Arc<dyn NotificationObserver>,
     ) -> Result<Arc<Self>, DesktopError> {
-        let _ = (app_id, observer);
-        not_implemented("DesktopNotifier.new")
+        let handler: dw_desktop::notify::ActivationHandler =
+            Arc::new(move |id, deep_link| observer.on_activated(id, deep_link));
+        Ok(Arc::new(Self {
+            inner: dw_desktop::notify::Notifier::new(&app_id, handler)?,
+        }))
     }
 
     pub fn notify(&self, notification: DesktopNotification) -> Result<(), DesktopError> {
-        let _ = notification;
-        not_implemented("DesktopNotifier.notify")
+        Ok(self.inner.notify(&dw_desktop::notify::Notification {
+            id: notification.id,
+            title: notification.title,
+            body: notification.body,
+            deep_link: notification.deep_link,
+        })?)
     }
 }
 
@@ -271,19 +339,19 @@ impl DesktopNotifier {
 
 /// Windows `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the window
 /// `hwnd` while a phrase is visible. Returns whether exclusion is in effect;
-/// `desktop.unsupported` on Linux (the host shows a warning banner).
+/// `desktop.unsupported` on Linux (the host shows a warning banner) and
+/// macOS (`NSWindow.sharingType` in Swift).
 #[uniffi::export]
 pub fn set_window_capture_excluded(hwnd: u64, excluded: bool) -> Result<bool, DesktopError> {
-    let _ = (hwnd, excluded);
-    not_implemented("set_window_capture_excluded")
+    Ok(dw_desktop::capture::set_excluded(hwnd, excluded)?)
 }
 
 /// Decodes every QR code in an image file's bytes (PNG, JPEG, BMP) or a
-/// clipboard image, in reading order. Works on every OS (pure Rust).
+/// clipboard image, in reading order. Works on every OS (pure Rust). At
+/// most 32 MiB and 40 megapixels (`desktop.image_unreadable` above).
 #[uniffi::export]
 pub fn decode_qr_codes(image: Vec<u8>) -> Result<Vec<String>, DesktopError> {
-    let _ = image;
-    not_implemented("decode_qr_codes")
+    Ok(dw_desktop::qr::decode(&image)?)
 }
 
 /// The OS biometric provider for vault slot B on this host.
@@ -317,21 +385,36 @@ pub fn windows_hello_wrap_key(challenge: Vec<u8>) -> Result<Vec<u8>, DesktopErro
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LogExport {
     pub path: String,
+    /// Log files in the zip, not counting its `manifest.txt`.
     pub file_count: u32,
     pub size_bytes: u64,
 }
 
 #[uniffi::export]
 impl Engine {
-    /// Zips the Rust log files of every network plus `extra_files` (the
-    /// Swift log) into `dest_path` (IOS-112). Logs never hold secrets (the
-    /// secret-in-log test guards this).
+    /// Zips the log files of the data root (`logs/` and `<network>/logs/`)
+    /// plus `extra_files` (the Swift log) and a `manifest.txt` into
+    /// `dest_path`, which must be absolute and must not exist (IOS-112).
+    /// Missing extra files are listed in the manifest as skipped. Logs never
+    /// hold secrets (the secret-in-log test guards this). The engine writes
+    /// no log files yet, so today the zip holds the host's files and the
+    /// manifest.
     pub async fn export_logs(
         &self,
         dest_path: String,
         extra_files: Vec<String>,
     ) -> Result<LogExport, DesktopError> {
-        let _ = (dest_path, extra_files);
-        not_implemented("Engine.export_logs")
+        let extras: Vec<PathBuf> = extra_files.into_iter().map(PathBuf::from).collect();
+        let export = dw_desktop::logs::export(
+            &self.inner.config().data_root,
+            &PathBuf::from(dest_path),
+            &extras,
+            &crate::core_version(),
+        )?;
+        Ok(LogExport {
+            path: export.path.to_string_lossy().into_owned(),
+            file_count: export.file_count,
+            size_bytes: export.size_bytes,
+        })
     }
 }

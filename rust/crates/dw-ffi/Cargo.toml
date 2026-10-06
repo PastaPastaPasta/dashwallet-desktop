@@ -14,6 +14,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 [dependencies]
 dashcore = { workspace = true }
 dw-console = { workspace = true }
+dw-desktop = { workspace = true }
 dw-engine = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }

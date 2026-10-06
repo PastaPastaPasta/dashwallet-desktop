@@ -256,6 +256,12 @@ impl From<dw_vault::VaultError> for VaultError {
             V::MixingOnly => Self::MixingOnly,
             V::NoSecret => Self::NoSecret,
             V::QuickUnlockUnavailable => Self::QuickUnlockUnavailable,
+            V::QuickUnlockLimitExceeded { limit_duffs } => {
+                Self::QuickUnlockLimitExceeded { limit_duffs }
+            }
+            V::PassphraseStale => Self::PassphraseStale,
+            V::NotEmpty => Self::NotEmpty,
+            V::RecoveryMismatch => Self::RecoveryMismatch,
             V::OsStoreUnavailable(detail) => Self::OsStoreUnavailable { detail },
             V::Corrupt(detail) => Self::Corrupt { detail },
             V::InvalidArgument(detail) => Self::InvalidArgument { detail },
@@ -384,7 +390,7 @@ impl From<VaultCredential> for OwnedCredential {
 }
 
 impl OwnedCredential {
-    fn as_credential(&self) -> Credential<'_> {
+    pub(crate) fn as_credential(&self) -> Credential<'_> {
         match self {
             Self::Passphrase(p) => Credential::Passphrase(p),
             Self::QuickUnlock(k) => Credential::QuickUnlock(k),
@@ -432,7 +438,7 @@ impl VaultError {
 /// The vault of one network. Obtained from `NetworkSession::vault`.
 #[derive(uniffi::Object)]
 pub struct Vault {
-    session: Arc<dw_engine::NetworkSession>,
+    pub(crate) session: Arc<dw_engine::NetworkSession>,
 }
 
 #[uniffi::export]
@@ -458,7 +464,7 @@ impl Vault {
     }
 
     /// Runs `f` on the engine's blocking pool via `NetworkSession::vault_op`.
-    async fn op<T, F>(&self, f: F) -> Result<T, VaultError>
+    pub(crate) async fn op<T, F>(&self, f: F) -> Result<T, VaultError>
     where
         F: FnOnce(&dw_vault::Vault) -> Result<T, dw_vault::VaultError> + Send + 'static,
         T: Send + 'static,
@@ -540,8 +546,12 @@ impl Vault {
     ///
     /// A passphrase credential does not change the lock state: on a locked
     /// or mixing-only vault the unwrapped key serves this grant only.
+    /// A quick-unlock credential (slot B, M2) issues `Spend` grants up to
+    /// the spending limit and `SignMessage` grants while the passphrase was
+    /// entered within 7 days; everything else needs the passphrase.
     /// Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`, `Locked`,
-    /// `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`.
+    /// `MixingOnly`, `CredentialRequired`, `QuickUnlockUnavailable`,
+    /// `QuickUnlockLimitExceeded`, `PassphraseStale`.
     pub async fn authorize(
         &self,
         purpose: GrantPurpose,
@@ -588,14 +598,24 @@ impl Vault {
         })
     }
 
-    /// Enrols the biometric slot (M2): returns the wrap key the host stores in
-    /// the OS biometric store. Needs a `ChangeCredential` grant.
+    /// Enrols the biometric slot B (IOS-011): returns the 32-byte wrap key
+    /// the host stores in the OS biometric store (macOS: a keychain item
+    /// with `.biometryCurrentSet`); the vault keeps only the data key sealed
+    /// under it. Needs an encrypted vault and a `ChangeCredential` grant.
+    /// Re-enrolling replaces the key. Only macOS has a biometric store the
+    /// host can use (Touch ID); elsewhere `vault.quick_unlock_unavailable`
+    /// (Windows Hello is M6, Linux has none).
     pub async fn enroll_quick_unlock(&self, grant_id: String) -> Result<Vec<u8>, VaultError> {
+        if !cfg!(target_os = "macos") {
+            self.check_open()?;
+            return Err(VaultError::QuickUnlockUnavailable);
+        }
         let mut key = self.op(move |v| v.enroll_quick_unlock(&grant_id)).await?;
         Ok(std::mem::take(&mut *key))
     }
 
-    /// Deletes the biometric slot (M2). Idempotent.
+    /// Deletes the biometric slot (M2). Idempotent; the spending limit is
+    /// kept for a later enrolment. The host deletes its OS item.
     pub async fn remove_quick_unlock(&self) -> Result<VaultStatus, VaultError> {
         self.op(|v| v.remove_quick_unlock()).await.map(Into::into)
     }

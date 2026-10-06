@@ -76,8 +76,8 @@ import Testing
         await #expect(throws: VaultError.NoVault) {
             try await session.vault().unlock(passphrase: Data("pw".utf8), scope: .full)
         }
-        // Biometric quick unlock lands in M2.
-        await #expect(throws: VaultError.NotImplemented(call: "Vault.enroll_quick_unlock")) {
+        // Quick unlock (M2) needs a vault first.
+        await #expect(throws: VaultError.NoVault) {
             try await session.vault().enrollQuickUnlock(grantId: "none")
         }
         // E1 calls answer offline: no SPV yet, nothing synced.
