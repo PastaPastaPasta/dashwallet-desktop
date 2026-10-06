@@ -2,8 +2,8 @@
 // models map their own domain codes first and fall back to this.
 import WalletRuntime
 
-enum ErrorText {
-    static func common(_ code: ServiceErrorCode) -> String {
+public enum ErrorText {
+    public static func common(_ code: ServiceErrorCode) -> String {
         switch code {
         case .notImplemented: L10n.Common.notAvailableYet
         case .networkNotOpen: L10n.Common.networkNotOpen

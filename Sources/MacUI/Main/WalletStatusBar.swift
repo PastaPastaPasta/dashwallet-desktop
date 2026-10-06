@@ -20,6 +20,9 @@ struct WalletStatusBar: View {
                 ForEach(DisplayUnit.allCases, id: \.self) { unit in
                     Button(model.env?.amounts.unitName(unit) ?? "") { main.settings.setUnit(unit) }
                 }
+                Divider()
+                Button(MacStrings.Peers.show) { model.isPeersPresented = true }
+                    .disabled(sync == nil)
             }
             .accessibilityIdentifier("statusBar")
     }
@@ -76,11 +79,16 @@ struct WalletStatusBar: View {
             let peers = MacStrings.Status.connections(sync.connectedPeers)
             items.append(StatusBarItem(
                 id: "peers", icon: .system(Self.connectionsSymbol(sync.connectedPeers)), text: "\(sync.connectedPeers)",
-                accessibilityLabel: peers, help: peers, tone: sync.connectedPeers == 0 ? .error : .neutral))
+                accessibilityLabel: peers, help: "\(peers). \(MacStrings.Peers.show)",
+                tone: sync.connectedPeers == 0 ? .error : .neutral,
+                action: { model.isPeersPresented = true }))
+            // While catching up a click opens the sync overlay (QT-027).
             items.append(StatusBarItem(
                 id: "sync", icon: .system(sync.isDone ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath"),
                 accessibilityLabel: sync.isDone ? MacStrings.Status.synced : MacStrings.Status.syncing,
-                help: main.home?.syncText, tone: sync.isDone ? .success : .info))
+                help: sync.isDone ? main.home?.syncText : "\(main.home?.syncText ?? ""). \(MacStrings.SyncOverlay.show)",
+                tone: sync.isDone ? .success : .info,
+                action: sync.isDone ? nil : { model.syncOverlayRequested = true }))
         }
         return items
     }

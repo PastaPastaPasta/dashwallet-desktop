@@ -19,6 +19,12 @@ struct MainWindowView: View {
             } else {
                 walletView
             }
+            if model.showsSyncOverlay, let status = main.home?.sync {
+                SyncOverlayView(
+                    status: status, rates: model.syncRates, syncText: main.home?.syncText ?? "",
+                    hide: { model.hideSyncOverlay() })
+                .transition(.opacity)
+            }
             if main.showsLockScreen {
                 LockScreenView(lock: main.lock, receive: main.receive)
                     .transition(.opacity)
@@ -41,6 +47,12 @@ struct MainWindowView: View {
         }
         .sheet(isPresented: Binding(get: { model.isOpenURIPresented }, set: { model.isOpenURIPresented = $0 })) {
             OpenURISheet(model: model)
+        }
+        .sheet(isPresented: Binding(get: { model.isPeersPresented }, set: { model.isPeersPresented = $0 })) {
+            if let sync = model.env?.sync { PeersSheet(sync: sync) }
+        }
+        .onChange(of: main.home?.sync) { _, status in
+            if let status { model.syncRates.record(status) }
         }
         .alert(
             MacStrings.Common.error,
@@ -78,6 +90,9 @@ struct MainWindowView: View {
         }
         .onChange(of: main.send?.route) { _, route in
             guard let route else { return }
+            // After an unknown broadcast outcome the Send page explains it
+            // first and follows the route itself.
+            if case .broadcastUnknown = main.send?.phase { return }
             main.send?.route = nil
             Task {
                 await main.navigate(route)

@@ -56,6 +56,23 @@ struct SendView: View {
         } message: {
             Text(L10n.Send.duplicateText)
         }
+        // The broadcast may have reached a peer: the inputs stay reserved and
+        // the user is sent to the transaction instead of sending again (M-7).
+        .alert(MacStrings.Send.outcomeUnknownTitle, isPresented: unknownBinding) {
+            Button(MacStrings.Send.showTransaction) {
+                let route = send.route
+                send.route = nil
+                Task {
+                    if let route { await model.main?.navigate(route) }
+                    await send.dismiss()
+                }
+            }
+            .accessibilityIdentifier("send.unknown.show")
+        } message: {
+            if case .broadcastUnknown(_, let failure) = send.phase {
+                Text("\(MacStrings.Send.outcomeUnknownText)\n\n\(failure.message)")
+            }
+        }
         .alert(L10n.Send.creationFailed, isPresented: failedBinding) {
             Button(MacStrings.Common.ok) { Task { await send.dismiss() } }
         } message: {
@@ -128,6 +145,10 @@ struct SendView: View {
 
     private var duplicatesBinding: Binding<Bool> {
         Binding(get: { send.phase == .confirmDuplicates }, set: { _ in })
+    }
+
+    private var unknownBinding: Binding<Bool> {
+        Binding(get: { if case .broadcastUnknown = send.phase { true } else { false } }, set: { _ in })
     }
 
     private var failedBinding: Binding<Bool> {

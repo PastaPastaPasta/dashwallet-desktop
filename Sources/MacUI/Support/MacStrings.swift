@@ -61,6 +61,35 @@ enum MacStrings {
         static func behind(_ text: String) -> String { "\(text) behind" }
     }
 
+    enum SyncOverlay {
+        static let title = "Recent transactions may not yet be visible"
+        static let body =
+            "The wallet is still synchronizing with the Dash network, so its balance may be incorrect. Spending coins from transactions not shown yet will not be accepted by the network."
+        static let status = "Status"
+        static let blocksLeft = "Number of blocks left"
+        static let lastBlockTime = "Last block time"
+        static let progress = "Progress"
+        static let progressPerHour = "Progress increase per hour"
+        static let timeLeft = "Estimated time left until synced"
+        static let hide = "Hide"
+        static let show = "Show synchronization details"
+    }
+
+    enum Peers {
+        static let title = "Peers"
+        static let show = "Show Peers…"
+        static let address = "Address"
+        static let userAgent = "User Agent"
+        static let height = "Height"
+        static let ping = "Ping"
+        static let direction = "Direction"
+        static let inbound = "Inbound"
+        static let outbound = "Outbound"
+        static let none = "Not connected to any peer."
+        static let changePeers = "Change Peers"
+        static let changePeersHelp = "Disconnect from the current peers and connect to others."
+    }
+
     enum Transition {
         static func starting(_ network: String) -> String { "Opening \(network)…" }
         static func stopping(_ network: String) -> String { "Closing \(network)…" }
@@ -141,6 +170,10 @@ enum MacStrings {
 
     enum Send {
         static let payTo = "Pay To"
+        static let outcomeUnknownTitle = "The transaction may have been sent"
+        static let outcomeUnknownText =
+            "The wallet could not confirm whether the network received the transaction. Its coins stay reserved. Check Transactions before you send again."
+        static let showTransaction = "Show Transaction"
         static let payToPlaceholder = "Enter a Dash address (e.g. yXdY…) or paste a dash: URI"
         static let chooseAddress = "Choose from address book"
         static let pasteAddress = "Paste address from clipboard"

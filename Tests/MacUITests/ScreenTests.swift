@@ -266,6 +266,31 @@ struct ScreenTests {
         #expect(model.unavailableReason?.contains(file.path) == true)
     }
 
+    @Test func syncRatesStayUnknownUntilAMinuteOfSamples() {
+        func status(_ height: UInt32, _ progress: Double, tip: Date? = nil) -> SyncStatus {
+            SyncStatus(
+                running: true,
+                phases: [SyncPhaseProgress(phase: .headers, currentHeight: height, targetHeight: 1_000, done: false)],
+                activePhase: .headers, tipHeight: height, tipDate: tip, chainLockHeight: nil, connectedPeers: 3,
+                progress: progress, isDone: false, isStalled: false)
+        }
+        let tracker = SyncRateTracker()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        tracker.record(status(100, 0.10), at: start)
+        tracker.record(status(150, 0.15), at: start.addingTimeInterval(30))
+        #expect(tracker.progressPerHour == nil)
+        tracker.record(status(200, 0.20), at: start.addingTimeInterval(360))
+        #expect(abs((tracker.progressPerHour ?? 0) - 1.0) < 0.0001)
+        #expect(abs((tracker.remaining(for: status(200, 0.20)) ?? 0) - 0.8 * 3600) < 1)
+        #expect(SyncRateTracker.blocksLeft(status(200, 0.20)) == 800)
+        // Progress going backwards (rescan) starts over.
+        tracker.record(status(10, 0.01), at: start.addingTimeInterval(400))
+        #expect(tracker.progressPerHour == nil)
+        #expect(SyncRateTracker.tipIsOld(status(10, 0.01, tip: start), now: start.addingTimeInterval(26 * 60)))
+        #expect(!SyncRateTracker.tipIsOld(status(10, 0.01, tip: start), now: start.addingTimeInterval(10 * 60)))
+        #expect(SyncRateTracker.tipIsOld(status(10, 0.01, tip: nil)))
+    }
+
     @Test func demoPhraseUsesBIP39Words() {
         #expect(DemoStore.phrase.count == 24)
         #expect(Set(DemoStore.phrase).count == 24)
