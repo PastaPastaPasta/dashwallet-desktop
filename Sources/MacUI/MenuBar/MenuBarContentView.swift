@@ -1,5 +1,6 @@
 // Menu bar companion (IOS-117, QT-028/029): balance (masked in discreet
-// mode), receive QR and address, and shortcuts into the app.
+// mode), last transaction, receive QR and address, and shortcuts into the
+// app (Send, Transactions).
 #if os(macOS)
 import DashUIMac
 import DesignTokens
@@ -37,6 +38,27 @@ struct MenuBarContentView: View {
                         .dashFont(.caption1)
                         .foregroundStyle(Color.dash.secondaryText)
                 }
+                // Hidden in discreet mode, like the Overview list.
+                if home.recentVisible, let last = home.recent.first {
+                    Button {
+                        show(.transaction(txid: last.id.txid))
+                    } label: {
+                        VStack(alignment: .leading, spacing: DashSpacing.xxxs) {
+                            Text(MacStrings.MenuBar.lastTransaction)
+                                .dashFont(.caption1)
+                                .foregroundStyle(Color.dash.secondaryText)
+                            HStack {
+                                Text(last.title).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text(last.amountText)
+                                    .monospacedDigit()
+                                    .foregroundStyle(last.isIncoming ? Color.dash.successText : Color.dash.primaryText)
+                            }
+                            .dashFont(.footnote)
+                        }
+                    }
+                    .accessibilityIdentifier("menuBar.lastTransaction")
+                }
             }
             if let receive = model.main?.receive {
                 Divider()
@@ -52,6 +74,10 @@ struct MenuBarContentView: View {
                 .disabled(receive.copyAddress() == nil)
             }
             Divider()
+            Button(MacStrings.MenuBar.send, systemImage: "arrow.up.right") { show(.section(.send)) }
+                .disabled(model.main?.needsOnboarding ?? true)
+            Button(MacStrings.MenuBar.transactions, systemImage: "list.bullet.rectangle") { show(.section(.transactions)) }
+                .disabled(model.main?.needsOnboarding ?? true)
             Button(MacStrings.Menu.openWallet) {
                 openWindow(id: SceneID.main)
                 MacApplication.activate()
@@ -61,6 +87,13 @@ struct MenuBarContentView: View {
         .buttonStyle(.borderless)
         .padding(DashSpacing.l)
         .frame(width: 280)
+    }
+
+    /// Brings the main window forward on `route`.
+    private func show(_ route: AppRoute) {
+        openWindow(id: SceneID.main)
+        MacApplication.activate()
+        Task { await model.main?.navigate(route) }
     }
 }
 #endif

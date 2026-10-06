@@ -310,6 +310,9 @@ enum MacStrings {
     enum MenuBar {
         static let receive = "Receive"
         static let noAddress = "No receiving address yet"
+        static let lastTransaction = "Last transaction"
+        static let send = "Send…"
+        static let transactions = "Transactions…"
     }
 }
 #endif
