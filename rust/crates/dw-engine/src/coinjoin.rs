@@ -1692,6 +1692,7 @@ impl NetworkSession {
     // ---- automatic denominating ------------------------------------------
 
     fn set_mix_status(&self, wallet_id: WalletId, status: StatusCode) {
+        tracing::debug!(%wallet_id, ?status, "CoinJoin step");
         if let Some(m) = self.coinjoin.mixers().get_mut(&wallet_id) {
             m.status = Some(status);
         }
@@ -2545,5 +2546,119 @@ mod tests {
                 ..CoinJoinSettings::default()
             })
         );
+    }
+
+    fn coin(
+        n: u8,
+        value: u64,
+        coinjoin: bool,
+        rounds: i32,
+        fully_mixed: bool,
+        address: &str,
+    ) -> MixViewCoin {
+        use std::str::FromStr;
+        let address = Address::from_str(address).unwrap().assume_checked();
+        let mut utxo = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([n; 32]), 0),
+            TxOut {
+                value,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        let path = if coinjoin {
+            "m/9'/1'/4'/0'/0/1"
+        } else {
+            "m/44'/1'/0'/0/1"
+        };
+        MixViewCoin {
+            coin: WalletCoin {
+                utxo,
+                send_account: !coinjoin,
+                coinjoin_account: coinjoin,
+                is_change: false,
+                block_time: None,
+                chain_locked: false,
+                foreign_incoming: true,
+                user_locked: false,
+                reserved: false,
+            },
+            path: Some(path.parse().unwrap()),
+            rounds,
+            fully_mixed,
+        }
+    }
+
+    const A: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
+    const B: &str = "yfGodgKENPQ1ePSRfbEHfuz1BBPD48vsDk";
+    const C: &str = "yTcx2EJ24TUobNtGfN8UKEQZ5fUziT8yRE";
+
+    #[test]
+    fn test_qt_041_balances_follow_core_definitions() {
+        let d = DENOMINATIONS[2]; // 0.100001
+        let coins = vec![
+            // Ordinary coin: anonymizable (one address above the minimum).
+            coin(
+                1,
+                50_000_000,
+                false,
+                rounds::ROUNDS_NOT_DENOMINATED,
+                false,
+                A,
+            ),
+            // Denominations: 0, 2 and 4 rounds; the last is fully mixed.
+            coin(2, d, true, 0, false, B),
+            coin(3, d, true, 2, false, C),
+            coin(4, d, true, 4, true, C),
+            // A collateral is neither anonymizable nor denominated.
+            coin(5, 40_000, true, rounds::ROUNDS_COLLATERAL, false, B),
+        ];
+        let (b, average) = compute_balances(&coins, dashcore::Network::Testnet, 4);
+        assert_eq!(b.denominated, 3 * d);
+        assert_eq!(b.fully_mixed, d);
+        // value · min(rounds, 4) / 4: 0 + d/2 + d.
+        assert_eq!(b.normalized_anonymized, d * 2 / 4 + d);
+        // A's coin plus the not-fully-mixed denominations (B and C groups).
+        assert_eq!(b.anonymizable, 50_000_000 + d + d);
+        assert_eq!(average, 2.0);
+    }
+
+    #[test]
+    fn test_qt_051_fully_mixed_candidates_need_final_free_coins() {
+        let d = DENOMINATIONS[3];
+        let mut pending = coin(1, d, true, 4, true, B);
+        pending.coin.utxo.is_confirmed = false;
+        let mut locked = coin(2, d, true, 4, true, B);
+        locked.coin.reserved = true;
+        let view = MixView {
+            height: 200,
+            coins: vec![
+                coin(3, d, true, 4, true, C),
+                coin(4, d, true, 2, false, C),
+                pending,
+                locked,
+                coin(
+                    5,
+                    50_000_000,
+                    false,
+                    rounds::ROUNDS_NOT_DENOMINATED,
+                    false,
+                    A,
+                ),
+            ],
+            balances: CoinJoinBalances::default(),
+            total: 0,
+            average_rounds: 0.0,
+        };
+        let got = fully_mixed_candidates(&view);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].outpoint.txid, Txid::from_byte_array([3; 32]));
+        // Ready to mix: the 2-round coin only (not fully mixed, final, free).
+        let ready = view.ready_to_mix(d);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].rounds, 2);
     }
 }

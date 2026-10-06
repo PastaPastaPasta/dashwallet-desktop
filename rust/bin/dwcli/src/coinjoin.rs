@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use clap::Subcommand;
 use dw_engine::coinjoin::{CoinJoinSettings, CoinJoinStatus, MixingState, SweepDestination};
-use dw_engine::{CoinFilter, Engine, NetworkSession, WalletId};
+use dw_engine::{CoinFilter, CoinSource, Engine, FeeMode, NetworkSession, WalletId};
 use dw_vault::{GrantPurpose, LockState, UnlockScope};
 use zeroize::Zeroizing;
 
@@ -41,7 +41,8 @@ pub enum CoinJoinCommand {
         /// Done once the fully mixed balance reaches this many duffs.
         #[arg(long)]
         until_fully_mixed: Option<u64>,
-        /// Done as soon as a session holds coins (to test stop).
+        /// Done as soon as an open session holds coins (its collateral or
+        /// entry inputs reserved), to test that stopping releases them.
         #[arg(long)]
         until_session_entry: bool,
         /// Unlock an encrypted vault for mixing only (QT-112).
@@ -88,7 +89,13 @@ pub enum CoinJoinCommand {
 impl CoinJoinCommand {
     /// Whether the command mixes and wants a mixing-only unlock.
     pub fn mixing_only(&self) -> bool {
-        matches!(self, Self::Mix { mixing_only: true, .. })
+        matches!(
+            self,
+            Self::Mix {
+                mixing_only: true,
+                ..
+            }
+        )
     }
 }
 
@@ -172,7 +179,9 @@ pub fn run(
                 for kv in &set {
                     apply_setting(&mut s, kv)?;
                 }
-                engine.block_on(session.set_coinjoin_settings(s)).map_err(e)?;
+                engine
+                    .block_on(session.set_coinjoin_settings(s))
+                    .map_err(e)?;
             }
             let s = session.coinjoin_settings().map_err(e)?;
             println!(
@@ -187,8 +196,17 @@ pub fn run(
             );
         }
         CoinJoinCommand::Status { wallet } => {
-            let s = session.coinjoin_status(wallet_id(&wallet)?).map_err(e)?;
+            let id = wallet_id(&wallet)?;
+            let s = session.coinjoin_status(id).map_err(e)?;
             println!("{}", status_line(&s));
+            let fee = FeeMode::Recommended { target_blocks: 6 };
+            let any = engine
+                .block_on(session.max_spendable(id, CoinSource::Any, fee))
+                .map_err(e)?;
+            let mixed = engine
+                .block_on(session.max_spendable(id, CoinSource::FullyMixedOnly, fee))
+                .map_err(e)?;
+            println!("cjspendable any={any} fully_mixed={mixed}");
         }
         CoinJoinCommand::Mix {
             wallet,
@@ -236,13 +254,16 @@ pub fn run(
                 if s.state != MixingState::Mixing {
                     break Err(format!("mixing stopped: {:?}", s.stop_reason));
                 }
-                let entered = s
-                    .sessions
-                    .iter()
-                    .any(|x| x.entries > 0);
-                let done = until_rounds.is_some_and(|r| facts.0 >= r)
-                    || until_fully_mixed.is_some_and(|d| s.balances.fully_mixed >= d)
-                    || (until_session_entry && entered);
+                // The status is refreshed once a second and an entry can
+                // finish within that second, so "holds coins" is read from
+                // the reserved coins of an open session.
+                let entered = !s.sessions.is_empty() && facts.1 > 0;
+                // Every condition given must hold.
+                let done =
+                    (until_rounds.is_some() || until_fully_mixed.is_some() || until_session_entry)
+                        && until_rounds.is_none_or(|r| facts.0 >= r)
+                        && until_fully_mixed.is_none_or(|d| s.balances.fully_mixed >= d)
+                        && (!until_session_entry || entered);
                 if done {
                     break Ok(());
                 }
@@ -254,12 +275,28 @@ pub fn run(
             engine.block_on(session.stop_mixing(id)).map_err(e)?;
             let s = session.coinjoin_status(id).map_err(e)?;
             println!("stopped {}", status_line(&s));
-            let (max_rounds, reserved) = coin_facts(engine, session, id)?;
+            // Stopping releases every session's coins at once; inputs of a
+            // session that already succeeded stay reserved until the wallet
+            // sees the mixing transaction spend them.
+            let released_by = Instant::now() + Duration::from_secs(30);
+            let (max_rounds, reserved) = loop {
+                let facts = coin_facts(engine, session, id)?;
+                if facts.1 == 0 || Instant::now() >= released_by {
+                    break facts;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            };
             println!("after_stop max_rounds={max_rounds} reserved={reserved}");
             outcome?;
-            println!("mixed max_rounds={max_rounds} fully_mixed={}", s.balances.fully_mixed);
+            println!(
+                "mixed max_rounds={max_rounds} fully_mixed={}",
+                s.balances.fully_mixed
+            );
         }
-        CoinJoinCommand::Utxos { wallet, fully_mixed } => {
+        CoinJoinCommand::Utxos {
+            wallet,
+            fully_mixed,
+        } => {
             let coins = engine
                 .block_on(session.utxos(
                     wallet_id(&wallet)?,
@@ -337,7 +374,10 @@ pub fn run(
                 .map_err(e)?;
             println!("plan total={} chunks={}", plan.total, plan.chunks.len());
             for c in &plan.chunks {
-                println!("chunk inputs={} amount={} fee={}", c.inputs, c.amount, c.fee);
+                println!(
+                    "chunk inputs={} amount={} fee={}",
+                    c.inputs, c.amount, c.fee
+                );
             }
             if !plan_only {
                 let grant = session
