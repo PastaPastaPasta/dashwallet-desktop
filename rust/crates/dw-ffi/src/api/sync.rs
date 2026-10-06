@@ -124,6 +124,8 @@ impl From<dw_engine::EngineError> for SyncError {
         let detail = e.to_string();
         match e {
             E::SpvNotRunning => Self::SpvNotRunning,
+            E::SpvRunning => Self::SpvRunning,
+            E::RescanInProgress => Self::RescanInProgress,
             E::HeightOutOfRange(height) => Self::HeightOutOfRange { height },
             E::Spv(_) => Self::Spv { detail },
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },

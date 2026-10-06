@@ -180,17 +180,14 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
         )),
         "invalid_argument"
     );
-    assert_code!(s.node_info(), not_implemented: "NetworkSession.node_info");
-    assert_code!(s.warnings(), not_implemented: "NetworkSession.warnings");
+    assert_eq!(s.node_info().unwrap().mempool_tx_count, None);
+    assert!(s.warnings().is_ok());
     assert_code!(
         rt.block_on(s.ban_peer("127.0.0.1".into(), 3600)),
         not_implemented: "NetworkSession.ban_peer"
     );
-    assert_code!(s.rescan_progress(), not_implemented: "NetworkSession.rescan_progress");
-    assert_code!(
-        rt.block_on(s.reset_chain_data()),
-        not_implemented: "NetworkSession.reset_chain_data"
-    );
+    assert_eq!(s.rescan_progress().unwrap(), None);
+    rt.block_on(s.reset_chain_data()).unwrap();
     assert_code!(
         rt.block_on(s.console_execute(None, b"getblockcount".to_vec(), None)),
         not_implemented: "NetworkSession.console_execute"

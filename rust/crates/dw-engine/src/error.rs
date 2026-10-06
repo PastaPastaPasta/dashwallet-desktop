@@ -39,6 +39,21 @@ pub enum EngineError {
     /// The call needs a running SPV client.
     #[error("spv is not running")]
     SpvNotRunning,
+    /// The call needs the SPV client stopped (`reset_chain_data`).
+    #[error("spv is running")]
+    SpvRunning,
+    /// A rescan the engine started is still running.
+    #[error("a rescan is in progress")]
+    RescanInProgress,
+    /// Not a BIP44 account-level extended public key of this network.
+    #[error("invalid xpub: {0}")]
+    InvalidXpub(String),
+    /// The transaction's state forbids abandon or resend.
+    #[error("transaction action refused: {0:?}")]
+    TxActionRefused(crate::TxActionRefusal),
+    /// No connected peer to announce a transaction to.
+    #[error("no connected peers")]
+    NoPeers,
     /// A block height above the known tip.
     #[error("height {0} is out of range")]
     HeightOutOfRange(u32),
@@ -110,6 +125,11 @@ impl EngineError {
             EngineError::Io(_) => "io",
             EngineError::NotImplemented(_) => "not_implemented",
             EngineError::SpvNotRunning => "spv_not_running",
+            EngineError::SpvRunning => "spv_running",
+            EngineError::RescanInProgress => "rescan_in_progress",
+            EngineError::InvalidXpub(_) => "invalid_xpub",
+            EngineError::TxActionRefused(_) => "tx_action_refused",
+            EngineError::NoPeers => "no_peers",
             EngineError::HeightOutOfRange(_) => "height_out_of_range",
             EngineError::InvalidQuery(_) => "invalid_query",
             EngineError::StaleCursor => "stale_cursor",

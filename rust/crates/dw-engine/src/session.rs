@@ -145,6 +145,11 @@ pub struct NetworkSession {
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
     pub(crate) spends: crate::send::PendingSpends,
+    /// When this session opened, UNIX seconds ("Startup time").
+    pub(crate) opened_at: u64,
+    /// The previous session of this network did not close cleanly (its
+    /// marker file was still there at open).
+    pub(crate) unclean_previous: bool,
 }
 
 impl NetworkSession {
@@ -167,6 +172,8 @@ impl NetworkSession {
             })
             .collect::<Result<Vec<_>, _>>()?;
         create_private_dir(&data_dir)?;
+        let marker = data_dir.join(crate::tools::SESSION_MARKER);
+        let unclean_previous = marker.exists();
 
         let vault_dir = data_dir.join(VAULT_DIR);
         let (core_network, tag) = (network.core_network(), network.dir_name());
@@ -262,7 +269,12 @@ impl NetworkSession {
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
+            opened_at: crate::events::unix_now(),
+            unclean_previous,
         });
+        if let Err(e) = std::fs::write(&marker, b"") {
+            tracing::warn!(error = %e, "could not write the open-session marker");
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
         }
@@ -295,6 +307,9 @@ impl NetworkSession {
             return;
         };
         let core = &info.core_wallet;
+        if let Some(cl) = &core.metadata.last_applied_chain_lock {
+            self.hub.note_chainlock(cl.block_height, cl.block_hash);
+        }
         self.hub.set_wallet_state(
             id,
             WalletState {
@@ -374,7 +389,8 @@ impl NetworkSession {
     /// (rs-platform-wallet-ffi/src/spv.rs:408, config built at :519-551).
     fn spv_config(&self) -> Result<ClientConfig, EngineError> {
         let mut config = ClientConfig::new(self.network.core_network())
-            .with_storage_path(self.data_dir.join(SPV_DIR));
+            .with_storage_path(self.data_dir.join(SPV_DIR))
+            .with_user_agent(crate::tools::USER_AGENT);
         config.enable_masternodes = true;
         for peer in &self.spv_peers {
             config.add_peer(*peer);
@@ -457,7 +473,14 @@ impl NetworkSession {
         let manager = live.manager;
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
-        if !report.all_clean() {
+        if report.all_clean() {
+            let marker = self.data_dir.join(crate::tools::SESSION_MARKER);
+            if let Err(e) = std::fs::remove_file(&marker)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(error = %e, "could not remove the open-session marker");
+            }
+        } else {
             self.sink.emit(EngineEvent::Notice {
                 network: Some(self.network.clone()),
                 code: NoticeCode::UncleanShutdown,

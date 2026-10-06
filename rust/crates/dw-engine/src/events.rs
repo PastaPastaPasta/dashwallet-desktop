@@ -24,6 +24,7 @@ use platform_wallet::events::WalletEvent;
 use crate::history::HistoryStore;
 use crate::pump::{EventPump, PumpTarget, TxidSet};
 use crate::sync::{SyncSnapshot, SyncTracker};
+use crate::tools::{RescanState, better_chainlock, count_masternodes};
 use crate::{DashNetwork, WalletBalances, WalletId};
 
 /// Engine → host signal. Events say *what changed*; hosts pull the data again
@@ -180,6 +181,10 @@ pub(crate) struct SessionHub {
     pub history: HistoryStore,
     pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
     pub names: RwLock<HashMap<WalletId, WalletName>>,
+    /// The rescan the engine started, until it finishes or is cancelled.
+    pub rescan: Mutex<Option<RescanState>>,
+    /// Height and block hash of the best ChainLock any wallet applied.
+    pub chainlock: Mutex<Option<(u32, dashcore::BlockHash)>>,
 }
 
 impl SessionHub {
@@ -192,7 +197,23 @@ impl SessionHub {
             history: HistoryStore::default(),
             wallets: RwLock::new(BTreeMap::new()),
             names: RwLock::new(HashMap::new()),
+            rescan: Mutex::new(None),
+            chainlock: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn rescan(&self) -> std::sync::MutexGuard<'_, Option<RescanState>> {
+        self.rescan.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(crate) fn best_chainlock(&self) -> Option<(u32, dashcore::BlockHash)> {
+        *self.chainlock.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Keeps the best ChainLock seen (by height).
+    pub(crate) fn note_chainlock(&self, height: u32, hash: dashcore::BlockHash) {
+        let mut best = self.chainlock.lock().unwrap_or_else(|p| p.into_inner());
+        *best = better_chainlock(*best, (height, hash));
     }
 
     pub(crate) fn emit(&self, event: EngineEvent) {
@@ -386,12 +407,19 @@ impl SessionHub {
                 if self.update_heights(id, Some(*height), Some(*height)) {
                     self.pump.mark_balances(id);
                 }
+                if let Some(rescan) = self.rescan().as_mut()
+                    && rescan.note_height(&id, *height)
+                {
+                    self.pump.mark_sync();
+                }
                 self.mark_young(id);
             }
             WalletEvent::ChainLockProcessed {
+                chain_lock,
                 locked_transactions,
                 ..
             } => {
+                self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
                 let locked: Vec<Txid> = self.history.with_wallet(id, |h| {
                     locked_transactions
                         .values()
@@ -450,6 +478,15 @@ impl PumpTarget for SessionPump {
         if let Some(height) = due {
             let time = self.spv.tip_block_time().await.map(u64::from);
             self.hub.tracker().set_tip_time(height, time);
+        }
+        let mn_due = self.hub.tracker().masternode_counts_due();
+        if let Some(height) = mn_due {
+            let counts = self
+                .spv
+                .masternode_list_summaries()
+                .await
+                .map(|list| count_masternodes(&list));
+            self.hub.tracker().set_masternode_counts(height, counts);
         }
         let snapshot = self.hub.tracker().snapshot();
         self.hub.emit(EngineEvent::Sync {

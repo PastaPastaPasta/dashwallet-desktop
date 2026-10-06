@@ -33,6 +33,8 @@ mod receive;
 pub(crate) mod send;
 mod session;
 pub mod sync;
+mod tools;
+mod tx_actions;
 mod wallets;
 
 pub use coins::{CoinFilter, CoinInfo, DUST_PROTECTION_MAX};
@@ -58,4 +60,9 @@ pub use send::{
 };
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
+pub use tools::{
+    ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
+    USER_AGENT, WarningCode,
+};
+pub use tx_actions::TxActionRefusal;
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};
