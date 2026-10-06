@@ -1544,11 +1544,16 @@ dependencies = [
 name = "dw-compat"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cbc",
  "dashcore",
  "dw-uri",
  "key-wallet",
  "proptest",
+ "rusqlite",
+ "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "zeroize",
 ]

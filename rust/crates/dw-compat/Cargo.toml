@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Dash Core compatibility: Core's BIP39 quirks and the dumpwallet file format"
+description = "Dash Core compatibility: BIP39 quirks, dumpwallet, SQLite descriptor wallet.dat, descriptors"
 
 [dependencies]
 # Same git source and revision that dashpay/platform bc321362b9 pins.
@@ -14,7 +14,15 @@ key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90
 dw-uri = { path = "../dw-uri" }
 unicode-normalization = "0.1"
 zeroize = "1.8"
+# wallet.dat (SQLite descriptor wallets): same rusqlite as dw-appdb and
+# platform-wallet-storage, so one bundled libsqlite3 is linked.
+rusqlite = { version = "0.38", features = ["bundled"] }
+# Dash Core's wallet crypter: AES-256-CBC + SHA-512 key derivation.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
-serde_json = "1"
 proptest = "1"
