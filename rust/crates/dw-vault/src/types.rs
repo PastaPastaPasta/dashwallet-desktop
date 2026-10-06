@@ -214,12 +214,17 @@ pub enum SeedDerivation {
     /// Dash Core `CMnemonic::ToSeed` (no NFKD, salt cut at 256 bytes).
     /// `weak_checksum`: only Core's weak checksum accepts the phrase.
     DashCore { weak_checksum: bool },
+    /// A raw 64-byte BIP32 seed imported without its phrase (dumpwallet
+    /// `# HD seed:`, dashd `dumphdinfo`; QT-107/108). The wallet has no
+    /// recovery phrase: no mnemonic records are stored.
+    RawSeed,
 }
 
 /// Secret material of one wallet, as stored in the vault.
 pub struct WalletSecret {
     /// The recovery phrase as the vault returns it on reveal (normalized:
-    /// single spaces; lower case for Core-compatible phrases).
+    /// single spaces; lower case for Core-compatible phrases). Empty for
+    /// [`SeedDerivation::RawSeed`].
     pub mnemonic: Zeroizing<Vec<u8>>,
     /// BIP39 passphrase ("25th word"); empty when none.
     pub mnemonic_passphrase: Zeroizing<Vec<u8>>,
