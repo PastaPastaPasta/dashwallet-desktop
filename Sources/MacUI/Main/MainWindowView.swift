@@ -10,7 +10,6 @@ import WalletRuntime
 struct MainWindowView: View {
     @Bindable var model: MacAppModel
     @Bindable var main: MainViewModel
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         ZStack {
@@ -132,20 +131,7 @@ struct MainWindowView: View {
         switch main.selection {
         case .overview:
             if let home = main.home {
-                VStack(spacing: 0) {
-                    if let features = model.features, let network = main.network {
-                        VStack(spacing: DashSpacing.m) {
-                            BackupReminderBanner(
-                                reminder: features.backupReminder, backUp: { model.perform(.showRecoveryPhrase) })
-                            ShortcutBarView(
-                                bar: features.shortcutBar(for: network),
-                                perform: { route in model.perform(route, openURL: openURL) })
-                        }
-                        .padding([.horizontal, .top], DashSpacing.xxl)
-                    }
-                    OverviewView(
-                        home: home, toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) })
-                }
+                OverviewPage(model: model, main: main, home: home)
             } else {
                 LoadingPage()
             }
@@ -162,6 +148,30 @@ struct MainWindowView: View {
         case .coinJoin, .masternodes, .governance, .contacts, .explore:
             // Hidden in M1 (FeatureFlags.m1); not reachable from the sidebar.
             LoadingPage()
+        }
+    }
+}
+
+/// Overview with the M2 backup reminder and shortcut bar above it.
+struct OverviewPage: View {
+    let model: MacAppModel
+    let main: MainViewModel
+    let home: HomeViewModel
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let features = model.features, let network = main.network {
+                VStack(spacing: DashSpacing.m) {
+                    BackupReminderBanner(
+                        reminder: features.backupReminder, backUp: { model.perform(.showRecoveryPhrase) })
+                    ShortcutBarView(
+                        bar: features.shortcutBar(for: network),
+                        perform: { route in model.perform(route, openURL: openURL) })
+                }
+                .padding([.horizontal, .top], DashSpacing.xxl)
+            }
+            OverviewView(home: home, toggleDiscreet: { main.settings.setDiscreet(!main.settings.display.hideBalances) })
         }
     }
 }

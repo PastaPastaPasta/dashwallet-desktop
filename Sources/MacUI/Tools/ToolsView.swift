@@ -28,26 +28,42 @@ struct ToolsView: View {
     @Binding var tab: ToolsTab
 
     var body: some View {
-        TabView(selection: $tab) {
-            InformationView(information: features.information)
-                .tabItem { Text(L10n.Shell.information) }
-                .tag(ToolsTab.information)
-            ConsoleView(console: features.console)
-                .tabItem { Text(L10n.Shell.console) }
-                .tag(ToolsTab.console)
-            NetworkTrafficUnavailableView()
-                .tabItem { Text(L10n.Shell.networkTraffic) }
-                .tag(ToolsTab.networkTraffic)
-            PeersToolView(peers: features.peers)
-                .tabItem { Text(L10n.Shell.peers) }
-                .tag(ToolsTab.peers)
-            RepairView(repair: features.repair)
-                .tabItem { Text(L10n.Shell.repair) }
-                .tag(ToolsTab.repair)
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(ToolsTab.allCases, id: \.self) { item in
+                    Text(Self.title(item)).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(DashSpacing.s)
+            .accessibilityIdentifier("tools.tabs")
+            Group {
+                switch tab {
+                case .information: InformationView(information: features.information)
+                case .console: ConsoleView(console: features.console)
+                case .networkTraffic: NetworkTrafficUnavailableView()
+                case .peers: PeersToolView(peers: features.peers)
+                case .repair: RepairView(repair: features.repair)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(DashSpacing.s)
         .frame(minWidth: 700, minHeight: 480)
         .accessibilityIdentifier("tools")
+    }
+}
+
+extension ToolsView {
+    static func title(_ tab: ToolsTab) -> String {
+        switch tab {
+        case .information: L10n.Shell.information
+        case .console: L10n.Shell.console
+        case .networkTraffic: L10n.Shell.networkTraffic
+        case .peers: L10n.Shell.peers
+        case .repair: L10n.Shell.repair
+        }
     }
 }
 

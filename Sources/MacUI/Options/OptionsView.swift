@@ -44,18 +44,26 @@ struct OptionsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView(selection: $tab) {
-                GeneralOptionsTab(model: model, settings: settings)
-                    .tabItem { Text(MacStrings.Options.general) }
-                    .tag(MacOptionsTab.general)
+            // dash-qt's tab strip as a segmented control (it also renders
+            // offscreen for the screenshots and is reachable in UI tests).
+            Picker("", selection: $tab) {
+                Text(MacStrings.Options.general).tag(MacOptionsTab.general)
                 ForEach(options.tabs, id: \.self) { item in
-                    content(item)
-                        .tabItem { Text(Self.title(item)) }
-                        .tag(MacOptionsTab.options(item))
+                    Text(Self.title(item)).tag(MacOptionsTab.options(item))
                 }
-                SecurityOptionsTab(security: security, settings: settings, screenCapture: model.env?.screenCapture)
-                    .tabItem { Text(MacStrings.Options.security) }
-                    .tag(MacOptionsTab.security)
+                Text(MacStrings.Options.security).tag(MacOptionsTab.security)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(DashSpacing.m)
+            .accessibilityIdentifier("options.tabs")
+            Group {
+                switch tab {
+                case .general: GeneralOptionsTab(model: model, settings: settings)
+                case .options(let item): content(item)
+                case .security:
+                    SecurityOptionsTab(security: security, settings: settings, screenCapture: model.env?.screenCapture)
+                }
             }
             .frame(height: 430)
             Divider()
