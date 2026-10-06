@@ -2,9 +2,7 @@
 //! resend, drop unconfirmed, CSV export and notification rows. Owner: R1
 //! (engine-tools). Contract: docs/contracts/m2-engine.md §2.2.
 
-use crate::api::common::{
-    OutPoint, domain_error_common, ensure_open, not_implemented, parse_txid, parse_wallet_id,
-};
+use crate::api::common::{OutPoint, domain_error_common, parse_txid, parse_wallet_id};
 use crate::{DisplayUnit, HistoryError, HistoryFilter, HistorySort, NetworkSession, TxType};
 
 /// The dash-qt details-dialog fields `TxDetail` lacks (QT-092 §4.6, QT-091
@@ -104,7 +102,40 @@ pub enum TxActionError {
     Internal { detail: String },
 }
 
-domain_error_common!(TxActionError);
+domain_error_common!(@not_implemented TxActionError);
+
+impl From<dw_engine::EngineError> for TxActionError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        let detail = e.to_string();
+        match e {
+            E::TxNotFound(txid) => Self::TxNotFound { txid },
+            E::TxActionRefused(r) => Self::Refused { refusal: r.into() },
+            E::SpvNotRunning => Self::SpvNotRunning,
+            E::NoPeers => Self::NoPeers,
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
+}
+
+impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
+    fn from(r: dw_engine::TxActionRefusal) -> Self {
+        use dw_engine::TxActionRefusal as R;
+        match r {
+            R::Confirmed => Self::Confirmed,
+            R::InstantLocked => Self::InstantLocked,
+            R::AlreadyAbandoned => Self::AlreadyAbandoned,
+            R::Coinbase => Self::Coinbase,
+            R::InMempool => Self::InMempool,
+            R::NotSentByWallet => Self::NotSentByWallet,
+        }
+    }
+}
 crate::api::common::export_error_code!(TxActionError);
 
 impl TxActionError {
@@ -133,53 +164,63 @@ impl NetworkSession {
         wallet_id: String,
         txid: String,
     ) -> Result<TxDetailExtras, HistoryError> {
-        parse_wallet_id(&wallet_id)?;
-        parse_txid(&txid)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.tx_detail_extras")
+        let id = parse_wallet_id(&wallet_id)?;
+        let txid = parse_txid(&txid)?;
+        let x = self.inner.tx_detail_extras(id, txid).await?;
+        Ok(TxDetailExtras {
+            txid: x.txid,
+            is_coinbase: x.is_coinbase,
+            total_credit: x.total_credit,
+            total_debit: x.total_debit,
+            net: x.net,
+            matures_in: x.matures_in,
+            in_mempool: x.in_mempool,
+            abandoned: x.abandoned,
+            can_abandon: x.can_abandon,
+            can_resend: x.can_resend,
+            dust_locked_outputs: x.dust_locked_outputs.into_iter().map(Into::into).collect(),
+            last_announced_at: x.last_announced_at,
+        })
     }
 
     /// dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
     /// its inputs for new payments and excludes it from balances (status
-    /// `Abandoned`, amount in brackets). SPV cannot prove the transaction is
-    /// in no mempool, so it may still confirm; the engine then shows it
-    /// confirmed again. Emits `HistoryChanged` and `Balances`.
+    /// `Abandoned`, amount in brackets). Its recorded descendants are
+    /// abandoned with it. SPV cannot prove the transaction is in no mempool,
+    /// so it may still confirm; the engine then shows it confirmed again.
+    /// The spent coins return through a rescan of their funding blocks.
+    /// Emits `HistoryChanged` and `Balances`.
     pub async fn abandon_transaction(
         &self,
         wallet_id: String,
         txid: String,
     ) -> Result<(), TxActionError> {
-        parse_wallet_id(&wallet_id)?;
-        parse_txid(&txid)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.abandon_transaction")
+        let id = parse_wallet_id(&wallet_id)?;
+        let txid = parse_txid(&txid)?;
+        Ok(self.inner.abandon_transaction(id, txid).await?)
     }
 
-    /// dash-qt "Resend transaction" (QT-091): announces the stored
-    /// transaction to the connected peers again. Returns once announced;
-    /// there is no acceptance verdict (unlike `TxDraft.broadcast`).
+    /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
+    /// to the SPV client again. Returns once handed over; there is no
+    /// acceptance verdict (unlike `TxDraft.broadcast`).
     pub async fn resend_transaction(
         &self,
         wallet_id: String,
         txid: String,
     ) -> Result<(), TxActionError> {
-        parse_wallet_id(&wallet_id)?;
-        parse_txid(&txid)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.resend_transaction")
+        let id = parse_wallet_id(&wallet_id)?;
+        let txid = parse_txid(&txid)?;
+        Ok(self.inner.resend_transaction(id, txid).await?)
     }
 
     /// iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-    /// unconfirmed, non-InstantSend-locked transaction of `wallet_id` (all
-    /// wallets when `None`) that no peer announced since start, then
-    /// schedules a rescan from the oldest dropped transaction's first-seen
-    /// height. Returns how many were dropped.
+    /// unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
+    /// `wallet_id` (all wallets when `None`), then rescans from the lowest
+    /// funding height of the coins they spent. Needs a running SPV client.
+    /// Returns how many transactions were dropped.
     pub async fn drop_unconfirmed(&self, wallet_id: Option<String>) -> Result<u32, TxActionError> {
-        if let Some(id) = &wallet_id {
-            parse_wallet_id(id)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.drop_unconfirmed")
+        let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        Ok(self.inner.drop_unconfirmed(id).await?)
     }
 
     /// dash-qt CSV export of the filtered view (QT-093, §4.7), exact bytes:
@@ -198,10 +239,18 @@ impl NetworkSession {
         type_names: Vec<String>,
         utc_offset_secs: i32,
     ) -> Result<String, HistoryError> {
-        let _ = (filter, sort, unit, type_names, utc_offset_secs);
-        parse_wallet_id(&wallet_id)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.export_history_csv")
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(self
+            .inner
+            .export_history_csv(
+                id,
+                filter.into(),
+                sort.into(),
+                unit.into(),
+                type_names,
+                utc_offset_secs,
+            )
+            .await?)
     }
 
     /// Notification rows for transactions named by a `NewTransactions`
@@ -211,11 +260,26 @@ impl NetworkSession {
         wallet_id: String,
         txids: Vec<String>,
     ) -> Result<Vec<TxNotice>, HistoryError> {
-        parse_wallet_id(&wallet_id)?;
-        for txid in &txids {
-            parse_txid(txid)?;
-        }
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.tx_notices")
+        let id = parse_wallet_id(&wallet_id)?;
+        let txids = txids
+            .iter()
+            .map(|t| parse_txid(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self
+            .inner
+            .tx_notices(id, txids)
+            .await?
+            .into_iter()
+            .map(|n| TxNotice {
+                txid: n.txid,
+                record_index: n.record_index,
+                amount: n.amount,
+                timestamp: n.timestamp,
+                tx_type: n.tx_type.into(),
+                address: n.address,
+                label: n.label,
+                coinjoin_internal: n.coinjoin_internal,
+            })
+            .collect())
     }
 }

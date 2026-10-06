@@ -134,15 +134,15 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.abandon_transaction(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.abandon_transaction"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.resend_transaction(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.resend_transaction"
+        "wallet_not_found"
     );
     assert_code!(
         rt.block_on(s.drop_unconfirmed(None)),
-        not_implemented: "NetworkSession.drop_unconfirmed"
+        "tx_action.spv_not_running"
     );
     assert_code!(
         rt.block_on(s.export_history_csv(
@@ -150,10 +150,10 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
             filter(),
             HistorySort::NewestFirst,
             crate::DisplayUnit::Dash,
-            vec![],
+            vec!["x".into()],
             0
         )),
-        not_implemented: "NetworkSession.export_history_csv"
+        "history.invalid_query"
     );
     assert_code!(
         rt.block_on(s.tx_notices(WALLET.into(), vec![TXID.into(), "bad".into()])),
@@ -161,7 +161,7 @@ fn session_stubs_check_arguments_then_report_not_implemented() {
     );
     assert_code!(
         rt.block_on(s.tx_detail_extras(WALLET.into(), TXID.into())),
-        not_implemented: "NetworkSession.tx_detail_extras"
+        "wallet_not_found"
     );
 
     // Fees, tools, console (R1).

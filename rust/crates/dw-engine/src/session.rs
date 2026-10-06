@@ -301,6 +301,22 @@ impl NetworkSession {
             let b = w.balance();
             WalletCoreBalance::new(b.confirmed(), b.unconfirmed(), b.immature(), b.locked())
         });
+        self.store_wallet_state(manager, id, balance).await;
+    }
+
+    /// As [`Self::refresh_wallet_state`], with key-wallet's own balance
+    /// instead of platform-wallet's event-fed mirror (after the engine
+    /// changed key-wallet state directly, e.g. an abandon).
+    pub(crate) async fn refresh_wallet_state_from_core(&self, manager: &Manager, id: WalletId) {
+        self.store_wallet_state(manager, id, None).await;
+    }
+
+    async fn store_wallet_state(
+        &self,
+        manager: &Manager,
+        id: WalletId,
+        balance: Option<WalletCoreBalance>,
+    ) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let Some(info) = wm.get_wallet_info(&id.0) else {

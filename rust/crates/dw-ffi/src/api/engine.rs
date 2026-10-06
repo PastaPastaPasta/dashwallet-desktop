@@ -141,8 +141,7 @@ pub enum EngineEvent {
     /// once per transaction, never for status changes (those are
     /// `HistoryChanged`). `catch_up` is true while SPV is not caught up
     /// (dash-qt shows no popups during initial block download). The host
-    /// reads the rows with `NetworkSession::tx_notices`. Owner R1; not sent
-    /// yet.
+    /// reads the rows with `NetworkSession::tx_notices`.
     NewTransactions {
         network: DashNetwork,
         wallet_id: String,
@@ -151,7 +150,6 @@ pub enum EngineEvent {
     },
     /// M2 (QT-101): a wallet was loaded (opened) or unloaded (closed) without
     /// being removed. Reload the wallet list and `wallet_load_states`.
-    /// Owner R1; not sent yet.
     WalletLoadChanged {
         network: DashNetwork,
         wallet_id: String,
@@ -215,6 +213,26 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
             E::VaultLockState { network, state } => Self::LockState {
                 network: network.into(),
                 state: state.into(),
+            },
+            E::NewTransactions {
+                network,
+                wallet_id,
+                txids,
+                catch_up,
+            } => Self::NewTransactions {
+                network: network.into(),
+                wallet_id: wallet_id.to_string(),
+                txids: txids.iter().map(ToString::to_string).collect(),
+                catch_up,
+            },
+            E::WalletLoadChanged {
+                network,
+                wallet_id,
+                loaded,
+            } => Self::WalletLoadChanged {
+                network: network.into(),
+                wallet_id: wallet_id.to_string(),
+                loaded,
             },
         }
     }

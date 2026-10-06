@@ -82,6 +82,22 @@ pub enum EngineEvent {
         network: DashNetwork,
         state: dw_vault::LockState,
     },
+    /// Transactions of the wallet seen for the first time, batched over
+    /// 100 ms as dash-qt batches its popups (QT-031…033). Never sent for
+    /// status changes. `catch_up`: SPV was not caught up when the batch was
+    /// sent (dash-qt shows no popups during initial sync).
+    NewTransactions {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        txids: Vec<Txid>,
+        catch_up: bool,
+    },
+    /// A wallet was loaded or unloaded (QT-101).
+    WalletLoadChanged {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        loaded: bool,
+    },
 }
 
 /// Non-fatal conditions the UI may surface.
@@ -185,6 +201,9 @@ pub(crate) struct SessionHub {
     pub rescan: Mutex<Option<RescanState>>,
     /// Height and block hash of the best ChainLock any wallet applied.
     pub chainlock: Mutex<Option<(u32, dashcore::BlockHash)>>,
+    /// When this session last handed a transaction to the network (send or
+    /// resend), UNIX seconds.
+    pub announced: Mutex<HashMap<Txid, u64>>,
 }
 
 impl SessionHub {
@@ -199,7 +218,23 @@ impl SessionHub {
             names: RwLock::new(HashMap::new()),
             rescan: Mutex::new(None),
             chainlock: Mutex::new(None),
+            announced: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn note_announced(&self, txid: Txid) {
+        self.announced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(txid, unix_now());
+    }
+
+    pub(crate) fn announced_at(&self, txid: &Txid) -> Option<u64> {
+        self.announced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(txid)
+            .copied()
     }
 
     pub(crate) fn rescan(&self) -> std::sync::MutexGuard<'_, Option<RescanState>> {
@@ -337,7 +372,9 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
-                self.history.with_wallet(id, |h| h.upsert(record, now));
+                if self.history.with_wallet(id, |h| h.upsert(record, now)) {
+                    self.pump.mark_new_txs(id, &[record.txid]);
+                }
                 self.pump.mark_history(id, Some(&[record.txid]));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
@@ -383,17 +420,23 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                let mut new = Vec::new();
                 let changed: Vec<Txid> = self.history.with_wallet(id, |h| {
                     inserted
                         .iter()
                         .chain(updated)
                         .chain(matured)
                         .map(|r| {
-                            h.upsert(r, now);
+                            if h.upsert(r, now) {
+                                new.push(r.txid);
+                            }
                             r.txid
                         })
                         .collect()
                 });
+                if !new.is_empty() {
+                    self.pump.mark_new_txs(id, &new);
+                }
                 let flipped = self.update_heights(id, None, Some(*height));
                 if !changed.is_empty() {
                     self.pump.mark_history(id, Some(&changed));
@@ -538,6 +581,18 @@ impl PumpTarget for SessionPump {
                 }
             }
         });
+    }
+
+    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+        let catch_up = !self.hub.tracker().caught_up();
+        for (wallet_id, txids) in batches {
+            self.hub.emit(EngineEvent::NewTransactions {
+                network: self.hub.network.clone(),
+                wallet_id,
+                txids,
+                catch_up,
+            });
+        }
     }
 
     fn tick(&self) {

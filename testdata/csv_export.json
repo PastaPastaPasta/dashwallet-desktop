@@ -1,0 +1,109 @@
+{
+  "description": "dash-qt transaction CSV export (QT-093). Expected bytes derived by hand from Dash Core v24.0.0-rc.2 src/qt/transactionview.cpp exportClicked, csvmodelwriter.cpp (every field quoted, quotes doubled, ',' separators, '\\n' line ends) and transactiontablemodel.cpp (ConfirmedRole = Confirming or Confirmed; Watch-only column = EditRole 1/0; DateRole via Qt::ISODate local time; Type = formatTxType; FormattedAmountRole = BitcoinUnits::format without separators; ID = txid). 'type' is the TxType index in dash-qt enum order; 'status' a TxStatusKind name.",
+  "cases": [
+    {
+      "name": "english_dash_mainnet",
+      "unit": "DASH",
+      "mainnet": true,
+      "watch_only_wallet": false,
+      "utc_offset_secs": 0,
+      "records": [
+        {
+          "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "type": 4,
+          "status": "Confirmed",
+          "timestamp": 1700000000,
+          "amount": 150000000,
+          "address": "XmainAddr1",
+          "label": "Salary, \"Oct\""
+        },
+        {
+          "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "type": 2,
+          "status": "Unconfirmed",
+          "timestamp": 1700003600,
+          "amount": -100001000,
+          "address": "Xdest"
+        },
+        {
+          "txid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "type": 0,
+          "status": "Confirming",
+          "amount": -5
+        },
+        {
+          "txid": "abababababababababababababababababababababababababababababababab",
+          "type": 3,
+          "status": "Abandoned",
+          "timestamp": 1700007200,
+          "amount": -123456789012
+        }
+      ],
+      "expected": "\"Confirmed\",\"Date\",\"Type\",\"Label\",\"Address\",\"Amount (DASH)\",\"ID\"\n\"true\",\"2023-11-14T22:13:20\",\"Received with\",\"Salary, \"\"Oct\"\"\",\"XmainAddr1\",\"1.50000000\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n\"false\",\"2023-11-14T23:13:20\",\"Sent to\",\"\",\"Xdest\",\"-1.00001000\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n\"true\",\"\",\"\",\"\",\"\",\"-0.00000005\",\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"\n\"false\",\"2023-11-15T00:13:20\",\"Sent to\",\"\",\"\",\"-1234.56789012\",\"abababababababababababababababababababababababababababababababab\"\n"
+    },
+    {
+      "name": "watch_only_testnet_duffs_utc_minus_5",
+      "unit": "duffs",
+      "mainnet": false,
+      "watch_only_wallet": true,
+      "utc_offset_secs": -18000,
+      "records": [
+        {
+          "txid": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "type": 1,
+          "status": "Immature",
+          "timestamp": 1700000000,
+          "amount": 50000000000,
+          "address": "yAddr",
+          "watch_only": true
+        },
+        {
+          "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+          "type": 9,
+          "status": "Confirmed",
+          "timestamp": 1699999999,
+          "amount": -10000,
+          "watch_only": false
+        }
+      ],
+      "expected": "\"Confirmed\",\"Watch-only\",\"Date\",\"Type\",\"Label\",\"Address\",\"Amount (tduffs)\",\"ID\"\n\"false\",\"1\",\"2023-11-14T17:13:20\",\"Mined\",\"\",\"yAddr\",\"50000000000\",\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\"true\",\"0\",\"2023-11-14T17:13:19\",\"CoinJoin Collateral Payment\",\"\",\"\",\"-10000\",\"1111111111111111111111111111111111111111111111111111111111111111\"\n"
+    },
+    {
+      "name": "localized_type_names_mdash_utc_plus_1",
+      "unit": "mDASH",
+      "mainnet": true,
+      "watch_only_wallet": false,
+      "utc_offset_secs": 3600,
+      "type_names": ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18"],
+      "records": [
+        {
+          "txid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "type": 6,
+          "status": "Confirmed",
+          "timestamp": 0,
+          "amount": -1000,
+          "address": "Xself",
+          "label": "Ünïcödé"
+        },
+        {
+          "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "type": 18,
+          "status": "Confirming",
+          "timestamp": 86399,
+          "amount": -100000,
+          "label": ""
+        }
+      ],
+      "expected": "\"Confirmed\",\"Date\",\"Type\",\"Label\",\"Address\",\"Amount (mDASH)\",\"ID\"\n\"true\",\"1970-01-01T01:00:00\",\"T6\",\"Ünïcödé\",\"Xself\",\"-0.01000\",\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"\n\"true\",\"1970-01-02T00:59:59\",\"T18\",\"\",\"\",\"-1.00000\",\"2222222222222222222222222222222222222222222222222222222222222222\"\n"
+    },
+    {
+      "name": "empty_history_udash_testnet",
+      "unit": "uDASH",
+      "mainnet": false,
+      "watch_only_wallet": false,
+      "utc_offset_secs": 0,
+      "records": [],
+      "expected": "\"Confirmed\",\"Date\",\"Type\",\"Label\",\"Address\",\"Amount (μtDASH)\",\"ID\"\n"
+    }
+  ]
+}

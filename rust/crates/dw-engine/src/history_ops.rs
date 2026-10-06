@@ -107,11 +107,13 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Vec<Txid>>, rusql
     Ok(out)
 }
 
-/// Persisted records and first-seen times of one wallet.
+/// Persisted records, first-seen times and abandoned transactions of one
+/// wallet.
 struct LoadedHistory {
     wallet: WalletId,
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
+    abandoned: Vec<(Txid, dashcore::Transaction)>,
 }
 
 impl NetworkSession {
@@ -153,10 +155,12 @@ impl NetworkSession {
                         tracing::warn!(%wallet, error = %e, "could not read first-seen times");
                         Vec::new()
                     });
+                    let abandoned = crate::tx_actions::load_abandoned(&appdb, wallet);
                     LoadedHistory {
                         wallet,
                         records,
                         seen,
+                        abandoned,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -169,6 +173,7 @@ impl NetworkSession {
             wallet,
             records,
             seen,
+            abandoned,
         } in loaded
         {
             let in_memory: Vec<TransactionRecord> = wm
@@ -185,6 +190,21 @@ impl NetworkSession {
             self.hub.history.with_wallet(wallet, |h| {
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
+                }
+                // Abandoned transactions are gone from wallet.sqlite; the
+                // app database keeps them so the history still shows them.
+                for (txid, tx) in &abandoned {
+                    h.txs
+                        .entry(*txid)
+                        .or_insert_with(|| crate::history::TxEntry {
+                            tx: tx.clone(),
+                            context: key_wallet::transaction_checking::TransactionContext::Mempool,
+                            instant_locked: false,
+                            first_seen: None,
+                            own_inputs: Default::default(),
+                            abandoned: true,
+                        })
+                        .abandoned = true;
                 }
                 for (txid, entry) in h.txs.iter_mut() {
                     if let Some(t) = seen.get(&txid.to_string()) {
@@ -215,7 +235,7 @@ impl NetworkSession {
 
     /// Runs `f` with the wallet's chain view. `WalletNotFound` for an
     /// unknown wallet.
-    async fn with_view<R>(
+    pub(crate) async fn with_view<R>(
         &self,
         manager: &Manager,
         wallet: WalletId,
@@ -259,19 +279,36 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             validate_query(&query)?;
-            let live = this.live()?;
-            let labels = Self::labels(&live.appdb, wallet).await?;
-            let records = this
-                .with_view(&live.manager, wallet, |view| {
-                    view.history
-                        .iter()
-                        .flat_map(|(txid, entry)| records_of(txid, entry, view, &labels).0)
-                        .collect::<Vec<_>>()
-                })
-                .await?;
+            let records = this.wallet_records(wallet).await?;
             page(records, &query)
         })
         .await
+    }
+
+    /// Every dash-qt record of a wallet, unsorted. Records of a watch-only
+    /// wallet are marked `involves_watch_only` (m2-engine.md §5). Caller
+    /// holds the operation guard.
+    pub(crate) async fn wallet_records(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<crate::TxRecord>, EngineError> {
+        let live = self.live()?;
+        let labels = Self::labels(&live.appdb, wallet).await?;
+        let watch_only = !self.vault.has_wallet_secret(&wallet.0);
+        let mut records = self
+            .with_view(&live.manager, wallet, |view| {
+                view.history
+                    .iter()
+                    .flat_map(|(txid, entry)| records_of(txid, entry, view, &labels).0)
+                    .collect::<Vec<_>>()
+            })
+            .await?;
+        if watch_only {
+            for r in &mut records {
+                r.involves_watch_only = true;
+            }
+        }
+        Ok(records)
     }
 
     /// The transaction details dialog (QT-092, IOS-031). `txid` is display
@@ -293,13 +330,19 @@ impl NetworkSession {
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
-            this.with_view(&live.manager, wallet, |view| {
-                view.history
-                    .get(&parsed)
-                    .map(|entry| detail_of(&parsed, entry, view, &labels, message))
-            })
-            .await?
-            .ok_or(EngineError::TxNotFound(txid))
+            let watch_only = !this.vault.has_wallet_secret(&wallet.0);
+            let mut detail = this
+                .with_view(&live.manager, wallet, |view| {
+                    view.history
+                        .get(&parsed)
+                        .map(|entry| detail_of(&parsed, entry, view, &labels, message))
+                })
+                .await?
+                .ok_or(EngineError::TxNotFound(txid))?;
+            for r in &mut detail.records {
+                r.involves_watch_only = watch_only;
+            }
+            Ok(detail)
         })
         .await
     }

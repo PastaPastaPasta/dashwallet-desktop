@@ -298,7 +298,7 @@ impl PendingSpends {
         self.map().entry(wallet).or_default().extend(outpoints);
     }
 
-    fn remove(&self, wallet: &WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
+    pub(crate) fn remove(&self, wallet: &WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
         let mut map = self.map();
         if let Some(set) = map.get_mut(wallet) {
             for o in outpoints {
@@ -920,6 +920,9 @@ impl TxDraft {
             Ok(_) | Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
         );
         if dispatched {
+            if let Ok(txid) = prepared.summary.txid.parse::<dashcore::Txid>() {
+                self.session.hub.note_announced(txid);
+            }
             if let Err(e) = self
                 .session
                 .record_send_metadata(self.wallet_id, &prepared)

@@ -17,6 +17,7 @@
 
 mod coins;
 mod context;
+pub mod csv_export;
 mod engine;
 mod error;
 mod events;
@@ -64,5 +65,5 @@ pub use tools::{
     ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
     USER_AGENT, WarningCode,
 };
-pub use tx_actions::TxActionRefusal;
+pub use tx_actions::{TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal};
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};

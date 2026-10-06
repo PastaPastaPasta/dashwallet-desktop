@@ -260,6 +260,9 @@ pub(crate) struct TxEntry {
     /// Values and addresses of the wallet's own inputs, by input index,
     /// from platform-wallet's records.
     pub own_inputs: BTreeMap<u32, (u64, Address)>,
+    /// The user abandoned it (`abandon_transaction`). Shown as `Abandoned`
+    /// while it stays out of a block.
+    pub abandoned: bool,
 }
 
 fn context_rank(c: &TransactionContext) -> u8 {
@@ -290,14 +293,17 @@ pub(crate) struct WalletHistory {
 
 impl WalletHistory {
     /// Merges a platform-wallet record. `seen_at` is set as the first-seen
-    /// time when the transaction is new to the store.
-    pub fn upsert(&mut self, record: &TransactionRecord, seen_at: Option<u64>) {
+    /// time when the transaction is new to the store. Returns whether it was
+    /// new.
+    pub fn upsert(&mut self, record: &TransactionRecord, seen_at: Option<u64>) -> bool {
+        let new = !self.txs.contains_key(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
             context: record.context.clone(),
             instant_locked: false,
             first_seen: seen_at,
             own_inputs: BTreeMap::new(),
+            abandoned: false,
         });
         entry.context = merge_context(&entry.context, &record.context);
         if matches!(record.context, TransactionContext::InstantSend(_)) {
@@ -308,6 +314,7 @@ impl WalletHistory {
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
         }
+        new
     }
 
     pub fn set_instant_locked(&mut self, txid: &Txid) -> bool {
@@ -355,6 +362,15 @@ impl HistoryStore {
             .get(wallet)
             .map(|h| h.txs.clone())
             .unwrap_or_default()
+    }
+
+    /// One transaction of a wallet.
+    pub fn get(&self, wallet: &WalletId, txid: &Txid) -> Option<TxEntry> {
+        self.wallets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(wallet)
+            .and_then(|h| h.txs.get(txid).cloned())
     }
 
     pub fn remove_wallet(&self, wallet: &WalletId) {
@@ -460,6 +476,8 @@ pub(crate) fn status_of(
             matures_in = Some(COINBASE_MATURITY + 1 - depth);
             TxStatusKind::Immature
         }
+    } else if depth == 0 && entry.abandoned && !instant_locked {
+        TxStatusKind::Abandoned
     } else if depth == 0 {
         TxStatusKind::Unconfirmed
     } else if depth < RECOMMENDED_CONFIRMATIONS && !chain_locked {
@@ -467,8 +485,10 @@ pub(crate) fn status_of(
     } else {
         TxStatusKind::Confirmed
     };
-    let counts = !matches!(kind, TxStatusKind::Immature | TxStatusKind::NotAccepted)
-        && (depth > 0 || instant_locked || all_from_me);
+    let counts = !matches!(
+        kind,
+        TxStatusKind::Immature | TxStatusKind::NotAccepted | TxStatusKind::Abandoned
+    ) && (depth > 0 || instant_locked || all_from_me);
     (
         TxStatus {
             kind,
@@ -510,6 +530,27 @@ pub(crate) struct Decomposed {
 
 fn to_i64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// The wallet's side of a transaction: credit (outputs paying the wallet),
+/// debit (the wallet's inputs) and how many inputs are the wallet's.
+pub(crate) fn amounts(entry: &TxEntry, view: &ChainView<'_>) -> (u64, u64, usize) {
+    let credit = entry
+        .tx
+        .output
+        .iter()
+        .filter(|o| view.owned.contains_key(&o.script_pubkey))
+        .map(|o| o.value)
+        .sum();
+    let own: Vec<u64> = (0..entry.tx.input.len())
+        .filter_map(|i| own_input(view, entry, i).map(|(v, _)| v))
+        .collect();
+    (credit, own.iter().sum(), own.len())
+}
+
+/// Confirmation depth of a transaction at `tip` (0 = unconfirmed).
+pub(crate) fn depth_of(entry: &TxEntry, tip: u32) -> u32 {
+    depth(&entry.context, tip)
 }
 
 /// dash-qt `TransactionRecord::decomposeTransaction` over one transaction.
@@ -897,6 +938,17 @@ pub(crate) fn validate_query(q: &HistoryQuery) -> Result<(), EngineError> {
             q.limit
         )));
     }
+    validate_filter(&q.filter)
+}
+
+/// Checks a filter's date range and search text.
+pub(crate) fn validate_filter(filter: &HistoryFilter) -> Result<(), EngineError> {
+    let q = HistoryQuery {
+        filter: filter.clone(),
+        sort: HistorySort::NewestFirst,
+        cursor: None,
+        limit: 1,
+    };
     if let (Some(from), Some(to)) = (q.filter.date_from, q.filter.date_to)
         && from > to
     {
@@ -923,7 +975,7 @@ pub(crate) fn validate_query(q: &HistoryQuery) -> Result<(), EngineError> {
 /// continues after that record. A cursor from a different filter or sort is
 /// `StaleCursor`.
 pub(crate) fn page(
-    mut records: Vec<TxRecord>,
+    records: Vec<TxRecord>,
     q: &HistoryQuery,
 ) -> Result<HistoryPage, EngineError> {
     validate_query(q)?;
@@ -933,20 +985,8 @@ pub(crate) fn page(
         .as_deref()
         .map(|c| decode_cursor(c, tag))
         .transpose()?;
-    let text = q
-        .filter
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(str::to_lowercase);
-    records.retain(|r| matches(r, &q.filter, text.as_deref()));
-    let total = u32::try_from(records.len()).ok();
-    let mut keyed: Vec<(SortKey, TxRecord)> = records
-        .into_iter()
-        .map(|r| (key_of(&r, q.sort), r))
-        .collect();
-    keyed.sort_by(|a, b| compare(&a.0, &b.0, q.sort));
+    let keyed = filter_sorted(records, &q.filter, q.sort);
+    let total = u32::try_from(keyed.len()).ok();
     let start = match &after {
         Some(k) => keyed.partition_point(|(rk, _)| compare(rk, k, q.sort) != Ordering::Greater),
         None => 0,
@@ -962,6 +1002,38 @@ pub(crate) fn page(
         next_cursor,
         total_matching: total,
     })
+}
+
+/// The records `filter` keeps, in `sort` order, with their sort keys.
+fn filter_sorted(
+    mut records: Vec<TxRecord>,
+    filter: &HistoryFilter,
+    sort: HistorySort,
+) -> Vec<(SortKey, TxRecord)> {
+    let text = filter
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase);
+    records.retain(|r| matches(r, filter, text.as_deref()));
+    let mut keyed: Vec<(SortKey, TxRecord)> =
+        records.into_iter().map(|r| (key_of(&r, sort), r)).collect();
+    keyed.sort_by(|a, b| compare(&a.0, &b.0, sort));
+    keyed
+}
+
+/// Every record `filter` keeps, in `sort` order (the CSV export's rows).
+pub(crate) fn filtered(
+    records: Vec<TxRecord>,
+    filter: &HistoryFilter,
+    sort: HistorySort,
+) -> Result<Vec<TxRecord>, EngineError> {
+    validate_filter(filter)?;
+    Ok(filter_sorted(records, filter, sort)
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect())
 }
 
 /// Push data of an `OP_RETURN` script, hex.
@@ -1109,6 +1181,7 @@ mod tests {
             instant_locked: false,
             first_seen: None,
             own_inputs: BTreeMap::new(),
+            abandoned: false,
         }
     }
 
