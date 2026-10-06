@@ -299,7 +299,7 @@ impl PendingSpends {
         self.map().get(wallet).cloned().unwrap_or_default()
     }
 
-    fn add(&self, wallet: WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
+    pub(crate) fn add(&self, wallet: WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
         self.map().entry(wallet).or_default().extend(outpoints);
     }
 
@@ -1065,7 +1065,7 @@ fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase
 }
 
 /// dash-spv's never-sent rejections: client not started, no connected peer.
-fn reason_means_no_peers(reason: &str) -> bool {
+pub(crate) fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
     r.contains("not started")
         || r.contains("not connected")

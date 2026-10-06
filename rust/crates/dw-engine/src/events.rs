@@ -564,6 +564,11 @@ impl PumpTarget for SessionPump {
                 .await
                 .map(|list| count_masternodes(&list));
             self.hub.tracker().set_masternode_counts(height, counts);
+            // The list moved: the Masternodes tab re-queries (M3; at most
+            // once per masternode-phase height).
+            self.hub.emit(EngineEvent::Masternodes {
+                network: self.hub.network.clone(),
+            });
         }
         let snapshot = self.hub.tracker().snapshot();
         self.hub.emit(EngineEvent::Sync {

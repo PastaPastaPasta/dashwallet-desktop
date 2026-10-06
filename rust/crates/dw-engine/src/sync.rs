@@ -349,6 +349,12 @@ impl SyncTracker {
         self.masternode_counts = counts;
     }
 
+    /// Height of the list the masternode counts were read from, once the
+    /// masternode phase finished (M3 `masternode_list_state`).
+    pub(crate) fn masternode_list_height(&self) -> Option<u32> {
+        self.masternode_counts().and(self.masternode_counts_height)
+    }
+
     /// Masternode and evonode counts, once the masternode phase finished.
     pub(crate) fn masternode_counts(
         &self,

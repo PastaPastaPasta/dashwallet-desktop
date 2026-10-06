@@ -1,15 +1,43 @@
 //! Masternodes in the engine (M3, owner R3; docs/contracts/m3-engine.md
 //! §2.3–2.5): the list model over the SPV masternode list and
 //! platform-wallet's masternode records, owned detection, ProTx flows over
-//! `dw-protx`, shared-masternode sessions, the masternode keychain, tracked
-//! masternodes and evonode tools, and the `Masternodes` event. Today this
-//! module holds the failure type of the contract; the calls return
-//! `NotImplemented` from the FFI until R3 lands them.
+//! `dw-protx`, the masternode keychain, tracked masternodes, and the
+//! `Masternodes` event.
+//!
+//! - [`list`]: list state, rows, details, owned detection.
+//! - [`protx`]: registration with the operator-secret gate, Update Service,
+//!   Update Registrar, Revoke.
+//! - [`keys`]: keychain, reveal, list search, tracked masternodes and
+//!   attached keys.
+//!
+//! Not here yet (the FFI answers `NotImplemented`): v24 shared-masternode
+//! sessions and their maintenance transactions (the payload codecs are in
+//! `dw_protx::shared`), registration with an external collateral, and the
+//! evonode Platform calls (M4).
+
+pub mod keys;
+pub mod list;
+pub mod protx;
+
+pub use keys::{
+    MasternodeKeyInfo, MasternodeKeyUsage, RevealedMasternodeKey, TrackedCapabilities,
+    TrackedMasternodeInfo,
+};
+pub use list::{
+    MasternodeDetail, MasternodeListState, MasternodeListStatus, MasternodeQuery, MasternodeRow,
+    MasternodeShare, MasternodeType, MasternodeTypeFilter, OperatorReward, OwnedRole,
+};
+pub use protx::{
+    CollateralCandidate, CollateralChoice, FeeSourceCandidate, FeeSourceChoice, OperatorKeyChoice,
+    PlatformFields, PreparedProviderTx, PreparedRegistration, ProviderTxKind, ProviderTxSummary,
+    RegistrationRequest, RegistrationSummary, RevocationReason, RevokeRequest,
+    UpdateRegistrarRequest, UpdateServiceRequest,
+};
 
 use crate::EngineError;
 
 /// A key's job on a masternode (platform-wallet `MasternodeKeyRole`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MasternodeKeyRole {
     /// secp256k1; signs ProUpRegTx.
     Owner,
