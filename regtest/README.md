@@ -107,6 +107,20 @@ DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwc
     .venv/bin/python -m pytest -v tests/test_l1_send.py
 ```
 
+**l2-tools** (`tests/test_l2_tools.py`, M2 R1) drives the same `dwcli` through the engine tools: a rescan
+from a height below a wallet's birth finds a payment the wallet missed; a payment dashd refused (mempool
+conflict with a transaction the test submitted, so never relayed) is abandoned and its coin comes back through
+the abandon's rescan; an unmined payment is resent; a watch-only wallet from the account xpub sees the same
+funds and cannot send or sign; the fee policy is the SPV minimum-relay answer and dash-qt's coin-control
+estimate; console commands with Core result shapes, grants and redaction; one batched `NewTransactions`
+event for three payments in a block; Close/Open wallet with the load-on-startup list. Two payments wait out
+dash-spv's 60 s acceptance timeout, so the suite takes about 4 minutes.
+
+```sh
+DWD_COMPOSE_PROJECT=dwd-r1 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_l2_tools.py
+```
+
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 

@@ -367,7 +367,7 @@ pub fn run(
         } => {
             let id = wallet_id(&wallet)?;
             let timeout = Duration::from_secs(timeout_secs);
-            wait_for_height(engine, session, id, sync_height, timeout)?;
+            sync_all(engine, session, sync_height, timeout)?;
             match engine.block_on(session.abandon_transaction(id, txid(&t)?)) {
                 Ok(()) => println!("abandoned {t}"),
                 Err(EngineError::TxActionRefused(r)) => {
@@ -387,7 +387,8 @@ pub fn run(
             linger_secs,
         } => {
             let id = wallet_id(&wallet)?;
-            wait_for_height(engine, session, id, sync_height, Duration::from_secs(240))?;
+            // SPV must be connected, not only the stored heights reached.
+            sync_all(engine, session, sync_height, Duration::from_secs(240))?;
             match engine.block_on(session.resend_transaction(id, txid(&t)?)) {
                 Ok(()) => println!("resent {t}"),
                 Err(EngineError::TxActionRefused(r)) => {
