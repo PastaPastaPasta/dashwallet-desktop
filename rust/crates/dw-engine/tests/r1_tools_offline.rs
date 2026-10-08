@@ -110,7 +110,7 @@ fn loaded_ids(s: &NetworkSession) -> Vec<WalletId> {
 
 #[test]
 fn test_qt_101_close_open_and_load_on_startup() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let os = Arc::new(MemoryOsStore::new());
@@ -178,7 +178,7 @@ fn test_qt_101_close_open_and_load_on_startup() {
 
 #[test]
 fn test_qt_114_watch_only_wallet_from_an_account_xpub() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let os = Arc::new(MemoryOsStore::new());
@@ -253,7 +253,7 @@ fn test_qt_114_watch_only_wallet_from_an_account_xpub() {
 
 #[test]
 fn test_ios_111_seed_wallet_account_xpub_matches_derivation() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(&dir.path().join("d"), rec, Arc::new(MemoryOsStore::new()));
     let s = open(&engine);
@@ -267,7 +267,7 @@ fn test_ios_111_seed_wallet_account_xpub_matches_derivation() {
 
 #[test]
 fn test_ios_009_existing_networks_reads_the_data_root() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let os = Arc::new(MemoryOsStore::new());
@@ -299,7 +299,7 @@ fn test_ios_009_existing_networks_reads_the_data_root() {
 
 #[test]
 fn test_qt_143_qt_148_information_warnings_and_repair() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(&root, rec, Arc::new(MemoryOsStore::new()));
@@ -342,7 +342,7 @@ fn test_qt_143_qt_148_information_warnings_and_repair() {
 
 #[test]
 fn test_ios_113_birth_height_is_stored_and_survives_a_restart() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let os = Arc::new(MemoryOsStore::new());
@@ -365,7 +365,7 @@ fn test_ios_113_birth_height_is_stored_and_survives_a_restart() {
 /// refused before anything changes.
 #[test]
 fn test_qt_091_abandon_needs_a_running_spv_client() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(
         &dir.path().join("data"),
         Arc::new(Recorder::default()),

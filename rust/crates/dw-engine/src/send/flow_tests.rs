@@ -39,7 +39,7 @@ struct Fixture {
 }
 
 fn fixture(encrypted: bool) -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
             data_root: dir.path().join("data"),

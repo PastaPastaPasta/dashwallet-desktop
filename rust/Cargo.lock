@@ -1578,10 +1578,10 @@ dependencies = [
  "dashcore",
  "dw-engine",
  "dw-message",
+ "dw-testutil",
  "dw-vault",
  "hex",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1619,6 +1619,7 @@ dependencies = [
  "dw-message",
  "dw-p2p",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1649,6 +1650,7 @@ dependencies = [
  "dw-engine",
  "dw-message",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1695,6 +1697,14 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "dw-testutil"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
 ]
 
 [[package]]
@@ -1756,10 +1766,10 @@ dependencies = [
  "dw-engine",
  "dw-message",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-vault",
  "hex",
- "tempfile",
  "tracing-subscriber",
  "zeroize",
 ]

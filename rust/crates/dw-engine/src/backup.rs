@@ -862,7 +862,7 @@ mod tests {
         impl crate::EventSink for Quiet {
             fn emit(&self, _: EngineEvent) {}
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let engine = crate::Engine::new(
             crate::EngineConfig {
                 data_root: dir.path().join("data"),

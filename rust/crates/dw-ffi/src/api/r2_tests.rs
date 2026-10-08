@@ -33,7 +33,7 @@ struct Fixture {
 
 /// A regtest session with an unencrypted vault on an in-memory OS store.
 fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     // The FFI constructor uses the OS keyring; tests use an in-memory store.
     let engine = Arc::new(Engine {
         inner: dw_engine::Engine::new(

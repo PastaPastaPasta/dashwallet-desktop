@@ -36,7 +36,7 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
             data_root: dir.path().to_string_lossy().into_owned(),
@@ -321,7 +321,7 @@ fn desktop_calls() {
         "desktop.image_unreadable"
     );
 
-    let out = tempfile::tempdir().unwrap();
+    let out = dw_testutil::private_tempdir();
     let dest = out.path().join("logs.zip");
     let export =
         f.rt.block_on(

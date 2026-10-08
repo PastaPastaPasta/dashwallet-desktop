@@ -1106,7 +1106,7 @@ mod tests {
 
     #[test]
     fn destinations_are_never_replaced() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let f = dir.path().join("out.txt");
         write_new_private(&f, b"x").unwrap();
         assert!(matches!(

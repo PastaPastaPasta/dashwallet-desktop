@@ -46,6 +46,7 @@ dw-engine = { path = "crates/dw-engine" }
 dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
 dw-psbt = { path = "crates/dw-psbt" }
+dw-testutil = { path = "crates/dw-testutil" }
 dw-units = { path = "crates/dw-units" }
 dw-uri = { path = "crates/dw-uri" }
 dw-vault = { path = "crates/dw-vault" }

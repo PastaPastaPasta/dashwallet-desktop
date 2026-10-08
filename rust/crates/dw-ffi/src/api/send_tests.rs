@@ -31,7 +31,7 @@ fn pay(address: &str, amount: u64) -> Recipient {
 
 #[test]
 fn send_coins_and_labels_map_engine_results() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
             data_root: dir.path().to_string_lossy().into_owned(),
