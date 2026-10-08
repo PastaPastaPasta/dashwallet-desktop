@@ -8,7 +8,7 @@ Code: `rust/crates/dw-ffi/src/api/{coinjoin,network_stats,masternode_keys}.rs`, 
 Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) and [`m2-engine.md`](m2-engine.md) still applies.
 
 **Scope change (2026-10-07).** Governance (R2) and the masternode list, ProTx flows, shared masternodes, tracked
-masternodes and evonode tools (R3) are left to Dash Core (repo CLAUDE.md "Product scope"). Their engine, FFI and
+masternodes and evonode tools (R3) were left to Dash Core by this change (repo CLAUDE.md "Product scope" then; DEC-01 of 2026-10-08 brings the owner-side flows back as milestone MG, DASHPAY §5a; operator-signed ProUpServTx and ProUpRevTx stay out). Their engine, FFI and
 Swift code is not on `main`; it is kept on the branches `m3/r2-governance` and `m3/r3-protx`. The sections below
 that described them are marked parked. From R3 only the iOS Masternode Keys tool (IOS-083) stays: `masternode_keys`
 and `Vault.reveal_masternode_key`, implemented in `dw-engine/src/masternode_keys.rs`.
@@ -240,7 +240,7 @@ runtime as M2's `count_masternodes` already reads it).
   HD with no keypool to exhaust, so `keys_left` is `None` and no "low keys" warning fires; the only "disabled"
   states are `CoinJoinUnavailable::{Disabled, WatchOnly, InsufficientFunds}`. The parity row records this as a
   deliberate deviation.
-- **Governance and masternode management are Dash Core's** (repo CLAUDE.md "Product scope"): **Parked — Dash Core scope (branches `m3/r2-governance`, `m3/r3-protx`).**
+- **Governance and masternode management were Dash Core's** (repo CLAUDE.md "Product scope" at the time): **Parked (branches `m3/r2-governance`, `m3/r3-protx`).** Superseded by DEC-01: the owner-side flows are milestone MG (DASHPAY §5a); the operator side stays with the node and its CLI.
 - **CoinJoin output chain.** DIP9 CoinJoin account (DESIGN.md R2, overriding Fable's BIP44 default).
 - **G6** gate: DESIGN-opus §6. G7 (governance sync) is parked with governance.
 
