@@ -162,7 +162,7 @@ pub struct AuthGrant {
 /// vault, so holding one means the authorization check passed. Bound to
 /// the vault that redeemed it: another vault, or the same vault file
 /// opened again, refuses it (review DW-E0-03 r2 M1). Valid until that
-/// vault locks or changes unlock scope.
+/// vault locks, changes unlock scope or changes its passphrase.
 pub struct GrantToken {
     pub(crate) purpose: GrantPurpose,
     pub(crate) wallet: Option<WalletId>,

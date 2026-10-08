@@ -72,7 +72,7 @@ engine and FFI tests (review H2).
 | `Vault.encrypt(new_passphrase, grant_id)` | async | dash-qt "Encrypt Wallet": add slot P, delete slot O (the OS store copy of the data key). Leaves the vault locked. `ChangeCredential` grant (no wallet). | `vault.already_encrypted`, `vault.grant_invalid`, `vault.grant_purpose_mismatch` | QT-111 | **works** |
 | `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`), which is persisted in the vault file and survives a restart. Attempts (unlock, change passphrase, passphrase grants) run one at a time, so parallel attempts cannot all pass the throttle check. | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | **works** |
 | `Vault.lock()` | sync | Drops the DEK, revokes all grants and invalidates redeemed grants and signers (including those holding a grant's own key). Idempotent. E0-04 makes it async: it then also revokes every flow lease and can wait up to the hand-off deadline (DASHPAY §2.6). | — | QT-111, IOS-015 | **works** |
-| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; records and seed unchanged; lock state unchanged. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted` | QT-111 | **works** |
+| `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; records and seed unchanged; lock state unchanged. Ends the vault's epoch (review DW-E0-03 r3 m3): every grant (pending or redeemed), grant token and signer issued before it is refused afterwards, so a leaked old passphrase authorizes nothing more. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted` | QT-111 | **works** |
 | `Vault.authorize(purpose, wallet_id: Option<String>, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`, single use, TTL 120 s. **Wallet binding** (review M-6): `wallet_id` is required for every purpose except `ChangeCredential`, which takes `None` (else `invalid_argument`); the grant is refused for any other wallet. **Credentials**: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted` (= no credential); see the requirement table below. A passphrase does **not** change the lock state (dash-qt re-lock parity, review M4): on a `Locked` or `UnlockedMixingOnly` vault the unwrapped key is held by this grant only and is dropped when the grant is used, expires, is revoked or the vault locks. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `PlatformOp` (`MasternodeOp` and `Governance` were removed in M3 with the parked masternode and governance domains, m3-engine.md). | `vault.wrong_passphrase`, `vault.throttled`, `vault.not_encrypted`, `vault.locked`, `vault.mixing_only`, `vault.credential_required`, `vault.quick_unlock_unavailable`, `invalid_argument` (wallet binding) | IOS-016/017 | **works** |
 | `Vault.revoke_grant(grant_id)` | sync | Unknown ids ignored. | — | IOS-017 | **works** |
 | `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant for `wallet_id`. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch` (other purpose or other wallet), `vault.locked` | QT-113, IOS-006 | **works** |
@@ -105,7 +105,10 @@ was. A redeemed token (`dw_vault::GrantToken`) is bound to the vault instance th
 vault's epoch: it carries a random id made when the vault was opened and the epoch at redemption, and every use
 compares both in constant time (review DW-E0-03 r2 M1). Another vault, even one holding the same wallet id at
 the same epoch number, refuses it (`vault.grant_invalid`), as does the same vault file opened again; a lock,
-unlock or scope change of its own vault ends it.
+unlock, scope change or passphrase change of its own vault ends it. Within its epoch a token is not single-use:
+the grant is, but its token works until the epoch ends, and removing or storing a wallet does not end it (a
+`Wipe` token can wipe the same wallet again after a re-import, which derives the same wallet id only from the
+same seed).
 
 **Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
 `PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped
@@ -126,7 +129,7 @@ key needs no prompt (`Unencrypted`, or `Unlocked` with scope Full), and refused 
 or `UnlockedMixingOnly` (`vault.mixing_only`). It signs nothing; the one key it exports is a DIP-15 auto-accept
 key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `PlatformOp` grant for its wallet, which
 the unattended bring-up authorizes with `Credential::None`, so it too works without a prompt only in those two
-states. Both stop working when the vault locks or changes unlock scope. Both are engine-only:
+states. Both stop working when the vault locks, changes unlock scope or changes its passphrase. Both are engine-only:
 `crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key` and
 `VaultScanKey::resolve`/`resolver` in dw-ffi (`clippy -D warnings` fails), and a dw-ffi test scans its sources
 for them. The engine adapters (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`,
@@ -151,23 +154,32 @@ file on disk is read only when the vault opens and to verify a record write. A d
 installed over the in-memory state, so a passphrase change running beside a wallet import cannot drop the
 imported seed.
 
-**Lock against running operations** (review DW-E0-03 B1, r2 M2). Every signer call holds a vault operation gate
-from its epoch check until its result is released; `reveal_mnemonic`, `export_wallet_secret`,
-`with_revealed_seed`, `seed_derivation` and `core_mnemonic_check` hold it while they read the secret. `lock()`, `unlock()` and every other epoch change take
-the gate exclusively, so `lock()` returns only after those operations already running have finished (a signature
-takes about a millisecond), and every later call is `Locked`. A result leaves the vault only through one release
-check (`dw_vault::Vault::gated`): holding the mutex that every epoch change holds, the epoch the operation started
-under must still be current, or the result is dropped and the call is `Locked`. Because that mutex orders each
-release wholly before or after each epoch change, and `lock()` changes the epoch before it returns, no signature,
-shared secret, ciphertext, exported key or secret read of the old epoch is made or released after `lock()`
-returns. This is structural, not a timing claim; the lock-race tests check it on the vault's own log of releases
-and epoch changes, in that mutex's order, under 16 concurrent signers and 300 locks per vault mode. What a caller
-does with a result released before the lock can finish after it: a signature it already holds, the provider key
-`with_revealed_seed`'s closure derives, the dump-wallet keys derived from `export_wallet_secret`. A flow that must
-not use such a result after a lock ("Lock to cancel") hands it to the transport only while holding a permit of its
-lease, which the lock takes exclusively (DASHPAY §2.6, E0-04). Not gated, and pre-existing: `backup_bundle` and `open_backup_bundle` (no grant
-or epoch; the latter returns the decrypted secrets of this vault's own bundle on an unlocked vault) and
-`enroll_quick_unlock` (serialized by the writer lock, which `lock()` does not take).
+**Lock against running operations** (review DW-E0-03 B1, r2 M2, r3 m1/m2). Every signer call holds a vault
+operation gate from its epoch check until its result is released. So does every use of a grant token's key, from
+the token check to the end of the operation: the secret reads (`reveal_mnemonic`, `export_wallet_secret`,
+`with_revealed_seed`) and the token-authorized writes
+(`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`, `set_quick_unlock_spend_limit`, with their file
+write). `seed_derivation` and `core_mnemonic_check` hold it while they read the secret. `lock()`, `unlock()` and
+every other epoch change take the gate exclusively, so `lock()` returns only after those operations already
+running have finished (a signature takes about a millisecond; a gated write, one file write), and every later
+call is `Locked`. A gated operation uses only a key already in memory: an unencrypted vault's key is loaded from
+the OS store before the gate, so a keyring that blocks (on its unlock prompt, say) never holds `lock()`. A result
+leaves the vault only through one release check (`dw_vault::Vault::gated`): holding the mutex that every epoch
+change holds, the epoch the operation started under must still be current, or the result is dropped and the
+call is `Locked`. Because that mutex orders each release wholly before or after each epoch change, and `lock()`
+changes the epoch before it returns, no signature, shared secret, ciphertext, exported key, secret read or
+token-authorized write of the old epoch is made or released after `lock()` returns. This is structural, not a
+timing claim; the lock-race tests check it on the vault's own log of releases and epoch changes, in that mutex's
+order, under 16 concurrent signers and 300 locks per vault mode. What a caller does with a result released
+before the lock can finish after it: a signature it already holds, the provider key `with_revealed_seed`'s
+closure derives, the dump-wallet keys derived from `export_wallet_secret`. A flow that must not use such a
+result after a lock ("Lock to cancel") hands it to the transport only while holding a permit of its lease,
+which the lock takes exclusively (DASHPAY §2.6, E0-04). Not gated: `backup_bundle` and `open_backup_bundle`
+(no grant or epoch; the latter returns the decrypted secrets of this vault's own bundle on an unlocked vault), and
+record writes under the vault's own key (`store_wallet_secret` and the import rollback's `delete_wallet_secret`). An
+unencrypted vault's read that loads the key and then finds it dropped by a lock before the gate loads it again
+(at most three tries) rather than failing `vault.locked`; `authorize` with no credential issues a grant only
+while that key is in memory.
 
 **Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
 or individually rolled-back record, or a changed manifest, makes unlock and reads fail with

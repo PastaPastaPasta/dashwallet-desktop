@@ -262,10 +262,8 @@ impl Vault {
         {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        self.gated(VaultError::Locked, |_| {
-            let dek = self.key_for(token)?;
-            #[cfg(test)]
-            crate::signer::test_hook::opened();
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, token)?;
             self.read_secret(&dek, wallet)
         })
     }
@@ -294,9 +292,8 @@ impl Vault {
     /// the stored seed. Reads the secrets internally (full data key needed:
     /// unlocked or unencrypted vault); returns only the verdict.
     pub fn core_mnemonic_check(&self, wallet: &WalletId) -> Result<CoreMnemonicCheck, VaultError> {
-        self.gated(VaultError::Locked, |_| {
-            let dek = self.full_dek()?;
-            let secret = self.read_secret(&dek, wallet)?;
+        self.with_loaded_key(|dek| {
+            let secret = self.read_secret(dek, wallet)?;
             if secret.derivation == SeedDerivation::RawSeed || secret.mnemonic.is_empty() {
                 return Ok(CoreMnemonicCheck {
                     has_mnemonic: false,

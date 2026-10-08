@@ -262,7 +262,8 @@ impl VaultSigner {
 /// `ScanKeyResolver`, `manager/startup.rs:90-110`, whose discovery derives
 /// every probed identity key from it, so nothing narrower serves). Holds no
 /// secret: the key is derived when [`Self::master_key`] is called, and that
-/// stops working once the vault locks or changes unlock scope. A key already
+/// stops working once the vault locks, changes unlock scope or changes its
+/// passphrase. A key already
 /// returned is the caller's: the vault cannot revoke it, and it erases itself
 /// only when dropped. Issued by [`Vault::scan_key`] under a `PlatformOp`
 /// grant.

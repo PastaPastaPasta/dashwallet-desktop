@@ -8,6 +8,12 @@
 //! check the vault's own log of releases and epoch changes
 //! ([`GateEvent`]), kept in the order of the mutex both hold, instead of
 //! timing.
+//!
+//! What each covers (review DW-E0-03 r3 n1, checked by mutation): the
+//! stress tests verify the gate and the log reconstruction. With the gate
+//! in place the release check never has a stale result to refuse, so they
+//! cannot tell whether it works; `a_result_is_not_released_in_a_later_epoch`
+//! covers the check on its own, by changing the epoch past the gate.
 
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
@@ -21,13 +27,15 @@ use key_wallet::bip32::DerivationPath;
 use key_wallet::{Network, Signer};
 use zeroize::Zeroizing;
 
+use crate::os_store::OsSecretStore;
 use crate::signer::KeyUse;
 use crate::signer::test_hook;
 use crate::vault::GateEvent;
 use crate::{
-    Credential, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
-    SeedDerivation, SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig,
-    VaultSigner, WalletSecret, WalletSigner,
+    Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantPurpose, GrantToken, KdfParams, KdfPolicy,
+    MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation, SignerError, SignerScope,
+    SystemClock, UnlockScope, Vault, VaultConfig, VaultError, VaultSigner, WalletSecret,
+    WalletSigner,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -39,9 +47,17 @@ fn path(s: &str) -> DerivationPath {
 }
 
 fn vault(dir: &tempfile::TempDir, passphrase: Option<&[u8]>) -> Vault {
+    vault_with_store(dir, passphrase, Arc::new(MemoryOsStore::new()))
+}
+
+fn vault_with_store(
+    dir: &tempfile::TempDir,
+    passphrase: Option<&[u8]>,
+    os_store: Arc<dyn OsSecretStore>,
+) -> Vault {
     let config = VaultConfig {
         kdf: KdfPolicy::Fixed(KdfParams::TEST),
-        os_store: Arc::new(MemoryOsStore::new()),
+        os_store,
         clock: Arc::new(SystemClock),
         grant_ttl_secs: 120,
     };
@@ -522,4 +538,306 @@ fn a_scope_change_waits_for_the_operation_already_running() {
         ecdh.clone(),
     );
     assert_eq!(ecdh(), Err(SignerError::Locked));
+}
+
+/// How long a test waits for a thread that should not block before it calls
+/// that a hang.
+const NO_HANG: Duration = Duration::from_secs(10);
+
+/// One token operation of review DW-E0-03 r3 m2, set up on a fresh vault:
+/// the call, and whether the vault still shows it undone.
+struct TokenOp {
+    name: &'static str,
+    _dir: tempfile::TempDir,
+    vault: Vault,
+    call: Box<dyn FnOnce() -> Result<(), VaultError> + Send>,
+    undone: fn(&Vault) -> bool,
+}
+
+/// The four operations that use a grant token's key outside a signer
+/// (wipe, encrypt, quick-unlock enrolment and its spending limit), each
+/// with the vault's key and, where the vault can be locked, with a
+/// passphrase grant's own key on a locked vault.
+fn token_ops() -> Vec<TokenOp> {
+    let limit = *QUICK_UNLOCK_SPEND_LIMITS
+        .iter()
+        .find(|&&l| l != DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
+        .unwrap();
+    let change_credential = |v: &Vault, credential| {
+        v.authorize(GrantPurpose::ChangeCredential, None, credential)
+            .unwrap()
+            .id
+    };
+    let mut ops = Vec::new();
+    for locked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, Some(PASS));
+        if locked {
+            v.lock();
+        }
+        let t = token(&v, GrantPurpose::Wipe, Credential::Passphrase(PASS));
+        let w = v.clone();
+        ops.push(TokenOp {
+            _dir: dir,
+            name: if locked {
+                "wipe, grant key"
+            } else {
+                "wipe, vault key"
+            },
+            vault: v,
+            call: Box::new(move || w.wipe_wallet_secret(&W, &t).map(drop)),
+            undone: |v| v.has_wallet_secret(&W),
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, Some(PASS));
+        if locked {
+            v.lock();
+        }
+        let (id, w) = (
+            change_credential(&v, Credential::Passphrase(PASS)),
+            v.clone(),
+        );
+        ops.push(TokenOp {
+            _dir: dir,
+            name: if locked {
+                "enroll, grant key"
+            } else {
+                "enroll, vault key"
+            },
+            vault: v,
+            call: Box::new(move || w.enroll_quick_unlock(&id).map(drop)),
+            undone: |v| !v.quick_unlock_policy().enrolled,
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, Some(PASS));
+        if locked {
+            v.lock();
+        }
+        let (id, w) = (
+            change_credential(&v, Credential::Passphrase(PASS)),
+            v.clone(),
+        );
+        ops.push(TokenOp {
+            _dir: dir,
+            name: if locked {
+                "spend limit, grant key"
+            } else {
+                "spend limit, vault key"
+            },
+            vault: v,
+            call: Box::new(move || w.set_quick_unlock_spend_limit(&id, limit).map(drop)),
+            undone: |v| {
+                v.quick_unlock_policy().spend_limit_duffs == DEFAULT_QUICK_UNLOCK_SPEND_LIMIT
+            },
+        });
+    }
+    // Unencrypted (the data key reloaded from the OS store): wipe and
+    // encrypt, which needs an unencrypted vault.
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, None);
+    let t = token(&v, GrantPurpose::Wipe, Credential::None);
+    let w = v.clone();
+    ops.push(TokenOp {
+        _dir: dir,
+        name: "wipe, unencrypted",
+        vault: v,
+        call: Box::new(move || w.wipe_wallet_secret(&W, &t).map(drop)),
+        undone: |v| v.has_wallet_secret(&W),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, None);
+    let (id, w) = (change_credential(&v, Credential::None), v.clone());
+    ops.push(TokenOp {
+        _dir: dir,
+        name: "encrypt",
+        vault: v,
+        call: Box::new(move || w.encrypt(b"new passphrase", &id).map(drop)),
+        undone: |v| !v.status().encrypted,
+    });
+    ops
+}
+
+/// Review DW-E0-03 r3 m2: a `lock()` that lands after a token operation
+/// checked (or redeemed) its token and before it loaded the key returns at
+/// once, and the operation is then refused `Locked` with nothing changed.
+/// Before the fix the wipe had checked its token at this point, the lock
+/// returned, and the wipe still deleted the wallet's records; so only the
+/// wipe cases fail on the old code. Encrypt, enrolment and the spending
+/// limit pause before any token check here, which the old code also made
+/// later; what they lacked (the gate) is what
+/// `lock_waits_for_a_token_operation_already_running` covers.
+#[test]
+fn a_lock_before_the_key_load_refuses_each_token_operation() {
+    for op in token_ops() {
+        assert!((op.undone)(&op.vault), "{}: set up undone", op.name);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let call = op.call;
+        let worker = thread::spawn(move || {
+            test_hook::set_checked(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            call()
+        });
+        entered_rx
+            .recv_timeout(NO_HANG)
+            .unwrap_or_else(|_| panic!("{}: the token was not checked", op.name));
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let locker = {
+            let v = op.vault.clone();
+            thread::spawn(move || {
+                v.lock();
+                locked_tx.send(()).unwrap();
+            })
+        };
+        let lock_returned = locked_rx.recv_timeout(NO_HANG).is_ok();
+        release_tx.send(()).unwrap();
+        let result = worker.join().unwrap();
+        locker.join().unwrap();
+        assert!(lock_returned, "{}: lock() waited before the gate", op.name);
+        assert_eq!(result, Err(VaultError::Locked), "{}", op.name);
+        assert!((op.undone)(&op.vault), "{}: changed after lock()", op.name);
+    }
+}
+
+/// Review DW-E0-03 r3 m2: a `lock()` that lands while a token operation is
+/// inside the gate (its key loaded) waits until the operation is done, so
+/// it is never still running once `lock()` has returned.
+#[test]
+fn lock_waits_for_a_token_operation_already_running() {
+    for op in token_ops() {
+        epoch_change_waits_for(&op.vault, lock, op.call);
+        assert!(!(op.undone)(&op.vault), "{}: done before lock()", op.name);
+    }
+}
+
+/// The gated reads that use the vault's own key, which an unencrypted vault
+/// loads from the OS store first.
+type Read = fn(&Vault) -> Result<(), VaultError>;
+const KEY_LOADING_READS: [(&str, Read); 2] = [
+    ("seed_derivation", |v| v.seed_derivation(&W).map(drop)),
+    ("core_mnemonic_check", |v| {
+        v.core_mnemonic_check(&W).map(drop)
+    }),
+];
+
+/// An OS store whose next `get` blocks until the test releases it, as a
+/// keyring waiting on its unlock prompt would.
+#[derive(Default)]
+struct SlowStore {
+    inner: MemoryOsStore,
+    armed: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl SlowStore {
+    /// Makes the next `get` block; returns (entered, release).
+    fn arm(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *self.armed.lock().unwrap() = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+}
+
+impl OsSecretStore for SlowStore {
+    fn put(&self, service: &[u8; 32], label: &str, secret: &[u8]) -> Result<(), VaultError> {
+        self.inner.put(service, label, secret)
+    }
+
+    fn get(
+        &self,
+        service: &[u8; 32],
+        label: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, VaultError> {
+        let armed = self.armed.lock().unwrap().take();
+        if let Some((entered, release)) = armed {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        self.inner.get(service, label)
+    }
+
+    fn delete(&self, service: &[u8; 32], label: &str) -> Result<bool, VaultError> {
+        self.inner.delete(service, label)
+    }
+
+    fn name(&self) -> &'static str {
+        "slow"
+    }
+}
+
+/// Review DW-E0-03 r3 m1: the gated reads that use an unencrypted vault's
+/// own key load it from the OS store before they enter the gate, so a
+/// `lock()` does not wait on a keyring that blocks. Before the fix it waited
+/// for as long as the read was held.
+#[test]
+fn lock_does_not_wait_for_an_os_store_read() {
+    for (name, read) in KEY_LOADING_READS {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SlowStore::default());
+        let v = vault_with_store(&dir, None, store.clone());
+        // Drops the cached key, so the next read goes to the OS store.
+        v.lock();
+        let (entered, release) = store.arm();
+        let worker = {
+            let v = v.clone();
+            thread::spawn(move || read(&v))
+        };
+        entered
+            .recv_timeout(NO_HANG)
+            .unwrap_or_else(|_| panic!("{name}: the key was not read from the OS store"));
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let locker = {
+            let v = v.clone();
+            thread::spawn(move || {
+                v.lock();
+                locked_tx.send(()).unwrap();
+            })
+        };
+        let lock_returned = locked_rx.recv_timeout(NO_HANG).is_ok();
+        release.send(()).unwrap();
+        let result = worker.join().unwrap();
+        locker.join().unwrap();
+        assert!(lock_returned, "{name}: lock() waited for the OS store");
+        // An unencrypted vault reloads its key on demand; the read then
+        // runs in the new epoch.
+        assert_eq!(result, Ok(()), "{name}");
+    }
+}
+
+/// Review DW-E0-03 r3 m1 (follow-up): a `lock()` between the OS-store key
+/// load and the gate drops the key again. An unencrypted vault's read then
+/// loads it again and succeeds, rather than failing with a spurious
+/// `Locked` the caller could do nothing about.
+#[test]
+fn a_lock_between_the_key_load_and_the_gate_reloads_the_key() {
+    for (name, read) in KEY_LOADING_READS {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, None);
+        v.lock();
+        let (loaded_tx, loaded_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let worker = {
+            let v = v.clone();
+            thread::spawn(move || {
+                let mut first = true;
+                test_hook::set_checked(move || {
+                    if std::mem::take(&mut first) {
+                        loaded_tx.send(()).unwrap();
+                        go_rx.recv().unwrap();
+                    }
+                });
+                read(&v)
+            })
+        };
+        loaded_rx
+            .recv_timeout(NO_HANG)
+            .unwrap_or_else(|_| panic!("{name}: the key was not loaded"));
+        v.lock();
+        go_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Ok(()), "{name}");
+    }
 }

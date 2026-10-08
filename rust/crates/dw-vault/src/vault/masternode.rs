@@ -21,10 +21,8 @@ impl Vault {
         f: impl FnOnce(&[u8; 64]) -> T,
     ) -> Result<T, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
-        let seed = self.gated(VaultError::Locked, |_| {
-            let dek = self.key_for(&token)?;
-            #[cfg(test)]
-            crate::signer::test_hook::opened();
+        let seed = self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, &token)?;
             let payload = self
                 .read_record(&dek, &record_id(wallet, REC_SEED))?
                 .ok_or(VaultError::NoSecret)?;

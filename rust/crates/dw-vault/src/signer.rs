@@ -310,6 +310,7 @@ pub(crate) mod test_hook {
 
     thread_local! {
         static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static CHECKED: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
     /// Calls `f` whenever an operation of this thread is opened.
@@ -317,8 +318,23 @@ pub(crate) mod test_hook {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
     }
 
+    /// Calls `f` whenever an operation of this thread has checked (or
+    /// redeemed) its grant token, or loaded the vault's key, and not yet
+    /// entered the gate.
+    pub(crate) fn set_checked(f: impl FnMut() + 'static) {
+        CHECKED.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
     pub(crate) fn opened() {
         HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
+    }
+
+    pub(crate) fn checked() {
+        CHECKED.with(|h| {
             if let Some(f) = h.borrow_mut().as_mut() {
                 f();
             }
