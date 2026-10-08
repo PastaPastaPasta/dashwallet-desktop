@@ -13,9 +13,24 @@ use dw_engine::{
 };
 use dw_vault::{LockState, VaultStatus};
 use serde::{Deserialize, Serialize};
+use tauri::Theme;
 use ts_rs::TS;
 
-use crate::launch::{LaunchOptions, Theme};
+use crate::launch::LaunchOptions;
+
+/// `impl From<$from> for $to` for two enums with the same variant names. A
+/// variant missing on either side is a compile error.
+macro_rules! mirror_enum {
+    ($from:ident => $to:ident { $($v:ident),+ $(,)? }) => {
+        impl From<$from> for $to {
+            fn from(x: $from) -> Self {
+                match x {
+                    $($from::$v => $to::$v),+
+                }
+            }
+        }
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +79,8 @@ pub enum ThemeName {
     Dark,
 }
 
+mirror_enum!(ThemeName => Theme { Light, Dark });
+
 /// What the renderer needs to know before its first query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -84,10 +101,7 @@ impl LaunchInfo {
             fixture: opts.fixture,
             selftest: opts.selftest.is_some(),
             selftest_pause_ms: opts.selftest_pause_ms,
-            theme: opts.theme.map(|t| match t {
-                Theme::Light => ThemeName::Light,
-                Theme::Dark => ThemeName::Dark,
-            }),
+            theme: opts.theme,
             network: NetworkInfo::from(&opts.network),
             app_version: env!("CARGO_PKG_VERSION").into(),
             engine_version: dw_engine::ENGINE_VERSION.into(),
@@ -99,17 +113,11 @@ impl LaunchInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Balances {
-    #[ts(type = "number")]
     pub confirmed: u64,
-    #[ts(type = "number")]
     pub unconfirmed: u64,
-    #[ts(type = "number")]
     pub immature: u64,
-    #[ts(type = "number")]
     pub locked: u64,
-    #[ts(type = "number")]
     pub total: u64,
-    #[ts(type = "number")]
     pub coinjoin: u64,
 }
 
@@ -162,18 +170,7 @@ pub enum LockStateName {
     Unlocked,
 }
 
-impl From<LockState> for LockStateName {
-    fn from(s: LockState) -> Self {
-        match s {
-            LockState::NoVault => LockStateName::NoVault,
-            LockState::NoKeys => LockStateName::NoKeys,
-            LockState::Unencrypted => LockStateName::Unencrypted,
-            LockState::Locked => LockStateName::Locked,
-            LockState::UnlockedMixingOnly => LockStateName::UnlockedMixingOnly,
-            LockState::Unlocked => LockStateName::Unlocked,
-        }
-    }
-}
+mirror_enum!(LockState => LockStateName { NoVault, NoKeys, Unencrypted, Locked, UnlockedMixingOnly, Unlocked });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -181,7 +178,6 @@ pub struct LockStatus {
     pub state: LockStateName,
     pub encrypted: bool,
     pub failed_attempts: u32,
-    #[ts(type = "number | null")]
     pub retry_after_secs: Option<u64>,
 }
 
@@ -205,16 +201,7 @@ pub enum SyncPhaseName {
     Masternodes,
 }
 
-impl From<SyncPhase> for SyncPhaseName {
-    fn from(p: SyncPhase) -> Self {
-        match p {
-            SyncPhase::Headers => SyncPhaseName::Headers,
-            SyncPhase::FilterHeaders => SyncPhaseName::FilterHeaders,
-            SyncPhase::Filters => SyncPhaseName::Filters,
-            SyncPhase::Masternodes => SyncPhaseName::Masternodes,
-        }
-    }
-}
+mirror_enum!(SyncPhase => SyncPhaseName { Headers, FilterHeaders, Filters, Masternodes });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -233,12 +220,10 @@ pub struct SyncStatus {
     pub phases: Vec<SyncPhaseStatus>,
     pub active_phase: Option<SyncPhaseName>,
     pub tip_height: Option<u32>,
-    #[ts(type = "number | null")]
     pub tip_time: Option<u64>,
     pub chainlock_height: Option<u32>,
     pub connected_peers: u32,
     pub caught_up: bool,
-    #[ts(type = "number | null")]
     pub seconds_since_progress: Option<u64>,
 }
 
@@ -292,33 +277,7 @@ pub enum TxTypeName {
     AssetLock,
 }
 
-impl From<TxType> for TxTypeName {
-    fn from(t: TxType) -> Self {
-        use TxType as T;
-        use TxTypeName as N;
-        match t {
-            T::Other => N::Other,
-            T::Generated => N::Generated,
-            T::SendToAddress => N::SendToAddress,
-            T::SendToOther => N::SendToOther,
-            T::RecvWithAddress => N::RecvWithAddress,
-            T::RecvFromOther => N::RecvFromOther,
-            T::SendToSelf => N::SendToSelf,
-            T::RecvWithCoinJoin => N::RecvWithCoinJoin,
-            T::CoinJoinMixing => N::CoinJoinMixing,
-            T::CoinJoinCollateralPayment => N::CoinJoinCollateralPayment,
-            T::CoinJoinMakeCollaterals => N::CoinJoinMakeCollaterals,
-            T::CoinJoinCreateDenominations => N::CoinJoinCreateDenominations,
-            T::CoinJoinSend => N::CoinJoinSend,
-            T::PlatformTransfer => N::PlatformTransfer,
-            T::DustReceive => N::DustReceive,
-            T::DataTransaction => N::DataTransaction,
-            T::MasternodeRegistration => N::MasternodeRegistration,
-            T::MasternodeUpdate => N::MasternodeUpdate,
-            T::AssetLock => N::AssetLock,
-        }
-    }
-}
+mirror_enum!(TxType => TxTypeName { Other, Generated, SendToAddress, SendToOther, RecvWithAddress, RecvFromOther, SendToSelf, RecvWithCoinJoin, CoinJoinMixing, CoinJoinCollateralPayment, CoinJoinMakeCollaterals, CoinJoinCreateDenominations, CoinJoinSend, PlatformTransfer, DustReceive, DataTransaction, MasternodeRegistration, MasternodeUpdate, AssetLock });
 
 /// iOS history filter categories (IOS-028).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -334,35 +293,9 @@ pub enum TxCategoryName {
     Other,
 }
 
-impl From<TxCategory> for TxCategoryName {
-    fn from(c: TxCategory) -> Self {
-        match c {
-            TxCategory::Sent => TxCategoryName::Sent,
-            TxCategory::Received => TxCategoryName::Received,
-            TxCategory::Reward => TxCategoryName::Reward,
-            TxCategory::Masternode => TxCategoryName::Masternode,
-            TxCategory::InternalTransfer => TxCategoryName::InternalTransfer,
-            TxCategory::CoinJoin => TxCategoryName::CoinJoin,
-            TxCategory::Platform => TxCategoryName::Platform,
-            TxCategory::Other => TxCategoryName::Other,
-        }
-    }
-}
+mirror_enum!(TxCategory => TxCategoryName { Sent, Received, Reward, Masternode, InternalTransfer, CoinJoin, Platform, Other });
 
-impl From<TxCategoryName> for TxCategory {
-    fn from(c: TxCategoryName) -> Self {
-        match c {
-            TxCategoryName::Sent => TxCategory::Sent,
-            TxCategoryName::Received => TxCategory::Received,
-            TxCategoryName::Reward => TxCategory::Reward,
-            TxCategoryName::Masternode => TxCategory::Masternode,
-            TxCategoryName::InternalTransfer => TxCategory::InternalTransfer,
-            TxCategoryName::CoinJoin => TxCategory::CoinJoin,
-            TxCategoryName::Platform => TxCategory::Platform,
-            TxCategoryName::Other => TxCategory::Other,
-        }
-    }
-}
+mirror_enum!(TxCategoryName => TxCategory { Sent, Received, Reward, Masternode, InternalTransfer, CoinJoin, Platform, Other });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -376,19 +309,7 @@ pub enum TxStatusKindName {
     NotAccepted,
 }
 
-impl From<TxStatusKind> for TxStatusKindName {
-    fn from(k: TxStatusKind) -> Self {
-        match k {
-            TxStatusKind::Unconfirmed => TxStatusKindName::Unconfirmed,
-            TxStatusKind::Confirming => TxStatusKindName::Confirming,
-            TxStatusKind::Confirmed => TxStatusKindName::Confirmed,
-            TxStatusKind::Conflicted => TxStatusKindName::Conflicted,
-            TxStatusKind::Abandoned => TxStatusKindName::Abandoned,
-            TxStatusKind::Immature => TxStatusKindName::Immature,
-            TxStatusKind::NotAccepted => TxStatusKindName::NotAccepted,
-        }
-    }
-}
+mirror_enum!(TxStatusKind => TxStatusKindName { Unconfirmed, Confirming, Confirmed, Conflicted, Abandoned, Immature, NotAccepted });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -422,13 +343,10 @@ pub struct TxRow {
     pub category: TxCategoryName,
     pub status: TxStatusInfo,
     /// UNIX seconds.
-    #[ts(type = "number | null")]
     pub timestamp: Option<u64>,
     pub block_height: Option<u32>,
     /// Signed duffs.
-    #[ts(type = "number")]
     pub amount: i64,
-    #[ts(type = "number | null")]
     pub fee: Option<u64>,
     pub address: Option<String>,
     pub label: Option<String>,
@@ -463,16 +381,7 @@ pub enum HistorySortName {
     AmountAscending,
 }
 
-impl From<HistorySortName> for HistorySort {
-    fn from(s: HistorySortName) -> Self {
-        match s {
-            HistorySortName::NewestFirst => HistorySort::NewestFirst,
-            HistorySortName::OldestFirst => HistorySort::OldestFirst,
-            HistorySortName::AmountDescending => HistorySort::AmountDescending,
-            HistorySortName::AmountAscending => HistorySort::AmountAscending,
-        }
-    }
-}
+mirror_enum!(HistorySortName => HistorySort { NewestFirst, OldestFirst, AmountDescending, AmountAscending });
 
 /// The part of the engine's history query the gate screens use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -509,7 +418,6 @@ pub struct TxInput {
     pub previous_txid: String,
     pub previous_vout: u32,
     pub address: Option<String>,
-    #[ts(type = "number | null")]
     pub amount: Option<u64>,
     pub is_mine: bool,
 }
@@ -531,7 +439,6 @@ impl From<TxInputDetail> for TxInput {
 pub struct TxOutput {
     pub vout: u32,
     pub address: Option<String>,
-    #[ts(type = "number")]
     pub amount: u64,
     pub is_mine: bool,
     pub is_change: bool,
@@ -556,11 +463,9 @@ pub struct TxDetails {
     pub txid: String,
     pub rows: Vec<TxRow>,
     pub status: TxStatusInfo,
-    #[ts(type = "number | null")]
     pub timestamp: Option<u64>,
     pub block_height: Option<u32>,
     pub block_hash: Option<String>,
-    #[ts(type = "number | null")]
     pub fee: Option<u64>,
     pub size_bytes: u32,
     pub inputs: Vec<TxInput>,
@@ -592,21 +497,18 @@ impl From<TxDetail> for TxDetails {
 /// changed; the renderer re-queries (DESIGN-opus §1.5 rule 4). The engine
 /// already debounces `sync`, `balances` and `history` to 4 Hz.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum EngineSignal {
-    #[serde(rename_all = "camelCase")]
     Session { network: String, open: bool },
-    #[serde(rename_all = "camelCase")]
     Wallets { network: String },
-    #[serde(rename_all = "camelCase")]
     Sync { network: String },
-    #[serde(rename_all = "camelCase")]
     Balances { network: String, wallet_id: String },
-    #[serde(rename_all = "camelCase")]
     History { network: String, wallet_id: String },
-    #[serde(rename_all = "camelCase")]
     LockState { network: String },
-    #[serde(rename_all = "camelCase")]
     Notice { code: String, detail: String },
 }
 
@@ -619,7 +521,6 @@ pub struct AppError {
     pub code: String,
     pub message: String,
     /// Set by `vault.wrong_passphrase` and `vault.throttled`.
-    #[ts(type = "number | null")]
     pub retry_after_secs: Option<u64>,
 }
 
@@ -636,23 +537,24 @@ impl AppError {
 impl From<dw_engine::EngineError> for AppError {
     fn from(e: dw_engine::EngineError) -> Self {
         use dw_vault::VaultError;
-        match &e {
-            dw_engine::EngineError::Vault(v) => AppError {
-                code: v.code().into(),
-                message: v.to_string(),
-                retry_after_secs: match v {
+        let (code, message, retry_after_secs) = match &e {
+            dw_engine::EngineError::Vault(v) => (
+                v.code(),
+                v.to_string(),
+                match v {
                     VaultError::WrongPassphrase {
                         retry_after_secs, ..
                     } => *retry_after_secs,
                     VaultError::Throttled { retry_after_secs } => Some(*retry_after_secs),
                     _ => None,
                 },
-            },
-            _ => AppError {
-                code: e.code().into(),
-                message: e.to_string(),
-                retry_after_secs: None,
-            },
+            ),
+            _ => (e.code(), e.to_string(), None),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            retry_after_secs,
         }
     }
 }
@@ -660,7 +562,10 @@ impl From<dw_engine::EngineError> for AppError {
 /// Every root type exported to TypeScript (dependencies follow).
 #[cfg(test)]
 pub(crate) fn export_all(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
-    let cfg = ts_rs::Config::new().with_out_dir(dir);
+    // Duff amounts and UNIX times are u64/i64; JSON numbers hold them exactly (see the top).
+    let cfg = ts_rs::Config::new()
+        .with_out_dir(dir)
+        .with_large_int("number");
     LaunchInfo::export_all(&cfg)?;
     WalletSummary::export_all(&cfg)?;
     LockStatus::export_all(&cfg)?;

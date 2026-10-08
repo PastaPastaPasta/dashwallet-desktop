@@ -4,7 +4,7 @@
 //! Every command the renderer may call is listed in `build.rs` and granted in
 //! `capabilities/main.json`; anything else is refused by Tauri's ACL.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -70,6 +70,13 @@ impl AppState {
             .ok_or_else(|| AppError::app("fixture_mode", "the app runs on fixture data; no engine"))
     }
 
+    /// The `--selftest` report path; the self-test commands refuse to run without it.
+    fn selftest_path(&self) -> Result<&Path, AppError> {
+        self.launch.selftest.as_deref().ok_or_else(|| {
+            AppError::app("not_selftest", "the app was not launched with --selftest")
+        })
+    }
+
     async fn session(&self) -> Result<Arc<NetworkSession>, AppError> {
         self.session
             .lock()
@@ -79,17 +86,22 @@ impl AppState {
     }
 }
 
-fn wallet_id(s: &str) -> Result<WalletId, AppError> {
+fn parse_wallet_id(s: &str) -> Result<WalletId, AppError> {
     s.parse().map_err(AppError::from)
 }
 
-#[tauri::command]
+// Commands that do no I/O are still `async`: Tauri runs sync commands on the
+// main thread, and the measured IPC path (U5) must be the one the engine
+// calls take.
+#[tauri::command(async)]
 pub fn launch_info(state: State<'_, AppState>) -> LaunchInfo {
     LaunchInfo::new(&state.launch)
 }
 
 /// Opens the launch network (once; later calls return the same session) and
-/// starts SPV when the app was launched with `--sync`.
+/// starts SPV when the app was launched with `--sync`. A failed SPV start
+/// leaves the session open (the wallet stays readable offline); the status
+/// bar shows that SPV is not running.
 #[tauri::command]
 pub async fn open_network(state: State<'_, AppState>) -> Result<LockStatus, AppError> {
     let engine = state.engine()?;
@@ -105,10 +117,12 @@ pub async fn open_network(state: State<'_, AppState>) -> Result<LockStatus, AppE
             let s = engine
                 .open_network(state.launch.network.clone(), opts)
                 .await?;
-            if state.launch.sync {
-                s.start_spv().await?;
-            }
             *slot = Some(Arc::clone(&s));
+            if state.launch.sync
+                && let Err(e) = s.start_spv().await
+            {
+                eprintln!("dw-app: SPV did not start: {e}");
+            }
             s
         }
     };
@@ -153,7 +167,7 @@ pub async fn balance(
     state: State<'_, AppState>,
     wallet_id: String,
 ) -> Result<Option<Balances>, AppError> {
-    let id = self::wallet_id(&wallet_id)?;
+    let id = parse_wallet_id(&wallet_id)?;
     Ok(state.session().await?.balances(&id)?.map(Balances::from))
 }
 
@@ -168,7 +182,7 @@ pub async fn history_page(
     wallet_id: String,
     request: HistoryRequest,
 ) -> Result<HistoryRows, AppError> {
-    let id = self::wallet_id(&wallet_id)?;
+    let id = parse_wallet_id(&wallet_id)?;
     let query = HistoryQuery {
         filter: HistoryFilter {
             categories: request.categories.into_iter().map(Into::into).collect(),
@@ -188,7 +202,7 @@ pub async fn tx_detail(
     wallet_id: String,
     txid: String,
 ) -> Result<TxDetails, AppError> {
-    let id = self::wallet_id(&wallet_id)?;
+    let id = parse_wallet_id(&wallet_id)?;
     Ok(state.session().await?.tx_detail(id, txid).await?.into())
 }
 
@@ -196,7 +210,7 @@ pub async fn tx_detail(
 /// window; `first-paint`: the first Overview frame with the balance and
 /// history). Returns milliseconds since the top of `main` and logs them
 /// (U5 cold start).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn startup_mark(state: State<'_, AppState>, mark: String) -> u64 {
     let ms = state.started.elapsed().as_millis() as u64;
     eprintln!("dw-app: startup {mark} {ms}");
@@ -206,18 +220,13 @@ pub fn startup_mark(state: State<'_, AppState>, mark: String) -> u64 {
 /// `--selftest`: writes the renderer's report, and exits once the report is
 /// marked final (`"final": false` is a checkpoint before a probe that could
 /// end the page).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn selftest_report<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     report: serde_json::Value,
 ) -> Result<(), AppError> {
-    let Some(path) = &state.launch.selftest else {
-        return Err(AppError::app(
-            "not_selftest",
-            "the app was not launched with --selftest",
-        ));
-    };
+    let path = state.selftest_path()?;
     let text = serde_json::to_string_pretty(&report)
         .map_err(|e| AppError::app("selftest", e.to_string()))?;
     std::fs::write(path, text).map_err(|e| AppError::app("selftest", e.to_string()))?;
@@ -230,14 +239,9 @@ pub fn selftest_report<R: Runtime>(
 
 /// `--selftest`: the renderer shows `screen`; announced on stderr so a
 /// harness can capture the window during the pause that follows.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn selftest_checkpoint(state: State<'_, AppState>, screen: String) -> Result<(), AppError> {
-    if state.launch.selftest.is_none() {
-        return Err(AppError::app(
-            "not_selftest",
-            "the app was not launched with --selftest",
-        ));
-    }
+    state.selftest_path()?;
     eprintln!("dw-app: selftest-screen {screen}");
     Ok(())
 }
@@ -245,38 +249,41 @@ pub fn selftest_checkpoint(state: State<'_, AppState>, screen: String) -> Result
 /// Synthetic page of `rows` records, the size and shape of a real
 /// `history_page` result. Measures the IPC and serialisation cost alone
 /// (U5); the engine's own query cost is measured on the engine.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ipc_bench_rows(rows: u32) -> HistoryRows {
     let rows = rows.min(dw_engine::history::MAX_PAGE);
     HistoryRows {
         rows: (0..rows)
-            .map(|i| TxRow {
-                txid: format!("{:064x}", u64::from(i) * 0x9e37_79b9_7f4a_7c15),
-                record_index: 0,
-                tx_type: if i % 3 == 0 {
-                    TxTypeName::SendToAddress
-                } else {
-                    TxTypeName::RecvWithAddress
-                },
-                category: if i % 3 == 0 {
-                    TxCategoryName::Sent
-                } else {
-                    TxCategoryName::Received
-                },
-                status: TxStatusInfo {
-                    kind: TxStatusKindName::Confirmed,
-                    confirmations: 6 + i,
-                    instant_locked: true,
-                    chain_locked: true,
-                    matures_in: None,
-                },
-                timestamp: Some(1_790_000_000 - u64::from(i) * 600),
-                block_height: Some(100_000 - i),
-                amount: if i % 3 == 0 { -150_000_226 } else { 25_000_000 },
-                fee: (i % 3 == 0).then_some(226),
-                address: Some("yNBLvUCmZq3K8v4eusVmKavEj2XrPoQe1x".into()),
-                label: (i % 5 == 0).then(|| "Coffee refund".into()),
-                counts_toward_balance: true,
+            .map(|i| {
+                let sent = i % 3 == 0;
+                TxRow {
+                    txid: format!("{:064x}", u64::from(i).wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+                    record_index: 0,
+                    tx_type: if sent {
+                        TxTypeName::SendToAddress
+                    } else {
+                        TxTypeName::RecvWithAddress
+                    },
+                    category: if sent {
+                        TxCategoryName::Sent
+                    } else {
+                        TxCategoryName::Received
+                    },
+                    status: TxStatusInfo {
+                        kind: TxStatusKindName::Confirmed,
+                        confirmations: 6 + i,
+                        instant_locked: true,
+                        chain_locked: true,
+                        matures_in: None,
+                    },
+                    timestamp: Some(1_790_000_000 - u64::from(i) * 600),
+                    block_height: Some(100_000 - i),
+                    amount: if sent { -150_000_226 } else { 25_000_000 },
+                    fee: sent.then_some(226),
+                    address: Some("yNBLvUCmZq3K8v4eusVmKavEj2XrPoQe1x".into()),
+                    label: (i % 5 == 0).then(|| "Coffee refund".into()),
+                    counts_toward_balance: true,
+                }
             })
             .collect(),
         next_cursor: Some("bench".into()),
@@ -289,4 +296,19 @@ pub fn ipc_bench_rows(rows: u32) -> HistoryRows {
 #[tauri::command]
 pub fn probe_unlisted() -> &'static str {
     "reached"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_page_is_a_full_page_of_distinct_records() {
+        // A largest page must not overflow (debug builds check arithmetic).
+        let page = ipc_bench_rows(10_000);
+        assert_eq!(page.rows.len(), dw_engine::history::MAX_PAGE as usize);
+        let txids: std::collections::HashSet<_> = page.rows.iter().map(|r| &r.txid).collect();
+        assert_eq!(txids.len(), page.rows.len());
+        assert!(page.rows.iter().all(|r| r.txid.len() == 64));
+    }
 }

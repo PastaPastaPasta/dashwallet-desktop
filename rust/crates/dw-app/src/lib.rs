@@ -17,7 +17,7 @@ use tauri::{Manager, RunEvent, Runtime, Url};
 
 use crate::commands::AppState;
 use crate::dto::AppError;
-use crate::launch::{LaunchOptions, ParseOutcome, Theme};
+use crate::launch::{LaunchOptions, ParseOutcome};
 
 /// Origins the main webview may show: the bundled assets (`tauri://localhost`
 /// on Linux and macOS, `http://tauri.localhost` on Windows) and, in debug
@@ -50,12 +50,34 @@ fn navigation_guard<R: Runtime>() -> TauriPlugin<R> {
         .on_navigation(|_, url| {
             let allowed = is_app_url(url);
             if !allowed {
-                tracing::warn!(%url, "navigation refused");
                 eprintln!("dw-app: navigation refused: {url}");
             }
             allowed
         })
         .build()
+}
+
+/// SIGTERM and SIGINT end the app through `AppHandle::exit`, so the engine
+/// shutdown in `run` (`RunEvent::Exit`) still flushes the wallet databases.
+fn exit_on_signal<R: Runtime>(app: tauri::AppHandle<R>) {
+    #[cfg(unix)]
+    tauri::async_runtime::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut term), Ok(mut int)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) else {
+            eprintln!("dw-app: could not install the signal handlers");
+            return;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+        app.exit(0);
+    });
+    #[cfg(not(unix))]
+    let _ = app;
 }
 
 /// Entry point of the `dash-wallet` binary.
@@ -123,12 +145,11 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
         ])
         .setup(move |app| {
             eprintln!("dw-app: startup setup {}", started.elapsed().as_millis());
-            let handle = app.handle().clone();
-            let path_handle = handle.clone();
             let theme = launch.theme;
             let title = window_title(&launch.network);
-            let state = AppState::new(&handle, launch, started, move || {
-                path_handle
+            let handle = app.handle();
+            let state = AppState::new(handle, launch, started, || {
+                handle
                     .path()
                     .app_data_dir()
                     .map_err(|e| AppError::app("data_dir", e.to_string()))
@@ -137,12 +158,10 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;
                 if let Some(theme) = theme {
-                    window.set_theme(Some(match theme {
-                        Theme::Light => tauri::Theme::Light,
-                        Theme::Dark => tauri::Theme::Dark,
-                    }))?;
+                    window.set_theme(Some(theme.into()))?;
                 }
             }
+            exit_on_signal(handle.clone());
             Ok(())
         })
 }

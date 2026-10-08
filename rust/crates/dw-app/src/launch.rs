@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use dw_engine::DashNetwork;
 
+use crate::dto::ThemeName;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchOptions {
     /// Data root; `None` = the platform app-data directory.
@@ -27,13 +29,7 @@ pub struct LaunchOptions {
     pub spv_peers: Vec<String>,
     pub dapi_addresses: Vec<String>,
     /// Force an appearance instead of following the system.
-    pub theme: Option<Theme>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Light,
-    Dark,
+    pub theme: Option<ThemeName>,
 }
 
 impl Default for LaunchOptions {
@@ -112,8 +108,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
             }
             "--theme" => {
                 opts.theme = Some(match value("--theme")?.as_str() {
-                    "light" => Theme::Light,
-                    "dark" => Theme::Dark,
+                    "light" => ThemeName::Light,
+                    "dark" => ThemeName::Dark,
                     other => return Err(format!("unknown theme {other:?}")),
                 })
             }
@@ -172,7 +168,7 @@ mod tests {
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
         assert_eq!(o.selftest_pause_ms, 1500);
-        assert_eq!(o.theme, Some(Theme::Dark));
+        assert_eq!(o.theme, Some(ThemeName::Dark));
     }
 
     #[test]

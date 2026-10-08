@@ -75,7 +75,7 @@ impl<R: Runtime> EventSink for TauriSink<R> {
     fn emit(&self, event: EngineEvent) {
         // `emit` queues the message for the webview and does not block.
         if let Err(e) = self.app.emit(SIGNAL_EVENT, signal_of(&event)) {
-            tracing::warn!(error = %e, "could not forward an engine event");
+            eprintln!("dw-app: could not forward an engine event: {e}");
         }
     }
 }
