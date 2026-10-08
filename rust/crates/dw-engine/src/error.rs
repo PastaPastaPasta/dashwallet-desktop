@@ -1,5 +1,7 @@
+use dpp::platform_value::string_encoding::Encoding;
 use dw_vault::{SignerError, VaultError};
 use platform_wallet::PlatformWalletError;
+use platform_wallet::error::promote_identity_insufficient_balance;
 use platform_wallet_storage::WalletStorageError;
 
 /// Engine error. The `Display` text is diagnostic detail for logs; the UI maps
@@ -30,6 +32,17 @@ pub enum EngineError {
     Wallet(String),
     #[error("platform sdk error: {0}")]
     Sdk(String),
+    /// The identity's credit balance cannot cover a Platform operation
+    /// (`platform.insufficient_credits{needed, available}`, DASHPAY §3.6).
+    /// `identity_id` is Base58.
+    #[error(
+        "identity {identity_id} has insufficient credits: {needed} needed, {available} available"
+    )]
+    InsufficientCredits {
+        identity_id: String,
+        needed: u64,
+        available: u64,
+    },
     #[error("spv error: {0}")]
     Spv(String),
     #[error("io error: {0}")]
@@ -136,6 +149,7 @@ impl EngineError {
             EngineError::WalletAlreadyExists(_) => "wallet_already_exists",
             EngineError::Wallet(_) => "wallet",
             EngineError::Sdk(_) => "sdk",
+            EngineError::InsufficientCredits { .. } => "insufficient_credits",
             EngineError::Spv(_) => "spv",
             EngineError::Io(_) => "io",
             EngineError::NotImplemented(_) => "not_implemented",
@@ -205,6 +219,14 @@ impl From<WalletStorageError> for EngineError {
 
 impl From<PlatformWalletError> for EngineError {
     fn from(e: PlatformWalletError) -> Self {
+        // Most Platform calls (contact requests, DPNS, transfers, tokens)
+        // hand back the balance refusal still inside the SDK error.
+        if let PlatformWalletError::Sdk(source)
+        | PlatformWalletError::TokenOperationFailed { source, .. } = &e
+            && let Some(promoted) = promote_identity_insufficient_balance(source)
+        {
+            return promoted.into();
+        }
         match e {
             PlatformWalletError::SpvAlreadyRunning | PlatformWalletError::SpvError(_) => {
                 EngineError::Spv(e.to_string())
@@ -216,6 +238,15 @@ impl From<PlatformWalletError> for EngineError {
                 EngineError::WalletAlreadyExists(e.to_string())
             }
             PlatformWalletError::WalletNotFound(_) => EngineError::WalletNotFound(e.to_string()),
+            PlatformWalletError::InsufficientIdentityCredits {
+                identity_id,
+                required,
+                available,
+            } => EngineError::InsufficientCredits {
+                identity_id: identity_id.to_string(Encoding::Base58),
+                needed: required,
+                available,
+            },
             other => EngineError::Wallet(other.to_string()),
         }
     }
@@ -223,7 +254,12 @@ impl From<PlatformWalletError> for EngineError {
 
 impl From<dash_sdk::Error> for EngineError {
     fn from(e: dash_sdk::Error) -> Self {
-        EngineError::Sdk(e.to_string())
+        // Platform's balance refusal (`IdentityInsufficientBalanceError`)
+        // keeps its figures instead of becoming SDK text.
+        match promote_identity_insufficient_balance(&e) {
+            Some(promoted) => promoted.into(),
+            None => EngineError::Sdk(e.to_string()),
+        }
     }
 }
 
@@ -234,5 +270,93 @@ impl From<tokio::task::JoinError> for EngineError {
         } else {
             EngineError::Internal(format!("engine task cancelled: {e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::error::StateTransitionBroadcastError;
+    use dpp::consensus::ConsensusError;
+    use dpp::consensus::codes::ErrorWithCode;
+    use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
+    use dpp::prelude::Identifier;
+
+    const IDENTITY: [u8; 32] = [9u8; 32];
+
+    fn assert_insufficient_credits(e: EngineError, needed: u64, available: u64) {
+        assert_eq!(e.code(), "insufficient_credits");
+        match e {
+            EngineError::InsufficientCredits {
+                identity_id,
+                needed: n,
+                available: a,
+            } => {
+                assert_eq!(
+                    identity_id,
+                    Identifier::from(IDENTITY).to_string(Encoding::Base58)
+                );
+                assert_eq!((n, a), (needed, available));
+            }
+            other => panic!("expected InsufficientCredits, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_the_typed_platform_wallet_refusal() {
+        let e = PlatformWalletError::InsufficientIdentityCredits {
+            identity_id: Identifier::from(IDENTITY),
+            required: 25_018_360_000,
+            available: 24_818_360_000,
+        };
+        assert_insufficient_credits(e.into(), 25_018_360_000, 24_818_360_000);
+    }
+
+    fn balance_refusal() -> ConsensusError {
+        IdentityInsufficientBalanceError::new(
+            Identifier::from(IDENTITY),
+            24_818_360_000,
+            25_018_360_000,
+        )
+        .into()
+    }
+
+    /// The wait-stream shape a rejected broadcast arrives in.
+    fn broadcast_refusal() -> dash_sdk::Error {
+        let cause = balance_refusal();
+        dash_sdk::Error::StateTransitionBroadcastError(StateTransitionBroadcastError {
+            code: cause.code(),
+            message: cause.to_string(),
+            cause: Some(cause),
+        })
+    }
+
+    #[test]
+    fn maps_the_balance_refusal_from_the_sdk() {
+        let check_tx = dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(
+            balance_refusal(),
+        )));
+        assert_insufficient_credits(check_tx.into(), 25_018_360_000, 24_818_360_000);
+        assert_insufficient_credits(broadcast_refusal().into(), 25_018_360_000, 24_818_360_000);
+    }
+
+    #[test]
+    fn maps_the_balance_refusal_wrapped_by_platform_wallet() {
+        let sdk = PlatformWalletError::Sdk(broadcast_refusal());
+        assert_insufficient_credits(sdk.into(), 25_018_360_000, 24_818_360_000);
+        let token = PlatformWalletError::TokenOperationFailed {
+            operation: "transfer",
+            source: broadcast_refusal(),
+        };
+        assert_insufficient_credits(token.into(), 25_018_360_000, 24_818_360_000);
+    }
+
+    #[test]
+    fn other_sdk_errors_keep_their_codes() {
+        let e: EngineError = dash_sdk::Error::Generic("boom".to_string()).into();
+        assert_eq!(e.code(), "sdk");
+        let e: EngineError =
+            PlatformWalletError::Sdk(dash_sdk::Error::Generic("boom".to_string())).into();
+        assert_eq!(e.code(), "wallet");
     }
 }

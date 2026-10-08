@@ -72,7 +72,9 @@ impl From<dw_engine::EngineError> for EngineError {
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },
             E::Wallet(_) => Self::Wallet { detail },
-            E::Sdk(_) => Self::Sdk { detail },
+            // Platform calls carry their own domain error (E0-08); M0 calls
+            // never produce it.
+            E::Sdk(_) | E::InsufficientCredits { .. } => Self::Sdk { detail },
             E::Spv(_) => Self::Spv { detail },
             E::Io(_) => Self::Io { detail },
             E::NotImplemented(_) => Self::NotImplemented { detail },

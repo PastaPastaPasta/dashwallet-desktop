@@ -33,8 +33,8 @@ See "Product scope" in `CLAUDE.md` and `docs/design/DASHPAY.md` §5a.
 The stack, described in `docs/design/DESIGN.md`, which takes precedence over `DESIGN-opus.md`:
 
 - A Rust engine, `rust/crates/dw-*`, built directly on the `platform-wallet` and
-  `platform-wallet-storage` libraries from dashpay/platform. It pins platform v5.0-dev `bc321362b9` and
-  rust-dashcore `e4208c90` as git dependencies.
+  `platform-wallet-storage` libraries from dashpay/platform. It pins platform v5.0-dev `bc41f1bc23` and
+  rust-dashcore `40268cc0` as git dependencies.
 - `dw-ffi` exposes the engine through UniFFI as the library `dashwallet_core`.
 - On top of that sit the Swift layers `DashKit` → `WalletRuntime` → `WalletFeatures`. They are shared
   `@Observable` view models that use only Foundation and run on every OS.

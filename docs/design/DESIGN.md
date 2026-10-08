@@ -54,8 +54,9 @@ creation, the masternode and governance scope (DEC-01) and DESIGN-opus's M4 plan
 - Never build `release`/`dist` locally except when explicitly assigned; `dev` profile on the host triple.
 - Disk guard: abort builds when free space < 15 GB (`scripts/disk-guard.sh`).
 - `swift build`/`swift test`/`git` writes must run outside the Claude sandbox.
-- Pins: platform `bc321362b9` (v5.0-dev, 2026-10-04), rust-dashcore `e4208c90`, Rust 1.98.1, Swift 6.3.3, SwiftCrossUI 0.10.0.
-- A clean platform checkout at the pin exists at `~/workspace/dashwallet-desktop-deps/platform` on the dev Mac for
-  reading; elsewhere use cargo's git checkout (`~/.cargo/git/checkouts/platform-*/bc32136`).
+- Pins: platform `bc41f1bc23` (v5.0-dev, 2026-10-07; E0-01), rust-dashcore `40268cc0`, grovedb `9791d277` (all as platform's lock), Rust 1.98.1, Swift 6.3.3, SwiftCrossUI 0.10.0.
+- A clean platform checkout for reading exists at `~/workspace/dashwallet-desktop-deps/platform` on the dev Mac (still
+  at `bc321362b9` after E0-01; check it out at the pin before citing line numbers from it); elsewhere use cargo's git
+  checkout (`~/.cargo/git/checkouts/platform-*/bc41f1b`).
 - Never touch `/Users/pasta/workspace/platform` (someone else's dirty tree).
 - Commits: conventional commits, signed automatically; never `git add -A`.
