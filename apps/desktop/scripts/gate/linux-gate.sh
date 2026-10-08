@@ -25,6 +25,9 @@ ENGINE_ARGS=("$@")
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 BIN=${BIN:-$REPO/rust/target/release/dash-wallet}
 RUNS=${RUNS:-5}
+# DROP_CACHES=1 makes run 1 a cold start by dropping the page cache (needs sudo). Off by default:
+# on a shared machine it disturbs every other process's measurements.
+DROP_CACHES=${DROP_CACHES:-0}
 mkdir -p "$OUT"
 cd "$OUT"
 
@@ -106,7 +109,7 @@ wait $pid 2>/dev/null || true
 echo "== U5: cold and warm start ($RUNS runs, fixture)"
 start_json="["
 for i in $(seq "$RUNS"); do
-  if ((i == 1)) && sudo -n true 2>/dev/null; then
+  if ((i == 1 && DROP_CACHES == 1)) && sudo -n true 2>/dev/null; then
     sync
     sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     cold=true
@@ -136,7 +139,7 @@ start_json="${start_json%,}]"
 engine_json=null
 if ((${#ENGINE_ARGS[@]})); then
   echo "== U1/U5: engine mode ${ENGINE_ARGS[*]}"
-  "$BIN" "${ENGINE_ARGS[@]}" --selftest selftest-engine.json >selftest-engine.log 2>&1 || echo "engine self-test exited with $?"
+  timeout 600 "$BIN" "${ENGINE_ARGS[@]}" --selftest selftest-engine.json >selftest-engine.log 2>&1 || echo "engine self-test exited with $?"
   log=engine-idle.log
   t0=$(now_ms)
   "$BIN" "${ENGINE_ARGS[@]}" >"$log" 2>&1 &
@@ -148,7 +151,7 @@ if ((${#ENGINE_ARGS[@]})); then
     if [[ -n "${PASSPHRASE_FILE:-}" ]]; then
       xdotool type --delay 15 "$(head -1 "$PASSPHRASE_FILE")"
       xdotool key Return
-      wait_line "$log" "never" 8 || true
+      sleep 8
       window_shot engine-overview
       xdotool key Tab Tab Tab Tab Tab Tab Return # toolbar (2) + sidebar: Overview, Send, Receive, Transactions
       sleep 6

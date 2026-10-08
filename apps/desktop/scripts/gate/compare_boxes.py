@@ -51,12 +51,15 @@ def main():
             worst = max(worst, delta)
             if delta > args.tolerance:
                 over.append({"screen": key[0], "id": key[1], "delta": round(delta, 2), base_name: a, name: b})
-        ok &= not over
+        missing = set(base) - set(d)
+        extra = set(d) - set(base)
+        # A container that exists in one engine only is a layout difference too.
+        ok &= not over and not missing and not extra
         summary["engines"][name] = {
             "maxDelta": round(worst, 2),
             "overTolerance": len(over),
-            "onlyHere": len(set(d) - set(base)),
-            "missingHere": len(set(base) - set(d)),
+            "onlyHere": sorted(f"{k[0]}:{k[1]}" for k in extra)[:10],
+            "missingHere": sorted(f"{k[0]}:{k[1]}" for k in missing)[:10],
             "worst": sorted(over, key=lambda o: -o["delta"])[:10],
         }
     summary["pass"] = ok

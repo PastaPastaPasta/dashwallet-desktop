@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Gate U1: what the Tauri screens show equals `dwcli` on the same datadir.
 
-Compares the engine-mode self-test report (`shown`: the hero amount on Overview and the first
-200 rows of Transactions, read from the DOM) with `dwcli list` and `dwcli history --limit 200`.
+Compares the engine-mode self-test report (`shown`: the hero amount on Overview, its
+full-precision tooltip, and the first 200 rows of Transactions, read from the DOM) with `dwcli list` and `dwcli history --limit 200`.
 Amounts are compared in duffs after parsing the displayed strings, so the whole display path
 (IPC, DTOs, formatting) is covered.
 
@@ -48,7 +48,10 @@ def main():
             cli_rows.append({"txid": parts[0], "recordIndex": int(parts[1]), "amount": int(parts[3])})
 
     hero = (shown["heroAmount"] or "").replace(THIN, "").replace(" ", "")
-    balance_ok = cli_total is not None and hero == floored(cli_total)
+    # The tooltip carries every duff ("206 014.36392896 tDASH"): compare it exactly.
+    full = (shown.get("heroFull") or "").rsplit(" ", 1)[0]
+    full_duffs = duffs(full) if full else None
+    balance_ok = cli_total is not None and hero == floored(cli_total) and full_duffs == cli_total
     app_rows = [{"txid": r["txid"], "recordIndex": r["recordIndex"], "amount": duffs(r["amount"])} for r in shown["rows"]]
     n = min(200, len(cli_rows))
     mismatches = [
@@ -57,7 +60,13 @@ def main():
         if a != c
     ]
     result = {
-        "balance": {"dwcliTotalDuffs": cli_total, "heroShown": shown["heroAmount"], "heroExpected": floored(cli_total) if cli_total else None, "match": balance_ok},
+        "balance": {
+            "dwcliTotalDuffs": cli_total,
+            "heroShown": shown["heroAmount"],
+            "heroExpected": floored(cli_total) if cli_total else None,
+            "heroTooltipDuffs": full_duffs,
+            "match": balance_ok,
+        },
         "rows": {"compared": n, "appRows": len(app_rows), "dwcliRows": len(cli_rows), "mismatches": len(mismatches), "firstMismatches": mismatches[:5]},
         "pass": balance_ok and n == 200 and len(app_rows) >= 200 and not mismatches,
     }

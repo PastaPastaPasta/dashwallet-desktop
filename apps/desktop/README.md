@@ -64,5 +64,6 @@ IPC timings and the security probes to `FILE`, and exits.
 Linux gate harness (Xvfb + private D-Bus + AT-SPI; nothing shows on a display):
 
 ```sh
-apps/desktop/scripts/gate/linux-gate.sh /tmp/gate [--datadir DIR --network regtest --spv-peer … --dapi …]
+apps/desktop/scripts/gate/linux-gate.sh OUT_DIR [--datadir DIR --network regtest --spv-peer … --dapi …]
+apps/desktop/scripts/gate/linux-packages.sh OUT_DIR   # U7: install the .deb, run the AppImage (sudo)
 ```
