@@ -101,7 +101,11 @@ another wallet is refused and left in place; in the send, message and wallet dom
 `send.vault_locked` unless the grant carries its own key; grant errors come from the redemption after the
 plan. A passphrase
 grant on a locked or mixing-only vault signs, reveals or wipes with its own key and leaves the vault as it
-was.
+was. A redeemed token (`dw_vault::GrantToken`) is bound to the vault instance that redeemed it and to that
+vault's epoch: it carries a random id made when the vault was opened and the epoch at redemption, and every use
+compares both in constant time (review DW-E0-03 r2 M1). Another vault, even one holding the same wallet id at
+the same epoch number, refuses it (`vault.grant_invalid`), as does the same vault file opened again; a lock,
+unlock or scope change of its own vault ends it.
 
 **Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
 `PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped

@@ -159,11 +159,16 @@ pub struct AuthGrant {
 }
 
 /// Proof that a grant was redeemed. Not cloneable and only built by the
-/// vault, so holding one means the authorization check passed. Valid until
-/// the vault locks or changes unlock scope.
+/// vault, so holding one means the authorization check passed. Bound to
+/// the vault that redeemed it: another vault, or the same vault file
+/// opened again, refuses it (review DW-E0-03 r2 M1). Valid until that
+/// vault locks or changes unlock scope.
 pub struct GrantToken {
     pub(crate) purpose: GrantPurpose,
     pub(crate) wallet: Option<WalletId>,
+    /// The random id of the [`crate::Vault`] instance that redeemed it.
+    pub(crate) vault_instance: [u8; 32],
+    /// That vault's epoch at redemption.
     pub(crate) epoch: u64,
     /// The grant's own data key (passphrase grant on a locked or mixing-only
     /// vault); zeroized on drop.

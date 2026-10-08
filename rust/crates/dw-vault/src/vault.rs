@@ -240,6 +240,17 @@ fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, V
     Ok(Some(payload))
 }
 
+/// How a grant token relates to the vault it is presented to
+/// ([`Vault::token_binding`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenBinding {
+    Current,
+    /// Redeemed by another vault instance.
+    OtherVault,
+    /// Redeemed by this vault before its epoch last changed.
+    EndedEpoch,
+}
+
 /// A grant held in vault memory.
 struct IssuedGrant {
     grant: AuthGrant,
@@ -299,6 +310,10 @@ impl Inner {
 }
 
 pub(crate) struct Shared {
+    /// Random id of this in-memory vault, made at open: a grant token
+    /// carries it, so only the vault that redeemed a token accepts it. Not
+    /// stored, so the same file opened again is another instance.
+    instance: [u8; 32],
     dir: PathBuf,
     network: Network,
     /// Network tag bound into every AAD (`regtest`, `devnet-<name>`, …).
@@ -347,6 +362,7 @@ impl Vault {
         }
         Ok(Self {
             shared: Arc::new(Shared {
+                instance: crypto::random_array()?,
                 dir,
                 network,
                 tag: network_tag.to_owned(),
@@ -1061,16 +1077,40 @@ impl Vault {
         Ok(GrantToken {
             purpose: issued.grant.purpose,
             wallet: issued.grant.wallet,
+            vault_instance: self.shared.instance,
             epoch: inner.epoch,
             key: issued.key,
         })
     }
 
+    /// Whether `token` was redeemed by this vault instance in its current
+    /// epoch. Both are compared in constant time, and every use of a token
+    /// (its key, or a signer it issues) checks this first, under `inner`
+    /// (review DW-E0-03 r2 M1). The instance id refuses a token of another
+    /// vault (even one with the same wallet id and epoch number) and of an
+    /// earlier opening of this vault's file; the epoch refuses a token
+    /// redeemed before a lock, unlock or scope change of this one.
+    fn token_binding(&self, inner: &Inner, token: &GrantToken) -> TokenBinding {
+        let same_vault = self.shared.instance.ct_eq(&token.vault_instance);
+        let same_epoch = inner.epoch.ct_eq(&token.epoch);
+        if !bool::from(same_vault) {
+            TokenBinding::OtherVault
+        } else if !bool::from(same_epoch) {
+            TokenBinding::EndedEpoch
+        } else {
+            TokenBinding::Current
+        }
+    }
+
     /// The full-scope data key a redeemed grant acts with: the grant's own
-    /// key, or the vault's. Refused once the vault locked after redemption.
+    /// key, or the vault's. Refused for a token of another vault
+    /// (`GrantInvalid`) and once the vault locked after redemption
+    /// (`Locked`).
     fn key_for(&self, token: &GrantToken) -> Result<Key32, VaultError> {
-        if self.inner().epoch != token.epoch {
-            return Err(VaultError::Locked);
+        match self.token_binding(&self.inner(), token) {
+            TokenBinding::Current => {}
+            TokenBinding::OtherVault => return Err(VaultError::GrantInvalid),
+            TokenBinding::EndedEpoch => return Err(VaultError::Locked),
         }
         match &token.key {
             Some(key) => Ok(Zeroizing::new(**key)),
@@ -1377,6 +1417,11 @@ impl Vault {
         if token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);
         }
+        // A token of another vault is refused before this one loads its
+        // key; the full check is made under the lock that issues the signer.
+        if self.token_binding(&self.inner(), token) == TokenBinding::OtherVault {
+            return Err(VaultError::GrantInvalid);
+        }
         let own_key = match &token.key {
             Some(key) => Some(Arc::new(Zeroizing::new(**key))),
             None => {
@@ -1385,7 +1430,7 @@ impl Vault {
             }
         };
         let inner = self.inner();
-        if token.epoch != inner.epoch {
+        if self.token_binding(&inner, token) != TokenBinding::Current {
             return Err(VaultError::GrantInvalid);
         }
         if own_key.is_none() && inner.dek.is_none() {
@@ -1934,6 +1979,184 @@ mod tests {
 
     fn step_clock() -> Arc<StepClock> {
         Arc::new(StepClock(std::sync::atomic::AtomicU64::new(1_000)))
+    }
+
+    /// Opens the vault in `dir` with the shared `os_store`.
+    fn open_in(dir: &Path, os_store: &Arc<crate::MemoryOsStore>) -> Vault {
+        let config = VaultConfig {
+            os_store: os_store.clone(),
+            ..test_config(step_clock())
+        };
+        Vault::open(dir.join("vault"), Network::Regtest, "regtest", config).unwrap()
+    }
+
+    /// A new vault in `dir` holding wallet `[1; 32]` with seed `[seed; 64]`.
+    fn vault_with_wallet(dir: &Path, passphrase: Option<&[u8]>, seed: u8) -> Vault {
+        let v = open_in(dir, &Arc::new(crate::MemoryOsStore::new()));
+        v.create(passphrase).unwrap();
+        let secret = WalletSecret {
+            mnemonic: Zeroizing::new(b"unused".to_vec()),
+            mnemonic_passphrase: Zeroizing::new(Vec::new()),
+            seed: Zeroizing::new([seed; 64]),
+            derivation: SeedDerivation::Bip39,
+        };
+        v.store_wallet_secret(&[1; 32], &secret).unwrap();
+        v
+    }
+
+    fn redeem(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantToken {
+        let grant = v.authorize(purpose, Some(&[1; 32]), credential).unwrap();
+        v.redeem_grant(&grant.id, purpose.kind(), Some(&[1; 32]))
+            .unwrap()
+    }
+
+    /// Every use of a token `v` must refuse: a scan key, a Platform signer,
+    /// a full signer, an export and a wipe, all `GrantInvalid`.
+    fn assert_refuses(v: &Vault, from: &Vault, credential: Credential<'_>, case: &str) {
+        let w = [1u8; 32];
+        let refused = |r: Result<(), VaultError>, what: &str| {
+            assert_eq!(r, Err(VaultError::GrantInvalid), "{case}: {what}");
+        };
+        let platform = || redeem(from, GrantPurpose::PlatformOp, credential);
+        refused(v.scan_key(&w, &platform()).map(drop), "scan key");
+        for scope in [
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+        ] {
+            refused(
+                v.platform_signer(&w, &platform(), scope).map(drop),
+                "Platform signer",
+            );
+        }
+        let spend = redeem(from, GrantPurpose::Spend { max_duffs: 1 }, credential);
+        refused(v.signer(&w, &spend).map(drop), "signer");
+        let reveal = redeem(from, GrantPurpose::RevealSecret, credential);
+        refused(v.export_wallet_secret(&w, &reveal).map(drop), "export");
+        let wipe = redeem(from, GrantPurpose::Wipe, credential);
+        refused(v.wipe_wallet_secret(&w, &wipe).map(drop), "wipe");
+        assert!(v.has_wallet_secret(&w), "{case}: nothing was wiped");
+    }
+
+    /// Review DW-E0-03 r2 M1: a token redeemed by one vault is refused by
+    /// another holding the same wallet id at the same epoch number, whether
+    /// the token would use the receiving vault's key (`Credential::None`)
+    /// or carries its own (a passphrase grant on a locked vault).
+    #[test]
+    fn a_token_of_another_vault_is_refused() {
+        let dirs = [(); 3].map(|_| tempfile::tempdir().unwrap());
+        // Encrypted and unlocked with scope Full, so its own key would serve.
+        let target = vault_with_wallet(dirs[0].path(), Some(b"pw"), 0x5a);
+        let unencrypted = vault_with_wallet(dirs[1].path(), None, 0x7f);
+        assert_eq!(target.inner().epoch, unencrypted.inner().epoch);
+        assert_refuses(&target, &unencrypted, Credential::None, "unencrypted");
+
+        let locked = vault_with_wallet(dirs[2].path(), Some(b"pw"), 0x7f);
+        locked.lock();
+        target.lock();
+        target.unlock(b"pw", UnlockScope::Full).unwrap();
+        locked.lock();
+        assert_eq!(target.inner().epoch, locked.inner().epoch);
+        assert_refuses(&target, &locked, Credential::Passphrase(b"pw"), "own key");
+
+        // The tokens still work in the vault that redeemed them.
+        let token = redeem(&unencrypted, GrantPurpose::PlatformOp, Credential::None);
+        unencrypted.scan_key(&[1; 32], &token).unwrap();
+        let token = redeem(
+            &locked,
+            GrantPurpose::PlatformOp,
+            Credential::Passphrase(b"pw"),
+        );
+        locked.scan_key(&[1; 32], &token).unwrap();
+    }
+
+    /// A token of an earlier opening of the same vault file is refused,
+    /// though it names the same wallet, the same data key and the same
+    /// epoch number: the reopened vault is another instance.
+    #[test]
+    fn a_token_of_an_earlier_opening_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_store = Arc::new(crate::MemoryOsStore::new());
+        let first = open_in(dir.path(), &os_store);
+        first.create(None).unwrap();
+        let secret = WalletSecret {
+            mnemonic: Zeroizing::new(b"unused".to_vec()),
+            mnemonic_passphrase: Zeroizing::new(Vec::new()),
+            seed: Zeroizing::new([0x5a; 64]),
+            derivation: SeedDerivation::Bip39,
+        };
+        first.store_wallet_secret(&[1; 32], &secret).unwrap();
+
+        // Two later openings of that file, each loading the key on demand.
+        let earlier = open_in(dir.path(), &os_store);
+        let token = redeem(&earlier, GrantPurpose::PlatformOp, Credential::None);
+        let reopened = open_in(dir.path(), &os_store);
+        reopened.full_dek().unwrap();
+        assert_eq!(earlier.inner().epoch, reopened.inner().epoch);
+        assert_eq!(
+            reopened.scan_key(&[1; 32], &token).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_refuses(&reopened, &earlier, Credential::None, "reopened");
+        earlier.scan_key(&[1; 32], &token).unwrap();
+
+        // Encrypted: both openings unlocked once.
+        let dir = tempfile::tempdir().unwrap();
+        let first = vault_with_wallet(dir.path(), Some(b"pw"), 0x5a);
+        drop(first);
+        let os_store = Arc::new(crate::MemoryOsStore::new());
+        let earlier = open_in(dir.path(), &os_store);
+        earlier.unlock(b"pw", UnlockScope::Full).unwrap();
+        let reopened = open_in(dir.path(), &os_store);
+        reopened.unlock(b"pw", UnlockScope::Full).unwrap();
+        assert_eq!(earlier.inner().epoch, reopened.inner().epoch);
+        // Both unlocked with scope Full, so these passphrase grants carry
+        // no key of their own and would use the receiving vault's.
+        assert_refuses(
+            &reopened,
+            &earlier,
+            Credential::Passphrase(b"pw"),
+            "reopened, unlocked",
+        );
+    }
+
+    /// A token of an earlier unlock of this vault is refused after a lock
+    /// and unlock: `GrantInvalid` for a signer or scan key, `Locked` for a
+    /// use of its key.
+    #[test]
+    fn a_token_of_an_earlier_unlock_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault_with_wallet(dir.path(), Some(b"pw"), 0x5a);
+        let w = [1u8; 32];
+        let platform = redeem(&v, GrantPurpose::PlatformOp, Credential::None);
+        let spend = redeem(&v, GrantPurpose::Spend { max_duffs: 1 }, Credential::None);
+        let reveal = redeem(
+            &v,
+            GrantPurpose::RevealSecret,
+            Credential::Passphrase(b"pw"),
+        );
+        v.lock();
+        v.unlock(b"pw", UnlockScope::Full).unwrap();
+        assert_eq!(
+            v.scan_key(&w, &platform).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.platform_signer(&w, &platform, SignerScope::PlatformIdentity)
+                .map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.signer(&w, &spend).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.export_wallet_secret(&w, &reveal).map(drop),
+            Err(VaultError::Locked)
+        );
+        // A token of this unlock works.
+        let platform = redeem(&v, GrantPurpose::PlatformOp, Credential::None);
+        v.scan_key(&w, &platform).unwrap();
     }
 
     /// Review L2: a grant that carries its own copy of the data key (issued
