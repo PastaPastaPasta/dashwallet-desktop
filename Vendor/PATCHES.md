@@ -220,11 +220,12 @@ Change (comments `dashwallet-desktop patch P10`):
   On GTK a re-request matters little once the minimum includes the menu bar: a window manager
   keeps the window at least that tall. Without one (Xvfb), a window forced below it stays there.
   `setSize(ofWindow:to:)` sets the window's default size, and GTK does not resize a mapped
-  window when that value is unchanged, so the re-request is refused and noted.
+  window when that value is unchanged. The re-request then gets no allocation and stays
+  pending until the next one, which answers it as a refusal.
 
-  AppKitBackend never reports an honoured request either. The request stays until the user
-  resizes, which then counts as a refusal. That is harmless there, because AppKit keeps the
-  content at least at its minimum itself.
+  AppKitBackend does not report an honoured request (`windowWillResize` only sees user
+  resizes). The request stays until the user resizes, which then counts as a refusal. That is
+  harmless there, because AppKit keeps the content at least at its minimum itself.
 - Tests: `Tests/SwiftCrossUIPatchTests/WindowSizeTests.swift` drives a real `WindowReference`
   over the fake backend with the app's numbers (a 1100x760 default window, a content minimum
   of 787). The checks: the window grows to the minimum and the report costs no update, a later
