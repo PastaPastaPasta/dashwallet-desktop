@@ -28,6 +28,9 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
 
     /// Used by the ``ModelObserver`` protocol to prevent duplicate view updates.
     var currentViewModelObservationID: UUID?
+    /// Windows sit below `_App` (-1) and above their root views (1) (dashwallet-desktop
+    /// patch P8).
+    var observationDepth: Int { 0 }
 
     /// - Parameters:
     ///   - closeHandler: The action to perform when the window is closed. Should

@@ -97,9 +97,11 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   was renewed in the meantime. An ancestor's update lays out its subtree again, which renews the
   descendants' observations, so their own updates are dropped. One batch of changes therefore
   costs one update of each shallowest affected subtree.
-- Depth: `ModelObserver.observationDepth`: `_App` -1 (it refreshes every window), windows 0. A
-  `ViewGraphNode` takes its depth from the internal environment value `viewGraphDepth` that its
-  parent passes on (window root view = 1).
+- Depth: `ModelObserver.observationDepth`, which every observer declares (there is no default):
+  `_App` -1 (it refreshes every window), windows 0. A `ViewGraphNode` takes its depth from the
+  internal environment value `viewGraphDepth` that its parent passes on (window root view = 1).
+  A sheet's content root, created in `SheetModifier.commit` from the modifier's parent
+  environment, is placed one level below the modifier explicitly.
 - `.onChange` and `.onAppear` run their actions after the update, through
   `runInMainThread`. `OnChangeModifier` compares the value in `commit` (upstream: in
   `computeLayout`, with a "Should this go in computeLayout or commit?" TODO), and

@@ -32,13 +32,12 @@ protocol ModelObserver: AnyObject, Sendable {
     func viewModelDidChange<Backend: BaseAppBackend>(backend: Backend)
 
     /// How deep the observer sits in the scene and view graph (dashwallet-desktop patch P8).
-    /// Pending updates run shallowest first; see ``ModelObserverUpdateQueue``.
+    /// Pending updates run shallowest first; see ``ModelObserverUpdateQueue``. No default, so
+    /// that every observer states its depth.
     var observationDepth: Int { get }
 }
 
 extension ModelObserver {
-    var observationDepth: Int { 0 }
-
     /// Performs a computation and tracks accesses to properties of objects conforming to
     /// `Observable` inside the computation. The next time one of those properties changes,
     /// ``viewModelDidChange(backend:)`` will be called.
