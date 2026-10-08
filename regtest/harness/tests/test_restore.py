@@ -78,7 +78,9 @@ class Dwcli:
     """One dwcli data directory with an encrypted vault."""
 
     def __init__(self, root: Path, peer_port: int):
-        root.mkdir(parents=True, exist_ok=True)
+        # Owner-only whatever the umask: the engine refuses a database below a
+        # group-writable directory (0775 under Ubuntu's default umask 002).
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.root = root
         passfile = root / "vault-pass"
         passfile.write_text("restore suite vault passphrase\n")

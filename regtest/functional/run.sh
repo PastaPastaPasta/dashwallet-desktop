@@ -22,6 +22,9 @@ test_script=$1
 shift
 
 here=$(cd "$(dirname "$0")" && pwd)
+# Everything below the scratch root is created owner-only, whatever the caller's umask: dwcli's
+# engine refuses a database below a group-writable directory (0775 under Ubuntu's umask 002).
+umask 077
 dashcore=${DASHCORE_DIR:-/opt/dashcore}
 scratch=${DWD_FUNC_TMP:-${TMPDIR:-/tmp}/dwd-functional}
 mkdir -p "$scratch"
