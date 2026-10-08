@@ -224,8 +224,10 @@ def send_flow(report, app, out_dir, step):
     time.sleep(3.5)  # the confirm button counts down 3 s (QT-067)
     if not press(report, app, "Send"):
         return
-    # After the broadcast the app opens the new transaction on the Transactions page.
-    done = wait_for(app, lambda n, i: i["role"] == "list item" and PAY_TO in i["name"] and "-0.25" in i["name"], 20)
+    # After the broadcast the app opens the new transaction on the Transactions page. That takes
+    # a few whole-window layouts (about 15 s in a debug build on an idle agentbox, longer under
+    # load); how long the app stays busy is checked by check_settles below.
+    done = wait_for(app, lambda n, i: i["role"] == "list item" and PAY_TO in i["name"] and "-0.25" in i["name"], 60)
     report.check("hard", "send: the sent payment is listed on the Transactions page", bool(done),
                  done[0][1]["name"] if done else "")
     record(app, out_dir, f"{step}-done")
