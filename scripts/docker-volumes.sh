@@ -20,5 +20,10 @@ if [[ -z "${DWD_DOCKER_VOLUME_TAG+set}" ]]; then
 fi
 DWD_VOLUME_TARGET="dwd-linux-swift-target${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
 DWD_VOLUME_SWIFTPM="dwd-linux-swiftpm${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
-# Cargo jobs inside the container: DWD_LINUX_JOBS, else the host's CARGO_BUILD_JOBS, else 8.
-DWD_DOCKER_JOBS="${DWD_LINUX_JOBS:-${CARGO_BUILD_JOBS:-8}}"
+# Cargo jobs inside the container: DWD_LINUX_JOBS, else 8 on macOS (Docker runs in a smaller VM
+# there), else the host's CARGO_BUILD_JOBS, else 8.
+if [[ "$(uname -s)" == Darwin ]]; then
+  DWD_DOCKER_JOBS="${DWD_LINUX_JOBS:-8}"
+else
+  DWD_DOCKER_JOBS="${DWD_LINUX_JOBS:-${CARGO_BUILD_JOBS:-8}}"
+fi
