@@ -148,9 +148,22 @@ cd rust && cargo test --workspace
 
 Neither an engine data directory nor any directory above it may be group- or world-writable unless
 it has the sticky bit (platform-wallet-storage refuses the database and names the directory; `/tmp`
-at 1777 is fine). The engine creates its own directories owner-only and the tests use owner-only
-temp dirs, so Ubuntu's default umask 002 is fine. A `--datadir` you create yourself must follow the
-rule, and so must its parents: on agentbox `~/workspace/dw-wt` is 0775, so do not put one there.
+at 1777 is fine). Under the umask 002 of Ubuntu and Fedora desktops a plain `mkdir` gives 0775, so the
+app, dwcli and the tests never rely on the umask:
+
+- The directories on the path to a database or secret are created 0700: the data root and any missing
+  parents (a new `~/.local/share` too), the network directories, `backups/` (with storage's
+  `backups/auto`), `spv/` and the vault. The databases, the vault, backups and exports are 0600
+  (`app.sqlite` too), and so are the settings files and the open-session marker. What dash-spv writes
+  inside `spv/` takes the umask's mode, behind the 0700 network directory.
+- What the app owns loses group and other access when it already has it (an older build created it with
+  the umask's mode): the default data root (the Swift app logs it on stderr), and the network
+  directories, `backups/`, `spv/` and `app.sqlite` (the engine logs a warning). The settings files
+  become 0600 on their next write. Symlinks are left alone.
+- An existing `--datadir` or chosen directory, and every existing parent, keep their mode: they are
+  the user's. If one is group-writable, opening the network fails and the storage error (on stderr)
+  names it and the `chmod go-w` that fixes it. On agentbox `~/workspace/dw-wt` is 0775, so do not
+  put a data dir there.
 
 ### Swift (Docker)
 
