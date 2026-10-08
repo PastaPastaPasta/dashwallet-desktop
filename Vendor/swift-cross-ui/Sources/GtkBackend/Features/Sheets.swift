@@ -59,20 +59,21 @@ extension GtkBackend: BackendFeatures.Sheets {
         sheet.onDismiss = onDismiss
 
         // Add a slight border to not be just a flat corner
-        sheet.css.clear()
-        sheet.css.set(
-            property: .border(
+        var properties: [CSSProperty] = [
+            .border(
                 color: SwiftCrossUI.Color.gray.resolve(in: environment).gtkColor,
                 width: 1
             )
-        )
+        ]
 
         // Respect corner radius and background Color
         let radius = cornerRadius.map(Int.init) ?? Self.defaultSheetCornerRadius
-        sheet.css.set(property: .cornerRadius(radius))
+        properties.append(.cornerRadius(radius))
         if let backgroundColor {
-            sheet.css.set(property: .backgroundColor(backgroundColor.gtkColor))
+            properties.append(.backgroundColor(backgroundColor.gtkColor))
         }
+        // dashwallet-desktop patch P9: one assignment, so unchanged CSS is not reloaded.
+        sheet.css.set(properties: properties, clear: true)
 
         sheet.interactiveDismissDisabled = interactiveDismissDisabled
 

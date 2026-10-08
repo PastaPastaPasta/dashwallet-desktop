@@ -4,6 +4,8 @@ import CGtk
 public class CSSProvider {
     var pointer: UnsafeMutablePointer<GtkCssProvider>
     var display: OpaquePointer
+    /// The CSS the provider holds (dashwallet-desktop patch P9).
+    private var loadedCSS: String?
 
     public init(
         forDisplay display: OpaquePointer = gdk_display_get_default(),
@@ -24,6 +26,10 @@ public class CSSProvider {
     ///
     /// Deprecated since: 4.12
     public func loadCss(from data: String) {
+        // dashwallet-desktop patch P9: the provider applies to the whole display and every load
+        // restyles every widget on it, so loading the CSS it already holds is skipped.
+        guard data != loadedCSS else { return }
+        loadedCSS = data
         // TODO: Connect to parsing-error signal to log parsing errors.
         gtk_css_provider_load_from_data(pointer, data, gssize(data.count))
     }

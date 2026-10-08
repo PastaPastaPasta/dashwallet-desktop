@@ -19,9 +19,11 @@ extension GtkBackend: BackendFeatures.TextEditors {
             onChange(buffer.text)
         }
 
-        textEditor.css.clear()
-        textEditor.css.set(properties: Self.cssProperties(for: environment, isControl: false))
-        textEditor.css.set(property: CSSProperty(key: "background", value: "none"))
+        // dashwallet-desktop patch P9: one assignment, so unchanged CSS is not reloaded.
+        textEditor.css.set(
+            properties: Self.cssProperties(for: environment, isControl: false)
+                + [CSSProperty(key: "background", value: "none")],
+            clear: true)
     }
 
     public func setContent(ofTextEditor textEditor: Widget, to content: String) {

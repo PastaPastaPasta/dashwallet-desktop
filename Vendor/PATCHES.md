@@ -108,3 +108,36 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
 - Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless). `container-demo.sh` runs
   it on Linux. It is built as the `DashWalletDesktopPackageTests` product because plain
   `swift test` also builds swift-winui's Windows-only C target there.
+
+### P9 — GTK CSS reloaded only when it changes
+
+Rationale: the other half of the same slowness. GtkBackend gives every widget its own
+`GtkCssProvider`, registered for the whole display. Every `load_from_data` therefore
+invalidates style matching for every widget on the display. Upstream reloaded providers when
+nothing had changed:
+- `css.clear()` followed by `css.set(...)` mutates `Widget.css` twice. Its `didSet` equality
+  guard sees the empty intermediate block, so every update of a `Text`, text field, button,
+  toggle, date picker, text editor or sheet loaded CSS twice.
+- View-label buttons (`GtkCustomButton.loadCSS`) and pickers (`updatePicker`) loaded their CSS
+  on every update.
+- `size(of:whenDisplayedIn:)` restyled one shared measurement label for every line-limited
+  text, so the label's CSS flipped whenever two consecutive texts differed in font or colour.
+  In the post-send profile this path alone took 21 % of the main thread and also made the
+  following `gtk_widget_create_pango_context` calls expensive (28 %).
+
+Change (comments `dashwallet-desktop patch P9`):
+- `Gtk/Utility/CSS/CSSProvider.swift`: `loadCss(from:)` skips data equal to what the
+  provider already holds. The guard tracks the provider's content, not one writer's, so
+  widgets whose provider has several writers keep upstream's result (for example a button
+  whose `.cornerRadius` writes the same provider as `GtkCustomButton.loadCSS`).
+- `Sources/GtkBackend/Features/{TextViews,TextFields,StringLabelButtons,ToggleButtons,
+  DatePickers,TextEditors,Sheets}.swift`: each update writes its CSS block in one
+  `set(properties:clear: true)`, so neither `Widget.css`'s guard nor the provider sees the empty
+  intermediate block.
+- `TextViews.swift`, `size(of:whenDisplayedIn:)`: for a label (`Text`), which is styled for
+  the same environment just before it is measured, the line-limit height uses the label's own
+  Pango context. Text editors, styled only at commit, still use the shared measurement label.
+
+Effect, measured with P8 (debug build, demo send flow): the post-send busy period went from
+never ending to about 15 s, and a whole-window update of the Transactions page from about 7 s
+to about 3 s. Upstream `main` has the same code.
