@@ -40,8 +40,8 @@ fn receiving(coin: u32, extra: &[ChildNumber]) -> DerivationPath {
 }
 
 /// `base` with its step `at` replaced (negative: from the end).
-fn with_step(base: &str, at: isize, step: ChildNumber) -> DerivationPath {
-    let mut p: Vec<ChildNumber> = path(base).into();
+fn with_step(base: DerivationPath, at: isize, step: ChildNumber) -> DerivationPath {
+    let mut p: Vec<ChildNumber> = base.into();
     let i = if at < 0 { p.len() as isize + at } else { at } as usize;
     p[i] = step;
     p.into()
@@ -176,28 +176,28 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ("bip44 other-network account 0", c("m/44'/{o}'/0'")),
         (
             "bip44 address 256-bit leaf",
-            with_step(&format!("m/44'/{coin}'/0'/0/3"), -1, big),
+            with_step(c("m/44'/{c}'/0'/0/3"), -1, big),
         ),
         (
             "bip44 address leaf 2^31",
-            with_step(&format!("m/44'/{coin}'/0'/0/3"), -1, normal(top)),
+            with_step(c("m/44'/{c}'/0'/0/3"), -1, normal(top)),
         ),
         (
             "bip44 account 256-bit, address",
-            with_step(&format!("m/44'/{coin}'/0'/0/3"), 2, big_hardened),
+            with_step(c("m/44'/{c}'/0'/0/3"), 2, big_hardened),
         ),
         (
             "bip44 account 2^31, address",
-            with_step(&format!("m/44'/{coin}'/0'/0/3"), 2, hardened(top)),
+            with_step(c("m/44'/{c}'/0'/0/3"), 2, hardened(top)),
         ),
         (
             "bip44 account u32::MAX, address",
-            with_step(&format!("m/44'/{coin}'/0'/0/3"), 2, hardened(u32::MAX)),
+            with_step(c("m/44'/{c}'/0'/0/3"), 2, hardened(u32::MAX)),
         ),
         ("bip32 address", c("m/0'/1/3")),
         (
             "bip32 address leaf u32::MAX",
-            with_step("m/0'/1/3", -1, normal(u32::MAX)),
+            with_step(path("m/0'/1/3"), -1, normal(u32::MAX)),
         ),
         // A BIP32 account numbered 44' is a BIP32 account, not BIP44.
         ("bip32 address of account 44'", c("m/44'/0/0")),
@@ -205,19 +205,11 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ("identity key", c("m/9'/{c}'/5'/0'/0'/1'/4'")),
         (
             "identity key id 2^31|4",
-            with_step(
-                &format!("m/9'/{coin}'/5'/0'/0'/1'/4'"),
-                -1,
-                hardened(top | 4),
-            ),
+            with_step(c("m/9'/{c}'/5'/0'/0'/1'/4'"), -1, hardened(top | 4)),
         ),
         (
             "identity index u32::MAX",
-            with_step(
-                &format!("m/9'/{coin}'/5'/0'/0'/1'/4'"),
-                5,
-                hardened(u32::MAX),
-            ),
+            with_step(c("m/9'/{c}'/5'/0'/0'/1'/4'"), 5, hardened(u32::MAX)),
         ),
         ("identity root", c("m/9'/{c}'/5'/0'/0'/1'")),
         ("identity key other network", c("m/9'/{o}'/5'/0'/0'/1'/4'")),
@@ -225,12 +217,12 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ("identity key child", c("m/9'/{c}'/5'/0'/0'/1'/4'/0'")),
         (
             "identity key 256-bit index",
-            with_step(&format!("m/9'/{coin}'/5'/0'/0'/1'/4'"), -1, big_hardened),
+            with_step(c("m/9'/{c}'/5'/0'/0'/1'/4'"), -1, big_hardened),
         ),
         (
             "identity key, feature out of range",
             with_step(
-                &format!("m/9'/{coin}'/5'/0'/0'/1'/4'"),
+                c("m/9'/{c}'/5'/0'/0'/1'/4'"),
                 2,
                 ChildNumber::Hardened { index: 5 | 1 << 31 },
             ),
@@ -243,14 +235,14 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ("registration credit key", c("m/9'/{c}'/5'/1'/0")),
         (
             "registration credit key leaf 2^31",
-            with_step(&format!("m/9'/{coin}'/5'/1'/0"), -1, normal(top)),
+            with_step(c("m/9'/{c}'/5'/1'/0"), -1, normal(top)),
         ),
         ("registration credit key, hardened", c("m/9'/{c}'/5'/1'/4'")),
         ("top-up credit key", c("m/9'/{c}'/5'/2'/0'/1")),
         ("top-up account", c("m/9'/{c}'/5'/2'/0'")),
         (
             "top-up account u32::MAX",
-            with_step(&format!("m/9'/{coin}'/5'/2'/0'"), -1, hardened(u32::MAX)),
+            with_step(c("m/9'/{c}'/5'/2'/0'"), -1, hardened(u32::MAX)),
         ),
         ("invitation credit key", c("m/9'/{c}'/5'/3'/2")),
         ("address top-up credit key", c("m/9'/{c}'/5'/4'/2")),
@@ -265,15 +257,14 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
             "receiving address leaf 2^31",
             receiving(coin, &[normal(top)]),
         ),
-        ("receiving account, hardened friend", {
-            let mut p: Vec<ChildNumber> = receiving(coin, &[]).into();
-            p[5] = big_hardened;
-            p.into()
-        }),
+        (
+            "receiving account, hardened friend",
+            with_step(receiving(coin, &[]), 5, big_hardened),
+        ),
         ("auto-accept key", c("m/9'/{c}'/16'/1900000000'")),
         (
             "auto-accept expiry 2^31|1",
-            with_step(&format!("m/9'/{coin}'/16'/1'"), -1, hardened(top | 1)),
+            with_step(c("m/9'/{c}'/16'/1'"), -1, hardened(top | 1)),
         ),
         ("auto-accept unhardened", c("m/9'/{c}'/16'/1900000000")),
         ("auto-accept other network", c("m/9'/{o}'/16'/1900000000'")),

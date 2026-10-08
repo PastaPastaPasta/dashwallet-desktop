@@ -393,96 +393,98 @@ mod tests {
         let bip32: Shape = |p, _| is_bip32_address(p);
         let identity: Shape = |p, n| identity_auth_key(p, n).is_some();
         // (shape, a matching path, the dynamic steps, hardened?)
-        let cases: [(&str, Shape, &str, &[usize], bool); 13] = [
+        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 13] = [
             (
                 "identity",
                 identity,
-                "m/9'/1'/5'/0'/0'/3'/5'",
+                path("m/9'/1'/5'/0'/0'/3'/5'"),
                 &[5, 6],
                 true,
             ),
             (
                 "contactInfo",
                 is_contact_info_key,
-                "m/9'/1'/5'/0'/0'/3'/5'/65536'/2'",
+                path("m/9'/1'/5'/0'/0'/3'/5'/65536'/2'"),
                 &[5, 6, 8],
                 true,
             ),
             (
                 "receiving account",
                 is_dashpay_receiving_account,
-                "",
+                receiving(1, None),
                 &[3],
                 true,
             ),
             (
                 "receiving address",
                 is_dashpay_receiving_address,
-                "",
+                receiving(1, Some(ChildNumber::Normal { index: 4 })),
                 &[6],
                 false,
             ),
             (
                 "auto-accept",
                 is_auto_accept_key,
-                "m/9'/1'/16'/7'",
+                path("m/9'/1'/16'/7'"),
                 &[3],
                 true,
             ),
-            ("bip44 path", is_bip44_path, "m/44'/1'/2'/0", &[2], true),
+            (
+                "bip44 path",
+                is_bip44_path,
+                path("m/44'/1'/2'/0"),
+                &[2],
+                true,
+            ),
             (
                 "bip44 address account",
                 is_bip44_address,
-                "m/44'/1'/2'/1/4",
+                path("m/44'/1'/2'/1/4"),
                 &[2],
                 true,
             ),
             (
                 "bip44 address leaf",
                 is_bip44_address,
-                "m/44'/1'/2'/1/4",
+                path("m/44'/1'/2'/1/4"),
                 &[4],
                 false,
             ),
-            ("bip32 account", bip32, "m/3'/1/4", &[0], true),
-            ("bip32 leaf", bip32, "m/3'/1/4", &[2], false),
+            ("bip32 account", bip32, path("m/3'/1/4"), &[0], true),
+            ("bip32 leaf", bip32, path("m/3'/1/4"), &[2], false),
             (
                 "credit key leaf",
                 is_asset_lock_credit_key,
-                "m/9'/1'/5'/1'/4",
+                path("m/9'/1'/5'/1'/4"),
                 &[4],
                 false,
             ),
             (
                 "top-up credit key",
                 is_asset_lock_credit_key,
-                "m/9'/1'/5'/2'/3'/4",
+                path("m/9'/1'/5'/2'/3'/4"),
                 &[4],
                 true,
             ),
             (
                 "top-up account",
                 is_identity_top_up_account,
-                "m/9'/1'/5'/2'/3'",
+                path("m/9'/1'/5'/2'/3'"),
                 &[4],
                 true,
             ),
         ];
         for (name, shape, base, steps, hardened) in cases {
-            let base: Vec<ChildNumber> = match name {
-                "receiving account" => receiving(1, None).into(),
-                "receiving address" => receiving(1, Some(ChildNumber::Normal { index: 4 })).into(),
-                _ => path(base).into(),
+            assert!(shape(&base, t), "{name}: base");
+            let base: Vec<ChildNumber> = base.into();
+            let step = |index| {
+                if hardened {
+                    ChildNumber::Hardened { index }
+                } else {
+                    ChildNumber::Normal { index }
+                }
             };
-            assert!(shape(&base.clone().into(), t), "{name}: base");
             for &at in steps {
-                let step = |index| {
-                    if hardened {
-                        ChildNumber::Hardened { index }
-                    } else {
-                        ChildNumber::Normal { index }
-                    }
-                };
                 let with = |c: ChildNumber| {
                     let mut p = base.clone();
                     p[at] = c;

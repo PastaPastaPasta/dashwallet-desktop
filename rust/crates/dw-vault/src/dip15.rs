@@ -110,9 +110,17 @@ pub(crate) fn unmask_account_reference(
     )
 }
 
-/// `encToUserId`: AES-256-ECB of the two 16-byte halves of `id`
-/// (`decrypt` for the inverse).
-pub(crate) fn enc_to_user_id(key: &Key32, id: &[u8; 32], decrypt: bool) -> [u8; 32] {
+/// `encToUserId`: AES-256-ECB of the two 16-byte halves of `id`.
+pub(crate) fn encrypt_enc_to_user_id(key: &Key32, id: &[u8; 32]) -> [u8; 32] {
+    aes_ecb_32(key, id, false)
+}
+
+/// Inverse of [`encrypt_enc_to_user_id`].
+pub(crate) fn decrypt_enc_to_user_id(key: &Key32, ciphertext: &[u8; 32]) -> [u8; 32] {
+    aes_ecb_32(key, ciphertext, true)
+}
+
+fn aes_ecb_32(key: &Key32, id: &[u8; 32], decrypt: bool) -> [u8; 32] {
     let cipher = Aes256::new(GenericArray::from_slice(&key[..]));
     let mut out = *id;
     for block in out.as_chunks_mut::<AES_BLOCK>().0 {
@@ -234,13 +242,11 @@ mod tests {
         for n in 0..4u8 {
             let k = key(n);
             let id: [u8; 32] = std::array::from_fn(|i| i as u8 ^ n);
-            let enc = enc_to_user_id(&k, &id, false);
+            let enc = encrypt_enc_to_user_id(&k, &id);
             assert_eq!(enc, platform_encryption::encrypt_enc_to_user_id(&k, &id));
-            assert_eq!(enc_to_user_id(&k, &enc, true), id);
-            assert_eq!(
-                enc_to_user_id(&k, &enc, true),
-                platform_encryption::decrypt_enc_to_user_id(&k, &enc)
-            );
+            let dec = decrypt_enc_to_user_id(&k, &enc);
+            assert_eq!(dec, id);
+            assert_eq!(dec, platform_encryption::decrypt_enc_to_user_id(&k, &enc));
             let iv = [n ^ 0x5a; 16];
             for len in (0..=49).chain([1000]) {
                 let plain: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();

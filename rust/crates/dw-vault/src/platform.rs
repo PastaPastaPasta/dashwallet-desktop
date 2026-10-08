@@ -214,7 +214,7 @@ impl VaultSigner {
     ) -> Result<ContactInfoSealed, SignerError> {
         self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
             ContactInfoSealed {
-                enc_to_user_id: dip15::enc_to_user_id(enc_key, contact_id, false),
+                enc_to_user_id: dip15::encrypt_enc_to_user_id(enc_key, contact_id),
                 private_data: dip15::encrypt_private_data(data_key, iv, private_data),
             }
         })
@@ -230,7 +230,7 @@ impl VaultSigner {
     ) -> Result<ContactInfoOpened, SignerError> {
         self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
             Ok(ContactInfoOpened {
-                contact_id: dip15::enc_to_user_id(enc_key, enc_to_user_id, true),
+                contact_id: dip15::decrypt_enc_to_user_id(enc_key, enc_to_user_id),
                 private_data: dip15::decrypt_private_data(data_key, private_data)?,
             })
         })?
@@ -307,11 +307,8 @@ impl Vault {
         if token.purpose().kind() != GrantKind::PlatformOp {
             return Err(crate::VaultError::GrantPurposeMismatch);
         }
-        Ok(ScanKey::new(self.token_signer(
-            wallet,
-            token,
-            SignerScope::Full,
-        )?))
+        self.token_signer(wallet, token, SignerScope::Full)
+            .map(ScanKey::new)
     }
 }
 

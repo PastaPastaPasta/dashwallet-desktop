@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 use crate::signer::KeyUse;
 use crate::signer::test_hook::{self, OpPoint};
 use crate::{
-    Credential, GrantKind, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
+    Credential, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
     SeedDerivation, SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig,
     VaultSigner, WalletSecret, WalletSigner,
 };
@@ -61,30 +61,20 @@ fn vault(dir: &tempfile::TempDir, passphrase: Option<&[u8]>) -> Vault {
     v
 }
 
-fn platform_grant(v: &Vault, credential: Credential<'_>) -> GrantToken {
-    let grant = v
-        .authorize(GrantPurpose::PlatformOp, Some(&W), credential)
-        .unwrap();
-    v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
-        .unwrap()
-}
-
-fn platform_token(v: &Vault) -> GrantToken {
-    platform_grant(v, Credential::None)
+/// A redeemed grant of `purpose` for the test wallet.
+fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantToken {
+    let grant = v.authorize(purpose, Some(&W), credential).unwrap();
+    v.redeem_grant(&grant.id, purpose.kind(), Some(&W)).unwrap()
 }
 
 fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
-    v.platform_signer(&W, &platform_grant(v, credential), scope)
-        .unwrap()
+    let token = token(v, GrantPurpose::PlatformOp, credential);
+    v.platform_signer(&W, &token, scope).unwrap()
 }
 
 fn spend_signer(v: &Vault) -> VaultSigner {
     let purpose = GrantPurpose::Spend { max_duffs: 1 };
-    let grant = v.authorize(purpose, Some(&W), Credential::None).unwrap();
-    let token = v
-        .redeem_grant(&grant.id, GrantKind::Spend, Some(&W))
-        .unwrap();
-    v.signer(&W, &token).unwrap()
+    v.signer(&W, &token(v, purpose, Credential::None)).unwrap()
 }
 
 fn peer() -> PublicKey {
@@ -103,10 +93,15 @@ fn identity_public_key(identity: &VaultSigner) -> [u8; 33] {
         .unwrap()
 }
 
-/// Pauses the next operation on another thread inside the gate, calls
-/// `lock()` and checks that it does not return until that operation has
-/// made its result; the result is `Ok`, and the next call is `Locked`.
-fn lock_waits_for(v: &Vault, call: impl Fn() -> Result<(), SignerError> + Send + Sync + 'static) {
+/// Pauses the next operation on another thread inside the gate, runs the
+/// epoch change `change` (a lock, a scope change) and checks that it does
+/// not return until that operation has made its result; the result is
+/// `Ok`, and the next call is `Locked`.
+fn epoch_change_waits_for(
+    v: &Vault,
+    change: impl FnOnce(&Vault) + Send + 'static,
+    call: impl Fn() -> Result<(), SignerError> + Send + Sync + 'static,
+) {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let call = Arc::new(call);
@@ -123,27 +118,31 @@ fn lock_waits_for(v: &Vault, call: impl Fn() -> Result<(), SignerError> + Send +
         })
     };
     entered_rx.recv().unwrap();
-    let locked = Arc::new(AtomicBool::new(false));
-    let locker = {
-        let (v, locked) = (v.clone(), locked.clone());
+    let changed = Arc::new(AtomicBool::new(false));
+    let changer = {
+        let (v, changed) = (v.clone(), changed.clone());
         thread::spawn(move || {
-            v.lock();
-            locked.store(true, SeqCst);
+            change(&v);
+            changed.store(true, SeqCst);
         })
     };
     thread::sleep(Duration::from_millis(200));
     assert!(
-        !locked.load(SeqCst),
-        "lock() returned while an operation was still inside the gate"
+        !changed.load(SeqCst),
+        "the epoch changed while an operation was still inside the gate"
     );
     release_tx.send(()).unwrap();
     worker
         .join()
         .unwrap()
-        .expect("the operation began before the lock");
-    locker.join().unwrap();
-    assert!(locked.load(SeqCst));
+        .expect("the operation began before the epoch change");
+    changer.join().unwrap();
+    assert!(changed.load(SeqCst));
     assert_eq!(call(), Err(SignerError::Locked));
+}
+
+fn lock(v: &Vault) {
+    v.lock();
 }
 
 #[test]
@@ -152,7 +151,7 @@ fn lock_waits_for_the_operation_already_running() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir, Some(PASS));
     let crypto = v.dashpay_crypto_signer(&W).unwrap();
-    lock_waits_for(&v, move || {
+    epoch_change_waits_for(&v, lock, move || {
         crypto
             .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
             .map(drop)
@@ -166,7 +165,7 @@ fn lock_waits_for_the_operation_already_running() {
         Credential::Passphrase(PASS),
     );
     let key_data = identity_public_key(&identity);
-    lock_waits_for(&v, move || {
+    epoch_change_waits_for(&v, lock, move || {
         identity
             .sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
             .map(drop)
@@ -304,7 +303,9 @@ fn no_result_is_made_after_lock_returns() {
             identity,
             spend: spend_signer(&v),
             mixing: v.mixing_signer(&W).unwrap(),
-            scan: v.scan_key(&W, &platform_token(&v)).unwrap(),
+            scan: v
+                .scan_key(&W, &token(&v, GrantPurpose::PlatformOp, Credential::None))
+                .unwrap(),
             key_data,
         }));
         barrier.wait();
@@ -366,38 +367,13 @@ fn a_scope_change_waits_for_the_operation_already_running() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir, Some(PASS));
     let crypto = v.dashpay_crypto_signer(&W).unwrap();
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-    let worker = {
-        let crypto = crypto.clone();
-        thread::spawn(move || {
-            test_hook::set(move |point| {
-                if point == OpPoint::Opened {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                }
-            });
-            crypto.ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
-        })
-    };
-    entered_rx.recv().unwrap();
-    let done = Arc::new(AtomicBool::new(false));
-    let unlocker = {
-        let (v, done) = (v.clone(), done.clone());
-        thread::spawn(move || {
-            v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
-            done.store(true, SeqCst);
-        })
-    };
-    thread::sleep(Duration::from_millis(200));
-    assert!(!done.load(SeqCst), "the scope change did not wait");
-    release_tx.send(()).unwrap();
-    assert!(worker.join().unwrap().is_ok());
-    unlocker.join().unwrap();
-    assert_eq!(
-        crypto
-            .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
-            .unwrap_err(),
-        SignerError::Locked
+    epoch_change_waits_for(
+        &v,
+        |v| v.unlock(PASS, UnlockScope::MixingOnly).map(drop).unwrap(),
+        move || {
+            crypto
+                .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
+                .map(drop)
+        },
     );
 }
