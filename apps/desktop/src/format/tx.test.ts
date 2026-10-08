@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
+import { dayTitle, groupByDay, shortAddress, txChip, txIcon, txTitle, typeTitle } from "./tx";
+
+const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
+  kind: "confirmed",
+  confirmations: 10,
+  instantLocked: false,
+  chainLocked: true,
+  maturesIn: null,
+  ...over,
+});
+
+describe("titles", () => {
+  it("prefers the label and never shows an address", () => {
+    expect(txTitle({ txType: "recvWithAddress", category: "received", amount: 1, label: "Coffee refund" })).toBe("Coffee refund");
+    expect(txTitle({ txType: "recvWithAddress", category: "received", amount: 1, label: null })).toBe("Received");
+  });
+
+  it("maps dash-qt types to iOS titles", () => {
+    expect(typeTitle("coinJoinMixing", "coinJoin", 0)).toBe("Mixing");
+    expect(typeTitle("recvWithAddress", "reward", 5)).toBe("Masternode reward");
+    expect(typeTitle("generated", "reward", 5)).toBe("Mined");
+    expect(typeTitle("other", "other", -1)).toBe("Sent");
+  });
+});
+
+describe("chips and icons", () => {
+  it("is quiet when settled", () => {
+    expect(txChip(status())).toBeNull();
+    expect(txChip(status({ kind: "unconfirmed", chainLocked: false }))).toBe("Pending");
+    expect(txChip(status({ kind: "unconfirmed", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
+    expect(txChip(status({ kind: "confirming", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
+    expect(txChip(status({ kind: "abandoned" }))).toBe("Abandoned");
+  });
+
+  it("marks failures with the error icon", () => {
+    expect(txIcon("sendToAddress", status({ kind: "conflicted" }), -5)).toBe("error");
+    expect(txIcon("sendToSelf", status(), 0)).toBe("internalTransfer");
+    expect(txIcon("recvWithAddress", status(), 5)).toBe("received");
+  });
+});
+
+describe("days and addresses", () => {
+  const now = new Date(2026, 9, 6, 12, 0);
+  it("titles today and yesterday", () => {
+    expect(dayTitle(new Date(2026, 9, 6, 1, 40), now, "en-US")).toBe("Today");
+    expect(dayTitle(new Date(2026, 9, 5, 23, 59), now, "en-US")).toBe("Yesterday");
+    expect(dayTitle(new Date(2026, 9, 4, 8, 0), now, "en-US")).toBe("October 4, 2026");
+  });
+
+  it("groups newest day first with undated items last", () => {
+    const items = [new Date(2026, 9, 5, 9), null, new Date(2026, 9, 6, 1), new Date(2026, 9, 5, 8)];
+    const groups = groupByDay(items, (d) => d);
+    expect(groups.map((g) => g.items.length)).toEqual([1, 2, 1]);
+    expect(groups[2].day).toBeNull();
+  });
+
+  it("shortens long addresses in the middle", () => {
+    expect(shortAddress("yNBLvUCmZq3K8v4eusVmKavEj2XrPoQe1x")).toBe("yNBLvUCmZq3K…vEj2XrPoQe1x");
+    expect(shortAddress("short")).toBe("short");
+  });
+});
