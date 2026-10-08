@@ -1,0 +1,3 @@
+# refinery checksums a migration's bytes: a CRLF checkout would differ from the
+# database that applied it (and from the checksums the dw-appdb tests pin).
+rust/crates/dw-appdb/migrations/*.sql text eol=lf
