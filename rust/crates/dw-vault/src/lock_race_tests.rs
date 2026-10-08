@@ -14,13 +14,18 @@
 //! in place the release check never has a stale result to refuse, so they
 //! cannot tell whether it works; `a_result_is_not_released_in_a_later_epoch`
 //! covers the check on its own, by changing the epoch past the gate.
+//!
+//! The stress rounds meet at an abortable rendezvous ([`stress_rounds`],
+//! review DW-E0-03 r4 n1): a worker that fails ends the run with its panic
+//! message instead of leaving the others waiting at a barrier.
 
+use std::any::Any;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::mpsc;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use key_wallet::bip32::DerivationPath;
@@ -390,6 +395,257 @@ fn check_gate_log(log: &[GateEvent]) -> GateStats {
     stats
 }
 
+/// How long a stress participant waits at a rendezvous for the others. A
+/// round takes well under a millisecond; this only bounds a hang.
+const RENDEZVOUS_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The round rendezvous of [`stress_rounds`] (review DW-E0-03 r3/r4 n1).
+/// Unlike [`std::sync::Barrier`], one participant's failure releases every
+/// other: [`Rendezvous::abort`] (called by a panicking participant's
+/// [`AbortOnPanic`] guard, or by a wait that outlasts
+/// [`RENDEZVOUS_TIMEOUT`]) wakes every waiter, and every wait from then on
+/// returns the reason as an error.
+struct Rendezvous {
+    parties: usize,
+    state: Mutex<RendezvousState>,
+    arrived: Condvar,
+}
+
+#[derive(Default)]
+struct RendezvousState {
+    waiting: usize,
+    generation: u64,
+    aborted: Option<String>,
+}
+
+impl Rendezvous {
+    fn new(parties: usize) -> Self {
+        Self {
+            parties,
+            state: Mutex::default(),
+            arrived: Condvar::new(),
+        }
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, RendezvousState> {
+        // A participant that panicked holds no guard across a panic point,
+        // so the state is consistent even when the mutex is poisoned.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits until every party arrived, or returns why the rendezvous was
+    /// aborted.
+    fn wait(&self) -> Result<(), String> {
+        let mut state = self.lock_state();
+        if let Some(why) = &state.aborted {
+            return Err(why.clone());
+        }
+        state.waiting += 1;
+        if state.waiting == self.parties {
+            state.waiting = 0;
+            state.generation += 1;
+            self.arrived.notify_all();
+            return Ok(());
+        }
+        let generation = state.generation;
+        let deadline = Instant::now() + RENDEZVOUS_TIMEOUT;
+        loop {
+            if state.generation != generation {
+                return Ok(());
+            }
+            if let Some(why) = &state.aborted {
+                return Err(why.clone());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                drop(state);
+                let why = format!(
+                    "a stress participant waited {RENDEZVOUS_TIMEOUT:?} at a rendezvous \
+                     for the others"
+                );
+                self.abort(why.clone());
+                return Err(why);
+            }
+            state = self
+                .arrived
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Ends the rendezvous for every party: current and later waits return
+    /// `Err`. The first reason is kept.
+    fn abort(&self, why: String) {
+        self.lock_state().aborted.get_or_insert(why);
+        self.arrived.notify_all();
+    }
+}
+
+/// Aborts the rendezvous if its thread unwinds while holding it.
+struct AbortOnPanic<'a>(&'a Rendezvous, &'static str);
+
+impl Drop for AbortOnPanic<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.abort(format!("the {} panicked", self.1));
+        }
+    }
+}
+
+/// The text of a panic payload.
+fn panic_text(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a non-text panic".to_owned())
+}
+
+/// Runs `rounds` rounds of `workers` threads against a coordinator. Each
+/// round: the coordinator calls `setup(index)`; every worker then runs its
+/// round body (made once per worker by `make_worker(w)`) while the
+/// coordinator calls `during(index)`; the round ends when all of them have
+/// returned.
+///
+/// A participant that fails cannot hang the others (review DW-E0-03 r4 n1):
+/// a panic aborts the [`Rendezvous`], which releases every waiter, and the
+/// test then panics with the reason and each worker's panic message. A
+/// participant stuck elsewhere aborts it after [`RENDEZVOUS_TIMEOUT`].
+///
+/// The join is bounded too (review m-4): a worker stuck inside its round
+/// body never reaches a rendezvous, so after the run the harness waits at
+/// most `join_grace` for every worker to finish, then panics naming the
+/// ones still running instead of joining them.
+fn stress_rounds<F>(
+    join_grace: Duration,
+    workers: usize,
+    rounds: usize,
+    make_worker: impl Fn(usize) -> F,
+    mut setup: impl FnMut(usize),
+    mut during: impl FnMut(usize),
+) where
+    F: FnMut() + Send + 'static,
+{
+    let rendezvous = Arc::new(Rendezvous::new(workers + 1));
+    let handles: Vec<_> = (0..workers)
+        .map(|w| {
+            let rendezvous = rendezvous.clone();
+            let mut body = make_worker(w);
+            thread::spawn(move || {
+                let _abort = AbortOnPanic(&rendezvous, "stress worker");
+                for _ in 0..rounds {
+                    if rendezvous.wait().is_err() {
+                        return;
+                    }
+                    body();
+                    if rendezvous.wait().is_err() {
+                        return;
+                    }
+                }
+            })
+        })
+        .collect();
+
+    let coordinated = {
+        let _abort = AbortOnPanic(&rendezvous, "stress coordinator");
+        (0..rounds).try_for_each(|index| {
+            setup(index);
+            rendezvous.wait()?;
+            during(index);
+            rendezvous.wait()
+        })
+    };
+    let deadline = Instant::now() + join_grace;
+    while handles.iter().any(|h| !h.is_finished()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut worker_panics = Vec::new();
+    let mut still_running = Vec::new();
+    for (w, h) in handles.into_iter().enumerate() {
+        if !h.is_finished() {
+            // Left detached: joining it would hang the test.
+            still_running.push(w);
+        } else if let Err(payload) = h.join() {
+            worker_panics.push(format!("worker {w}: {}", panic_text(&*payload)));
+        }
+    }
+    let outcome = format!(
+        "worker panics: {worker_panics:?}; workers still running after {join_grace:?}: \
+         {still_running:?}"
+    );
+    if let Err(why) = coordinated {
+        panic!("stress rounds aborted: {why}; {outcome}");
+    }
+    assert!(
+        worker_panics.is_empty() && still_running.is_empty(),
+        "stress workers failed: {outcome}"
+    );
+}
+
+/// How long [`stress_rounds`] waits for its workers to finish after the
+/// last round or an abort.
+const JOIN_GRACE: Duration = Duration::from_secs(10);
+
+/// The harness fails fast when a worker fails, in the first round or a
+/// later one (review DW-E0-03 r4 n1): the stress run ends with a panic
+/// that names the worker's failure, rather than leaving the other
+/// participants waiting at a barrier forever. A worker stuck inside its
+/// round body (review m-4) does not hang the join either: the run panics
+/// after the join grace, naming it.
+#[test]
+fn a_failing_stress_worker_fails_the_run_instead_of_hanging() {
+    let release = Arc::new(AtomicBool::new(false));
+    for (failing_round, stuck_worker) in [(0, None), (3, None), (2, Some(3))] {
+        let (sender, outcome) = mpsc::channel();
+        let release = release.clone();
+        thread::spawn(move || {
+            let run = std::panic::catch_unwind(|| {
+                stress_rounds(
+                    Duration::from_millis(200),
+                    4,
+                    10,
+                    |w| {
+                        let (mut round, release) = (0, release.clone());
+                        move || {
+                            if w == 2 && round == failing_round {
+                                panic!("injected failure in round {round}");
+                            }
+                            if Some(w) == stuck_worker && round == failing_round {
+                                while !release.load(SeqCst) {
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                            }
+                            round += 1;
+                        }
+                    },
+                    |_| {},
+                    |_| thread::sleep(Duration::from_millis(1)),
+                )
+            });
+            let _ = sender.send(run.map_err(|payload| panic_text(&*payload)));
+        });
+        let run = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the stress harness hung after a worker failed");
+        let message = run.expect_err("a failing worker must fail the run");
+        assert!(
+            message.contains(&format!(
+                "worker 2: injected failure in round {failing_round}"
+            )),
+            "{message}"
+        );
+        assert!(message.contains("the stress worker panicked"), "{message}");
+        let still_running = match stuck_worker {
+            Some(w) => format!("still running after 200ms: [{w}]"),
+            None => "still running after 200ms: []".to_owned(),
+        };
+        assert!(message.contains(&still_running), "{message}");
+    }
+    // Let the stuck worker end.
+    release.store(true, SeqCst);
+}
+
 /// Many threads call every kind of signer operation while `lock()` runs
 /// round after round (review DW-E0-03 r2 M2). The vault logs each release
 /// and epoch change in the order of the mutex both take; no result may be
@@ -402,52 +658,39 @@ fn no_result_is_released_after_its_epoch(mode: Mode) {
     let dir = tempfile::tempdir().unwrap();
     let v = mode.vault(&dir);
     let current: Arc<Mutex<Option<Arc<Round>>>> = Arc::default();
-    let barrier = Arc::new(Barrier::new(WORKERS + 1));
     let results = Arc::new(AtomicUsize::new(0));
     let refused = Arc::new(AtomicUsize::new(0));
 
-    let workers: Vec<_> = (0..WORKERS)
-        .map(|w| {
-            let (current, barrier, results, refused) = (
-                current.clone(),
-                barrier.clone(),
-                results.clone(),
-                refused.clone(),
-            );
-            thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .build()
-                    .unwrap();
-                for _ in 0..ROUNDS {
-                    barrier.wait();
-                    let round = current.lock().unwrap().clone().unwrap();
-                    for n in w.. {
-                        match call(&rt, &round, n) {
-                            Ok(()) => results.fetch_add(1, SeqCst),
-                            Err(SignerError::Locked) => {
-                                refused.fetch_add(1, SeqCst);
-                                break;
-                            }
-                            Err(e) => panic!("{mode:?}, call {n}: {e}"),
-                        };
-                    }
-                    barrier.wait();
-                }
-            })
-        })
-        .collect();
-
     v.start_gate_log();
-    for index in 0..ROUNDS {
-        *current.lock().unwrap() = Some(Arc::new(mode.round(&v)));
-        barrier.wait();
-        thread::sleep(Duration::from_micros(50 + (index as u64 * 37) % 400));
-        v.lock();
-        barrier.wait();
-    }
-    for w in workers {
-        w.join().unwrap();
-    }
+    stress_rounds(
+        JOIN_GRACE,
+        WORKERS,
+        ROUNDS,
+        |w| {
+            let (current, results, refused) = (current.clone(), results.clone(), refused.clone());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            move || {
+                let round = current.lock().unwrap().clone().unwrap();
+                for n in w.. {
+                    match call(&rt, &round, n) {
+                        Ok(()) => results.fetch_add(1, SeqCst),
+                        Err(SignerError::Locked) => {
+                            refused.fetch_add(1, SeqCst);
+                            break;
+                        }
+                        Err(e) => panic!("{mode:?}, call {n}: {e}"),
+                    };
+                }
+            }
+        },
+        |_| *current.lock().unwrap() = Some(Arc::new(mode.round(&v))),
+        |index| {
+            thread::sleep(Duration::from_micros(50 + (index as u64 * 37) % 400));
+            v.lock();
+        },
+    );
 
     let stats = check_gate_log(&v.take_gate_log());
     let (results, refused) = (results.load(SeqCst), refused.load(SeqCst));
