@@ -9,6 +9,7 @@
 //! `platform()` finds it again.
 
 use super::contacts::Eligibility;
+use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 
@@ -35,16 +36,36 @@ pub enum PlatformError {
     InsufficientCredits { needed: u64, available: u64 },
     #[error("grant invalid")]
     GrantInvalid,
-    #[error("grant exceeded")]
-    GrantExceeded,
+    /// A lease budget cannot cover the charge (E0-04 §4.2).
+    #[error("{purpose:?} budget exceeded: {needed} needed, {remaining} remaining")]
+    GrantExceeded {
+        purpose: BudgetPurpose,
+        needed: u64,
+        remaining: u64,
+    },
     /// A signed artifact was handed off and its outcome is unknown: it may
-    /// have been sent (E0-04 `MaybeSent`). Never retried blindly.
-    #[error("broadcast outcome unknown")]
-    BroadcastUnknown,
+    /// already be out (E0-04 `MaybeSent`). Never retried blindly.
+    #[error("broadcast outcome unknown for {artifact}")]
+    BroadcastUnknown { artifact: String },
+    /// The artifact is committed and the engine will send it again, for
+    /// example when the network is back. Never retried.
+    #[error("{artifact} will be sent")]
+    WillBeSent { artifact: String },
     /// Lock won the flow's permit before the hand-off: nothing was sent
-    /// (E0-04 `Cancelled`).
+    /// (E0-04 `Cancelled`, `lease.locked`).
     #[error("cancelled before anything was sent")]
     Cancelled,
+    /// The lease is parked or its grants died with an unlock, a scope or a
+    /// passphrase change: the flow needs a fresh grant for `purpose`.
+    #[error("needs a new grant for {purpose:?}")]
+    NeedsGrant { purpose: BudgetPurpose },
+    /// The lease the call named was revoked.
+    #[error("lease revoked: {cause:?}")]
+    LeaseRevoked { cause: RevokeCause },
+    /// The lease the call named has ended: `end_flow`, the idle reaper, or
+    /// its own key's expiry.
+    #[error("lease expired")]
+    LeaseExpired,
     #[error("feature off: {feature}")]
     FeatureOff { feature: String },
     /// `call` is `"DashPay.<method>"`, `"NetworkSession.<method>"` or the
@@ -77,9 +98,13 @@ impl PlatformError {
             Self::SeedMismatch => "platform.seed_mismatch",
             Self::InsufficientCredits { .. } => "platform.insufficient_credits",
             Self::GrantInvalid => "platform.grant_invalid",
-            Self::GrantExceeded => "platform.grant_exceeded",
-            Self::BroadcastUnknown => "platform.broadcast_unknown",
+            Self::GrantExceeded { .. } => "platform.grant_exceeded",
+            Self::BroadcastUnknown { .. } => "platform.broadcast_unknown",
+            Self::WillBeSent { .. } => "platform.will_be_sent",
             Self::Cancelled => "platform.cancelled",
+            Self::NeedsGrant { .. } => "platform.needs_grant",
+            Self::LeaseRevoked { .. } => "platform.lease_revoked",
+            Self::LeaseExpired => "platform.lease_expired",
             Self::FeatureOff { .. } => "platform.feature_off",
             Self::NotImplemented { .. } => "platform.not_implemented",
             Self::Identity(e) => e.code(),

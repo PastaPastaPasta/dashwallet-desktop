@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
 use super::errors::RegistrationError;
+use super::flows::GrantRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationRequest {
@@ -69,6 +70,9 @@ pub struct RegistrationQuote {
     pub total_duffs: u64,
     /// Credits the identity keeps after the name and profile.
     pub remaining_credits: u64,
+    /// The grant to ask for: `max_duffs` covers `total_duffs`, and
+    /// `max_credits` the identity creation, name and profile.
+    pub grant: GrantRequest,
 }
 
 /// One `dp_registration` row.
@@ -82,12 +86,13 @@ pub struct RegistrationStatus {
     pub txid: Option<String>,
     /// What a parked or slow flow waits for; `None` while it runs or after
     /// it ends. `resume_registration` needs a grant exactly when this is
-    /// `Unlock`.
+    /// `Unlock` or `Authorize`.
     pub waiting: Option<RegistrationWait>,
     /// A lease holds a key for this flow ("Registration in progress — Lock
     /// to cancel").
     pub holds_key: bool,
-    /// True from `FundingSent` on ("Funds locked — finishing").
+    /// True once the asset lock is anything but definitely not sent
+    /// ("Funds locked — finishing").
     pub funds_committed: bool,
     /// While `phase` is `Contested`.
     pub contest_ends_at: Option<u64>,
@@ -119,6 +124,10 @@ pub enum RegistrationPhase {
 pub enum RegistrationWait {
     /// Parked keyless: "Unlock to finish". The resume needs a grant.
     Unlock,
+    /// The vault is unlocked but the flow's grant died (an unlock, a scope
+    /// or a passphrase change) or its budget ran short: "Confirm to
+    /// finish". The resume needs a grant. Pending E0-04 rev1.
+    Authorize,
     /// Held until SPV has synced: "Waiting for the network to sync".
     Sync,
     InstantSend,

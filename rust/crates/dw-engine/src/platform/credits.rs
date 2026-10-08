@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
 use super::errors::CreditsError;
+use super::flows::GrantRequest;
 
 /// Credit costs of the DashPay actions, for "≈ N contact requests" and the
 /// low-credit warnings (F8).
@@ -27,6 +28,7 @@ pub struct TopUpQuote {
     /// `duffs + fee_duffs`: what the grant must cover.
     pub total_duffs: u64,
     pub credits: u64,
+    pub grant: GrantRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +54,7 @@ pub struct WithdrawQuote {
     pub credits: u64,
     pub fee_credits: u64,
     pub expected_duffs: u64,
+    pub grant: GrantRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

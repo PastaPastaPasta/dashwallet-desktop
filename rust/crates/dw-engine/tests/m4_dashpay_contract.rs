@@ -646,9 +646,21 @@ fn error_codes_match_the_contract() {
                 available: 0,
             },
             PlatformError::GrantInvalid,
-            PlatformError::GrantExceeded,
-            PlatformError::BroadcastUnknown,
+            PlatformError::GrantExceeded {
+                purpose: BudgetPurpose::Credits,
+                needed: 0,
+                remaining: 0,
+            },
+            PlatformError::BroadcastUnknown { artifact: s() },
+            PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::NeedsGrant {
+                purpose: BudgetPurpose::Funding,
+            },
+            PlatformError::LeaseRevoked {
+                cause: RevokeCause::Lock,
+            },
+            PlatformError::LeaseExpired,
             PlatformError::FeatureOff { feature: s() },
             PlatformError::NotImplemented { call: s() },
             PlatformError::InvalidArgument { detail: s() },
@@ -962,6 +974,14 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(session.invitation_status(s()).await);
         c.stub(session.pending_invitations().await);
         c.stub(session.forget_invitation(s()).await);
+        c.stub(
+            session
+                .begin_flow(wallet, FlowKind::AcceptAndPay, vec![s()])
+                .await,
+        );
+        c.stub(session.end_flow(s()));
+        c.stub(dp.grant_request(s(), GrantAction::SendRequest).await);
+        c.stub(dp.dispatch_status(s()).await);
 
         c.stub(dp.status());
         c.stub(dp.sync_status());

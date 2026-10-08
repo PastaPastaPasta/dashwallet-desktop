@@ -9,6 +9,7 @@ mod contacts;
 mod credits;
 mod dashpay;
 mod errors;
+mod flows;
 mod identity;
 mod invitations;
 pub mod keys_policy;
@@ -33,6 +34,10 @@ pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
     PlatformError, RegistrationError,
+};
+pub use flows::{
+    BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState, FlowKind, GrantAction,
+    GrantRequest, RevokeCause,
 };
 pub use identity::{
     IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, SecurityLevel,
