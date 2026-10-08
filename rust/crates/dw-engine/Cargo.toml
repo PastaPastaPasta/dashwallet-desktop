@@ -53,3 +53,7 @@ tempfile = { workspace = true }
 dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests.
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# tests/umask_002.rs sets the process umask.
+libc = "0.2"

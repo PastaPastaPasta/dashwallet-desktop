@@ -1625,6 +1625,7 @@ dependencies = [
  "dw-vault",
  "hex",
  "key-wallet",
+ "libc",
  "platform-wallet",
  "platform-wallet-storage",
  "rand 0.8.6",
