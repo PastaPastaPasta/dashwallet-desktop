@@ -1935,29 +1935,118 @@ def step2_findings(rule: str) -> dict:
 
 
 def restart_retry(rule: str) -> Optional[tuple]:
-    """Review Opus r2 1a. A row-less state transition (a withdrawal) ends
-    broadcast_unknown, the app restarts, and the host asks dispatch_status
-    before offering a retry. rev1's contract read "no entry" as "retry
-    allowed"; rev2 answers Unknown, which never allows a retry, unless the
-    identity's nonce shows positive evidence (H16). Returns the first
-    (nonce_state, original_executes) at which a retry is offered while the
-    original can still execute."""
+    """Review Opus r2 1a, DW-E0-08 r2 N-1. A row-less state transition (a
+    withdrawal) ends broadcast_unknown, the app restarts, and the host asks
+    dispatch_status before offering a retry. A withdrawal is not resumable,
+    so after the restart the engine has no record of it and answers None
+    (no entry) whatever the identity's nonce now says (H16). rev1's contract
+    read None as "retry allowed"; rev2 reads None as unknown for a transition
+    or a TxDraft (only an asset lock's None means never registered). Returns
+    the first (nonce_state, original_executes) at which a retry is offered
+    while the original can still execute."""
     for nonce in ("unconsumed", "consumed_by_this", "consumed_by_other"):
         for original_executes in (False, True):
             if nonce == "consumed_by_other" and original_executes:
                 continue  # its nonce is gone: it cannot execute
             if nonce == "consumed_by_this" and not original_executes:
                 continue
+            status = None  # no record after the restart
             if rule == "rev1":
-                status = None
+                retry = status is None or status == "NotSent"
             else:
-                status = {"unconsumed": "Unknown", "consumed_by_this": "Sent",
-                          "consumed_by_other": "NotSent"}[nonce]
-            retry = status is None or status == "NotSent"
+                retry = status == "NotSent"  # None is unknown for a transition
             can_execute = nonce == "unconsumed"
             if retry and can_execute:
                 return (nonce, original_executes)
     return None
+
+
+def rowless_tombstone(rule: str) -> set:
+    """DW-E0-08 r2 N-1, manager correction to rev2 ruling 4. A row-less state
+    transition h settles definitely unsent (every attempt definitely
+    rejected, none possibly out). The host then asks dispatch_status(h),
+    possibly after a restart, and reads the answer as a transition's: only
+    Some(NotSent) allows a retry, and None means unknown. Optionally the
+    identical bytes are admitted again under a live lease (F10) and sent;
+    the process may stop at each point. Rules:
+    `forget` (rev2 as first committed): the id is forgotten at settlement;
+    `no-override`: a per-process tombstone that a later First of the same
+    bytes does not replace;
+    `rev2`: a per-process tombstone that the J step admitting a later First of
+    the same bytes replaces with its attempt, before any transport.
+    Returns the findings."""
+    found = set()
+    for readmit in (False, True):
+        for stop in ("none", "before_send", "after_send"):
+            if not readmit and stop != "none":
+                continue
+            for restart in (False, True):
+                status = None if rule == "forget" else "NotSent"
+                if status is None:
+                    found.add("a definitely-unsent transition reads unknown in its process")
+                out = False
+                if readmit:
+                    if rule == "rev2":
+                        status = "MaybeSent"
+                    if stop != "before_send":
+                        out = True
+                        if rule == "rev2" and stop == "none":
+                            status = "Sent"
+                if restart:
+                    status = None  # the per-process set is gone
+                retry = status == "NotSent"
+                if retry and out:
+                    found.add("dispatch_status says not sent while the transition may be out")
+    return found
+
+
+def asset_lock_absent(rule: str) -> set:
+    """Manager correction to rev2 ruling 4: an asset lock's None (no entry)
+    passes the engine's funding gate (discard_registration), the only kind
+    for which None allows anything. It is safe because
+    register precedes tracking and every transport (I1), entries are never
+    deleted while their wallet tracks a row (6.5), and a tracked row with no
+    entry counts as evidence. Each scenario is (entry, row, possibly out)
+    as the host's dispatch_status call finds it. Rules:
+    `rev2`: the row is consulted first, then the entry, and None is answered
+    only with neither;
+    `entry-only`: no entry is None whatever the rows say;
+    `skip-consumed`: a Consumed row is ignored, as the seeding ignores it.
+    Returns the findings."""
+    scenarios = [
+        ("never registered", None, None, False),
+        ("registered, stopped before tracking", "unsent_dead", None, False),
+        ("registered and tracked, Lock won", "revoked", "built", False),
+        ("a live flow before its commit", "unsent_live", "built", False),
+        ("committing", "committing", "built", False),
+        ("committed and sent", "dispatching", "built", True),
+        ("committed, sent and seen", "dispatching", "seen", True),
+        ("journal deleted after the lock was consumed", None, "consumed", True),
+        ("journal deleted, the row resent", "prefence", "built", True),
+        ("journal rolled back below a registered and sent row", None, "built", True),
+    ]
+    found = set()
+    for name, entry, row, out in scenarios:
+        seen_row = row in ("seen", "consumed") and not (rule == "skip-consumed" and row == "consumed")
+        has_row = row is not None and not (rule == "skip-consumed" and row == "consumed")
+        if rule != "entry-only" and seen_row:
+            st = "Sent"
+        elif entry in ("committing", "dispatching", "prefence", "ambiguous"):
+            st = "WillBeSent" if has_row else "MaybeSent"
+        elif entry == "unsent_live":
+            st = "MaybeSent"
+        elif entry in ("unsent_dead", "revoked"):
+            st = "NotSent"
+        elif rule != "entry-only" and has_row:
+            st = "MaybeSent"
+        else:
+            st = None
+        retry = st is None or st == "NotSent"  # the asset-lock exception
+        if retry and out:
+            found.add(f"a second funding while the lock may be out: {name}")
+        if retry and entry == "unsent_live":
+            found.add(f"a retry offered while the flow can still commit: {name}")
+    return found
 
 
 def part5() -> bool:
@@ -2000,8 +2089,31 @@ def part5() -> bool:
     r1, r2 = restart_retry("rev1"), restart_retry("rev2")
     check(
         r1 is not None and r2 is None,
-        f"Opus r2 1a: a restart after broadcast_unknown on a withdrawal: rev1 offers a "
-        f"retry while the original can execute {r1}; rev2 answers Unknown",
+        f"Opus r2 1a, E0-08 N-1: a restart after broadcast_unknown on a withdrawal: rev1 "
+        f"offers a retry on None while the original can execute {r1}; rev2 reads None as "
+        f"unknown for a transition",
+    )
+    tombs = {r: rowless_tombstone(r) for r in ("forget", "no-override", "rev2")}
+    for r in ("forget", "no-override"):
+        print(f"       {r}: {sorted(tombs[r])}")
+    check(
+        "a definitely-unsent transition reads unknown in its process" in tombs["forget"]
+        and "dispatch_status says not sent while the transition may be out" in tombs["no-override"]
+        and not tombs["rev2"],
+        "E0-08 N-1: a settled transition keeps a per-process tombstone that answers NotSent, "
+        "replaced under J by a later First of the same bytes; forgetting it, or not "
+        "replacing it, fails; after a restart it reads None, which is unknown",
+    )
+    absent = {r: asset_lock_absent(r) for r in ("entry-only", "skip-consumed", "rev2")}
+    for r in ("entry-only", "skip-consumed"):
+        print(f"       {r}: {sorted(absent[r])}")
+    check(
+        any("rolled back" in f for f in absent["entry-only"])
+        and any("consumed" in f for f in absent["skip-consumed"])
+        and not absent["rev2"],
+        "asset-lock exception: None allows a second funding only with neither an entry nor "
+        "a tracked row of any status; reading the entry alone, or skipping Consumed rows, "
+        "funds twice",
     )
     return ok
 

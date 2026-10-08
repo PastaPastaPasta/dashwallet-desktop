@@ -1,9 +1,11 @@
 # E0-04: grants and leases — design
 
-**Status:** design (D), **rev2**, for the DEC-57 final closure check.
+**Status:** design (D), **rev2** as amended after the E0-08 closure check (DW-E0-08 r2, Opus), for the DEC-57
+final closure check.
 - rev0 (6b4cdf9) was reviewed in r1: GPT REWORK, Opus APPROVE-WITH-CHANGES.
 - rev1 (d2a21c6) was reviewed in r2: GPT REWORK, Opus APPROVE-WITH-CHANGES.
-- The manager's rulings and every finding's disposition are in "Changes in rev2" and "Changes in rev1" below.
+- The manager's rulings and every finding's disposition are in "Amendment to rev2", "Changes in rev2" and
+  "Changes in rev1" below.
 - DEC-65 accepted rev0's Q2–Q20. DEC-67 accepted Q21, rejected Q22, and accepted Mode B with its promise in user
   terms.
 - Q1 (the platform PR) is still pasta's call (B5), so the design specifies both outcomes (§2a).
@@ -18,8 +20,9 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
 - reviews DW-E0-03 r3 (Opus) and r4 (GPT), and the fix4 findings listed in DASHPAY §2.6;
 - reviews DW-E0-04-design r1 and r2 (GPT and Opus, `~/workspace/node-program/reviews/DW-E0-04-design-r{1,2}-*.md`),
   with the reviewers' scratch probes;
-- the m4 DashPay contract on `dw/e0-08-dashpay-facade` at cf9ba8e and c3c9bbd. **This design is authoritative over
-  it:** §16 is the single source for E0-04's names, types, codes and copy, and E0-08 conforms to §16;
+- the m4 DashPay contract on `dw/e0-08-dashpay-facade` at cf9ba8e and c3c9bbd, and its closure check DW-E0-08 r2
+  (Opus). **Names and shapes follow c3c9bbd; the safety semantics are this design's** (the manager's correction to
+  rev2 ruling 4). §16 states both, and E0-08 matches its semantics (§15);
 - DEC-18, DEC-57, DEC-65, DEC-67 and DECISIONS-PENDING B5.
 
 **Pins read:**
@@ -27,7 +30,33 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
   `SDK` = `packages/rs-sdk/src`.
 - rust-dashcore `40268cc0` (`dash-spv`, `key-wallet`).
 
-**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 75 checks).
+**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 77 checks).
+
+## Amendment to rev2: E0-08 alignment
+
+**Manager correction to rev2 ruling 4** (2026-10-08, after DW-E0-08 r2 Opus):
+- **Names and shapes follow E0-08's implemented contract (c3c9bbd)**, not rev2's §16: `will_be_sent`, `GrantAction`
+  with an `identity` argument, `DispatchState`'s four values (`WillBeSent`, `MaybeSent`, `Sent`, `NotSent`), rows
+  moving to `Unlock` or `Authorize` with no `needs_grant` field, and `DispatchResolved.resolution`.
+- **The safety semantics stay this design's:**
+  - retry and discard never proceed on a missing journal entry, except for asset locks. A state transition or a
+    `TxDraft` send with no entry is unknown, not "not sent";
+  - a transition known to be unsent keeps a tombstone, so `dispatch_status` can still answer `NotSent` after the
+    fact.
+- Also: define `Committed{will_resend: false}` or remove it; map `lease_revoked` and `lease_expired`; add
+  `WalletClosed` to the causes; align `funds_committed` with N-3, stated precisely in §16.5.
+
+| Item | Disposition | Where | Model |
+|---|---|---|---|
+| Names and shapes | **Applied.** §16 restates c3c9bbd's surface: `dispatch_status(artifact) -> Result<Option<DispatchState>, PlatformError>` with the four values, and rev2's `Unknown` is gone. `FlowKind` is c3c9bbd's closed list, `Discovery` included: a lease that holds only `IdentityScan` and admits nothing (§16.1). The other names already matched. | §4.1, §4.6, §16 | — |
+| `None` and the asset-lock exception (N-1) | **Applied.** §16.6 says what each kind of artifact answers and how the host reads `None`. For an asset lock, `None` (no entry **and** no tracked row of any status) means never registered, and it allows a second funding: `register` precedes tracking and every transport (I1), and an entry outlives its row (§6.2). For a state transition or a `TxDraft` send, `None` is unknown, read as `MaybeSent`. A txid and a transition hash look alike, so the host reads every `None` as unknown, and the asset-lock reading belongs to the engine's funding gates (`discard_registration`), which know the step's kind. A live `Unsent` entry and a `Committing` one read `MaybeSent`. | §4.6, H11, I16, §16.6 | `asset_lock_absent`: reading the entry alone, or skipping `Consumed` rows, funds twice after a journal rollback or deletion. `restart_retry`: after a restart a withdrawal reads `None` and gets no retry |
+| Tombstone (N-1) | **Applied.** A state transition settled definitely unsent keeps a per-process `NotSent` tombstone instead of being forgotten. The J step that admits a later First of the same bytes under a live lease replaces it before any transport. After a restart the set is gone and the answer is `None`, which for a transition is unknown: fail closed. | §5.5, I4, I10, H16 | `rowless_tombstone`: forgetting the id leaves no retry; a tombstone that a later First does not replace says `NotSent` while the bytes may be out |
+| `Committed{will_resend: false}` | **Removed.** It was rev1's `DispatchStatus` value for a committed artifact the engine would not resend, and it maps to `MaybeSent` (`will_resend: true` is `WillBeSent`). rev2 never used it. | — | — |
+| `lease_revoked`, `lease_expired` (N-5) | **Mapped.** `LeaseError::Revoked{cause}` is `platform.lease_revoked{cause}`, and `LeaseError::Ended` (`end_flow`, the reaper) is `platform.lease_expired`. A passed `key_until` parks the lease, so it is `platform.needs_grant{purpose}`, never `lease_expired`: E0-08 drops "or its own key passed `key_until`" from its row. | §4.4, §16.4 | — |
+| `WalletClosed` (N-4) | **Kept** as its own cause: one wallet's close (§8.6), while `Close` is the session's. E0-08 adds `RevokeCause::WalletClosed`. | §16.4 | — |
+| `funds_committed` (N-3) | **Applied.** In Mode A it is true when an asset lock of the flow has its entry in `Committing`, `Dispatching`, `Ambiguous` or `PreFence`, or has a tracked row with no entry. It is false for an `Unsent` entry (live, or with a dead origin), a `Revoked` entry, and no entry with no row. In Mode B it is true from the J step that takes the funding call's permit (and its marker) until the funding reads `NotSent`. So a revoked lock and an uncommitted one both read false. E0-08 copies §16.5. | §2a.5, §4.6, §16.5 | — |
+| A lease id's reach, the reaper (N-6) | Unchanged here. A lease id is accepted only by calls of its wallet whose purpose it carries, otherwise `platform.needs_grant{purpose}`; another wallet's id is `platform.grant_invalid`. E0-08 states it. | §16.1 | — |
+| The retry gates (N-1, N-2) | `discard_registration` needs the funding to read `NotSent` or `None`, which also refuses a live `Unsent`. `resume_registration` acts on any state, and `finish_asset_locks` is not gated. E0-08 replaces its "`NotSent` … or absent" clause with these, and its refusal list's phase rule with the same check. | §16.6 | — |
 
 ## Changes in rev2
 
@@ -48,10 +77,11 @@ under rev2's in the model:
    - one combined cap over a grant set, so "Accept and pay" cannot reach twice the limit.
 3. Mode B status derivation from the tracked rows and the call's end (§2a.5), with "no double pay" passing in the
    model (Part 5).
-4. The design is authoritative over the contract:
-   - retry and discard are fail-closed, with no "absent means allowed";
+4. The design is authoritative over the contract. *Corrected by the amendment above: names and shapes follow
+   c3c9bbd, and the safety semantics stay here.*
+   - retry and discard are fail-closed; "absent means allowed" holds for asset locks only;
    - the `finish_asset_locks` gate is fixed;
-   - §16 is the single source for names.
+   - §16 states the names, which are c3c9bbd's.
 5. The UX minors (§4.6, §4.8, UX-SPEC §4.1).
 6. The phase plan: P4 is L, and the Swift freeze is respected (§13).
 
@@ -69,16 +99,16 @@ under rev2's in the model:
 | 9 | A refund after a rebind restores signing above the fresh cap | **Fixed.** Each charge carries the authority generation it was made under. A refund restores only that generation's accounting. New signing is bounded by the current generation's ceiling, `min(available at rebind, fresh cap)`, through every later refund and rebind, with checked arithmetic. | §4.2, §4.3 | `rebind_ceiling` |
 | 10 | Mode B lists step 2 as a sole-artifact call for `Locked → Cancelled` | **Fixed.** The engine's signer adapters count the signatures released during each call permit (host-visible and monotone). A call is `Cancelled` only if it failed with no signature released and no earlier marker of its step exists. Otherwise it is `MaybeSent`, and the flow is Parked when a further signature is needed. No call is special-cased by name. | §2a.3 | Part 5 step 2: rev1 reports Cancelled after S1 went out |
 | 11 | Funded-flow copy promises more than Mode B provides | **Fixed.** One copy table (§16.10). While any library call of the flow runs, the line is DEC-67's: "Lock stops new signatures; a transaction already signed may still be sent". "You'll finish after you unlock" appears only when no call runs and a further signature is required. "Sent before the lock" needs the drain to have seen it. | §4.6, §16.10 | Part 5 step 2: rev1's copy promises a stop that does not happen |
-| 12 | Mode B's absent-artifact discard allows duplicate funding after power loss | **Fixed.** In Mode B every funding call is preceded by a durable funding step marker, keyed by flow and step, not by artifact. `dispatch_status` is derived (§2a.5) and is never "none". A marker with no row and no definite resolution is `MaybeSent`, which can last indefinitely, and blocks funding again until DP1-05 finds the lock or Repair's ChainLocked self-spend proves it dead. | §2a.5 | Part 5 funding: rev1 builds T2 beside a peer-held T1; rev2 cannot |
-| 13 | Repair turns negative observations into definitely-unsent | **Fixed.** Repair keeps a row of unknown provenance `Unknown`. Its only resolutions are "Send it" (a First under a fresh lease) and "Cancel it": a self-spend of one of its inputs, after which the row is cleaned up only once that spend is ChainLocked. There is no negative-evidence discard. | §6.5 | `repair_resolution` |
+| 12 | Mode B's absent-artifact discard allows duplicate funding after power loss | **Fixed.** In Mode B every funding call is preceded by a durable funding step marker, keyed by flow and step, not by artifact. `dispatch_status` is derived (§2a.5). With no marker the call never started, which is an asset lock's `None` (amendment). A marker with no row and no definite resolution is `MaybeSent`, which can last indefinitely, and blocks funding again until DP1-05 finds the lock or Repair's ChainLocked self-spend proves it dead. | §2a.5 | Part 5 funding: rev1 builds T2 beside a peer-held T1; rev2 cannot |
+| 13 | Repair turns negative observations into definitely-unsent | **Fixed.** Repair keeps a row of unknown provenance `MaybeSent`. Its only resolutions are "Send it" (a First under a fresh lease) and "Cancel it": a self-spend of one of its inputs, after which the row is cleaned up only once that spend is ChainLocked. There is no negative-evidence discard. | §6.5 | `repair_resolution` |
 | 14 | Q22 implements the policy DEC-67 rejected | **Fixed.** A silent rebind needs the setting off. With it on, the lease goes to `NeedsGrant` and the flow to `Authorize` (a prompt). Q22 is marked rejected, and §3.1 now admits Touch ID for `PlatformOp` (Q21). | §3.1, §4.3, §4.8, Q22 | — |
 
 **Opus r2 dispositions**
 
 | # | Finding | Disposition | Where |
 |---|---|---|---|
-| 1a | "No entry" means retry allowed in the contract; `finish_asset_locks` gated backwards | **Fixed.** `dispatch_status` returns `Unknown`, never none, and only `NotSent` allows a retry or a discard. `NotSent` needs positive evidence. `finish_asset_locks` is not gated, since it resumes committed locks. A test covers a restart after a withdrawal's `broadcast_unknown`. | §4.6, H11, H16, §16 |
-| 1b | Names and shapes disagree with c3c9bbd | **Fixed.** §16 is the single source and takes the contract's names where Opus suggested: `will_be_sent{artifact}`, `broadcast_unknown{artifact}`, `DashPay::dispatch_status(artifact) -> DispatchState` with `Unknown` added, `DispatchResolved{wallet_id, artifact, resolution}`, `grant_request(identity, GrantAction)`, "no more than quoted". It adds the contract's lease codes: `needs_grant` (rows move to `Unlock`/`Authorize`), `lease_expired` only for `end_flow` and the reaper, `lease_revoked{cause}`, `RevokeCause::WalletClosed`, `storage`. It also drops `FlowKind::Discovery`, makes the reaper skip running flows, and names the owners of `LeaseView` and Repair. | §16 |
+| 1a | "No entry" means retry allowed in the contract; `finish_asset_locks` gated backwards | **Fixed.** Only `NotSent` allows a retry or a discard, plus an asset lock's `None` (amended: rev2 first answered `Unknown` and never none; c3c9bbd's `None` stands, read by the artifact's kind, §16.6). `NotSent` needs positive evidence. `finish_asset_locks` is not gated, since it resumes committed locks. A test covers a restart after a withdrawal's `broadcast_unknown`. | §4.6, H11, H16, §16 |
+| 1b | Names and shapes disagree with c3c9bbd | **Fixed.** §16 is the single source and takes the contract's names where Opus suggested: `will_be_sent{artifact}`, `broadcast_unknown{artifact}`, `DashPay::dispatch_status(artifact)` (amended to c3c9bbd's `Option` of four values), `DispatchResolved{wallet_id, artifact, resolution}`, `grant_request(identity, GrantAction)`, "no more than quoted". It adds the contract's lease codes: `needs_grant` (rows move to `Unlock`/`Authorize`), `lease_expired` only for `end_flow` and the reaper, `lease_revoked{cause}`, `RevokeCause::WalletClosed`, `storage`. It also drops `FlowKind::Discovery` (restored by the amendment), makes the reaper skip running flows, and names the owners of `LeaseView` and Repair. | §16 |
 | 2 | Mode B has no source for `dispatch_status`, `funds_committed`, `WillBeSent`, `DispatchResolved` | **Fixed.** §2a.5 derives them from `list_tracked_locks`, the funding marker and the call's end, and says how row-less "may have been sent" resolves after a restart (H16). | §2a.5 |
 | 3 | Rebind skips the prompt against DEC-67 | Fixed with GPT 14. | §4.3 |
 | 4a | Mode B step markers have no read rule; the J step does a FULL write | **Fixed.** At a resumable step's call-permit step, an earlier marker of the step under a dead lease means MaybeSent. The marker write follows the `Committing` pattern (spawned, outside J). | §2a.3 |
@@ -180,7 +210,8 @@ revocation at the lock call, host-enforced deadlines and `lock_gen`. rev1 makes 
    - A row lost to a power loss is restored from the payload, and its inputs are fenced.
 6. **Row-less bytes are tracked per attempt.** The fence keeps every admitted row-less artifact and its running
    attempts. It settles one as definitely unsent only when no attempt still runs and none may have let it out. A
-   settled Core send is tombstoned.
+   settled artifact is tombstoned for its process: a Core send refuses any later copy, and a state transition
+   answers `NotSent` until a later First of the same bytes replaces it.
 7. **Revocation happens at the call, and a barrier closes the gate window.** `lock_vault` revokes every lease and
    snapshots the permits in one synchronous step under J.
    - A table-owned lock barrier, which covers both the vault gate's completion and the drain, keeps every lease
@@ -197,9 +228,11 @@ revocation at the lock call, host-enforced deadlines and `lock_gen`. rev1 makes 
    - `MaybeSent`;
    - `Cancelled`, only for a flow that never committed anything.
 
-   No retry or discard is offered unless `dispatch_status` is `NotSent`, which needs positive evidence. No entry is
-   `Unknown`, and it never allows a retry. `DispatchResolved` fires when a provisional outcome resolves. Mode B derives
-   all of this from the library's tracked rows, a durable funding marker and how each call ended (§2a.5).
+   No retry or discard is offered unless `dispatch_status` is `NotSent`, which needs positive evidence. The one
+   exception is the engine's funding gate, for an asset lock with no entry and no row, which was never registered.
+   A state transition or a `TxDraft` send with no entry is unknown, and it never allows a retry. `DispatchResolved`
+   fires when a provisional outcome resolves. Mode B derives all of this from the library's tracked rows, a durable
+   funding marker and how each call ended (§2a.5).
 9. **Exactly one party cleans up, nothing can drop it, and it frees the inputs.** Only the compare-and-set winner
    cleans up, as a spawned task (a drop guard covers a dropped build). It releases the reservation owner-guarded, and
    it settles the in-broadcast pin released, so the inputs are selectable again.
@@ -423,7 +456,7 @@ recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at lo
 6. Step markers: the kill matrix for resumable steps (kill before and after the broadcast, before the response,
    before the phase write); a later refusal reads MaybeSent.
 7. **No double pay** (Part 5 funding; engine tests against the fake library):
-   - outcomes from history, `WillBeSent`, and `dispatch_status` derived as §2a.5 says and never none;
+   - outcomes from history, `WillBeSent`, and `dispatch_status` derived as §2a.5 says;
    - retry and discard allowed only on `NotSent`;
    - the withheld-T1 power-loss trace: the row is lost, DP1-05 finds nothing, discard is refused, and no T2 is
      built;
@@ -466,23 +499,26 @@ Mode B has no registered journal entries, so it derives every status from three 
 | the row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain` | `Sent` |
 | the row is `Built` or `Broadcast` | `WillBeSent` (the catch-up and the deferred resume resend it) |
 | no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send | `NotSent` |
-| no marker: the call never started | `NotSent` |
+| no marker: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6) |
 | anything else: a marker, no row, no definite resolution | `MaybeSent`, possibly indefinitely |
 
 - **Definite resolutions are written with the marker** (`FULL`), so they survive a restart.
 - **The table is applied to every flow with a funding marker**: at load, on every `list_tracked_locks` change and on
   each call's end.
-- **`funds_committed`** (§16.5) is true while a funding marker exists and its status is not `NotSent`.
+- **`funds_committed`** (§16.5) is true from the J step that takes the funding call's permit, and with it the
+  marker, until the funding's status is `NotSent`.
 - **`DispatchResolved`** fires when the status moves to `Sent` (a row reaches a proof, or DP1-05 adopts a
   `RecoveredFromChain` lock) or to `NotSent` (a definite resolution, or the ChainLocked self-spend).
 - **An orphan can stay unresolved indefinitely.** A lock that lost its row and is withheld by a peer stays
   `MaybeSent` with no time bound. The user can force a resolution with Repair's "Cancel it" (§6.5): a self-spend of
   every coin. Once that spend is ChainLocked, any lost lock whose inputs it consumed can no longer confirm.
-- **Row-less state transitions after a restart, in both modes (H16).** The per-process set is gone. Every resolution
-  needs positive evidence, and none is ever offered a retry:
-  - a resumable step has its marker (§7.6);
-  - any other transition stays "may have been sent" (`Unknown`) until a re-query of the identity's nonce settles it:
-    `Sent` if the transition with this hash consumed it, `NotSent` if another transition consumed it.
+- **Row-less state transitions after a restart, in both modes (H16).** The per-process set and its tombstones are
+  gone, so `dispatch_status` answers `None`, which for a transition is unknown. Every resolution needs positive
+  evidence, and none is offered a retry before it:
+  - a resumable step has its marker, and §7.6 resolves it;
+  - any other transition has no record, so it stays "may have been sent" for as long as the host shows it, and the
+    engine never answers `NotSent` for it. In its own process the row-less entry keeps the transition's identity and
+    nonce, so a re-query of that nonce settles it (H16).
 
 ## 3. Grants (dw-vault)
 
@@ -575,7 +611,7 @@ before.
 pub struct Lease {                       // Arc<Lease>; owned by its flow
     id: LeaseId,                         // 128-bit, OS RNG (m-1); never persisted as "live"
     wallet: WalletId,
-    flow: FlowKind,                      // Registration, TopUp, ProfileEdit, ContactRequest, Accept, AcceptAndPay, …
+    flow: FlowKind,                      // c3c9bbd's closed list (§16.1)
     table: Arc<LeaseTable>,
 }
 struct LeaseEntry {                      // inside LeaseTable, under J
@@ -763,7 +799,8 @@ An own-key lease, one issued on a `Locked` or `UnlockedMixingOnly` vault, holds 
 - **Expiry:** a timer task drops the `KeyHold` at `key_until` and moves the lease to `Parked{ProofWaiting}`. That
   is a park, not an end. A call that then needs the key gets `platform.needs_grant{purpose}`, and a registration
   row moves to `Unlock` or `Authorize` when its proof arrives, so the host never prompts during the wait.
-  `platform.lease_expired` is reserved for a lease ended by `end_flow` or the idle reaper (§16.4).
+  `platform.lease_expired` is reserved for a lease ended by `end_flow` or the idle reaper, never a passed
+  `key_until` (§16.4).
 - **InstantSend timeout of step 1:** when `create_funded_asset_lock_proof` returns its timeout, the flow calls
   `lease.park(ProofWaiting)`, which drops the key at once. The row records `ProofWaiting{CL}` and waits for the
   ChainLock without any key.
@@ -808,12 +845,16 @@ pub struct LeaseView {                 // owned by m4 §2.11 (flows.rs), §16
 ```
 
 - `NetworkSession::leases() -> Vec<LeaseView>`.
-- **`DashPay::dispatch_status(artifact) -> DispatchState`** (§16.6), where `DispatchState` is one of `WillBeSent`,
-  `MaybeSent`, `Sent`, `NotSent` and `Unknown`. It is never none.
-  - `Unknown` means no entry and no derivation applies. It behaves exactly like `MaybeSent`: no retry, no discard.
-  - Only `NotSent` allows a retry or a discard, and `NotSent` always rests on positive evidence:
-    - a `Revoked` entry;
-    - a row-less settlement `DefinitelyUnsent`;
+- **`DashPay::dispatch_status(artifact) -> Option<DispatchState>`** (§16.6), where `DispatchState` is one of
+  `WillBeSent`, `MaybeSent`, `Sent` and `NotSent`, and `None` means the engine has no entry.
+  - `None` depends on the artifact's kind. For an asset lock with no tracked row either, it means never
+    registered. For a state transition or a `TxDraft` send it means unknown, and it behaves exactly like
+    `MaybeSent`: no retry, no discard (review DW-E0-08 r2 N-1). The host cannot tell the kinds apart, so it reads
+    every `None` as unknown; the engine's funding gates apply the asset-lock reading (§16.6).
+  - A live `Unsent` entry and a `Committing` one read `MaybeSent`: the flow can still commit it.
+  - `NotSent` allows a retry or a discard, and it always rests on positive evidence:
+    - a `Revoked` entry, or an `Unsent` one whose origin is dead (I1: its transport was never called);
+    - a row-less settlement `DefinitelyUnsent`, kept as a tombstone in its process (§5.5);
     - Mode B's definite resolutions (§2a.5);
     - a ChainLocked conflicting spend;
     - a nonce consumed by another transition (H16).
@@ -834,13 +875,14 @@ pub struct LeaseView {                 // owned by m4 §2.11 (flows.rs), §16
 |---|---|---|
 | `Sent` | handed off and seen accepted, or handed off before the lock | — |
 | `WillBeSent` | committed, with a tracked row; the engine resends it on resume, catch-up and reconnect | **never**; the flow waits for `DispatchResolved` |
-| `MaybeSent` (and `Unknown`) | handed off, outcome unknown | only after `DispatchResolved(NotSent)` or a `dispatch_status` of `NotSent` |
+| `MaybeSent` (and a transition's `None`) | handed off, outcome unknown | only after `DispatchResolved(NotSent)` or a `dispatch_status` of `NotSent` |
 | `Cancelled` | nothing of the flow was ever committed, or every committed row-less artifact settled unsent | allowed |
 
 - **Two rules prevent paying twice:**
-  - `funds_committed` (§16.5) holds as soon as any funding of the flow is not `NotSent`;
+  - `funds_committed` (§16.5) holds from the funding's commit (Mode A: its entry reaches `Committing`; Mode B: the
+    funding call takes its permit) until the funding reads `NotSent`;
   - no UI path builds a second asset lock, or a second payment, for a step whose artifact is anything but `NotSent`
-    (H11, §16).
+    (the engine's funding gate also accepts an asset lock's `None`; H11, §16.6).
 - **Which line shows** (reviews GPT r2 11, Opus r2 5a). Exactly one line of §16.10 shows at a time, chosen in order:
   1. a library call of the flow is running (Mode B), or a committed First of the flow is in flight (Mode A):
      **C2**, DEC-67's line. This covers the whole funding call and a funded step 2;
@@ -1140,7 +1182,8 @@ admit(req):
   - **Other refused callers** drop their claims and report Cancelled.
 - **Row-less attempts** (review GPT 1). The fence keeps, in memory and per process, an entry for every row-less
   artifact it admitted:
-  - **The entry:** `Admitted{attempts, possibly_out}` or `Revoked`.
+  - **The entry:** `Admitted{attempts, possibly_out}`, whose state transitions also keep their identity and nonce
+    (H16); `Revoked`, a Core send's tombstone; or `NotSent`, a state transition's tombstone.
   - **Attempt guards.**
     - Every attempt (the First, and every Resend of the same bytes) holds a permit or an `AttemptGuard`.
     - `possibly_out` becomes true, and stays true, when any attempt finishes `Sent` or `MaybeSent`, or is dropped.
@@ -1149,12 +1192,15 @@ admit(req):
       (or `Sent`).
   - **On `DefinitelyUnsent`:**
     - the budget is refunded;
-    - a state transition's id is forgotten, since it has nothing to release, so an identical later signature is a
-      fresh First under a live lease;
+    - a state transition's entry becomes the tombstone `NotSent`, so `dispatch_status` still answers `NotSent`
+      (review DW-E0-08 r2 N-1; rev2 first forgot the id, which left the host nothing to retry on). It has nothing to
+      release. An identical later signature is a fresh First under a live lease: the J step that admits it replaces
+      the tombstone with its attempt before any transport, so the answer is `MaybeSent` from then on. A refusal
+      leaves the tombstone (model `rowless_tombstone`);
     - a Core send's entry becomes `Revoked`, and its engine releases the draft's reservation and pin exactly once
       (the release runs only for that `Settlement`). Any later copy of those bytes is refused.
   - **A refusal of an id never admitted** is definite. For a Core send it makes the entry `Revoked`, and only that
-    refusal's caller releases.
+    refusal's caller releases. For a state transition it writes the tombstone `NotSent`.
   - **What it covers:**
     - a `TxDraft` repeat (`send/mod.rs:1052-1080`);
     - a user resend (`tx_actions.rs:415`);
@@ -1162,7 +1208,8 @@ admit(req):
     - a second holder of the same bytes running concurrently.
   - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
     set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
-    durable marker instead (§7.6).
+    durable marker instead (§7.6). Nor are the tombstones: after a restart `dispatch_status` answers `None`, which
+    for a row-less artifact is unknown (§16.6).
 - **`finish(outcome)`:**
   - It records `Sent`, `MaybeSent` (also the drop default) or `NotSent`.
   - It feeds the lock report and, for a funding permit, the floor of the IS window (§4.4).
@@ -1211,12 +1258,12 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H8 | Every way a lease enters the table (`begin_lease`, the background lease's creation and re-creation, `rebind`) first waits until no lock barrier is set, then reads `lock_gen` before it takes a token or signer. Its insert refuses if a barrier is set or `lock_gen` changed. An insert that finds only the vault epoch moved inserts `NeedsGrant` (§4.1, §8.3; GPT 2). |
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
 | H10 | A resumable step's First writes its durable step marker before any transport (§7.6). A flow resumed in a later process reads `Refused{step_possibly_dispatched: true}` as MaybeSent, never Cancelled. The marker, not the flow's own phase, is the evidence (GPT 3). |
-| H11 | **Fail closed.** No retry, no discard and no second funding of a step is offered unless `dispatch_status` of its artifact (or, in Mode B, of its funding, §2a.5) is `NotSent`. `Unknown`, absent or "no entry" never allows one (review Opus r2 1a). `discard_registration` consults it for the registration's funding; a top-up retry, a payment retry and "Register again" do too. `finish_asset_locks` is **not** gated: it resumes committed locks, which are never `NotSent` (review Opus r2 1a). |
+| H11 | **Fail closed.** No retry, no discard and no second funding of a step is offered unless `dispatch_status` of its artifact (or, in Mode B, of its funding, §2a.5) is `NotSent`. The one exception is the engine's funding gate (`discard_registration`), which also allows an asset lock's `None`: no entry, no marker and no tracked row (§16.6). The host reads every `None` as unknown, and a state transition's or a `TxDraft` send's `None` never allows a retry (reviews Opus r2 1a, DW-E0-08 r2 N-1). `discard_registration` consults it for the registration's funding; a top-up retry, a payment retry and "Register again" do too. `finish_asset_locks` is **not** gated: it resumes committed locks, which are never `NotSent` (review Opus r2 1a). |
 | H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. |
 | H13 | Mode B: each library write call runs under a call permit, taken in a J step that checks the lease and charges the call's quoted budget. A funding call or a resumable step first has its marker written, with the `Committing` pattern (§2a.3). The engine's signer adapters count the signatures released per call permit. |
 | H14 | **Every lock request runs its own vault gate** (review GPT r2 8). Each `lock_vault` call (async, the FFI's sync lock, the relock timer, auto lock) runs `vault.lock()` after its own freeze, and returns only after that gate. Concurrent requests share only the drain. An unlock (`NetworkSession::unlock`) waits while any lock gate is pending, so a lock request is always ordered before an unlock issued after its call. The epoch that a lock ends is always one that existed at or after its call. |
 | H15 | Mode B: the statuses of §2a.5 are derived on every `list_tracked_locks` change, at load and at each call's end. Definite resolutions are written with their marker (`FULL`). |
-| H16 | A row-less transition's `broadcast_unknown` that outlives its process stays `Unknown` until positive evidence settles it: a marker (§7.6), or a re-query of the identity's nonce. If the nonce was consumed by this hash it is `Sent`; if another transition consumed it, `NotSent`. Never offer a retry on `Unknown` (review Opus r2 1a, Part 5 `restart_retry`). |
+| H16 | A row-less transition's `broadcast_unknown` is settled only by positive evidence. In its process, the row-less entry keeps the transition's identity and nonce, and a re-query of that nonce settles it: `Sent` if this hash consumed it, `NotSent` if another transition did. After a restart a resumable step has its marker (§7.6). Any other transition has no record, so `dispatch_status` answers `None`, which is unknown. A retry is never offered on `None` or `MaybeSent` (reviews Opus r2 1a, DW-E0-08 r2 N-1; Part 5 `restart_retry`). |
 
 ### 5.8 Lock order and why nothing can deadlock
 
@@ -1301,8 +1348,9 @@ CREATE TABLE step (                                          -- resumable steps'
   - `Dispatching`: `UPDATE dispatch SET state = 1, dispatched_at = ? WHERE wallet = ? AND txid = ? AND state = 0`,
     or a no-op if the row is already 1.
   - Step marker: `INSERT … ON CONFLICT DO NOTHING`, `FULL`, before the step's transport (§7.6).
-  - No statement sets `state` to 0. The only deletes are the wiping `remove_wallet` of §6.5 and the repair's discard
-    of §6.5.
+  - No statement sets `state` to 0. The only delete is the wiping `remove_wallet` of §6.5, which waits until the
+    wallet tracks no row. So an entry outlives its row, which is why an asset lock's `None` means "never
+    registered" (§16.6).
 
 ### 6.3 States
 
@@ -1381,14 +1429,14 @@ CREATE TABLE step (                                          -- resumable steps'
   dw never restores this file, so this is the only residual, and it needs manual file surgery.
 - **`wallet.sqlite` is restored or rolled back:** every row meets its entry, or has none and is kept. Safe both ways.
 - **A way out for rows with no entry** (reviews Opus 15, GPT r2 13). Tools ▸ Repair "Unrecorded asset locks" lists
-  them; they stay `Unknown` throughout. Repair offers two actions:
+  them; they read `MaybeSent` throughout. Repair offers two actions:
   - **"Send it"** registers the row's transaction under a fresh lease (a prompt). The lock's owner is the user, so it
     commits as a First like any other.
   - **"Cancel it"** builds an engine `TxDraft` that spends one of the row's inputs back to the wallet (a prompt) and
     sends it.
     - Only once that spend is **ChainLocked** can the old transaction never confirm. Only then does the engine record
       the row `NotSent` (as `Revoked`) and run the ordinary cleanup.
-    - Until then the row stays `Unknown`: a peer may still hold the old bytes. Negative observations, such as
+    - Until then the row stays `MaybeSent`: a peer may still hold the old bytes. Negative observations, such as
       unspent inputs or a transaction absent from the local chain or mempool, prove nothing (F17's withheld-peer
       case).
 
@@ -1659,9 +1707,10 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
 - **I4. A refusal is definite.** `Refused` or `Revoked{…}` ⇒ the entry was `Unsent` (I3) ⇒ no `Dispatching` write
   ever succeeded ⇒ no transport call ever happened (I1) and none can (I3). So the cleanup, which happens only on
   `cleanup: true`, never touches bytes that may be on the wire. For a row-less artifact a refusal is given only to an
-  id that was never admitted in this process, or to a tombstoned Core send whose every attempt settled definitely
-  unsent (§5.5). A resumable step's earlier hand-off in an earlier process is visible through its marker, and its
-  refusal says `step_possibly_dispatched` (§7.6).
+  id that was never admitted in this process, or to a tombstoned one whose every attempt settled definitely unsent:
+  a Core send's `Revoked`, or a state transition's `NotSent` under a dead lease (§5.5). A resumable step's earlier
+  hand-off in an earlier process is visible through its marker, and its refusal says `step_possibly_dispatched`
+  (§7.6).
 - **I5. The drain is complete.** `lock_vault` returns only after every permit granted before its freeze has dropped or
   expired (H3, H4).
 - **I6. One owner-guarded cleanup that cannot be dropped, and that frees the inputs.** Only the CAS winner cleans
@@ -1674,7 +1723,8 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
   creation began before a freeze is never inserted after it, and no lease is inserted while a lock's barrier (gate
   and drain) is set (H8).
 - **I10. A row-less settlement is aggregate.** A row-less artifact is settled definitely unsent only when no attempt
-  is running and none may have let it out; a Core send settled so is tombstoned (§5.5).
+  is running and none may have let it out. Every artifact settled so is tombstoned for its process: a Core send
+  as `Revoked`, a state transition as `NotSent` (§5.5).
 - **I11. Resumable steps are write-ahead.** Their transport follows a durable step marker (§7.6).
 - **I12. A possible send survives a power loss** (Mode A). Every `Dispatching` or `PreFence` entry carries a payload
   that rebuilds its row and fences its inputs at load (§6.5).
@@ -1683,7 +1733,9 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
 - **I15. Every lock request ends an epoch that existed at or after its call** (H14). So no grant issued before a
   lock's call survives that lock.
 - **I16. No retry without positive evidence.** A retry, discard or second funding needs `NotSent`, and `NotSent` is
-  never inferred from absence or from negative observations (H11, H16, §6.5).
+  never inferred from negative observations or from a row-less artifact's absence. Only an asset lock's absence (no
+  entry and no tracked row) passes the engine's funding gate, because its entry precedes every transport (I1) and
+  outlives its row (H11, H16, §6.2, §16.6).
 - **I14. Lock outcomes come from history.** `Cancelled` requires that nothing of the flow was ever committed, or that
   every committed artifact settled definitely unsent (§8.4).
 
@@ -1755,7 +1807,7 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
     self-spend and the user's choice to fund again, under rev1's "no entry means retry" and rev2's status
     derivation;
   - registration step 2's ChainLock-height retry with its `Locked` classification and its copy;
-  - a retry offered after a restart.
+  - a retry offered after a restart, the row-less tombstone, and the asset-lock reading of `None`.
 
   It also checks that rev2 never strands a definitely-unsent funding.
 
@@ -1937,8 +1989,14 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
   - the same with the synchronous FFI lock as K2, and with K1's caller dropped;
   - an unlock queued before K1's gate runs after it.
 - **No double pay** (Opus 2, Opus r2 1a, 2):
-  - a restart after a withdrawal's `broadcast_unknown`: `dispatch_status` is `Unknown`, and no retry is offered
-    until the nonce re-query (H16);
+  - a restart after a withdrawal's `broadcast_unknown`: `dispatch_status` is `None`, and no retry is offered (H16);
+  - in one process, a withdrawal definitely rejected: `dispatch_status` is `NotSent` (the tombstone) and a retry is
+    offered. The retry signs identical bytes and is admitted, and from then on the answer is `MaybeSent`, then
+    `Sent`;
+  - an asset lock with no entry: `None` allows a second funding only with no tracked row. With a `Consumed` row
+    after a deleted journal it is `Sent`; with a `Built` row after a rolled-back journal it is `MaybeSent`;
+  - `funds_committed` is false for a live `Unsent` funding (which reads `MaybeSent`) and for a `Revoked` one (which
+    reads `NotSent`), and true from `Committing` on;
   - Mode B: a top-up's `broadcast_unknown` with its row `Built`: `WillBeSent`, no retry. With its row lost to a
     power loss and the lock withheld by a peer: `MaybeSent`, discard refused, until Repair's self-spend is
     ChainLocked;
@@ -1951,7 +2009,7 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
 - **Mode B step 2** (GPT r2 10, 11): a signer `Locked` before the first signature is Cancelled. Between ChainLock-height
   attempts, after an IS submission, and with an earlier marker of the step present, it is MaybeSent and the flow
   parks. While the call runs the UI shows C2, through a signed-before-broadcast barrier.
-- **Repair** (GPT r2 13): a withheld peer holds the row's transaction. "Cancel it" leaves the row `Unknown` until
+- **Repair** (GPT r2 13): a withheld peer holds the row's transaction. "Cancel it" leaves the row `MaybeSent` until
   the self-spend is ChainLocked, and only then cleans it up; nothing is ever declared `NotSent` from negative
   observations.
 - **Auto lock** (Opus r2 5d): it is not armed on a `Locked` vault, so an own-key flow survives inactivity there.
@@ -2200,24 +2258,37 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
   - DP1-02 "Depends" names P2b or P4.
 - **m1-engine §2.1 and §2.2:** as §3.6, with `Vault.lock()` synchronous plus `LockProgress` and `LockReport`.
 - **m1-engine and m1-swift for DP3-01:** `send.cancelled` (§4.6).
-- **m4** (E0-08): conforms to §16, which is authoritative.
+- **m4** (E0-08), per the amendment. Its names and shapes stand, and it matches §16's semantics:
+  - §2.11's `dispatch_status` row and §4's retry clause: the host reads every `None` as unknown, only the engine's
+    funding gates read an asset lock's `None` as never registered, and live entries read `MaybeSent` (§16.6);
+  - §4's refusal list: `discard_registration` unless its funding reads `NotSent` or `None`;
+  - `funds_committed`: §16.5's definition, word for word;
+  - `RevokeCause::WalletClosed`;
+  - `lease_expired`: `end_flow` and the reaper only, without "its own key passed `key_until`";
+  - a lease id's reach and the reaper's 10 minutes, as §16.1 (N-6).
 - **DECISIONS-PENDING B5:** name §11's PR content and say that Mode B is the "no" branch.
 
 ## 16. The contract surface (single source for E0-08)
 
-This section is authoritative. E0-08's m4 conforms to it (manager ruling, rev2), taking the next Contract-Version
-after c3c9bbd's 2. Where c3c9bbd already chose a name and Opus r2 recommended it, the name is kept.
+Names and shapes are E0-08's implemented contract (c3c9bbd, Contract-Version 2), restated here. The semantics are
+this design's (the manager's correction to rev2 ruling 4). Where c3c9bbd's prose differs, E0-08 matches this
+section; §15 lists the lines.
 
 ### 16.1 Leases
 
 - `NetworkSession.begin_flow(wallet_id, flow: FlowKind, grants: Vec<String>) -> Result<String, PlatformError>`
   returns a lease id. `NetworkSession.end_flow(lease: String) -> Result<(), PlatformError>` is synchronous and
   idempotent.
-- A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries.
+- A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A call
+  that needs a purpose the lease lacks gets `platform.needs_grant{purpose}`. Another wallet's lease, or an unknown
+  id, is `platform.grant_invalid` (N-6).
 - **The idle reaper** ends a vault-key lease after 10 minutes with no call, no permit and no running flow task.
-- `FlowKind`: `Registration`, `TopUp`, `Withdraw`, `NameRegistration`, `ProfileEdit`, `ContactRequest`, `Accept`,
-  `AcceptAndPay`, `PrivateDetails`, `EnableDashPayKeys`. There is no `Discovery`: `IdentityScan` is a grant, not a
-  lease (§3.2).
+- `FlowKind` is c3c9bbd's closed list: `Registration`, `TopUp`, `Withdraw`, `NameRegistration`, `ProfileEdit`,
+  `ContactRequest`, `Accept`, `AcceptAndPay`, `PrivateDetails`, `EnableDashPayKeys`, `Discovery`.
+  - A `Discovery` lease holds only an `IdentityScan` grant (§3.2), for a host that runs several
+    `discover_identities` calls under one id.
+  - It has no budget and no hand-off purpose, so the fence refuses every `admit` with its origin. Lock revokes it
+    like any other lease.
 - `BudgetPurpose`: `Funding`, `Credits`, `Spend`, `Crypto`.
 - `LeaseView` (§4.6) and `NetworkSession.leases()` are owned by m4 §2.11 (`flows.rs`).
 - **"Accept and pay"**: one `authorize_set` prompt (one combined Touch ID cap, §3.7), one `begin_flow`, and the id
@@ -2247,39 +2318,76 @@ after c3c9bbd's 2. Where c3c9bbd already chose a name and Opus r2 recommended it
 | Engine situation | Code |
 |---|---|
 | `lease.locked`: a lock landed while `begin_flow` redeemed, or Lock won a flow's permit | `platform.cancelled` |
-| a call names a lease that a revoking call ended | `platform.lease_revoked{cause}`; for an uncommitted write this is E0-04's `Cancelled` too |
-| a call names a lease ended by `end_flow` or the idle reaper | `platform.lease_expired` |
+| `LeaseError::Revoked{cause}`: a call names a lease that a revoking call ended (§4.3's `Revoked{cause}`) | `platform.lease_revoked{cause}`. This call sent nothing; for an uncommitted write it is E0-04's `Cancelled` too |
+| `LeaseError::Ended`: a call names a lease ended by `end_flow` or the idle reaper (§4.3's `Ended`) | `platform.lease_expired`; never for a passed `key_until`, which parks (next row) |
 | `LeaseError::Parked` or `NeedsGrant`: `key_until` passed, an unlock, a scope or passphrase change, a budget at 0 | `platform.needs_grant{purpose}` |
 | a budget refusal | `platform.grant_exceeded{purpose, needed, remaining}` |
+| an unknown, used or other-wallet grant or lease id | `platform.grant_invalid` |
 | outcome `WillBeSent` | `platform.will_be_sent{artifact}` |
-| outcome `MaybeSent` (or `Unknown`) | `platform.broadcast_unknown{artifact}` |
+| outcome `MaybeSent` | `platform.broadcast_unknown{artifact}` |
 | outcome `Cancelled` | `platform.cancelled` |
 | the journal is unavailable, or its schema is newer | the common `storage`, with `Notice{DispatchJournalUnavailable}` |
 
-`RevokeCause`: `Lock`, `Close`, `PassphraseChange`, `WalletRemoved`, `WalletClosed`.
+`RevokeCause`: `Lock`, `Close` (the session's), `PassphraseChange`, `WalletRemoved`, `WalletClosed` (one wallet's
+close, §8.6). c3c9bbd lacks `WalletClosed`, and E0-08 adds it (N-4).
 
 ### 16.5 Two flags
 
 - **`holds_key`** = `LeaseView.own_key && state ∈ {Active, AwaitingProof}`.
-- **`funds_committed`**: true once any funding of the flow is not `NotSent`. It is the only definition, used by
-  `LeaseView`, `RegistrationStatus` and the copy:
-  - in Mode A, a registered artifact (asset lock) of the flow whose `dispatch_status` is not `NotSent`;
-  - in Mode B, a funding marker of the flow whose derived status (§2a.5) is not `NotSent`.
+- **`funds_committed`**: true once a funding of the flow has committed and is not definitely unsent. It is the only
+  definition, used by `LeaseView`, `RegistrationStatus` and the copy, and E0-08 copies it (N-3):
+  - **Mode A:** an asset lock of the flow has its journal entry in `Committing`, `Dispatching`, `Ambiguous` or
+    `PreFence`, or has a tracked row with no entry (unknown provenance, §6.5).
+  - **Mode B:** a funding marker of the flow exists and the funding's status (§2a.5) is not `NotSent`. The marker
+    is taken in the J step that takes the funding call's permit, and is durable before the call starts, so the flag
+    turns on with the permit and survives a restart.
+  - **Not committed:** no entry and no row (never registered); an `Unsent` entry, whether its lease is live (not
+    committed yet) or its origin is dead (never can be); a `Revoked` entry. So a lock that Lock revoked and one
+    still being built both read false, and "Lock to cancel" shows exactly while Lock still cancels.
 
   A contact request's or profile's `MaybeSent` transition does not set it: those are not funding.
 
 ### 16.6 `dispatch_status`, retry and discard
 
-- `DashPay::dispatch_status(artifact: String) -> Result<DispatchState, PlatformError>`. `artifact` is what
-  `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry: a txid, a state-transition hash, or a funding step
-  id (`registration/<draft>/funding`, `topup/<id>/funding`). Mode B uses the step id whenever the engine never saw
-  the funding's txid (§2a.5).
-- `DispatchState`: `WillBeSent`, `MaybeSent`, `Sent`, `NotSent`, `Unknown`. It is never none, and `Unknown` (no entry,
-  no derivation) behaves as `MaybeSent`.
-- **Only `NotSent` allows a retry, a discard or a second funding** (H11). The `broadcast_unknown` retry rule is
-  "after `DispatchResolved(NotSent)` or a `NotSent` status", never "after a re-query shows nothing was sent".
-- `discard_registration` is allowed only when the registration's funding is `NotSent`; otherwise
-  `invalid_argument`.
+- `DashPay::dispatch_status(artifact: String) -> Result<Option<DispatchState>, PlatformError>`, async. `artifact`
+  is what `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry: a txid, a state-transition hash, or a
+  funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). Mode B uses the step id whenever the
+  engine never saw the funding's txid (§2a.5).
+- `DispatchState`: `WillBeSent`, `MaybeSent`, `Sent`, `NotSent`. `None` means the engine has no entry.
+- **What it answers**, first matching row wins:
+
+  | Artifact | Evidence | Answer |
+  |---|---|---|
+  | any | an attempt or a Resend finished `Sent`, or the wallet has seen the transaction (its row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain`) | `Sent` |
+  | asset lock, Mode A | entry `Dispatching`, `PreFence` or `Ambiguous` (the catch-up restores a lost row, §6.5) | `WillBeSent` |
+  | asset lock, Mode A | entry `Unsent` with a live origin, or `Committing` | `MaybeSent` |
+  | asset lock, Mode A | entry `Revoked`, or `Unsent` with a dead origin; Repair's self-spend ChainLocked | `NotSent` |
+  | asset lock, Mode A | no entry, but a tracked row of any status | `MaybeSent` (unknown provenance, §6.5) |
+  | funding, Mode B | §2a.5's table | as there |
+  | state transition, `TxDraft` send | an attempt running or `possibly_out`; a resumable step's marker | `MaybeSent` |
+  | state transition, `TxDraft` send | its tombstone (§5.5); its nonce consumed by another transition (H16) | `NotSent` |
+  | any | none of the above | `None` |
+
+- **What `None` means depends on the artifact's kind:**
+  - **an asset lock** (a funding txid or step id): never registered. Its entry (in Mode B, its marker) precedes
+    tracking and every transport (I1), and an entry outlives its row (§6.2). So with no entry and no row, nothing
+    was or can be sent;
+  - **a state transition or a `TxDraft` send:** unknown, read exactly as `MaybeSent`. Row-less entries and their
+    tombstones live in one process (§5.5), so after a restart `None` is all the engine can say.
+- **Who applies the asset-lock reading.** The artifact string does not carry its kind (a txid and a transition hash
+  look alike), so:
+  - **the host reads every `None` as unknown**, and only `Some(NotSent)` allows a retry it offers (H11). It loses
+    nothing by this. It holds only artifacts from `broadcast_unknown` or `will_be_sent`, which the engine reports
+    after their record exists, so an asset lock the host holds reads `None` only once its record was erased (a
+    wiping removal, or a journal deleted by hand);
+  - **the engine's funding gates apply the asset-lock reading.** They ask about a flow's funding step, whose kind
+    they know: `discard_registration`, and DP1-02's "Register again", which discards first. With no entry, no
+    marker and no tracked row, the step never built a lock, so the gate allows it.
+- The `broadcast_unknown` retry rule is "after `DispatchResolved(NotSent)` or a `NotSent` status", never "after a
+  re-query shows nothing was sent".
+- `discard_registration` is allowed only when the registration's funding reads `NotSent` or `None`; otherwise
+  `invalid_argument`. That implies `!funds_committed`, and it also refuses a live `Unsent`, whose flow is still
+  building.
 - `resume_registration` acts on any state.
 - `finish_asset_locks` is not gated by the journal: it resumes committed locks.
 
@@ -2313,7 +2421,7 @@ engine-side until E0-13 like the other new notices.
 | C1 | no library call running, nothing committed | "{Flow} in progress — Lock to cancel" |
 | C2 | a library call of the flow runs (Mode B), or a committed First of it is in flight (Mode A); DEC-67's promise | "Lock stops new signatures; a transaction already signed may still be sent" |
 | C3 | no call running, `funds_committed`, a further signature needed | "Funds committed — finishing. Lock to stop; you'll finish after you unlock" |
-| C4 | after the lock, by outcome | `Sent`: "Sent" ("Sent before the lock" only when the drain saw it finish); `WillBeSent`: "Will be sent"; `MaybeSent`/`Unknown`: "May have been sent"; `Cancelled`: "Cancelled"; parked: "Unlock to finish" (locked) or "Confirm to finish" (unlocked) |
+| C4 | after the lock, by outcome | `Sent`: "Sent" ("Sent before the lock" only when the drain saw it finish); `WillBeSent`: "Will be sent"; `MaybeSent` (or a transition's `None`): "May have been sent"; `Cancelled`: "Cancelled"; parked: "Unlock to finish" (locked) or "Confirm to finish" (unlocked) |
 | C5 | an auto lock during a flow | "Locked automatically — cancelled" (nothing committed); "Locked automatically — unlock to finish" (otherwise) |
 | C6 | the drain has permits in flight (non-blocking status line) | "Finishing a transaction already handed off" |
 | C7 | the "key held" tooltip | "{Flow} of {name} holds a key for {m:ss} — Lock to cancel" (`!funds_committed`) or "… — Lock to stop" (`funds_committed`); Cross short text "Locked · key held" or "Mixing only · key held" |
