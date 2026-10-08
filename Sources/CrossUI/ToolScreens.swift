@@ -116,7 +116,7 @@ struct AddressBookScreen: View {
                 return
             }
             do {
-                try Data(csv.utf8).write(to: url, options: .atomic)
+                try ExportFile.write(csv, to: url)
                 exportMessage = "\(CrossStrings.exported) \(url.path)"
             } catch {
                 exportMessage = L10n.Transactions.exportFailed

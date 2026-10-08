@@ -4,6 +4,7 @@
 #if os(macOS)
 import AppKit
 import Foundation
+import PlatformServices
 import UniformTypeIdentifiers
 
 /// `NSOpenPanel` for imports, PSBT files and the data directory.
@@ -65,7 +66,7 @@ extension MacSavePanel {
     public static func save(data: Data, suggestedName: String, title: String) async -> MacSaveOutcome {
         guard let url = await chooseDestination(suggestedName: suggestedName, title: title) else { return .cancelled }
         do {
-            try data.write(to: url, options: .atomic)
+            try PrivateFileSystem.writeFile(data, to: url, replacing: true)
             return .saved(url)
         } catch {
             return .failed(error.localizedDescription)

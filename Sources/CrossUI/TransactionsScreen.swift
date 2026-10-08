@@ -192,7 +192,7 @@ struct TransactionsScreen: View {
                 return
             }
             do {
-                try Data(csv.utf8).write(to: url, options: .atomic)
+                try ExportFile.write(csv, to: url)
                 exportFailed = false
                 exportMessage = "\(CrossStrings.exported) \(url.path)"
             } catch {

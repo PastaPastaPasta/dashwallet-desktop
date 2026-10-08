@@ -244,7 +244,7 @@ public final class PSBTViewModel {
         do {
             let data = try psbt.bytes(reference)
             do {
-                try data.write(to: url, options: .withoutOverwriting)
+                try PrivateFileSystem.writeFile(data, to: url, replacing: false)
                 message = L10n.PSBT.saved
             } catch {
                 errorMessage = L10n.M2Errors.destinationUnwritable
