@@ -74,7 +74,12 @@ extension GtkBackend: BackendFeatures.CoreWindowing {
         minimum minimumSize: SIMD2<Int>,
         maximum maximumSize: SIMD2<Int>?
     ) {
-        window.setMinimumSize(to: Size(width: minimumSize.x, height: minimumSize.y))
+        // dashwallet-desktop patch P10: the limit applies to the whole window, so it includes
+        // the menu bar. Upstream gave the window the content's minimum, so a user could shrink
+        // the content one menu bar below its minimum.
+        window.setMinimumSize(
+            to: Size(width: minimumSize.x, height: minimumSize.y + menubarHeight(ofWindow: window))
+        )
 
         // NB: GTK does not support setting maximum sizes for widgets. It just doesn't.
         // https://discourse.gnome.org/t/how-to-build-fixed-size-windows-in-gtk-4/22807/10

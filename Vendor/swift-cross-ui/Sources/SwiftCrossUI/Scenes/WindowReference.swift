@@ -14,7 +14,8 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
     /// The cached window size. Nil on first run or after a window is resized.
     private var cachedWindowSize: SIMD2<Int>?
     /// The size last requested with `setSize(ofWindow:to:)`, until the next resize event
-    /// (dashwallet-desktop patch P10).
+    /// (dashwallet-desktop patch P10; see Vendor/PATCHES.md for backends that never report an
+    /// honoured request).
     private var requestedWindowSize: SIMD2<Int>?
     /// A requested size the window did not take, and the size it kept instead, until the
     /// window gets another size (dashwallet-desktop patch P10).
@@ -75,14 +76,22 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
 
         backend.setResizeHandler(ofWindow: window) { [weak self] newSize in
             guard let self else { return }
-            // dashwallet-desktop patch P10: note a request the window did not take (a window
-            // manager constraint, a misjudged menu bar); see `refusedWindowSize`.
-            if let requested = self.requestedWindowSize, requested != newSize {
+            // dashwallet-desktop patch P10: the first resize event after a request answers it.
+            // GtkBackend reports the allocation that follows a request even when it matches.
+            if let requested = self.requestedWindowSize {
+                self.requestedWindowSize = nil
+                if requested == newSize {
+                    // Honoured. The update that made the request has laid the window out at
+                    // this size already.
+                    self.refusedWindowSize = nil
+                    return
+                }
+                // Refused (a window manager constraint, a misjudged menu bar); see
+                // `refusedWindowSize`.
                 self.refusedWindowSize = (requested, newSize)
             } else if let refused = self.refusedWindowSize, refused.kept != newSize {
                 self.refusedWindowSize = nil
             }
-            self.requestedWindowSize = nil
             self.update(
                 self.scene,
                 proposedWindowSize: newSize,

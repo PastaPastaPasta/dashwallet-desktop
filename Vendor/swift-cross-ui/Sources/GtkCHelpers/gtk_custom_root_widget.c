@@ -48,9 +48,13 @@ void gtk_custom_root_widget_allocate(
 
     root_widget->has_been_allocated = true;
 
-    if (width == root_widget->allocated_width && height == root_widget->allocated_height) {
+    // dashwallet-desktop patch P10: report the first allocation after a preempted size even
+    // when it matches, so the resize handler can tell an honoured request from a refused one.
+    if (width == root_widget->allocated_width && height == root_widget->allocated_height
+        && !root_widget->awaiting_preempted_allocation) {
         return;
     }
+    root_widget->awaiting_preempted_allocation = false;
 
     root_widget->allocated_width = width;
     root_widget->allocated_height = height;
@@ -71,6 +75,7 @@ GtkWidget *gtk_custom_root_widget_new(void) {
     widget->allocated_width = 0;
     widget->allocated_height = 0;
     widget->has_been_allocated = false;
+    widget->awaiting_preempted_allocation = false;
 
     return GTK_WIDGET(widget);
 }
@@ -107,6 +112,7 @@ void gtk_custom_root_widget_preempt_allocated_size(
 ) {
     self->allocated_width = allocated_width;
     self->allocated_height = allocated_height;
+    self->awaiting_preempted_allocation = true;  // dashwallet-desktop patch P10
 }
 
 void gtk_custom_root_widget_set_resize_callback(

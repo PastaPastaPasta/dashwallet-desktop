@@ -182,11 +182,33 @@ Change (comments `dashwallet-desktop patch P10`):
   bar, the window's direct child with the CSS name `menubar`, at its minimum height, as
   GtkApplicationWindow allocates it. The old 25 px stays as the fallback for when GTK has not
   created the menu bar yet. That was observed at the window's first sizing.
+- GtkBackend (`setSizeLimits`): the window's minimum is the content's minimum plus the menu
+  bar. Upstream applied the content's minimum to the whole window, so a user could shrink the
+  content one menu bar below its minimum.
+- GtkCHelpers (`gtk_custom_root_widget.c`): the root widget reports the first allocation after
+  a preempted size (`setSize(ofWindow:to:)`) even when it matches. Upstream returned early on a
+  match, so an honoured request was never answered.
 - SwiftCrossUI (`Scenes/WindowReference.swift`): remember the size last requested with
-  `setSize(ofWindow:to:)`. If the next resize event reports a different size, note the refusal
-  (requested, kept). A later update that would request the same size again while the window
-  still has the kept size lays out at that size instead. Any other window size clears the
-  refusal, so unrelated resizes behave as upstream's do.
+  `setSize(ofWindow:to:)`. The next resize event answers it:
+  - The same size means the request was honoured. The request is forgotten, and there is no new
+    update, because the update that made the request already laid the window out at that size.
+  - A different size means it was refused. The refusal (requested, kept) is noted. A later
+    update that would request the same size again while the window still has the kept size
+    lays out at that size instead. Any other window size clears the refusal, so unrelated
+    resizes behave as upstream's do.
+
+  The first version of this patch had no report of an honoured request. The request then stayed
+  until the next resize, and a later user resize was taken for a refusal. That left a window
+  shrunk to its GTK minimum with the content clipped (review DW-D4 r1).
+
+  On GTK a re-request matters little once the minimum includes the menu bar: a window manager
+  keeps the window at least that tall. Without one (Xvfb), a window forced below it stays there.
+  `setSize(ofWindow:to:)` sets the window's default size, and GTK does not resize a mapped
+  window when that value is unchanged, so the re-request is refused and noted.
+
+  AppKitBackend never reports an honoured request either. The request stays until the user
+  resizes, which then counts as a refusal. That is harmless there, because AppKit keeps the
+  content at least at its minimum itself.
 - Test: the demo harness's "the main thread goes idle" checks after the live onboarding and the
   send flows (`ci/linux/crossui/atspi_demo.py`). `WindowReference` needs a backend, and the
   vendored package has no test backend.
