@@ -2,6 +2,7 @@
 import DashKit
 import Foundation
 import Observation
+import PlatformServices
 
 /// A JSON value, so the settings file can hold sections whose types live in
 /// other modules (e.g. WalletFeatures' `UIPreferences`) without this module
@@ -276,9 +277,9 @@ public final class SettingsStore: SettingsProviding, SessionObserving {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(value)
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try PrivateFileSystem.createDirectory(url.deletingLastPathComponent())
             try data.write(to: url, options: .atomic)
+            try PrivateFileSystem.restrictFile(url)
         } catch {
             throw ServiceError(code: .settingsWriteFailed, detail: "\(url.lastPathComponent): \(error)")
         }

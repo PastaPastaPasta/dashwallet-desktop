@@ -14,13 +14,16 @@ import Testing
     static let abandon12 =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
-    /// A fresh directory under the system temp dir, removed when the test ends.
+    /// A fresh owner-only directory under the system temp dir, removed when
+    /// the test ends. The engine refuses a data root that is group-writable,
+    /// which a plain directory is under umask 002.
     final class TempDir {
         let url: URL
         init() throws {
             url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("dashkit-tests-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         deinit { try? FileManager.default.removeItem(at: url) }
     }

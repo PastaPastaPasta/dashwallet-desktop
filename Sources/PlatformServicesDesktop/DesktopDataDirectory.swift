@@ -68,17 +68,28 @@ public enum DesktopDataDirectory {
         }
     }
 
-    /// Creates `root` (and its parents) if missing and returns it.
+    /// Creates `root` and its missing parents owner-only (0700, whatever the
+    /// umask) and returns it. When `root` is `defaultRoot`, the directory the
+    /// app owns, an existing one that grants group or other access loses it
+    /// (an older build created it with the umask's mode) and `log` says so. Any other existing directory (`--datadir`, the
+    /// chooser) keeps its mode.
     @discardableResult
-    public static func prepare(_ root: URL) throws -> URL {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    public static func prepare(
+        _ root: URL, defaultRoot: URL = DesktopDataDirectory.root(),
+        log: (String) -> Void = PrivateFileSystem.logToStandardError
+    ) throws -> URL {
+        if root.standardizedFileURL.path == defaultRoot.standardizedFileURL.path {
+            try PrivateFileSystem.createOwnedDirectory(root, log: log)
+        } else {
+            try PrivateFileSystem.createDirectory(root)
+        }
         return root
     }
 }
 
 /// `DataLocating` over `DesktopDataDirectory.root(for:)`: the XDG data
 /// directory on Linux, `%APPDATA%` on Windows, Application Support on macOS.
-/// `defaultDataRoot()` also creates the directory.
+/// `defaultDataRoot()` also creates the directory, owner-only.
 public struct DesktopDataLocation: DataLocating {
     public let os: DesktopDataDirectory.HostOS
     public let environment: [String: String]
@@ -95,6 +106,7 @@ public struct DesktopDataLocation: DataLocating {
     }
 
     public func defaultDataRoot() throws -> URL {
-        try DesktopDataDirectory.prepare(DesktopDataDirectory.root(for: os, environment: environment, home: home))
+        let root = DesktopDataDirectory.root(for: os, environment: environment, home: home)
+        return try DesktopDataDirectory.prepare(root, defaultRoot: root)
     }
 }
