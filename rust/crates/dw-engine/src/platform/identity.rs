@@ -94,6 +94,8 @@ impl DashPay {
         stub("DashPay.refresh_balance")
     }
 
+    /// `grant` is an `IdentityScan` grant id only; a lease id is
+    /// `platform.grant_invalid`.
     pub async fn discover_identities(&self, grant: String) -> Result<u32, PlatformError> {
         stub("DashPay.discover_identities")
     }

@@ -17,11 +17,14 @@ pub struct PaymentLock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LockResolution {
-    /// The payment was found; the lock is cleared.
+    /// The payment was sent: an attempt or a Resend finished `Sent`, or the
+    /// wallet has seen it. The lock is cleared.
     Sent,
-    /// The payment was never sent; the lock is cleared.
+    /// Positive evidence that it was never sent: in this process its
+    /// `dispatch_status` is `Some(NotSent)`, or a ChainLocked spend conflicts
+    /// with one of its inputs. Never "not found". The lock is cleared.
     NotSent,
-    /// Still unknown; the lock stays.
+    /// Anything else, read like `MaybeSent`; the lock stays.
     Unknown,
 }
 

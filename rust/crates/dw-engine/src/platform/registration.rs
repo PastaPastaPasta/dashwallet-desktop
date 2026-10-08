@@ -91,8 +91,9 @@ pub struct RegistrationStatus {
     /// A lease holds a key for this flow ("Registration in progress — Lock
     /// to cancel").
     pub holds_key: bool,
-    /// True once any funding of the flow is not `NotSent` (E0-04 §16.5):
-    /// "Funds committed — finishing".
+    /// True once a funding of the flow has committed and is not definitely
+    /// unsent (E0-04 §16.5, copied in the contract's §4.1). A live `Unsent`
+    /// entry is not committed. "Funds committed — finishing".
     pub funds_committed: bool,
     /// While `phase` is `Contested`.
     pub contest_ends_at: Option<u64>,

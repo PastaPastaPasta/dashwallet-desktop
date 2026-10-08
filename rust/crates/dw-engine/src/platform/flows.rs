@@ -79,9 +79,9 @@ pub enum GrantAction {
     EnableDashPayKeys,
 }
 
-/// What the engine knows about a handed-off artifact. `dispatch_status`
-/// returns `None` when it knows nothing (E0-04's `Unknown`), which the host
-/// treats exactly like `MaybeSent`.
+/// What the engine knows about a handed-off artifact (E0-04 §16.6, the
+/// contract's §4.1). `dispatch_status` returns `None` when the engine has no
+/// entry; the host reads every `None` as unknown, exactly like `MaybeSent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchState {
@@ -92,17 +92,20 @@ pub enum DispatchState {
     MaybeSent,
     Sent,
     /// Definitely never sent, on positive evidence: the only state that
-    /// allows a retry, a discard or a second funding.
+    /// allows a retry the host offers.
     NotSent,
 }
 
-/// The payload of the event sent when a provisional outcome resolves: a
-/// later resend was accepted, or a reload refused and cleaned up the entry.
+/// The payload of the event sent when a provisional outcome settles, from
+/// any of E0-04 §4.6's sources: a Resend accepted or the transaction seen,
+/// a reload that cleans up an `Unsent` row, a row-less artifact settled
+/// definitely unsent, Mode B's derived status moving, or H16's evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchResolved {
     /// Lower-case hex, as `WalletId` displays.
     pub wallet_id: String,
-    /// The txid of a Core transaction or the hash of a state transition.
+    /// A txid, a state-transition hash, or a funding step id
+    /// (`registration/<draft>/funding`, `topup/<id>/funding`).
     pub artifact: String,
     pub resolution: DispatchResolution,
 }
@@ -126,6 +129,7 @@ pub struct LeaseView {
     pub own_key: bool,
     /// While an own key is held: seconds until it is dropped.
     pub key_expires_in_secs: Option<u64>,
+    /// E0-04 §16.5's definition, as `RegistrationStatus.funds_committed`.
     pub funds_committed: bool,
     pub budgets: Vec<BudgetView>,
     /// Permits held now.
@@ -198,8 +202,9 @@ impl DashPay {
         stub("DashPay.grant_request")
     }
 
-    /// `None`: the engine knows nothing (E0-04's `Unknown`); never a reason
-    /// to retry.
+    /// `None`: the engine has no entry. The host reads it as unknown, never
+    /// as a reason to retry; only the engine's funding gates read an asset
+    /// lock's `None`, with the tracked-row check (E0-04 §16.6).
     pub async fn dispatch_status(
         &self,
         artifact: String,

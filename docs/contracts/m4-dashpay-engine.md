@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 3
+Contract-Version: 4
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -115,7 +115,7 @@ Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`. | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance; `None` = not found on Platform yet. | `PlatformError` (`identity.not_found`) |
-| `discover_identities(grant)` | async | Same-seed discovery (DP1-05); returns the number of identities found. | `PlatformError` |
+| `discover_identities(grant)` | async | Same-seed discovery (DP1-05); returns the number of identities found. `grant` is an `IdentityScan` grant id only (E0-04 §3.2); a lease id there is `platform.grant_invalid`. | `PlatformError` |
 
 ### 2.2 Registration (DASHPAY §3.4)
 
@@ -124,8 +124,8 @@ Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `
 | `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
 | `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5). | `RegistrationError` |
-| `resume_registration(draft, grant)` | async | Advances a parked flow, in any state. `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. It never builds a second asset lock unless the first funding's `dispatch_status` is `NotSent` (§4). | `RegistrationError` |
-| `discard_registration(draft)` | async | Allowed only when the registration's funding is `NotSent` (§4, the journal decides, whatever the phase); otherwise, while `funds_committed`, `invalid_argument`. | `RegistrationError` |
+| `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
+| `discard_registration(draft)` | async | Allowed only when the registration's funding reads `NotSent` or `None`; otherwise `invalid_argument`. That implies `!funds_committed`, and it also refuses a live `Unsent`, whose flow is still building. This is one of the engine's funding gates, which read an asset lock's `None` with the tracked-row check (§4.1). The journal decides, whatever the phase. | `RegistrationError` |
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
@@ -162,7 +162,7 @@ Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `payment_lock(identity, contact)` | sync | The lock an ambiguous broadcast set (`dp_payment_lock`), if any. | `ContactError` |
-| `resolve_payment_lock(identity, contact)` | async | Reconciles: `Sent` or `NotSent` clear the lock; `Unknown` keeps it. | `ContactError` |
+| `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. | `ContactError` |
 | `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received. | `ContactError` |
 | `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip. | `ContactError` |
 
@@ -225,7 +225,7 @@ screen), and the vault is per network. Before a vault exists (the session's vaul
 | `NetworkSession.end_flow(lease)` | sync | Releases the lease; idempotent. In-flight hand-offs finish first (E0-04 §4.1). | `PlatformError` |
 | `NetworkSession.leases()` | sync | The live leases as `LeaseView`s (E0-04 §4.6): flow, state, own key and its seconds left, `funds_committed`, budgets, permits in flight, and whether a library call of the flow runs (which picks the copy, E0-04 §16.10). Re-queried on E0-04's `LeaseChanged` (§6). | `PlatformError` |
 | `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action; the engine never charges more. | `PlatformError` |
-| `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`, or `None` when it knows nothing; `None` is never a reason to retry (§4). The host calls it before it offers any retry. | `PlatformError` |
+| `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
 
 ## 3. Surface (generated)
 
@@ -234,7 +234,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8fbdb6b2614681234c2d4a1158aebd136b820396ebc98fe4549efb4ca885dfda version: 3 -->
+<!-- surface-sha256: 8fbdb6b2614681234c2d4a1158aebd136b820396ebc98fe4549efb4ca885dfda version: 4 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1202,24 +1202,12 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   - `will_be_sent{artifact}`: the artifact is committed and the engine will send it again, for example when the
     network is back (E0-04 Q13: "will be sent when the network is back"). **Never retried and never discarded**; the
     UI shows it as pending until `DispatchResolved` arrives.
-  - **Only `NotSent` allows a retry, a discard or a second funding** (E0-04 H11, §16.6). The host offers a retry
-    only after `DispatchResolved(NotSent)` or a `dispatch_status` of `Some(NotSent)`; `discard_registration` and a
-    resumed registration's second funding check the same status in the engine. Every other answer blocks the retry:
-    `WillBeSent`, `MaybeSent`, `Sent`, and `None`.
-  - **What `None` means depends on the artifact, and the engine, not the host, interprets it.**
-    - *Registered artifacts* (asset locks) and *funding step ids*: the journal or the funding marker is written
-      durably before any hand-off (E0-04 §5.5, §2a.5), so a missing entry is itself evidence that nothing was handed
-      off. The engine answers `Some(NotSent)` for it, never `None`.
-    - *Row-less artifacts* (every state transition: `send_request`, `accept_request`, `register_name`,
-      `update_profile`, `set_private_details`, `enable_dashpay_keys`, `withdraw`; and `TxDraft` sends): their
-      entries live in a per-process set that a restart loses. A missing entry is **unknown** (`None`, E0-04's
-      `Unknown`), and the host treats it exactly like `MaybeSent`: no retry. `NotSent` for them rests on positive
-      evidence only: a settlement the engine recorded in this process (E0-04's tombstone, once it exists), or a
-      nonce re-query that shows another transition consumed the nonce (E0-04 H16). Before the tombstone exists, a
-      settled-unsent transition whose id was forgotten answers `None`, which blocks a retry that would have been
-      safe, never one that is unsafe; after it, the engine answers `Some(NotSent)` instead. The rule holds either way.
-    - *In flight* (an entry under a live lease not yet committed, or `Committing`): `MaybeSent`, never `NotSent`.
-  - A registration whose funding is anything but `NotSent` is `funds_committed` (§5).
+  - **Retry, discard and what `None` means: §4.1, which is E0-04 §16.6 word for word.** The host offers a retry only
+    after `DispatchResolved(NotSent)` or a `dispatch_status` of `Some(NotSent)`, and reads every `None` as unknown,
+    whatever the artifact. Only the engine's funding gates apply the asset-lock reading of `None`, with the
+    tracked-row check. The row-less artifacts (state transitions: `send_request`, `accept_request`, `register_name`,
+    `update_profile`, `set_private_details`, `enable_dashpay_keys`, `withdraw`; and `TxDraft` sends) are §4.1's
+    "state transition, `TxDraft` send" rows.
   - `cancelled`: Lock won before the hand-off; nothing was sent, and a retry is safe after an unlock.
 - **Leases and grants** (E0-04's `LeaseError`, mapped as E0-04 design rev2 §16.4 has it):
 
@@ -1249,7 +1237,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
     that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`;
-  - `discard_registration` while `funds_committed` (its funding is not `NotSent`; the journal decides, not the
+  - `discard_registration` unless its funding reads `NotSent` or `None` (§4.1; the journal decides, not the
     phase), an unknown draft, candidate or faucet key id, an
     `initial_profile` avatar candidate without a URL: `invalid_argument`;
   - a call for a feature the build or the settings leave off (the faucet, Imgur): `platform.feature_off{feature}`;
@@ -1260,6 +1248,73 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   `funding_insufficient{needed, available}` (duffs, both domains), `below_minimum{min}` (duffs),
   `feature_off{feature}`, `not_implemented{call}`, `keys_missing{purpose}`, `recoverable{draft}`, `invalid{rules}`,
   `ineligible{reason}`, `payment_locked{txid}`.
+
+### 4.1 Funds committed and dispatch status (E0-04 §16.5 and §16.6, word for word)
+
+Copied word for word from the E0-04 design (`docs/design/E0-04-grants-leases.md` at `723d9d3`, amendment 2). The
+section and rule references inside (§2a.5, §5.5, §6.2, §6.5, H11, H16, I1, N-3, the J step) are E0-04's. Where
+anything else in this contract reads differently, this subsection wins.
+
+#### E0-04 §16.5 Two flags
+
+- **`holds_key`** = `LeaseView.own_key && state ∈ {Active, AwaitingProof}`.
+- **`funds_committed`**: true once a funding of the flow has committed and is not definitely unsent. It is the only
+  definition, used by `LeaseView`, `RegistrationStatus` and the copy, and E0-08 copies it (N-3):
+  - **Mode A:** an asset lock of the flow has its journal entry in `Committing`, `Dispatching`, `Ambiguous` or
+    `PreFence`, or has a tracked row with no entry (unknown provenance, §6.5).
+  - **Mode B:** a funding marker of the flow exists, or a tracked row matches the draft's own funding key, and the
+    funding's status (§2a.5) is not `NotSent`. The marker is taken in the J step that takes the funding call's
+    permit, and is durable before the call starts, so the flag turns on with the permit and survives a restart.
+  - **Not committed:** no entry and no row (never registered); an `Unsent` entry, whether its lease is live (not
+    committed yet) or its origin is dead (never can be); a `Revoked` entry. So a lock that Lock revoked and one
+    still being built both read false, and "Lock to cancel" shows exactly while Lock still cancels.
+
+  A contact request's or profile's `MaybeSent` transition does not set it: those are not funding.
+
+#### E0-04 §16.6 `dispatch_status`, retry and discard
+
+- `DashPay::dispatch_status(artifact: String) -> Result<Option<DispatchState>, PlatformError>`, async. `artifact`
+  is what `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry: a txid, a state-transition hash, or a
+  funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). Mode B uses the step id whenever the
+  engine never saw the funding's txid (§2a.5).
+- `DispatchState`: `WillBeSent`, `MaybeSent`, `Sent`, `NotSent`. `None` means the engine has no entry.
+- **What it answers**, first matching row wins:
+
+  | Artifact | Evidence | Answer |
+  |---|---|---|
+  | any | an attempt or a Resend finished `Sent`, or the wallet has seen the transaction (its row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain`) | `Sent` |
+  | asset lock, Mode A | entry `Dispatching`, `PreFence` or `Ambiguous` (the catch-up restores a lost row, §6.5) | `WillBeSent` |
+  | asset lock, Mode A | entry `Unsent` with a live origin, or `Committing` | `MaybeSent` |
+  | asset lock, Mode A | entry `Revoked`, or `Unsent` with a dead origin; Repair's self-spend ChainLocked | `NotSent` |
+  | asset lock, Mode A | no entry, but a tracked row of any status | `MaybeSent` (unknown provenance, §6.5) |
+  | funding, Mode B | §2a.5's table | as there |
+  | state transition, `TxDraft` send | an attempt running or `possibly_out`; a resumable step's marker | `MaybeSent` |
+  | state transition, `TxDraft` send | its tombstone (§5.5); a different transition this engine signed is proved executed in its nonce slot (H16) | `NotSent` |
+  | any | none of the above | `None` |
+
+- **What `None` means depends on the artifact's kind:**
+  - **an asset lock** (a funding txid or step id): never registered. Its entry (in Mode B, its marker) precedes
+    tracking and every transport (I1), and an entry outlives its row (§6.2). So with no entry and no row, nothing
+    was or can be sent;
+  - **a state transition or a `TxDraft` send:** unknown, read exactly as `MaybeSent`. Row-less entries and their
+    tombstones live in one process (§5.5), so after a restart `None` is all the engine can say.
+- **Who applies the asset-lock reading.** The artifact string does not carry its kind (a txid and a transition hash
+  look alike), so:
+  - **the host reads every `None` as unknown**, and only `Some(NotSent)` allows a retry it offers (H11). It loses
+    nothing by this. It holds only artifacts from `broadcast_unknown` or `will_be_sent`, which the engine reports
+    after their record exists, so an asset lock the host holds reads `None` only once its record was erased (a
+    wiping removal, or a journal deleted by hand);
+  - **the engine's funding gates apply the asset-lock reading.** They ask about a flow's funding step, whose kind
+    they know: `discard_registration`, and DP1-02's "Register again", which discards first. With no entry, no
+    marker and no tracked row matching the step (in Mode A by its txid, in Mode B by the draft's own funding key or
+    the marker's), the step never built a lock, so the gate allows it.
+- The `broadcast_unknown` retry rule is "after `DispatchResolved(NotSent)` or a `NotSent` status", never "after a
+  re-query shows nothing was sent".
+- `discard_registration` is allowed only when the registration's funding reads `NotSent` or `None`; otherwise
+  `invalid_argument`. That implies `!funds_committed`, and it also refuses a live `Unsent`, whose flow is still
+  building.
+- `resume_registration` acts on any state.
+- `finish_asset_locks` is not gated by the journal: it resumes committed locks.
 
 ## 5. Records
 
@@ -1295,12 +1350,12 @@ The shapes are in §3. What they mean, where the name does not say:
     while a library call of the flow runs; otherwise C3 ("Funds committed — finishing. Lock to stop; you'll finish
     after you unlock") when `funds_committed` and a further signature is needed; otherwise C1 ("Registration in
     progress — Lock to cancel").
-  - `funds_committed`: **E0-04 §16.5's definition, the only one**, shared with `LeaseView.funds_committed` and the
-    copy: true once any funding of the flow is not `NotSent`. In Mode A (with the platform PR) that is a registered
-    asset lock of the flow whose `dispatch_status` is not `NotSent`; in Mode B (without it) a funding marker of the
-    flow whose derived status (E0-04 §2a.5) is not `NotSent`. A contact request's or a profile's `MaybeSent`
-    transition does not set it: those are not funding. While it is true, discard is refused ("Funds committed —
-    finishing", F2).
+  - `funds_committed`: E0-04 §16.5's definition, copied word for word in §4.1 and the only one, shared with
+    `LeaseView.funds_committed` and the copy: true once a funding of the flow has committed and is not definitely
+    unsent. Mode A means the journal states and the entry-less tracked row listed there, and Mode B (without the
+    platform PR) a funding marker or a tracked row matching the draft's own funding key. A live `Unsent` entry and a
+    `Revoked` one are not committed, so "Lock to cancel" shows exactly while Lock still cancels. While it is true,
+    discard is refused ("Funds committed — finishing", F2).
   - `contest_ends_at` while `Contested`; `failure` when `Failed`: the phase it stopped in, the code, `retryable`, and
     `needed`/`available` for the `*funding_insufficient*` and `insufficient_credits` codes.
 - **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id),
@@ -1373,7 +1428,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13 | E0-05, E0-10b, E0-13 |
 | `EngineEvent::Platform{network, wallet_id, change}` (§3.5) | E0-06 |
-| `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome resolves: a later resend was accepted (`Sent`), or a reload refused the entry and cleaned it up (`NotSent`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
+| `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
 | `EngineEvent::LeaseChanged{network, lease: LeaseView}` and `LockProgress{network, phase}`, engine-side until E0-13 | E0-04 (P2a), E0-13 |
 | m1's `SendError` gains `send.cancelled` for a contact payment that Lock refused (E0-04 §16.11) | DP3-01 (P5 reuses it for M1 sends) |
@@ -1442,7 +1497,8 @@ with 1–21 and changed 5, 8, 9, 10, 12 and 16; the result is below):
     facade (§6; ROADMAP E0-05 row).
 
 **From E0-04** (version 2 from its design review r1, findings 2 and 4; version 3 conformed to its design rev2 §16,
-which is authoritative for this surface). E0-04 adopted this contract's names (`will_be_sent`, `GrantAction` with
+which is authoritative for this surface; version 4 to the final design at `723d9d3`, amendment 2, copying §16.5 and
+§16.6 word for word in §4.1). E0-04 adopted this contract's names (`will_be_sent`, `GrantAction` with
 `identity`, `DispatchState`'s four values, the `Unlock`/`Authorize` waits, `resolution`). A later E0-04 revision that
 renames or reshapes them takes the next version bump:
 
@@ -1450,7 +1506,8 @@ renames or reshapes them takes the next version bump:
     `leases() -> Vec<LeaseView>`. A lease id is accepted only by calls of its wallet for a purpose it carries
     (`grant_invalid` and `needs_grant{purpose}` otherwise); the idle reaper ends a vault-key lease after 10 minutes
     (§1, §2.11). `FlowKind` is E0-04 §16.1's closed list; it has no `Discovery`, because the identity scan uses a
-    grant, not a lease. The async `NetworkSession` calls take `self: &Arc<Self>`, the engine's receiver for calls
+    grant, not a lease: `discover_identities` takes an `IdentityScan` grant id only, and a lease id there is
+    `platform.grant_invalid`. The async `NetworkSession` calls take `self: &Arc<Self>`, the engine's receiver for calls
     that run on its runtime.
 27. **Grant sizing.** `GrantRequest{max_duffs, max_credits}` in `RegistrationQuote`, `TopUpQuote` and
     `WithdrawQuote`, and `grant_request(identity, action)` for the writes without a quote; the engine charges no more
@@ -1460,17 +1517,25 @@ renames or reshapes them takes the next version bump:
     needs keys again (§5).
 29. **Lease and grant codes.** `platform.needs_grant{purpose}`, `platform.lease_revoked{cause}`,
     `platform.lease_expired`, and `platform.grant_exceeded{purpose, needed, remaining}` (it had no parameters);
-    `lease.locked` maps to `platform.cancelled`, an unavailable journal to `storage`; an own key past `key_until` is
-    `needs_grant`, not `lease_expired` (§4 table). `RevokeCause` includes `WalletClosed`.
+    `lease.locked` maps to `platform.cancelled`, an unavailable journal to `storage`; `lease_expired` is only for
+    `end_flow` and the idle reaper, and an own key past `key_until` is `needs_grant` (§4 table). `RevokeCause`
+    includes `WalletClosed`.
 30. **`platform.will_be_sent{artifact}`**, distinct from `platform.broadcast_unknown{artifact}`: a committed artifact
     the engine will resend; never retried or discarded (finding 2). Both carry the artifact id.
-31. **Only `NotSent` allows a retry, a discard or a second funding** (review DW-E0-08 r2 N-1, N-2). `None` from
-    `dispatch_status` is never a retry signal: for asset locks and funding steps the engine turns a missing entry into
-    `NotSent` itself, and for row-less artifacts (state transitions, `TxDraft` sends) a missing entry is unknown.
-    That reading holds before and after E0-04's tombstone for settled row-less artifacts (§4). `dispatch_status`
-    returns `Option<DispatchState>`, where `None` is E0-04 §16.6's `Unknown`. `resume_registration` acts in any state
-    but never funds twice; `finish_asset_locks` is not gated. `funds_committed` is E0-04 §16.5's definition (§5).
-32. **`DispatchResolved`**, the event payload for a provisional outcome that resolves; the `EngineEvent` variant and
-    the three dispatch notices land with E0-04 P2 and E0-13 (§6).
+31. **Retry, discard and `None` follow E0-04 §16.6 word for word** (§4.1; reviews DW-E0-08 r2 N-1 and N-2, r3 C-1).
+    `dispatch_status` returns `Option<DispatchState>` with four values, and `None` means the engine has no entry.
+    The host reads every `None` as unknown; only the engine's funding gates read an asset lock's `None` as never
+    registered, and only with no entry, no marker and no tracked row matching the step (in Mode A by its txid, in
+    Mode B by the draft's own funding key or the marker's). Version 3 promised a host-visible `Some(NotSent)` for a
+    missing asset-lock or funding entry; that is withdrawn, because a tracked row that survives a journal loss would
+    have allowed a second funding. `resume_registration` acts on any state; `finish_asset_locks` is not gated.
+    `funds_committed` is §16.5 word for word (r3 C-2): a live `Unsent` entry is not committed.
+32. **`DispatchResolved`**, the event payload for a provisional outcome that settles, with E0-04 §4.6's sources and a
+    txid, state-transition hash or funding step id as its artifact; the `EngineEvent` variant and the three dispatch
+    notices land with E0-04 P2 and E0-13 (§6).
 33. **`holds_key`** is `LeaseView.own_key` with the lease `Active` or `AwaitingProof`, and its copy depends on
     `funds_committed` (§5, finding 3).
+34. **`resolve_payment_lock` needs positive evidence for `NotSent`** (review r3 G-1, C-7): in this process
+    `dispatch_status(txid) == Some(NotSent)`, or a ChainLocked conflicting spend of one of the payment's inputs; never
+    "not found on chain or in the wallet". `LockResolution::Unknown` reads like `MaybeSent` and `None`, and the lock
+    stays (§2.5).
