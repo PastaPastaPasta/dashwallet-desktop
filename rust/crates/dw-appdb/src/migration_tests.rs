@@ -182,7 +182,7 @@ fn shipped_migrations_are_unchanged() {
 }
 
 const CHECKSUM_INITIAL: u64 = 15039092102494657885;
-const CHECKSUM_DASHPAY: u64 = 10226747534079937336;
+const CHECKSUM_DASHPAY: u64 = 11805424486264248187;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {

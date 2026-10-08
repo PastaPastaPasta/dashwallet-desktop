@@ -125,9 +125,11 @@ it is no longer written.
 4. Store the secret under this vault's DEK and register the wallet (seed-safety order, as
    `import_wallet`), with the payload's name and birth height. A wallet registered with keys
    already: `backup.already_exists`.
-5. Insert the `app_rows` (`INSERT OR IGNORE`; identical rows are skipped), so labels, address
-   book, receive requests, UTXO locks, wallet settings and the wallet's DashPay `dp_*` rows return
-   (§3.1).
+5. Insert the `app_rows` (`INSERT OR IGNORE`): a row whose primary key or unique index matches
+   an existing row is skipped and the existing row is kept (for `dp_registration_lock`, a restored
+   registration whose asset-lock outpoint is already held by a flow adds no second flow; the
+   existing flow stays). So labels, address book, receive requests, UTXO locks, wallet settings and
+   the wallet's DashPay `dp_*` rows return (§3.1).
 
 Wallet state is rebuilt by the compact-filter scan from the birth height. A restore that fails
 after a wallet was registered (its app rows, or a later bundle of the file) removes the wallets it

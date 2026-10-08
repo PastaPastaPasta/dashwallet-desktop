@@ -262,7 +262,11 @@ The layered provider's policy (`platform/trust.rs`):
    - while the fallback is in use, has the changeset tap (§3.5) record every entity a changeset touches (identity
      ids, contact-request ids, DPNS labels) in dw-appdb `dp_trust_unverified(wallet_id, kind, key, since)`;
    - once SPV has synced, re-fetches those entities, and clears each row when its re-fetch verifies against SPV;
-   - lets no money move to an entity that still has a row (DP3-04).
+   - lets no money move to an entity that still has a row in **any** wallet (DP3-04): the gate queries
+     `WHERE kind = ? AND key = ?`, not just the current `wallet_id`. wallet.sqlite holds one row per identity (a write
+     from another wallet is a no-op), so wallet A's flag covers an identity wallet B relies on; a verified re-fetch of
+     an identity clears its rows in every wallet. Contact-request and DPNS rows are per wallet there and are cleared
+     by the owning wallet's re-fetch.
 6. **Contracts and the activation height** may still come from the trusted provider; the SDK verifies contract
    fetches through proofs as well.
 
@@ -631,7 +635,7 @@ Nothing secret goes to `settings.json` or SQLite.
 | Store | What DashPay adds |
 |---|---|
 | `wallet.sqlite` (`SqlitePersister`, the library's) | Everything the library persists: identities (with DPNS names and profiles), public identity keys, contacts (alias, note, hidden, accepted accounts, `payment_channel_broken`), ignored senders, asset locks and proofs, invitations, DPNS name states, scan state, the DashPay payments overlay. **Nothing written by us.** |
-| `app.sqlite` (dw-appdb, append-only migrations; the wallet column is `wallet_id`, as in every dw-appdb table, so wallet removal and `.dwbackup` export cover these) | `dp_main_identity(wallet_id, identity)`; `dp_registration(id, wallet_id, identity_index, identity, label, temp_label, funding, initial_profile, asset_lock_outpoint, phase, error, retryable, created_at, updated_at)` (`initial_profile`: the profile entered at Draft as JSON, kept until `ProfileCreated`; the outpoint is unique per wallet, so one asset lock funds one flow); `dp_contest_watch(wallet_id, identity, label, ends_at, last_state)`; `dp_events(id, wallet_id, identity, kind, contact, ref, at, read_at)` (contact and ref are `''` when absent; unique on all but id, so journal writes are `INSERT OR IGNORE`); `dp_payment_lock(wallet_id, identity, contact, txid, since)`; `dp_trust_unverified(wallet_id, kind, key, since)` (§2.2; per wallet, since two wallets can hold copies of one entity and each copy is cleared when that wallet's store re-fetches it); `dp_avatar(url_sha, content_sha, dhash, status, file, fetched_at, bytes)` (network-wide cache index; `status` is the fetch and decode outcome of the URL only, never a verdict on a profile's `avatarHash` or fingerprint, which is checked per profile when reading; thumbnail files are named by content, so rows can share one and rotation counts and unlinks a shared file once, when no row names it); `dp_prefs(wallet_id, identity, key, value)` |
+| `app.sqlite` (dw-appdb, append-only migrations; the wallet column is `wallet_id`, as in every dw-appdb table, so wallet removal and `.dwbackup` export cover these) | `dp_main_identity(wallet_id, identity)`; `dp_registration(id, wallet_id, identity_index, identity, label, temp_label, funding, initial_profile, asset_lock_outpoint, phase, error, retryable, created_at, updated_at)` (`initial_profile`: the profile entered at Draft as JSON, kept until `ProfileCreated`; the outpoint is unique per wallet, so one asset lock funds one flow); `dp_contest_watch(wallet_id, identity, label, ends_at, last_state)`; `dp_events(id, wallet_id, identity, kind, contact, ref, at, read_at)` (contact and ref are `''` when absent; unique on all but id, so journal writes are `INSERT OR IGNORE`); `dp_payment_lock(wallet_id, identity, contact, txid, since)`; `dp_trust_unverified(wallet_id, kind, key, since)` (§2.2; keyed per wallet, but wallet.sqlite stores one row per identity, so another wallet's write is a no-op: the money-move gate blocks when ANY wallet flags the entity, and a verified re-fetch of an identity clears its rows in every wallet; contact-request and DPNS rows are per wallet and cleared by their own wallet's re-fetch); `dp_avatar(url_sha, content_sha, dhash, status, file, fetched_at, bytes)` (network-wide cache index; `status` is the fetch and decode outcome of the URL only, never a verdict on a profile's `avatarHash` or fingerprint, which is checked per profile when reading; thumbnail files are named by content, so rows can share one and rotation counts and unlinks a shared file once, when no row names it); `dp_prefs(wallet_id, identity, key, value)` |
 | `<network>/avatars/` (mode 0700) | engine-re-encoded PNG thumbnails (128 and 256 px) named by SHA-256, never the original bytes; rotated at 200 MB, oldest first |
 | vault | pending invitation links; the Imgur delete hash |
 | UI settings | advanced mode, notifications toggle, contact sort, "load contact pictures" |
@@ -696,7 +700,11 @@ backup says `KeysPrepared` while the source machine has already funded and regis
 3. writes `asset_lock_outpoint` when the lock is **built**, before it is broadcast, so a kill or a snapshot after the
    broadcast never shows an unfunded phase for a funded flow (the unique index then also keeps a second flow off the
    same lock; `finish_asset_locks` reuses the stranded lock's row);
-4. runs an automatic backup when the flow reaches `FundingSent`, so the newest backup carries the outpoint.
+4. runs an automatic backup when the flow reaches `FundingSent`, so the newest backup carries the outpoint;
+5. writes `asset_lock_outpoint` in one canonical text only (lower-case hex txid, `:`, decimal vout, `OutPoint`'s
+   `Display`), and keys any upsert on the lock with the index's predicate:
+   `ON CONFLICT(wallet_id, asset_lock_outpoint) WHERE asset_lock_outpoint IS NOT NULL DO ...` (SQLite rejects the
+   statement without the `WHERE`).
 
 An invitation-funded row (`Invitation{link_id}`) **fails with a typed error on another machine**, for example
 `invitation.invalid` ("open the invitation link again"): the link is in the vault of the source machine only. That is
@@ -739,6 +747,10 @@ While the trusted fallback is in use (§2.2), the tap also writes every entity a
 The conventions are m1's: hex wallet ids, base58 identity ids, duffs and credits as `u64`, `Option` for unknown values,
 grants by id, one error enum per domain. Records derive `serde` (plus `uniffi` or `specta` in the binding crate only).
 Sync calls read in-memory state; async calls touch the network or persistence.
+
+Note for DP1-02: `dp_registration.asset_lock_outpoint` is unique per wallet byte-wise, and the column has no format
+CHECK. Format it in exactly one place, as lower-case hex txid, `:`, decimal vout (`OutPoint`'s `Display`); no helper
+exists yet, so DP1-02 adds the single writer and a test that `'T:0'`-style upper-case input is normalized or rejected.
 
 ```rust
 // NetworkSession::dashpay(wallet_id) -> Arc<DashPay>
@@ -863,7 +875,10 @@ Notices: `PlatformTrustMismatch`, `DashPayStartupIncomplete`, and the existing `
     them;
   - decoded with `image` size limits, then re-encoded to PNG;
   - checked against the profile's `avatarHash` and dHash; a mismatch shows the initials avatar;
-  - "Load contact pictures" is on by default and can be turned off.
+  - "Load contact pictures" is on by default and can be turned off;
+  - DP4-02 writes thumbnails through descriptors, never by path: `avatars_dir()` was checked once, at session open, and
+    a user-chosen symlink may stand in for the directory. Open the directory `O_NOFOLLOW|O_DIRECTORY` (or through
+    dw-fs) and create files with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0600. A symlink target keeps its own mode.
 - **Gravatar** e-mail addresses are hashed in Rust and never stored. **Imgur** uploads are anonymous, and the delete
   hash is kept.
 - **Bearer credentials** (invitation links, `dapk` QR payloads, the faucet asset-lock key):

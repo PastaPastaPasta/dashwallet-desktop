@@ -168,7 +168,7 @@ UB-0, UB-1 and UB-2 take the slots of U-01…U-06 in the waves below.
 | ID | Task | Deps | Size | Owner | Tier | Stack-indep | Acceptance |
 |---|---|---|---|---|---|---|---|
 | DP4-01 | Profile read and update (limits from the contract: 25 / 140) | DP2-01 | S | engine | T2 | Y | A contact sees the change within 2 passes. |
-| DP4-02 | Avatar pipeline (DASHPAY §3.8): fetch guard, verification, re-encoding, cache, privacy toggle; URL, Gravatar and file sources; Imgur only with B1 | DP4-01 | L | engine | T0, T2 | Y | Fixtures: oversize, wrong hash, redirect to 10.0.0.1, GIF. A mismatch shows initials; no fetch reaches a private IP; hash and dHash equal the library's. |
+| DP4-02 | Avatar pipeline (DASHPAY §3.8): fetch guard, verification, re-encoding, cache, privacy toggle; URL, Gravatar and file sources; Imgur only with B1 | DP4-01 | L | engine | T0, T2 | Y | Fixtures: oversize, wrong hash, redirect to 10.0.0.1, GIF. A mismatch shows initials; no fetch reaches a private IP; hash and dHash equal the library's. Thumbnails are written through descriptors, not by path (DASHPAY §3.8). |
 | DP4-03 | UI: Edit Profile (crop, unsaved-changes guard); avatars in every list | DP4-02, DP1-10 | M | UI | T0 | N | — |
 
 ### DP5 — Invitation claim

@@ -60,7 +60,12 @@ CREATE TABLE dp_registration (
 ) STRICT;
 CREATE INDEX dp_registration_wallet ON dp_registration (wallet_id, phase);
 -- Draft and KeysPrepared rows (no outpoint yet) are unaffected: NULLs are
--- distinct, and the index leaves them out.
+-- distinct, and the index leaves them out. The uniqueness is byte-wise, so it
+-- holds for one canonical text only: the lower-case hex txid in display order,
+-- a colon, the decimal vout (`OutPoint`'s `Display`), e.g. 'ab12...ef:0'. The
+-- column has no format CHECK; every writer must produce that text ('T:0' and
+-- 't:0' would count as two flows). An upsert on this index must repeat the
+-- WHERE clause below in its ON CONFLICT target.
 CREATE UNIQUE INDEX dp_registration_lock ON dp_registration (wallet_id, asset_lock_outpoint)
     WHERE asset_lock_outpoint IS NOT NULL;
 
@@ -113,10 +118,15 @@ CREATE TABLE dp_payment_lock (
 -- Entities stored while the trusted-quorum fallback was in use (§2.2) and not
 -- yet re-verified against SPV: `kind` is 'identity', 'contact_request' or
 -- 'dpns_label'; `key` is its id or label. No money moves to an entity that
--- has a row. Scoped to the wallet like the other tables: two wallets can hold
--- a copy of one entity, and each copy is cleared only when that wallet's
--- store has re-fetched it. Removing a wallet removes its rows; a backup
--- carries them (restoring a flag is the conservative choice).
+-- has a row. Scoped to the wallet like the other tables, but the stored
+-- entity is not: wallet.sqlite keeps one row per identity (a write from
+-- another wallet is a no-op), so wallet A's flag can cover an identity that
+-- wallet B relies on. The money-move gate therefore blocks when ANY wallet
+-- flags the entity (`WHERE kind = ? AND key = ?`, not just the current
+-- wallet_id), and a verified re-fetch of an identity clears its rows in every
+-- wallet. Contact requests and DPNS states are per wallet there, so those rows
+-- are cleared by the owning wallet's re-fetch. Removing a wallet removes its
+-- rows; a backup carries them (restoring a flag is the conservative choice).
 CREATE TABLE dp_trust_unverified (
     wallet_id TEXT    NOT NULL,
     kind      TEXT    NOT NULL,

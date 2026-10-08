@@ -209,8 +209,11 @@ impl NetworkSession {
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
         // Owner-only whatever the umask (DASHPAY §3.4). The cache is
-        // disposable, so a stray file or a dangling symlink named `avatars`
-        // turns avatars off for this session instead of failing the open.
+        // disposable, so a stray file, a symlink that cannot be resolved, or
+        // an entry owned by another user (or a symlink loop) named `avatars`
+        // turns avatars off for this session instead of failing the open. A
+        // dangling symlink whose target can be created is followed and the
+        // target created (mode 0700); avatars stay on.
         let avatars_ready = match create_owned_dir(&data_dir, Path::new(AVATARS_DIR)) {
             Ok(()) => true,
             Err(e) => {
