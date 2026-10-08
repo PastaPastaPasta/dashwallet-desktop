@@ -43,6 +43,7 @@ dw-compat = { path = "crates/dw-compat" }
 dw-console = { path = "crates/dw-console" }
 dw-desktop = { path = "crates/dw-desktop" }
 dw-engine = { path = "crates/dw-engine" }
+dw-fs = { path = "crates/dw-fs" }
 dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
 dw-psbt = { path = "crates/dw-psbt" }

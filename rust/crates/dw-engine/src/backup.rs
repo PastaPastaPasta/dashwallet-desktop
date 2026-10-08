@@ -716,9 +716,9 @@ impl NetworkSession {
         }
         let result = async {
             let bytes = self.backup_bytes(id, None, true).await?;
-            let d = dir.clone();
+            let (data_dir, d) = (self.data_dir().to_path_buf(), dir.clone());
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                crate::fsutil::create_owned_dir(&d)?;
+                crate::fsutil::create_owned_dir(&data_dir, Path::new(BACKUP_DIR))?;
                 write_new_private(&path, &bytes)?;
                 prune(&d, Some(id), keep)
             })

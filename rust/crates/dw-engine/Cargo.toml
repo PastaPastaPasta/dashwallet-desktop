@@ -28,6 +28,8 @@ dw-compat = { workspace = true }
 dw-psbt = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
+# Owner-only directories and files, changed through descriptors.
+dw-fs = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
