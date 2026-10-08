@@ -15,10 +15,11 @@
 //! derivations, path gates and zeroization), and
 //! `rs-platform-wallet-ffi/src/sign_with_mnemonic_resolver.rs`
 //! `dash_sdk_sign_with_mnemonic_resolver_and_path` (`:155-330`, identity
-//! signing with the key binding). The derived scalars never reach this
-//! module: the vault computes every product (signature, ECDH, mask,
-//! ciphertext) and returns only that, plus the auto-accept key DIP-15 hands
-//! out on purpose.
+//! signing with the key binding). The vault computes every product
+//! (signature, ECDH, mask, ciphertext) and returns only that; two keys reach
+//! this module: the auto-accept key DIP-15 hands out on purpose, and the
+//! master key [`VaultScanKey`] resolves for the identity scan, released only
+//! under a `PlatformOp` grant.
 
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey};
@@ -293,10 +294,11 @@ impl ContactCryptoProvider for VaultContactCrypto {
 
 /// The identity-scan key (platform-wallet `ScanKeyResolver`,
 /// `manager/startup.rs:104`): resolved only when the bring-up takes the
-/// branch that scans, from a [`ScanKey`] the vault issues while its full key
-/// needs no prompt. The resolved master key erases itself on drop
-/// (key-wallet `ExtendedPrivKey: Drop`), and the library also holds it in
-/// its `ScanKeyGuard` (`startup.rs:130-150`).
+/// branch that scans, from a [`ScanKey`] the vault issues under a
+/// `PlatformOp` grant (`Vault::scan_key`). The resolved master key erases
+/// itself on drop (key-wallet `ExtendedPrivKey: Drop`), and the library also
+/// holds it in its `ScanKeyGuard` (`startup.rs:130-150`). A resolved key is
+/// beyond the vault's lock: the bring-up must be dropped on lock (E0-05).
 #[derive(Debug, Clone)]
 pub struct VaultScanKey {
     key: ScanKey,

@@ -114,14 +114,28 @@ before reading the seed:
 | `DashPayCrypto` | never signs. Public keys; ECDH and the account-reference mask; contactInfo AES keys; export of the auto-accept key | xpubs of `m/9'/coin'/15'/a'/<user>/<friend>` (DIP-14 256-bit children), `m/9'/coin'/16'/expiry'` and `m/44'/coin'/0'`; ECDH and mask with identity keys; contactInfo `…/k'/65536'\|65537'/n'` under an identity key; export of `m/9'/coin'/16'/expiry'` only |
 | `PlatformFunding{max_duffs}` | sign, public key (no chain code); one extended public key | BIP44 and BIP32 addresses, DIP-15 receiving addresses, asset-lock credit keys `m/9'/coin'/5'/{1',2',3'}/…` with a non-hardened last step; the xpub of an identity's top-up account `m/9'/coin'/5'/2'/i'`. The engine checks the cap before signing, as for `Spend`. Until E0-04 puts caps on `PlatformOp` grants, the engine also picks the cap. |
 
-`Vault::dashpay_crypto_signer` (the background crypto signer) and `Vault::scan_key` (the identity-scan master
-key, resolved only when the scan runs) need no grant. They are issued only while the full key needs no prompt
-(`Unencrypted`, or `Unlocked` with scope Full), and refused while `Locked` (`vault.locked`) or
-`UnlockedMixingOnly` (`vault.mixing_only`). Like every signer, they stop working when the vault locks. Neither
-needs a grant, so only the engine may call them, and dw-ffi must not expose them. The
-engine adapters (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`, platform-wallet's
-`ContactCryptoProvider` and `ScanKeyResolver` over these. The derived scalars never leave dw-vault; the one
-exception is the auto-accept key that DIP-15 hands out on purpose.
+`Vault::dashpay_crypto_signer` (the background crypto signer) needs no grant. It is issued only while the full
+key needs no prompt (`Unencrypted`, or `Unlocked` with scope Full), and refused while `Locked` (`vault.locked`)
+or `UnlockedMixingOnly` (`vault.mixing_only`). It signs nothing; the one key it exports is a DIP-15 auto-accept
+key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `PlatformOp` grant for its wallet, which
+the unattended bring-up authorizes with `Credential::None`, so it too works without a prompt only in those two
+states. Both stop working when the vault locks or changes unlock scope. Both are engine-only:
+`crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key` and
+`VaultScanKey::resolve`/`resolver` in dw-ffi (`clippy -D warnings` fails), and a dw-ffi test scans its sources
+for them. The engine adapters (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`,
+platform-wallet's `ContactCryptoProvider` and `ScanKeyResolver` over these.
+
+Derived scalars stay in dw-vault, with two exceptions:
+
+- the DIP-15 auto-accept key (`m/9'/coin'/16'/expiry'`), which DIP-15 hands out on purpose as a bearer
+  credential for contact auto-acceptance; it leaves as a secp256k1 `SecretKey`, which does not erase itself;
+- the wallet's **master** extended private key, for platform-wallet's identity scan. `ScanKeyResolver`
+  (`manager/startup.rs:90-110`) requires it: discovery derives every probed identity key from it, so nothing
+  narrower serves. Its only consumer is the engine's call of `start_wallet_subsystems`, which invokes the
+  resolver at most once and only on the branch that scans, and holds the key in its `ScanKeyGuard` (erased on
+  drop) for that call. A key already resolved is outside the vault: `lock()` cannot revoke it, and it is erased
+  only when dropped. E0-05 must therefore cancel (drop) a running bring-up on lock, so the guard drops with it.
+  Follow-up: ask upstream for a resolver that derives and returns the probed public keys instead.
 
 **Concurrency** (review H1). All changes of the vault file (create, encrypt, change passphrase, record
 writes, throttle updates) and all passphrase checks are serialized by one vault-level writer lock. Each

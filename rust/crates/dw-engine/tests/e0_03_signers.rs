@@ -22,8 +22,8 @@ use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dw_engine::platform::{VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
 use dw_vault::{
-    Credential, GrantKind, GrantPurpose, KdfPolicy, MemoryOsStore, SeedDerivation, SignerScope,
-    SystemClock, Vault, VaultConfig, WalletSecret,
+    Credential, GrantKind, GrantPurpose, GrantToken, KdfPolicy, MemoryOsStore, SeedDerivation,
+    SignerScope, SystemClock, Vault, VaultConfig, WalletSecret,
 };
 use key_wallet::Network;
 use key_wallet::account::{AccountType, StandardAccountType};
@@ -84,17 +84,21 @@ fn vault(case: &Value, dir: &tempfile::TempDir) -> Vault {
     v
 }
 
-/// An identity signer for the DIP-13 identities `identities`, under a
-/// `PlatformOp` grant.
-fn identity_signer(v: &Vault, identities: impl IntoIterator<Item = u32>) -> VaultIdentitySigner {
+/// A redeemed `PlatformOp` grant, authorized without a prompt (the vault
+/// is unencrypted).
+fn platform_token(v: &Vault) -> GrantToken {
     let grant = v
         .authorize(GrantPurpose::PlatformOp, Some(&WALLET), Credential::None)
         .unwrap();
-    let token = v
-        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&WALLET))
-        .unwrap();
+    v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&WALLET))
+        .unwrap()
+}
+
+/// An identity signer for the DIP-13 identities `identities`, under a
+/// `PlatformOp` grant.
+fn identity_signer(v: &Vault, identities: impl IntoIterator<Item = u32>) -> VaultIdentitySigner {
     let signer = v
-        .platform_signer(&WALLET, &token, SignerScope::PlatformIdentity)
+        .platform_signer(&WALLET, &platform_token(v), SignerScope::PlatformIdentity)
         .unwrap();
     VaultIdentitySigner::new(signer, identities).unwrap()
 }
@@ -328,7 +332,7 @@ async fn scan_key_resolves_the_master_the_identity_keys_derive_from() {
     for case in doc["cases"].as_array().unwrap() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(case, &dir);
-        let scan = VaultScanKey::new(v.scan_key(&WALLET).unwrap());
+        let scan = VaultScanKey::new(v.scan_key(&WALLET, &platform_token(&v)).unwrap());
         let resolve = scan.resolver();
         let master = resolve().unwrap();
         let secp = Secp256k1::new();

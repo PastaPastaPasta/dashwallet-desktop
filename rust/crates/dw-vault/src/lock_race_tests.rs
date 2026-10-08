@@ -23,9 +23,9 @@ use zeroize::Zeroizing;
 use crate::signer::KeyUse;
 use crate::signer::test_hook::{self, OpPoint};
 use crate::{
-    Credential, GrantKind, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, SeedDerivation,
-    SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultSigner,
-    WalletSecret, WalletSigner,
+    Credential, GrantKind, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
+    SeedDerivation, SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig,
+    VaultSigner, WalletSecret, WalletSigner,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -61,14 +61,21 @@ fn vault(dir: &tempfile::TempDir, passphrase: Option<&[u8]>) -> Vault {
     v
 }
 
-fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
+fn platform_grant(v: &Vault, credential: Credential<'_>) -> GrantToken {
     let grant = v
         .authorize(GrantPurpose::PlatformOp, Some(&W), credential)
         .unwrap();
-    let token = v
-        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
-        .unwrap();
-    v.platform_signer(&W, &token, scope).unwrap()
+    v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
+        .unwrap()
+}
+
+fn platform_token(v: &Vault) -> GrantToken {
+    platform_grant(v, Credential::None)
+}
+
+fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
+    v.platform_signer(&W, &platform_grant(v, credential), scope)
+        .unwrap()
 }
 
 fn spend_signer(v: &Vault) -> VaultSigner {
@@ -181,6 +188,7 @@ struct Round {
     identity: VaultSigner,
     spend: VaultSigner,
     mixing: VaultSigner,
+    scan: ScanKey,
     key_data: [u8; 33],
 }
 
@@ -188,7 +196,7 @@ struct Round {
 fn call(rt: &tokio::runtime::Runtime, r: &Round, n: usize) -> Result<(), SignerError> {
     let identity_key = path(IDENTITY_KEY);
     let root = path("m/9'/1'/5'/0'/0'/0'/2'");
-    match n % 7 {
+    match n % 8 {
         0 => r
             .crypto
             .ecdh_shared_secret(&identity_key, &peer())
@@ -212,9 +220,10 @@ fn call(rt: &tokio::runtime::Runtime, r: &Round, n: usize) -> Result<(), SignerE
         5 => rt
             .block_on(r.spend.sign_message(&path("m/44'/1'/0'/0/0"), b"m"))
             .map(drop),
-        _ => rt
+        6 => rt
             .block_on(r.mixing.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [9; 32]))
             .map(drop),
+        _ => r.scan.master_key().map(drop),
     }
 }
 
@@ -295,6 +304,7 @@ fn no_result_is_made_after_lock_returns() {
             identity,
             spend: spend_signer(&v),
             mixing: v.mixing_signer(&W).unwrap(),
+            scan: v.scan_key(&W, &platform_token(&v)).unwrap(),
             key_data,
         }));
         barrier.wait();

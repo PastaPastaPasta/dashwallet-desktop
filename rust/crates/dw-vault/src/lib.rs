@@ -10,14 +10,18 @@
 //!   random 256-bit key the OS keeps behind biometrics; spend-limited);
 //! - lock states `NoVault/NoKeys/Unencrypted/Locked/UnlockedMixingOnly/Unlocked`;
 //! - single-use, expiring [`AuthGrant`]s checked here, so a buggy view
-//!   cannot sign, reveal or wipe without one;
+//!   cannot sign, reveal or wipe without one (the one grant-less signer,
+//!   [`Vault::dashpay_crypto_signer`], signs nothing and is engine-only:
+//!   dw-ffi's clippy configuration forbids calling it);
 //! - [`VaultSigner`] implements key_wallet's [`key_wallet::Signer`] over the
 //!   stored seed; a mixing-only unlock signs CoinJoin-account paths only;
 //! - Platform signers are scoped ([`SignerScope`], DASHPAY §3.3): identity
 //!   keys, DashPay contact crypto (which never signs) and asset-lock
 //!   funding, each refusing every path outside its own ([`paths`]); the
 //!   identity signatures and DIP-15 crypto run here so derived scalars stay
-//!   in this crate.
+//!   in this crate. Two keys leave it: the DIP-15 auto-accept key, and the
+//!   master key of an identity scan ([`ScanKey`], under a `PlatformOp`
+//!   grant), which platform-wallet's `ScanKeyResolver` requires.
 //!
 //! dash-qt parity: "Encrypt wallet" adds slot P and removes slot O, "Change
 //! passphrase" re-wraps the DEK (the seed is unchanged), and there is no

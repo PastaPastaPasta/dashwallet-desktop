@@ -3,7 +3,10 @@
 //! adapters implement dpp's `Signer<IdentityPublicKey>` and platform-wallet's
 //! `ContactCryptoProvider` over these, so derived scalars stay in this crate;
 //! only signatures, public keys, ECDH and HMAC products and ciphertexts
-//! leave it, plus the one key DIP-15 hands out on purpose (auto-accept).
+//! leave it, with two exceptions: the auto-accept key DIP-15 hands out on
+//! purpose, and the master key of an identity scan ([`ScanKey`]), which
+//! platform-wallet's `ScanKeyResolver` requires and only a `PlatformOp`
+//! grant releases.
 //!
 //! Each operation checks the shape of its path whatever the signer's scope,
 //! then the scope's [`KeyUse`] rule. The counterparts are
@@ -25,7 +28,7 @@ use zeroize::Zeroizing;
 use crate::SignerError;
 use crate::crypto::Key32;
 use crate::signer::{KeyUse, SignerScope, VaultSigner, WalletSigner};
-use crate::types::WalletId;
+use crate::types::{GrantKind, GrantToken, WalletId};
 use crate::vault::Vault;
 use crate::{dip15, paths};
 
@@ -249,11 +252,13 @@ impl VaultSigner {
 }
 
 /// The master key of one wallet for an identity scan (platform-wallet's
-/// `ScanKeyResolver`, `manager/startup.rs:104`). Holds no secret: the key is
-/// derived when [`Self::master_key`] is called and stops being available
-/// once the vault locks or changes unlock scope. Issued by
-/// [`Vault::scan_key`] only while the vault's full key is available without
-/// a prompt.
+/// `ScanKeyResolver`, `manager/startup.rs:90-110`, whose discovery derives
+/// every probed identity key from it, so nothing narrower serves). Holds no
+/// secret: the key is derived when [`Self::master_key`] is called, and that
+/// stops working once the vault locks or changes unlock scope. A key already
+/// returned is the caller's: the vault cannot revoke it, and it erases itself
+/// only when dropped. Issued by [`Vault::scan_key`] under a `PlatformOp`
+/// grant.
 #[derive(Clone)]
 pub struct ScanKey {
     signer: VaultSigner,
@@ -277,8 +282,8 @@ impl ScanKey {
         self.signer.wallet_id()
     }
 
-    /// The wallet's master extended private key. It erases itself when
-    /// dropped (key-wallet `ExtendedPrivKey: Drop`).
+    /// The wallet's master extended private key: every key of the wallet.
+    /// It erases itself when dropped (key-wallet `ExtendedPrivKey: Drop`).
     pub fn master_key(&self) -> Result<ExtendedPrivKey, SignerError> {
         self.signer
             .with_key(&DerivationPath::master(), KeyUse::Export, |_, x| x.clone())
@@ -286,14 +291,27 @@ impl ScanKey {
 }
 
 impl Vault {
-    /// The [`ScanKey`] of `wallet`; see [`Vault::dashpay_crypto_signer`] for
-    /// the states that issue it. It yields the master key with no grant,
-    /// because the unattended bring-up needs it (DASHPAY §3.2): only the
-    /// engine's bring-up may call it, and dw-ffi must never expose it.
-    pub fn scan_key(&self, wallet: &WalletId) -> Result<ScanKey, crate::VaultError> {
-        Ok(ScanKey::new(
-            self.prompt_free_signer(wallet, SignerScope::Full)?,
-        ))
+    /// The [`ScanKey`] of `wallet`, authorized by a redeemed `PlatformOp`
+    /// grant for that wallet (review DW-E0-03 M1: the master key never
+    /// leaves without one). The unattended bring-up (DASHPAY §3.2)
+    /// authorizes that grant itself with `Credential::None`, which works
+    /// only while the full key needs no prompt (`Unencrypted`, or `Unlocked`
+    /// with scope Full); a locked vault needs the passphrase. Lifetime and
+    /// own-key rules are those of [`Vault::platform_signer`]. Engine-only:
+    /// dw-ffi's clippy configuration forbids calling it.
+    pub fn scan_key(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+    ) -> Result<ScanKey, crate::VaultError> {
+        if token.purpose().kind() != GrantKind::PlatformOp {
+            return Err(crate::VaultError::GrantPurposeMismatch);
+        }
+        Ok(ScanKey::new(self.token_signer(
+            wallet,
+            token,
+            SignerScope::Full,
+        )?))
     }
 }
 

@@ -1346,7 +1346,9 @@ impl Vault {
         self.token_signer(wallet, token, scope)
     }
 
-    fn token_signer(
+    /// A signer with `scope` under a redeemed grant for `wallet`; the caller
+    /// has checked the grant's purpose.
+    pub(crate) fn token_signer(
         &self,
         wallet: &WalletId,
         token: &GrantToken,
@@ -1376,10 +1378,10 @@ impl Vault {
     /// DASHPAY §2.6): no grant, so it exists only while the full key is
     /// available without a prompt, on an unencrypted vault or one unlocked
     /// with scope Full. `Locked` and `MixingOnly` otherwise. It can neither
-    /// spend nor sign a state transition. Stops working when the vault locks
-    /// or changes unlock scope. Engine-internal, like [`Self::scan_key`]:
-    /// dw-ffi must not expose either, so no view reaches key material
-    /// without a grant.
+    /// spend nor sign a state transition; the one key it exports is a
+    /// DIP-15 auto-accept key. Stops working when the vault locks or changes
+    /// unlock scope. Engine-only: dw-ffi's clippy configuration forbids
+    /// calling it, so no view reaches key material without a grant.
     pub fn dashpay_crypto_signer(&self, wallet: &WalletId) -> Result<VaultSigner, VaultError> {
         self.prompt_free_signer(wallet, SignerScope::DashPayCrypto)
     }
@@ -1389,7 +1391,7 @@ impl Vault {
     /// [`Self::dashpay_crypto_signer`]). The state is read under the same
     /// lock that issues the signer, so an unlock for mixing in between is
     /// refused rather than served with the mixing-only key.
-    pub(crate) fn prompt_free_signer(
+    fn prompt_free_signer(
         &self,
         wallet: &WalletId,
         scope: SignerScope,

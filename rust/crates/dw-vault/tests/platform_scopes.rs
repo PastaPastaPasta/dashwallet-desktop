@@ -466,7 +466,7 @@ async fn platform_grants_issue_scoped_signers_only() {
 }
 
 #[tokio::test]
-async fn background_crypto_and_scan_key_need_a_prompt_free_full_key() {
+async fn background_crypto_needs_a_prompt_free_full_key() {
     let fx = Fixture::new();
     let v = fx.open();
     assert_eq!(
@@ -479,9 +479,6 @@ async fn background_crypto_and_scan_key_need_a_prompt_free_full_key() {
     // Unlocked: issued; the background signer still signs nothing.
     let crypto = v.dashpay_crypto_signer(&wallet(1)).unwrap();
     assert_eq!(crypto.scope(), SignerScope::DashPayCrypto);
-    let scan = v.scan_key(&wallet(1)).unwrap();
-    let master = scan.master_key().unwrap();
-    assert_eq!(master.depth, 0);
     assert!(refused(
         crypto.sign_ecdsa(&path("m/44'/1'/0'/0/0"), [1; 32]).await
     ));
@@ -495,7 +492,7 @@ async fn background_crypto_and_scan_key_need_a_prompt_free_full_key() {
         VaultError::NoSecret
     );
 
-    // Lock: both stop, and neither is issued.
+    // Lock: it stops, and is not issued.
     v.lock();
     assert_eq!(
         crypto
@@ -504,31 +501,120 @@ async fn background_crypto_and_scan_key_need_a_prompt_free_full_key() {
             .unwrap_err(),
         SignerError::Locked
     );
-    assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
     assert_eq!(
         v.dashpay_crypto_signer(&wallet(1)).unwrap_err(),
         VaultError::Locked
     );
-    assert_eq!(v.scan_key(&wallet(1)).unwrap_err(), VaultError::Locked);
 
-    // Mixing-only unlock: neither.
+    // Mixing-only unlock: not issued.
     v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
     assert_eq!(
         v.dashpay_crypto_signer(&wallet(1)).unwrap_err(),
         VaultError::MixingOnly
     );
-    assert_eq!(v.scan_key(&wallet(1)).unwrap_err(), VaultError::MixingOnly);
 
     // Full unlock after mixing-only: issued again.
     v.unlock(PASS, UnlockScope::Full).unwrap();
     v.dashpay_crypto_signer(&wallet(1)).unwrap();
-    v.scan_key(&wallet(1)).unwrap();
 
     // An unencrypted vault: issued without a prompt.
     let fx = Fixture::new();
     let v = unencrypted_vault(&fx);
     v.dashpay_crypto_signer(&wallet(1)).unwrap();
-    assert_eq!(v.scan_key(&wallet(1)).unwrap().wallet_id(), wallet(1));
+}
+
+/// Review DW-E0-03 M1: the master key leaves only under a redeemed
+/// `PlatformOp` grant for its wallet; a grant-less caller has no way to it.
+#[tokio::test]
+async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    v.store_wallet_secret(&wallet(2), &secret(2)).unwrap();
+
+    // Unlocked: the bring-up authorizes the grant itself, without a prompt.
+    let scan = v.scan_key(&wallet(1), &platform_token(&v)).unwrap();
+    assert_eq!(scan.wallet_id(), wallet(1));
+    let master = scan.master_key().unwrap();
+    assert_eq!(master.depth, 0);
+    // It is that wallet's master: it derives what the wallet's signer does.
+    let p = path("m/9'/1'/5'/0'/0'/0'/0'");
+    let identity = platform_signer(&v, SignerScope::PlatformIdentity);
+    assert_eq!(
+        master
+            .derive_priv(&Secp256k1::new(), &p)
+            .unwrap()
+            .private_key
+            .public_key(&Secp256k1::new()),
+        identity.public_key(&p).await.unwrap()
+    );
+
+    // Another wallet's grant, or another purpose, releases nothing.
+    assert_eq!(
+        v.scan_key(&wallet(2), &platform_token(&v)).unwrap_err(),
+        VaultError::GrantPurposeMismatch
+    );
+    for purpose in [
+        GrantPurpose::Spend { max_duffs: 1 },
+        GrantPurpose::SignMessage,
+    ] {
+        let grant = v
+            .authorize(purpose, Some(&wallet(1)), Credential::None)
+            .unwrap();
+        let token = v
+            .redeem_grant(&grant.id, purpose.kind(), Some(&wallet(1)))
+            .unwrap();
+        assert_eq!(
+            v.scan_key(&wallet(1), &token).unwrap_err(),
+            VaultError::GrantPurposeMismatch
+        );
+    }
+
+    // Lock: the scan key stops, a token redeemed before the lock releases
+    // nothing, and no grant comes without the passphrase.
+    let token = platform_token(&v);
+    v.lock();
+    assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
+    assert_eq!(
+        v.scan_key(&wallet(1), &token).unwrap_err(),
+        VaultError::Locked
+    );
+    assert_eq!(
+        v.authorize(GrantPurpose::PlatformOp, Some(&wallet(1)), Credential::None)
+            .unwrap_err(),
+        VaultError::Locked
+    );
+    // With the passphrase, the grant's own key serves the scan until the
+    // next lock.
+    let grant = v
+        .authorize(
+            GrantPurpose::PlatformOp,
+            Some(&wallet(1)),
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap();
+    let scan = v.scan_key(&wallet(1), &token).unwrap();
+    assert_eq!(scan.master_key().unwrap().depth, 0);
+    v.lock();
+    assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
+
+    // Mixing-only unlock: no grant without the passphrase.
+    v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
+    assert_eq!(
+        v.authorize(GrantPurpose::PlatformOp, Some(&wallet(1)), Credential::None)
+            .unwrap_err(),
+        VaultError::MixingOnly
+    );
+
+    // Unencrypted: the grant needs no prompt.
+    let fx = Fixture::new();
+    let v = unencrypted_vault(&fx);
+    let scan = v.scan_key(&wallet(1), &platform_token(&v)).unwrap();
+    assert_eq!(scan.master_key().unwrap().depth, 0);
 }
 
 #[tokio::test]
