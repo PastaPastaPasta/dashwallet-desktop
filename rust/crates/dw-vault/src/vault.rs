@@ -18,9 +18,10 @@
 //!   change, encrypt, recover, destroy) holds it exclusively, so `lock()`
 //!   returns only once every such operation that started before it has
 //!   finished, and any operation after it sees the new epoch and fails
-//!   `Locked`. Not gated: the backup bundles (`backup_bundle`,
-//!   `open_backup_bundle`), which take no grant or epoch, and
-//!   `enroll_quick_unlock`, serialized by `writer`. A holder must not take
+//!   `Locked`. `seed_derivation` and `core_mnemonic_check`, which read a
+//!   secret with the vault's own key, are gated too. Not gated: the backup
+//!   bundles (`backup_bundle`, `open_backup_bundle`), which take no grant or
+//!   epoch, and `enroll_quick_unlock`, serialized by `writer`. A holder must not take
 //!   the gate again, take `writer` or block on any other lock: a waiting
 //!   epoch change may block new shared holders (std's `RwLock` prefers
 //!   writers on Linux; the policy is OS-dependent).
@@ -31,13 +32,14 @@
 //! vault only through [`OpGuard::release`], which [`Vault::gated`] calls
 //! last: under `inner`, the epoch the operation started under (read under
 //! `inner` when it entered the gate) must still be the vault's epoch, or the
-//! result is dropped (erasing what it holds) and the call fails `Locked`.
+//! result is dropped (secret results erase themselves on drop, an
+//! `ExtendedPrivKey` included) and the call fails `Locked`.
 //! Why that is enough for "nothing is released once `lock()` has returned":
 //! - every epoch change writes `inner.epoch` holding `inner`, and every
 //!   release reads it holding `inner`, so the mutex orders each release
 //!   wholly before or wholly after each epoch change;
-//! - a release ordered after a lock's change reads a newer epoch than the
-//!   one its operation started under, and refuses;
+//! - an operation that started before a lock's change and releases after
+//!   it reads a newer epoch than the one it started under, and refuses;
 //! - so every result released under epoch `e` was released before the
 //!   change that ended `e`, and `lock()` makes that change before it
 //!   returns. A result released after `lock()` returned would be ordered
@@ -102,11 +104,6 @@ pub(crate) struct OpGuard<'a> {
 }
 
 impl OpGuard<'_> {
-    /// The epoch this operation started under.
-    pub(crate) fn epoch(&self) -> u64 {
-        self.epoch
-    }
-
     /// Releases `out` if the vault is still in the epoch this operation
     /// started under; `None` (and `out` dropped) otherwise. The check holds
     /// `inner`, the mutex every epoch change holds; the module doc
@@ -116,12 +113,14 @@ impl OpGuard<'_> {
     fn release<T>(self, out: T) -> Option<T> {
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut inner = self.vault.inner();
-        if !bool::from(inner.epoch.ct_eq(&self.epoch)) {
-            return None;
-        }
+        let current = bool::from(inner.epoch.ct_eq(&self.epoch));
         #[cfg(test)]
-        inner.record(GateEvent::Released(self.epoch));
-        Some(out)
+        inner.record(if current {
+            GateEvent::Released(self.epoch)
+        } else {
+            GateEvent::Refused(self.epoch)
+        });
+        current.then_some(out)
     }
 }
 
@@ -135,8 +134,10 @@ pub(crate) enum GateEvent {
     Epoch(u64),
     /// An operation entered the gate under this epoch.
     Opened(u64),
-    /// An operation released its result under this epoch.
+    /// An operation that started under this epoch released its result.
     Released(u64),
+    /// An operation that started under this epoch had its result refused.
+    Refused(u64),
     /// `lock()` was called; it now waits for the gate.
     LockCalled,
 }
@@ -363,10 +364,16 @@ impl Inner {
         self.dek = None;
         self.backup_kek = None;
         self.scope = UnlockScope::Full;
+        self.next_epoch();
+        self.grants.clear();
+    }
+
+    /// Ends the current epoch. Every caller holds the gate exclusively
+    /// (an [`EpochGuard`]), except a test's [`Vault::bump_epoch_ungated`].
+    fn next_epoch(&mut self) {
         self.epoch += 1;
         #[cfg(test)]
         self.record(GateEvent::Epoch(self.epoch));
-        self.grants.clear();
     }
 
     #[cfg(test)]
@@ -388,9 +395,7 @@ impl Inner {
         self.dek = Some(dek);
         self.scope = scope;
         if changed {
-            self.epoch += 1;
-            #[cfg(test)]
-            self.record(GateEvent::Epoch(self.epoch));
+            self.next_epoch();
             self.grants.clear();
         }
     }
@@ -543,10 +548,7 @@ impl Vault {
     /// test show that [`OpGuard::release`] refuses on its own.
     #[cfg(test)]
     pub(crate) fn bump_epoch_ungated(&self) {
-        let mut inner = self.inner();
-        inner.epoch += 1;
-        let epoch = inner.epoch;
-        inner.record(GateEvent::Epoch(epoch));
+        self.inner().next_epoch();
     }
 
     /// Waits for every open operation, then excludes new ones until the
@@ -1468,11 +1470,13 @@ impl Vault {
 
     /// How the stored seed of `wallet` was derived. Needs full scope.
     pub fn seed_derivation(&self, wallet: &WalletId) -> Result<SeedDerivation, VaultError> {
-        let dek = self.full_dek()?;
-        let payload = self
-            .read_record(&dek, &record_id(wallet, REC_SEED))?
-            .ok_or(VaultError::NoSecret)?;
-        Ok(decode_seed(&payload)?.1)
+        self.gated(VaultError::Locked, |_| {
+            let dek = self.full_dek()?;
+            let payload = self
+                .read_record(&dek, &record_id(wallet, REC_SEED))?
+                .ok_or(VaultError::NoSecret)?;
+            Ok(decode_seed(&payload)?.1)
+        })
     }
 
     /// The recovery phrase and BIP39 passphrase (QT-113, IOS-006). Needs a
@@ -1486,7 +1490,7 @@ impl Vault {
         self.gated(VaultError::Locked, |_| {
             let dek = self.key_for(&token)?;
             #[cfg(test)]
-            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            crate::signer::test_hook::opened();
             let phrase = self
                 .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
                 .ok_or(VaultError::NoSecret)?;
@@ -1686,7 +1690,7 @@ impl Vault {
         epoch: u64,
         own_key: Option<&Key32>,
     ) -> Result<Zeroizing<[u8; 64]>, SignerError> {
-        if op.epoch() != epoch {
+        if op.epoch != epoch {
             return Err(SignerError::Locked);
         }
         let dek = {
@@ -2130,7 +2134,21 @@ mod tests {
 
     /// A new vault in `dir` holding wallet `[1; 32]` with seed `[seed; 64]`.
     fn vault_with_wallet(dir: &Path, passphrase: Option<&[u8]>, seed: u8) -> Vault {
-        let v = open_in(dir, &Arc::new(crate::MemoryOsStore::new()));
+        vault_with_wallet_in(
+            dir,
+            &Arc::new(crate::MemoryOsStore::new()),
+            passphrase,
+            seed,
+        )
+    }
+
+    fn vault_with_wallet_in(
+        dir: &Path,
+        os_store: &Arc<crate::MemoryOsStore>,
+        passphrase: Option<&[u8]>,
+        seed: u8,
+    ) -> Vault {
+        let v = open_in(dir, os_store);
         v.create(passphrase).unwrap();
         let secret = WalletSecret {
             mnemonic: Zeroizing::new(b"unused".to_vec()),
@@ -2148,8 +2166,9 @@ mod tests {
             .unwrap()
     }
 
-    /// Every use of a token `v` must refuse: a scan key, a Platform signer,
-    /// a full signer, an export and a wipe, all `GrantInvalid`.
+    /// Every use, in `v`, of a token redeemed by `from` is refused with
+    /// `GrantInvalid`: a scan key, a Platform signer, a full signer, an
+    /// export and a wipe.
     fn assert_refuses(v: &Vault, from: &Vault, credential: Credential<'_>, case: &str) {
         let w = [1u8; 32];
         let refused = |r: Result<(), VaultError>, what: &str| {
@@ -2215,15 +2234,7 @@ mod tests {
     fn a_token_of_an_earlier_opening_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let os_store = Arc::new(crate::MemoryOsStore::new());
-        let first = open_in(dir.path(), &os_store);
-        first.create(None).unwrap();
-        let secret = WalletSecret {
-            mnemonic: Zeroizing::new(b"unused".to_vec()),
-            mnemonic_passphrase: Zeroizing::new(Vec::new()),
-            seed: Zeroizing::new([0x5a; 64]),
-            derivation: SeedDerivation::Bip39,
-        };
-        first.store_wallet_secret(&[1; 32], &secret).unwrap();
+        vault_with_wallet_in(dir.path(), &os_store, None, 0x5a);
 
         // Two later openings of that file, each loading the key on demand.
         let earlier = open_in(dir.path(), &os_store);
@@ -2231,10 +2242,6 @@ mod tests {
         let reopened = open_in(dir.path(), &os_store);
         reopened.full_dek().unwrap();
         assert_eq!(earlier.inner().epoch, reopened.inner().epoch);
-        assert_eq!(
-            reopened.scan_key(&[1; 32], &token).map(drop),
-            Err(VaultError::GrantInvalid)
-        );
         assert_refuses(&reopened, &earlier, Credential::None, "reopened");
         earlier.scan_key(&[1; 32], &token).unwrap();
 

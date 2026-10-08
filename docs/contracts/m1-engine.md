@@ -152,8 +152,8 @@ installed over the in-memory state, so a passphrase change running beside a wall
 imported seed.
 
 **Lock against running operations** (review DW-E0-03 B1, r2 M2). Every signer call holds a vault operation gate
-from its epoch check until its result is released; `reveal_mnemonic`, `export_wallet_secret` and
-`with_revealed_seed` hold it while they read the secret. `lock()`, `unlock()` and every other epoch change take
+from its epoch check until its result is released; `reveal_mnemonic`, `export_wallet_secret`,
+`with_revealed_seed`, `seed_derivation` and `core_mnemonic_check` hold it while they read the secret. `lock()`, `unlock()` and every other epoch change take
 the gate exclusively, so `lock()` returns only after those operations already running have finished (a signature
 takes about a millisecond), and every later call is `Locked`. A result leaves the vault only through one release
 check (`dw_vault::Vault::gated`): holding the mutex that every epoch change holds, the epoch the operation started

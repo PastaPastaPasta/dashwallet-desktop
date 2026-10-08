@@ -265,7 +265,7 @@ impl Vault {
         self.gated(VaultError::Locked, |_| {
             let dek = self.key_for(token)?;
             #[cfg(test)]
-            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            crate::signer::test_hook::opened();
             self.read_secret(&dek, wallet)
         })
     }
@@ -294,21 +294,24 @@ impl Vault {
     /// the stored seed. Reads the secrets internally (full data key needed:
     /// unlocked or unencrypted vault); returns only the verdict.
     pub fn core_mnemonic_check(&self, wallet: &WalletId) -> Result<CoreMnemonicCheck, VaultError> {
-        let dek = self.full_dek()?;
-        let secret = self.read_secret(&dek, wallet)?;
-        if secret.derivation == SeedDerivation::RawSeed || secret.mnemonic.is_empty() {
-            return Ok(CoreMnemonicCheck {
-                has_mnemonic: false,
-                core_compatible: false,
-            });
-        }
-        let core_compatible = match bip39_core_seed(&secret.mnemonic, &secret.mnemonic_passphrase) {
-            Some(core) => bool::from(core[..].ct_eq(&secret.seed[..])),
-            None => false,
-        };
-        Ok(CoreMnemonicCheck {
-            has_mnemonic: true,
-            core_compatible,
+        self.gated(VaultError::Locked, |_| {
+            let dek = self.full_dek()?;
+            let secret = self.read_secret(&dek, wallet)?;
+            if secret.derivation == SeedDerivation::RawSeed || secret.mnemonic.is_empty() {
+                return Ok(CoreMnemonicCheck {
+                    has_mnemonic: false,
+                    core_compatible: false,
+                });
+            }
+            let core_compatible =
+                match bip39_core_seed(&secret.mnemonic, &secret.mnemonic_passphrase) {
+                    Some(core) => bool::from(core[..].ct_eq(&secret.seed[..])),
+                    None => false,
+                };
+            Ok(CoreMnemonicCheck {
+                has_mnemonic: true,
+                core_compatible,
+            })
         })
     }
 

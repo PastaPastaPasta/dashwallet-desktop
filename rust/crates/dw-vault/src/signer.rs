@@ -245,7 +245,7 @@ impl VaultSigner {
             let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
                 .map_err(|e| SignerError::Derivation(e.to_string()))?;
             #[cfg(test)]
-            test_hook::fire(test_hook::OpPoint::Opened);
+            test_hook::opened();
             body(&Op {
                 signer: self,
                 master,
@@ -297,39 +297,30 @@ impl Op<'_> {
 impl Drop for Op<'_> {
     fn drop(&mut self) {
         self.master.private_key.non_secure_erase();
-        #[cfg(test)]
-        test_hook::fire(test_hook::OpPoint::Closing);
     }
 }
 
-/// Observes [`Op`]s on the current thread, for the lock-race tests: `Opened`
-/// once the epoch check passed, `Closing` once the master key is erased,
-/// before the result is released and the gate with it.
+/// Lets the lock-race tests pause a gated operation of the current thread
+/// once it has passed its epoch check ([`opened`]).
 #[cfg(test)]
 pub(crate) mod test_hook {
     use std::cell::RefCell;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum OpPoint {
-        Opened,
-        Closing,
-    }
-
-    type Hook = Box<dyn FnMut(OpPoint)>;
+    type Hook = Box<dyn FnMut()>;
 
     thread_local! {
         static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
-    /// Calls `f` at every [`OpPoint`] of the operations this thread runs.
-    pub(crate) fn set(f: impl FnMut(OpPoint) + 'static) {
+    /// Calls `f` whenever an operation of this thread is opened.
+    pub(crate) fn set(f: impl FnMut() + 'static) {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
     }
 
-    pub(crate) fn fire(point: OpPoint) {
+    pub(crate) fn opened() {
         HOOK.with(|h| {
             if let Some(f) = h.borrow_mut().as_mut() {
-                f(point);
+                f();
             }
         });
     }

@@ -24,7 +24,7 @@ impl Vault {
         let seed = self.gated(VaultError::Locked, |_| {
             let dek = self.key_for(&token)?;
             #[cfg(test)]
-            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            crate::signer::test_hook::opened();
             let payload = self
                 .read_record(&dek, &record_id(wallet, REC_SEED))?
                 .ok_or(VaultError::NoSecret)?;

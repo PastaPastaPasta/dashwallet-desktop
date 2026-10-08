@@ -104,7 +104,7 @@ impl ErasingSha256 {
         }
     }
 
-    /// Back to the initial state; the previous message's state is erased.
+    /// Erases the state of the message so far and starts a new one.
     fn reset(&mut self) {
         self.zeroize();
         self.state = SHA256_IV;
@@ -124,7 +124,8 @@ impl ErasingSha256 {
         }
     }
 
-    /// Pads, writes the digest into `out` and erases the state.
+    /// Pads, writes the digest into `out`, then erases the state and starts
+    /// over ([`Self::reset`]), ready for the next message.
     fn finalize_into(&mut self, out: &mut [u8; 32]) {
         let bits = self.length.wrapping_mul(8);
         self.block[self.filled] = 0x80;
@@ -135,10 +136,10 @@ impl ErasingSha256 {
         }
         self.block[SHA256_BLOCK - 8..].copy_from_slice(&bits.to_be_bytes());
         self.compress();
-        for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(self.state) {
+        for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(&self.state) {
             *chunk = word.to_be_bytes();
         }
-        self.zeroize();
+        self.reset();
     }
 
     /// One compression of `block` into `state` (FIPS 180-4 §6.2.2).
@@ -217,7 +218,6 @@ fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> Zeroizing<[u8; 32]> {
     h.finalize_into(&mut inner);
     let mut out = Zeroizing::new([0u8; 32]);
     pad(&mut block, 0x5c);
-    h.reset();
     h.update(&block[..]);
     h.update(&inner[..]);
     h.finalize_into(&mut out);
@@ -370,21 +370,26 @@ mod tests {
         }
     }
 
-    /// The state, schedule and block are zero once a digest is out and
-    /// after `reset`, and a reset hasher starts over.
+    /// Once a digest is out, and after `reset`, nothing of the message is
+    /// left (schedule, block, counters zero; the state is the IV), and the
+    /// hasher digests the next message correctly.
     #[test]
     fn erasing_sha256_leaves_nothing() {
-        let blank = |h: &ErasingSha256| {
-            h.state == [0; 8] && h.schedule == [0; 64] && h.block == [0; 64] && h.length == 0
+        let fresh = |h: &ErasingSha256| {
+            h.state == SHA256_IV
+                && h.schedule == [0; 64]
+                && h.block == [0; 64]
+                && h.filled == 0
+                && h.length == 0
         };
         let mut h = ErasingSha256::new();
         h.update(&[0xA5; 100]);
         let mut first = [0u8; 32];
         h.finalize_into(&mut first);
-        assert!(blank(&h));
-        h.update(&[0xA5; 100]);
+        assert!(fresh(&h));
+        h.update(&[0x5A; 70]);
         h.reset();
-        assert!(h.schedule == [0; 64] && h.block == [0; 64] && h.state == SHA256_IV);
+        assert!(fresh(&h));
         h.update(&[0xA5; 100]);
         let mut again = [0u8; 32];
         h.finalize_into(&mut again);

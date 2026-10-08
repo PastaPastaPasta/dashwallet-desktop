@@ -4,7 +4,7 @@
 //! is released.
 //!
 //! The barrier tests pause an operation inside the gate with the
-//! [`test_hook`] (`Opened`, once it passed its epoch check). The stress tests
+//! [`test_hook`], once it passed its epoch check. The stress tests
 //! check the vault's own log of releases and epoch changes
 //! ([`GateEvent`]), kept in the order of the mutex both hold, instead of
 //! timing.
@@ -22,7 +22,7 @@ use key_wallet::{Network, Signer};
 use zeroize::Zeroizing;
 
 use crate::signer::KeyUse;
-use crate::signer::test_hook::{self, OpPoint};
+use crate::signer::test_hook;
 use crate::vault::GateEvent;
 use crate::{
     Credential, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
@@ -100,17 +100,13 @@ fn epoch_change_waits_for<E: std::fmt::Debug + Send + 'static>(
 ) {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
-    let worker = {
-        thread::spawn(move || {
-            test_hook::set(move |point| {
-                if point == OpPoint::Opened {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                }
-            });
-            call()
-        })
-    };
+    let worker = thread::spawn(move || {
+        test_hook::set(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        call()
+    });
     entered_rx.recv().unwrap();
     let changed = Arc::new(AtomicBool::new(false));
     let changer = {
@@ -313,6 +309,7 @@ fn call(rt: &tokio::runtime::Runtime, r: &Round, n: usize) -> Result<(), SignerE
 #[derive(Debug, Default)]
 struct GateStats {
     released: usize,
+    refused: usize,
     /// Results released between a `lock()` call and its epoch change: the
     /// operations that lock had to wait for.
     released_while_lock_waited: usize,
@@ -320,10 +317,11 @@ struct GateStats {
 }
 
 /// Checks the release rule on the vault's own log, which records every
-/// release and every epoch change in the order of the mutex both hold
-/// (vault module doc, "Release"): the epoch is rebuilt from the change
-/// events alone, and every result must be released under the epoch it
-/// started in, before the change that ends it.
+/// release decision and every epoch change in the order of the mutex both
+/// hold (vault module doc, "Release"): the epoch is rebuilt from the change
+/// events alone; every result released must have started in that epoch
+/// (released before the change that ends it), and every result refused
+/// must have started in an earlier one.
 fn check_gate_log(log: &[GateEvent]) -> GateStats {
     let Some(&GateEvent::Epoch(mut epoch)) = log.first() else {
         panic!("the log starts with the epoch");
@@ -347,6 +345,13 @@ fn check_gate_log(log: &[GateEvent]) -> GateStats {
                 );
                 stats.released += 1;
                 stats.released_while_lock_waited += usize::from(lock_waiting);
+            }
+            GateEvent::Refused(started) => {
+                assert!(
+                    started < epoch,
+                    "event {i}: a result of the current epoch {epoch} was refused"
+                );
+                stats.refused += 1;
             }
             GateEvent::LockCalled => {
                 lock_waiting = true;
@@ -420,10 +425,14 @@ fn no_result_is_released_after_its_epoch(mode: Mode) {
     let (results, refused) = (results.load(SeqCst), refused.load(SeqCst));
     eprintln!(
         "{mode:?}: {WORKERS} workers, {} locks: {results} results, {refused} refused Locked, \
-         {} released ({} while lock() waited for them), 0 released under an ended epoch",
-        stats.locks, stats.released, stats.released_while_lock_waited
+         {} released ({} while lock() waited for them), 0 released under an ended epoch, \
+         {} refused by the release check",
+        stats.locks, stats.released, stats.released_while_lock_waited, stats.refused
     );
     assert_eq!(stats.locks, ROUNDS);
+    // The gate makes lock() wait for running operations, so the release
+    // check never has a stale result to refuse.
+    assert_eq!(stats.refused, 0);
     // Each round's setup releases one result (the identity public key).
     assert_eq!(
         stats.released,
@@ -480,11 +489,8 @@ fn a_result_is_not_released_in_a_later_epoch() {
         Ok(())
     });
     assert_eq!(r, Err(crate::VaultError::Locked));
-    let log = v.take_gate_log();
-    assert!(
-        !log.iter().any(|e| matches!(e, GateEvent::Released(_))),
-        "{log:?}"
-    );
+    let stats = check_gate_log(&v.take_gate_log());
+    assert_eq!((stats.released, stats.refused), (0, 2));
     // The signer belongs to the ended epoch; a new one, and the gated read,
     // release when nothing changes the epoch.
     assert_eq!(
