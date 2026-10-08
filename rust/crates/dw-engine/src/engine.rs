@@ -8,6 +8,11 @@ use tokio::sync::Mutex;
 use crate::fsutil::create_private_dir;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, SessionOptions};
 
+/// Stack size of every engine thread. tokio's default is 2 MiB, which proof
+/// descent in the Platform SDK overflows; platform-wallet's own DashPay loop
+/// and both platform FFI runtimes use 8 MiB (DASHPAY §2.5).
+pub const ENGINE_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Root data directory; each network lives in `<data_root>/<network>/`.
@@ -47,7 +52,11 @@ impl Engine {
         }
         create_private_dir(&config.data_root)?;
         let mut builder = tokio::runtime::Builder::new_multi_thread();
-        builder.enable_all().thread_name("dw-engine");
+        // Applies to the async workers and the blocking pool alike.
+        builder
+            .enable_all()
+            .thread_name("dw-engine")
+            .thread_stack_size(ENGINE_THREAD_STACK_SIZE);
         if let Some(n) = config.worker_threads {
             builder.worker_threads(n);
         }
@@ -194,5 +203,69 @@ impl Drop for Engine {
             // blocking here; the runtime is dropped in the background.
             tracing::warn!(error = %e, "could not start the engine drop thread");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NullSink;
+    impl EventSink for NullSink {
+        fn emit(&self, _event: EngineEvent) {}
+    }
+
+    /// Recurses until it holds `frames` live 64 KiB buffers: `frames * 64 KiB`
+    /// of stack, plus a little.
+    fn use_stack(frames: usize) -> usize {
+        let mut buf = [0u8; 64 * 1024];
+        buf[frames % buf.len()] = frames as u8;
+        let below = if frames == 0 {
+            0
+        } else {
+            use_stack(frames - 1)
+        };
+        std::hint::black_box(&buf);
+        below + usize::from(buf[frames % buf.len()] == frames as u8)
+    }
+
+    /// 80 frames = 5 MiB: over tokio's 2 MiB default, under 8 MiB.
+    const FRAMES: usize = 80;
+
+    fn engine() -> (tempfile::TempDir, Engine) {
+        let dir = dw_testutil::private_tempdir();
+        let engine = Engine::new(
+            EngineConfig {
+                data_root: dir.path().join("data"),
+                worker_threads: Some(2),
+                vault: dw_vault::VaultConfig::default(),
+            },
+            Arc::new(NullSink),
+        )
+        .unwrap();
+        (dir, engine)
+    }
+
+    #[test]
+    fn engine_workers_have_an_8_mib_stack() {
+        let (_dir, engine) = engine();
+        let on_worker = engine.block_on(async {
+            tokio::spawn(async {
+                assert_eq!(std::thread::current().name(), Some("dw-engine"));
+                use_stack(FRAMES)
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(on_worker, FRAMES + 1);
+    }
+
+    #[test]
+    fn engine_blocking_threads_have_an_8_mib_stack() {
+        let (_dir, engine) = engine();
+        let on_blocking = engine
+            .block_on(engine.run_blocking(|| Ok(use_stack(FRAMES))))
+            .unwrap();
+        assert_eq!(on_blocking, FRAMES + 1);
     }
 }
