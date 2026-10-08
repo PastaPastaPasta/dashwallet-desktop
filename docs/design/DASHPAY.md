@@ -454,7 +454,11 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
   - It is dropped on lock.
   - It lets the sweep build contact accounts without a prompt, and it can neither spend nor sign a state transition.
 - **The `DashPayCrypto` scope** may derive exactly the contactInfo children `65536'`/`65537'` under the identity-auth
-  root, and nothing else there.
+  root, and nothing else there. *(Amended by E0-03.)* It also needs the identity keys themselves for ECDH and the
+  `accountReference` mask, because DIP-15's encryption and decryption keys are identity keys
+  (`PW/wallet/identity/network/contact_requests.rs:534-586, 3659-3662`). Those operations return only hashed
+  products, never a signature. The scope also needs the BIP44 account-0 xpub for the seed-binding check
+  (`seed_binding.rs:200-222`).
 
 **Rejected:**
 
@@ -607,8 +611,8 @@ close: cancel a running bring-up → quiesce the loops → stop SPV → manager.
 | Scope (dw-vault) | May derive or sign | Used by |
 |---|---|---|
 | `PlatformIdentity` | `m/9'/c'/5'/0'/0'/i'/k'` | state transitions: identity create/update, DPNS, documents, contactInfo |
-| `DashPayCrypto` | `m/9'/c'/15'/…` (DIP-15 xpubs and ECDH, DIP-14 256-bit children), `m/9'/c'/16'/…` (auto-accept export), and exactly the contactInfo children `65536'`/`65537'` under the identity-auth root; **never signs a transaction** | drains, request send and accept |
-| `PlatformFunding{max_duffs}` | BIP44, BIP32 and DashPay-receiving inputs, plus asset-lock credit keys `m/9'/c'/5'/{1',2',3'}/…`; capped | registration, top-up (invitation creation in X3) |
+| `DashPayCrypto` | `m/9'/c'/15'/…` (DIP-15 receiving xpubs, DIP-14 256-bit children), `m/9'/c'/16'/…` (auto-accept xpub and export), the BIP44 account-0 xpub (seed binding), ECDH and the `accountReference` mask with the identity keys `m/9'/c'/5'/0'/0'/i'/k'`, and exactly the contactInfo children `65536'`/`65537'` under the identity-auth root; **never signs** (E0-03; see `m1-engine.md` §2.2) | drains, request send and accept |
+| `PlatformFunding{max_duffs}` | BIP44, BIP32 and DashPay-receiving inputs, plus asset-lock credit keys `m/9'/c'/5'/{1',2',3'}/…` and the top-up account xpub `m/9'/c'/5'/2'/i'`; capped | registration, top-up (invitation creation in X3) |
 | `Spend{max_duffs}` (exists) | as today | contact payments |
 
 **Grants and leases.** `PlatformOp` becomes `PlatformOp{max_duffs, max_credits}`. A flow redeems its grant **once**
