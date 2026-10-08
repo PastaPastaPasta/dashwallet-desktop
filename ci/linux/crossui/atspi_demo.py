@@ -115,39 +115,45 @@ def type_into(report, app, field, value, timeout=15):
     return ok
 
 
-def main_thread_seconds(pid):
-    """CPU time (user + system) the app's main thread has used, in seconds;
-    None once the process is gone."""
+def main_thread_demand(pid):
+    """Seconds the app's main thread has spent on a CPU or runnable and waiting for one
+    (/proc schedstat: run time + run-queue wait); None once the process is gone."""
     try:
-        with open(f"/proc/{pid}/task/{pid}/stat") as fh:
-            fields = fh.read().rsplit(")", 1)[1].split()
-    except OSError:
+        with open(f"/proc/{pid}/task/{pid}/schedstat") as fh:
+            run_ns, wait_ns = (int(field) for field in fh.read().split()[:2])
+    except (OSError, ValueError):
         return None
-    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    return (run_ns + wait_ns) / 1e9
 
 
-def check_settles(report, app, label, timeout=60, window=5.0, max_busy=0.25):
-    """Hard check that the app's main thread goes idle within `timeout` s: one
-    `window` in which it uses at most `max_busy` of a core while the harness
-    sends no AT-SPI queries. Guards against view updates that never settle
-    (a busy main thread also starves every AT-SPI query)."""
+def check_settles(report, app, label, timeout=60, window=2.0, quiet_windows=3, max_busy=0.25):
+    """Hard check that the app's main thread goes idle within `timeout` s: `quiet_windows`
+    consecutive `window`-second windows in each of which it wants at most `max_busy` of a core,
+    while the harness sends no AT-SPI queries. "Wants" counts the time it waited to run as well
+    as the time it ran: on a loaded host a spinning thread gets only its share of a core, so its
+    CPU time alone can look idle. Guards against view updates that never settle (a busy main
+    thread also starves every AT-SPI query)."""
     pid = safe(lambda: app.get_process_id())
     deadline = time.monotonic() + timeout
     samples = []
-    while pid and time.monotonic() < deadline:
-        start, used = time.monotonic(), main_thread_seconds(pid)
+    quiet = 0
+    while pid and quiet < quiet_windows and time.monotonic() < deadline:
+        start, before = time.monotonic(), main_thread_demand(pid)
         time.sleep(window)
-        now = main_thread_seconds(pid)
-        if used is None or now is None:
+        after = main_thread_demand(pid)
+        if before is None or after is None:
             samples.append(None)
             break
-        samples.append((now - used) / (time.monotonic() - start))
-        if samples[-1] <= max_busy:
-            break
-    busy = samples[-1] if samples else None
-    shown = ", ".join("gone" if b is None else f"{b:.0%}" for b in samples) or "no app pid"
+        samples.append((after - before) / (time.monotonic() - start))
+        quiet = quiet + 1 if samples[-1] <= max_busy else 0
+    recent = samples[-12:]
+    shown = ", ".join("gone" if b is None else f"{b:.0%}" for b in recent) or "no app pid"
+    if len(samples) > len(recent):
+        shown = f"… {shown}"
     report.check("hard", f"{label}: the main thread goes idle within {timeout} s",
-                 busy is not None and busy <= max_busy, f"{window:.0f} s windows: {shown} of a core")
+                 quiet >= quiet_windows,
+                 f"{len(samples)} windows of {window:.0f} s, demand (run + wait) {shown} of a core; "
+                 f"needs {quiet_windows} in a row at most {max_busy:.0%}")
 
 
 def onboarding_flow(report, app, out_dir, step):
