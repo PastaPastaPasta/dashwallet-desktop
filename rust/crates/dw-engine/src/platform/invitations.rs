@@ -2,6 +2,8 @@
 //! network, on `NetworkSession`: a link may arrive before any wallet, or
 //! any vault, exists (F18).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{BearerSecret, stub};
@@ -38,12 +40,15 @@ impl NetworkSession {
     /// Stores the link as the vault record `invitation/<id>`, or before a
     /// vault exists as a 0600 file in the vault directory that moves into
     /// the vault when it is created (§2.9). Returns the id.
-    pub async fn stash_invitation(&self, link: BearerSecret) -> Result<String, InvitationError> {
+    pub async fn stash_invitation(
+        self: &Arc<Self>,
+        link: BearerSecret,
+    ) -> Result<String, InvitationError> {
         stub("NetworkSession.stash_invitation")
     }
 
     pub async fn invitation_status(
-        &self,
+        self: &Arc<Self>,
         link_id: String,
     ) -> Result<InvitationStatus, InvitationError> {
         stub("NetworkSession.invitation_status")
@@ -51,12 +56,15 @@ impl NetworkSession {
 
     /// The ids of the stashed links, oldest first, for the replay after a
     /// restart or onboarding.
-    pub async fn pending_invitations(&self) -> Result<Vec<String>, InvitationError> {
+    pub async fn pending_invitations(self: &Arc<Self>) -> Result<Vec<String>, InvitationError> {
         stub("NetworkSession.pending_invitations")
     }
 
     /// Deletes a stashed link: dismissed, or claimed.
-    pub async fn forget_invitation(&self, link_id: String) -> Result<(), InvitationError> {
+    pub async fn forget_invitation(
+        self: &Arc<Self>,
+        link_id: String,
+    ) -> Result<(), InvitationError> {
         stub("NetworkSession.forget_invitation")
     }
 }

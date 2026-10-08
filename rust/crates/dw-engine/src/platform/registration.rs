@@ -91,8 +91,8 @@ pub struct RegistrationStatus {
     /// A lease holds a key for this flow ("Registration in progress — Lock
     /// to cancel").
     pub holds_key: bool,
-    /// True once the asset lock is anything but definitely not sent
-    /// ("Funds locked — finishing").
+    /// True once any funding of the flow is not `NotSent` (E0-04 §16.5):
+    /// "Funds committed — finishing".
     pub funds_committed: bool,
     /// While `phase` is `Contested`.
     pub contest_ends_at: Option<u64>,
@@ -126,7 +126,7 @@ pub enum RegistrationWait {
     Unlock,
     /// The vault is unlocked but the flow's grant died (an unlock, a scope
     /// or a passphrase change) or its budget ran short: "Confirm to
-    /// finish". The resume needs a grant. Pending E0-04 rev1.
+    /// finish". The resume needs a grant.
     Authorize,
     /// Held until SPV has synced: "Waiting for the network to sync".
     Sync,

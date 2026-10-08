@@ -811,9 +811,14 @@ fn wrapped_codes_pass_through() {
 static_assertions::assert_not_impl_any!(
     BearerSecret: serde::Serialize,
     std::fmt::Display,
+    ToString,
     Clone,
     PartialEq,
-    Into<String>
+    Into<String>,
+    std::ops::Deref<Target = str>,
+    AsRef<str>,
+    AsRef<[u8]>,
+    std::borrow::Borrow<str>
 );
 static_assertions::assert_not_impl_any!(AvatarSource: serde::Serialize, Clone);
 
@@ -980,6 +985,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await,
         );
         c.stub(session.end_flow(s()));
+        c.stub(session.leases());
         c.stub(dp.grant_request(s(), GrantAction::SendRequest).await);
         c.stub(dp.dispatch_status(s()).await);
 

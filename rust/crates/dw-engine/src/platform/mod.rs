@@ -36,8 +36,8 @@ pub use errors::{
     PlatformError, RegistrationError,
 };
 pub use flows::{
-    BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState, FlowKind, GrantAction,
-    GrantRequest, RevokeCause,
+    BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
+    GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
 };
 pub use identity::{
     IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, SecurityLevel,

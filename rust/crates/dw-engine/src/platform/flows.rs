@@ -1,10 +1,12 @@
 //! Flows, grants and the dispatch journal as the host sees them (E0-04;
-//! DASHPAY §2.3, §2.6). **Pending E0-04 rev1:** the names and shapes here
-//! follow the E0-04 design r1 review (findings 2 and 4) and may change with
-//! the revised design, under the contract's version rule.
+//! DASHPAY §2.3, §2.6). The shapes follow E0-04 design rev2 §16, the single
+//! source for this surface; a later E0-04 revision changes them under the
+//! contract's version rule.
 //!
 //! The lease itself (`Lease`, its table and signers) is E0-04's engine
-//! internals; the facade only hands out its id.
+//! internals; the facade hands out its id and a view of it.
+
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +30,6 @@ pub enum FlowKind {
     AcceptAndPay,
     PrivateDetails,
     EnableDashPayKeys,
-    Discovery,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -53,10 +54,12 @@ pub enum RevokeCause {
     Close,
     PassphraseChange,
     WalletRemoved,
+    WalletClosed,
 }
 
 /// The caps of the `PlatformOp{max_duffs, max_credits}` grant an action
-/// needs. The engine charges no more than it quoted.
+/// needs. The engine charges no more than it quoted; a quote made without
+/// the payload (`GrantAction`) is a worst-case bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantRequest {
     pub max_duffs: u64,
@@ -76,16 +79,20 @@ pub enum GrantAction {
     EnableDashPayKeys,
 }
 
-/// What the dispatch journal knows about a handed-off artifact.
+/// What the engine knows about a handed-off artifact. `dispatch_status`
+/// returns `None` when it knows nothing (E0-04's `Unknown`), which the host
+/// treats exactly like `MaybeSent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchState {
     /// Committed; the engine will send it again (`platform.will_be_sent`).
     WillBeSent,
-    /// It may already be out (`platform.broadcast_unknown`).
+    /// It may already be out, or is still in flight
+    /// (`platform.broadcast_unknown`).
     MaybeSent,
     Sent,
-    /// Definitely never sent; a retry is safe.
+    /// Definitely never sent, on positive evidence: the only state that
+    /// allows a retry, a discard or a second funding.
     NotSent,
 }
 
@@ -93,6 +100,7 @@ pub enum DispatchState {
 /// later resend was accepted, or a reload refused and cleaned up the entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchResolved {
+    /// Lower-case hex, as `WalletId` displays.
     pub wallet_id: String,
     /// The txid of a Core transaction or the hash of a state transition.
     pub artifact: String,
@@ -106,12 +114,63 @@ pub enum DispatchResolution {
     NotSent,
 }
 
+/// A lease as the UI sees it (E0-04 §4.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseView {
+    /// The first 8 hex digits of the id; for logs and the UI only.
+    pub id: String,
+    /// Lower-case hex.
+    pub wallet_id: String,
+    pub flow: FlowKind,
+    pub state: LeaseStateView,
+    pub own_key: bool,
+    /// While an own key is held: seconds until it is dropped.
+    pub key_expires_in_secs: Option<u64>,
+    pub funds_committed: bool,
+    pub budgets: Vec<BudgetView>,
+    /// Permits held now.
+    pub in_flight: u32,
+    /// A library call of the flow is running; selects the copy.
+    pub call_running: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeaseStateView {
+    Active,
+    /// Funding handed off with an own key, until `key_expires_in_secs`.
+    AwaitingProof,
+    Parked {
+        reason: ParkReason,
+    },
+    NeedsGrant,
+    Revoked {
+        cause: RevokeCause,
+    },
+    Ended,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParkReason {
+    ProofWaiting,
+}
+
+/// One budget of the lease's current generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetView {
+    pub purpose: BudgetPurpose,
+    pub ceiling: u64,
+    pub spent: u64,
+}
+
 #[expect(unused_variables, reason = "stubs until E0-04")]
 impl NetworkSession {
     /// Redeems `grants` into one lease for `flow` and returns its id, which
-    /// every call taking a `grant: String` accepts.
+    /// the calls of its wallet accept as their `grant` for the purposes the
+    /// lease carries.
     pub async fn begin_flow(
-        &self,
+        self: &Arc<Self>,
         wallet_id: WalletId,
         flow: FlowKind,
         grants: Vec<String>,
@@ -122,6 +181,10 @@ impl NetworkSession {
     /// Releases a lease. Idempotent.
     pub fn end_flow(&self, lease: String) -> Result<(), PlatformError> {
         stub("NetworkSession.end_flow")
+    }
+
+    pub fn leases(&self) -> Result<Vec<LeaseView>, PlatformError> {
+        stub("NetworkSession.leases")
     }
 }
 
@@ -135,7 +198,8 @@ impl DashPay {
         stub("DashPay.grant_request")
     }
 
-    /// `None` if the journal has no entry for `artifact`.
+    /// `None`: the engine knows nothing (E0-04's `Unknown`); never a reason
+    /// to retry.
     pub async fn dispatch_status(
         &self,
         artifact: String,
