@@ -6,6 +6,10 @@ source design disagree, this file wins. Fable's document remains the reference f
 protocol notes it carries (CoinJoin codec/rounds/salt detail, governance object/vote detail, ProTx v24 shared-MN
 detail, wallet.dat record list, BIP21 superset parser, NodeLink scope, checklist mapping cross-check).
 
+**Amended 2026-10-08 by [`DASHPAY.md`](DASHPAY.md) §8**: the UI stack, the binding, Platform proof trust, invitation
+creation, the masternode and governance scope (DEC-01) and DESIGN-opus's M4 plan (WS-07) are superseded there. The task plan is
+[`ROADMAP.md`](ROADMAP.md).
+
 ## R1. Decisions where both designs agreed (locked)
 - Rust engine owned by this repo, built **directly on the `platform-wallet` Rust library** (generic over its persister),
   with `platform-wallet-storage::SqlitePersister` for wallet state. No SwiftData, no 46-slot vtable, no dependency on
