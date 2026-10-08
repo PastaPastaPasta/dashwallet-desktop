@@ -726,7 +726,7 @@ fn a_backup_holds_only_its_wallets_data() {
         serde_json::from_value(body["bundles"][0].clone()).unwrap();
     let (_, payload) = s
         .vault()
-        .open_backup_bundle(&bundle, Some(b"bk"), &header)
+        .open_backup_bundle(&bundle, Some(b"bk"), None, &header)
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     assert!(json.get("wallet_sqlite").is_none(), "{json}");

@@ -130,10 +130,11 @@ or `UnlockedMixingOnly` (`vault.mixing_only`). It signs nothing; the one key it 
 key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `PlatformOp` grant for its wallet, which
 the unattended bring-up authorizes with `Credential::None`, so it too works without a prompt only in those two
 states. Both stop working when the vault locks, changes unlock scope or changes its passphrase. Both are engine-only:
-`crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key` and
-`VaultScanKey::resolve`/`resolver` in dw-ffi (`clippy -D warnings` fails), and a dw-ffi test scans its sources
-for them. The engine adapters (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`,
-platform-wallet's `ContactCryptoProvider` and `ScanKeyResolver` over these.
+`crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key`,
+`VaultScanKey::resolve`/`resolver` and `open_backup_bundle` (review DW-E0-03 r3) in dw-ffi
+(`clippy -D warnings` fails), and a dw-ffi test scans its sources for them. The engine adapters
+(`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`, platform-wallet's
+`ContactCryptoProvider` and `ScanKeyResolver` over these.
 
 Derived scalars stay in dw-vault, with two exceptions:
 
@@ -157,7 +158,7 @@ imported seed.
 **Lock against running operations** (review DW-E0-03 B1, r2 M2, r3 m1/m2). Every signer call holds a vault
 operation gate from its epoch check until its result is released. So does every use of a grant token's key, from
 the token check to the end of the operation: the secret reads (`reveal_mnemonic`, `export_wallet_secret`,
-`with_revealed_seed`) and the token-authorized writes
+`with_revealed_seed`, `open_backup_bundle` of the vault's own bundle) and the token-authorized writes
 (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`, `set_quick_unlock_spend_limit`, with their file
 write). `seed_derivation` and `core_mnemonic_check` hold it while they read the secret. `lock()`, `unlock()` and
 every other epoch change take the gate exclusively, so `lock()` returns only after those operations already
@@ -174,12 +175,25 @@ order, under 16 concurrent signers and 300 locks per vault mode. What a caller d
 before the lock can finish after it: a signature it already holds, the provider key `with_revealed_seed`'s
 closure derives, the dump-wallet keys derived from `export_wallet_secret`. A flow that must not use such a
 result after a lock ("Lock to cancel") hands it to the transport only while holding a permit of its lease,
-which the lock takes exclusively (DASHPAY §2.6, E0-04). Not gated: `backup_bundle` and `open_backup_bundle`
-(no grant or epoch; the latter returns the decrypted secrets of this vault's own bundle on an unlocked vault), and
-record writes under the vault's own key (`store_wallet_secret` and the import rollback's `delete_wallet_secret`). An
+which the lock takes exclusively (DASHPAY §2.6, E0-04). Not gated: `backup_bundle` (no grant or epoch; it
+returns ciphertext only), `open_backup_bundle` through a bundle's passphrase slot (no vault key), and record
+writes under the vault's own key (`store_wallet_secret` and the import rollback's `delete_wallet_secret`). An
 unencrypted vault's read that loads the key and then finds it dropped by a lock before the gate loads it again
 (at most three tries) rather than failing `vault.locked`; `authorize` with no credential issues a grant only
 while that key is in memory.
+
+**Backup bundles** (review DW-E0-03 r3). `open_backup_bundle` opens a bundle this vault wrote with the vault's
+key only under a `RevealSecret` grant for the bundle's wallet, which it redeems, as `reveal_mnemonic` does;
+without one, every bundle needs its passphrase slot. So a restore never hands out the phrase for less than a
+reveal needs: nothing on an unencrypted vault, the vault passphrase on an encrypted one, unlocked or not. The
+engine's `restore_backup` gets that grant itself (`backup.rs` `open_bundle`): with no credential on an
+unencrypted vault. On an encrypted one, a bundle whose slot takes the current vault passphrase, or a backup
+passphrase, opens only through that slot, which the vault's throttle does not count, so a mistyped backup
+passphrase never throttles unlock. Only a bundle that just the vault's key opens with the current passphrase
+(`Vault::own_key_only`: made before a passphrase change, or an automatic backup from before `encrypt`) has the
+passphrase checked as the vault's, after its slot was tried; a wrong one then counts. A restore on a locked vault
+is refused before any bundle is opened. Before r3, an unlocked vault opened its own bundles with no grant and no
+passphrase.
 
 **Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
 or individually rolled-back record, or a changed manifest, makes unlock and reads fail with

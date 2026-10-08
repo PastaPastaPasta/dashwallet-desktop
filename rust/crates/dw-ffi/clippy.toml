@@ -2,12 +2,14 @@
 # `dw_vault::Vault` through the session, so without this nothing but a
 # comment would stop a view-facing call from reaching key material without a
 # grant (the background DashPay crypto signer) or from handing the wallet's
-# master key to the UI layer (the identity-scan key). Only dw-engine's
-# bring-up may call these; `cargo clippy -- -D warnings` enforces it here.
+# master key or a backup's recovery phrase to the UI layer (the identity-scan
+# key, `open_backup_bundle`; review DW-E0-03 r3). Only dw-engine may call
+# these; `cargo clippy -- -D warnings` enforces it here.
 disallowed-methods = [
     { path = "dw_vault::Vault::dashpay_crypto_signer", reason = "engine-only: the grant-less background DashPay crypto signer (dw-vault vault.rs)" },
     { path = "dw_vault::Vault::scan_key", reason = "engine-only: releases the wallet's master key for platform-wallet's identity scan" },
     { path = "dw_vault::ScanKey::master_key", reason = "engine-only: the wallet's master private key" },
+    { path = "dw_vault::Vault::open_backup_bundle", reason = "engine-only: decrypts a backup's recovery phrase and seed; views restore through NetworkSession::restore_backup" },
     { path = "dw_engine::platform::VaultScanKey::resolve", reason = "engine-only: the wallet's master private key" },
     { path = "dw_engine::platform::VaultScanKey::resolver", reason = "engine-only: the wallet's master private key" },
 ]

@@ -1,17 +1,19 @@
 //! Review DW-E0-03 M1: dw-ffi never calls the vault's engine-only entry
-//! points (the grant-less background DashPay crypto signer and the
-//! identity-scan master key). `clippy.toml` forbids them by path; this test
-//! catches the same calls in a plain `cargo test`.
+//! points (the grant-less background DashPay crypto signer, the
+//! identity-scan master key and, since r3, opening a backup bundle).
+//! `clippy.toml` forbids them by path; this test catches the same calls in
+//! a plain `cargo test`.
 
 use std::path::{Path, PathBuf};
 
 /// Call forms, so unrelated identifiers do not match; clippy also catches
 /// uses without a call (a function pointer).
-const FORBIDDEN: [&str; 4] = [
+const FORBIDDEN: [&str; 5] = [
     "dashpay_crypto_signer(",
     "scan_key(",
     "master_key(",
     "VaultScanKey",
+    "open_backup_bundle(",
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -15,17 +15,19 @@
 //!   epoch check until its result is released, and every use of a grant
 //!   token's key holds it from the token check until the operation is done
 //!   ([`Vault::gated`]): the secret reads (`reveal_mnemonic`,
-//!   `export_wallet_secret`, `with_revealed_seed`) and the token-authorized
-//!   writes (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`,
+//!   `export_wallet_secret`, `with_revealed_seed`, `open_backup_bundle` of
+//!   this vault's own bundle) and the token-authorized writes
+//!   (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`,
 //!   `set_quick_unlock_spend_limit`), whose file write is inside.
 //!   `seed_derivation` and `core_mnemonic_check`, which read a secret with
 //!   the vault's own key, are gated too. Every epoch change (lock, unlock,
 //!   scope change, passphrase change, encrypt, recover, destroy) holds it
 //!   exclusively, so `lock()` returns only once every such operation that
 //!   started before it has finished, and any operation after it sees the
-//!   new epoch and fails `Locked`. Not gated: the backup bundles
-//!   (`backup_bundle`, `open_backup_bundle`), which take no grant or epoch,
-//!   and record writes under the vault's own key (`store_wallet_secret`,
+//!   new epoch and fails `Locked`. Not gated: `backup_bundle`, which takes
+//!   no grant or epoch and returns only ciphertext, `open_backup_bundle`
+//!   through a bundle's passphrase slot (no vault key), and record writes
+//!   under the vault's own key (`store_wallet_secret`,
 //!   `delete_wallet_secret`).
 //!
 //!   A holder must not take the gate again, take `writer`, block on another

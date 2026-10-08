@@ -182,8 +182,9 @@ fn lock_waits_for_the_operation_already_running() {
 }
 
 /// The secret reads of the reveal paths hold the gate too: on an unlocked
-/// vault (`reveal_mnemonic`) and with a passphrase grant's own key on a
-/// locked one (`with_revealed_seed`, `export_wallet_secret`).
+/// vault (`reveal_mnemonic`, `open_backup_bundle`) and with a passphrase
+/// grant's own key on a locked one (`with_revealed_seed`,
+/// `export_wallet_secret`).
 #[test]
 fn lock_waits_for_a_secret_read_already_running() {
     let dir = tempfile::tempdir().unwrap();
@@ -210,6 +211,17 @@ fn lock_waits_for_a_secret_read_already_running() {
     let w = v.clone();
     epoch_change_waits_for(&v, lock, move || {
         w.export_wallet_secret(&W, &token).map(drop)
+    });
+
+    // Opening this vault's own backup bundle with its key, under a reveal
+    // grant (review DW-E0-03 r3). Writing the bundle needs the vault
+    // unlocked.
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    let bundle = v.backup_bundle(&W, None, b"payload", b"header").unwrap();
+    let (id, w) = (reveal_grant(&v), v.clone());
+    epoch_change_waits_for(&v, lock, move || {
+        w.open_backup_bundle(&bundle, None, Some(&id), b"header")
+            .map(drop)
     });
 }
 
