@@ -40,6 +40,25 @@ on Linux.**
    light session stalled after the failed details wait (the same presses passed in the dark session,
    and `ux-dark-07-address-book.png` exists). There is no `ux-light-06`/`ux-light-07` screenshot.
 
+**Measured on agentbox (2026-10-08): failures 1–3 are a busy main thread, not a stale render.** The
+M1 send flow (`scripts/crossui-linux-demo.sh`, default suite) fails the same check there. The app
+is right: the screenshot after the send shows the new "Sent −0.25000226" row. But from the moment
+the new transaction is revealed, the GTK main thread runs at 100 % CPU and keeps doing so for as
+long as it was watched (over 40 s after the harness stopped querying). Every AT-SPI call into the
+app then times out, so the harness sees an empty tree. Three gdb samples of the main thread all
+show the same driver:
+
+```
+GtkBackend.runInMainThread → ViewGraphNode.viewModelDidChange → bottomUpUpdate
+  → computeLayout / commit of the whole page (800–1300 frames deep)
+  → Text.computeLayout → GtkBackend.updateTextView → Widget.css setter → gtk_css_provider_load_from_data
+```
+
+So Observation change notifications keep re-laying out the whole Transactions page (with a CSS
+reload for every `Text`). Not root-caused: an equality guard on `TransactionDetailCard`'s
+`labelText` write did not stop it. Next steps: log which observed property fires in
+`viewModelDidChange`, and check whether layout or commit writes observed state.
+
 Everything else passed: Overview (hero, breakdown, shortcut card, day cards), Send, Receive,
 Transactions list and table, Sign / Verify, Tools (Information, Console, Peers), PSBT, Wallets,
 Options, Security, Settings, About, onboarding (welcome, phrase), lock screen, sync overlay and the

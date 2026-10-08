@@ -38,13 +38,17 @@ detail, wallet.dat record list, BIP21 superset parser, NodeLink scope, checklist
 | Workstream table | 13 WS | 18 WS | **Opus WS-01…WS-13** (§5.2 of DESIGN-opus.md). Fable's §5.4 mapping used as a cross-check. |
 
 ## R3. Local environment rules (all agents)
-- One shared Rust target dir: `CARGO_TARGET_DIR=/Users/pasta/workspace/dashwallet-desktop-deps/target` on macOS;
-  Linux builds in Docker image `dwd-linux-rust` (`ci/linux/Dockerfile`) with named volumes `dwd-cargo-registry`,
-  `dwd-cargo-git`, `dwd-linux-target`.
+- Rust target dir: on the dev Mac one shared dir, `~/workspace/dashwallet-desktop-deps/target`
+  (`$DWD_DEPS_DIR/target` when `DWD_DEPS_DIR` is set); on Linux hosts that run several worktrees (agentbox) one
+  `rust/target` per checkout, never shared, with sccache deduplicating compiles. `scripts/build-core.sh` applies
+  this. Linux Swift builds run in Docker (`ci/linux/Dockerfile.swift`, `Dockerfile.crossui`) with shared
+  `dwd-cargo-registry` / `dwd-cargo-git` volumes and target / SwiftPM volumes per checkout off macOS
+  (`scripts/docker-volumes.sh`).
 - Never build `release`/`dist` locally except when explicitly assigned; `dev` profile on the host triple.
 - Disk guard: abort builds when free space < 15 GB (`scripts/disk-guard.sh`).
 - `swift build`/`swift test`/`git` writes must run outside the Claude sandbox.
 - Pins: platform `bc321362b9` (v5.0-dev, 2026-10-04), rust-dashcore `e4208c90`, Rust 1.98.1, Swift 6.3.3, SwiftCrossUI 0.10.0.
-- A clean platform checkout at the pin exists at `/Users/pasta/workspace/dashwallet-desktop-deps/platform` for reading.
+- A clean platform checkout at the pin exists at `~/workspace/dashwallet-desktop-deps/platform` on the dev Mac for
+  reading; elsewhere use cargo's git checkout (`~/.cargo/git/checkouts/platform-*/bc32136`).
 - Never touch `/Users/pasta/workspace/platform` (someone else's dirty tree).
 - Commits: conventional commits, signed automatically; never `git add -A`.

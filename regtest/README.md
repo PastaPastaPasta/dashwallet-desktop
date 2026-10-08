@@ -87,7 +87,7 @@ history. It is skipped unless `DWCLI` points at a built `dwcli`:
 
 ```sh
 (cd rust && cargo build -p dwcli)
-DWCLI=$CARGO_TARGET_DIR/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py
+DWCLI=$PWD/../../rust/target/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py   # or $CARGO_TARGET_DIR/debug/dwcli
 ```
 
 On a single node dash-spv never reports `caught_up`: there are no quorums, so its masternode phase
@@ -187,15 +187,18 @@ regtest/scripts/run-functional.sh                      # dwd_mn_chainlock.py + d
 docker compose -f regtest/docker-compose.yml --profile functional run --rm functional \
     feature_llmq_chainlocks.py --timeout-factor=3             # any single test with any options
 
-# on a macOS host with the darwin release (ad-hoc signed by fetch-dashcore.sh)
-uv venv /path/to/func-venv && uv pip install --python /path/to/func-venv/bin/python \
+# on the host with the matching release: Linux (x86_64/aarch64) or macOS (ad-hoc signed by
+# fetch-dashcore.sh); building dash_hash needs a C compiler
+sh regtest/scripts/fetch-dashcore.sh ~/.cache/dwd-dashcore/24.0.0-rc.2
+uv venv ~/.cache/dwd-dashcore/func-venv --python 3.12 && uv pip install --python ~/.cache/dwd-dashcore/func-venv/bin/python \
     https://github.com/dashpay/dash_hash/archive/refs/tags/1.4.0.tar.gz
-DWD_PYTHON=/path/to/func-venv/bin/python DASHCORE_DIR=/path/to/dashcore \
+DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 \
     regtest/functional/run.sh dwd_mn_chainlock.py
 ```
 
 `run.sh` puts config.ini, the framework cache and each run's node datadirs (`--tmpdir`, unique per
-run) under `DWD_FUNC_TMP` (default `$TMPDIR/dwd-functional`). The `functional` service bind-mounts
+run) under `DWD_FUNC_TMP` (default `$TMPDIR/dwd-functional`), all created owner-only (`umask 077`: dwcli's
+engine refuses a database below a group-writable directory). The `functional` service bind-mounts
 `functional/` read-only over the copy baked into the image, so test edits need no rebuild; inside
 the container everything lives in a tmpfs `/tmp`. Any test_framework option can follow the script
 name and overrides run.sh's defaults (`--nocleanup`, `--tmpdir=`, `--portseed=`,
@@ -283,19 +286,21 @@ mixing wallets and a second `dwcli` wallet, in real time (`disable_mocktime`: ou
 `dsq` timestamps against the wall clock). It checks that stopping releases a session's coins, one
 round, that a restarted process resumes to 2 rounds with a fully mixed balance, and that fully mixed
 coins pay only through `send --coinjoin` (no change output, `CoinJoinSend` in history). The `dwcli`
-nodes connect to the framework's ports on the host, so it runs on the host with the darwin release
-(the Docker image would need a Linux `dwcli` inside the container):
+nodes connect to the framework's ports on the host, so it runs on the host with the host's release,
+set up as in "Running" above (the Docker image would need a Linux `dwcli` inside the container):
 
 ```sh
-DWCLI=$CARGO_TARGET_DIR/debug/dwcli DWD_PYTHON=/path/to/func-venv/bin/python \
-    DASHCORE_DIR=/path/to/dashcore regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
+(cd rust && cargo build -p dwcli)
+DWCLI=$PWD/rust/target/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
 ```
 
 dashd counterparties alone are not enough on this network: after their first sessions they keep the
 masternode connections they opened (`CMasternodeUtils::DoMaintenance` keeps them while the node has
 fewer than its maximum outbound peers) and skip every connected masternode
 (`IsMasternodeOrDisconnectRequested`), so most queues expire. The second `dwcli` wallet keeps
-sessions going. One pass takes 8–15 minutes (quorums about 2, mixing 5–12).
+sessions going. One pass takes 8–15 minutes on the laptop (quorums about 2, mixing 5–12) and about
+6–7 minutes on agentbox.
 
 ## Layout
 

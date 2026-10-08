@@ -47,7 +47,7 @@ docs/contracts/           engine API (m1-engine.md, m2-engine.md), Swift seams (
 
 - Rust 1.98.1 (`rust/rust-toolchain.toml`; rustup installs it), protoc 29+, libclang
 - Swift 6.3.3 (Xcode 26.6 on macOS)
-- Linux builds: Docker (OrbStack on the dev Mac)
+- Linux builds: Docker (OrbStack on the dev Mac) for Swift; Rust also builds on the host (see "Linux")
 
 ## Build and test (macOS)
 
@@ -64,10 +64,16 @@ swift test                            # every Swift suite; DashKit, WalletRuntim
 committed Swift differs from a fresh generation). It runs `scripts/disk-guard.sh`
 first and aborts below 15 GB free (`DWD_MIN_FREE_GB` overrides).
 
-`build-core.sh` uses the shared Cargo target dir
-`/Users/pasta/workspace/dashwallet-desktop-deps/target` (DESIGN.md R3) when
-that directory exists and `rust/target` otherwise; set `CARGO_TARGET_DIR` to
-override. Build only the `dev` profile locally.
+`build-core.sh` picks the Cargo target dir (DESIGN.md R3), first match wins:
+
+1. `CARGO_TARGET_DIR`;
+2. `$DWD_DEPS_DIR/target` when `DWD_DEPS_DIR` (the shared dependency dir) is set;
+3. on macOS, `~/workspace/dashwallet-desktop-deps/target` when that directory exists (the dev
+   Mac's one shared target dir);
+4. `rust/target`.
+
+Linux hosts that build several worktrees at once (agentbox) keep one target dir per checkout
+(case 4) and share compiles through sccache instead. Build only the `dev` profile locally.
 
 Rust tests (every crate in the workspace):
 
@@ -121,7 +127,32 @@ against dashd v24 in the regtest `restore` suite, watch-only in `l2-tools`; back
 `rust/crates/dw-engine/tests/r2_compat_offline.rs`. In demo mode these calls answer
 `not_implemented`, and the screens show that error.
 
-## Linux (Docker)
+## Linux
+
+### Rust on the host
+
+The Rust workspace, `dwcli` and the regtest suites build and run on a plain Linux host. On
+Ubuntu (checked on 26.04, agentbox):
+
+```sh
+sudo apt install build-essential clang libclang-dev libssl-dev pkg-config cmake unzip curl
+curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal   # rust-toolchain.toml installs 1.98.1
+# protoc 29+: Ubuntu's protobuf-compiler is 3.21, too old. Use the release zip, as the Dockerfiles do
+# (or `mise use -g protoc@32`):
+curl -fsSLO https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+sudo unzip -o protoc-29.3-linux-x86_64.zip -d /usr/local bin/protoc 'include/*'
+cd rust && cargo test --workspace
+```
+
+Engine databases must not sit below a group- or world-writable directory (platform-wallet-storage
+refuses them, naming the directory). The engine creates its own directories owner-only, and the
+tests use owner-only temp dirs, so Ubuntu's default umask 002 is fine; a `--datadir` you create
+yourself must not be group-writable.
+
+### Swift (Docker)
+
+There is no Swift toolchain for every Linux release (none for Ubuntu 26.04), so the Linux Swift
+targets build and test in the pinned `swift:6.3.3-noble` image:
 
 ```sh
 scripts/linux-docker-test.sh
@@ -134,8 +165,19 @@ variant, checks the committed bindings, and runs `DashKitTests`,
 `PlatformServicesDesktopTests` with `DWD_HEADLESS=1`. That variable
 removes the SwiftCrossUI targets from the package graph (the dependency stays
 declared, so `Package.resolved` is unchanged), so no GTK is needed.
-`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` caps cargo jobs;
-`DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and inside the container.
+`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` sets cargo jobs (default: the
+host's `CARGO_BUILD_JOBS`, else 8); `DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and
+inside the container.
+
+The cargo target dir and the SwiftPM scratch dir live in Docker volumes (`scripts/docker-volumes.sh`):
+one pair shared by every checkout on macOS, one pair per checkout elsewhere, so worktrees that run
+at the same time never build into the same directory. `DWD_DOCKER_VOLUME_TAG` overrides the key
+(`""` selects the shared pair). Remove a deleted worktree's volumes with `docker volume rm`.
+
+On agentbox (32 vCPU), with images built and the cargo registry warm: `linux-docker-test.sh` takes about
+14 minutes on a fresh checkout (11 of them the in-container core build) and runs 528 Swift tests;
+`crossui-linux-demo.sh` takes about 15 minutes, nearly all of it AT-SPI driving. Pass an `OUT_DIR` to
+the demo unless you mean to replace the committed screenshots.
 
 ## Running the app
 
