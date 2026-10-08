@@ -353,6 +353,9 @@ status, milestone and test reference.
   (also run by `RepoChecksTests`). A new target under `Sources/` needs an
   entry there.
 - Generated bindings are never hand-edited; regenerate with `build-core.sh`.
+- GitHub Actions runs CI on Linux, macOS and Windows for `main` and `dw/**` pushes, a nightly regtest
+  run, and the UI-gate measurement runs ([`docs/ci.md`](docs/ci.md)). Run screenshots are downloadable
+  artifacts.
 
 ## Status
 
