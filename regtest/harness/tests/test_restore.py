@@ -24,7 +24,7 @@ dashd `walletcreatefundedpsbt` is signed by dwcli (signatures equal dashd's) and
 Signatures (§4.4 item 3) are covered by the `l1-send` suite (sign/verify both ways).
 Not covered here: legacy BDB wallet.dat (M6), wallets mixed by Core's CoinJoin.
 
-    DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \\
+    DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=<target>/debug/dwcli \\
         .venv/bin/python -m pytest -v tests/test_restore.py
 """
 

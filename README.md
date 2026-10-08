@@ -144,10 +144,11 @@ sudo unzip -o protoc-29.3-linux-x86_64.zip -d /usr/local bin/protoc 'include/*'
 cd rust && cargo test --workspace
 ```
 
-Engine databases must not sit below a group- or world-writable directory (platform-wallet-storage
-refuses them, naming the directory). The engine creates its own directories owner-only, and the
-tests use owner-only temp dirs, so Ubuntu's default umask 002 is fine; a `--datadir` you create
-yourself must not be group-writable.
+Neither an engine data directory nor any directory above it may be group- or world-writable unless
+it has the sticky bit (platform-wallet-storage refuses the database and names the directory; `/tmp`
+at 1777 is fine). The engine creates its own directories owner-only and the tests use owner-only
+temp dirs, so Ubuntu's default umask 002 is fine. A `--datadir` you create yourself must follow the
+rule, and so must its parents: on agentbox `~/workspace/dw-wt` is 0775, so do not put one there.
 
 ### Swift (Docker)
 
@@ -165,8 +166,8 @@ variant, checks the committed bindings, and runs `DashKitTests`,
 `PlatformServicesDesktopTests` with `DWD_HEADLESS=1`. That variable
 removes the SwiftCrossUI targets from the package graph (the dependency stays
 declared, so `Package.resolved` is unchanged), so no GTK is needed.
-`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` sets cargo jobs (default: the
-host's `CARGO_BUILD_JOBS`, else 8); `DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and
+`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` sets cargo jobs (default: 8 on macOS;
+elsewhere the host's `CARGO_BUILD_JOBS`, else 8); `DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and
 inside the container.
 
 The cargo target dir and the SwiftPM scratch dir live in Docker volumes (`scripts/docker-volumes.sh`):
@@ -176,8 +177,8 @@ at the same time never build into the same directory. `DWD_DOCKER_VOLUME_TAG` ov
 
 On agentbox (32 vCPU), with images built and the cargo registry warm: `linux-docker-test.sh` takes about
 14 minutes on a fresh checkout (11 of them the in-container core build) and runs 528 Swift tests;
-`crossui-linux-demo.sh` takes about 15 minutes, nearly all of it AT-SPI driving. Pass an `OUT_DIR` to
-the demo unless you mean to replace the committed screenshots.
+`crossui-linux-demo.sh` takes about 15 minutes, nearly all of it AT-SPI driving. Pass an output directory as
+the demo's first argument unless you mean to replace the committed screenshots.
 
 ## Running the app
 

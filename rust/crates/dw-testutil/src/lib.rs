@@ -3,9 +3,10 @@
 /// A temporary directory that only the current user can write to, whatever
 /// the process umask.
 ///
-/// `SqlitePersister` refuses a database below any group- or world-writable
-/// directory, and `tempfile::tempdir()` creates its directory with the umask's
-/// mode: 0775 under Ubuntu's default umask 002, which fails every engine test.
+/// `SqlitePersister` refuses a database when any directory above it is group-
+/// or world-writable without the sticky bit, and `tempfile::tempdir()` creates
+/// its directory with the umask's mode: 0775 under Ubuntu's default umask 002,
+/// which fails every engine test.
 pub fn private_tempdir() -> tempfile::TempDir {
     let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
