@@ -37,7 +37,7 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
             data_root: dir.path().to_string_lossy().into_owned(),

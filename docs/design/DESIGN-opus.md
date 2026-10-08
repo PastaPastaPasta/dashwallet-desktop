@@ -232,6 +232,12 @@ macOS deployment target is **14.0** (`@Observable` in SwiftUI). `Observations` (
 - Linux: `$XDG_DATA_HOME/dashwallet/<net>/` (Flatpak: `~/.var/app/org.dashfoundation.DashWallet/data/…`)
 
 `--datadir` and the first-run chooser (QT-004) override the root. Each network is isolated, which satisfies QT-002.
+Whatever the umask, the app creates every directory on the path to a database or secret 0700, and the
+databases, secrets and settings files 0600, because platform-wallet-storage refuses a database below a
+group-writable directory. The default root and the directories the engine creates lose group and other access
+when found with it; a user-chosen root and its parents are not changed, and the storage error names the one to
+fix. Modes are only changed through descriptors opened with `O_NOFOLLOW` relative to the parent's (dw-fs,
+`PrivateFileSystem`), never by path. Exports outside the data root (CSV, PSBT, log zip) are created 0600.
 
 **Restore completeness gap (verified).** SqlitePersister does **not** attest `WALLET_RESTORE`: "token balances and the DashPay overlay have no load readers, so a full restore remains lossy" (`persister.rs:1311-1313`). Mitigation:
 - Engine side: after `load()`, the engine forces a Platform re-sync of token balances and the DashPay payment overlay. This costs time but loses no data.

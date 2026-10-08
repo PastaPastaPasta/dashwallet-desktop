@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::context::{LazyTrustedContext, SharedContext};
 use crate::events::{SessionHub, SessionPump, WalletName, WalletState};
-use crate::fsutil::create_private_dir;
+use crate::fsutil::{create_owned_dir, create_owned_file};
 use crate::gate::{OpGate, OpGuard};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
@@ -182,7 +182,7 @@ impl NetworkSession {
                     .map_err(|e| EngineError::InvalidArgument(format!("bad SPV peer {p:?}: {e}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        create_private_dir(&data_dir)?;
+        create_owned_dir(&data_dir, Path::new(""))?;
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
         let unclean_previous = marker.exists();
 
@@ -194,6 +194,7 @@ impl NetworkSession {
         .await??;
 
         let appdb_path = data_dir.join(APP_DB_FILE);
+        create_owned_file(&data_dir, Path::new(APP_DB_FILE))?;
         let (appdb, names) = tokio::task::spawn_blocking(move || {
             let db = AppDb::open(&appdb_path)?;
             let names = db.wallets()?;
@@ -233,6 +234,18 @@ impl NetworkSession {
         let sdk = build_sdk(&network, &opts, Arc::clone(&context))?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
+        // SqlitePersister creates its backup directory with the umask's mode
+        // and refuses one below a group-writable directory: `backups` and
+        // `backups/auto` are owner-only, legacy 0775 ones included, before
+        // it needs a pre-migration backup.
+        let auto_backups = platform_wallet_storage::default_auto_backup_dir(&db_path);
+        let auto_backups = auto_backups.strip_prefix(&data_dir).map_err(|_| {
+            EngineError::Internal(format!(
+                "{} is outside the network directory",
+                auto_backups.display()
+            ))
+        })?;
+        create_owned_dir(&data_dir, auto_backups)?;
         let persister = Arc::new(
             tokio::task::spawn_blocking(move || {
                 SqlitePersister::open(SqlitePersisterConfig::new(db_path))
@@ -317,7 +330,9 @@ impl NetworkSession {
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
         });
-        if let Err(e) = std::fs::write(&marker, b"") {
+        if let Err(e) =
+            create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
+        {
             tracing::warn!(error = %e, "could not write the open-session marker");
         }
         session.apply_stored_lookaheads(&manager).await;
@@ -487,6 +502,8 @@ impl NetworkSession {
     /// Starts dash-spv and spawns its run loop.
     pub(crate) async fn start_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
         let config = self.spv_config()?;
+        // Owner-only before dash-spv creates it with the umask's mode.
+        create_owned_dir(&self.data_dir, Path::new(SPV_DIR))?;
         let spv = manager.spv_arc();
         spv.start(config).await?;
         spv.spawn_run_loop();

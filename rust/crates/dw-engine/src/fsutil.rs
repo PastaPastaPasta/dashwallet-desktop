@@ -1,53 +1,38 @@
-//! File-system helpers.
+//! File-system helpers: the owner-only directories and files of the data root
+//! ([`dw_fs`], which never changes a mode through a swapped-in symlink).
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Creates `dir` and any missing parents. Every directory this call creates
-/// is restricted to the current user (0700 on Unix), because SqlitePersister
-/// refuses databases under group- or world-writable directories.
-///
-/// Directories that already exist keep their permissions: when the user
-/// chose the data root (dash-qt's `--datadir` or first-run chooser, QT-004),
-/// the engine must not change the mode of a directory it does not own.
-pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
-    // Collect the missing components, deepest first.
-    let mut missing: Vec<PathBuf> = Vec::new();
-    let mut cursor = Some(dir);
-    while let Some(path) = cursor {
-        if path.as_os_str().is_empty() || path.exists() {
-            break;
-        }
-        missing.push(path.to_path_buf());
-        cursor = path.parent();
-    }
-    for path in missing.iter().rev() {
-        match std::fs::create_dir(path) {
-            Ok(()) => restrict_to_user(path)?,
-            // Another thread or process created it first: it is not ours.
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
-            Err(e) => return Err(e),
-        }
-    }
-    if !dir.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            format!("{} is not a directory", dir.display()),
-        ));
-    }
-    Ok(())
+pub(crate) use dw_fs::create_private_dir;
+
+/// Creates `rel` below the network directory `data_dir` (`<root>/<network>`),
+/// both the engine's: each directory from the network directory down is
+/// created 0700, or loses its group and other permissions when an older
+/// build or a permissive umask left them open. The data root above is the
+/// user's and keeps its mode (QT-004).
+pub(crate) fn create_owned_dir(data_dir: &Path, rel: &Path) -> io::Result<()> {
+    let (root, network) = split(data_dir)?;
+    dw_fs::create_owned_dir(root, &Path::new(network).join(rel))
 }
 
-#[cfg(unix)]
-fn restrict_to_user(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+/// [`create_owned_dir`] for the file `rel` below the network directory: the
+/// engine's files that would otherwise get the umask's mode (`app.sqlite`,
+/// whose `-wal` and `-shm` files SQLite gives the database file's mode, and
+/// the open-session marker) are created 0600 or restricted to it.
+pub(crate) fn create_owned_file(data_dir: &Path, rel: &Path) -> io::Result<()> {
+    let (root, network) = split(data_dir)?;
+    dw_fs::create_owned_file(root, &Path::new(network).join(rel))
 }
 
-#[cfg(not(unix))]
-fn restrict_to_user(_path: &Path) -> io::Result<()> {
-    // Windows: a directory under the user profile inherits a per-user ACL.
-    Ok(())
+fn split(data_dir: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
+    match (data_dir.parent(), data_dir.file_name()) {
+        (Some(root), Some(network)) => Ok((root, network)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a network directory", data_dir.display()),
+        )),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -60,40 +45,27 @@ mod tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    fn chmod(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
     #[test]
-    fn restricts_only_the_directories_it_creates() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("chosen-root");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fn owns_the_network_directory_but_not_the_root() {
+        let tmp = dw_testutil::private_tempdir();
+        let root = tmp.path().join("root");
+        create_private_dir(&root).unwrap();
+        chmod(&root, 0o755);
+        let net = root.join("regtest");
+        std::fs::create_dir(&net).unwrap();
+        chmod(&net, 0o775);
 
-        let net = root.join("regtest").join("spv");
-        create_private_dir(&net).unwrap();
-
-        assert_eq!(
-            mode(&root),
-            0o755,
-            "an existing user-chosen root keeps its mode"
-        );
-        assert_eq!(mode(&root.join("regtest")), 0o700);
+        create_owned_dir(&net, Path::new("backups/auto")).unwrap();
+        create_owned_file(&net, Path::new("app.sqlite")).unwrap();
+        assert_eq!(mode(&root), 0o755);
         assert_eq!(mode(&net), 0o700);
-    }
-
-    #[test]
-    fn leaves_an_existing_directory_untouched() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("existing");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
-        create_private_dir(&dir).unwrap();
-        assert_eq!(mode(&dir), 0o750);
-    }
-
-    #[test]
-    fn rejects_a_file_in_the_way() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("file");
-        std::fs::write(&file, b"x").unwrap();
-        assert!(create_private_dir(&file).is_err());
+        assert_eq!(mode(&net.join("backups")), 0o700);
+        assert_eq!(mode(&net.join("backups/auto")), 0o700);
+        assert_eq!(mode(&net.join("app.sqlite")), 0o600);
+        assert!(create_owned_dir(Path::new("/"), Path::new("x")).is_err());
     }
 }

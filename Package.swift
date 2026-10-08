@@ -123,7 +123,9 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "RepoChecksTests"),
-    .testTarget(name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop", "PlatformServices"]),
+    // DashKit: the umask 002 test opens the engine on a prepared data root.
+    .testTarget(
+        name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop", "PlatformServices", "DashKit"]),
     // macOS-only: the sources compile to nothing elsewhere. The keychain test
     // skips itself without Touch ID or outside a signed app.
     .testTarget(

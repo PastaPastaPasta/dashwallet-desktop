@@ -27,8 +27,7 @@ public struct FileSystemDataDirectoryInspector: DataDirectoryInspecting {
 
     public func create(_ url: URL) throws(PlatformServiceError) {
         do {
-            try FileManager.default.createDirectory(
-                at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try PrivateFileSystem.createDirectory(url)
         } catch {
             throw PlatformServiceError(code: "desktop.os_error", detail: "\(url.path): \(error.localizedDescription)")
         }

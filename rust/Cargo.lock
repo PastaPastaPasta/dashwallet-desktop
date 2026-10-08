@@ -1578,10 +1578,10 @@ dependencies = [
  "dashcore",
  "dw-engine",
  "dw-message",
+ "dw-testutil",
  "dw-vault",
  "hex",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1616,14 +1616,17 @@ dependencies = [
  "dw-appdb",
  "dw-coinjoin",
  "dw-compat",
+ "dw-fs",
  "dw-message",
  "dw-p2p",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-uri",
  "dw-vault",
  "hex",
  "key-wallet",
+ "libc",
  "platform-wallet",
  "platform-wallet-storage",
  "rand 0.8.6",
@@ -1649,6 +1652,7 @@ dependencies = [
  "dw-engine",
  "dw-message",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-uri",
  "dw-vault",
@@ -1659,6 +1663,15 @@ dependencies = [
  "tokio",
  "uniffi",
  "zeroize",
+]
+
+[[package]]
+name = "dw-fs"
+version = "0.1.0"
+dependencies = [
+ "dw-testutil",
+ "rustix 1.1.4",
+ "tracing",
 ]
 
 [[package]]
@@ -1698,6 +1711,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-testutil"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "dw-units"
 version = "0.1.0"
 dependencies = [
@@ -1727,7 +1748,9 @@ dependencies = [
  "chacha20poly1305",
  "dashcore",
  "dw-compat",
+ "dw-fs",
  "dw-message",
+ "dw-testutil",
  "dw-uri",
  "dw-vault",
  "getrandom 0.2.17",
@@ -1756,10 +1779,10 @@ dependencies = [
  "dw-engine",
  "dw-message",
  "dw-psbt",
+ "dw-testutil",
  "dw-units",
  "dw-vault",
  "hex",
- "tempfile",
  "tracing-subscriber",
  "zeroize",
 ]

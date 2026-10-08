@@ -28,6 +28,8 @@ dw-compat = { workspace = true }
 dw-psbt = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
+# Owner-only directories and files, changed through descriptors.
+dw-fs = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -49,5 +51,11 @@ dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 dw-message = { workspace = true }
 serde_json = "1"
 tempfile = { workspace = true }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests.
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# tests/umask_002.rs sets the process umask.
+libc = "0.2"

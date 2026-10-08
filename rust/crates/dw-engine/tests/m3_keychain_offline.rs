@@ -97,7 +97,7 @@ fn reveal_grant(e: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> String {
 
 #[test]
 fn test_ios_083_secp256k1_keys_match_their_dip3_paths() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e);
     let id = import(&e, &s);
@@ -146,7 +146,7 @@ fn test_ios_083_secp256k1_keys_match_their_dip3_paths() {
 
 #[test]
 fn test_ios_083_operator_and_platform_node_keys() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e);
     let id = import(&e, &s);

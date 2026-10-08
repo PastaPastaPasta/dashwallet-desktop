@@ -83,11 +83,14 @@ unique compose project and free loopback ports per session, so runs do not colli
 
 `tests/test_l1_sync.py` (`l1-sync`) drives the `dwcli` binary: vault + import of a known mnemonic,
 SPV sync, a dashd payment, history type/amount/status and balance, and a restart that keeps the
-history. It is skipped unless `DWCLI` points at a built `dwcli`:
+history. It is skipped unless `DWCLI` points at a built `dwcli`. The commands in this section run
+from `regtest/harness`; `DW_TARGET` is the cargo target dir (`rust/target` unless `CARGO_TARGET_DIR`
+says otherwise):
 
 ```sh
-(cd rust && cargo build -p dwcli)
-DWCLI=$CARGO_TARGET_DIR/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py
+(cd ../../rust && cargo build -p dwcli)
+DW_TARGET=${CARGO_TARGET_DIR:-$PWD/../../rust/target}
+DWCLI=$DW_TARGET/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py
 ```
 
 On a single node dash-spv never reports `caught_up`: there are no quorums, so its masternode phase
@@ -103,7 +106,7 @@ waits; the re-broadcast test leaves one unmined past dash-spv's 60 s acceptance 
 `send.broadcast_unknown`, then sends the same prepared transaction again (`dwcli send --rebroadcast-unknown`).
 
 ```sh
-DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+DWD_COMPOSE_PROJECT=dwd-e2 DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
     .venv/bin/python -m pytest -v tests/test_l1_send.py
 ```
 
@@ -117,7 +120,7 @@ event for three payments in a block; Close/Open wallet with the load-on-startup 
 dash-spv's 60 s acceptance timeout, so the suite takes about 4 minutes.
 
 ```sh
-DWD_COMPOSE_PROJECT=dwd-r1 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+DWD_COMPOSE_PROJECT=dwd-r1 DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
     .venv/bin/python -m pytest -v tests/test_l2_tools.py
 ```
 
@@ -138,7 +141,7 @@ Legacy BIP39 passphrases are limited to 256 characters by dashd (`SetMnemonic`),
 case has no `dumpwallet` path. Not covered yet: BDB `wallet.dat` (M6), Core-mixed CoinJoin funds.
 
 ```sh
-DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \
+DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
     .venv/bin/python -m pytest -v tests/test_restore.py
 ```
 
@@ -187,15 +190,19 @@ regtest/scripts/run-functional.sh                      # dwd_mn_chainlock.py + d
 docker compose -f regtest/docker-compose.yml --profile functional run --rm functional \
     feature_llmq_chainlocks.py --timeout-factor=3             # any single test with any options
 
-# on a macOS host with the darwin release (ad-hoc signed by fetch-dashcore.sh)
-uv venv /path/to/func-venv && uv pip install --python /path/to/func-venv/bin/python \
+# on the host with the matching release: Linux (x86_64/aarch64) or macOS (ad-hoc signed by
+# fetch-dashcore.sh); building dash_hash needs a C compiler
+sh regtest/scripts/fetch-dashcore.sh ~/.cache/dwd-dashcore/24.0.0-rc.2
+uv venv ~/.cache/dwd-dashcore/func-venv --python 3.12 && uv pip install --python ~/.cache/dwd-dashcore/func-venv/bin/python \
     https://github.com/dashpay/dash_hash/archive/refs/tags/1.4.0.tar.gz
-DWD_PYTHON=/path/to/func-venv/bin/python DASHCORE_DIR=/path/to/dashcore \
+DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 \
     regtest/functional/run.sh dwd_mn_chainlock.py
 ```
 
 `run.sh` puts config.ini, the framework cache and each run's node datadirs (`--tmpdir`, unique per
-run) under `DWD_FUNC_TMP` (default `$TMPDIR/dwd-functional`). The `functional` service bind-mounts
+run) under `DWD_FUNC_TMP` (default `$TMPDIR/dwd-functional`), all created owner-only (`umask 077`, and the
+scratch root is reset to 0700): dwcli's engine refuses a database below a group- or world-writable
+directory that is not sticky, so `DWD_FUNC_TMP` must not sit below one either. The `functional` service bind-mounts
 `functional/` read-only over the copy baked into the image, so test edits need no rebuild; inside
 the container everything lives in a tmpfs `/tmp`. Any test_framework option can follow the script
 name and overrides run.sh's defaults (`--nocleanup`, `--tmpdir=`, `--portseed=`,
@@ -283,19 +290,21 @@ mixing wallets and a second `dwcli` wallet, in real time (`disable_mocktime`: ou
 `dsq` timestamps against the wall clock). It checks that stopping releases a session's coins, one
 round, that a restarted process resumes to 2 rounds with a fully mixed balance, and that fully mixed
 coins pay only through `send --coinjoin` (no change output, `CoinJoinSend` in history). The `dwcli`
-nodes connect to the framework's ports on the host, so it runs on the host with the darwin release
-(the Docker image would need a Linux `dwcli` inside the container):
+nodes connect to the framework's ports on the host, so it runs on the host with the host's release,
+set up as in "Running" above (the Docker image would need a Linux `dwcli` inside the container):
 
 ```sh
-DWCLI=$CARGO_TARGET_DIR/debug/dwcli DWD_PYTHON=/path/to/func-venv/bin/python \
-    DASHCORE_DIR=/path/to/dashcore regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
+(cd rust && cargo build -p dwcli)    # from the repo root
+DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
 ```
 
 dashd counterparties alone are not enough on this network: after their first sessions they keep the
 masternode connections they opened (`CMasternodeUtils::DoMaintenance` keeps them while the node has
 fewer than its maximum outbound peers) and skip every connected masternode
 (`IsMasternodeOrDisconnectRequested`), so most queues expire. The second `dwcli` wallet keeps
-sessions going. One pass takes 8–15 minutes (quorums about 2, mixing 5–12).
+sessions going. One pass takes 8–15 minutes on the laptop (quorums about 2, mixing 5–12) and about
+6–7 minutes on agentbox.
 
 ## Layout
 

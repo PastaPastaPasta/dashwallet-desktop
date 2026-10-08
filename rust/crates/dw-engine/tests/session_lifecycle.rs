@@ -109,7 +109,7 @@ fn first_receive_address(phrase: &str) -> String {
 
 #[test]
 fn created_wallet_survives_engine_restart() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
 
@@ -171,7 +171,7 @@ fn created_wallet_survives_engine_restart() {
 
 #[test]
 fn imported_wallet_id_is_deterministic_and_network_scoped() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
 
     let regtest = engine
@@ -229,7 +229,7 @@ fn imported_wallet_id_is_deterministic_and_network_scoped() {
 
 #[test]
 fn dropping_engine_without_shutdown_releases_storage() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
@@ -266,7 +266,7 @@ fn dropping_engine_without_shutdown_releases_storage() {
 
 #[test]
 fn second_engine_on_same_data_dir_gets_storage_in_use() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let first = new_engine(dir.path(), Arc::new(Recorder::default()));
     let _s = first
         .block_on(first.open_network(DashNetwork::Regtest, local_opts()))
@@ -282,7 +282,7 @@ fn second_engine_on_same_data_dir_gets_storage_in_use() {
 
 #[test]
 fn rejects_bad_arguments() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
@@ -328,7 +328,7 @@ fn rejects_bad_arguments() {
 
 #[test]
 fn spv_starts_and_stops_without_reachable_peers() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(dir.path(), Arc::clone(&rec));
     let s = engine
@@ -354,7 +354,7 @@ fn spv_starts_and_stops_without_reachable_peers() {
 /// Review H-1: no path registers a wallet whose seed is not in the vault.
 #[test]
 fn import_without_usable_vault_registers_nothing() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
@@ -387,7 +387,7 @@ fn import_without_usable_vault_registers_nothing() {
 /// vault lets it sign, and the signature verifies against its address.
 #[test]
 fn imported_wallet_signs_after_restart_and_unlock() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(dir.path(), Arc::clone(&rec));
     let s = engine
@@ -457,7 +457,7 @@ fn imported_wallet_signs_after_restart_and_unlock() {
 /// lost attaches the keys again instead of failing.
 #[test]
 fn import_attaches_keys_to_registered_wallet_without_secret() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = engine
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))

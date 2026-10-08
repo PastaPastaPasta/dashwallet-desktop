@@ -3,6 +3,7 @@
 #if os(macOS)
 import AppKit
 import Foundation
+import PlatformServices
 import UniformTypeIdentifiers
 
 /// The general pasteboard, as plain text.
@@ -46,7 +47,7 @@ public enum MacSavePanel {
         }
         guard response == .OK, let url = panel.url else { return .cancelled }
         do {
-            try Data(text.utf8).write(to: url, options: .atomic)
+            try PrivateFileSystem.writeFile(Data(text.utf8), to: url, replacing: true)
             return .saved(url)
         } catch {
             return .failed(error.localizedDescription)

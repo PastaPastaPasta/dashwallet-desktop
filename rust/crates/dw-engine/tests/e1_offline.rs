@@ -112,7 +112,7 @@ fn address_at(phrase: &str, path: &str) -> String {
 
 #[test]
 fn names_rename_and_remove() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let rec = Arc::new(Recorder::default());
     let store = Arc::new(MemoryOsStore::new());
@@ -230,7 +230,7 @@ fn names_rename_and_remove() {
 fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
     // Encrypted and locked, with a grant that carries no key: refused before
     // anything is consumed, nothing removed.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(&dir.path().join("data"), Arc::clone(&rec));
     let s = open(&engine);
@@ -265,7 +265,7 @@ fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
 
     // The vault file cannot be rewritten when the records are deleted: the
     // wallet is removed and announced, the leftover seed is a notice.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(&dir.path().join("data"), Arc::clone(&rec));
     let s = open(&engine);
@@ -307,7 +307,7 @@ fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
 
 #[test]
 fn receive_addresses_requests_and_lookahead() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = open(&engine);
     unencrypted_vault(&engine, &s);
@@ -439,7 +439,7 @@ fn receive_addresses_requests_and_lookahead() {
 
 #[test]
 fn empty_history_and_query_errors() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
     let s = open(&engine);
     unencrypted_vault(&engine, &s);
@@ -489,7 +489,7 @@ fn empty_history_and_query_errors() {
 
 #[test]
 fn sync_state_events_and_spv_requirements() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(dir.path(), Arc::clone(&rec));
     let s = open(&engine);
@@ -551,7 +551,7 @@ fn sync_state_events_and_spv_requirements() {
 #[test]
 fn chosen_data_root_keeps_its_mode() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("chosen");
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();

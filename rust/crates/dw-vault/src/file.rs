@@ -194,13 +194,13 @@ pub(crate) fn read(dir: &Path) -> Result<Option<VaultFile>, VaultError> {
     Ok(Some(file))
 }
 
-/// Creates `dir` restricted to the current user.
-pub(crate) fn create_private_dir(dir: &Path) -> Result<(), VaultError> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+/// Creates the vault directory `dir` owner-only (0700), and its missing
+/// parents. An existing one loses its group and other permissions; a symlink
+/// there is followed but its target left as it is (dw-fs).
+pub(crate) fn create_vault_dir(dir: &Path) -> Result<(), VaultError> {
+    match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => dw_fs::create_owned_dir(parent, Path::new(name))?,
+        _ => dw_fs::create_private_dir(dir)?,
     }
     Ok(())
 }
@@ -208,13 +208,20 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<(), VaultError> {
 /// Writes the vault file atomically: temp file (mode 0600), fsync, rename,
 /// fsync of the directory. A crash leaves either the old or the new file.
 pub(crate) fn write(dir: &Path, file: &VaultFile) -> Result<(), VaultError> {
-    create_private_dir(dir)?;
+    create_vault_dir(dir)?;
     let bytes = serde_json::to_vec_pretty(file)
         .map_err(|e| VaultError::Internal(format!("serialize vault: {e}")))?;
     let tmp = dir.join(TMP_NAME);
+    // A temp file a crash left (or anything else there) is never reused or
+    // followed: the new one is created fresh, so it is 0600 from the start.
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     {
         let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
+        opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;

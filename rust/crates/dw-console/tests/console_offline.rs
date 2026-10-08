@@ -19,7 +19,7 @@ impl EventSink for Null {
 
 #[test]
 fn test_qt_145_console_answers_wallet_commands_offline() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
             data_root: dir.path().join("d"),

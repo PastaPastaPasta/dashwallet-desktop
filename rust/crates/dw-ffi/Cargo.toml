@@ -37,4 +37,6 @@ openssl = { version = "0.10", features = ["vendored"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 tempfile = { workspace = true }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }
 tokio = { workspace = true }

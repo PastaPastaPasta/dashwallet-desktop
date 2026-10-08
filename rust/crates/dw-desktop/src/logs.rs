@@ -98,7 +98,16 @@ pub fn export(
         sources.push((extra.clone(), format!("app/{name}")));
     }
 
-    let file = OpenOptions::new().write(true).create_new(true).open(dest)?;
+    // Owner-only from creation: the logs name the data root and its wallets'
+    // activity, and the destination is any directory the user picks.
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(dest)?;
     let result = write_zip(file, &sources, data_root, version);
     match result {
         Ok(file_count) => Ok(LogExport {
@@ -218,6 +227,12 @@ mod tests {
         let report = export(root.path(), &dest, &[swift_log, missing], "0.1.0").unwrap();
         assert_eq!(report.file_count, 3);
         assert_eq!(report.size_bytes, std::fs::metadata(&dest).unwrap().len());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "owner-only whatever the umask (review D1-r2)");
+        }
 
         let got = entries(&dest);
         let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();

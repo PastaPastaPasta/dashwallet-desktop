@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn create_then_list_round_trips_through_cli_paths() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let pass = dir.path().join("pass");
         std::fs::write(&pass, "dwcli test passphrase\n").unwrap();
         let base = |cmd: Command, passphrase: bool| Cli {
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn passphrase_file_takes_the_first_line() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let p = dir.path().join("p");
         std::fs::write(&p, "secret\r\nignored\n").unwrap();
         assert_eq!(&read_passphrase(&p).unwrap()[..], b"secret");

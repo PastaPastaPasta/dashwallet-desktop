@@ -22,4 +22,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }

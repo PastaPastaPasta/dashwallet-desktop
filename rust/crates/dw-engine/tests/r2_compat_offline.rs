@@ -107,7 +107,7 @@ fn strings(v: &serde_json::Value) -> Vec<String> {
 
 #[test]
 fn test_qt_107_import_dump_wallet_restores_dashd_wallet() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, None);
     let path = testdata("dumpwallet/dump_hd_basic.txt");
@@ -167,7 +167,7 @@ fn test_qt_107_import_dump_wallet_restores_dashd_wallet() {
 #[test]
 fn test_qt_106_import_wallet_dat() {
     let m = manifest();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, Some(b"vault pass"));
     e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
@@ -270,7 +270,7 @@ fn test_qt_106_import_wallet_dat() {
 #[test]
 fn test_qt_108_import_key_material() {
     let m = manifest();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, None);
     let json = std::fs::read(testdata("compat/listdescriptors_plain.json")).unwrap();
@@ -370,7 +370,7 @@ fn reveal_grant(
 #[test]
 fn test_qt_109_exports_for_dash_qt_read_back() {
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(&dir.path().join("a"));
     let s = open(&e, None);
     let id = e
@@ -472,7 +472,7 @@ fn test_qt_109_exports_for_dash_qt_read_back() {
 
 #[test]
 fn test_qt_109_strict_non_english_phrase_is_not_core_compatible() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, None);
     let phrase = dw_vault::mnemonic::generate(12, dw_vault::mnemonic::Language::Spanish).unwrap();
@@ -502,7 +502,7 @@ fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
 fn test_qt_110_backup_restores_into_another_vault() {
     const PHRASE: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(&dir.path().join("a"));
     let s = open(&e, Some(b"vault pw"));
     e.block_on(s.vault_op(|v| v.unlock(b"vault pw", UnlockScope::Full)))
@@ -620,7 +620,7 @@ fn test_qt_110_backup_restores_into_another_vault() {
 
 #[test]
 fn test_qt_116_automatic_backups_rotate() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, None);
     let policy = s.backup_policy().unwrap();
@@ -652,7 +652,7 @@ fn test_qt_116_automatic_backups_rotate() {
 
 #[test]
 fn test_qt_105_core_lookahead_survives_a_restart() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, Some(b"pw"));
     let id = e
@@ -713,7 +713,7 @@ fn backup_lines(path: &Path) -> (Vec<u8>, serde_json::Value) {
 /// is gone.
 #[test]
 fn a_backup_holds_only_its_wallets_data() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(dir.path());
     let s = open(&e, None);
     let a = import(&e, &s, PHRASE_A, "A");
@@ -777,7 +777,7 @@ fn craft_backup(s: &Arc<NetworkSession>, path: &Path, wallets: &[(WalletId, serd
 /// it registered, so a failure leaves no half-restored wallet behind.
 #[test]
 fn a_failed_restore_rolls_back_the_wallets_it_registered() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(&dir.path().join("src"));
     let s = open(&e, None);
     let a = import(&e, &s, PHRASE_A, "A");
@@ -833,7 +833,7 @@ fn a_failed_restore_rolls_back_the_wallets_it_registered() {
 /// automatic backup behind, and a good one backs up every restored wallet.
 #[test]
 fn test_qt_116_failed_restore_leaves_no_automatic_backup() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(&dir.path().join("src"));
     let s = open(&e, None);
     let a = import(&e, &s, PHRASE_A, "A");
@@ -882,7 +882,7 @@ fn test_qt_116_failed_restore_leaves_no_automatic_backup() {
 /// bundle no longer parses as this build's bundle; nothing is registered.
 #[test]
 fn test_qt_110_unknown_bundle_version_is_unsupported() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = dw_testutil::private_tempdir();
     let e = engine(&dir.path().join("src"));
     let s = open(&e, None);
     let a = import(&e, &s, PHRASE_A, "A");

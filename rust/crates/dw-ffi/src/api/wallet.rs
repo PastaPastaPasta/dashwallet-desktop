@@ -463,7 +463,7 @@ mod tests {
     /// usable vault (review H-1), and the stored phrase can be revealed.
     #[test]
     fn import_reveal_and_sign_through_the_vault() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let rec = Arc::new(Recorder::default());
         let engine = Engine::new(
             EngineConfig {

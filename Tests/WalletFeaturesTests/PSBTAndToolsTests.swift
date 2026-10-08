@@ -126,6 +126,31 @@ struct PSBTViewModelTests {
         #expect(model.step == .empty && m2.psbt.released.current.count == 1)
     }
 
+    /// Review D1-r2: the saved PSBT is owner-only whatever the umask, and an
+    /// existing file is still never replaced.
+    @Test func QT077_saveWritesAnOwnerOnlyFileAndNeverReplacesOne() async throws {
+        m2.psbt.loadAnalysis.withLock { $0 = psbtAnalysis(status: .complete, unsigned: 0) }
+        let model = make()
+        await model.load(data: Data("cHNidP8B".utf8))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("psbt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("tx.psbt")
+
+        model.save(to: url)
+        #expect(model.message == L10n.PSBT.saved)
+        #expect(try Data(contentsOf: url) == Data([0x70, 0x73, 0x62, 0x74, 0xff]))
+        #if !os(Windows)
+            let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+            #expect(mode?.intValue == 0o600)
+        #endif
+
+        try Data("theirs".utf8).write(to: url)
+        model.save(to: url)
+        #expect(model.errorMessage == L10n.M2Errors.destinationUnwritable)
+        #expect(try Data(contentsOf: url) == Data("theirs".utf8))
+    }
+
     @Test func QT076_notImplementedCreateLeavesNoEmptySuccess() async {
         let model = make()
         await model.createUnsigned(draft: FakeDraft(addresses: world.uri))

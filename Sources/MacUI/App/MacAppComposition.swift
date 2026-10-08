@@ -79,7 +79,13 @@ public enum MacAppComposition {
         }
         let dataRoot = launch.dataDirectory ?? stored ?? defaultRoot
         do {
-            try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
+            // Owner-only whatever the umask; the default root is the app's, so
+            // an existing one that grants group or other access is restricted.
+            if dataRoot.standardizedFileURL.path == defaultRoot.standardizedFileURL.path {
+                try PrivateFileSystem.createOwnedDirectory(dataRoot)
+            } else {
+                try PrivateFileSystem.createDirectory(dataRoot)
+            }
         } catch {
             return MacAppModel(
                 unavailableReason: "\(MacStrings.App.dataFolder): \(dataRoot.path)\n\(error.localizedDescription)",

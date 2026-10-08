@@ -716,9 +716,9 @@ impl NetworkSession {
         }
         let result = async {
             let bytes = self.backup_bytes(id, None, true).await?;
-            let d = dir.clone();
+            let (data_dir, d) = (self.data_dir().to_path_buf(), dir.clone());
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                crate::fsutil::create_private_dir(&d)?;
+                crate::fsutil::create_owned_dir(&data_dir, Path::new(BACKUP_DIR))?;
                 write_new_private(&path, &bytes)?;
                 prune(&d, Some(id), keep)
             })
@@ -862,7 +862,7 @@ mod tests {
         impl crate::EventSink for Quiet {
             fn emit(&self, _: EngineEvent) {}
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let engine = crate::Engine::new(
             crate::EngineConfig {
                 data_root: dir.path().join("data"),

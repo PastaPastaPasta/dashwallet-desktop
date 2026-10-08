@@ -124,10 +124,40 @@ machine.
 ## 7. Not verified
 
 * Windows: nothing was run. There is no Windows dashd path in the harness yet.
-* The x86_64 Linux image ran only under Rosetta emulation, and only for a single-node smoke check.
-  The functional tests were not run on amd64.
+* (Laptop runs) The x86_64 Linux image ran only under Rosetta emulation, and only for a single-node
+  smoke check. §8 has the native amd64 runs on agentbox.
 * `x86_64-apple-darwin` binaries: hash pinned, not executed.
-* An SPV client (`dwcli`/dash-spv) talking to these nodes: not attempted; `dwcli` does not exist yet.
-  Only a raw TCP connection to the published P2P port was checked.
+* (2026-10-05) An SPV client (`dwcli`/dash-spv) talking to these nodes: not attempted then; the L1/L2,
+  `restore` and `coinjoin` suites (§8) do it now.
 * GPG verification of `SHA256SUMS.asc`: the file's signature was not checked. The pinned hashes
   were copied from it as downloaded over HTTPS from GitHub.
+
+## 8. agentbox (2026-10-08)
+
+Linux x86_64: Ubuntu 26.04 VM, 32 vCPU (Xeon E5-2687W v4), 160 GB RAM, Docker 29.1.3. Same
+v24.0.0-rc.2 binaries (`verified dashcore-24.0.0-rc.2-x86_64-linux-gnu.tar.gz sha256=626840b4…f908`,
+in the image and on the host through `fetch-dashcore.sh`). `dwcli` was a host `dev` build of the
+branch. The four pytest suites ran at the same time, each under its own compose project, while
+Docker builds ran alongside them. The umask fixes of this date were needed first: under Ubuntu's
+default umask 002, `restore` failed 3 of 7 and `coinjoin` failed at `init-vault` (the engine
+refuses a database below a group-writable directory).
+
+| Suite | Command | Result | Wall clock |
+|---|---|---|---|
+| image build | `docker compose -f regtest/docker-compose.yml build dashd` | built | 1 min 16 s |
+| selftest | `regtest/scripts/selftest.sh` | PASS | 15 s |
+| harness | `pytest tests/test_smoke.py tests/test_harness.py` | 5 passed | 8 s |
+| `l1-sync` | `pytest tests/test_l1_sync.py` | 1 passed | 20 s |
+| `l1-send` | `pytest tests/test_l1_send.py` | 9 passed | 2 min 49 s |
+| `l2-tools` | `pytest tests/test_l2_tools.py` | 7 passed | 5 min 36 s |
+| `restore` | `pytest tests/test_restore.py` | 7 passed | 2 min 36 s |
+| `dwd_mn_chainlock.py` | `run-functional.sh` (Docker) | PASS | 30 s |
+| `dwd_coinjoin_probe.py` | `run-functional.sh` (Docker) | PASS | 51 s |
+| `coinjoin` (`dwd_coinjoin_client.py`) | `functional/run.sh` on the host, `--portseed=4711` and `4712` | 2 of 2 PASS | 6 min 35 s, 7 min 8 s |
+| upstream `feature_llmq_chainlocks.py` | `run-functional.sh` (Docker), twice | 1 of 2 PASS | 55 s, 56 s |
+
+The `coinjoin` suite ran to completion both times: the stop released the session's coins, one
+round, the restarted process resumed to 2 rounds with 2.00002000 DASH fully mixed, a plain send of
+the mixed-only funds was refused, and `send --coinjoin` paid. Quorums took about 1 minute and
+mixing about 5. The upstream test failed at line 252 again, the same ChainLock timing race as run 1
+in §6, on an idle machine this time.

@@ -13,8 +13,8 @@
 #   Artifacts/DashWalletCore.artifactbundle/info.json           (variants built from
 #                                                                the current sources)
 #
-# Env: CARGO_TARGET_DIR (default: the shared dir from DESIGN.md R3 when it
-#      exists, else rust/target),
+# Env: CARGO_TARGET_DIR (default: see "Cargo target dir" below),
+#      DWD_DEPS_DIR (shared dependency dir; its target/ becomes the default),
 #      DWD_MIN_FREE_GB (disk guard threshold, default 15).
 set -euo pipefail
 
@@ -56,16 +56,26 @@ case "$triple" in
   *) echo "build-core: unsupported triple $triple" >&2; exit 2 ;;
 esac
 
-# The shared dev-Mac target dir (DESIGN.md R3) is used only where it exists;
-# every other machine builds into rust/target.
-SHARED_DEPS_DIR=/Users/pasta/workspace/dashwallet-desktop-deps
+# Cargo target dir (DESIGN.md R3), first match wins:
+#   1. CARGO_TARGET_DIR;
+#   2. $DWD_DEPS_DIR/target when DWD_DEPS_DIR is set;
+#   3. on macOS, ~/workspace/dashwallet-desktop-deps/target when that deps dir
+#      exists (the dev Mac's one shared target dir);
+#   4. rust/target. Linux hosts that build several worktrees at once (agentbox)
+#      keep one target dir per checkout and share compiles through sccache.
+# A relative CARGO_TARGET_DIR or DWD_DEPS_DIR is taken from the directory the
+# script runs in: cargo runs in rust/ and would resolve it there, while the
+# artifact is looked up from here.
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-  if [[ -d "$SHARED_DEPS_DIR" ]]; then
-    export CARGO_TARGET_DIR="$SHARED_DEPS_DIR/target"
+  if [[ -n "${DWD_DEPS_DIR:-}" ]]; then
+    export CARGO_TARGET_DIR="$DWD_DEPS_DIR/target"
+  elif [[ "$(uname -s)" == Darwin && -d "$HOME/workspace/dashwallet-desktop-deps" ]]; then
+    export CARGO_TARGET_DIR="$HOME/workspace/dashwallet-desktop-deps/target"
   else
     export CARGO_TARGET_DIR="$RUST_DIR/target"
   fi
 fi
+[[ "$CARGO_TARGET_DIR" == /* ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"

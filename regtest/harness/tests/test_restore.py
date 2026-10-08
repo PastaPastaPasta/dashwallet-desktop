@@ -24,7 +24,7 @@ dashd `walletcreatefundedpsbt` is signed by dwcli (signatures equal dashd's) and
 Signatures (§4.4 item 3) are covered by the `l1-send` suite (sign/verify both ways).
 Not covered here: legacy BDB wallet.dat (M6), wallets mixed by Core's CoinJoin.
 
-    DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$CARGO_TARGET_DIR/debug/dwcli \\
+    DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=<target>/debug/dwcli \\
         .venv/bin/python -m pytest -v tests/test_restore.py
 """
 
@@ -78,7 +78,9 @@ class Dwcli:
     """One dwcli data directory with an encrypted vault."""
 
     def __init__(self, root: Path, peer_port: int):
-        root.mkdir(parents=True, exist_ok=True)
+        # Owner-only whatever the umask: the engine refuses a database below a
+        # group-writable directory (0775 under Ubuntu's default umask 002).
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.root = root
         passfile = root / "vault-pass"
         passfile.write_text("restore suite vault passphrase\n")

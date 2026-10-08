@@ -8,11 +8,13 @@
 # builds never touch the host .build/ or Package.resolved. Only Artifacts/
 # is shared. Every .build/ and .swiftpm/ is left out of the copy, including
 # ones an editor's indexer creates inside Vendor/swift-cross-ui.
-# Cargo caches and build dirs live in named volumes.
+# Cargo caches and build dirs live in named volumes (scripts/docker-volumes.sh).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${DWD_LINUX_IMAGE:-dwd-linux-swift}"
+# shellcheck source=scripts/docker-volumes.sh
+source "$ROOT/scripts/docker-volumes.sh"
 
 "$ROOT/scripts/disk-guard.sh"
 
@@ -35,16 +37,16 @@ docker run --rm \
   -v "$ROOT/Artifacts":/work/Artifacts \
   -v dwd-cargo-registry:/usr/local/cargo/registry \
   -v dwd-cargo-git:/usr/local/cargo/git \
-  -v dwd-linux-swift-target:/target \
-  -v dwd-linux-swiftpm:/swiftpm \
+  -v "$DWD_VOLUME_TARGET":/target \
+  -v "$DWD_VOLUME_SWIFTPM":/swiftpm \
   -e CARGO_TARGET_DIR=/target \
-  -e CARGO_BUILD_JOBS="${DWD_LINUX_JOBS:-8}" \
+  -e CARGO_BUILD_JOBS="$DWD_DOCKER_JOBS" \
   -e DWD_HEADLESS=1 \
   -e DWD_MIN_FREE_GB="${DWD_MIN_FREE_GB:-15}" \
   -e DWD_SWIFT_TEST_FILTER="$filter" \
   "$IMAGE" bash -euo pipefail -c '
     mkdir -p /work
-    tar -C /src --exclude=.build --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm -cf - . \
+    tar -C /src --exclude=.build --exclude=./rust/target --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm -cf - . \
       | tar -C /work -xf -
     cd /work
     start=$(date +%s)

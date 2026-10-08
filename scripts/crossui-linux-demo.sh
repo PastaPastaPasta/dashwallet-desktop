@@ -8,12 +8,14 @@
 # The repo is mounted read-only and copied into the container (untracked files
 # included). Artifacts/ is NOT shared: the Linux bundle is built inside the
 # container. Cargo caches and build dirs live in the named volumes that
-# scripts/linux-docker-test.sh also uses.
+# scripts/linux-docker-test.sh also uses (scripts/docker-volumes.sh).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${DWD_CROSSUI_IMAGE:-dwd-linux-crossui}"
 OUT="${1:-$ROOT/docs/screenshots/m1/linux}"
+# shellcheck source=scripts/docker-volumes.sh
+source "$ROOT/scripts/docker-volumes.sh"
 
 "$ROOT/scripts/disk-guard.sh" "${DWD_MIN_FREE_GB:-15}"
 
@@ -27,10 +29,10 @@ docker run --rm \
   -v "$OUT":/out \
   -v dwd-cargo-registry:/usr/local/cargo/registry \
   -v dwd-cargo-git:/usr/local/cargo/git \
-  -v dwd-linux-swift-target:/target \
-  -v dwd-linux-swiftpm:/swiftpm \
+  -v "$DWD_VOLUME_TARGET":/target \
+  -v "$DWD_VOLUME_SWIFTPM":/swiftpm \
   -e CARGO_TARGET_DIR=/target \
-  -e CARGO_BUILD_JOBS="${DWD_LINUX_JOBS:-8}" \
+  -e CARGO_BUILD_JOBS="$DWD_DOCKER_JOBS" \
   -e DWD_MIN_FREE_GB="${DWD_MIN_FREE_GB:-15}" \
   -e DWD_CROSSUI_SUITE="${DWD_CROSSUI_SUITE:-m1}" \
   "$IMAGE" bash /src/ci/linux/crossui/container-demo.sh 2>&1 | tee "$OUT/run.log"

@@ -55,7 +55,6 @@ Known gaps:
 - The macOS XCUITests have never run.
 - No GUI has been tested against a syncing node or a real send; only `dwcli` has, through the regtest suites.
 - Windows has never been built.
-- `scripts/build-core.sh` hard-codes `/Users/pasta/workspace/dashwallet-desktop-deps`.
 
 Reading order: `CLAUDE.md`, then `README.md`, `docs/design/DESIGN.md`, `docs/design/UX-SPEC.md`,
 `docs/parity.md`, the `docs/contracts/` files and `docs/research/`.
