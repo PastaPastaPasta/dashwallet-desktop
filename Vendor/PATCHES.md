@@ -110,21 +110,26 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
 - A deferred action never outlives its view
   (`Views/Modifiers/Lifecycle/LifecycleHookModifier.swift`). Both modifiers are
   `LifecycleHookModifier`s: their node's children own a lifetime flag that ends synchronously when
-  the node is released. That is the same moment `OnDisappearModifierChildren` schedules the
-  `.onDisappear` action. A queued action checks the flag and does nothing once it has ended. It
-  holds only the flag, never the children, so it cannot keep the node alive. Without this, a view
-  removed before the main loop reached its queued action (a GTK event handled first, or any update
-  in between) had its cleanup run and then its appear or change action. That action could restart
-  a resource or a task that nothing would stop (review DW-D4 r2).
+  the node is released. A `.onDisappear` on the same view is scheduled in that same release (its
+  `OnDisappearModifierChildren` goes with it). A queued action checks the flag and does nothing
+  once it has ended. It holds only the flag, never the children, so it cannot keep the node alive.
+  Without this, a view removed before the main loop reached its queued action (a GTK event handled
+  first, or any update in between) had its cleanup run and then its appear or change action. That
+  action could restart a resource or a task that nothing would stop (review DW-D4 r2).
 
   The lifecycle guarantees under P8, then:
   - `.onAppear` and `.onChange` actions run after the update that queued them, outside any
-    observation or layout scope, and only while their view is in the graph.
+    observation or layout scope, and only while their view's graph node is alive. (`List`,
+    `Table` and index-keyed `ForEach` keep a row's node and rebind it to other content, as
+    upstream does; its queued action still runs then, and no `.onDisappear` fires.)
   - A view removed before its queued `.onAppear` ran gets no appear action, but its
     `.onDisappear` action still runs. Cleanup must therefore cope with a resource that was
     never started (upstream always ran appear first, synchronously).
   - `.onDisappear` runs from a main-actor `Task` (unchanged), so its timing relative to other
-    queued main-loop work is not fixed. Only the "no action after removal" rule above is.
+    queued main-loop work is not fixed. Only the "no action after removal" rule above is. A view
+    removed and created again before the main loop runs gets a new node: the new node's appear
+    and the old node's disappear can run in either order, so cleanup can also run after a
+    re-created view's appear. Upstream had the same hazard, in a fixed order (appear first).
   - `.task` starts its task during the update (below), before the view's deferred
     `.onAppear` runs. A task body can therefore run before the appear action
     (`taskMayRunBeforeAppear`). Code that needs the appear action's setup should do that setup
@@ -145,10 +150,10 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   why `.onChange` and `.onAppear` now run after the update. Writes made while an update commits
   are safe: every observation of that update has started by then. `.onDisappear` was already
   deferred (a main-actor `Task` from a `deinit`). `.task`, built on `.onChange`, still starts
-  its task during the update (`OnChangeModifier.runsAfterUpdate`): the start writes only its
-  `@State`, which observation does not track, and a deferred start could come after the
-  view's `.onDisappear` and leave a task nobody cancels (`taskCancelledAfterImmediateRemoval`).
-  The task itself runs later. A known
+  its task during the update (`OnChangeModifier.runsAfterUpdate`), as upstream does. The start
+  writes only its `@State`, which observation does not track, so the rule does not need it
+  deferred. Starting at once keeps upstream's timing and pairs the start with the cancel in
+  `.onDisappear` (`taskCancelledAfterImmediateRemoval`). The task itself runs later. A known
   path that can still write during layout: `Picker` updates its `GtkDropDown` from
   `computeLayout` (an upstream TODO), and replacing its options can fire the previous update's
   selection handler.
