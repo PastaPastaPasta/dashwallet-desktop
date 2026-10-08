@@ -216,6 +216,7 @@ impl From<dw_engine::EngineError> for WalletError {
             E::Signer(_)
             | E::Wallet(_)
             | E::Sdk(_)
+            | E::InsufficientCredits { .. }
             | E::Spv(_)
             | E::SpvNotRunning
             | E::SpvRunning
