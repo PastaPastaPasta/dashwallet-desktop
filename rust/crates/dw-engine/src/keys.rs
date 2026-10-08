@@ -136,8 +136,10 @@ impl NetworkSession {
             .await?
     }
 
-    /// Drops the vault's data key and revokes every grant. In-memory; never
-    /// blocks. Cancels a pending [`Self::relock_after`] timer.
+    /// Drops the vault's data key and revokes every grant. In-memory; waits
+    /// only for vault operations already running (about a millisecond
+    /// each, dw-vault `Vault::lock`). Cancels a pending
+    /// [`Self::relock_after`] timer.
     pub fn lock_vault(&self) -> Result<VaultStatus, EngineError> {
         let _op = self.try_enter()?;
         self.manager()?;

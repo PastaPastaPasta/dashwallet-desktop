@@ -60,10 +60,11 @@ pub enum SignerScope {
     /// (no chain codes) of BIP44, BIP32 and DashPay-receiving addresses and
     /// of the credit keys `m/9'/coin'/5'/{1',2',3'}/…`, plus the extended
     /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
-    /// (platform-wallet adds that account through the signer). The engine
-    /// refuses a transaction whose wallet debit exceeds `max_duffs` before
-    /// it asks this signer, as it does for a `Spend` grant; until roadmap
-    /// E0-04 puts caps on `PlatformOp` grants, the engine also picks the cap.
+    /// (platform-wallet adds that account through the signer). The cap is
+    /// advisory: the vault signs sighashes and cannot check it, so the
+    /// engine must refuse a transaction whose wallet debit exceeds
+    /// `max_duffs` before it asks this signer, as for a `Spend` grant. No
+    /// engine flow does so yet; roadmap E0-04 binds the cap to the grant.
     PlatformFunding { max_duffs: u64 },
 }
 

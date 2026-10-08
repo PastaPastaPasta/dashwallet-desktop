@@ -21,10 +21,12 @@
 //!
 //! Out of reach: libsecp256k1's stack during ECDH; SHA-256's internals
 //! (sha2 0.10 cannot erase its state, its message schedule or its block
-//! buffer; the key blocks are compressed straight from our buffers, and the
-//! block buffer ends holding the inner digest, which alone reveals neither
-//! the key nor the mask); registers, stack spills and moves of return
-//! values.
+//! buffer). The key blocks are compressed straight from our buffers, so the
+//! hashers never copy the key; but their midstates after `K ^ ipad` and
+//! `K ^ opad` are HMAC-key-equivalent (enough to compute `ASK28` for any
+//! xpub, not to recover the identity scalar), and the outer block buffer
+//! ends holding the inner digest. Also registers, stack spills and moves of
+//! return values.
 
 use aes::Aes256;
 use aes::cipher::block_padding::Pkcs7;

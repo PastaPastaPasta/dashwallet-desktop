@@ -11,14 +11,18 @@
 //!   The file on disk is read only at open and for the post-write check.
 //! - `inner` is a short-held mutex over the in-memory state. Argon2id, OS
 //!   store calls and file writes run outside it.
-//! - `ops` is the operation gate. Every operation that turns the data key
-//!   into a secret-derived result (a signer call, a revealed phrase or seed)
-//!   holds it shared from its epoch check until that result exists. Every
-//!   epoch change (lock, unlock, scope change, encrypt, recover, destroy)
-//!   holds it exclusively, so `lock()` returns only once every operation
-//!   that started before it has finished, and any operation after it sees
-//!   the new epoch and fails `Locked`. A holder must not take it again, nor
-//!   take `writer`: a waiting epoch change blocks new shared holders.
+//! - `ops` is the operation gate. Every signer call holds it shared from its
+//!   epoch check until its result exists, and `reveal_mnemonic`,
+//!   `export_wallet_secret` and `with_revealed_seed` hold it while they read
+//!   the secret. Every epoch change (lock, unlock, scope change, encrypt,
+//!   recover, destroy) holds it exclusively, so `lock()` returns only once
+//!   every such operation that started before it has finished, and any
+//!   operation after it sees the new epoch and fails `Locked`. Not gated:
+//!   the backup bundles (`backup_bundle`, `open_backup_bundle`), which take
+//!   no grant or epoch, and `enroll_quick_unlock`, serialized by `writer`.
+//!   A holder must not take the gate again, take `writer` or block on any
+//!   other lock: a waiting epoch change may block new shared holders (std's
+//!   `RwLock` prefers writers on Linux; the policy is OS-dependent).
 //!
 //! Lock order: `writer`, then `ops`, then `inner`.
 
@@ -56,12 +60,18 @@ pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
-/// Proof that the caller holds `Shared::ops` shared: one operation that
-/// produces a secret-derived result (see the module doc).
-pub(crate) type OpGuard<'a> = RwLockReadGuard<'a, ()>;
-/// Proof that the caller holds `Shared::ops` exclusively, which every epoch
-/// change needs.
-type EpochGuard<'a> = RwLockWriteGuard<'a, ()>;
+/// Shared hold of `Shared::ops`: one operation that produces a
+/// secret-derived result (see the module doc). Only [`Vault::op_guard`]
+/// makes one.
+pub(crate) struct OpGuard<'a> {
+    _ops: RwLockReadGuard<'a, ()>,
+}
+
+/// Exclusive hold of `Shared::ops`, which every epoch change needs. Only
+/// [`Vault::epoch_guard`] makes one.
+struct EpochGuard<'a> {
+    _ops: RwLockWriteGuard<'a, ()>,
+}
 
 /// Longest accepted vault passphrase, in bytes.
 pub const MAX_PASSPHRASE_BYTES: usize = 1024;
@@ -381,19 +391,25 @@ impl Vault {
 
     /// Opens one operation (shared hold of the gate; see the module doc).
     pub(crate) fn op_guard(&self) -> OpGuard<'_> {
-        self.shared
-            .ops
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        OpGuard {
+            _ops: self
+                .shared
+                .ops
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        }
     }
 
     /// Waits for every open operation, then excludes new ones until the
     /// guard drops: the right to change the epoch.
     fn epoch_guard(&self) -> EpochGuard<'_> {
-        self.shared
-            .ops
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        EpochGuard {
+            _ops: self
+                .shared
+                .ops
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        }
     }
 
     /// A copy of the in-memory file to change under `writer`.
@@ -647,10 +663,11 @@ impl Vault {
     /// cached key (it is re-read from the OS store on demand); the state
     /// stays `Unencrypted`.
     ///
-    /// Waits for the signer operations and reveals already running (a
-    /// signature takes about a millisecond), so once it returns no
-    /// signature, shared secret, ciphertext, exported key or phrase that
-    /// the old epoch allowed is still being made.
+    /// Waits for the gated operations already running (a signature takes
+    /// about a millisecond; see the module doc), so once it returns no
+    /// signer result (signature, shared secret, ciphertext, exported key)
+    /// of the old epoch is still being made, and no gated secret read is
+    /// still under way.
     pub fn lock(&self) -> VaultStatus {
         let ops = self.epoch_guard();
         let mut inner = self.inner();
@@ -1292,6 +1309,8 @@ impl Vault {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
         let _op = self.op_guard();
         let dek = self.key_for(&token)?;
+        #[cfg(test)]
+        crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
         let phrase = self
             .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
             .ok_or(VaultError::NoSecret)?;
@@ -1309,7 +1328,8 @@ impl Vault {
     /// authorized by passphrase on a locked or mixing-only vault hands its
     /// own key to the signer. The signer stops working when the vault locks
     /// or changes unlock scope. A `PlatformOp` grant gets scoped signers
-    /// only ([`Self::platform_signer`]).
+    /// ([`Self::platform_signer`]) and the identity-scan key
+    /// ([`Self::scan_key`]), not this signer.
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
         if !token.purpose.signs() {
             return Err(VaultError::GrantPurposeMismatch);

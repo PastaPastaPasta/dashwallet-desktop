@@ -10,8 +10,10 @@ use crate::types::{GrantKind, WalletId};
 impl Vault {
     /// Runs `f` with `wallet`'s 64-byte seed under a redeemed
     /// `RevealSecret` grant for that wallet; the decrypted seed is erased
-    /// when `f` returns. `f` runs inside one vault operation (a `lock()`
-    /// waits for it), so it must not call back into the vault.
+    /// when `f` returns. The seed is read inside one vault operation (a
+    /// `lock()` waits for that read); `f` runs after it, since it may block
+    /// (the engine's derivation takes platform-wallet's manager lock), so a
+    /// reveal whose seed was read before a lock still completes.
     pub fn with_revealed_seed<T>(
         &self,
         wallet: &WalletId,
@@ -19,12 +21,16 @@ impl Vault {
         f: impl FnOnce(&[u8; 64]) -> T,
     ) -> Result<T, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
-        let _op = self.op_guard();
-        let dek = self.key_for(&token)?;
-        let payload = self
-            .read_record(&dek, &record_id(wallet, REC_SEED))?
-            .ok_or(VaultError::NoSecret)?;
-        let (seed, _) = decode_seed(&payload)?;
+        let seed = {
+            let _op = self.op_guard();
+            let dek = self.key_for(&token)?;
+            #[cfg(test)]
+            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            let payload = self
+                .read_record(&dek, &record_id(wallet, REC_SEED))?
+                .ok_or(VaultError::NoSecret)?;
+            decode_seed(&payload)?.0
+        };
         Ok(f(&seed))
     }
 }

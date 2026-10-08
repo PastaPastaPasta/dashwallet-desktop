@@ -93,20 +93,17 @@ fn identity_public_key(identity: &VaultSigner) -> [u8; 33] {
         .unwrap()
 }
 
-/// Pauses the next operation on another thread inside the gate, runs the
+/// Pauses the operation `call` on another thread inside the gate, runs the
 /// epoch change `change` (a lock, a scope change) and checks that it does
-/// not return until that operation has made its result; the result is
-/// `Ok`, and the next call is `Locked`.
-fn epoch_change_waits_for(
+/// not return until that operation has made its result, which is `Ok`.
+fn epoch_change_waits_for<E: std::fmt::Debug + Send + 'static>(
     v: &Vault,
     change: impl FnOnce(&Vault) + Send + 'static,
-    call: impl Fn() -> Result<(), SignerError> + Send + Sync + 'static,
+    call: impl FnOnce() -> Result<(), E> + Send + 'static,
 ) {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
-    let call = Arc::new(call);
     let worker = {
-        let call = call.clone();
         thread::spawn(move || {
             test_hook::set(move |point| {
                 if point == OpPoint::Opened {
@@ -138,7 +135,6 @@ fn epoch_change_waits_for(
         .expect("the operation began before the epoch change");
     changer.join().unwrap();
     assert!(changed.load(SeqCst));
-    assert_eq!(call(), Err(SignerError::Locked));
 }
 
 fn lock(v: &Vault) {
@@ -151,11 +147,13 @@ fn lock_waits_for_the_operation_already_running() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir, Some(PASS));
     let crypto = v.dashpay_crypto_signer(&W).unwrap();
-    epoch_change_waits_for(&v, lock, move || {
+    let ecdh = move || {
         crypto
             .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
             .map(drop)
-    });
+    };
+    epoch_change_waits_for(&v, lock, ecdh.clone());
+    assert_eq!(ecdh(), Err(SignerError::Locked));
 
     // A passphrase grant on a locked vault, whose signer holds the grant's
     // own copy of the data key: an identity signature.
@@ -165,10 +163,44 @@ fn lock_waits_for_the_operation_already_running() {
         Credential::Passphrase(PASS),
     );
     let key_data = identity_public_key(&identity);
-    epoch_change_waits_for(&v, lock, move || {
+    let sign = move || {
         identity
             .sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
             .map(drop)
+    };
+    epoch_change_waits_for(&v, lock, sign.clone());
+    assert_eq!(sign(), Err(SignerError::Locked));
+}
+
+/// The secret reads of the reveal paths hold the gate too: on an unlocked
+/// vault (`reveal_mnemonic`) and with a passphrase grant's own key on a
+/// locked one (`with_revealed_seed`, `export_wallet_secret`).
+#[test]
+fn lock_waits_for_a_secret_read_already_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let reveal_grant = |v: &Vault| {
+        v.authorize(
+            GrantPurpose::RevealSecret,
+            Some(&W),
+            Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id
+    };
+
+    let (id, w) = (reveal_grant(&v), v.clone());
+    epoch_change_waits_for(&v, lock, move || w.reveal_mnemonic(&W, &id).map(drop));
+
+    let (id, w) = (reveal_grant(&v), v.clone());
+    epoch_change_waits_for(&v, lock, move || {
+        w.with_revealed_seed(&W, &id, |seed| seed[0]).map(drop)
+    });
+
+    let token = token(&v, GrantPurpose::RevealSecret, Credential::Passphrase(PASS));
+    let w = v.clone();
+    epoch_change_waits_for(&v, lock, move || {
+        w.export_wallet_secret(&W, &token).map(drop)
     });
 }
 
@@ -367,13 +399,15 @@ fn a_scope_change_waits_for_the_operation_already_running() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir, Some(PASS));
     let crypto = v.dashpay_crypto_signer(&W).unwrap();
+    let ecdh = move || {
+        crypto
+            .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
+            .map(drop)
+    };
     epoch_change_waits_for(
         &v,
         |v| v.unlock(PASS, UnlockScope::MixingOnly).map(drop).unwrap(),
-        move || {
-            crypto
-                .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
-                .map(drop)
-        },
+        ecdh.clone(),
     );
+    assert_eq!(ecdh(), Err(SignerError::Locked));
 }

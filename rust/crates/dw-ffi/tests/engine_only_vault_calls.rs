@@ -5,10 +5,12 @@
 
 use std::path::{Path, PathBuf};
 
+/// Call forms, so unrelated identifiers do not match; clippy also catches
+/// uses without a call (a function pointer).
 const FORBIDDEN: [&str; 4] = [
-    "dashpay_crypto_signer",
-    "scan_key",
-    "master_key",
+    "dashpay_crypto_signer(",
+    "scan_key(",
+    "master_key(",
     "VaultScanKey",
 ];
 

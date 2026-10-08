@@ -106,7 +106,10 @@ was.
 **Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
 `PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped
 signers from it instead (one token may issue several), and each refuses every path and use outside its scope
-before reading the seed:
+before reading the seed. The same token also releases the identity-scan key (`Vault::scan_key`, below), which is
+the master key: until E0-04, any `PlatformOp` token is as strong as the wallet. E0-04 must give the scan its own
+grant kind, or refuse capped `PlatformOp{max_duffs, max_credits}` tokens in `scan_key`, so a capped flow token
+cannot release it.
 
 | Scope | Uses | Paths |
 |---|---|---|
@@ -144,12 +147,16 @@ file on disk is read only when the vault opens and to verify a record write. A d
 installed over the in-memory state, so a passphrase change running beside a wallet import cannot drop the
 imported seed.
 
-**Lock against running operations** (review DW-E0-03 B1). Every operation that turns the data key into a
-secret-derived result (each signer call, `reveal_mnemonic`, `export_wallet_secret`, `with_revealed_seed`) holds
-a vault operation gate from its epoch check until its result exists. `lock()`, `unlock()` and every other epoch
-change take the gate exclusively, so `lock()` returns only after the operations already running have finished
-(a signature takes about a millisecond), and every later call is `Locked`. No signature, shared secret,
-ciphertext, exported key or phrase of the old epoch is made after `lock()` returns.
+**Lock against running operations** (review DW-E0-03 B1). Every signer call holds a vault operation gate from
+its epoch check until its result exists; `reveal_mnemonic`, `export_wallet_secret` and `with_revealed_seed` hold
+it while they read the secret. `lock()`, `unlock()` and every other epoch change take the gate exclusively, so
+`lock()` returns only after those operations already running have finished (a signature takes about a
+millisecond), and every later call is `Locked`. No signature, shared secret, ciphertext or exported key of the
+old epoch is made after `lock()` returns. What a caller does with a secret it read before the lock (the provider
+key `with_revealed_seed`'s closure derives, the dump-wallet keys derived from `export_wallet_secret`) can finish
+after it. Not gated, and pre-existing: `backup_bundle` and `open_backup_bundle` (no grant or epoch; the latter
+returns the decrypted secrets of this vault's own bundle on an unlocked vault) and `enroll_quick_unlock`
+(serialized by the writer lock, which `lock()` does not take).
 
 **Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
 or individually rolled-back record, or a changed manifest, makes unlock and reads fail with
