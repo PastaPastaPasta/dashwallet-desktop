@@ -5,6 +5,11 @@
 //! normal step, and the coin type of the vault's network. A path that is a
 //! prefix or an extension of an allowed shape is refused. 256-bit (DIP-14)
 //! children are accepted only where DIP-15 puts them, and only non-hardened.
+//!
+//! A 31-bit step is valid only with `index < 2^31`. `ChildNumber`'s variants
+//! are public, so `Normal { index: 2^31 }` or `Hardened { index: 2^31 | i }`
+//! can be built directly; key-wallet would derive them (the second as an
+//! alias of `i'`), so the predicates refuse them (review DW-E0-03 M2).
 
 use key_wallet::Network;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -28,19 +33,24 @@ pub(crate) fn coin_type(network: Network) -> u32 {
     if network == Network::Mainnet { 5 } else { 1 }
 }
 
+/// First index past the 31-bit child range (BIP32 `2^31`).
+const INDEX_LIMIT: u32 = 1 << 31;
+
 fn is_hardened(c: &ChildNumber, index: u32) -> bool {
     *c == ChildNumber::Hardened { index }
 }
 
+/// The index of a valid 31-bit hardened step.
 fn hardened_index(c: &ChildNumber) -> Option<u32> {
     match c {
-        ChildNumber::Hardened { index } => Some(*index),
+        ChildNumber::Hardened { index } if *index < INDEX_LIMIT => Some(*index),
         _ => None,
     }
 }
 
+/// Whether `c` is a valid 31-bit non-hardened step.
 fn is_normal(c: &ChildNumber) -> bool {
-    matches!(c, ChildNumber::Normal { .. })
+    matches!(c, ChildNumber::Normal { index } if *index < INDEX_LIMIT)
 }
 
 /// `m/9'/coin'/feature'`, the first three steps of every DIP9 path.
@@ -58,13 +68,13 @@ pub fn is_coinjoin_path(path: &DerivationPath, network: Network) -> bool {
 }
 
 /// Whether `path` lies inside a BIP44 account of `network`
-/// (`m/44'/coin'/account'/…`).
+/// (`m/44'/coin'/account'/…`, the account a 31-bit hardened step).
 pub fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
     let p: &[ChildNumber] = path.as_ref();
     p.len() >= 4
         && is_hardened(&p[0], BIP44)
         && is_hardened(&p[1], coin_type(network))
-        && p[2].is_hardened()
+        && hardened_index(&p[2]).is_some()
 }
 
 /// The DIP-13 ECDSA identity authentication key
@@ -363,6 +373,125 @@ mod tests {
             "m/9'/1'/5'",
         ] {
             assert!(!is_bip32_address(&path(bad)), "{bad}");
+        }
+    }
+
+    /// Every dynamic step of every shape, as a raw `ChildNumber`: the last
+    /// 31-bit index is accepted; `2^31`, `u32::MAX` and 256-bit children are
+    /// not (review DW-E0-03 M2).
+    #[test]
+    fn dynamic_steps_take_31_bit_indices_only() {
+        let t = Network::Testnet;
+        type Shape = fn(&DerivationPath, Network) -> bool;
+        let bip32: Shape = |p, _| is_bip32_address(p);
+        let identity: Shape = |p, n| identity_auth_key(p, n).is_some();
+        // (shape, a matching path, the dynamic steps, hardened?)
+        let cases: [(&str, Shape, &str, &[usize], bool); 13] = [
+            (
+                "identity",
+                identity,
+                "m/9'/1'/5'/0'/0'/3'/5'",
+                &[5, 6],
+                true,
+            ),
+            (
+                "contactInfo",
+                is_contact_info_key,
+                "m/9'/1'/5'/0'/0'/3'/5'/65536'/2'",
+                &[5, 6, 8],
+                true,
+            ),
+            (
+                "receiving account",
+                is_dashpay_receiving_account,
+                "",
+                &[3],
+                true,
+            ),
+            (
+                "receiving address",
+                is_dashpay_receiving_address,
+                "",
+                &[6],
+                false,
+            ),
+            (
+                "auto-accept",
+                is_auto_accept_key,
+                "m/9'/1'/16'/7'",
+                &[3],
+                true,
+            ),
+            ("bip44 path", is_bip44_path, "m/44'/1'/2'/0", &[2], true),
+            (
+                "bip44 address account",
+                is_bip44_address,
+                "m/44'/1'/2'/1/4",
+                &[2],
+                true,
+            ),
+            (
+                "bip44 address leaf",
+                is_bip44_address,
+                "m/44'/1'/2'/1/4",
+                &[4],
+                false,
+            ),
+            ("bip32 account", bip32, "m/3'/1/4", &[0], true),
+            ("bip32 leaf", bip32, "m/3'/1/4", &[2], false),
+            (
+                "credit key leaf",
+                is_asset_lock_credit_key,
+                "m/9'/1'/5'/1'/4",
+                &[4],
+                false,
+            ),
+            (
+                "top-up credit key",
+                is_asset_lock_credit_key,
+                "m/9'/1'/5'/2'/3'/4",
+                &[4],
+                true,
+            ),
+            (
+                "top-up account",
+                is_identity_top_up_account,
+                "m/9'/1'/5'/2'/3'",
+                &[4],
+                true,
+            ),
+        ];
+        for (name, shape, base, steps, hardened) in cases {
+            let base: Vec<ChildNumber> = match name {
+                "receiving account" => receiving(1, None).into(),
+                "receiving address" => receiving(1, Some(ChildNumber::Normal { index: 4 })).into(),
+                _ => path(base).into(),
+            };
+            assert!(shape(&base.clone().into(), t), "{name}: base");
+            for &at in steps {
+                let step = |index| {
+                    if hardened {
+                        ChildNumber::Hardened { index }
+                    } else {
+                        ChildNumber::Normal { index }
+                    }
+                };
+                let with = |c: ChildNumber| {
+                    let mut p = base.clone();
+                    p[at] = c;
+                    shape(&p.into(), t)
+                };
+                assert!(with(step(INDEX_LIMIT - 1)), "{name}[{at}]: 2^31-1");
+                for bad in [
+                    step(INDEX_LIMIT),
+                    step(INDEX_LIMIT | 3),
+                    step(u32::MAX),
+                    ChildNumber::Hardened256 { index: [0x42; 32] },
+                    ChildNumber::Normal256 { index: [0x42; 32] },
+                ] {
+                    assert!(!with(bad), "{name}[{at}]: {bad:?}");
+                }
+            }
         }
     }
 
