@@ -91,12 +91,22 @@ fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf, DesktopError> {
 }
 
 /// Writes `contents` to `path` atomically (temp file + rename), creating
-/// the parent directory.
+/// the parent directory. Missing directories are created 0700, as the XDG
+/// Base Directory spec asks: a `~/.local/share` created with the umask's
+/// 0775 (umask 002 on Ubuntu and Fedora desktops) would make the wallet
+/// storage refuse the data root below it.
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), DesktopError> {
     let parent = path
         .parent()
         .ok_or_else(|| DesktopError::OsError(format!("{} has no parent", path.display())))?;
-    std::fs::create_dir_all(parent)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(parent)?;
     let tmp = path.with_extension("tmp-dw");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)?;
@@ -174,6 +184,23 @@ mod tests {
         assert_eq!(exec_arg("100%"), "100%%");
         assert_eq!(exec_arg(""), "\"\"");
         assert_eq!(value("a\nb\\c"), "a\\nb\\\\c");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_creates_missing_directories_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".local/share/applications/x.desktop");
+        write_atomic(&path, "[Desktop Entry]\n").unwrap();
+        for dir in [".local", ".local/share", ".local/share/applications"] {
+            let mode = std::fs::metadata(tmp.path().join(dir))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{dir}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Desktop Entry]\n");
     }
 
     #[test]
