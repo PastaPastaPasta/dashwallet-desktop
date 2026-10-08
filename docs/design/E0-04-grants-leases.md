@@ -34,8 +34,10 @@ open-issues list) and the draft clauses of the E0-04 row in [`ROADMAP.md`](ROADM
    after that write has returned durably. A failed or ambiguous write makes the entry `Ambiguous`: it is never
    cleaned up, and it is resent only after a later write succeeds.
 4. **Registration before tracking.** platform-wallet registers an asset lock with the fence (durable `Unsent` plus its
-   origin lease) before it tracks the `Built` row, and makes the row durable before it asks to hand it off. A row with
-   no journal entry therefore predates the fence and counts as possibly sent. This closes M-B (d).
+   origin lease) before it tracks the `Built` row, and makes the row durable before it asks to hand it off. When the
+   journal is created it is seeded with a `PreFence` entry, counted as possibly sent, for every asset-lock row already
+   in `wallet.sqlite`. This closes M-B (d). A row with no entry at all has unknown provenance and is neither sent nor
+   cleaned up, so the decision never rests on what a call site says about the row.
 5. **Revocation happens at the call, not in the drain.** `lock_vault` revokes every lease and snapshots the permits in
    one synchronous step under J, before its first await. Its drain then only waits. Each permit carries a deadline
    (its grant + H), and the host enforces that deadline whatever the library does. So `lock_vault` returns within
@@ -66,7 +68,7 @@ open-issues list) and the draft clauses of the E0-04 row in [`ROADMAP.md`](ROADM
 | M-B (a) `store` not durable | journal written with `synchronous=FULL` before the transport (§6.2); row durable before admit (L3) | `transport-first`, `no-flush` mutations |
 | M-B (b) merge not monotone, resurrected rows | the record is not in the changeset; the journal never moves `Dispatching → Unsent`; a resurrected row meets its entry (§6.3) | Part 1 `flow+crash` |
 | M-B (c) failed write is not a clean `Unsent` | `Ambiguous`: no cleanup, Deferred, retried before any transport (§6.4) | `clean-on-write-fail` mutation |
-| M-B (d) rows from before the record | no entry ⇒ pre-fence ⇒ Resend (§5.4) | `legacy` scenario, `legacy-unsent` mutation |
+| M-B (d) rows from before the record | the journal is seeded with `PreFence` for them ⇒ Resend; no entry ⇒ kept, not sent (§5.4, §6.5) | `legacy` and `unknown` scenarios; `legacy-unsent`, `no-entry-resend` mutations |
 | M-C H bound and drain end | deadline from the grant covers write and transport; host-side expiry; revoke at the freeze (§8) | Part 2 (all four wrong timing rules fail) |
 | m-1 lease ids across processes | 128-bit random ids, matched with the wallet (§4.1) | `lease-reuse` mutation |
 | m-2 Part 2 cannot fail | Part 2 is now a tick simulation with per-lease states and the freeze as an event | Part 2 mutations |
@@ -301,7 +303,8 @@ pub struct LeaseView {
     pub id: String,                  // first 8 hex digits; for logs and the UI only
     pub wallet_id: String,
     pub flow: FlowKind,
-    pub state: LeaseStateView,       // Active | AwaitingProof{key_until} | Parked{reason} | NeedsGrant | Revoked{cause} | Ended
+    pub state: LeaseStateView,       // Active | AwaitingProof{key_until} | Parked{reason}
+                                     //   | NeedsGrant | Revoked{cause} | Ended
     pub own_key: bool,
     pub key_expires_in_secs: Option<u64>,
     pub budgets: Vec<BudgetView>,    // {purpose, cap, spent}
@@ -400,13 +403,17 @@ pub enum Verdict {
     Resend,                         // a recorded possible dispatch: hand off now, no permit
     Refused { cleanup: bool },      // provably never sent and never will be; `cleanup` only for the CAS winner
     Deferred,                       // not now; outcome unknown (MaybeSent): keep the row and the reservation
+                                    // (also a tracked row with no entry: unknown provenance, with a Notice)
 }
 #[async_trait] pub trait DispatchFence: Send + Sync {
     async fn register(&self, wallet: WalletId, txid: Txid) -> Result<(), FenceError>;    // durable Unsent{origin}
     async fn admit(&self, req: DispatchRequest<'_>) -> Verdict;
     async fn abandon(&self, wallet: WalletId, txid: Txid) -> Abandon;  // Revoked{cleanup} | Committed
 }
-impl DispatchPermit { pub fn deadline(&self) -> Instant; pub fn finish(self, outcome: Outcome); }  // Drop = finish(MaybeSent)
+impl DispatchPermit {
+    pub fn deadline(&self) -> Instant;
+    pub fn finish(self, outcome: Outcome);   // Drop = finish(MaybeSent)
+}
 ```
 
 `tracked_row` is a fact about the artifact: it has a persisted row. It does not say First or Resend. Only the journal
@@ -432,7 +439,9 @@ admit(req):
                                      ok, deadline passed:  e := Dispatching → Deferred
                                      fail (either way):    e := Ambiguous   → Deferred
                                else: e := Revoked → Refused{cleanup: true}
-      none, tracked_row      → Resend                              // written before the fence existed (M-B d)
+      PreFence               → Resend                              // seeded at the journal's creation (M-B d)
+      none, tracked_row      → Deferred + Notice{DispatchRecordMissing}
+                               // unknown provenance: never sent, never cleaned up (Q16)
       none, row-less         → match req.origin:
                                  Lease(L) live, admissible, fits → p := new permit → First(p)
                                  Lease(L) otherwise             → Refused{cleanup: false}
@@ -548,7 +557,8 @@ The library keeps its row exactly as at the pin. That row now serves funds track
 
 - **File:** `<network dir>/dispatch.sqlite`, mode 0600, beside `app.sqlite`. It is a separate file because:
   - it needs a stricter durability setting than `app.sqlite`;
-  - it must not take part in `.dwbackup` row export, which takes every table with a `wallet_id` column (`dw-appdb/src/rows.rs:69-89`);
+  - it must not take part in `.dwbackup` row export, which takes every table with a `wallet_id` column
+    (`dw-appdb/src/rows.rs:69-89`);
   - it must outlive wallet removal (§6.5).
 - **Code:** a module of dw-appdb (`dispatch.rs`) with its own embedded migrations. One connection behind a mutex,
   used only from the blocking pool.
@@ -563,7 +573,7 @@ CREATE TABLE dispatch (
   txid         BLOB NOT NULL CHECK (length(txid) = 32),
   origin_lease BLOB NOT NULL CHECK (length(origin_lease) = 16),
   process      BLOB NOT NULL CHECK (length(process) = 16),   -- per-session nonce, diagnostics
-  state        INTEGER NOT NULL CHECK (state IN (0, 1)),     -- 0 Unsent, 1 Dispatching
+  state        INTEGER NOT NULL CHECK (state IN (0, 1, 2)),  -- 0 Unsent, 1 Dispatching, 2 PreFence
   registered_at INTEGER NOT NULL,
   dispatched_at INTEGER,
   PRIMARY KEY (wallet, txid)
@@ -580,15 +590,17 @@ CREATE TABLE dispatch (
 
 | In memory | On disk | Meaning |
 |---|---|---|
-| none | none | not registered: a pre-fence row (Resend) or a row-less artifact |
+| none | none | row-less artifact; or a row of unknown provenance (kept, not sent, `Notice`) |
+| `PreFence` | 2 | the row existed when the journal was created; possibly sent, so Resend only |
 | `Unsent{origin}` | 0 | registered, never possibly sent |
 | `Committing(owner)` | 0 or 1 | a `Dispatching` write is in progress |
 | `Dispatching` | 1 | possibly sent; only Resends from now on |
 | `Ambiguous` | 0 or 1 | a write failed; it may still have reached disk |
 | `Revoked` | 0 | refused or abandoned in this process; never possibly sent |
 
-- **Monotone:** on disk, 0 → 1 only. In memory, `Unsent` goes to `Committing` or `Revoked`, `Committing` goes to
-  `Dispatching` or `Ambiguous`, and `Ambiguous` goes to `Committing` (retry). None of them goes back.
+- **Monotone:** on disk, 0 → 1 only, and 2 is written only by the seeding. In memory, `Unsent` goes to `Committing`
+  or `Revoked`, `Committing` goes to `Dispatching` or `Ambiguous`, and `Ambiguous` goes to `Committing` (retry). None
+  of them goes back.
 - **`Revoked` is not persisted** and does not need to be. At load every origin is dead, so an on-disk 0 is refused on
   its first `admit`, which is exactly what `Revoked` would do. A row brought back by the library's merge or upsert
   (M-B b) meets the same entry and is refused again. The journal decides, not the row.
@@ -605,24 +617,33 @@ CREATE TABLE dispatch (
   - At the next load the file decides. 1 means Resend. 0 means the transport was never called, because I1 guarantees
     that, so the row is refused and cleaned up.
 - **The journal cannot be opened:** the fence refuses every registered-artifact `register` and every leased First,
-  and raises a `Notice{DispatchJournalUnavailable}`. Unleased paths and Resends of artifacts with no entry still work.
+  and raises a `Notice{DispatchJournalUnavailable}`. Tracked rows get `Deferred`, so nothing is sent or cleaned up
+  without the journal. Unleased paths still work.
 
 ### 6.5 Load, loss, rollback, GC
 
-- **Load:** at session open, before `start_wallet_subsystems` and before any `admit` can run, the fence reads every
-  row into memory. `admit` and `register` wait until that is done.
+- **Seeding.** When the session opens and `dispatch.sqlite` has no `meta.seeded` row (the first session with the
+  fence, or a journal that was deleted), the fence reads every asset-lock row of every wallet from `wallet.sqlite`.
+  It uses the read-only connection dw already uses for history (`dw-engine/src/history_ops.rs:86`), so wallets the
+  user closed are included. It then inserts a `PreFence` entry for each row whose status is not `consumed`, and sets
+  `meta.seeded`, in one transaction. No fence-era row can exist yet: the fence admits nothing before the seeding is
+  done.
+- **Load:** at session open, after the seeding and before `start_wallet_subsystems` or any `admit`, the fence reads
+  every row into memory. `admit` and `register` wait until that is done.
 - **Wallet removal:** journal rows are kept. A wallet removed and imported again finds its old entries, and the
   library's rows for it come back only from `wallet.sqlite`, which has the matching entries.
-- **The journal is deleted or reset:** every `Built` row then has no entry, so it counts as pre-fence and is resent.
-  That is safe for funds (nothing possibly sent is cleaned up). It can send an asset lock the user had cancelled, but
-  only after someone deletes a file by hand.
+- **The journal is deleted or reset:** the next session seeds it again, so every current row becomes `PreFence` and
+  is resent. That is safe for funds (nothing possibly sent is cleaned up). It can send an asset lock the user had
+  cancelled, but only after someone deletes a file by hand.
 - **`app.sqlite`** is irrelevant here; the journal does not live there.
 - **The journal is rolled back** to an older copy by hand, with `wallet.sqlite` newer: a row registered after the copy
-  is pre-fence and resent (safe). A row dispatched after the copy reads `Unsent` and is refused, so its row is
-  untracked even though it may be on the wire. DP1-05's asset-lock reconstruction recovers that lock from the chain
-  (`RecoveredFromChain`). dw never restores this file, so this is the only residual, and it needs manual file
-  surgery.
-- **`wallet.sqlite` is restored or rolled back:** every older row meets its entry, or is pre-fence. Safe.
+  has no entry, so it is kept and not sent, with a `Notice` (safe). A row dispatched after the copy reads `Unsent`
+  and is refused, so its row is untracked even though it may be on the wire. DP1-05's asset-lock reconstruction
+  recovers that lock from the chain (`RecoveredFromChain`). dw never restores this file, so this is the only
+  residual, and it needs manual file surgery.
+- **`wallet.sqlite` is restored or rolled back:** every row meets its entry. A row from before the seeding that the
+  seeding never saw has no entry, so it is kept and not sent; platform-wallet still tracks its proofs, which need no
+  hand-off. Safe both ways.
 - **GC:** none in 1.0 (Q10). A row is about 120 bytes, one per asset lock ever built.
 
 ## 7. Commit points and crash consistency
@@ -672,7 +693,7 @@ reconstruction finds it as `RecoveredFromChain` (Q11).
 
 | Path | Reaches the fence as | Decided by |
 |---|---|---|
-| `resume_asset_lock`, Built arm (`recovery.rs:1176`) and Broadcast arm (`:1491`), all callers (F6) | CoreTx, `tracked_row`, usually unscoped | the journal |
+| `resume_asset_lock`, Built arm (`recovery.rs:1176`) and Broadcast arm (`:1491`), all callers (F6) | CoreTx, `tracked_row`, usually unscoped | the journal (`PreFence` for rows older than the journal) |
 | deferred-resume task (`recovery.rs:592`) | same; spawned by the library, unscoped | the journal |
 | load replay (`load.rs:620`) | CoreTx, row-less, unscoped | never runs in dw (F8); elsewhere refused unless the host's records hold the tx |
 | dash-spv's 600 s rebroadcast (F3) | not at all | an entry exists only after a fenced hand-off, so membership is the record |
@@ -797,7 +818,8 @@ session. E0-05 owns the cancelation of the bring-up task. This design adds only 
   J step. So no commit is ordered after a lock's call under a lease that lock revoked.
 - **I3. Exclusive outcomes.** `Revoked` and `Dispatching` (or `Committing`, or `Ambiguous`) are reached only from
   `Unsent`, each by a compare-and-set under J. On disk, 0 → 1 only. At load, `Unsent` with a dead origin is refused,
-  as `Revoked` would be.
+  as `Revoked` would be. `PreFence` is never `Unsent`: it counts as `Dispatching` and is never cleaned up. A tracked
+  row with no entry is neither sent nor cleaned up.
 - **I4. A refusal is definite.** `Refused` or `Revoked{…}` ⇒ the entry was `Unsent` (I3) ⇒ no `Dispatching` write
   ever succeeded ⇒ no transport call ever happened (I1) and none can (I3). So the cleanup, which happens only on
   `cleanup: true`, never touches bytes that may be on the wire. The row-less case is direct: the refused call is the
@@ -835,7 +857,8 @@ session. E0-05 owns the cancelation of the bring-up task. This design adds only 
 
 `docs/design/checks/e0_04_design_model.py`:
 - **Part 1** explores every interleaving of O (the original flow), R (a resume of the same row), L (`lock_vault`),
-  one crash with every partial outcome, and the reload.
+  one crash with every partial outcome, and the reload. Its six scenarios are `flow`, `flow+crash`, `restart`
+  (an unsent row at load), `ambiguous`, `legacy` (a `PreFence` row) and `unknown` (a row with no entry).
 - **Part 2** is a tick simulation of the bound.
 - **Part 3** explores the lock order.
 
@@ -862,7 +885,8 @@ It is a model of this design's decisions, not a test of the code.
 | I3 | "an artifact both Revoked and Dispatching" |
 | I5 | "lock_vault returned while a hand-off it waits for ran" |
 | I7 | "a commit under an origin from an earlier process" |
-| liveness | "a never-dispatched row left reserved"; "a genuine ambiguous dispatch was not resent"; "deadlock" |
+| liveness | "a never-dispatched row left reserved"; "a genuine possible dispatch was not resent" (ambiguous and pre-fence rows); "deadlock" |
+| unknown provenance | "a hand-off without a durable Dispatching record"; "a row of unknown provenance cleaned up" |
 | bound | Part 2: drain end ≤ H for 1–3 leases; no First after the call; second call joins |
 | lock order | Part 3: no reachable state without a step |
 
@@ -889,7 +913,8 @@ It is a model of this design's decisions, not a test of the code.
 | `check-then-act` | lease check and permit in separate steps | commit after lock_vault was called |
 | `transport-first` | the transport before the record is durable | hand-off without a durable record |
 | `clean-on-write-fail` | a failed write leaves a clean `Unsent` (M-B c) | reported not sent, but still sendable |
-| `legacy-unsent` | no entry treated as never sent (M-B d) | possibly-sent row cleaned up |
+| `legacy-unsent` | a `PreFence` row treated as never sent (M-B d) | possible dispatch not resent; row cleaned up |
+| `no-entry-resend` | a row with no entry resent (trusting the call site's `tracked_row`) | hand-off without a durable record |
 | `abort-direct` | an aborted build releases without the fence | possibly-sent row cleaned up |
 | `no-flush` | hand-off before the row is durable | hand-off before its row was durable |
 | `revoke-in-drain` | revocation at the drain's end; a drop reopens (M-C) | commit after lock_vault was called |
@@ -998,9 +1023,11 @@ and for a state transition.
 3. **A genuine ambiguous dispatch.** Entry 1 and a stalled transport give MaybeSent; `lock_vault` returns; a resume
    then sends a Resend, which the fake records.
 4. **M-A order.** The resume admits after O's commit and after the lock: Resend; the inputs stay reserved.
-5. **A pre-fence row** (no entry): Resend at load, never cleaned up.
-6. **A deleted journal:** every `Built` row is resent; nothing is cleaned up.
+5. **A pre-fence row** (`PreFence`, from the seeding): Resend at load, never cleaned up. The seeding covers closed
+   wallets and skips `consumed` rows.
+6. **A deleted journal:** the next session seeds it again; every `Built` row is resent; nothing is cleaned up.
 7. **A failed `Dispatching` write:** no hand-off now; the row and reservation are kept.
+8. **A row with no entry** (an older `wallet.sqlite` copied in by hand): not sent, not cleaned up, `Notice`.
 
 **Library obligations (P3, in the platform PR)**
 - At every F1 and F9 site, `admit` runs with no wallet-manager guard held (a test-only guard-depth probe).
@@ -1070,6 +1097,7 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
 | Q13 | A registered artifact whose transport returned a definite rejection after `Dispatching` stays committed, and is resent later, even after a lock. Accept? | **Accept.** Undoing a durable commit safely needs a second protocol, and the readiness check before `admit` (L8) narrows the case to a peer loss in the moment between the check and the enqueue. The UI says "will be sent when the network is back". |
 | Q14 | Separate `dispatch.sqlite`, or a table in `app.sqlite`? | **Separate file** (§6.2): stricter durability, kept out of `.dwbackup` export, and kept past wallet removal. |
 | Q15 | Shielded redrives (1.1) persist signed state transitions. | **Rule:** they become registered artifacts, keyed by ST hash, before shielded ships. The X-phase task adds `register` on their persist path. |
+| Q16 | A tracked row with no journal entry: Resend it (trust the library's `tracked_row` and assume pre-fence) or keep it unsent? | **Keep it unsent**, with a `Notice`. The seeding gives every real pre-fence row an entry, so a row without one is either a bug (a missed `register`) or a file restored by hand. Resending would reopen the r4 shape: a possible dispatch inferred from the call site. Keeping the row loses nothing, since platform-wallet tracks its proofs without a hand-off. |
 
 ## 15. Changes to other documents after the review
 
@@ -1107,7 +1135,8 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
   - (b) The record left the changeset (§6.1); the journal is monotone (§6.2–6.3); a resurrected row is refused again
     by its entry.
   - (c) A failed write is `Ambiguous`, never `Unsent` (§6.4).
-  - (d) No entry means pre-fence, which means Resend (§5.4).
+  - (d) The journal is seeded with `PreFence` for every row that predates it, and `PreFence` means Resend (§6.5).
+    No entry means unknown provenance: kept and not sent. So the decision never rests on the call site.
 - **M-C.**
   - H starts at the permit's grant and covers the write and the transport (§5.4).
   - The host enforces it (H3).

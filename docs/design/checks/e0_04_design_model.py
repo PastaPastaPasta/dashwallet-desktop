@@ -11,8 +11,9 @@ and e0_04_mutations.py, which stay as the design's inputs.
 What is modelled, at the granularity of the design's atomic steps:
 
 - The fence's journal entry for one registered artifact (an asset lock):
-  on disk `Unsent` or `Dispatching` (or none for a row that predates the
-  fence), in memory also `Committing`, `Ambiguous` and `Revoked`. Every
+  on disk `Unsent`, `Dispatching` or `PreFence` (seeded when the journal
+  is created, for rows that predate it) or none, in memory also
+  `Committing`, `Ambiguous` and `Revoked`. Every
   read-and-change of the in-memory entry is one step under the lease
   table's mutex J; the durable writes are separate steps outside J.
 - The original flow O: register (durable Unsent), track the Built row and
@@ -25,11 +26,12 @@ What is modelled, at the granularity of the design's atomic steps:
 - A crash at any step, with every outcome of the write or transport call
   in progress, followed by a reload (leases are per process, so dead).
 
-Part 1 explores five scenarios and checks that no violation is reachable:
+Part 1 explores six scenarios and checks that no violation is reachable:
 `flow` (O, R and L interleaved), `flow+crash` (the same with one crash and
 a reload at any point), `restart` (a never-dispatched row found at load),
-`ambiguous` (a genuine possible dispatch, then the lock) and `legacy` (a
-row written before the fence existed). It replays review DW-E0-03 r4 M1's
+`ambiguous` (a genuine possible dispatch, then the lock), `legacy` (a row
+written before the fence existed) and `unknown` (a row with no entry,
+which must be neither sent nor cleaned up). It replays review DW-E0-03 r4 M1's
 counterexample under the r3 rule (a violation) and shows the design does
 not admit it, replays the M-A split-step trace's design counterpart, and
 replays the acceptance tests' barriers 1 and 2.
@@ -61,6 +63,7 @@ from dataclasses import dataclass, replace
 from typing import Iterator, Optional
 
 U, C, D, A, T = "Unsent", "Committing", "Dispatching", "Ambiguous", "Revoked"
+P = "PreFence"  # seeded at the journal's creation for rows that predate it
 DEFINITE = ("Cancelled", "Failed", "NotSent")  # verdicts that promise "never sent"
 
 
@@ -72,10 +75,9 @@ DEFINITE = ("Cancelled", "Failed", "NotSent")  # verdicts that promise "never se
 @dataclass(frozen=True)
 class S:
     proc: int = 0  # 0: the process that built the row; 1: after a crash
-    legacy: bool = False  # the row predates the fence: no entry, maybe sent
-    j_disk: Optional[str] = None  # journal entry on disk: None, U, D
+    j_disk: Optional[str] = None  # journal entry on disk: None, U, D, P
     row_disk: bool = False  # the Built row is durable in wallet.sqlite
-    mir: Optional[str] = None  # journal entry in memory: None, U, C, D, A, T
+    mir: Optional[str] = None  # journal entry in memory: None, U, C, D, A, T, P
     lease: str = "live"  # live | revoked | dead (an earlier process's)
     lock: str = "idle"  # idle | draining | returned | dropped | gone (after a crash)
     snap: frozenset = frozenset()  # permits lock_vault waits for
@@ -147,7 +149,7 @@ def start_commit(s: S, who: str, m: frozenset) -> S:
 
 
 def to_transport(s: S, who: str, permit: bool) -> S:
-    if not (s.j_disk == D or s.legacy):
+    if s.j_disk not in (D, P):
         s = flag(s, "no_durable_commit")
     if not s.row_disk:
         s = flag(s, "row_not_durable")
@@ -161,7 +163,7 @@ def send(s: S, who: str) -> S:
         not s.sends
         and s.proc == 0
         and s.lock in ("returned", "dropped")
-        and not s.legacy
+        and s.j_disk != P
         and not before_lock
     ):
         s = flag(s, "first_send_after_lock")
@@ -173,7 +175,7 @@ def refuse(s: S, who: str, m: frozenset) -> S:
     caller whose compare-and-set made Revoked cleans up (exactly once)."""
     if "r3" in m:
         return put(s, who, "cleanup")  # the r3 rule writes no record
-    if s.mir == U or (s.mir is None and "legacy-unsent" in m):
+    if s.mir == U or (s.mir == P and "legacy-unsent" in m):
         return put(replace(s, mir=T), who, "cleanup")
     return put(s, who, "done", "Cancelled" if who == "O" else None)
 
@@ -191,10 +193,16 @@ def admit(s: S, who: str, m: frozenset) -> Iterator[tuple]:
 
 def decide(s: S, who: str, seen: Optional[str], m: frozenset) -> Iterator[tuple]:
     if seen is None:
-        if "legacy-unsent" in m:
-            yield "no entry: refused", refuse(s, who, m)
+        if "no-entry-resend" in m:
+            yield "no entry: Resend", to_transport(s, who, False)
         else:
-            yield "no entry (pre-fence row): Resend", to_transport(s, who, False)
+            # Unknown provenance: neither sent nor cleaned up (a Notice).
+            yield "no entry: Deferred, kept", put(s, who, "done", "MaybeSent")
+    elif seen == P:
+        if "legacy-unsent" in m:
+            yield "PreFence treated as Unsent: refused", refuse(s, who, m)
+        else:
+            yield "PreFence: Resend", to_transport(s, who, False)
     elif seen == T:
         yield "Revoked: refused", refuse(s, who, m)
     elif seen == D:
@@ -455,7 +463,9 @@ def all_done(s: S) -> bool:
 
 def may_send(s: S) -> bool:
     """The artifact went out or can still go out (now, or after a reload)."""
-    return s.tcalled or s.mir in (C, D, A) or s.j_disk == D or s.legacy or s.pending_write
+    return (
+        s.tcalled or s.mir in (C, D, A, P) or s.j_disk in (D, P) or s.pending_write
+    )
 
 
 def violations(s: S, scenario: str, m: frozenset) -> list:
@@ -470,17 +480,18 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
         out.append("reported not sent, but sent or still sendable")
     if s.mir == T and s.j_disk == D:
         out.append("an artifact both Revoked and Dispatching")
+    if scenario == "unknown" and s.cleaned:
+        out.append("a row of unknown provenance cleaned up")
     if all_done(s):
         if (
-            not s.legacy
-            and s.j_disk != D
+            s.j_disk not in (D, P)
             and s.mir in (U, T)
             and s.lease != "live"
             and (s.row_mem or s.reserved)
         ):
             out.append("a never-dispatched row left reserved")
-        if scenario == "ambiguous" and not s.r_tcalled:
-            out.append("a genuine ambiguous dispatch was not resent")
+        if scenario in ("ambiguous", "legacy") and not s.r_tcalled:
+            out.append("a genuine possible dispatch was not resent")
     elif not any(True for _ in steps(s, m, with_crash=False)):
         out.append("deadlock")
     return out
@@ -498,9 +509,16 @@ def scenarios() -> dict:
             lease="revoked", lock="returned", o="late", o_verdict="MaybeSent",
             crashes=1,
         ),
+        # A row written before the fence existed: the journal was seeded
+        # with a PreFence entry for it when it was created.
         "legacy": replace(
-            built, proc=1, legacy=True, j_disk=None, mir=None, lease="dead",
-            lock="gone", o="absent",
+            built, proc=1, j_disk=P, mir=P, lease="dead", lock="gone", o="absent",
+        ),
+        # A row with no entry at all: an old copy of wallet.sqlite restored
+        # by hand, or a library that skipped register. Neither send nor clean.
+        "unknown": replace(
+            built, proc=1, j_disk=None, mir=None, lease="dead", lock="gone",
+            o="absent",
         ),
     }
 
@@ -603,7 +621,8 @@ MUTATIONS = {
     "check-then-act": "the lease check and the permit are separate steps",
     "transport-first": "the transport is called before the record is durable",
     "clean-on-write-fail": "a failed record write leaves a clean Unsent (M-B c)",
-    "legacy-unsent": "a row without an entry is treated as never sent (M-B d)",
+    "legacy-unsent": "a pre-fence row is treated as never sent (M-B d)",
+    "no-entry-resend": "a row with no entry is resent (trusts the call site)",
     "abort-direct": "an aborted build releases its inputs without the fence",
     "no-flush": "the row is handed off before it is durable",
     "revoke-in-drain": "revocation at the end of the drain; drop reopens (M-C)",
