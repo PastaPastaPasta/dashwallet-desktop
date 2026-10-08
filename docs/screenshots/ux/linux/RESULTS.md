@@ -55,9 +55,19 @@ GtkBackend.runInMainThread → ViewGraphNode.viewModelDidChange → bottomUpUpda
 ```
 
 So Observation change notifications keep re-laying out the whole Transactions page (with a CSS
-reload for every `Text`). Not root-caused: an equality guard on `TransactionDetailCard`'s
-`labelText` write did not stop it. Next steps: log which observed property fires in
-`viewModelDidChange`, and check whether layout or commit writes observed state.
+reload for every `Text`). An equality guard on `TransactionDetailCard`'s `labelText` write did
+not stop it.
+
+**Root-caused and fixed later on 2026-10-08 (branch `dw/crossui-busy-loop`) in the vendored
+SwiftCrossUI. There was no update loop and no write of observed state from layout.** A single
+assignment (`TransactionsViewModel.selection` in `reveal(txid:)`) fired about 950 observation
+callbacks, one for every ancestor of every view that read it, because nested tracking scopes
+merge into their parents. Each callback then re-laid out its whole subtree, in 7–12 s each,
+partly because GTK CSS providers that apply display-wide were reloaded even when the CSS had not
+changed. Patches P8 (coalesced updates) and P9 (CSS loaded only on change) in
+`Vendor/PATCHES.md` fix this. In live mode a third cause showed the same symptom: a resize
+ping-pong caused by a hard-coded menu bar height, fixed by P10. The demo harness now checks
+that the main thread goes idle after the send and onboarding flows.
 
 Everything else passed: Overview (hero, breakdown, shortcut card, day cards), Send, Receive,
 Transactions list and table, Sign / Verify, Tools (Information, Console, Peers), PSBT, Wallets,
