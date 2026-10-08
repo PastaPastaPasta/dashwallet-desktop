@@ -165,6 +165,11 @@ if !headless {
                 "DashUICross", "DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
         ),
+        // The vendored SwiftCrossUI's patches that need no backend (Vendor/PATCHES.md).
+        .testTarget(
+            name: "SwiftCrossUIPatchTests",
+            dependencies: [.product(name: "SwiftCrossUI", package: "swift-cross-ui")]
+        ),
         // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(
             name: "DashWalletCross",

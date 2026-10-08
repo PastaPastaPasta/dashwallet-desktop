@@ -72,3 +72,39 @@ Change (`Sources/GtkBackend/GtkBackend.swift`, `cssProperties(for:isControl:)`, 
 `dashwallet-desktop patch P2`): light→300, regular→400, medium→500, semibold→600 (the CSS /
 OpenType numbers); ultraLight, thin, bold, heavy and black are unchanged. Other backends are not
 touched.
+
+### P8 — coalesced observation updates (CPU pinned at 100 % after a model change)
+
+Rationale: after a send, the GTK main thread ran at 100 % indefinitely and every AT-SPI query
+timed out (docs/screenshots/ux/linux/RESULTS.md, 2026-10-08). There was no update loop. A
+single assignment (`TransactionsViewModel.selection` in `reveal(txid:)`) fired about 950
+`onChange` callbacks, and they then ran one by one, each re-laying out a large subtree in
+7–12 s. Swift's `withObservationTracking` merges a nested tracking scope's accesses into the
+enclosing scope. `ViewGraphNode` lays out its children inside its own `observe(with:_:)` call,
+so every ancestor of a view that reads a property also observes it. Upstream runs each
+notification on its own main-thread hop. A child's update renews only the child's own
+observation, so the parent, grandparent and so on each run a full update of their whole subtree
+after it. Upstream 0.10.0 and `main` (still commit `0f3ec39` on 2026-10-08) have the same
+code, and no upstream issue reports it. The change is in the backend-independent core, so it
+applies to every backend.
+
+Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNode.swift`,
+`Environment/EnvironmentValues.swift`, `_App.swift`, comments `dashwallet-desktop patch P8`):
+- The main-thread hop no longer calls `viewModelDidChange` itself. It queues the call in
+  `ModelObserverUpdateQueue`, which schedules one flush per batch. The flush runs after the
+  hops that the same changes have already scheduled.
+- The flush runs the queued updates shallowest first and skips any observer whose observation
+  was renewed in the meantime. An ancestor's update lays out its subtree again, which renews the
+  descendants' observations, so their own updates are dropped. One batch of changes therefore
+  costs one update of each shallowest affected subtree.
+- Depth: `ModelObserver.observationDepth`: `_App` -1 (it refreshes every window), windows 0. A
+  `ViewGraphNode` takes its depth from the internal environment value `viewGraphDepth` that its
+  parent passes on (window root view = 1).
+- Not changed: tracking scopes still merge. The window's root node still observes nearly every
+  property read in the window, so nearly any model change costs one whole-window layout (P8
+  only stops the chain of them). A deeper fix would track a node's own `body` and layout
+  separately from its children's. That is a larger change to upstream's update model, and it
+  is not done here.
+- Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless). `container-demo.sh` runs
+  it on Linux. It is built as the `DashWalletDesktopPackageTests` product because plain
+  `swift test` also builds swift-winui's Windows-only C target there.

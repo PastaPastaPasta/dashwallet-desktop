@@ -45,6 +45,8 @@ allowed_for() {
     # Native backends: the quit hook (engine shutdown) and the GTK application name.
     DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesDesktop DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
+    # Unit tests of the vendored SwiftCrossUI's patches (Vendor/PATCHES.md).
+    SwiftCrossUIPatchTests)  echo "Foundation Testing SwiftCrossUI" ;;
     DashUIMacSnapshotTests)  echo "Foundation Testing AppKit SwiftUI DashUIMac DesignTokens" ;;
     # Renders MacUI screens offscreen (NSHostingView) for the screenshots.
     MacUITests)              echo "Foundation Testing AppKit SwiftUI MacUI DashUIMac DesignTokens WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesMac" ;;

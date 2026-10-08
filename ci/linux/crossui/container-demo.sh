@@ -18,6 +18,11 @@ if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
   echo "== swift build dash-wallet took $(( $(date +%s) - start ))s"
   bin=$(swift build --scratch-path /swiftpm/.build --show-bin-path)/dash-wallet
   echo "== binary: $(file -b "$bin" | cut -c1-80)"
+  # Unit tests of the vendored SwiftCrossUI's patches. Built as the test product:
+  # plain `swift test` also builds swift-winui's Windows-only C target and fails here.
+  swift build --scratch-path /swiftpm/.build --product DashWalletDesktopPackageTests
+  "$(dirname "$bin")/DashWalletDesktopPackageTests.xctest" --testing-library swift-testing \
+    --filter SwiftCrossUIPatchTests
   # Re-exec under a private session bus so Xvfb, AT-SPI and the app share it.
   exec dbus-run-session -- env BIN="$bin" "$0"
 fi

@@ -55,6 +55,11 @@ public struct EnvironmentValues {
     /// proposal received by each view must be its intended final proposal.
     var allowLayoutCaching: Bool = false
 
+    /// The depth in the view graph of the node that passes this environment on to its
+    /// children, 0 above a window's root view (dashwallet-desktop patch P8, see
+    /// `ModelObserverUpdateQueue`).
+    var viewGraphDepth: Int = 0
+
     /// Backing storage for observable subscript
     private var observableObjects: [ObjectIdentifier: any ObservableObject]
 
