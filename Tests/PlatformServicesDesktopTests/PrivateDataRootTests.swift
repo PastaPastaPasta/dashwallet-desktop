@@ -1,6 +1,6 @@
 import DashKit
 import Foundation
-import PlatformServices
+@testable import PlatformServices
 import PlatformServicesDesktop
 import Testing
 
@@ -74,17 +74,87 @@ import Testing
 
             let target = scratch.url.appendingPathComponent("target")
             try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
-            try Self.chmod(target, 0o755)
+            try Self.chmod(target, 0o775)
             let link = scratch.url.appendingPathComponent("link")
             try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
             #expect(try PrivateFileSystem.createOwnedDirectory(link) { _ in } == nil)
-            #expect(try Self.mode(target) == 0o755)
+            #expect(try Self.mode(target) == 0o775)
 
-            let settings = scratch.url.appendingPathComponent("settings.json")
-            try Data("{}".utf8).write(to: settings)
-            try Self.chmod(settings, 0o664)
-            try PrivateFileSystem.restrictFile(settings)
-            #expect(try Self.mode(settings) == 0o600)
+            // A symlink in an intermediate component of a chosen directory is
+            // followed; what it leads to keeps its mode.
+            try PrivateFileSystem.createDirectory(link.appendingPathComponent("below"))
+            #expect(try Self.mode(target) == 0o775)
+            #expect(try Self.mode(target.appendingPathComponent("below")) == 0o700)
+        }
+
+        /// Review D1-r2: the root is swapped for a symlink after it is opened,
+        /// before its mode is looked at. The directory that was opened is the
+        /// one restricted; the symlink's target is not touched.
+        @Test func aRootSwappedAfterItIsOpenedIsTheOneChanged() throws {
+            let scratch = try Scratch()
+            let root = scratch.url.appendingPathComponent("dashwallet")
+            let moved = scratch.url.appendingPathComponent("moved")
+            let outside = scratch.url.appendingPathComponent("outside")
+            for dir in [root, outside] {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+                try Self.chmod(dir, 0o775)
+            }
+            // The walked path: /private/var/... for /var/... on macOS.
+            let rootSuffix = "/\(scratch.url.lastPathComponent)/dashwallet"
+            try PrivateFileSystem.$opened.withValue({ path in
+                // The walk opens the root once.
+                guard path.hasSuffix(rootSuffix) else { return }
+                try? FileManager.default.moveItem(at: root, to: moved)
+                try? FileManager.default.createSymbolicLink(at: root, withDestinationURL: outside)
+            }) {
+                try PrivateFileSystem.createOwnedDirectory(root) { _ in }
+            }
+            #expect(try Self.mode(outside) == 0o775)
+            #expect(try Self.mode(moved) == 0o700)
+        }
+
+        /// A group member could have swapped anything below a group-writable
+        /// directory: nothing there is changed, and the log says so.
+        @Test func nothingChangesBelowADirectoryOthersCanWrite() throws {
+            let scratch = try Scratch()
+            let shared = scratch.url.appendingPathComponent("shared")
+            let root = shared.appendingPathComponent("dashwallet")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Self.chmod(shared, 0o775)
+            try Self.chmod(root, 0o775)
+            var logged: [String] = []
+            #expect(try PrivateFileSystem.createOwnedDirectory(root) { logged.append($0) } == nil)
+            #expect(try Self.mode(root) == 0o775)
+            #expect(logged.count == 1 && logged[0].contains("/shared/dashwallet at mode 0775"), "\(logged)")
+        }
+
+        @Test func filesAreWrittenOwnerOnlyAndReplacedOrRefused() throws {
+            let scratch = try Scratch()
+            let file = scratch.url.appendingPathComponent("transactions.csv")
+            try PrivateFileSystem.writeFile(Data("a".utf8), to: file, replacing: false)
+            #expect(try Self.mode(file) == 0o600)
+            #expect(throws: (any Error).self) {
+                try PrivateFileSystem.writeFile(Data("b".utf8), to: file, replacing: false)
+            }
+            #expect(try String(contentsOf: file, encoding: .utf8) == "a")
+
+            // Replacing an existing file the user chose: the new one is 0600,
+            // and no temp file is left.
+            try Self.chmod(file, 0o644)
+            try PrivateFileSystem.writeFile(Data("c".utf8), to: file, replacing: true)
+            #expect(try String(contentsOf: file, encoding: .utf8) == "c")
+            #expect(try Self.mode(file) == 0o600)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: scratch.url.path) == ["transactions.csv"])
+
+            // A symlink at a name that must be new is refused, not followed.
+            let target = scratch.url.appendingPathComponent("target")
+            try Data("theirs".utf8).write(to: target)
+            let link = scratch.url.appendingPathComponent("link.psbt")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+            #expect(throws: (any Error).self) {
+                try PrivateFileSystem.writeFile(Data("x".utf8), to: link, replacing: false)
+            }
+            #expect(try String(contentsOf: target, encoding: .utf8) == "theirs")
         }
 
         @Test func aFileInTheWayIsAnError() throws {
@@ -99,6 +169,20 @@ import Testing
     #endif
 
     #if os(Linux)
+        /// A parent the user may search but not read, as `/home` at 0711 on
+        /// some distributions, is walked through (O_PATH).
+        @Test func aSearchOnlyParentIsNoObstacle() throws {
+            let scratch = try Scratch()
+            let home = scratch.url.appendingPathComponent("home")
+            let root = home.appendingPathComponent("dashwallet")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Self.chmod(root, 0o775)
+            try Self.chmod(home, 0o311)
+            defer { try? Self.chmod(home, 0o700) }
+            try PrivateFileSystem.createOwnedDirectory(root) { _ in }
+            #expect(try Self.mode(root) == 0o700)
+        }
+
         /// Set to a scratch directory in the child process of the umask test.
         static let childVariable = "DWD_UMASK_CHILD_DIR"
 
@@ -169,6 +253,13 @@ import Testing
                 #expect(try Self.mode(root.appendingPathComponent("regtest")) == 0o700)
                 #expect(try Self.mode(root.appendingPathComponent("regtest/app.sqlite")) == 0o600)
             }
+            // Exports (CSV, PSBT) and settings, both ways of writing.
+            let exported = scratch.appendingPathComponent("transactions.csv")
+            try PrivateFileSystem.writeFile(Data("x".utf8), to: exported, replacing: true)
+            let psbt = scratch.appendingPathComponent("tx.psbt")
+            try PrivateFileSystem.writeFile(Data("x".utf8), to: psbt, replacing: false)
+            #expect(try Self.mode(exported) == 0o600)
+            #expect(try Self.mode(psbt) == 0o600)
             try Data("ok".utf8).write(to: scratch.appendingPathComponent("result"))
         }
     #endif

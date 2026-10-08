@@ -278,8 +278,8 @@ public final class SettingsStore: SettingsProviding, SessionObserving {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(value)
             try PrivateFileSystem.createDirectory(url.deletingLastPathComponent())
-            try data.write(to: url, options: .atomic)
-            try PrivateFileSystem.restrictFile(url)
+            // 0600 from creation: never published with the umask's mode.
+            try PrivateFileSystem.writeFile(data, to: url, replacing: true)
         } catch {
             throw ServiceError(code: .settingsWriteFailed, detail: "\(url.lastPathComponent): \(error)")
         }
