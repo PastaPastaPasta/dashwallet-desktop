@@ -404,7 +404,7 @@ final class FakeAuth: AuthenticationGating {
         guard encrypted else { return }
         switch purpose {
         case .revealSecret, .wipe, .changeCredential: throw ServiceError(code: .vaultCredentialRequired)
-        case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation: break
+        case .spend, .signMessage, .platformOperation: break
         }
         if lockState == .locked { throw ServiceError(code: .vaultLocked) }
         if lockState == .unlockedMixingOnly { throw ServiceError(code: .vaultMixingOnly) }

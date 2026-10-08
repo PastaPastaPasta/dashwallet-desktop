@@ -55,31 +55,29 @@ public final class NetworkInformationViewModel {
 
     private let provider: any NetworkStatisticsProviding
     private let sync: any SyncStatusProviding
-    private let masternodes: (any MasternodeListProviding)?
     private let amounts: any AmountFormatting
     private let settings: any SettingsProviding
     private var tasks: [Task<Void, Never>] = []
 
     public init(
-        provider: any NetworkStatisticsProviding, sync: any SyncStatusProviding,
-        masternodes: (any MasternodeListProviding)?, amounts: any AmountFormatting, settings: any SettingsProviding
+        provider: any NetworkStatisticsProviding, sync: any SyncStatusProviding, amounts: any AmountFormatting,
+        settings: any SettingsProviding
     ) {
         self.provider = provider
         self.sync = sync
-        self.masternodes = masternodes
         self.amounts = amounts
         self.settings = settings
     }
 
     public convenience init(env: AppEnvironment, m3: M3Services) {
         self.init(
-            provider: m3.networkStatistics, sync: env.sync, masternodes: m3.masternodes, amounts: env.amounts,
-            settings: env.settings)
+            provider: m3.networkStatistics, sync: env.sync, amounts: env.amounts, settings: env.settings)
     }
 
     private func amount(_ value: Amount) -> String { AmountText(amounts: amounts, settings: settings)(value) }
 
-    /// Loads, then re-reads on sync and masternode-list changes.
+    /// Loads, then re-reads on sync changes (the masternode list is a sync
+    /// phase).
     public func start() async {
         stop()
         await reload()
@@ -87,11 +85,6 @@ public final class NetworkInformationViewModel {
         tasks.append(Task { [weak self] in
             for await _ in syncChanges { await self?.reload() }
         })
-        if let changes = masternodes?.changes() {
-            tasks.append(Task { [weak self] in
-                for await _ in changes { await self?.reload() }
-            })
-        }
     }
 
     public func stop() {

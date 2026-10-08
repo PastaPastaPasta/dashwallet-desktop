@@ -87,7 +87,7 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
             switch purpose {
             case .revealSecret, .changeCredential, .wipe:
                 return ask
-            case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation:
+            case .spend, .signMessage, .platformOperation:
                 return requireAuthenticationForEveryPayment ? ask : .none
             }
         }

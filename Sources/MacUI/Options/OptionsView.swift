@@ -434,12 +434,6 @@ private struct DisplayOptionsTab: View {
                     }
                 }
             }
-            MenuCard {
-                ToggleRow(icon: .token(.masternodeKeys), title: L10n.Options.showMasternodesTab, isOn: $options.display.showMasternodesTab)
-                ToggleRow(icon: .token(.voting), title: L10n.Options.showGovernanceTab, isOn: $options.display.showGovernanceTab)
-                ToggleRow(title: L10n.Options.showGovernanceClock, isOn: $options.display.showGovernanceClock)
-                    .disabled(!options.display.showGovernanceTab)
-            }
             MenuCard(title: L10n.Options.thirdPartyTxURLs, footer: MacStrings.Options.thirdPartyHelp) {
                 TextField(L10n.Options.thirdPartyTxURLs, text: $options.display.thirdPartyTxURLs)
                     .textFieldStyle(.dash)

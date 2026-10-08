@@ -205,7 +205,7 @@ struct CoinJoinViewModelTests {
 
     @Test func QT041_notImplementedEngineShowsUnavailable() async {
         let panel = CoinJoinPanelViewModel(
-            env: world.environment(), m2: m2.services, m3: M3Services.unavailable(network: .testnet))
+            env: world.environment(), m2: m2.services, m3: M3Services.unavailable())
         await panel.reload()
         #expect(panel.phase == .unavailable)
         #expect(panel.isVisible)
@@ -276,7 +276,7 @@ struct CoinJoinViewModelTests {
 
     @Test func QT046_engineWithoutCoinJoinLeavesTheTabUnavailable() async {
         let options = OptionsViewModel(
-            env: world.environment(), m2: m2.services, m3: M3Services.unavailable(network: .testnet))
+            env: world.environment(), m2: m2.services, m3: M3Services.unavailable())
         await options.load()
         #expect(!options.coinJoinAvailable)
         #expect(options.errorMessage == nil)

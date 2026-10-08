@@ -158,8 +158,6 @@ extension GrantPurpose {
         case .signMessage: self = .signMessage
         case .changeCredential: self = .changeCredential
         case .wipe: self = .wipe
-        case .masternodeOperation: self = .masternodeOperation
-        case .governance: self = .governance
         case .platformOperation: self = .platformOperation
         }
     }
@@ -171,8 +169,6 @@ extension GrantPurpose {
         case .signMessage: .signMessage
         case .changeCredential: .changeCredential
         case .wipe: .wipe
-        case .masternodeOperation: .masternodeOperation
-        case .governance: .governance
         case .platformOperation: .platformOperation
         }
     }

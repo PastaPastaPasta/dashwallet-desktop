@@ -1,8 +1,7 @@
-// Dash Core constants the M3 engine calls `coinjoin_limits`,
-// `governance_params` and `masternode_network_defaults` return (m3-engine.md
-// §2; dw-coinjoin `denoms`/`settings`, dw-governance `params`, dw-protx
-// `params`). Used where no engine adapter answers yet (the placeholder
-// services and demo mode), so those values never drift from Core's.
+// Dash Core constants the M3 engine call `coinjoin_limits` returns
+// (m3-engine.md §2.1; dw-coinjoin `denoms`/`settings`). Used where no engine
+// adapter answers (the placeholder services and demo mode), so those values
+// never drift from Core's.
 import Foundation
 import WalletRuntime
 
@@ -18,36 +17,6 @@ public enum M3Defaults {
         ],
         minimumMixingBalance: Amount(duffs: coin / 1_000 + 1 + 40_000), rounds: 2...16, sessions: 1...10,
         targetAmountDash: 2...21_000_000, denoms: 10...100_000, defaults: .dashQtDefaults)
-
-    /// `governance_params(network)`.
-    public static func governanceParameters(_ network: DashNetwork) -> GovernanceParameters {
-        let (start, cycle, window, quorum): (UInt32, UInt32, UInt32, Int)
-        switch network {
-        case .mainnet: (start, cycle, window, quorum) = (614_820, 16_616, 1_662, 10)
-        case .testnet, .devnet: (start, cycle, window, quorum) = (4_200, 24, 8, 1)
-        case .regtest: (start, cycle, window, quorum) = (1_500, 20, 10, 1)
-        }
-        return GovernanceParameters(
-            superblockStartHeight: start, superblockCycle: cycle, maturityWindow: window, minQuorum: quorum,
-            proposalFee: Amount(duffs: coin), feeConfirmations: 6, maxNameLength: 40, maxPayloadBytes: 512,
-            maxPayments: 12, evonodeVoteWeight: 4, voteUpdateMinimum: .seconds(3_600), targetSpacing: .seconds(150))
-    }
-
-    /// `masternode_network_defaults(network)`.
-    public static func masternodeDefaults(_ network: DashNetwork) -> MasternodeNetworkDefaults {
-        let (core, p2p, https): (UInt16, UInt16, UInt16)
-        switch network {
-        case .mainnet: (core, p2p, https) = (9_999, 26_656, 443)
-        case .testnet: (core, p2p, https) = (19_999, 22_000, 22_001)
-        case .devnet: (core, p2p, https) = (19_799, 22_100, 22_101)
-        case .regtest: (core, p2p, https) = (19_899, 22_200, 22_201)
-        }
-        return MasternodeNetworkDefaults(
-            coreP2PPort: core, platformP2PPort: p2p, platformHTTPSPort: https,
-            masternodeCollateral: Amount(duffs: 1_000 * coin), evonodeCollateral: Amount(duffs: 4_000 * coin),
-            shares: 2...8, minimumShareAmount: Amount(duffs: 100 * coin), maxEarlyPeriodBlocks: 420_480,
-            maxEnvelopeBytes: 2 * 1_024 * 1_024, maxOperatorRewardX100: 10_000)
-    }
 
     /// The `set_coinjoin_settings` range check (dw-coinjoin
     /// `CoinJoinSettings::validate`): the field that is out of range, or

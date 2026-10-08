@@ -2,11 +2,12 @@
 import Foundation
 import WalletRuntime
 
-/// Sidebar sections in display order. CoinJoin, Masternodes, Governance,
-/// Contacts and Explore arrive with later milestones and stay hidden until
-/// their feature flag is on.
+/// Sidebar sections in display order. CoinJoin, Contacts and Explore arrive
+/// with later milestones and stay hidden until their feature flag is on.
+/// Masternodes and Governance stay in Dash Core (repo CLAUDE.md "Product
+/// scope").
 public enum SidebarItem: String, Sendable, Hashable, CaseIterable, Identifiable {
-    case overview, send, receive, transactions, coinJoin, masternodes, governance, contacts, explore
+    case overview, send, receive, transactions, coinJoin, contacts, explore
 
     public var id: String { rawValue }
 
@@ -15,8 +16,6 @@ public enum SidebarItem: String, Sendable, Hashable, CaseIterable, Identifiable 
         switch self {
         case .overview, .send, .receive, .transactions: true
         case .coinJoin: features.coinJoin
-        case .masternodes: features.masternodes
-        case .governance: features.governance
         case .contacts: features.contacts
         case .explore: features.explore
         }
@@ -29,8 +28,6 @@ public enum SidebarItem: String, Sendable, Hashable, CaseIterable, Identifiable 
         case .receive: L10n.Navigation.receive
         case .transactions: L10n.Navigation.transactions
         case .coinJoin: L10n.Navigation.coinJoin
-        case .masternodes: L10n.Navigation.masternodes
-        case .governance: L10n.Navigation.governance
         case .contacts: L10n.Navigation.contacts
         case .explore: L10n.Navigation.explore
         }
@@ -50,25 +47,18 @@ public enum SidebarItem: String, Sendable, Hashable, CaseIterable, Identifiable 
 /// Sections that later milestones switch on. All are off in M1.
 public struct FeatureFlags: Sendable, Hashable {
     public var coinJoin: Bool
-    public var masternodes: Bool
-    public var governance: Bool
     public var contacts: Bool
     public var explore: Bool
 
-    public init(
-        coinJoin: Bool = false, masternodes: Bool = false, governance: Bool = false, contacts: Bool = false,
-        explore: Bool = false
-    ) {
+    public init(coinJoin: Bool = false, contacts: Bool = false, explore: Bool = false) {
         self.coinJoin = coinJoin
-        self.masternodes = masternodes
-        self.governance = governance
         self.contacts = contacts
         self.explore = explore
     }
 
     public static let m1 = FeatureFlags()
-    /// CoinJoin, Masternodes and Governance (M3).
-    public static let m3 = FeatureFlags(coinJoin: true, masternodes: true, governance: true)
+    /// CoinJoin (M3).
+    public static let m3 = FeatureFlags(coinJoin: true)
 }
 
 /// Navigation requests view models raise; the UI layer performs them.

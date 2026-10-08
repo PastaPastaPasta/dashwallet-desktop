@@ -1,83 +1,32 @@
 // M3 demo state over the demo world: CoinJoin options and per-wallet mixing,
-// a sample masternode list (two masternodes and a share owned by the sample
-// wallet), sample proposals with tallies, votes cast in this run, pending
-// proposals, tracked masternodes and shared sessions. The rules are the
-// engine's (m3-engine.md §2): option ranges, the 0.00140001 DASH minimum,
-// the vault states mixing accepts, the 1-hour vote rule, the proposal field
-// rules, the last-4 gate before a registration is sent, ≤ 100 keys per call,
-// 2 MiB envelopes. Calls whose engine work builds transactions the demo
-// cannot make (move mixed coins, the multi-party shared broadcast, standby
-// dissolutions) and the Platform calls answer `not_implemented`.
+// the Network sub-tab's statistics and the masternode keychain. The rules
+// are the engine's (m3-engine.md §2): option ranges, the 0.00140001 DASH
+// minimum, the vault states mixing accepts, ≤ 100 keys per call and the
+// `RevealSecret` grant of a key reveal. "Move mixed coins" builds
+// transactions the demo cannot make and answers `not_implemented`.
 import Foundation
 import WalletFeatures
 import WalletRuntime
 
-/// One sample masternode and what the demo knows about it.
-struct DemoMasternode: Sendable {
-    var row: MasternodeRow
-    var detail: MasternodeDetail
-    /// The demo wallet holds its voting key (it can vote with it).
-    var votingKeyInWallet: Bool
-}
-
-/// A vote this run cast: per proposal and masternode.
-struct DemoVote: Sendable {
-    let outcome: VoteOutcome
-    let time: Date
-}
-
-struct DemoProposal: Sendable {
-    var row: ProposalRow
-    var parentHash: String
-    var collateralTxid: String
-    var createdAt: Date
-    var payments: Int
-    var mine: Bool
-}
-
-struct DemoPendingProposal: Sendable {
-    var proposal: PendingProposal
-    var draft: ProposalDraft
-    /// The collateral's height: confirmations follow the demo's block clock.
-    var createdAt: Date
-}
-
 @MainActor
 final class DemoM3World {
     let world: DemoWorld
-    let m2: DemoM2World
     let startedAt: Date
 
     var coinJoinSettings: [DashNetwork: CoinJoinSettings] = [:]
     var mixingSince: [WalletID: Date] = [:]
     var stopReasons: [WalletID: CoinJoinStopReason] = [:]
     var salts: [WalletID: String] = [:]
-    var governanceSyncOn = false
-    var masternodes: [DemoMasternode] = []
-    var proposals: [DemoProposal] = []
-    var votes: [String: [String: DemoVote]] = [:]
-    var pending: [WalletID: [DemoPendingProposal]] = [:]
-    var tracked: [String: (label: String?, attached: [MasternodeKeyRole: String])] = [:]
-    var sharedSessions: [String: SharedSessionInfo] = [:]
-    var registrations: [UUID: (summary: RegistrationSummary, secret: String?, gateOpen: Bool, wallet: WalletID)] = [:]
-    var providerTransactions: [UUID: (ProviderTransactionSummary, DemoProviderEffect)] = [:]
 
     nonisolated let coinJoinChanges = DemoBroadcaster<WalletID>()
-    nonisolated let governanceChanges = DemoBroadcaster<Void>()
-    nonisolated let masternodeChanges = DemoBroadcaster<Void>()
     nonisolated let network: DashNetwork
 
-    init(world: DemoWorld, m2: DemoM2World) {
+    init(world: DemoWorld) {
         self.world = world
-        self.m2 = m2
         network = world.network
         startedAt = world.now()
-        let sample = DemoM3Sample(network: network, now: startedAt)
-        masternodes = sample.masternodes
-        proposals = sample.proposals
     }
 
-    var parameters: GovernanceParameters { M3Defaults.governanceParameters(network) }
     var tip: UInt32 { world.sync.tipHeight ?? DemoLedger.tipHeight }
 
     func wallet(_ id: WalletID) throws(ServiceError) -> WalletInfo {
@@ -132,9 +81,12 @@ final class DemoM3World {
         let progress = Self.progress(
             anonymizable: anonymizable, denominated: denominated, normalized: normalized, fullyMixed: fullyMixed,
             target: target, rounds: settings.rounds, averageRounds: isSample ? roundsDone : 0)
+        var rng = DemoRandom(text: "cj-session|" + network.description)
+        let port = network == .mainnet ? 9_999 : 19_999
         let sessions: [CoinJoinSessionInfo] = mixing
             ? [CoinJoinSessionInfo(
-                proTxHash: masternodes.first?.row.proTxHash, service: masternodes.first?.row.service,
+                proTxHash: rng.hex(bytes: 32),
+                service: "\(34 + rng.next() % 9).\(rng.next() % 200 + 20).\(rng.next() % 250).\(rng.next() % 250):\(port)",
                 denomination: limits.denominations[2], state: .queue, entries: 1, lastMessage: .entriesAdded)]
             : []
         return CoinJoinStatus(
@@ -235,21 +187,60 @@ final class DemoM3World {
 
     // MARK: Network statistics
 
+    /// A mainnet-sized sample list (the demo has no masternode list).
     func statistics() -> NetworkStatistics {
-        let rows = masternodes.map(\.row)
-        func count(_ type: MasternodeType) -> MasternodeCount {
-            let typed = rows.filter { $0.type == type }
-            return MasternodeCount(
-                total: typed.count,
-                enabled: typed.filter { if case .active = $0.status { return true } else { return false } }.count)
-        }
+        var rng = DemoRandom(text: "chainlock|\(tip)")
         return NetworkStatistics(
-            creditPool: nil, instantSend: nil, masternodes: count(.regular), evonodes: count(.evo),
-            bestChainLock: ChainLockInfo(height: tip, blockHash: DemoM3Sample.hash("chainlock|\(tip)"), blockDate: world.now()),
+            creditPool: nil, instantSend: nil, masternodes: MasternodeCount(total: 2_120, enabled: 2_034),
+            evonodes: MasternodeCount(total: 152, enabled: 149),
+            bestChainLock: ChainLockInfo(height: tip, blockHash: rng.hex(bytes: 32), blockDate: world.now()),
             quorums: [
                 QuorumSummary(name: "llmq_50_60", type: 1, active: 24, healthPercent: 98.4, rotated: false),
                 QuorumSummary(name: "llmq_60_75", type: 5, active: 32, healthPercent: 97.1, rotated: true),
                 QuorumSummary(name: "llmq_100_67", type: 4, active: 24, healthPercent: nil, rotated: false),
             ])
+    }
+
+    // MARK: Masternode keychain
+
+    /// Derived provider keys of the wallet (public data), ≤ 100 per call;
+    /// platform node keys stop at the 20 the engine pre-derives.
+    func keys(_ wallet: WalletID, role: MasternodeKeyRole, range: Range<UInt32>) throws(ServiceError) -> [MasternodeKeyInfo] {
+        guard range.count <= 100 else { throw .demo(.invalidArgument, "count > 100") }
+        let info = try self.wallet(wallet)
+        guard !info.watchOnly else { throw .demo(.masternodeWatchOnly) }
+        let coin = network == .mainnet ? 5 : 1
+        let account: Int =
+            switch role {
+            case .voting: 1
+            case .owner: 2
+            case .operator: 3
+            case .platformNode: 4
+            }
+        let indexes = role == .platformNode ? range.clamped(to: 0..<20) : range
+        return indexes.map { index in
+            var rng = DemoRandom(text: "mnkey|\(wallet.hex)|\(role)|\(index)")
+            let isSecp = role == .owner || role == .voting
+            return MasternodeKeyInfo(
+                role: role, index: index,
+                derivationPath: "m/9'/\(coin)'/3'/\(account)'/\(index)" + (role == .platformNode ? "'" : ""),
+                address: isSecp ? rng.address(on: network) : nil,
+                publicKeyHex: role == .operator ? rng.hex(bytes: 48) : role == .platformNode ? rng.hex(bytes: 32) : "02" + rng.hex(bytes: 32),
+                legacyPublicKeyHex: role == .operator ? rng.hex(bytes: 48) : nil,
+                platformNodeID: role == .platformNode ? rng.hex(bytes: 20) : nil)
+        }
+    }
+
+    func revealKey(_ wallet: WalletID, role: MasternodeKeyRole, index: UInt32, grant: AuthGrant) throws(ServiceError)
+        -> RevealedMasternodeKey
+    {
+        try world.check(grant, .revealSecret, wallet: wallet, refuse: .masternode, locked: .masternodeVaultLocked)
+        try world.redeem(grant, .revealSecret, wallet: wallet, refuse: .masternode)
+        var rng = DemoRandom(text: "mnpriv|\(wallet.hex)|\(role)|\(index)")
+        let key = rng.hex(bytes: 32)
+        return RevealedMasternodeKey(
+            privateKeyHex: DemoSecret(utf8: key),
+            wif: role == .owner || role == .voting ? DemoSecret(utf8: "c" + DemoAddress.base58(rng.bytes(37))) : nil,
+            tenderdashKey: role == .platformNode ? DemoSecret(utf8: key + rng.hex(bytes: 32)) : nil)
     }
 }

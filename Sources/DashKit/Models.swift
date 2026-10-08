@@ -160,10 +160,6 @@ public enum EngineEvent: Sendable, Hashable {
     /// M3: the wallet's mixing status changed; re-query `coinjoin_status`
     /// (m3-engine.md §3).
     case coinJoinChanged(DashNetwork, WalletID)
-    /// M3: governance sync, objects, votes or pending proposals changed.
-    case governanceChanged(DashNetwork)
-    /// M3: the masternode list, owned detection or tracked masternodes changed.
-    case masternodesChanged(DashNetwork)
     /// Not from the engine: `EventBus` dropped signals for a slow consumer.
     /// Re-query everything (sync, balances, history, wallets).
     case resynchronize
@@ -187,8 +183,6 @@ public enum EngineEvent: Sendable, Hashable {
         case .walletLoadChanged(let n, let id, let loaded):
             self = .walletLoadChanged(DashNetwork(n), WalletID(engine: id), loaded: loaded)
         case .coinJoin(let n, let id): self = .coinJoinChanged(DashNetwork(n), WalletID(engine: id))
-        case .governance(let n): self = .governanceChanged(DashNetwork(n))
-        case .masternodes(let n): self = .masternodesChanged(DashNetwork(n))
         }
     }
 
@@ -198,8 +192,7 @@ public enum EngineEvent: Sendable, Hashable {
         case .sessionOpened(let n), .sessionClosed(let n), .walletCreated(let n, _),
              .spvStateChanged(let n, _), .syncChanged(let n), .balancesChanged(let n, _), .historyChanged(let n, _, _),
              .walletRemoved(let n, _), .lockStateChanged(let n), .newTransactions(let n, _, _, _),
-             .walletLoadChanged(let n, _, _), .coinJoinChanged(let n, _), .governanceChanged(let n),
-             .masternodesChanged(let n):
+             .walletLoadChanged(let n, _, _), .coinJoinChanged(let n, _):
             n
         case .notice(let n, _, _):
             n
@@ -216,8 +209,7 @@ public enum EngineEvent: Sendable, Hashable {
         case .sessionOpened, .sessionClosed, .walletCreated, .walletRemoved, .spvStateChanged, .lockStateChanged,
              .notice, .newTransactions, .walletLoadChanged:
             true
-        case .syncChanged, .balancesChanged, .historyChanged, .coinJoinChanged, .governanceChanged,
-             .masternodesChanged, .resynchronize:
+        case .syncChanged, .balancesChanged, .historyChanged, .coinJoinChanged, .resynchronize:
             false
         }
     }

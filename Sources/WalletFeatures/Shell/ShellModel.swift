@@ -179,14 +179,8 @@ public final class ShellModel {
 
     /// Visible sidebar sections in order; Cmd/Alt+1…N follow it (QT-012).
     public var sections: [SidebarItem] {
-        let options = desktopPreferences.desktop.options
-        return SidebarItem.visible(with: features).filter { item in
-            switch item {
-            case .masternodes: options.showMasternodesTab
-            case .governance: options.showGovernanceTab
-            case .coinJoin: coinJoinEnabled
-            default: true
-            }
+        SidebarItem.visible(with: features).filter { item in
+            item != .coinJoin || coinJoinEnabled
         }
     }
 

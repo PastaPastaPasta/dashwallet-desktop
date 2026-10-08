@@ -178,8 +178,6 @@ public enum GrantPurpose: Sendable, Hashable {
     case signMessage
     case changeCredential
     case wipe
-    case masternodeOperation
-    case governance
     case platformOperation
 
     init(_ ffi: DashWalletCore.GrantPurpose) throws(DashKitError) {
@@ -189,8 +187,6 @@ public enum GrantPurpose: Sendable, Hashable {
         case .signMessage: self = .signMessage
         case .changeCredential: self = .changeCredential
         case .wipe: self = .wipe
-        case .masternodeOp: self = .masternodeOperation
-        case .governance: self = .governance
         case .platformOp: self = .platformOperation
         }
     }
@@ -202,8 +198,6 @@ public enum GrantPurpose: Sendable, Hashable {
         case .signMessage: .signMessage
         case .changeCredential: .changeCredential
         case .wipe: .wipe
-        case .masternodeOperation: .masternodeOp
-        case .governance: .governance
         case .platformOperation: .platformOp
         }
     }

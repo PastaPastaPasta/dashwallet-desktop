@@ -1,6 +1,6 @@
 // dash-qt status bar (QT-020…025): sync text and progress on the left; unit
 // selector, HD, lock, connections and sync state on the right. Items with
-// no view-model data (proxy, governance clock) are left out.
+// no view-model data (proxy) are left out.
 #if os(macOS)
 import DashUIMac
 import SwiftUI

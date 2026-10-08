@@ -41,13 +41,12 @@ struct DemoGrant: Sendable {
 
 /// The grant kinds `redeem` checks for (the engine's `GrantKind`).
 enum DemoGrantKind: Sendable {
-    case spend, revealSecret, signMessage, changeCredential, wipe, masternodeOperation, governance
+    case spend, revealSecret, signMessage, changeCredential, wipe
 
     func matches(_ purpose: GrantPurpose) -> Bool {
         switch (self, purpose) {
         case (.spend, .spend), (.revealSecret, .revealSecret), (.signMessage, .signMessage),
-            (.changeCredential, .changeCredential), (.wipe, .wipe), (.masternodeOperation, .masternodeOperation),
-            (.governance, .governance):
+            (.changeCredential, .changeCredential), (.wipe, .wipe):
             true
         default:
             false
@@ -66,7 +65,6 @@ struct DemoGrantRefusal: Sendable {
     static let message = DemoGrantRefusal(invalid: .messageGrantInvalid, mismatch: .messageGrantInvalid)
     static let wallet = DemoGrantRefusal(invalid: .walletGrantInvalid, mismatch: .walletGrantInvalid)
     static let coinJoin = DemoGrantRefusal(invalid: .coinjoinGrantInvalid, mismatch: .coinjoinGrantInvalid)
-    static let governance = DemoGrantRefusal(invalid: .governanceGrantInvalid, mismatch: .governanceGrantInvalid)
     static let masternode = DemoGrantRefusal(invalid: .masternodeGrantInvalid, mismatch: .masternodeGrantInvalid)
 }
 
@@ -392,7 +390,7 @@ final class DemoWorld {
         let sensitive: Bool
         switch purpose {
         case .revealSecret, .changeCredential, .wipe: sensitive = true
-        case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation: sensitive = false
+        case .spend, .signMessage, .platformOperation: sensitive = false
         }
         var ownKey = false
         switch vault.state {

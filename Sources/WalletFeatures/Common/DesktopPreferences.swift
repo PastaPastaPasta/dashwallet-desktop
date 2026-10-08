@@ -54,12 +54,6 @@ public struct DesktopOptions: Sendable, Hashable, Codable {
     public var keepCustomChangeAddress: Bool
     /// `sCustomChangeAddress`, kept while `keepCustomChangeAddress` is on.
     public var customChangeAddress: String?
-    /// `fShowMasternodesTab` (default off).
-    public var showMasternodesTab: Bool
-    /// `fShowGovernanceTab` (default off).
-    public var showGovernanceTab: Bool
-    /// `show_governance_clock` (default off).
-    public var showGovernanceClock: Bool
     /// `strThirdPartyTxUrls`: `|`-separated, `%s` = txid (default empty).
     public var thirdPartyTxURLs: String
     /// ISO 4217 code; `nil` follows the OS locale (IOS-104).
@@ -67,8 +61,7 @@ public struct DesktopOptions: Sendable, Hashable, Codable {
 
     public init(
         subtractFeeByDefault: Bool = false, coinControl: Bool = false, psbtControls: Bool = false,
-        keepCustomChangeAddress: Bool = false, customChangeAddress: String? = nil, showMasternodesTab: Bool = false,
-        showGovernanceTab: Bool = false, showGovernanceClock: Bool = false, thirdPartyTxURLs: String = "",
+        keepCustomChangeAddress: Bool = false, customChangeAddress: String? = nil, thirdPartyTxURLs: String = "",
         localCurrency: String? = nil
     ) {
         self.subtractFeeByDefault = subtractFeeByDefault
@@ -76,9 +69,6 @@ public struct DesktopOptions: Sendable, Hashable, Codable {
         self.psbtControls = psbtControls
         self.keepCustomChangeAddress = keepCustomChangeAddress
         self.customChangeAddress = customChangeAddress
-        self.showMasternodesTab = showMasternodesTab
-        self.showGovernanceTab = showGovernanceTab
-        self.showGovernanceClock = showGovernanceClock
         self.thirdPartyTxURLs = thirdPartyTxURLs
         self.localCurrency = localCurrency
     }
@@ -93,9 +83,6 @@ public struct DesktopOptions: Sendable, Hashable, Codable {
         keepCustomChangeAddress =
             try c.decodeIfPresent(Bool.self, forKey: .keepCustomChangeAddress) ?? d.keepCustomChangeAddress
         customChangeAddress = try c.decodeIfPresent(String.self, forKey: .customChangeAddress)
-        showMasternodesTab = try c.decodeIfPresent(Bool.self, forKey: .showMasternodesTab) ?? d.showMasternodesTab
-        showGovernanceTab = try c.decodeIfPresent(Bool.self, forKey: .showGovernanceTab) ?? d.showGovernanceTab
-        showGovernanceClock = try c.decodeIfPresent(Bool.self, forKey: .showGovernanceClock) ?? d.showGovernanceClock
         thirdPartyTxURLs = try c.decodeIfPresent(String.self, forKey: .thirdPartyTxURLs) ?? d.thirdPartyTxURLs
         localCurrency = try c.decodeIfPresent(String.self, forKey: .localCurrency)
     }
@@ -131,7 +118,7 @@ public struct DesktopPreferences: Sendable, Hashable, Codable {
     public var shortcuts: [ShortcutAction]?
     /// `consoleFontSize`, 4...40 pt.
     public var consoleFontSize: Int
-    /// CoinJoin, Masternodes and shared-masternode values (M3).
+    /// CoinJoin values (M3).
     public var m3: M3Preferences
 
     public init(

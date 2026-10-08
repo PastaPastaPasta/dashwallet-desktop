@@ -29,8 +29,6 @@ extension L10n {
         public static let receive = "Receive"
         public static let transactions = "Transactions"
         public static let coinJoin = "CoinJoin"
-        public static let masternodes = "Masternodes"
-        public static let governance = "Governance"
         public static let contacts = "Contacts"
         public static let explore = "Explore"
         public static let appName = "Dash Wallet"

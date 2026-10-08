@@ -126,7 +126,7 @@ struct MainSplitView: View {
                 if let receive = main.receive { ReceiveScreen(model: receive, state: state) }
             case .transactions:
                 if let transactions = state.transactions() { TransactionsScreen(model: transactions, state: state) }
-            case .coinJoin, .masternodes, .governance, .contacts, .explore:
+            case .coinJoin, .contacts, .explore:
                 Page(main.selection.title) {
                     DashCard { EmptyState(icon: Sidebar.icon(main.selection), title: L10n.Common.notAvailableYet) }
                 }
@@ -258,8 +258,6 @@ struct Sidebar: View {
         case .receive: .arrowDown
         case .transactions: .votingList
         case .coinJoin: .coinjoinShuffle
-        case .masternodes: .tabMore
-        case .governance: .voting
         case .contacts: .tabContacts
         case .explore: .tabExplore
         }

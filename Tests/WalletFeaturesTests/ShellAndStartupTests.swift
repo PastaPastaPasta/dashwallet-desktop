@@ -40,18 +40,12 @@ struct ShellAndStartupTests {
         #expect(m2.desktopPreferences.updates == 1)
     }
 
-    @Test func QT012_sectionsFollowFeaturesAndTabOptions() async {
-        let features = FeatureFlags(masternodes: true, governance: true)
-        let shell = makeShell(features: features)
-        #expect(shell.sections == [.overview, .send, .receive, .transactions])
-        m2.desktopPreferences.desktop.options.showMasternodesTab = true
-        #expect(shell.sections == [.overview, .send, .receive, .transactions, .masternodes])
+    @Test func QT012_sectionsFollowFeatures() async {
+        #expect(makeShell(features: .m1).sections == [.overview, .send, .receive, .transactions])
+        let shell = makeShell(features: FeatureFlags(contacts: true))
+        #expect(shell.sections == [.overview, .send, .receive, .transactions, .contacts])
         await shell.selectShortcut(5)
-        #expect(shell.selection == .masternodes)
-        // Hiding the active tab jumps to Overview (dash-qt).
-        m2.desktopPreferences.desktop.options.showMasternodesTab = false
-        shell.optionsChanged()
-        #expect(shell.selection == .overview)
+        #expect(shell.selection == .contacts)
     }
 
     @Test func QT021_QT022_hdIconAndLockIcon() async {

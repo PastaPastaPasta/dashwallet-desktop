@@ -148,7 +148,7 @@ struct MainWindowView: View {
             } else {
                 LoadingPage()
             }
-        case .coinJoin, .masternodes, .governance, .contacts, .explore:
+        case .coinJoin, .contacts, .explore:
             // Hidden in M1 (FeatureFlags.m1); not reachable from the sidebar.
             LoadingPage()
         }
@@ -290,8 +290,6 @@ struct Sidebar: View {
         case .receive: .system("arrow.down.left")
         case .transactions: .system("list.bullet.rectangle")
         case .coinJoin: .system("shuffle")
-        case .masternodes: .system("server.rack")
-        case .governance: .system("checkmark.seal")
         case .contacts: .system("person.2")
         case .explore: .system("map")
         }

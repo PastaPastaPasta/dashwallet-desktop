@@ -114,11 +114,9 @@ struct OptionsViewModelTests {
         let m2 = FakeM2World()
         let model = make(m2)
         await model.load()
-        model.display.showGovernanceTab = true
         model.display.thirdPartyTxURLs = "https://example.com/tx/%s"
         model.display.languageCode = "en"
         try await model.apply()
-        #expect(m2.desktopPreferences.desktop.options.showGovernanceTab)
         #expect(m2.desktopPreferences.desktop.options.thirdPartyTxURLs == "https://example.com/tx/%s")
         #expect(model.restartRequired)
         #expect(L10n.Options.languageName(nil) == "(Default)")

@@ -42,9 +42,7 @@ public enum GrantPurpose: Sendable, Hashable {
     case signMessage
     case changeCredential
     case wipe
-    /// M3/M4 purposes, listed so the enum matches the engine's.
-    case masternodeOperation
-    case governance
+    /// The M4 purpose, listed so the enum matches the engine's.
     case platformOperation
 }
 

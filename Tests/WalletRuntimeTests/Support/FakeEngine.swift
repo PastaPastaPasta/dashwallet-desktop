@@ -285,7 +285,7 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         let sensitive: Bool
         switch purpose {
         case .revealSecret, .wipe, .changeCredential: sensitive = true
-        case .spend, .signMessage, .masternodeOperation, .governance, .platformOperation: sensitive = false
+        case .spend, .signMessage, .platformOperation: sensitive = false
         }
         switch credential {
         case .quickUnlock:

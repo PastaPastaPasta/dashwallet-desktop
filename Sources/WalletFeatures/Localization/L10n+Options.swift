@@ -37,9 +37,6 @@ extension L10n {
         public static let languageDefault = "(Default)"
         public static let unit = "Unit to show amounts in:"
         public static let decimalDigits = "Decimal digits"
-        public static let showMasternodesTab = "Show Masternodes Tab"
-        public static let showGovernanceTab = "Show Governance Tab"
-        public static let showGovernanceClock = "Show governance clock"
         public static let thirdPartyTxURLs = "Third-party transaction URLs"
         public static let localCurrency = "Local currency"
 

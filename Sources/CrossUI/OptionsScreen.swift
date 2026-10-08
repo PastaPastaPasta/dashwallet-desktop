@@ -185,15 +185,6 @@ struct OptionsScreen: View {
             L10n.Options.decimalDigits,
             options: OptionsViewModel.decimalDigitsRange.map { PickerOption($0, "\($0)") },
             selection: bind({ model.display.decimalDigits }, { model.display.decimalDigits = $0 }))
-        DashToggle(
-            L10n.Options.showMasternodesTab,
-            isOn: bind({ model.display.showMasternodesTab }, { model.display.showMasternodesTab = $0 }))
-        DashToggle(
-            L10n.Options.showGovernanceTab,
-            isOn: bind({ model.display.showGovernanceTab }, { model.display.showGovernanceTab = $0 }))
-        DashToggle(
-            L10n.Options.showGovernanceClock,
-            isOn: bind({ model.display.showGovernanceClock }, { model.display.showGovernanceClock = $0 }))
         DashTextField(
             L10n.Options.thirdPartyTxURLs, placeholder: CrossStrings.thirdPartyPlaceholder,
             text: bind({ model.display.thirdPartyTxURLs }, { model.display.thirdPartyTxURLs = $0 }))

@@ -127,9 +127,9 @@ struct MainViewModelTests {
         #expect(SidebarItem.visible(with: .m1) == [.overview, .send, .receive, .transactions])
         #expect(SidebarItem.transactions.shortcutNumber(with: .m1) == 4)
         #expect(SidebarItem.coinJoin.shortcutNumber(with: .m1) == nil)
-        let withCoinJoin = FeatureFlags(coinJoin: true, governance: true)
-        #expect(SidebarItem.visible(with: withCoinJoin) == [.overview, .send, .receive, .transactions, .coinJoin, .governance])
-        #expect(SidebarItem.governance.shortcutNumber(with: withCoinJoin) == 6)
+        let withCoinJoin = FeatureFlags(coinJoin: true, contacts: true)
+        #expect(SidebarItem.visible(with: withCoinJoin) == [.overview, .send, .receive, .transactions, .coinJoin, .contacts])
+        #expect(SidebarItem.contacts.shortcutNumber(with: withCoinJoin) == 6)
         #expect(SidebarItem.overview.title == "Overview")
     }
 

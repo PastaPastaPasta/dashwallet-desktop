@@ -61,9 +61,6 @@ public struct DisplayOptions: Sendable, Hashable {
     public var languageCode: String?
     public var unit: DisplayUnit
     public var decimalDigits: Int
-    public var showMasternodesTab: Bool
-    public var showGovernanceTab: Bool
-    public var showGovernanceClock: Bool
     public var thirdPartyTxURLs: String
     /// ISO 4217; `nil` follows the OS locale. A list only until rates (M5).
     public var localCurrency: String?
@@ -241,9 +238,8 @@ public final class OptionsViewModel {
                 dustProtectionEnabled: false, dustThreshold: Self.defaultDustThreshold, automaticBackups: 10),
             display: DisplayOptions(
                 languageCode: preferences.preferences.languageCode, unit: settings.display.unit,
-                decimalDigits: settings.display.decimalDigits, showMasternodesTab: options.showMasternodesTab,
-                showGovernanceTab: options.showGovernanceTab, showGovernanceClock: options.showGovernanceClock,
-                thirdPartyTxURLs: options.thirdPartyTxURLs, localCurrency: options.localCurrency),
+                decimalDigits: settings.display.decimalDigits, thirdPartyTxURLs: options.thirdPartyTxURLs,
+                localCurrency: options.localCurrency),
             appearance: preferences.preferences.theme,
             notifications: NotificationOptions(
                 enabled: shell.notificationsEnabled, showCoinJoinNotifications: shell.showCoinJoinNotifications),
@@ -367,9 +363,6 @@ public final class OptionsViewModel {
         desktop.options.psbtControls = next.wallet.psbtControls
         desktop.options.keepCustomChangeAddress = next.wallet.keepCustomChangeAddress
         if !next.wallet.keepCustomChangeAddress { desktop.options.customChangeAddress = nil }
-        desktop.options.showMasternodesTab = next.display.showMasternodesTab
-        desktop.options.showGovernanceTab = next.display.showGovernanceTab
-        desktop.options.showGovernanceClock = next.display.showGovernanceClock
         desktop.options.thirdPartyTxURLs = next.display.thirdPartyTxURLs
         desktop.options.localCurrency = next.display.localCurrency
         desktop.m3.showAdvancedCoinJoinUI = next.coinJoin.showAdvancedInterface

@@ -29,9 +29,6 @@ struct ShellM3Tests {
         let shell = makeShell()
         await shell.refresh()
         #expect(shell.sections == [.overview, .send, .receive, .transactions, .coinJoin])
-        m2.desktopPreferences.desktop.options.showMasternodesTab = true
-        m2.desktopPreferences.desktop.options.showGovernanceTab = true
-        #expect(shell.sections == [.overview, .send, .receive, .transactions, .coinJoin, .masternodes, .governance])
         await shell.selectShortcut(5)
         #expect(shell.selection == .coinJoin)
         shell.coinJoinOptionChanged(enabled: false)
@@ -41,7 +38,7 @@ struct ShellM3Tests {
 
     @Test func QT012_engineWithoutCoinJoinHidesTheSection() async {
         let shell = ShellModel(
-            env: world.environment(), m2: m2.services, features: .m3, m3: M3Services.unavailable(network: .testnet))
+            env: world.environment(), m2: m2.services, features: .m3, m3: M3Services.unavailable())
         await shell.refresh()
         #expect(!shell.sections.contains(.coinJoin))
         #expect(!shell.coinJoinOn)
@@ -141,7 +138,7 @@ struct ShellM3Tests {
     }
 
     @Test func QT144_unavailableEngineSaysSo() async {
-        let model = NetworkInformationViewModel(env: world.environment(), m3: M3Services.unavailable(network: .testnet))
+        let model = NetworkInformationViewModel(env: world.environment(), m3: M3Services.unavailable())
         await model.reload()
         #expect(!model.available)
         #expect(model.sections.isEmpty)
@@ -173,10 +170,8 @@ struct ShellM3Tests {
     // MARK: Placeholders
 
     @Test func unavailableServicesAnswerNotImplementedAndKeepCoreConstants() async {
-        let services = M3Services.unavailable(network: .mainnet)
+        let services = M3Services.unavailable()
         #expect(services.coinJoin.limits().minimumMixingBalance == Amount(duffs: 140_001))
-        #expect(services.governance.parameters().superblockCycle == 16_616)
-        #expect(services.masternodes.defaults().coreP2PPort == 9_999)
         do {
             _ = try await services.coinJoin.status(wallet: walletA)
             Issue.record("expected not_implemented")
@@ -188,6 +183,18 @@ struct ShellM3Tests {
             Issue.record("expected invalid_argument")
         } catch {
             #expect(error.code == .invalidArgument)
+        }
+        do {
+            _ = try await services.keychain.keys(wallet: walletA, role: .owner, range: 0..<101)
+            Issue.record("expected invalid_argument")
+        } catch {
+            #expect(error.code == .invalidArgument)
+        }
+        do {
+            _ = try await services.keychain.keys(wallet: walletA, role: .owner, range: 0..<20)
+            Issue.record("expected not_implemented")
+        } catch {
+            #expect(error.code == .notImplemented)
         }
     }
 }
