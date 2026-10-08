@@ -24,6 +24,9 @@ creation, the masternode and governance scope (DEC-01) and DESIGN-opus's M4 plan
   source, never fabricated values.
 - Scope: CoinJoin mixing, governance list/vote/create/resume, full ProTx incl. v24 shared MN, sweep, invitation creation,
   PSBT, dumpwallet + wallet.dat import (SQLite first, BDB later), exports for dash-qt. CrowdNode and HWI behind flags.
+  *(Amended by DEC-01, DASHPAY §5a: governance and ProTx are the wallet-holder flows only, in milestone MG after the
+  DashPay core. Operator-signed ProUpServTx and ProUpRevTx and server work stay with the node and its CLI.
+  `CLAUDE.md` "Product scope" carries the current lists.)*
 - Mnemonic passphrase is shown on reveal (behind full unlock). dash-qt bugs listed in research 02 §21 are not copied.
 
 ## R2. Decisions taken in reconciliation

@@ -8,6 +8,10 @@ models, and native UI (SwiftUI on macOS, SwiftCrossUI on Linux/Windows).
 Design: [`docs/design/DESIGN.md`](docs/design/DESIGN.md) (authoritative) on top
 of [`docs/design/DESIGN-opus.md`](docs/design/DESIGN-opus.md).
 
+Product scope and the plan to get there: [`docs/design/DASHPAY.md`](docs/design/DASHPAY.md) (DashPay on the
+desktop, authoritative where it differs from DESIGN.md; wallet-holder masternodes and governance in §5a) and
+[`docs/design/ROADMAP.md`](docs/design/ROADMAP.md) (the task list). Agents also read `CLAUDE.md`.
+
 ## Layout
 
 ```

@@ -13,14 +13,18 @@ that gives a better result. The user's goal is what matters, not what already ex
 
 The user's goal, latest version (2026-10-07): **DashPay on the desktop.** It should have full feature parity
 with the mobile apps (iOS and Android), plus tasteful compatibility with Dash Core. It targets macOS, Windows
-and Linux. Dash Core (dash-qt) remains the power-user tool, so masternode, ProTx and governance UI, the RPC
-console and node operation are out of scope. See "Product scope" in `CLAUDE.md`.
+and Linux. Dash Core (dash-qt) remains the power-user tool. Update 2026-10-08 (DEC-01): the wallet-holder
+masternode and governance flows (voting, proposals, my masternodes, the registration wizard, v24 shared
+masternodes) are in scope again, as milestone MG after the DashPay core. The operator and server side (running a
+node, ProUpServTx, ProUpRevTx, operator BLS secrets, node administration) stays with the Rust node and its CLI.
+See "Product scope" in `CLAUDE.md` and `docs/design/DASHPAY.md` §5a.
 
 ## Where it is
 
 - Repo: https://github.com/PastaPastaPasta/dashwallet-desktop (public). Work happens on `main`.
 - Parked branches: `m3/r2-governance` and `m3/r3-protx` hold governance and ProTx work that was cut by the
-  scope change. They are kept for reference only.
+  2026-10-07 scope change. DEC-01 brings the owner-side part back (milestone MG), so MG tasks salvage from them;
+  the operator-signed parts (update-service, revoke) are dropped.
 - The laptop copy is `/Users/pasta/workspace/dashwallet-desktop`. It has about 50 old local workstream
   branches, all merged or obsolete, and none of them were pushed.
 
@@ -44,7 +48,7 @@ Milestones:
 - M0 to M2 are merged. That covers the engine, vault, both UIs, and the dash-qt layer-1 tools: PSBT, coin
   control, sign/verify, import/export and backups.
 - M3 is merged: the CoinJoin client and mixing, plus an iOS-style restyle of both UIs. Governance and ProTx were
-  removed from `main`.
+  removed from `main` (they return as milestone MG, DEC-01).
 - Parity status is in `docs/parity.md`:
   - dash-qt checklist: 51 done, 63 partial, 22 not started, 18 parked.
   - iOS checklist: 12 done, 48 partial, 60 not started.
