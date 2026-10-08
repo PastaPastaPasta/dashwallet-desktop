@@ -1,0 +1,4 @@
+{
+  "deb": {"file": "Dash Wallet_0.1.0_amd64.deb", "bytes": 19294470, "installed": true, "launchedAndSelftested": true, "desktopFile": "/usr/share/applications/Dash Wallet.desktop"},
+  "appimage": {"file": "Dash Wallet_0.1.0_amd64.AppImage", "bytes": 101054968, "launchedAndSelftested": true}
+}
