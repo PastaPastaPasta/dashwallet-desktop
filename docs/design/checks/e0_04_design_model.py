@@ -18,20 +18,27 @@ What is modelled, at the granularity of the design's atomic steps:
   table's mutex J; the durable writes are separate steps outside J.
 - The original flow O: register (durable Unsent), track the Built row and
   reserve its inputs, flush the row, admit, write Dispatching, transport.
-- A resume R of the same row (platform-wallet's recovery), in the same
-  process and again after a crash, which goes through the same admit.
+  Its future may be dropped between track and admit (a drop guard
+  abandons), and it may hand the same bytes off again.
+- A resume R of the same row (platform-wallet's recovery) in the same
+  process; after a crash, R is the engine's catch-up at load (H6), which
+  first reserves a possibly-sent row's inputs again (L12).
+- K, the cleanup task the library spawns for the refusal's CAS winner; W,
+  a journal write whose admit future was dropped; B, another build that
+  may reserve inputs left free after a reload.
 - lock_vault L: freeze (revoke every lease, snapshot the permits), drain
   (wait until each snapshotted permit is dropped or past its deadline),
   return; or its future is dropped mid-drain.
 - A crash at any step, with every outcome of the write or transport call
   in progress, followed by a reload (leases are per process, so dead).
 
-Part 1 explores six scenarios and checks that no violation is reachable:
+Part 1 explores seven scenarios and checks that no violation is reachable:
 `flow` (O, R and L interleaved), `flow+crash` (the same with one crash and
 a reload at any point), `restart` (a never-dispatched row found at load),
 `ambiguous` (a genuine possible dispatch, then the lock), `legacy` (a row
-written before the fence existed) and `unknown` (a row with no entry,
-which must be neither sent nor cleaned up). It replays review DW-E0-03 r4 M1's
+written before the fence existed), `rowless` (a row-less First, a repeat
+of the same bytes and the lock) and `unknown` (a row with no entry, which
+must be neither sent nor cleaned up). It replays review DW-E0-03 r4 M1's
 counterexample under the r3 rule (a violation) and shows the design does
 not admit it, replays the M-A split-step trace's design counterpart, and
 replays the acceptance tests' barriers 1 and 2.
@@ -44,12 +51,15 @@ First is admitted once lock_vault was called, and that a second lock_vault
 during a drain returns within the same bound. The rejected timing rules
 (sequential revocation, a deadline that starts at the transport call, a
 host that waits for the library, revocation deferred to the end of the
-drain) each fail it.
+drain) each fail it. It also checks that a lease whose creation began
+before the call is never inserted after it (the lock_gen rule).
 
 Part 3 explores the lock order between the permits, the wallet-manager
 guard G and the drain: the draft's FIFO permit lock deadlocks when a task
 asks for a permit while holding G; the design's non-blocking admit and
-host-side deadline cannot.
+host-side deadline cannot; and an admit that took G itself would deadlock
+a caller holding G behind a queued writer, which is why the design's
+admit takes no library lock.
 
 This is a model of the design's decisions, not a test of the code, which
 does not exist yet.
@@ -90,12 +100,18 @@ class S:
     w: str = "none"  # a record write whose admit future was dropped
     o_verdict: Optional[str] = None
     crashes: int = 0  # crashes still allowed
+    rowless: bool = False  # the artifact has no row (a TxDraft send, an ST)
+    rl_admitted: bool = False  # a row-less First was admitted in this process
+    repeats: int = 0  # times O may hand the same bytes off again
+    k: str = "none"  # a spawned cleanup task, with the verdict it settles
+    expired: frozenset = frozenset()  # actors whose permit deadline passed
     # History, used only by the checks.
     committed: bool = False  # a Dispatching write was attempted
     tcalled: bool = False  # some transport call started
     r_tcalled: bool = False
     sends: tuple = ()  # bytes that actually left: (who, proc)
     cleaned: bool = False  # a cleanup untracked the row
+    cleanups: int = 0  # cleanup runs in this process
     releases: int = 0  # owner-guarded releases of this build's reservation
     foreign: bool = False  # after a reload, another build reserved the inputs
     foreign_freed: bool = False  # a release freed that other build's hold
@@ -109,6 +125,7 @@ FLAG_TEXT = {
     "row_not_durable": "a hand-off before its row was durable",
     "early_return": "lock_vault returned while a hand-off it waits for ran",
     "first_send_after_lock": "a first actual send after lock_vault returned",
+    "twice_cleaned": "the cleanup ran twice in one process",
 }
 
 
@@ -135,24 +152,33 @@ def lease_admits(s: S, m: frozenset) -> bool:
     return s.lease == "live"
 
 
-def start_commit(s: S, who: str, m: frozenset) -> S:
-    """Unsent -> Committing under J, with a First permit."""
-    s = replace(s, mir=C, permits=s.permits | {who}, committed=True)
+def grant(s: S, who: str) -> S:
+    """A First permit, granted in a J step: the commit."""
+    s = replace(s, permits=s.permits | {who}, expired=s.expired - {who}, committed=True)
     if s.proc == 0 and s.lock != "idle":
         s = flag(s, "late_commit")
     if s.proc != 0:
         s = flag(s, "foreign_commit")
+    return s
+
+
+def start_commit(s: S, who: str, m: frozenset) -> S:
+    """Unsent -> Committing under J, with a First permit."""
+    s = grant(replace(s, mir=C), who)
     if "transport-first" in m:
         # The record write is queued and the transport is called at once.
         return to_transport(replace(s, pending_write=True), who, True)
     return put(s, who, "commit")
 
 
-def to_transport(s: S, who: str, permit: bool) -> S:
-    if s.j_disk not in (D, P):
-        s = flag(s, "no_durable_commit")
-    if not s.row_disk:
-        s = flag(s, "row_not_durable")
+def to_transport(s: S, who: str, permit: bool, m: frozenset = frozenset()) -> S:
+    if not s.rowless:
+        if s.j_disk not in (D, P):
+            s = flag(s, "no_durable_commit")
+        if not s.row_disk:
+            s = flag(s, "row_not_durable")
+    if permit and "permit-ends-at-first" in m:
+        s = replace(s, permits=s.permits - {who})
     s = replace(s, tcalled=True, r_tcalled=s.r_tcalled or who == "R")
     return put(s, who, "transport" if permit else "resend")
 
@@ -172,12 +198,26 @@ def send(s: S, who: str) -> S:
 
 def refuse(s: S, who: str, m: frozenset) -> S:
     """The fence refuses a First. Under J: Unsent -> Revoked, and only the
-    caller whose compare-and-set made Revoked cleans up (exactly once)."""
+    caller whose compare-and-set made Revoked cleans up. The cleanup runs as
+    a task the library spawns, so dropping the caller cannot lose it."""
+    verdict = "Cancelled" if who == "O" else None
     if "r3" in m:
         return put(s, who, "cleanup")  # the r3 rule writes no record
+    if s.rowless:
+        # The engine releases the inputs of a refused TxDraft send.
+        return spawn_cleanup(put(s, who, "done", verdict), "rowless")
     if s.mir == U or (s.mir == P and "legacy-unsent" in m):
-        return put(replace(s, mir=T), who, "cleanup")
-    return put(s, who, "done", "Cancelled" if who == "O" else None)
+        n = replace(s, mir=T)
+        if "inline-cleanup" in m:
+            return put(n, who, "cleanup")
+        return spawn_cleanup(put(n, who, "done", verdict), "refused")
+    if "every-refuser-cleans" in m:
+        return spawn_cleanup(put(s, who, "done", verdict), "refused")
+    return put(s, who, "done", verdict)
+
+
+def spawn_cleanup(s: S, why: str) -> S:
+    return replace(s, k=why) if s.k == "none" else replace(s, k=s.k + "+" + why)
 
 
 def admit(s: S, who: str, m: frozenset) -> Iterator[tuple]:
@@ -192,6 +232,17 @@ def admit(s: S, who: str, m: frozenset) -> Iterator[tuple]:
 
 
 def decide(s: S, who: str, seen: Optional[str], m: frozenset) -> Iterator[tuple]:
+    if seen is None and s.rowless:
+        if s.rl_admitted and "rowless-no-memory" not in m:
+            yield "row-less, admitted before in this process: Resend", to_transport(
+                s, who, False
+            )
+        elif lease_admits(s, m):
+            n = grant(replace(s, rl_admitted=True), who)
+            yield "row-less First: permit", to_transport(n, who, True, m)
+        else:
+            yield "row-less First refused", refuse(s, who, m)
+        return
     if seen is None:
         if "no-entry-resend" in m:
             yield "no entry: Resend", to_transport(s, who, False)
@@ -251,7 +302,7 @@ def commit_steps(s: S, who: str, retry: bool, m: frozenset) -> Iterator[tuple]:
     if retry:
         yield "D write ok: Resend", to_transport(ok, who, False)
     elif who in s.permits:
-        yield "D write ok: hand off under the permit", to_transport(ok, who, True)
+        yield "D write ok: hand off under the permit", to_transport(ok, who, True, m)
     else:
         yield "D write ok after the deadline: Deferred", put(
             replace(ok, permits=s.permits - {who}), who, "done", "MaybeSent"
@@ -259,7 +310,9 @@ def commit_steps(s: S, who: str, retry: bool, m: frozenset) -> Iterator[tuple]:
     drop = s.permits - {who}
     yield from write_failures(s, who, drop, m)
     if who in s.permits:
-        yield "permit deadline passes during the write", replace(s, permits=drop)
+        yield "permit deadline passes during the write", replace(
+            s, permits=drop, expired=s.expired | {who}
+        )
         if who == "O":
             yield "admit future dropped; the write goes on", replace(
                 s, o="done", o_verdict="MaybeSent", w="write", permits=drop
@@ -286,34 +339,44 @@ def transport_steps(s: S, who: str, permit: bool) -> Iterator[tuple]:
     yield "transport rejects: not sent, kept for a resend", put(
         replace(s, permits=drop), who, "done", "MaybeSent"
     )
-    if permit:
-        if who in s.permits:
-            yield "permit deadline passes: MaybeSent", put(
-                replace(s, permits=drop), who, "late", "MaybeSent"
-            )
+    if permit and who not in s.expired:
+        yield "permit deadline passes: MaybeSent", put(
+            replace(s, permits=drop, expired=s.expired | {who}), who, "late", "MaybeSent"
+        )
     else:
         yield "resend times out: MaybeSent", put(s, who, "late", "MaybeSent")
 
 
+def cleaned_up(s: S, m: frozenset) -> list:
+    """Untrack the row and release the build's reservation (owner-guarded):
+    the states with the row's removal flushed, and not yet flushed."""
+    base = replace(
+        s, row_mem=False, reserved=False, cleaned=True,
+        releases=s.releases + (1 if s.reserved else 0),
+        cleanups=s.cleanups + 1,
+    )
+    if base.cleanups > 1:
+        base = flag(base, "twice_cleaned")
+    if "unguarded-release" in m and s.foreign:
+        base = replace(base, foreign_freed=True)
+    out = [("removal flushed", replace(base, row_disk=False))]
+    if s.row_disk and not s.rowless:
+        out.append(("row still on disk", base))
+    return out
+
+
 def cleanup_steps(s: S, who: str, verdict: str, m: frozenset) -> Iterator[tuple]:
+    """Inline cleanup by the refused caller (the r3 rule, `inline-cleanup`)."""
     other_claim = who == "O" and s.r not in ("idle", "done")
     if "no-cleanup" in m or (("no-override" in m or "r3" in m) and other_claim):
         yield "refusal leaves the row", put(
             s, who, "done", "MaybeSent" if other_claim else verdict
         )
         return
-    base = replace(
-        s, row_mem=False, reserved=False, cleaned=True,
-        releases=s.releases + (1 if s.reserved else 0),
-    )
-    if "unguarded-release" in m and s.foreign:
-        base = replace(base, foreign_freed=True)
-    yield "row removed, inputs released; removal flushed", put(
-        replace(base, row_disk=False), who, "done", verdict
-    )
-    yield "row removed, inputs released; row still on disk", put(
-        base, who, "done", verdict
-    )
+    for lab, n in cleaned_up(s, m):
+        yield f"row removed, inputs released; {lab}", put(n, who, "done", verdict)
+    if "inline-cleanup" in m:
+        yield "caller's future dropped before its cleanup", put(s, who, "done", verdict)
 
 
 def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
@@ -355,7 +418,7 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
         elif s.mir == U:
             # Abandon through the fence: Unsent -> Revoked under J. A failed
             # flush keeps its buffer, so the row may still land on disk.
-            ab = replace(s, mir=T, o="cleanup_failed")
+            ab = spawn_cleanup(replace(s, mir=T, o="done", o_verdict="Failed"), "abandoned")
             yield "flush fails: abandon (Revoked)", ab
             yield "flush fails: abandon (Revoked); row lands later", replace(
                 ab, row_disk=True
@@ -387,8 +450,21 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
         yield "bytes never leave", put(s, who, "done")
     elif st == "cleanup":
         yield from cleanup_steps(s, who, "Cancelled" if who == "O" else "Refused", m)
-    elif st == "cleanup_failed":
-        yield from cleanup_steps(s, who, "Failed", m)
+    if who == "O" and st in ("flush", "admit") and not s.rowless:
+        # The build's future is dropped after the row was tracked and
+        # before admit decided: its drop guard abandons synchronously.
+        if "no-drop-guard" in m:
+            yield "build future dropped (no guard)", replace(s, o="done")
+        elif s.mir == U:
+            yield "build future dropped: guard abandons (Revoked)", spawn_cleanup(
+                replace(s, mir=T, o="done"), "abandoned"
+            )
+        else:
+            yield "build future dropped: entry not Unsent, keep", replace(s, o="done")
+    if who == "O" and st == "done" and s.repeats > 0 and s.o_verdict in ("Sent", "MaybeSent"):
+        yield "hand the same bytes off again", replace(
+            s, o="admit", repeats=s.repeats - 1
+        )
 
 
 def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
@@ -399,20 +475,30 @@ def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
         yield "lock_vault called: freeze", n
     elif s.lock == "draining":
         held = s.snap & s.permits
+        # What the drain must wait for, judged from the hand-offs themselves:
+        # a First begun before the freeze, still running, not past its
+        # deadline.
+        running = {
+            x for x in s.snap
+            if actor(s, x) in ("commit", "transport") and x not in s.expired
+        }
         if not held or "no-drain-wait" in m:
             n = replace(s, lock="returned", snap=frozenset())
-            if held:
+            if running:
                 n = flag(n, "early_return")
             if "revoke-in-drain" in m and n.lease == "live":
                 n = replace(n, lease="revoked")
             yield "drain done: lock_vault returns", n
-        yield "lock_vault future dropped mid-drain", replace(
-            s, lock="dropped", snap=frozenset()
-        )
+        yield DROP_LOCK, replace(s, lock="dropped", snap=frozenset())
+
+
+DROP_LOCK = "lock_vault future dropped mid-drain"
 
 
 def crash_steps(s: S, m: frozenset) -> Iterator[tuple]:
     if s.proc != 0 or s.crashes == 0:
+        return
+    if s.rowless:
         return
     writing = "commit" in (s.o, s.r) or "retry" in (s.o, s.r) or s.w == "write"
     j_opts = sorted({s.j_disk, D} if writing else {s.j_disk}, key=str)
@@ -424,13 +510,24 @@ def crash_steps(s: S, m: frozenset) -> Iterator[tuple]:
             proc=1, j_disk=j, mir=j, sends=snd,
             lease="live" if "lease-reuse" in m else "dead",
             lock="gone", snap=frozenset(), permits=frozenset(),
-            pending_write=False, row_mem=s.row_disk, reserved=False,
-            o="gone", r="idle", w="none", crashes=s.crashes - 1,
+            pending_write=False, row_mem=s.row_disk,
+            # The catch-up at load (H6) re-reserves a possibly-sent row (L12).
+            reserved=s.row_disk and j in (D, P) and "no-rereserve" not in m,
+            o="gone", r="idle", w="none", k="none", crashes=s.crashes - 1,
+            cleanups=0, expired=frozenset(),
         )
 
 
 def steps(s: S, m: frozenset, with_crash: bool = True) -> Iterator[tuple]:
     yield from (("L: " + lab, n) for lab, n in lock_steps(s, m))
+    if s.k != "none":
+        rest = s.k.split("+", 1)[1] if "+" in s.k else "none"
+        claimed = s.r not in ("idle", "done")
+        if "no-cleanup" in m or ("no-override" in m and claimed):
+            yield "K: cleanup task leaves the row", replace(s, k=rest)
+        else:
+            for lab, n in cleaned_up(replace(s, k=rest), m):
+                yield f"K: cleanup task: row removed, inputs released; {lab}", n
     for who in ("O", "R"):
         yield from ((f"{who}: {lab}", n) for lab, n in flow_steps(s, who, m))
     if s.w == "write":
@@ -443,7 +540,7 @@ def steps(s: S, m: frozenset, with_crash: bool = True) -> Iterator[tuple]:
         yield "W: queued D write lands", replace(
             s, pending_write=False, j_disk=D, mir=D if s.mir == C else s.mir
         )
-    if s.proc == 1 and not s.foreign and not s.reserved and s.row_mem:
+    if s.proc == 1 and not s.foreign and not s.reserved and s.row_mem and not s.rowless:
         # The pin does not re-reserve a loaded row's inputs, so a new build
         # may take them.
         yield "B: another build reserves the row's inputs", replace(s, foreign=True)
@@ -456,6 +553,7 @@ def all_done(s: S) -> bool:
         s.o in ("done", "absent", "gone")
         and s.r == "done"
         and s.w == "none"
+        and s.k == "none"
         and not s.pending_write
         and s.lock != "draining"
     )
@@ -482,6 +580,8 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
         out.append("an artifact both Revoked and Dispatching")
     if scenario == "unknown" and s.cleaned:
         out.append("a row of unknown provenance cleaned up")
+    if s.proc == 1 and s.row_mem and s.mir in (D, P) and not s.reserved:
+        out.append("inputs of a possibly-sent row left selectable after load")
     if all_done(s):
         if (
             s.j_disk not in (D, P)
@@ -492,7 +592,7 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
             out.append("a never-dispatched row left reserved")
         if scenario in ("ambiguous", "legacy") and not s.r_tcalled:
             out.append("a genuine possible dispatch was not resent")
-    elif not any(True for _ in steps(s, m, with_crash=False)):
+    elif not any(lab != "L: " + DROP_LOCK for lab, _ in steps(s, m, with_crash=False)):
         out.append("deadlock")
     return out
 
@@ -513,9 +613,13 @@ def scenarios() -> dict:
         # with a PreFence entry for it when it was created.
         "legacy": replace(
             built, proc=1, j_disk=P, mir=P, lease="dead", lock="gone", o="absent",
+            reserved=True,
         ),
         # A row with no entry at all: an old copy of wallet.sqlite restored
         # by hand, or a library that skipped register. Neither send nor clean.
+        # A row-less send (TxDraft, a state transition): its First, a
+        # repeat of the same bytes, and the lock.
+        "rowless": S(rowless=True, o="admit", r="done", reserved=True, repeats=1),
         "unknown": replace(
             built, proc=1, j_disk=None, mir=None, lease="dead", lock="gone",
             o="absent",
@@ -574,8 +678,8 @@ R4_TRACE_DESIGN = BUILT + [
     "L: lock_vault called: freeze",
     "L: drain done: lock_vault returns",
     "O: First refused",
-    "O: row removed, inputs released; removal flushed",
     "R: Revoked: refused",
+    "K: cleanup task: row removed, inputs released; removal flushed",
 ]
 # M-A (e0_04_split_model.py): O dispatches, the lock comes, and only then
 # does the resume act. Under the design its admit reads Dispatching.
@@ -593,7 +697,7 @@ BARRIER_1 = BUILT + [
     "L: lock_vault called: freeze",
     "L: drain done: lock_vault returns",
     "O: First refused",
-    "O: row removed, inputs released; removal flushed",
+    "K: cleanup task: row removed, inputs released; removal flushed",
 ]
 BARRIER_2 = BUILT + [
     "O: First: commit and permit",
@@ -629,6 +733,12 @@ MUTATIONS = {
     "no-drain-wait": "lock_vault returns without waiting for the snapshot",
     "lease-reuse": "lease ids restart per process, so an old origin matches (m-1)",
     "unguarded-release": "the cleanup releases inputs without the build's token",
+    "rowless-no-memory": "a repeat of row-less bytes under a revoked lease is refused",
+    "no-rereserve": "the load catch-up leaves a possibly-sent row's inputs free",
+    "no-drop-guard": "a build dropped before admit leaves its row tracked",
+    "inline-cleanup": "the refused caller cleans up inline, so a drop loses it",
+    "every-refuser-cleans": "every refused caller cleans up, not just the CAS winner",
+    "permit-ends-at-first": "the permit is dropped when the transport call starts",
 }
 
 
@@ -810,6 +920,27 @@ def run_lock(rule: str, H: int, plans: list, drop_at=None, second_at=None):
     return end_tick, end2, late_admit
 
 
+def creation_race(rule: str) -> Optional[tuple]:
+    """begin_lease starts at tick b (it reads lock_gen, then redeems its
+    grants) and inserts the lease into the table at tick b + d; its flow then
+    tries a First at tick a. lock_vault is called at tick 0 and its freeze
+    revokes every lease in the table. Returns the first (b, d, a) at which a
+    First under a lease begun before the call is admitted at or after it."""
+    for b in range(-3, 3):
+        for d in (0, 1, 2):
+            ins = b + d
+            for a in range(ins, 6):
+                if ins < 0:
+                    live_at_a = a < 0  # in the table at the freeze: revoked at 0
+                elif b < 0 and rule == "design":
+                    live_at_a = False  # lock_gen moved since b: insert refused
+                else:
+                    live_at_a = True
+                if live_at_a and b < 0 and a >= 0:
+                    return (b, d, a)
+    return None
+
+
 def part2() -> bool:
     ok = True
 
@@ -876,6 +1007,13 @@ def part2() -> bool:
         for c in two for k in range(0, H + 1)
     )
     check(w2 <= H, f"a second lock_vault during the drain ends within H of the first call (worst {w2})")
+    bad = creation_race("no-gen-check")
+    check(
+        creation_race("design") is None and bad is not None,
+        f"a lease begun before the call and inserted after it: refused by the "
+        f"lock_gen check; without it a First is admitted after the call "
+        f"(begin, insert delay, First at {bad})",
+    )
     return ok
 
 
@@ -977,6 +1115,55 @@ def l3_deadlocks(rule: str):
     return None
 
 
+def fifo_grantable(readers: frozenset, writer: bool, queue: tuple, req: tuple) -> bool:
+    """tokio's RwLock is fair: a read waits behind a queued write."""
+    if writer:
+        return False
+    ahead = queue[: queue.index(req)]
+    if req[0] == "r":
+        return not any(k == "w" for k, _ in ahead)
+    return not readers and not ahead
+
+
+def guard_deadlock(rule: str):
+    """B holds the wallet guard G for reading and calls admit; W asks for G
+    for writing meanwhile. Under `admit-takes-guard`, admit takes G for
+    reading too (as a debit lookup would), and queues behind W."""
+    init = (0, 0, frozenset(), False, ())
+    seen = {init: []}
+    frontier = [init]
+    while frontier:
+        nxt = []
+        for st in frontier:
+            b, w, readers, writer, queue = st
+            succ = []
+            if b == 0:
+                succ.append(("B asks for G.read", (1, w, readers, writer, queue + (("r", "B"),))))
+            elif b == 1 and fifo_grantable(readers, writer, queue, ("r", "B")):
+                succ.append(("B holds G.read", (2, w, readers | {"B"}, writer, tuple(q for q in queue if q != ("r", "B")))))
+            elif b == 2:
+                if rule == "admit-takes-guard":
+                    succ.append(("B calls admit; admit asks for G.read", (3, w, readers, writer, queue + (("r", "B2"),))))
+                else:
+                    succ.append(("B calls admit (takes no guard)", (5, w, readers, writer, queue)))
+            elif b == 3 and fifo_grantable(readers, writer, queue, ("r", "B2")):
+                succ.append(("admit holds G.read", (5, w, readers | {"B2"}, writer, tuple(q for q in queue if q != ("r", "B2")))))
+            elif b == 5:
+                succ.append(("B releases G", (6, w, readers - {"B", "B2"}, writer, queue)))
+            if w == 0:
+                succ.append(("W asks for G.write", (b, 1, readers, writer, queue + (("w", "W"),))))
+            elif w == 1 and fifo_grantable(readers, writer, queue, ("w", "W")):
+                succ.append(("W holds G.write, then releases", (b, 2, readers, False, tuple(q for q in queue if q != ("w", "W")))))
+            if not succ and not (b == 6 and w == 2):
+                return seen[st]
+            for lab, n in succ:
+                if n not in seen:
+                    seen[n] = seen[st] + [lab]
+                    nxt.append(n)
+        frontier = nxt
+    return None
+
+
 def part3() -> bool:
     ok = True
 
@@ -992,6 +1179,12 @@ def part3() -> bool:
         print("       " + " -> ".join(tr))
     check(l3_deadlocks("design") is None,
           "design (admit never waits, host-side deadline) cannot deadlock")
+    tr = guard_deadlock("admit-takes-guard")
+    check(tr is not None and guard_deadlock("design") is None,
+          "an admit that took the wallet guard would deadlock a caller holding "
+          "it (L2) behind a queued writer; the design's admit takes no guard")
+    if tr:
+        print("       " + " -> ".join(tr))
     return ok
 
 
