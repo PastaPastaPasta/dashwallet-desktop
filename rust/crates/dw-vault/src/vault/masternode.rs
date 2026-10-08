@@ -10,7 +10,8 @@ use crate::types::{GrantKind, WalletId};
 impl Vault {
     /// Runs `f` with `wallet`'s 64-byte seed under a redeemed
     /// `RevealSecret` grant for that wallet; the decrypted seed is erased
-    /// when `f` returns.
+    /// when `f` returns. `f` runs inside one vault operation (a `lock()`
+    /// waits for it), so it must not call back into the vault.
     pub fn with_revealed_seed<T>(
         &self,
         wallet: &WalletId,
@@ -18,6 +19,7 @@ impl Vault {
         f: impl FnOnce(&[u8; 64]) -> T,
     ) -> Result<T, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
+        let _op = self.op_guard();
         let dek = self.key_for(&token)?;
         let payload = self
             .read_record(&dek, &record_id(wallet, REC_SEED))?

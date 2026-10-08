@@ -11,12 +11,20 @@
 //!   The file on disk is read only at open and for the post-write check.
 //! - `inner` is a short-held mutex over the in-memory state. Argon2id, OS
 //!   store calls and file writes run outside it.
+//! - `ops` is the operation gate. Every operation that turns the data key
+//!   into a secret-derived result (a signer call, a revealed phrase or seed)
+//!   holds it shared from its epoch check until that result exists. Every
+//!   epoch change (lock, unlock, scope change, encrypt, recover, destroy)
+//!   holds it exclusively, so `lock()` returns only once every operation
+//!   that started before it has finished, and any operation after it sees
+//!   the new epoch and fails `Locked`. A holder must not take it again, nor
+//!   take `writer`: a waiting epoch change blocks new shared holders.
 //!
-//! Lock order: `writer`, then `inner`.
+//! Lock order: `writer`, then `ops`, then `inner`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use key_wallet::Network;
 use sha2::{Digest, Sha256};
@@ -48,6 +56,12 @@ pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
+/// Proof that the caller holds `Shared::ops` shared: one operation that
+/// produces a secret-derived result (see the module doc).
+pub(crate) type OpGuard<'a> = RwLockReadGuard<'a, ()>;
+/// Proof that the caller holds `Shared::ops` exclusively, which every epoch
+/// change needs.
+type EpochGuard<'a> = RwLockWriteGuard<'a, ()>;
 
 /// Longest accepted vault passphrase, in bytes.
 pub const MAX_PASSPHRASE_BYTES: usize = 1024;
@@ -248,7 +262,7 @@ struct Inner {
 
 impl Inner {
     /// Drops the data key, revokes grants and invalidates outstanding signers.
-    fn forget_key(&mut self) {
+    fn forget_key(&mut self, _ops: &EpochGuard<'_>) {
         self.dek = None;
         self.backup_kek = None;
         self.scope = UnlockScope::Full;
@@ -263,7 +277,7 @@ impl Inner {
     }
 
     /// Installs a data key with `scope`; bumps the epoch when the state changes.
-    fn install_key(&mut self, dek: Key32, scope: UnlockScope) {
+    fn install_key(&mut self, dek: Key32, scope: UnlockScope, _ops: &EpochGuard<'_>) {
         let changed = self.dek.is_none() || self.scope != scope;
         self.dek = Some(dek);
         self.scope = scope;
@@ -282,6 +296,8 @@ pub(crate) struct Shared {
     config: VaultConfig,
     /// Serializes file changes and passphrase checks (see the module doc).
     writer: Mutex<()>,
+    /// The operation gate (see the module doc).
+    ops: RwLock<()>,
     inner: Mutex<Inner>,
 }
 
@@ -326,6 +342,7 @@ impl Vault {
                 tag: network_tag.to_owned(),
                 config,
                 writer: Mutex::new(()),
+                ops: RwLock::new(()),
                 inner: Mutex::new(Inner {
                     file,
                     dek: None,
@@ -359,6 +376,23 @@ impl Vault {
         self.shared
             .writer
             .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Opens one operation (shared hold of the gate; see the module doc).
+    pub(crate) fn op_guard(&self) -> OpGuard<'_> {
+        self.shared
+            .ops
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Waits for every open operation, then excludes new ones until the
+    /// guard drops: the right to change the epoch.
+    fn epoch_guard(&self) -> EpochGuard<'_> {
+        self.shared
+            .ops
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -524,10 +558,11 @@ impl Vault {
         }
         let encrypted = vault_file.slot_p.is_some();
         let now = self.now();
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
-        inner.install_key(dek, UnlockScope::Full);
+        inner.install_key(dek, UnlockScope::Full, &ops);
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
@@ -568,8 +603,9 @@ impl Vault {
         let old_slot = next.slot_o.take();
         self.persist(&writer, next)?;
         let status = {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
-            inner.forget_key();
+            inner.forget_key(&ops);
             self.status_of(&inner)
         };
         drop(writer);
@@ -598,8 +634,9 @@ impl Vault {
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
-        inner.install_key(dek, scope);
+        inner.install_key(dek, scope, &ops);
         inner.backup_kek = Some(backup_kek);
         Ok(self.status_of(&inner))
     }
@@ -609,9 +646,15 @@ impl Vault {
     /// grant's own key. Idempotent. On an unencrypted vault this drops the
     /// cached key (it is re-read from the OS store on demand); the state
     /// stays `Unencrypted`.
+    ///
+    /// Waits for the signer operations and reveals already running (a
+    /// signature takes about a millisecond), so once it returns no
+    /// signature, shared secret, ciphertext, exported key or phrase that
+    /// the old epoch allowed is still being made.
     pub fn lock(&self) -> VaultStatus {
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
-        inner.forget_key();
+        inner.forget_key(&ops);
         self.status_of(&inner)
     }
 
@@ -1247,6 +1290,7 @@ impl Vault {
         grant_id: &str,
     ) -> Result<RevealedMnemonic, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
+        let _op = self.op_guard();
         let dek = self.key_for(&token)?;
         let phrase = self
             .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
@@ -1429,9 +1473,10 @@ impl Vault {
     }
 
     /// Seed of `wallet` for a signer issued at `epoch`, decrypted with the
-    /// signer's own key or the vault's.
+    /// signer's own key or the vault's, inside the operation `_op`.
     pub(crate) fn signing_seed(
         &self,
+        _op: &OpGuard<'_>,
         wallet: &WalletId,
         epoch: u64,
         own_key: Option<&Key32>,
@@ -1674,11 +1719,12 @@ impl Vault {
         // if the read-back check below fails, so nothing keeps using the
         // old key.
         {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = Some(next);
             inner.high_water = manifest.generation;
-            inner.forget_key();
-            inner.install_key(Zeroizing::new(*dek), UnlockScope::Full);
+            inner.forget_key(&ops);
+            inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
         }
@@ -1727,11 +1773,12 @@ impl Vault {
         }
         file::remove_all(&self.shared.dir)?;
         {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = None;
             inner.high_water = 0;
             inner.last_passphrase_at = None;
-            inner.forget_key();
+            inner.forget_key(&ops);
         }
         drop(writer);
         if let Some(o) = current.slot_o

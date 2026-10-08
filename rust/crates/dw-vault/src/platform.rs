@@ -98,7 +98,8 @@ impl VaultSigner {
     /// double-SHA256 that `dashcore::signer::sign` makes (and
     /// `dash_sdk_sign_with_mnemonic_resolver_and_path`, which binds the key
     /// the same way before signing). A key that does not match is
-    /// [`SignerError::KeyMismatch`] and nothing is signed.
+    /// [`SignerError::KeyMismatch`] and nothing is signed. `data` is hashed
+    /// before the key is derived, so a large input does not hold up a lock.
     pub fn sign_identity(
         &self,
         path: &DerivationPath,
@@ -106,14 +107,14 @@ impl VaultSigner {
         data: &[u8],
     ) -> Result<[u8; 65], SignerError> {
         self.require_identity_key(path)?;
+        let digest: [u8; 32] = double_sha(data)
+            .try_into()
+            .map_err(|_| SignerError::Derivation("digest length".into()))?;
         self.with_key(path, KeyUse::Sign, |secp, x| {
             let public = PublicKey::from_secret_key(secp, &x.private_key).serialize();
             if !key_data_matches(&public, key_data) {
                 return Err(SignerError::KeyMismatch(path.to_string()));
             }
-            let digest: [u8; 32] = double_sha(data)
-                .try_into()
-                .map_err(|_| SignerError::Derivation("digest length".into()))?;
             let sig = secp.sign_ecdsa_recoverable(&Message::from_digest(digest), &x.private_key);
             Ok(sig.to_compact_signature(true))
         })?
@@ -173,40 +174,30 @@ impl VaultSigner {
         })
     }
 
-    /// The contactInfo AES key `root/feature'/derivation_index'`, where
-    /// `root` is an identity key and `feature` is `65536` or `65537`.
-    fn contact_info_key(
+    /// Runs `f` on the `(encToUserId, privateData)` contactInfo AES keys
+    /// `root/65536'/derivation_index'` and `root/65537'/derivation_index'`
+    /// (`root` an identity key), in one operation, so whatever `f` makes
+    /// with them exists before any later lock returns.
+    fn with_contact_info_keys<T>(
         &self,
         root: &DerivationPath,
-        feature: u32,
         derivation_index: u32,
-    ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
+        f: impl FnOnce(&Key32, &Key32) -> T,
+    ) -> Result<T, SignerError> {
         self.require_identity_key(root)?;
         let step = |i| {
             ChildNumber::from_hardened_idx(i).map_err(|e| SignerError::Derivation(e.to_string()))
         };
-        let path = root.extend([step(feature)?, step(derivation_index)?]);
-        self.with_key(&path, KeyUse::ContactInfo, |_, x| secret_bytes(x))
-    }
-
-    /// The `(encToUserId, privateData)` contactInfo keys of `root` at
-    /// `derivation_index`.
-    fn contact_info_keys(
-        &self,
-        root: &DerivationPath,
-        derivation_index: u32,
-    ) -> Result<(Key32, Key32), SignerError> {
-        let enc_key = self.contact_info_key(
-            root,
-            DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD,
-            derivation_index,
-        )?;
-        let data_key = self.contact_info_key(
-            root,
-            DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
-            derivation_index,
-        )?;
-        Ok((enc_key, data_key))
+        let index = step(derivation_index)?;
+        let enc_path = root.extend([step(DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD)?, index]);
+        let data_path = root.extend([step(DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD)?, index]);
+        let op = self.op(&[
+            (KeyUse::ContactInfo, &enc_path),
+            (KeyUse::ContactInfo, &data_path),
+        ])?;
+        let enc_key = op.with_key(&enc_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
+        let data_key = op.with_key(&data_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
+        Ok(f(&enc_key, &data_key))
     }
 
     /// DIP-15 contactInfo seal: `encToUserId` (AES-256-ECB) and
@@ -220,10 +211,11 @@ impl VaultSigner {
         private_data: &[u8],
         iv: &[u8; 16],
     ) -> Result<ContactInfoSealed, SignerError> {
-        let (enc_key, data_key) = self.contact_info_keys(root, derivation_index)?;
-        Ok(ContactInfoSealed {
-            enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(&enc_key, contact_id),
-            private_data: platform_encryption::encrypt_private_data(&data_key, iv, private_data),
+        self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
+            ContactInfoSealed {
+                enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(enc_key, contact_id),
+                private_data: platform_encryption::encrypt_private_data(data_key, iv, private_data),
+            }
         })
     }
 
@@ -235,13 +227,14 @@ impl VaultSigner {
         enc_to_user_id: &[u8; 32],
         private_data: &[u8],
     ) -> Result<ContactInfoOpened, SignerError> {
-        let (enc_key, data_key) = self.contact_info_keys(root, derivation_index)?;
-        let private_data = platform_encryption::decrypt_private_data(&data_key, private_data)
-            .map_err(|e| SignerError::Decrypt(e.to_string()))?;
-        Ok(ContactInfoOpened {
-            contact_id: platform_encryption::decrypt_enc_to_user_id(&enc_key, enc_to_user_id),
-            private_data,
-        })
+        self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
+            let private_data = platform_encryption::decrypt_private_data(data_key, private_data)
+                .map_err(|e| SignerError::Decrypt(e.to_string()))?;
+            Ok(ContactInfoOpened {
+                contact_id: platform_encryption::decrypt_enc_to_user_id(enc_key, enc_to_user_id),
+                private_data,
+            })
+        })?
     }
 
     /// The DIP-15 auto-accept private key at `m/9'/coin'/16'/expiry'`: the

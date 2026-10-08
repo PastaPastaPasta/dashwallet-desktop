@@ -262,6 +262,7 @@ impl Vault {
         {
             return Err(VaultError::GrantPurposeMismatch);
         }
+        let _op = self.op_guard();
         let dek = self.key_for(token)?;
         self.read_secret(&dek, wallet)
     }

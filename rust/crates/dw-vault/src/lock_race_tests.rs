@@ -1,0 +1,393 @@
+//! `lock()` against signer calls already running (review DW-E0-03 B1/m1):
+//! once `lock()` has returned, no signature, shared secret, ciphertext or
+//! exported key of the old epoch is still being made.
+//!
+//! The [`test_hook`] stamps each operation when it passes its epoch check
+//! (`Opened`) and just before it releases the operation gate (`Closing`),
+//! by which point its result exists.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::mpsc;
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use key_wallet::bip32::DerivationPath;
+use key_wallet::{Network, Signer};
+use zeroize::Zeroizing;
+
+use crate::signer::KeyUse;
+use crate::signer::test_hook::{self, OpPoint};
+use crate::{
+    Credential, GrantKind, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, SeedDerivation,
+    SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultSigner,
+    WalletSecret, WalletSigner,
+};
+
+const W: [u8; 32] = [1; 32];
+const PASS: &[u8] = b"pw";
+const IDENTITY_KEY: &str = "m/9'/1'/5'/0'/0'/0'/0'";
+
+fn path(s: &str) -> DerivationPath {
+    DerivationPath::from_str(s).unwrap()
+}
+
+fn vault(dir: &tempfile::TempDir, passphrase: Option<&[u8]>) -> Vault {
+    let config = VaultConfig {
+        kdf: KdfPolicy::Fixed(KdfParams::TEST),
+        os_store: Arc::new(MemoryOsStore::new()),
+        clock: Arc::new(SystemClock),
+        grant_ttl_secs: 120,
+    };
+    let v = Vault::open(
+        dir.path().join("vault"),
+        Network::Regtest,
+        "regtest",
+        config,
+    )
+    .unwrap();
+    v.create(passphrase).unwrap();
+    let secret = WalletSecret {
+        mnemonic: Zeroizing::new(b"unused".to_vec()),
+        mnemonic_passphrase: Zeroizing::new(Vec::new()),
+        seed: Zeroizing::new([0x5a; 64]),
+        derivation: SeedDerivation::Bip39,
+    };
+    v.store_wallet_secret(&W, &secret).unwrap();
+    v
+}
+
+fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
+    let grant = v
+        .authorize(GrantPurpose::PlatformOp, Some(&W), credential)
+        .unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
+        .unwrap();
+    v.platform_signer(&W, &token, scope).unwrap()
+}
+
+fn spend_signer(v: &Vault) -> VaultSigner {
+    let purpose = GrantPurpose::Spend { max_duffs: 1 };
+    let grant = v.authorize(purpose, Some(&W), Credential::None).unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::Spend, Some(&W))
+        .unwrap();
+    v.signer(&W, &token).unwrap()
+}
+
+fn peer() -> PublicKey {
+    PublicKey::from_secret_key(
+        &Secp256k1::new(),
+        &SecretKey::from_slice(&[0x42; 32]).unwrap(),
+    )
+}
+
+/// The compressed public key of [`IDENTITY_KEY`] (its on-chain key data).
+fn identity_public_key(identity: &VaultSigner) -> [u8; 33] {
+    identity
+        .with_key(&path(IDENTITY_KEY), KeyUse::PublicKey, |secp, x| {
+            PublicKey::from_secret_key(secp, &x.private_key).serialize()
+        })
+        .unwrap()
+}
+
+/// Pauses the next operation on another thread inside the gate, calls
+/// `lock()` and checks that it does not return until that operation has
+/// made its result; the result is `Ok`, and the next call is `Locked`.
+fn lock_waits_for(v: &Vault, call: impl Fn() -> Result<(), SignerError> + Send + Sync + 'static) {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let call = Arc::new(call);
+    let worker = {
+        let call = call.clone();
+        thread::spawn(move || {
+            test_hook::set(move |point| {
+                if point == OpPoint::Opened {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+            });
+            call()
+        })
+    };
+    entered_rx.recv().unwrap();
+    let locked = Arc::new(AtomicBool::new(false));
+    let locker = {
+        let (v, locked) = (v.clone(), locked.clone());
+        thread::spawn(move || {
+            v.lock();
+            locked.store(true, SeqCst);
+        })
+    };
+    thread::sleep(Duration::from_millis(200));
+    assert!(
+        !locked.load(SeqCst),
+        "lock() returned while an operation was still inside the gate"
+    );
+    release_tx.send(()).unwrap();
+    worker
+        .join()
+        .unwrap()
+        .expect("the operation began before the lock");
+    locker.join().unwrap();
+    assert!(locked.load(SeqCst));
+    assert_eq!(call(), Err(SignerError::Locked));
+}
+
+#[test]
+fn lock_waits_for_the_operation_already_running() {
+    // The background crypto signer of an unlocked vault: ECDH.
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let crypto = v.dashpay_crypto_signer(&W).unwrap();
+    lock_waits_for(&v, move || {
+        crypto
+            .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
+            .map(drop)
+    });
+
+    // A passphrase grant on a locked vault, whose signer holds the grant's
+    // own copy of the data key: an identity signature.
+    let identity = platform_signer(
+        &v,
+        SignerScope::PlatformIdentity,
+        Credential::Passphrase(PASS),
+    );
+    let key_data = identity_public_key(&identity);
+    lock_waits_for(&v, move || {
+        identity
+            .sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
+            .map(drop)
+    });
+}
+
+/// One call a worker made: its round, its gate stamps (`None` when it never
+/// passed the epoch check) and whether it returned a result.
+struct Call {
+    round: usize,
+    stamps: Option<(u64, u64)>,
+    ok: bool,
+}
+
+/// The signers of one round, all issued in the same epoch.
+struct Round {
+    index: usize,
+    crypto: VaultSigner,
+    identity: VaultSigner,
+    spend: VaultSigner,
+    mixing: VaultSigner,
+    key_data: [u8; 33],
+}
+
+/// One call of kind `n` on the round's signers.
+fn call(rt: &tokio::runtime::Runtime, r: &Round, n: usize) -> Result<(), SignerError> {
+    let identity_key = path(IDENTITY_KEY);
+    let root = path("m/9'/1'/5'/0'/0'/0'/2'");
+    match n % 7 {
+        0 => r
+            .crypto
+            .ecdh_shared_secret(&identity_key, &peer())
+            .map(drop),
+        1 => r
+            .identity
+            .sign_identity(&identity_key, &r.key_data, b"transition")
+            .map(drop),
+        2 => r
+            .crypto
+            .account_reference(&identity_key, &[7; 69], 3, 0)
+            .map(drop),
+        3 => r
+            .crypto
+            .contact_info_seal(&root, 1, &[3; 32], b"alias", &[1; 16])
+            .map(drop),
+        4 => r
+            .crypto
+            .export_auto_accept_key(&path("m/9'/1'/16'/1900000000'"))
+            .map(drop),
+        5 => rt
+            .block_on(r.spend.sign_message(&path("m/44'/1'/0'/0/0"), b"m"))
+            .map(drop),
+        _ => rt
+            .block_on(r.mixing.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [9; 32]))
+            .map(drop),
+    }
+}
+
+/// Many threads call every kind of signer operation while `lock()` runs
+/// round after round. Every call that returned a result must have made it
+/// (reached `Closing`) before the `lock()` ending its round returned.
+#[test]
+fn no_result_is_made_after_lock_returns() {
+    const ROUNDS: usize = 300;
+    const WORKERS: usize = 8;
+
+    let dir = tempfile::tempdir().unwrap();
+    // Unencrypted: each round's signers come without a KDF run.
+    let v = vault(&dir, None);
+    let clock = Arc::new(AtomicU64::new(0));
+    let current: Arc<Mutex<Option<Arc<Round>>>> = Arc::default();
+    let barrier = Arc::new(Barrier::new(WORKERS + 1));
+    let calls: Arc<Mutex<Vec<Call>>> = Arc::default();
+
+    let workers: Vec<_> = (0..WORKERS)
+        .map(|w| {
+            let (clock, current, barrier, calls) = (
+                clock.clone(),
+                current.clone(),
+                barrier.clone(),
+                calls.clone(),
+            );
+            thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                let stamps: Rc<RefCell<(Option<u64>, Option<u64>)>> = Rc::default();
+                {
+                    let (stamps, clock) = (stamps.clone(), clock.clone());
+                    test_hook::set(move |point| {
+                        let now = clock.fetch_add(1, SeqCst);
+                        let mut s = stamps.borrow_mut();
+                        match point {
+                            OpPoint::Opened => s.0 = Some(now),
+                            OpPoint::Closing => s.1 = Some(now),
+                        }
+                    });
+                }
+                let mut mine = Vec::new();
+                for _ in 0..ROUNDS {
+                    barrier.wait();
+                    let round = current.lock().unwrap().clone().unwrap();
+                    for n in w.. {
+                        *stamps.borrow_mut() = (None, None);
+                        let result = call(&rt, &round, n);
+                        let (opened, closing) = *stamps.borrow();
+                        mine.push(Call {
+                            round: round.index,
+                            stamps: opened.zip(closing),
+                            ok: result.is_ok(),
+                        });
+                        match result {
+                            Ok(()) => {}
+                            Err(SignerError::Locked) => break,
+                            Err(e) => panic!("call {n}: {e}"),
+                        }
+                    }
+                    barrier.wait();
+                }
+                calls.lock().unwrap().extend(mine);
+            })
+        })
+        .collect();
+
+    let mut lock_calls = Vec::with_capacity(ROUNDS);
+    let mut lock_returns = Vec::with_capacity(ROUNDS);
+    for index in 0..ROUNDS {
+        let identity = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+        let key_data = identity_public_key(&identity);
+        *current.lock().unwrap() = Some(Arc::new(Round {
+            index,
+            crypto: v.dashpay_crypto_signer(&W).unwrap(),
+            identity,
+            spend: spend_signer(&v),
+            mixing: v.mixing_signer(&W).unwrap(),
+            key_data,
+        }));
+        barrier.wait();
+        thread::sleep(Duration::from_micros(50 + (index as u64 * 37) % 400));
+        lock_calls.push(clock.fetch_add(1, SeqCst));
+        v.lock();
+        lock_returns.push(clock.fetch_add(1, SeqCst));
+        barrier.wait();
+    }
+    for w in workers {
+        w.join().unwrap();
+    }
+
+    let calls = calls.lock().unwrap();
+    let ok: Vec<_> = calls.iter().filter(|c| c.ok).collect();
+    let late: Vec<_> = ok
+        .iter()
+        .filter(|c| c.stamps.is_none_or(|(_, end)| end > lock_returns[c.round]))
+        .collect();
+    // Calls that had passed their epoch check when lock() was called and
+    // were still running: the ones lock() had to wait for.
+    let raced = ok
+        .iter()
+        .filter(|c| {
+            c.stamps.is_some_and(|(start, end)| {
+                start < lock_calls[c.round] && end > lock_calls[c.round]
+            })
+        })
+        .count();
+    let refused = calls.iter().filter(|c| !c.ok).count();
+    eprintln!(
+        "{} calls: {} results, {} refused Locked, {raced} in flight when lock() was called, \
+         {} results made after lock() returned",
+        calls.len(),
+        ok.len(),
+        refused,
+        late.len()
+    );
+    assert!(
+        late.is_empty(),
+        "{} results outlived their lock",
+        late.len()
+    );
+    assert_eq!(
+        refused,
+        ROUNDS * WORKERS,
+        "every worker ends its round Locked"
+    );
+    assert!(
+        raced >= ROUNDS / 10,
+        "only {raced} calls were in flight at a lock: the race was not exercised"
+    );
+}
+
+/// A scope change (full unlock → mixing-only) ends the epoch as a lock does,
+/// and also waits for the operation already running.
+#[test]
+fn a_scope_change_waits_for_the_operation_already_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let crypto = v.dashpay_crypto_signer(&W).unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker = {
+        let crypto = crypto.clone();
+        thread::spawn(move || {
+            test_hook::set(move |point| {
+                if point == OpPoint::Opened {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+            });
+            crypto.ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
+        })
+    };
+    entered_rx.recv().unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let unlocker = {
+        let (v, done) = (v.clone(), done.clone());
+        thread::spawn(move || {
+            v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
+            done.store(true, SeqCst);
+        })
+    };
+    thread::sleep(Duration::from_millis(200));
+    assert!(!done.load(SeqCst), "the scope change did not wait");
+    release_tx.send(()).unwrap();
+    assert!(worker.join().unwrap().is_ok());
+    unlocker.join().unwrap();
+    assert_eq!(
+        crypto
+            .ecdh_shared_secret(&path(IDENTITY_KEY), &peer())
+            .unwrap_err(),
+        SignerError::Locked
+    );
+}

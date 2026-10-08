@@ -31,6 +31,8 @@
 mod crypto;
 mod error;
 mod file;
+#[cfg(test)]
+mod lock_race_tests;
 pub mod mnemonic;
 pub mod os_store;
 pub mod paths;

@@ -130,6 +130,13 @@ file on disk is read only when the vault opens and to verify a record write. A d
 installed over the in-memory state, so a passphrase change running beside a wallet import cannot drop the
 imported seed.
 
+**Lock against running operations** (review DW-E0-03 B1). Every operation that turns the data key into a
+secret-derived result (each signer call, `reveal_mnemonic`, `export_wallet_secret`, `with_revealed_seed`) holds
+a vault operation gate from its epoch check until its result exists. `lock()`, `unlock()` and every other epoch
+change take the gate exclusively, so `lock()` returns only after the operations already running have finished
+(a signature takes about a millisecond), and every later call is `Locked`. No signature, shared secret,
+ciphertext, exported key or phrase of the old epoch is made after `lock()` returns.
+
 **Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
 or individually rolled-back record, or a changed manifest, makes unlock and reads fail with
 `vault.corrupt`. A changed wrapped key or KDF parameter fails like a wrong passphrase

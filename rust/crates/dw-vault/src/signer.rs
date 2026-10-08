@@ -10,11 +10,15 @@
 //! A [`SignerScope`] limits both the paths a signer derives and what it does
 //! with the key there ([`KeyUse`]); a refused path or use is
 //! [`SignerError::PathNotAllowed`] before the seed is read.
+//!
+//! Every call is one [`Op`]: it holds the vault's operation gate from the
+//! epoch check until its result exists, so [`Vault::lock`] waits for calls
+//! already running and every later call is [`SignerError::Locked`].
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{Message, PublicKey, Secp256k1, ecdsa};
+use dashcore::secp256k1::{All, Message, PublicKey, Secp256k1, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
@@ -23,7 +27,7 @@ use crate::SignerError;
 use crate::crypto::Key32;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::WalletId;
-use crate::vault::Vault;
+use crate::vault::{OpGuard, Vault};
 
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -202,42 +206,117 @@ impl VaultSigner {
         self.vault.network()
     }
 
-    /// Derives the extended private key at `path` for `key_use`, after the
-    /// scope check. The key erases itself when dropped.
-    fn derive(
-        &self,
-        path: &DerivationPath,
-        key_use: KeyUse,
-    ) -> Result<ExtendedPrivKey, SignerError> {
-        let network = self.vault.network();
-        if !self.scope.allows(key_use, path, network) {
-            return Err(SignerError::PathNotAllowed(path.to_string()));
+    /// The scope check of one use of the key at `path`.
+    fn check(&self, key_use: KeyUse, path: &DerivationPath) -> Result<(), SignerError> {
+        if self.scope.allows(key_use, path, self.vault.network()) {
+            Ok(())
+        } else {
+            Err(SignerError::PathNotAllowed(path.to_string()))
         }
-        let seed = self
-            .vault
-            .signing_seed(&self.wallet_id, self.epoch, self.own_key.as_deref())?;
-        let secp = Secp256k1::new();
-        let mut master = ExtendedPrivKey::new_master(network, &seed[..])
-            .map_err(|e| SignerError::Derivation(e.to_string()))?;
-        let derived = master
-            .derive_priv(&secp, path)
-            .map_err(|e| SignerError::Derivation(e.to_string()));
-        master.private_key.non_secure_erase();
-        derived
     }
 
-    /// Runs `f` on the private key at `path`, then erases the key.
+    /// Opens one operation that will use the keys `uses`: every use passes
+    /// the scope check before the seed is read, then the operation gate is
+    /// taken and the epoch checked.
+    pub(crate) fn op(&self, uses: &[(KeyUse, &DerivationPath)]) -> Result<Op<'_>, SignerError> {
+        for (key_use, path) in uses {
+            self.check(*key_use, path)?;
+        }
+        let gate = self.vault.op_guard();
+        let seed =
+            self.vault
+                .signing_seed(&gate, &self.wallet_id, self.epoch, self.own_key.as_deref())?;
+        let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
+            .map_err(|e| SignerError::Derivation(e.to_string()))?;
+        #[cfg(test)]
+        test_hook::fire(test_hook::OpPoint::Opened);
+        Ok(Op {
+            signer: self,
+            master,
+            secp: Secp256k1::new(),
+            _gate: gate,
+        })
+    }
+
+    /// Runs `f` on the private key at `path` in an operation of its own,
+    /// then erases the key.
     pub(crate) fn with_key<T>(
         &self,
         path: &DerivationPath,
         key_use: KeyUse,
-        f: impl FnOnce(&Secp256k1<dashcore::secp256k1::All>, &ExtendedPrivKey) -> T,
+        f: impl FnOnce(&Secp256k1<All>, &ExtendedPrivKey) -> T,
     ) -> Result<T, SignerError> {
-        let mut xpriv = self.derive(path, key_use)?;
-        let secp = Secp256k1::new();
-        let out = f(&secp, &xpriv);
+        self.op(&[(key_use, path)])?.with_key(path, key_use, f)
+    }
+}
+
+/// One signer call ([`VaultSigner::op`]): the wallet's master key and the
+/// vault's operation gate, held until the call's result exists. On drop the
+/// master key is erased, then the gate is released.
+pub(crate) struct Op<'a> {
+    signer: &'a VaultSigner,
+    master: ExtendedPrivKey,
+    secp: Secp256k1<All>,
+    _gate: OpGuard<'a>,
+}
+
+impl Op<'_> {
+    /// Runs `f` on the private key at `path` (scope-checked again), then
+    /// erases the key.
+    pub(crate) fn with_key<T>(
+        &self,
+        path: &DerivationPath,
+        key_use: KeyUse,
+        f: impl FnOnce(&Secp256k1<All>, &ExtendedPrivKey) -> T,
+    ) -> Result<T, SignerError> {
+        self.signer.check(key_use, path)?;
+        let mut xpriv = self
+            .master
+            .derive_priv(&self.secp, path)
+            .map_err(|e| SignerError::Derivation(e.to_string()))?;
+        let out = f(&self.secp, &xpriv);
         xpriv.private_key.non_secure_erase();
         Ok(out)
+    }
+}
+
+impl Drop for Op<'_> {
+    fn drop(&mut self) {
+        self.master.private_key.non_secure_erase();
+        #[cfg(test)]
+        test_hook::fire(test_hook::OpPoint::Closing);
+    }
+}
+
+/// Observes [`Op`]s on the current thread, for the lock-race tests: `Opened`
+/// once the epoch check passed, `Closing` just before the gate is released.
+#[cfg(test)]
+pub(crate) mod test_hook {
+    use std::cell::RefCell;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum OpPoint {
+        Opened,
+        Closing,
+    }
+
+    type Hook = Box<dyn FnMut(OpPoint)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Calls `f` at every [`OpPoint`] of the operations this thread runs.
+    pub(crate) fn set(f: impl FnMut(OpPoint) + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn fire(point: OpPoint) {
+        HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f(point);
+            }
+        });
     }
 }
 
