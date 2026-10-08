@@ -32,11 +32,14 @@
 //! `derive_priv` intermediates are not erased; key-wallet's
 //! `Mnemonic::phrase` and `to_seed` return unzeroized temporaries that are
 //! copied into `Zeroizing` buffers at once; the DEK is not mlocked. The
-//! DIP-15 helpers (`dip15`) erase every buffer they own, not libsecp256k1's
-//! or sha2's internal state. Two outputs leave in types that cannot erase
-//! themselves, because platform-wallet's traits name them: the auto-accept
-//! key as a secp256k1 `SecretKey`, and opened contactInfo plaintext as the
-//! library's `ContactInfoOpened` (a plain `Vec`).
+//! DIP-15 helpers (`dip15`) erase every buffer they own, including the whole
+//! state of the SHA-256 under their HMAC (their own implementation, since
+//! sha2's hasher cannot erase itself); not libsecp256k1's ECDH stack, nor
+//! round variables held in registers or spilled by the compiler. Two
+//! outputs leave in types that cannot erase themselves, because
+//! platform-wallet's traits name them: the auto-accept key as a secp256k1
+//! `SecretKey`, and opened contactInfo plaintext as the library's
+//! `ContactInfoOpened` (a plain `Vec`).
 
 mod crypto;
 mod dip15;
