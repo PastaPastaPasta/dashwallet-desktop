@@ -46,7 +46,7 @@ docker run --rm \
   -e DWD_SWIFT_TEST_FILTER="$filter" \
   "$IMAGE" bash -euo pipefail -c '
     mkdir -p /work
-    tar -C /src --exclude=.build --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm -cf - . \
+    tar -C /src --exclude=.build --exclude=./rust/target --exclude=./.derived --exclude=./.claude --exclude=./Artifacts --exclude=./.build-logs --exclude=.swiftpm -cf - . \
       | tar -C /work -xf -
     cd /work
     start=$(date +%s)
