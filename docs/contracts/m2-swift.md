@@ -146,8 +146,9 @@ var main: MainOptions            // startOnLogin (LaunchAtLoginManaging), showTr
 var wallet: WalletOptions        // subtractFeeByDefault, coinControl, psbtControls, keepCustomChangeAddress,
                                  // dustProtection: Amount? (engine), automaticBackups: Int (engine)
 var network: NetworkOptionsView  // proxy fields shown, disabled "requires engine update" until U1; numeric-IP validation
-var display: DisplayOptions      // language, unit, digits (M1), showMasternodesTab, showGovernanceTab,
-                                 // showGovernanceClock, thirdPartyTxURLs ("|"-separated, %s), localCurrency (list only)
+var display: DisplayOptions      // language, unit, digits (M1), thirdPartyTxURLs ("|"-separated, %s),
+                                 // localCurrency (list only); the Masternodes/Governance tab toggles and the
+                                 // governance clock are parked (Dash Core scope, m3-engine.md)
 var appearance: AppTheme         // light/dark/system (DESIGN.md R2)
 var notifications: NotificationOptions  // enabled (+ OS authorization), showCoinJoinNotifications
 var restartRequired: Bool
