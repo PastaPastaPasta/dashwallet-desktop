@@ -1,6 +1,9 @@
 extension View {
     /// A view modifier that runs an action whenever a piece of state changes.
     ///
+    /// The action runs after the view update that saw the change has finished
+    /// (dashwallet-desktop patch P8).
+    ///
     /// - Parameters:
     ///   - value: The value to observe for changes. Must be `Equatable`.
     ///   - initial: Whether to call `action` when the view first appears.
@@ -30,28 +33,30 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
     var action: () -> Void
     var initial: Bool
 
-    // TODO: Should this go in computeLayout or commit?
-    func computeLayout<Backend: BaseAppBackend>(
+    // dashwallet-desktop patch P8: compared in `commit` (upstream: `computeLayout`) and run after
+    // the update, so the ancestors see what `action` writes (the layout rule in
+    // Vendor/PATCHES.md, P8).
+    func commit<Backend: BaseAppBackend>(
         _ widget: Backend.Widget,
         children: any ViewGraphNodeChildren,
-        proposedSize: ProposedViewSize,
+        layout: ViewLayoutResult,
         environment: EnvironmentValues,
         backend: Backend
-    ) -> ViewLayoutResult {
+    ) {
         if let previousValue, value != previousValue {
-            action()
+            backend.runInMainThread(action: action)
         } else if initial, previousValue == nil {
-            action()
+            backend.runInMainThread(action: action)
         }
 
         if previousValue != value {
             previousValue = value
         }
 
-        return defaultComputeLayout(
+        defaultCommit(
             widget,
             children: children,
-            proposedSize: proposedSize,
+            layout: layout,
             environment: environment,
             backend: backend
         )

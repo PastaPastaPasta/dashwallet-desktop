@@ -100,11 +100,30 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
 - Depth: `ModelObserver.observationDepth`: `_App` -1 (it refreshes every window), windows 0. A
   `ViewGraphNode` takes its depth from the internal environment value `viewGraphDepth` that its
   parent passes on (window root view = 1).
+- `.onChange` and `.onAppear` run their actions after the update, through
+  `runInMainThread`. `OnChangeModifier` compares the value in `commit` (upstream: in
+  `computeLayout`, with a "Should this go in computeLayout or commit?" TODO), and
+  `OnAppearModifier` schedules its action when it creates its widget (upstream: called it
+  there). This matches SwiftUI, which runs these actions after the update. See the rule below
+  for why.
 - Not changed: tracking scopes still merge. The window's root node still observes nearly every
   property read in the window, so nearly any model change costs one whole-window layout (P8
   only stops the chain of them). A deeper fix would track a node's own `body` and layout
   separately from its children's. That is a larger change to upstream's update model, and it
   is not done here.
+- **Rule: views must not write observed state while they lay out** (in `body`, in
+  `computeLayout`, or from backend code that a layout calls, such as a signal handler fired by a
+  widget update). `withObservationTracking` starts observing a node's layout only when that
+  layout returns. A write made during it is missed by every ancestor that read the old value
+  earlier in the same pass. Their pending updates have already run, because they are the
+  shallowest, so they stay stale until some unrelated change. Upstream has the same race, but
+  its order is random (the review measured 3 stale runs in 12); P8 makes it certain. This is
+  why `.onChange` and `.onAppear` now run after the update. Writes made while an update commits
+  are safe: every observation of that update has started by then. `.onDisappear` was already
+  deferred (a main-actor `Task` from a `deinit`), and `.task` runs asynchronously. A known path
+  that can still write during layout: `Picker` updates its `GtkDropDown` from `computeLayout`
+  (an upstream TODO), and replacing its options can fire the previous update's selection
+  handler.
 - Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless). `container-demo.sh` runs
   it on Linux. It is built as the `DashWalletDesktopPackageTests` product because plain
   `swift test` also builds swift-winui's Windows-only C target there.
