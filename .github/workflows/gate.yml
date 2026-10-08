@@ -1,0 +1,132 @@
+# UI-stack gate measurement runs (DASHPAY §2.1 "Gate G-UI"; roadmap G-02 Tauri, G-03 SwiftCrossUI).
+#
+# Dispatch it on a gate branch (Actions ▸ UI gate ▸ Run workflow, or
+# `gh workflow run gate.yml --ref <branch> -f candidate=tauri -f os=all`). Each selected OS gets
+# the toolchains for the candidate, then runs the branch's measurement script:
+#
+#   ci/gate/<candidate>.sh       (bash on every OS, Git Bash on Windows)
+#
+# with GATE_CANDIDATE, GATE_OS (linux|macos|windows) and GATE_OUT (an empty directory) set, and
+# GATE_ARGS from the `args` input. Everything the script writes to GATE_OUT (screenshots, timings,
+# trees, logs) is uploaded as the artifact gate-<candidate>-<os>. The scripts belong to the gate
+# tasks; this workflow only provides the runners. See docs/ci.md.
+name: UI gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Gate candidate
+        type: choice
+        options: [tauri, swiftcrossui]
+        required: true
+      os:
+        description: Runners
+        type: choice
+        options: [all, linux, macos, windows]
+        default: all
+      args:
+        description: Extra arguments for ci/gate/<candidate>.sh (GATE_ARGS)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  DWD_MIN_FREE_GB: "5"
+  GATE_CANDIDATE: ${{ inputs.candidate }}
+  GATE_ARGS: ${{ inputs.args }}
+
+jobs:
+  measure:
+    name: ${{ inputs.candidate }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os == 'all' && '["linux","macos","windows"]' || format('["{0}"]', inputs.os)) }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-24.04","macos":"macos-latest","windows":"windows-latest"}')[matrix.os] }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      GATE_OS: ${{ matrix.os }}
+      # As in ci.yml's Windows jobs (ci/windows/unistd-shim/unistd.h); unused elsewhere.
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      - name: Git for Windows settings (long paths, LF checkouts)
+        if: ${{ matrix.os == 'windows' }}
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Measurement script present
+        run: |
+          script="ci/gate/$GATE_CANDIDATE.sh"
+          if [[ ! -f "$script" ]]; then
+            echo "::error::$script does not exist on ${GITHUB_REF_NAME}. The gate task adds it (docs/ci.md, \"UI gate\")."
+            exit 1
+          fi
+          echo "GATE_OUT=$RUNNER_TEMP/gate-out" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/gate-out"
+      - name: Free disk space (Linux)
+        if: ${{ matrix.os == 'linux' }}
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: gate-${{ inputs.candidate }}
+      - name: Linux packages (WebKitGTK or GTK 4, Xvfb, AT-SPI)
+        if: ${{ matrix.os == 'linux' }}
+        run: ci/github/linux-host-deps.sh "$GATE_CANDIDATE"
+
+      # Tauri: Node and pnpm from apps/desktop/package.json (the gate script fetches its own browsers).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: ${{ inputs.candidate == 'tauri' }}
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ inputs.candidate == 'tauri' }}
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        if: ${{ inputs.candidate == 'tauri' }}
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      # SwiftCrossUI: Swift 6.3.3 (Linux), Xcode's Swift (macOS), the Windows toolchain.
+      - name: Swift (Linux, swiftly)
+        if: ${{ inputs.candidate == 'swiftcrossui' && matrix.os == 'linux' }}
+        run: ci/github/linux-swiftly.sh 6.3.3
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
+        if: ${{ inputs.candidate == 'swiftcrossui' && matrix.os == 'windows' }}
+        with:
+          swift-version: swift-6.3.3-release
+          swift-build: 6.3.3-RELEASE
+      - name: Swift version
+        if: ${{ inputs.candidate == 'swiftcrossui' }}
+        run: swift --version
+
+      - name: ci/gate/${{ inputs.candidate }}.sh
+        run: |
+          read -ra args <<<"$GATE_ARGS"
+          bash ci/gate/"$GATE_CANDIDATE".sh ${args[@]+"${args[@]}"}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gate-${{ inputs.candidate }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/gate-out/
+          if-no-files-found: warn

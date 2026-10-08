@@ -1,0 +1,150 @@
+# Nightly (roadmap T-03; DASHPAY §6 tiers T1 and GUI):
+# - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli;
+# - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
+#   Xvfb in Docker, M1 and M2 flows).
+#
+# `schedule` runs only from the repository's default branch. Once the setup steps have passed,
+# every suite step runs even when an earlier one failed, so one run reports them all.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  DWD_MIN_FREE_GB: "5"
+  DASHCORE_DIR: ${{ github.workspace }}/.dashcore
+  # Owner-only scratch for the functional framework (dwcli refuses a database below a
+  # group-writable directory).
+  DWD_FUNC_TMP: ${{ github.workspace }}/.functional-tmp
+  LOGS: ${{ github.workspace }}/regtest-logs
+
+jobs:
+  regtest:
+    name: Regtest suites (T1)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      # The pytest suites use the image built by the "Build the regtest image" step.
+      DWD_REGTEST_BUILD: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - name: Build dwcli
+        working-directory: rust
+        run: |
+          cargo build -p dwcli --locked
+          echo "DWCLI=$PWD/target/debug/dwcli" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dwd-dashcore
+          key: dashcore-${{ runner.os }}-${{ hashFiles('regtest/scripts/fetch-dashcore.sh') }}
+      - name: Dash Core release (verified) and Python environments
+        run: |
+          sh regtest/scripts/fetch-dashcore.sh "$DASHCORE_DIR"
+          uv venv regtest/harness/.venv --python 3.12
+          uv pip install --python regtest/harness/.venv/bin/python -r regtest/harness/requirements.txt
+          uv venv .func-venv --python 3.12
+          # dash_hash 1.4.0 (X11 for the functional framework) from its commit archive, hash-checked.
+          curl -fsSL -o "$RUNNER_TEMP/dash_hash.tar.gz" \
+            https://github.com/dashpay/dash_hash/archive/7af387315d9064ec3a751545fee0524d997c8867.tar.gz
+          echo "7153d3341e3a6b1a2a1365dbdf9ff6315fa7c6c67b60506e91ffd93383a601d5  $RUNNER_TEMP/dash_hash.tar.gz" | sha256sum -c -
+          uv pip install --python .func-venv/bin/python "$RUNNER_TEMP/dash_hash.tar.gz"
+          mkdir -p "$LOGS"
+      - name: Build the regtest image
+        id: setup
+        run: docker compose -f regtest/docker-compose.yml build dashd
+
+      - name: harness (smoke)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_smoke.py tests/test_harness.py --junitxml="$LOGS/harness.xml"
+      - name: l1-sync
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_l1_sync.py --junitxml="$LOGS/l1-sync.xml"
+      - name: l1-send
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_l1_send.py --junitxml="$LOGS/l1-send.xml"
+      - name: l2-tools
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_l2_tools.py --junitxml="$LOGS/l2-tools.xml"
+      - name: restore
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_restore.py --junitxml="$LOGS/restore.xml"
+      - name: functional (masternodes, ChainLocks, CoinJoin probe; Docker)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_FUNC_LOGDIR: ${{ env.LOGS }}/functional
+        run: regtest/scripts/run-functional.sh dwd_mn_chainlock.py dwd_coinjoin_probe.py
+      - name: coinjoin (our client against 4 masternodes; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+        run: |
+          regtest/functional/run.sh dwd_coinjoin_client.py --portseed=4711 --loglevel=INFO \
+            > "$LOGS/coinjoin.log" 2>&1 || { tail -n 200 "$LOGS/coinjoin.log"; exit 1; }
+          tail -n 20 "$LOGS/coinjoin.log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: regtest-logs
+          path: regtest-logs/
+          if-no-files-found: warn
+
+  # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
+  # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
+  crossui-linux:
+    name: SwiftCrossUI AT-SPI demo (GUI, Linux; non-blocking)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: scripts/crossui-linux-demo.sh (M1 and M2 flows)
+        env:
+          DWD_CROSSUI_SUITE: m2
+          DWD_LINUX_JOBS: "4"
+        run: scripts/crossui-linux-demo.sh "$RUNNER_TEMP/crossui"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: crossui-linux-demo
+          path: ${{ runner.temp }}/crossui/
+          if-no-files-found: warn
