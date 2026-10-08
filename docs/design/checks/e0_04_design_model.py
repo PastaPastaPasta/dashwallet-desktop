@@ -102,6 +102,8 @@ class S:
     crashes: int = 0  # crashes still allowed
     rowless: bool = False  # the artifact has no row (a TxDraft send, an ST)
     rl_admitted: bool = False  # a row-less First was admitted in this process
+    rl_out: bool = False  # a hand-off of those row-less bytes may have let them out
+    pre_running: frozenset = frozenset()  # Firsts running at the freeze
     repeats: int = 0  # times O may hand the same bytes off again
     k: str = "none"  # a spawned cleanup task, with the verdict it settles
     expired: frozenset = frozenset()  # actors whose permit deadline passed
@@ -331,8 +333,29 @@ def write_failures(s: S, who: str, drop: frozenset, m: frozenset) -> Iterator[tu
     yield "D write failed but reached disk: Ambiguous, Deferred", replace(bad, j_disk=D)
 
 
-def transport_steps(s: S, who: str, permit: bool) -> Iterator[tuple]:
+def transport_steps(s: S, who: str, permit: bool, m: frozenset) -> Iterator[tuple]:
     drop = s.permits - {who}
+    if s.rowless:
+        out = replace(s, rl_out=True)
+        yield "transport returns: sent", put(
+            replace(send(out, who), permits=drop), who, "done", "Sent"
+        )
+        # A definite rejection: these bytes did not leave in this call. The
+        # fence forgets the id (and refunds) unless an earlier hand-off of
+        # them may have let them out.
+        n = replace(s, permits=drop)
+        if not s.rl_out:
+            n = replace(n, tcalled=False, committed=False)
+            if "rowless-keep-on-notsent" not in m:
+                n = replace(n, rl_admitted=False)
+        yield "transport rejects: definitely not sent", put(n, who, "done", "NotSent" if not s.rl_out else "MaybeSent")
+        if permit and who not in s.expired:
+            yield "permit deadline passes: MaybeSent", put(
+                replace(out, permits=drop, expired=s.expired | {who}), who, "late", "MaybeSent"
+            )
+        elif not permit:
+            yield "resend times out: MaybeSent", put(out, who, "late", "MaybeSent")
+        return
     yield "transport returns: sent", put(
         replace(send(s, who), permits=drop), who, "done", "Sent"
     )
@@ -442,9 +465,9 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
     elif st == "retry":
         yield from commit_steps(s, who, True, m)
     elif st == "transport":
-        yield from transport_steps(s, who, True)
+        yield from transport_steps(s, who, True, m)
     elif st == "resend":
-        yield from transport_steps(s, who, False)
+        yield from transport_steps(s, who, False, m)
     elif st == "late":
         yield "bytes leave late", put(send(s, who), who, "done")
         yield "bytes never leave", put(s, who, "done")
@@ -461,15 +484,20 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
             )
         else:
             yield "build future dropped: entry not Unsent, keep", replace(s, o="done")
-    if who == "O" and st == "done" and s.repeats > 0 and s.o_verdict in ("Sent", "MaybeSent"):
+    if who == "O" and st == "done" and s.repeats > 0 and s.o_verdict in ("Sent", "MaybeSent", "NotSent"):
+        # A new call: its verdict replaces the earlier one.
         yield "hand the same bytes off again", replace(
-            s, o="admit", repeats=s.repeats - 1
+            s, o="admit", repeats=s.repeats - 1, o_verdict=None
         )
 
 
 def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
     if s.lock == "idle":
-        n = replace(s, lock="draining", snap=s.permits)
+        running = frozenset(
+            x for x in ("O", "R")
+            if actor(s, x) in ("commit", "transport") and x not in s.expired
+        )
+        n = replace(s, lock="draining", snap=s.permits, pre_running=running)
         if "revoke-in-drain" not in m and n.lease == "live":
             n = replace(n, lease="revoked")
         yield "lock_vault called: freeze", n
@@ -479,11 +507,11 @@ def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
         # a First begun before the freeze, still running, not past its
         # deadline.
         running = {
-            x for x in s.snap
+            x for x in s.pre_running
             if actor(s, x) in ("commit", "transport") and x not in s.expired
         }
         if not held or "no-drain-wait" in m:
-            n = replace(s, lock="returned", snap=frozenset())
+            n = replace(s, lock="returned", snap=frozenset(), pre_running=frozenset())
             if running:
                 n = flag(n, "early_return")
             if "revoke-in-drain" in m and n.lease == "live":
@@ -739,6 +767,7 @@ MUTATIONS = {
     "inline-cleanup": "the refused caller cleans up inline, so a drop loses it",
     "every-refuser-cleans": "every refused caller cleans up, not just the CAS winner",
     "permit-ends-at-first": "the permit is dropped when the transport call starts",
+    "rowless-keep-on-notsent": "a row-less id stays admitted after a definite not-sent",
 }
 
 
@@ -926,16 +955,18 @@ def creation_race(rule: str) -> Optional[tuple]:
     tries a First at tick a. lock_vault is called at tick 0 and its freeze
     revokes every lease in the table. Returns the first (b, d, a) at which a
     First under a lease begun before the call is admitted at or after it."""
+    def lock_gen(t: int) -> int:
+        return 1 if t >= 0 else 0  # the freeze at tick 0 increments it
+
     for b in range(-3, 3):
         for d in (0, 1, 2):
             ins = b + d
+            read = lock_gen(b)
+            inserted = rule == "no-gen-check" or lock_gen(ins) == read
             for a in range(ins, 6):
-                if ins < 0:
-                    live_at_a = a < 0  # in the table at the freeze: revoked at 0
-                elif b < 0 and rule == "design":
-                    live_at_a = False  # lock_gen moved since b: insert refused
-                else:
-                    live_at_a = True
+                # In the table at the freeze (inserted before tick 0): revoked.
+                revoked = ins < 0 <= a
+                live_at_a = inserted and not revoked
                 if live_at_a and b < 0 and a >= 0:
                     return (b, d, a)
     return None

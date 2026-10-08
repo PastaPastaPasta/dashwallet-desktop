@@ -56,8 +56,9 @@ open-issues list) and the draft clauses of the E0-04 row in [`ROADMAP.md`](ROADM
    again. Never-dispatched rows are cleaned up.
 9. **Leases** are engine objects with a 128-bit random id. A lease is bound to one wallet and one flow, and holds
    scoped signers and per-purpose budgets. Its tokens are dropped once the signers are issued. On a locked vault it
-   also holds one `KeyHold`, the only strong reference to the grant's own key. It drops the hold when the engine's
-   InstantSend wait ends or the flow falls back to the ChainLock wait.
+   also holds one `KeyHold`, the only strong reference to the grant's own key. It drops the hold when the library's
+   InstantSend window, reported through `proof_wait_started`, ends, or when the flow falls back to the ChainLock
+   wait.
 10. **Grants:**
     - `PlatformOp{max_duffs, max_credits}`.
     - A new `IdentityScan` purpose, the only one that releases the scan master key.
@@ -221,7 +222,9 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   1. read `lock_gen`;
   2. redeem every grant (so the 120 s grant lifetime cannot run out mid-flow, DASHPAY §2.3), build the one `KeyHold`
      and issue every signer the lease's purposes need, then drop the tokens;
-  3. insert into the table, in a J step that refuses if `lock_gen` has changed since step 1.
+  3. insert into the table, in a J step that refuses if `lock_gen` has changed since step 1. If only the vault's
+     epoch moved since step 2 (an unlock or a scope change, not a lock), the lease is inserted as `NeedsGrant`, since
+     its tokens are already dead.
 
   If step 3 refuses, the hold and the signers are dropped and the call fails `lease.locked`; the flow asks again.
 - Every token must be for the lease's wallet.
@@ -309,25 +312,37 @@ struct LeaseEntry {                      // inside LeaseTable, under J
 
 An own-key lease, one issued on a `Locked` or `UnlockedMixingOnly` vault, holds a `KeyHold` (§3.5).
 
-- **Which flows may hold one.** An own-key registration or top-up must use DASHPAY §2.6's split flow:
-  1. `build_asset_lock_transaction` (fenced);
-  2. the engine's own proof wait;
-  3. `AssetLockFunding::FromExistingAssetLock`.
+- **Which flows may hold one.** An own-key registration or top-up runs as two library calls, so that the ChainLock
+  fallback is visible to the engine:
+  1. `AssetLockManager::create_funded_asset_lock_proof` (`build.rs:806`). It builds, registers, tracks and
+     broadcasts the lock through the fence, then waits 300 s for a proof inside the library (`build.rs:1265-1300`),
+     and returns a timeout rather than falling back to the ChainLock wait.
+  2. `AssetLockFunding::FromExistingAssetLock` with the proof, which signs and submits the identity transition.
 
-  The monolithic library path falls back to the ChainLock proof where the engine cannot see it (F14), so it can run
-  only under a vault-key lease.
+  The one-call path (`register_identity_with_funding` on Core balance) falls back to the ChainLock proof inside the
+  library, where the engine cannot see it (F14), so it may run only under a vault-key lease.
+- **What a leased flow must never use.** `build_asset_lock_transaction` is build-only. It returns the transaction
+  unsent, untracked and without its reservation token (`build.rs:91-117`, `:144`), and the pin has no public API to
+  track a prebuilt lock. A leased flow therefore never hands off an asset lock built that way. The fence enforces this:
+  an asset-lock transaction (special type 8) arriving as a row-less First is refused (§5.4), because every asset lock
+  must be registered.
 - **Without a proof wait:** `key_until = created + 120 s`, the grant TTL.
 - **The InstantSend window:**
-  - The split flow calls `lease.begin_proof_wait()` when it starts the engine's InstantSend wait. That sets
-    `key_until = now + 300 s` and moves the lease to `AwaitingProof`.
-  - That is the window of DASHPAY §2.6, started from an in-memory instant. Nothing persisted moves it (DASHPAY §3.4).
-  - The engine's own wait uses the same 300 s, so the key cannot drop before an InstantSend lock that the wait would
-    still accept.
-  - If a flow never calls it, a funding permit's `finish` sets `key_until = max(key_until, finish + 300 s)` as a floor.
+  - The library's proof wait starts only after its broadcaster's acceptance wait (§5.1, step 3), which can take 65 s
+    or more (F2). So the PR adds an informational callback, `DispatchFence::proof_wait_started(wallet, txid,
+    timeout)`. `create_funded_asset_lock_proof` calls it right before its 300 s wait, and the fence sets the origin
+    lease's `key_until = now + timeout` and moves it to `AwaitingProof`.
+  - The key therefore lasts exactly as long as the library's own InstantSend window, which is the window of DASHPAY
+    §2.6, started from an in-memory instant. Nothing persisted moves it (DASHPAY §3.4).
+  - Without that callback (an older pin), the floor is `finish + 300 s + A`, where `A` is the acceptance wait's
+    configured bound (65 s at the pin). The key then outlives the window by at most `A`, which is the price of not
+    seeing its start.
 - **Expiry:** a timer task drops the `KeyHold` at `key_until` and moves the lease to `Parked{ProofWaiting}`.
-- **ChainLock fallback:** when the engine's wait gives up on InstantSend (`FinalityTimeout`), the flow calls
-  `lease.park(ProofWaiting)`, which drops the key at once.
-- **Resuming:** a parked registration resumes with a new grant and a new lease ("Finish registering @alice").
+- **ChainLock fallback:** when `create_funded_asset_lock_proof` returns its timeout, the flow calls
+  `lease.park(ProofWaiting)`, which drops the key at once. The registration row records `ProofWaiting{CL}` and waits
+  for the ChainLock without any key.
+- **Resuming:** a parked registration resumes with a new grant and a new lease ("Finish registering @alice"), through
+  step 2.
 - **Unlocked vault (vault-key leases):** no `KeyHold`. The lease lives until the flow ends or a revoking call ends it.
 
 ### 4.5 The background `DashPayCrypto` lease
@@ -336,6 +351,9 @@ An own-key lease, one issued on a `Locked` or `UnlockedMixingOnly` vault, holds 
 - **It exists** while the vault is `Unlocked` with scope Full, `Unencrypted` or `NoKeys`. It is created on the
   `VaultLockState` event, or at bring-up if the vault is already in one of those states.
 - **It is dropped** in the freeze step of `lock_vault` and on any move to `Locked` or `UnlockedMixingOnly`.
+- **It is created, and re-created, under the same `lock_gen` rule as `begin_lease` (H8).** Its insert refuses if a
+  freeze happened since the creation began, so a re-creation racing `lock_vault` can never leave a background lease
+  behind the freeze.
 - **It is re-created** after an epoch change that keeps the vault prompt-free: a passphrase change, or a scope change
   back to Full. The engine notices those through `Vault::epoch()` in `vault_op` and in the dedicated methods (§4.3),
   not through `VaultLockState`, which a passphrase change does not emit.
@@ -384,7 +402,6 @@ impl Lease {
     pub fn contact_crypto(&self) -> Result<VaultContactCrypto, LeaseError>;
     pub fn spend(&self) -> Result<LeaseSpend<'_>, LeaseError>;        // for TxDraft::prepare_with_lease
     pub fn scope<F: Future>(&self, f: F) -> impl Future<Output = F::Output>;  // DispatchScope::lease(self.id)
-    pub fn begin_proof_wait(&self);                                   // §4.4
     pub fn park(&self, reason: ParkReason);
     pub fn rebind(&self, grant_id: &str) -> Result<(), LeaseError>;
     pub fn end(self: Arc<Self>);
@@ -464,6 +481,8 @@ pub enum Verdict {
     async fn admit(&self, req: DispatchRequest<'_>) -> Verdict;
     /// One J step, no I/O; callable from Drop.
     fn abandon(&self, wallet: WalletId, txid: Txid) -> Abandon;   // Revoked{cleanup} | Committed
+    /// Informational: the library's proof wait for this asset lock starts now (§4.4).
+    fn proof_wait_started(&self, wallet: WalletId, txid: Txid, timeout: Duration);
 }
 impl DispatchPermit {
     pub fn deadline(&self) -> Instant;
@@ -479,7 +498,8 @@ decides that for such an artifact. A tracked row the journal does not know is `D
 
 ```
 admit(req):
-  if the journal is not loaded yet: → Deferred                    // never waits (§5.8)
+  if req is a tracked row and the journal is not loaded: → Deferred   // never waits (§5.8)
+  if req is unscoped: debug assertion and Notice{UnscopedDispatch}, whatever the verdict (H7)
   lock J
     e = journal_mem.get(req.wallet, artifact_id)
     match e:
@@ -498,12 +518,14 @@ admit(req):
       none, tracked_row      → Deferred + Notice{DispatchRecordMissing}
                                // unknown provenance: never sent, never cleaned up (Q16)
       none, row-less         → if id ∈ rowless_admitted: → Resend          // the same bytes again (§5.5)
+                               else if req is an asset-lock tx: → Refused{cleanup: false}   // must be registered
                                else match req.origin:
-                                 Lease(L) live, admissible, Credits fit → p := new permit;
+                                 Lease(L) live, and a ST whose Credits fit, or a Core tx with
+                                 a Spend charge recorded for this txid (TxDraft) → p := new permit;
                                                                   insert id → First(p)
                                  Lease(L) otherwise             → Refused{cleanup: false}
                                  Unleased(_)                    → insert id → FirstUnleased
-                                 None                           → Refused{cleanup: false}   // fail closed
+                                 None                           → Deferred + Notice   // fail closed, no false verdict
   unlock J
 ```
 
@@ -516,6 +538,10 @@ admit(req):
 - **The write is spawned inside the J step**, on the blocking pool, and that task owns the resolution of
   `Committing`. A dropped `admit` future therefore never leaves an entry in `Committing` without a writer; the
   orphaned write still resolves it to `Dispatching` or `Ambiguous` (the model's `W` steps).
+- **Fail closed without a false verdict.** An unscoped row-less call that is not in the set gets `Deferred`, not
+  `Refused`. Nothing is handed off, but nothing is called definitely not sent either, since its history is unknown (a
+  load replay, say). A missing scope is an engine bug, and the debug assertion and the `Notice` make it visible in
+  tests, even when the answer is a `Resend`.
 - **No waiting on another caller.** A caller that finds `Committing(other)` gets `Deferred` at once and keeps
   everything. The committer resolves the entry within H. A resume that was deferred simply ends, and the next resume
   finds `Dispatching`.
@@ -553,7 +579,10 @@ admit(req):
   - Other refused callers drop their claims and report Cancelled.
 - **The row-less set.**
   - The fence keeps, in memory and per process, the ids of row-less artifacts it answered `First` or `FirstUnleased`.
-  - A later `admit` of the same id is a `Resend`, whatever its origin. That covers:
+  - An id leaves the set when its permit finishes `NotSent` (a definite rejection), unless an earlier hand-off of
+    the same bytes finished `Sent` or `MaybeSent`. That way a definite not-sent does not turn a later identical
+    signature (F10) into a lease-free Resend.
+  - A later `admit` of an id still in the set is a `Resend`, whatever its origin. That covers:
     - a `TxDraft` repeat (`send/mod.rs:1052-1080`);
     - a user resend (`tx_actions.rs:415`);
     - a registration re-run from an existing lock that signs identical bytes (F10).
@@ -561,9 +590,10 @@ admit(req):
     Under a revoked lease those bytes would otherwise get a "definite" refusal while dash-spv may still be
     rebroadcasting them (F3).
   - The set is not persisted, and does not need to be. Row-less bytes are handed off only in the process that signed
-    them (dash-spv's broadcast set is not persisted either, F3, and dw has no load replay, F8). A flow that resumes in
-    a later process signs again, and its own persisted state (the `dp_registration` phase, say) already records the
-    earlier MaybeSent.
+    them (dash-spv's broadcast set is not persisted either, F3, and dw has no load replay, F8). The exception is a
+    flow that resumes in a later process and signs identical bytes again (F10). Such a flow must read a `Refused`
+    as MaybeSent whenever its own persisted state (the `dp_registration` phase, say) records an earlier hand-off
+    of the same step (H10).
 - **`finish(outcome)`:**
   - It records `Sent`, `MaybeSent` (also the drop default) or `NotSent` on the permit.
   - It feeds the lock report and, for a funding permit, the floor of the IS window (§4.4).
@@ -591,6 +621,7 @@ admit(req):
 | L12 | Provide a load-time re-reservation: reserve the inputs of a tracked row the host names (owner: the row), released when the row reaches a terminal status. The host calls it for every possibly-sent row in its catch-up (H6). |
 | L13 | After `admit` returned `First` for a tracked row (its `Dispatching` record is durable), a transport rejection neither untracks the row nor releases its inputs. The pin's `Rejected` arm (`build.rs:1144-1233`) applies only before `admit`, through `abandon`. |
 | L14 | Hold a drop guard from `track` until `admit` has decided, whose `Drop` calls `abandon` and spawns its cleanup. |
+| L15 | `create_funded_asset_lock_proof` calls `fence.proof_wait_started` right before its proof wait (§4.4). |
 
 With no fence installed, the library behaves exactly as at the pin, so other hosts (iOS) are unaffected.
 
@@ -603,9 +634,10 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H3 | Every permit has a deadline of grant + H, and the drain treats a permit past its deadline as ended, whether or not the library dropped it. |
 | H4 | Revocation (the freeze) and the permit snapshot happen in one J step, before `lock_vault`'s first await. |
 | H5 | Lease ids are 128-bit random. The journal stores the id, the wallet and the process nonce, and every check compares the wallet too. |
-| H6 | **Catch-up at load.** After the journal is loaded and before any user flow, the engine resumes every tracked `Built` or `Broadcast` row of every loaded wallet, unscoped, so the journal decides. A row at `Dispatching` or `PreFence` first gets its inputs reserved again (L12). The same runs when a closed wallet is opened. |
+| H6 | **Catch-up at load**, in two parts. (1) Synchronously, after the journal is loaded and before any user flow or build can run, the engine re-reserves the inputs of every tracked row at `Dispatching` or `PreFence` (L12). (2) After SPV has started (E0-05's bring-up), it spawns, and does not await, an unscoped resume of every tracked `Built` or `Broadcast` row, so the journal decides. Resumes of `Broadcast` rows wait for proofs, and an early resume would only miss the 15 s readiness wait and defer for up to 10 minutes (`recovery.rs:211, 929-932`). The catch-up, the deferred-resume task and a user's "Finish registration" can overlap safely, because each is decided by the journal. Both parts run again when a closed wallet is opened. |
 | H7 | Every engine call site that can hand off runs inside a `DispatchScope`, including hand-offs inside a task the engine spawns (`tx_actions.rs:414`). |
-| H8 | `begin_lease` reads `lock_gen` before it redeems any grant, and its insert refuses if `lock_gen` changed (§4.1, §8.3). |
+| H8 | Every way a lease enters the table (`begin_lease`, the background lease's creation and re-creation, `rebind`) reads `lock_gen` before it takes a token or signer, and its insert refuses if `lock_gen` changed (§4.1, §4.5, §8.3). An insert that finds only the vault epoch moved inserts `NeedsGrant`. |
+| H10 | A flow that resumes in a later process treats a `Refused` (or `Cancelled`) of a step as MaybeSent when its persisted state records an earlier hand-off of that step (§5.5). DP1-02's registration rows and DP3-01's payment locks carry that record. |
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
 
 ### 5.8 Lock order and why nothing can deadlock
@@ -787,7 +819,7 @@ reconstruction finds it as `RecoveredFromChain` (Q11).
 |---|---|---|
 | `resume_asset_lock`, Built arm (`recovery.rs:1176`) and Broadcast arm (`:1491`), all callers (F6) and dw's catch-up at load (H6) | CoreTx, `tracked_row`, usually unscoped | the journal (`PreFence` for rows older than the journal) |
 | deferred-resume task (`recovery.rs:592`) | same; spawned by the library, unscoped | the journal |
-| load replay (`load.rs:620`) | CoreTx, row-less, unscoped | never runs in dw (F8); if it did, the fail-closed rule would refuse it, which is safe (nothing sent) |
+| load replay (`load.rs:620`) | CoreTx, row-less, unscoped | never runs in dw (F8); if it did, it would get `Deferred` and a `Notice`: nothing sent now, and no false "definitely not sent" for bytes that were probably sent before |
 | dash-spv's 600 s rebroadcast (F3) | not at all | an entry exists only after a fenced hand-off, so membership is the record |
 | shielded redrives (F11, 1.1) | state transition, persisted before dispatch | must be registered artifacts, keyed by ST hash, before the shielded work ships (X-phase) |
 
@@ -900,6 +932,7 @@ session. E0-05 owns the cancelation of the bring-up task. This design adds only 
 | close | all `Revoked{Close}` | yes, then abort flows | dropped |
 | `change_passphrase` (vault stays unlocked; epoch ends) | all `Revoked{PassphraseChange}` (Q4) | yes | re-created |
 | `remove_wallet` | that wallet's, `Revoked{WalletRemoved}` | yes (that wallet's permits) | that wallet's dropped |
+| close a wallet (dash-qt "Close Wallet", QT-101) | that wallet's, `Revoked{WalletClosed}` | yes (that wallet's permits) | that wallet's dropped; H6 runs again when it is opened |
 | unlock or scope change (epoch ends) | `NeedsGrant`, `KeyHold` dropped (Q5) | no | created or dropped by the new state |
 | encrypt, recover, destroy | as `lock_vault` | yes | dropped |
 | any other call that ends the epoch (caught by `vault_op`'s epoch check, H9) | `NeedsGrant` | no | re-created if the vault is prompt-free |
@@ -997,7 +1030,8 @@ Limits. What the model does not cover:
 - the vault gate's own ordering, which E0-03's lock-race tests cover.
 
 Some checks are confirmations rather than discoveries, and they are labelled as such. In Part 2, "no First after
-the call" and "a second call joins" follow from revocation at the freeze, so the design passes them by construction.
+the call", "a second call joins" and the creation race (a `lock_gen` read and compare) follow from revocation at the
+freeze and from H8, so the design passes them by construction.
 Their teeth are the rejected rules, which fail them. Part 1's "deadlock" check ignores only the step that drops
 `lock_vault`'s future, so a holder that could never end would show; no mutation produces one, and Part 3 covers lock
 order.
@@ -1014,7 +1048,7 @@ It is a model of this design's decisions, not a test of the code.
 | I4 | "a possibly-sent row cleaned up"; "reported not sent, but sent or still sendable" (also for a row-less repeat) |
 | I6 | "the cleanup ran twice in one process"; "another build's reservation released"; "a never-dispatched row left reserved" (a dropped build or caller) |
 | I3 | "an artifact both Revoked and Dispatching" |
-| I5 | "lock_vault returned while a hand-off it waits for ran". It is judged from the hand-offs themselves (a First begun before the freeze, still running, not past its deadline), not from the permit set. |
+| I5 | "lock_vault returned while a hand-off it waits for ran". It is judged from the hand-offs running at the freeze, recorded at the freeze itself (a First still in its write or transport and not past its deadline), not from the permit set. |
 | I7 | "a commit under an origin from an earlier process" |
 | I9 | Part 2: a lease begun before the call and inserted after it |
 | H6, L12 | "inputs of a possibly-sent row left selectable after load"; "a genuine possible dispatch was not resent" |
@@ -1060,6 +1094,7 @@ It is a model of this design's decisions, not a test of the code.
 | `inline-cleanup` | the refused caller cleans up inline | never-dispatched row left reserved (caller dropped) |
 | `every-refuser-cleans` | every refused caller cleans up | the cleanup ran twice in one process |
 | `permit-ends-at-first` | the permit is dropped when the transport starts | lock_vault returned while a hand-off ran |
+| `rowless-keep-on-notsent` | a row-less id stays in the set after a definite not-sent | a first actual send after lock_vault returned |
 
 - `split-cas`, a split read and act whose act is a compare-and-set, passes. It is what the single J step guarantees.
 - Part 2 fails each of `sequential`, `transport-deadline`, `host-waits`, `drop-reopens` and `no-gen-check`.
@@ -1075,7 +1110,8 @@ check DASHPAY §2.6 names.
     `Sdk::with_dispatch_fence`; the call and the per-attempt clamping in `StateTransition::broadcast`;
   - (2) platform-wallet: `FencedBroadcaster`, the SPV split, `register` with the debit, the synchronous `abandon`
     and its drop guard, the spawned cleanup with the token kept on the in-memory row, the load-time re-reservation,
-    `DispatchScope`, and the obligations L1–L14 with their tests.
+    `DispatchScope`, `proof_wait_started`, and the obligations L1–L15 with
+    their tests.
 
   With no fence installed, behaviour is unchanged.
 - **Carriage:** the desktop carries it as a cherry-pick onto its pin branch (DEC-18), next to E0-11's carried branch.
@@ -1137,7 +1173,7 @@ abortable rendezvous from E0-03 `a79b3a9`.
 - Key hold:
   - `authorize_set` on a locked vault yields one `KeyHold`, and no token copy of the key survives (the erased
     buffers are checked under the test allocator);
-  - `begin_proof_wait` starts the 300 s window, and `park` on `FinalityTimeout` drops the key.
+  - `proof_wait_started` starts the 300 s window, and `park` on the proof wait's timeout drops the key.
 - Real time: the same bounds, within 250 ms.
 
 **Journal (P2)**
@@ -1161,7 +1197,14 @@ and for a state transition.
 - **Barrier 2 with a stalled `Dispatching` write:** the same bound; the flow reports Deferred and MaybeSent, and no
   transport call starts after the deadline (L5).
 - **A row-less repeat:** a `TxDraft` under a lease times out (MaybeSent), `lock_vault` returns, and the repeat is
-  admitted as a Resend. It is never reported Cancelled, and the inputs stay reserved.
+  admitted as a Resend. It is never reported Cancelled, and the inputs stay reserved. In a variant the first
+  attempt is a definite `NotSent`: the id leaves the set, and the repeat after the lock is refused.
+- **The fence's row-less guards:** a row-less asset-lock transaction is refused. A leased row-less Core send with no
+  `TxDraft` Spend charge for its txid is refused. An unscoped call gets `Deferred` and a `Notice`, and an unscoped
+  repeat gets `Resend` and a `Notice`.
+- **The key window:** `proof_wait_started` sets `key_until` to its timeout. A fake library that delays the proof wait
+  by the acceptance bound keeps the key until the wait's own end, and a timeout from
+  `create_funded_asset_lock_proof` drops it at once.
 - **A dropped build:** the build future is dropped after `track` and before `admit` decides. The drop guard
   abandons, the spawned cleanup untracks the row and releases its inputs once, and nothing is recorded. The same
   holds when the CAS winner's future is dropped right after its verdict.
@@ -1181,7 +1224,9 @@ and for a state transition.
 6. **A deleted journal:** the next session seeds it again; every `Built` row is resent; nothing is cleaned up.
 7. **A failed `Dispatching` write:** no hand-off now; the row and reservation are kept.
 8. **A row with no entry** (an older `wallet.sqlite` copied in by hand): not sent, not cleaned up, `Notice`.
-9. **The catch-up at load (H6):** after a kill at each step of §7.2, the next session's catch-up does what the
+9. **The catch-up at load (H6),** run with SPV deliberately slow to start: the re-reservation happens before any
+   build can run, the resumes start only after SPV, and bring-up does not wait for them.
+10. **Its outcomes:** after a kill at each step of §7.2, the next session's catch-up does what the
    table's last column says. Entry 1 rows get their inputs reserved again before any other build can select them,
    and a build started right after the catch-up cannot spend them.
 
@@ -1250,14 +1295,15 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
 | Q9 | During a drain, does `begin_lease` wait or fail? | **Wait** (at most H). The UI is showing "Locking…" then anyway, and waiting keeps "lock_vault returned" a clean boundary. |
 | Q10 | Journal GC? | **None in 1.0.** About 120 bytes per asset lock ever built. Revisit if a profile ever shows it. |
 | Q11 | Power loss can drop a `Built` row (`wallet.sqlite` at `synchronous=NORMAL`) after its lock was sent. Raise wallet.sqlite to FULL? | **No.** FULL makes every changeset fsync during sync. Rely on DP1-05's reconstruction (`RecoveredFromChain`), and document the case. |
-| Q12 | Fail closed for unscoped row-less hand-offs? | **Yes,** with a debug assertion and a `Notice` in release builds. A missed scope breaks a flow visibly, in its tests, instead of silently escaping Lock. |
+| Q12 | Fail closed for unscoped row-less hand-offs? | **Yes,** as `Deferred` rather than `Refused`, so nothing is sent and no false "definitely not sent" is reported. A debug assertion and a release-build `Notice` fire on every unscoped call, including repeats answered `Resend`. A missed scope breaks a flow visibly, in its tests, instead of silently escaping Lock. |
 | Q13 | A registered artifact whose transport returned a definite rejection after `Dispatching` stays committed, and is resent later, even after a lock (L13). Accept? | **Accept.** The alternative, the pin's own `Rejected` arm (untrack and release when no claim exists), is also fund-safe: the entry at 1 is then orphaned. But a kill before that removal lands would resend, at the next load, bytes the user was told were not sent. The readiness check before `admit` (L8) narrows the case to a peer loss in the moment between the check and the enqueue. The UI says "will be sent when the network is back". |
 | Q14 | Separate `dispatch.sqlite`, or a table in `app.sqlite`? | **Separate file** (§6.2): stricter durability, kept out of `.dwbackup` export, and kept past wallet removal. |
 | Q15 | Shielded redrives (1.1) persist signed state transitions. | **Rule:** they become registered artifacts, keyed by ST hash, before shielded ships. The X-phase task adds `register` on their persist path. |
 | Q16 | A tracked row with no journal entry: Resend it (trust the library's `tracked_row` and assume pre-fence) or keep it unsent? | **Keep it unsent**, with a `Notice`. The seeding gives every real pre-fence row an entry, so a row without one is either a bug (a missed `register`) or a file restored by hand. Resending would reopen the r4 shape: a possible dispatch inferred from the call site. Keeping the row loses nothing, since platform-wallet tracks its proofs without a hand-off. |
 | Q17 | The catch-up at load (H6) and the re-reservation (L12) are new behaviour. dw had no catch-up at all, and the pin never reserves a loaded row's inputs again (F7). Make them part of E0-04, the re-reservation in the platform PR? | **Yes.** Without the catch-up, a row whose bytes never left (killed between the write and the enqueue) is never resent, and an `Unsent` row is never cleaned up. Without the re-reservation, another build can spend the inputs of a lock that may be on the wire. Both gaps exist at the pin today; E0-04 is where they first matter. |
 | Q18 | The row-less set is per process, not persisted. Enough? | **Yes** (§5.5). Row-less bytes are handed off only in the process that signed them, and a flow resumed later signs again and carries its own record of the earlier outcome. Persisting the set would add a journal write to every send for no case that needs it. |
-| Q19 | Should a leased flow's state transitions use the split flow everywhere, or only where an own key is held? | **Only for own-key registration and top-up** (§4.4), where the ChainLock fallback must be visible. Vault-key leases may use the library's one-call paths. |
+| Q19 | Should a leased flow use the two-call split (`create_funded_asset_lock_proof`, then `FromExistingAssetLock`) everywhere, or only where an own key is held? | **Only for own-key registration and top-up** (§4.4), where the ChainLock fallback must be visible. Vault-key leases may use the library's one-call paths. Either way, never `build_asset_lock_transaction` for a hand-off. |
+| Q20 | `proof_wait_started` (L15) is a second, informational fence callback in the PR. Worth it, or accept the `finish + 300 s + A` floor? | **Add it.** It is one call at one site, and without it an own key outlives DASHPAY's window by up to the acceptance bound (65 s or more, F2). |
 
 ## 15. Changes to other documents after the review
 
