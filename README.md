@@ -307,7 +307,9 @@ Xvfb. It drives the onboarding and send flows through AT-SPI, in demo mode and l
 engine (results: `docs/screenshots/m1/linux/RESULTS.md`). With `DWD_CROSSUI_SUITE=m2` it runs the M1
 flows as a regression check and then the M2 flows: menus and title, Options and coin selection,
 Tools, PSBT, Wallets / Security / About / transaction details, and a live `-choosedatadir` run
-(results: `docs/screenshots/m2/linux/RESULTS.md`).
+(results: `docs/screenshots/m2/linux/RESULTS.md`). Before the GUI sessions it runs
+`SwiftCrossUIPatchTests`, the unit tests of the vendored SwiftCrossUI's patches. After the send
+and onboarding flows it checks that the app's main thread goes idle.
 
 ### dash-qt command-line options
 

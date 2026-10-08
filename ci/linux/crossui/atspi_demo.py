@@ -115,6 +115,41 @@ def type_into(report, app, field, value, timeout=15):
     return ok
 
 
+def main_thread_seconds(pid):
+    """CPU time (user + system) the app's main thread has used, in seconds;
+    None once the process is gone."""
+    try:
+        with open(f"/proc/{pid}/task/{pid}/stat") as fh:
+            fields = fh.read().rsplit(")", 1)[1].split()
+    except OSError:
+        return None
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
+def check_settles(report, app, label, timeout=60, window=5.0, max_busy=0.25):
+    """Hard check that the app's main thread goes idle within `timeout` s: one
+    `window` in which it uses at most `max_busy` of a core while the harness
+    sends no AT-SPI queries. Guards against view updates that never settle
+    (a busy main thread also starves every AT-SPI query)."""
+    pid = safe(lambda: app.get_process_id())
+    deadline = time.monotonic() + timeout
+    samples = []
+    while pid and time.monotonic() < deadline:
+        start, used = time.monotonic(), main_thread_seconds(pid)
+        time.sleep(window)
+        now = main_thread_seconds(pid)
+        if used is None or now is None:
+            samples.append(None)
+            break
+        samples.append((now - used) / (time.monotonic() - start))
+        if samples[-1] <= max_busy:
+            break
+    busy = samples[-1] if samples else None
+    shown = ", ".join("gone" if b is None else f"{b:.0%}" for b in samples) or "no app pid"
+    report.check("hard", f"{label}: the main thread goes idle within {timeout} s",
+                 busy is not None and busy <= max_busy, f"{window:.0f} s windows: {shown} of a core")
+
+
 def onboarding_flow(report, app, out_dir, step):
     """Onboarding on a network without wallets (`--demo onboarding`, or live
     mode on an empty data directory): create, show phrase, verify, encrypt,
@@ -164,6 +199,7 @@ def onboarding_flow(report, app, out_dir, step):
         ready = wait_for(app, has_text(OVERVIEW), 15)
     report.check("hard", "onboarding: the new wallet's Overview is shown", bool(ready))
     record(app, out_dir, f"{step}-done")
+    check_settles(report, app, "onboarding")
 
 
 def send_flow(report, app, out_dir, step):
@@ -193,6 +229,7 @@ def send_flow(report, app, out_dir, step):
     report.check("hard", "send: the sent payment is listed on the Transactions page", bool(done),
                  done[0][1]["name"] if done else "")
     record(app, out_dir, f"{step}-done")
+    check_settles(report, app, "send")
 
 
 def tools_flow(report, app, out_dir, step):
