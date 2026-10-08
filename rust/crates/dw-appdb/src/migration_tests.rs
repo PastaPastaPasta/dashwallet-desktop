@@ -490,7 +490,11 @@ fn dashpay_rows_travel_in_the_wallet_export() {
         ]
     );
     for table in &rows {
-        assert!(!table.columns.contains(&"id".to_string()), "{}", table.table);
+        assert!(
+            !table.columns.contains(&"id".to_string()),
+            "{}",
+            table.table
+        );
     }
 
     let dst = AppDb::open_in_memory().unwrap();
