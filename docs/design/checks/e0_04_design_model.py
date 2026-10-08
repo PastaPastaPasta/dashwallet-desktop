@@ -73,7 +73,10 @@ withholding peer, the catch-up's resend, DP1-05's discovery, Repair's
 self-spend and the user's choice to fund again, under rev1's "no entry means
 retry" and rev2's status derivation (Opus r2 2, GPT r2 12); registration
 step 2's ChainLock-height retry with its Locked classification and its Lock
-copy (GPT r2 10, 11); and a retry offered after a restart (Opus r2 1a).
+copy (GPT r2 10, 11), including the copy after an auto lock (C5, GPT r3
+F2); a retry offered after a restart (Opus r2 1a); the row-less tombstone and
+the asset-lock reading of None, in both modes (DW-E0-08 r2 N-1, Opus r3 F-2);
+and the nonce evidence for NotSent (Opus r3 F-1).
 """
 
 from __future__ import annotations
@@ -1873,7 +1876,7 @@ def f_can_fund_again_after(rule: str) -> set:
     return after
 
 
-def step2_findings(rule: str) -> dict:
+def step2_findings(rule: str, copy_rule: Optional[str] = None) -> dict:
     """Mode B registration step 2 (review GPT r2 10, 11): the call signs S1
     and submits it; a lagging node answers "ChainLock height too low"; the
     library backs off, signs S2 and submits again. Lock may land anywhere.
@@ -1881,7 +1884,39 @@ def step2_findings(rule: str) -> dict:
     call) and showed "Funds locked ... Lock stops it here; you'll finish
     after you unlock" during the call. rev2 calls a signer Locked Cancelled
     only when the call released no signature, and shows DEC-67's line while
-    a library call runs."""
+    a library call runs.
+
+    `copy_rule` selects the line shown once the vault is locked (GPT r3 F2).
+    The funding is already Sent, so every C5 rule below sees a committed flow:
+    `manual` (the default): the line chosen at the Lock, as rev2's C2/C3;
+    `c5-rev2`: rev2's auto-lock C5, "unlock to finish" once committed;
+    `c5-parked-first`: C4/C5 chosen afresh on every change, but "unlock to
+    finish" whenever the flow is parked, even with an artifact pending;
+    `c5-amend2`: C4/C5 chosen afresh on every change, first match: DEC-67's
+    promise while the call runs, then "may have been sent" (with "unlock to
+    finish" when parked) while an artifact is pending, and a plain "unlock
+    to finish" or "cancelled" only with nothing pending.
+    A stop promise ("cancelled", a plain "unlock to finish") shown while S1
+    can still execute, followed by S1 executing, is a finding."""
+    if copy_rule is None:
+        copy_rule = "rev1" if rule == "rev1" else "manual"
+
+    def static_copy(phase):
+        running = phase not in ("ok", "err")
+        if copy_rule in ("rev1", "c5-rev2"):
+            return "stop"  # funded: "... you'll finish after you unlock"
+        return "may_still_send" if running else "stop"
+
+    def dynamic_copy(phase, outcome):
+        if phase not in ("ok", "err"):
+            return "may_still_send"  # DEC-67's promise (C2)
+        if outcome == "MaybeSent":  # parked: a further signature is needed
+            return "stop" if copy_rule == "c5-parked-first" else "maybe_unlock"
+        if outcome == "Sent":
+            return "sent"
+        return "stop"  # Cancelled with nothing pending: a plain "unlock to finish"
+
+    dynamic = copy_rule.startswith("c5-") and copy_rule != "c5-rev2"
     init = ("pre", 0, False, False, False, None, None)
     # (phase, sigs, s1_out, executed, locked, outcome, copy)
     seen = {init: []}
@@ -1899,15 +1934,11 @@ def step2_findings(rule: str) -> dict:
             phase, sigs, s1_out, executed, locked, outcome, copy = st
             if outcome == "Cancelled" and s1_out:
                 found.setdefault("step 2 reported Cancelled after S1 was handed off", seen[st])
-            if copy == "stop" and executed == "after_lock":
+            if copy in ("stop", "promised") and executed == "after_lock":
                 found.setdefault("the Lock copy promised a stop that did not happen", seen[st])
             succ = []
             if not locked:
-                running = phase not in ("ok", "err")
-                if rule == "rev1":
-                    shown = "stop"  # funded: "Lock stops it here; you'll finish after you unlock"
-                else:
-                    shown = "may_still_send" if running else "stop"
+                shown = None if dynamic else static_copy(phase)
                 succ.append(("Lock", (phase, sigs, s1_out, executed, True, outcome, shown)))
             if phase == "pre":
                 if locked:
@@ -1927,6 +1958,11 @@ def step2_findings(rule: str) -> dict:
             if s1_out and not executed:
                 succ.append(("S1 executes late (another node had it)", (phase, sigs, s1_out, "after_lock" if locked else True, locked, outcome, copy)))
             for lab, n in succ:
+                if dynamic and n[4]:
+                    ph, sg, so, ex, lk, oc, cp = n
+                    if cp != "promised" and dynamic_copy(ph, oc) == "stop" and ex is False and sg > 0:
+                        cp = "promised"  # a stop promised while S1 can still execute
+                    n = (ph, sg, so, ex, lk, oc, cp)
                 if n not in seen:
                     seen[n] = seen[st] + [lab]
                     nxt.append(n)
@@ -2049,6 +2085,89 @@ def asset_lock_absent(rule: str) -> set:
     return found
 
 
+def mode_b_absent(rule: str) -> set:
+    """Opus r3 F-2. Mode B's funding gate reads a funding step's None as
+    never funded. Rows from list_tracked_locks are matched to the draft by a
+    funding key (funding type, identity index, account). Each scenario is
+    (marker, row status, how the row matches, possibly out) as the gate finds
+    it after the event named. Rules:
+    `marker-key` (rev2, amendment 1): rows match only by the key in the
+    funding marker, so a lost marker hides the row;
+    `amend2`: rows also match by the draft's own key, kept in app.sqlite.
+    Returns the findings."""
+    scenarios = [
+        ("never funded", None, None, None, False),
+        ("the call released no signature", "definite", None, None, False),
+        ("funded, the row Broadcast", "open", "Broadcast", "both", True),
+        ("funded, a withheld lock lost its row", "open", None, None, True),
+        ("journal deleted, the row Broadcast", None, "Broadcast", "draft", True),
+        ("journal rolled back below the marker, the lock Consumed", None, "Consumed", "draft", True),
+    ]
+    found = set()
+    for name, marker, row, match, out in scenarios:
+        seen = row is not None and (match == "both" or rule == "amend2")
+        if seen and row in ("InstantSendLocked", "ChainLocked", "Consumed", "RecoveredFromChain"):
+            st = "Sent"
+        elif seen:
+            st = "WillBeSent"
+        elif marker == "definite":
+            st = "NotSent"
+        elif marker == "open":
+            st = "MaybeSent"
+        else:
+            st = None
+        if st in (None, "NotSent") and out:
+            found.add(f"a second funding while the lock may be out: {name}")
+    return found
+
+
+def nonce_notsent(rule: str) -> set:
+    """Opus r3 F-1. A transition h with identity nonce n ended
+    broadcast_unknown in its process. At the pin a nonce up to 24 below the
+    current value still executes while its slot is marked missing
+    (rs-dpp identity_nonce.rs, MAX_MISSING_IDENTITY_REVISIONS = 24), and one
+    slot admits one transition. Events: h executes; h2, a different
+    transition this engine signed with the same nonce n, executes (its proof
+    is then held); a later transition takes n + 1; 25 later transitions move
+    the window past n. Rules for answering NotSent:
+    `advanced`: the fetched nonce has reached n;
+    `slot-closed`: n can no longer execute (its slot is used or out of the
+    window), with no evidence of who used it;
+    `amend2`: h2's proved execution in h's own slot.
+    Returns the findings: NotSent while h executed or can still execute."""
+    found = set()
+    init = ("open", -1)  # (slot n: open | h | h2, current nonce minus n)
+    seen, frontier = {init}, [init]
+    while frontier:
+        nxt = []
+        for slot, v in frontier:
+            h_can = slot == "open" and v <= 24
+            if rule == "advanced":
+                notsent = v >= 0
+            elif rule == "slot-closed":
+                notsent = slot != "open" or v > 24
+            else:
+                notsent = slot == "h2"
+            if notsent and slot == "h":
+                found.add("NotSent after h executed")
+            if notsent and h_can:
+                found.add("NotSent while h can still execute in its missing slot")
+            succ = []
+            if h_can:
+                succ.append(("h", max(v, 0)))
+                succ.append(("h2", max(v, 0)))
+            if v < 1:
+                succ.append((slot, 1))
+            if v < 25:
+                succ.append((slot, 25))
+            for n in succ:
+                if n not in seen:
+                    seen.add(n)
+                    nxt.append(n)
+        frontier = nxt
+    return found
+
+
 def part5() -> bool:
     ok = True
 
@@ -2086,6 +2205,20 @@ def part5() -> bool:
         "Cancelled after S1 went out and its funded copy promises a stop; rev2 "
         "classifies by released signatures and shows DEC-67's line while a call runs",
     )
+    c5 = {r: step2_findings("rev2", r) for r in ("c5-rev2", "c5-parked-first", "c5-amend2")}
+    for r in ("c5-rev2", "c5-parked-first"):
+        for v, tr in sorted(c5[r].items()):
+            print(f"       {r}: {v}: {' -> '.join(tr)}")
+    check(
+        "the Lock copy promised a stop that did not happen" in c5["c5-rev2"]
+        and "the Lock copy promised a stop that did not happen" in c5["c5-parked-first"]
+        and "step 2 reported Cancelled after S1 was handed off" not in c5["c5-rev2"]
+        and not c5["c5-amend2"],
+        "GPT r3 F2: an auto lock during funded step 2 (rev2's classifier kept): rev2's C5 "
+        "promises 'unlock to finish' and S1 executes; 'unlock to finish' while S1 is "
+        "pending fails too; amendment 2's C4/C5 shows DEC-67's line while the call runs, "
+        "then the observed outcome, and promises a stop only with nothing pending",
+    )
     r1, r2 = restart_retry("rev1"), restart_retry("rev2")
     check(
         r1 is not None and r2 is None,
@@ -2114,6 +2247,27 @@ def part5() -> bool:
         "asset-lock exception: None allows a second funding only with neither an entry nor "
         "a tracked row of any status; reading the entry alone, or skipping Consumed rows, "
         "funds twice",
+    )
+    mb = {r: mode_b_absent(r) for r in ("marker-key", "amend2")}
+    print(f"       marker-key: {sorted(mb['marker-key'])}")
+    check(
+        any("journal deleted" in f for f in mb["marker-key"])
+        and any("Consumed" in f for f in mb["marker-key"])
+        and not mb["amend2"],
+        "Opus r3 F-2: Mode B's funding gate matches tracked rows by the draft's own "
+        "funding key too; matching only by the marker's key funds twice once the "
+        "journal is deleted or rolled back",
+    )
+    nn = {r: nonce_notsent(r) for r in ("advanced", "slot-closed", "amend2")}
+    for r in ("advanced", "slot-closed"):
+        print(f"       {r}: {sorted(nn[r])}")
+    check(
+        "NotSent while h can still execute in its missing slot" in nn["advanced"]
+        and "NotSent after h executed" in nn["slot-closed"]
+        and not nn["amend2"],
+        "Opus r3 F-1: a transition is NotSent only when a different transition this "
+        "engine signed is proved executed in its own nonce slot; a nonce past n, or a "
+        "closed slot with no evidence of its user, answers NotSent wrongly",
     )
     return ok
 
