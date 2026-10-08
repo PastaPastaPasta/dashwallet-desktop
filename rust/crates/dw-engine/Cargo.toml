@@ -61,6 +61,10 @@ tempfile = { workspace = true }
 dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests.
 tokio = { workspace = true, features = ["test-util"] }
+# tests/m4_dashpay_contract.rs renders the DashPay facade's surface from its
+# source for docs/contracts/m4-dashpay-engine.md (both already in the graph).
+syn = { version = "2", features = ["full", "printing"] }
+quote = "1"
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests/umask_002.rs sets the process umask.
