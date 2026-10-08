@@ -1,0 +1,1424 @@
+{
+ "source": {
+  "task": "dashwallet-desktop DP1-01",
+  "ios": "dashpay/dashwallet-ios 37c0e78a2f557fa35c98c051a4ce40b77be350ee (DWDashPayIdentityKeys.swift last changed in 6836db798b)",
+  "platform": "dashpay/platform bc41f1bc233dec4607d387101c1d9c2f111019b2",
+  "how": "See fixtures/README.md. Every public key and path agrees between an independent from-scratch Python derivation and the rs-platform-wallet-ffi entry points SwiftDashSDK calls; keys 0-3 also take key type, purpose and security level from that FFI. The DashPay pair's metadata comes from reading the Swift source.",
+  "mnemonics": "BIP39 English test vectors; throwaway."
+ },
+ "dashpay_contract_id": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+ "dashpay_contract_id_base58": "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7",
+ "sets": [
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "mainnet",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/0'",
+     "public_key": "03de6e4f0a455c1f089e51c53ed937b172d46e5cec4a98e2d9977ea4638129d252",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/1'",
+     "public_key": "02725184a963a31b362742455e4b1bd36b8b56b0d667f1f6c24688ed3d9b0e13e9",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/2'",
+     "public_key": "0224fec3be710f5b8375faefd255efd97f1414bf571f4e7d6627e27aa179428a95",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/3'",
+     "public_key": "02136f55ea0c496f9cf64c023d0b02b4c1a66dda56aeb40f761cf933b76578a417",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/0'/4'",
+     "public_key": "022c3e8d4b11cdcdbb2de4cafbcdcbdde877998e415f25b0381c440dd185e9879f",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/0'/5'",
+     "public_key": "02b27ace04e655a87a07a7a46513394ee5ce04870b91b30eb692c02a7f46c806d7",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "mainnet",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/0'",
+     "public_key": "03a1d16e5996b98b2c08a3a81a2b4b922a76acd2094cd7bdfa560b1d91dffea5f6",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/1'",
+     "public_key": "03c16c4428f119183ae4e1dfe0ae7e34cd8ffada86c60ee0e76d676baf0c158d7a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/2'",
+     "public_key": "03d44474281ab6a55451553d958037ac34dca0654c6aed7e07c26b6588fd574de4",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/3'",
+     "public_key": "03fedfee09cd6255150772093acf225c3dd4756f0d5093cc3fc8ae5c4dc082a731",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/1'/4'",
+     "public_key": "0274a6518c65264dfd52e43b659f5f13c3c502df9d984db9bd3f1b12f3328d941d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/1'/5'",
+     "public_key": "03515b3545472c3125f9dc2ffe1a7bfc7211a53900b77c8997a59382d6e383c47d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "testnet",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/0'",
+     "public_key": "03a00f4853081aeb8c9debe37267303fa133bd7f6678bfb3299dfa001bfd0341db",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/1'",
+     "public_key": "03280859fd14d1b8a7a75d918dd0a1bf922be5af7eff9aafa26f446ea5f16da616",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/2'",
+     "public_key": "02cb109b54e542efbb86f3e5ba1d6a2da97d02cc4de0c706c23ab8ddb53ff7fe3e",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/3'",
+     "public_key": "02711df617d984f97ad43dfb5eab5e780055f4a4dd68a1d95fe708ae1e9c9e17aa",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/4'",
+     "public_key": "03d3c6c2629ff5c15703717a7a14c8a01b04b55dbf511cafc58d96519206f0213c",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/5'",
+     "public_key": "02f521bfa606ef60d9a1b3582d9bdc6ed00c95177cd3546e3eef95e424a912795a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "testnet",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/0'",
+     "public_key": "0312aa9ac813f9751da6747c4ac7798a9c5f778545788204785eafbfe287544144",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/1'",
+     "public_key": "03a8150f657be60fe91fec7aefe69d655247417e9e7ab408d209261b57f798ce84",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/2'",
+     "public_key": "03e1280783f1b2d0ed971a93ab9e1f7665e5555b1e5154201462cd33e9a7ab9a47",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/3'",
+     "public_key": "02c5036f9253775c16dd64fb788e2f6ff62bc24b7785c74ad1ea011cf3fcc55a4e",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/4'",
+     "public_key": "02025d6686712a76e128b92875b4e542f7192bdbe7c1dd8ec90fb09ce79d63111a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/5'",
+     "public_key": "03ce77cf2a2d8f1d479ede39cc827e464a10237ac5858a38d74c15443e92d23d2d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "regtest",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/0'",
+     "public_key": "03a00f4853081aeb8c9debe37267303fa133bd7f6678bfb3299dfa001bfd0341db",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/1'",
+     "public_key": "03280859fd14d1b8a7a75d918dd0a1bf922be5af7eff9aafa26f446ea5f16da616",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/2'",
+     "public_key": "02cb109b54e542efbb86f3e5ba1d6a2da97d02cc4de0c706c23ab8ddb53ff7fe3e",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/3'",
+     "public_key": "02711df617d984f97ad43dfb5eab5e780055f4a4dd68a1d95fe708ae1e9c9e17aa",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/4'",
+     "public_key": "03d3c6c2629ff5c15703717a7a14c8a01b04b55dbf511cafc58d96519206f0213c",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/5'",
+     "public_key": "02f521bfa606ef60d9a1b3582d9bdc6ed00c95177cd3546e3eef95e424a912795a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+   "passphrase": "",
+   "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+   "network": "regtest",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/0'",
+     "public_key": "0312aa9ac813f9751da6747c4ac7798a9c5f778545788204785eafbfe287544144",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/1'",
+     "public_key": "03a8150f657be60fe91fec7aefe69d655247417e9e7ab408d209261b57f798ce84",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/2'",
+     "public_key": "03e1280783f1b2d0ed971a93ab9e1f7665e5555b1e5154201462cd33e9a7ab9a47",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/3'",
+     "public_key": "02c5036f9253775c16dd64fb788e2f6ff62bc24b7785c74ad1ea011cf3fcc55a4e",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/4'",
+     "public_key": "02025d6686712a76e128b92875b4e542f7192bdbe7c1dd8ec90fb09ce79d63111a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/5'",
+     "public_key": "03ce77cf2a2d8f1d479ede39cc827e464a10237ac5858a38d74c15443e92d23d2d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "mainnet",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/0'",
+     "public_key": "032d38121ea1bb639d1c411217b3a333d5ef999dd41b92ca6d82f31db6649410c7",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/1'",
+     "public_key": "027fef126894782226177c9fe4badf521e7f8b050f89676630d59ee61e11ef6dae",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/2'",
+     "public_key": "0318bb8b3fb3bcaa482554ecb24d113e33e6f1ceb60dec33764f1a3ad9b1628406",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/0'/3'",
+     "public_key": "02e4f7d5af31eb2e9301f1881b9ac3582691b7812c0df33bd8ed38bacc62ca188d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/0'/4'",
+     "public_key": "03d87c25b4403aa49eb2483c7e973821b65a182d0da0cd76db288dca6015a3b596",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/0'/5'",
+     "public_key": "02e4ae638056c44f5631731e9e6d7cfd9361c8366a5be0943852d5ad4642e792ea",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "mainnet",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/0'",
+     "public_key": "02824cad41f1200e194070f6c1b79500ec162b7b4a2ff4957a9fc7c0e4609d1a76",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/1'",
+     "public_key": "0207df30ddb732e0b9b70b100b2699ef01d98c403d06a4218e86e72e1e0bdf246f",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/2'",
+     "public_key": "03400500dbd8fb5c2ecb75edbaf5765c5535c612d8636996eeeb8190eee9f36061",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/5'/5'/0'/0'/1'/3'",
+     "public_key": "0201a0c8aedf2d3bc28994eea103d7efdc8388b6d5dcaaf58ea9271861be66410c",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/1'/4'",
+     "public_key": "02b9fb49723f28967870d8d12a600bb843f93d5695008ac6a4a79937ea8d86a6c9",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/5'/5'/0'/0'/1'/5'",
+     "public_key": "02424c270470511cb99afb365ff7c5e8fa3fca1cf8df7d621585363d8ada093c0d",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "testnet",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/0'",
+     "public_key": "0308554425a379a61270e1e437ecf0c49fe4107784700e07fe534277147fb39e1a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/1'",
+     "public_key": "031c006b0ad8bd3287a455264c52d3b5be9fb57bcd108fec0f7e2079c5fd2787d9",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/2'",
+     "public_key": "03689a798dc9de3125a8af4c15726da01666a54353f48f41bc290d6b654880c0b6",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/3'",
+     "public_key": "03ecb20c6923f7029707895e02b63062400aef8f57d4f6848ef9f17c5c20387f87",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/4'",
+     "public_key": "0383ae27386f3b27e07958ffb5c9d1f0a6926d76d4745dee10863b40e088736632",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/5'",
+     "public_key": "034e5702d786ceef0170f95dd1f46beecd6facc74482decf7c59b5f04cab163282",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "testnet",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/0'",
+     "public_key": "02d8eea624024cc917f5f83917354b2a81d49e0e9b91da230309605cec01b87b69",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/1'",
+     "public_key": "03005f082896e3f955dc4b9d6fad4a729ac719b2e9d04b927639180a1b548be9df",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/2'",
+     "public_key": "0306e671caf4c822f0843377ef5e0e7d687173ffa1ec0101284064e844e8b4d3a7",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/3'",
+     "public_key": "025d3a62ea7dc558ab9e9cf1101d7a60a8a84525c86a54fa5f54d5551ac1d4336a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/4'",
+     "public_key": "0394f54bb869b016268a6b56ae02b5a6cb97158513a54f7352b66b5420fed89d35",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/5'",
+     "public_key": "03e5dc3c9a44befa6743ab8693ded9bcc27fc7187a50c660fb886df07b67c98905",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "regtest",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/0'",
+     "public_key": "0308554425a379a61270e1e437ecf0c49fe4107784700e07fe534277147fb39e1a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/1'",
+     "public_key": "031c006b0ad8bd3287a455264c52d3b5be9fb57bcd108fec0f7e2079c5fd2787d9",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/2'",
+     "public_key": "03689a798dc9de3125a8af4c15726da01666a54353f48f41bc290d6b654880c0b6",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/3'",
+     "public_key": "03ecb20c6923f7029707895e02b63062400aef8f57d4f6848ef9f17c5c20387f87",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/4'",
+     "public_key": "0383ae27386f3b27e07958ffb5c9d1f0a6926d76d4745dee10863b40e088736632",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/5'",
+     "public_key": "034e5702d786ceef0170f95dd1f46beecd6facc74482decf7c59b5f04cab163282",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "",
+   "seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+   "network": "regtest",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/0'",
+     "public_key": "02d8eea624024cc917f5f83917354b2a81d49e0e9b91da230309605cec01b87b69",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/1'",
+     "public_key": "03005f082896e3f955dc4b9d6fad4a729ac719b2e9d04b927639180a1b548be9df",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/2'",
+     "public_key": "0306e671caf4c822f0843377ef5e0e7d687173ffa1ec0101284064e844e8b4d3a7",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/3'",
+     "public_key": "025d3a62ea7dc558ab9e9cf1101d7a60a8a84525c86a54fa5f54d5551ac1d4336a",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_and_persist_identity_keys (Swift prePersistIdentityKeysForRegistration, keyCount 4): public key, path, key type, purpose, security level"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/4'",
+     "public_key": "0394f54bb869b016268a6b56ae02b5a6cb97158513a54f7352b66b5420fed89d35",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/5'",
+     "public_key": "03e5dc3c9a44befa6743ab8693ded9bcc27fc7187a50c660fb886df07b67c98905",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "TREZOR",
+   "seed": "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607",
+   "network": "testnet",
+   "identity_index": 0,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/0'",
+     "public_key": "03c938f6401883a2807b5f3e0ca4d75455c4e4784b1e9078000032d43caf6a2f61",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/1'",
+     "public_key": "0314afafbf25acaed1a40c0d0765b2e4cc40cfe0909b384da8ba7b7b86aff033f6",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/2'",
+     "public_key": "03a5845fca6751f54f33d31d979a028a0e91954c3d608de997a8166bb9be466724",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/0'/3'",
+     "public_key": "02f27d2385fbf9261e7e29802e91bc485fe9f46eac0a2c20d8901d662c14f9cf24",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/4'",
+     "public_key": "0276ed7dd55da3d0eed3e9f3a0643d99f7759ae09543c52940d2e3f254577836f7",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/0'/5'",
+     "public_key": "0296a8cc32da8a6efd75476e0cb73beaae40b84892d0a1b6641f39aff3614f4397",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  },
+  {
+   "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "passphrase": "TREZOR",
+   "seed": "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607",
+   "network": "testnet",
+   "identity_index": 1,
+   "keys": [
+    {
+     "id": 0,
+     "purpose": "AUTHENTICATION",
+     "security_level": "MASTER",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/0'",
+     "public_key": "03e3a8fe75d066b9f553be10bc35ebba13dad3e2842a99aea30f6b0c3d664cc066",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 1,
+     "purpose": "AUTHENTICATION",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/1'",
+     "public_key": "032fdb18b0fa4b127cf2d4a77cee569f917c8dc458c75b91c9c84a0062bb1d312e",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 2,
+     "purpose": "AUTHENTICATION",
+     "security_level": "HIGH",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/2'",
+     "public_key": "03cbb60244a64112f50605903eb1920fc46c0daaf4f726baa77a932f798871ce77",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 3,
+     "purpose": "TRANSFER",
+     "security_level": "CRITICAL",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": null,
+     "path": "m/9'/1'/5'/0'/0'/1'/3'",
+     "public_key": "03f4a0ee8a25c4bb5be8b9e911b70c30a21438f00f7e7f1dcbd5cb7b7becb499e9",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 4,
+     "purpose": "ENCRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/4'",
+     "public_key": "033f6d6ec64404740ce1fa7b862e7d737ad403dc36495386a6bae0d6a208064443",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    },
+    {
+     "id": 5,
+     "purpose": "DECRYPTION",
+     "security_level": "MEDIUM",
+     "key_type": "ECDSA_SECP256K1",
+     "contract_bounds": {
+      "contract": "a2a1b4ac6fef22ea2a1a68e8123644b357875f6b412c18109281c146e7b271bc",
+      "document_type": "contactRequest"
+     },
+     "path": "m/9'/1'/5'/0'/0'/1'/5'",
+     "public_key": "0280611e206d9e2dcaba3e949f868e294d98f5260a5afbc86e51b9bb92cc6bd6f3",
+     "sources": [
+      "python-independent",
+      "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot (mnemonic+passphrase variant of the same derive_at_slot_inner): public key, path",
+      "purpose, security level, key type, bounds: DWDashPayIdentityKeys.swift (source reading)",
+      "e0_03_signer_vectors.json: public key"
+     ]
+    }
+   ]
+  }
+ ],
+ "upgrade_slots": {
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "network": "testnet",
+  "identity_index": 0,
+  "keys": [
+   {
+    "id": 6,
+    "path": "m/9'/1'/5'/0'/0'/0'/6'",
+    "public_key": "03399d9d457a52dbfaec02e56e7f54ca4421c1646f5cc81bd1d8c7630a477d8fd9",
+    "sources": [
+     "python-independent",
+     "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path"
+    ]
+   },
+   {
+    "id": 7,
+    "path": "m/9'/1'/5'/0'/0'/0'/7'",
+    "public_key": "03a26bfd78a5914b041c984d9cdebf073ee94f3040d281f97f816b479deb704d9e",
+    "sources": [
+     "python-independent",
+     "rs-platform-wallet-ffi dash_sdk_derive_identity_key_at_slot_with_resolver (Swift deriveIdentityAuthKeyAtSlot): public key, path"
+    ]
+   }
+  ]
+ }
+}

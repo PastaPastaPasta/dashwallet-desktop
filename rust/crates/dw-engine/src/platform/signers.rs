@@ -40,14 +40,14 @@ use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
 use key_wallet::ExtendedPubKeySigner;
-use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType};
+use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use platform_wallet::manager::startup::ScanKeyError;
-use platform_wallet::wallet::identity::network::identity_auth_derivation_path_for_type;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
 };
 use zeroize::Zeroizing;
 
+use super::keys_policy::key_path;
 use crate::EngineError;
 
 fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineError> {
@@ -91,14 +91,9 @@ impl VaultIdentitySigner {
         })
     }
 
+    /// The slot `keys_policy` derives the key at.
     fn slot(&self, identity_index: u32, key: &IdentityPublicKey) -> Option<DerivationPath> {
-        identity_auth_derivation_path_for_type(
-            self.signer.network(),
-            KeyDerivationType::ECDSA,
-            identity_index,
-            key.id(),
-        )
-        .ok()
+        key_path(self.signer.network(), identity_index, key.id()).ok()
     }
 
     fn supported(key: &IdentityPublicKey) -> bool {

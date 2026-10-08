@@ -2,6 +2,7 @@
 //! library owns the protocol; this module supplies what it asks the host
 //! for: signers over the vault, bring-up order, read models and flows.
 
+pub mod keys_policy;
 pub mod signers;
 mod status;
 
