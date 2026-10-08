@@ -452,9 +452,11 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
       InstantSend timeout instead of falling back, then `AssetLockFunding::FromExistingAssetLock`, called only once
       the tracked row holds a proof. The build-only `build_asset_lock_transaction` returns an untracked, unsent lock
       and is never used for a hand-off (E0-04 design §4.4).
-  - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so:
-    "Registration in progress — Lock to cancel" before the funds are committed, "Funds locked — finishing. Lock stops
-    it here; you'll finish after you unlock" after (E0-04 design §4.6).
+  - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so,
+    with the copy of the E0-04 design §16.10:
+    - "Registration in progress — Lock to cancel" before the funds are committed and while no library call runs;
+    - "Lock stops new signatures; a transaction already signed may still be sent" while a call runs (DEC-67);
+    - "Funds committed — finishing. Lock to stop; you'll finish after you unlock" once funded, between calls.
   - The vault releases no signature or crypto result of an epoch once `lock()` has returned (E0-03; m1-engine
     §2.2). A result released just before the lock can still reach the flow; the commit-point rule below is what
     keeps it from going out (E0-04).
@@ -596,8 +598,8 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
     - **Upstream.** The desktop may carry the hook only as a cherry-pick of a public upstream PR (DEC-18), and
       opening one needs pasta's go-ahead (DECISIONS-PENDING B5). Until the pin carries it, the library-driven
       flows offer no "Lock to cancel" once they have signed. The lock still refuses every later signature, and
-      the UI says "Locking stops new signatures; a send already signed may still go out". E0-04 is not done
-      for those flows until the hook is in.
+      the UI says "Lock stops new signatures; a transaction already signed may still be sent" (DEC-67). E0-04
+      is not done for those flows until the hook is in.
   - **At lock time.**
     - **Waiting.** `lock_vault` runs in three phases.
       1. **Vault gate (synchronous).** It locks the vault first and so stops every signature (E0-03). That waits

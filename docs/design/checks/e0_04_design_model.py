@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spec check for the E0-04 design, rev1 (docs/design/E0-04-grants-leases.md).
+"""Spec check for the E0-04 design, rev2 (docs/design/E0-04-grants-leases.md).
 
 Run: python3 -I docs/design/checks/e0_04_design_model.py   (exit 0 = pass)
 
@@ -7,7 +7,8 @@ Within the state spaces below it checks the safety and timing properties of
 the design's section 10.2, by exhaustive exploration. It runs each wrong rule
 the design rejects, rev0's rules included, to show that the check catches it,
 and it replays the reproducing interleavings of review DW-E0-04-design r1 (GPT)
-under rev0's rule (a violation) and rev1's (none). It replaces
+under rev0's rule (a violation) and rev1's (none), and those of r2 (GPT, Opus)
+under rev1's rule (a violation) and rev2's (none). It replaces
 e0_04_dispatch_model.py, e0_04_split_model.py and e0_04_mutations.py, which
 stay as the design's inputs. It is a model of the design's decisions, not a test
 of the code, and it does not cover what section 10.1 lists as out of scope.
@@ -54,7 +55,10 @@ and replays GPT r1's reproductions of majors 1, 3, 5 and 7.
 Part 2 is a tick-by-tick simulation of the lock bound with up to three leases
 and the freeze as an event; five rejected timing rules fail it. It also checks
 the lease-creation race (lock_gen), the window between the freeze and the
-vault gate (GPT 2) and the rebind cap (GPT 6), each under rev0 and rev1.
+vault gate (GPT 2) and the rebind cap (GPT 6), each under rev0 and rev1; and
+joined locks around an unlock (GPT r2 8), refunds after a rebind (GPT r2 9),
+Repair's evidence rule (GPT r2 13) and the Touch ID combined cap (DEC-67),
+each under rev1 and rev2.
 
 Part 3 explores the lock order between the permits, the wallet-manager guard
 G and the drain.
@@ -63,6 +67,13 @@ Part 4 explores an own-key registration's key hold against the ChainLock
 fallback (GPT 4, Opus 9) under rev0, Mode A (surfaced fallback) and Mode B
 (hidden fallback, bounded by key_until): Mode A has no finding, Mode B exactly
 the documented residual.
+
+Part 5 is Mode B (no platform PR): one funding call with power loss, a
+withholding peer, the catch-up's resend, DP1-05's discovery, Repair's
+self-spend and the user's choice to fund again, under rev1's "no entry means
+retry" and rev2's status derivation (Opus r2 2, GPT r2 12); registration
+step 2's ChainLock-height retry with its Locked classification and its Lock
+copy (GPT r2 10, 11); and a retry offered after a restart (Opus r2 1a).
 """
 
 from __future__ import annotations
@@ -1245,6 +1256,92 @@ def rebind_cap(rule: str) -> Optional[tuple]:
     return None
 
 
+def joined_lock(rule: str) -> Optional[tuple]:
+    """Review GPT r2 8. K1 is called at tick 0 while a pre-K1 permit stalls,
+    so its drain ends at H - 1; K1's vault gate completes at g1. An unlock at
+    u, after that gate, reopens the vault, and a grant G is issued then. K2
+    is called at k, during the drain. Under rev1 K2 joins K1's coordinator
+    and its completed gate; under rev2 every lock request runs its own vault
+    gate (H14), so K2's gate ends G's epoch before K2 returns. A creator then
+    waits for the barrier and redeems G if it is still alive. Returns the
+    first (g1, u, k) at which a grant issued before K2's call is redeemed
+    after K2 returned."""
+    H = 4
+    drain_end = H - 1
+    for g1 in (0, 1):
+        for u in range(g1 + 1, drain_end):
+            for k in range(u + 1, drain_end + 1):
+                k2_gate = None if rule == "rev1" else k
+                k2_return = max(drain_end, k2_gate if k2_gate is not None else 0)
+                creator = k2_return  # after the barrier clears
+                alive = k2_gate is None or creator < k2_gate
+                if alive:
+                    return (g1, u, k)
+    return None
+
+
+def rebind_ceiling(rule: str) -> Optional[tuple]:
+    """Review GPT r2 9. A Credits cap of 1000; an artifact S charged c_s is
+    unresolved; the lease is rebound with a fresh cap F; S then settles
+    definitely unsent and its charge is refunded; a new transition costing x
+    is signed. Under rev1 the refund replenishes the remaining budget; under
+    rev2 every charge belongs to the authority generation it was made under,
+    a refund restores only that generation's accounting, and new signing is
+    bounded by the current generation's ceiling min(old available, F).
+    Returns the first (c_s, F, x) at which a new charge above F is admitted."""
+    for c_s in (100, 500):
+        for fresh in (1, 50, 600):
+            for x in (1, 100, 600):
+                ceiling = min(1000 - c_s, fresh)
+                if rule == "rev1":
+                    available = ceiling + c_s  # the refund adds the old charge back
+                else:
+                    available = ceiling  # the refund is generation 0's, not this one's
+                if x <= available and x > fresh:
+                    return (c_s, fresh, x)
+    return None
+
+
+def repair_resolution(rule: str) -> Optional[tuple]:
+    """Review GPT r2 13. Repair looks at a tracked row with no journal entry
+    (unknown provenance): its inputs are unspent and the transaction is not
+    in the local chain or mempool. Under rev1 "Discard" then declares it
+    definitely unsent; under rev2 only positive evidence does: a conflicting
+    self-spend of one of its inputs is ChainLocked. Returns the first
+    (peer_holds, conflict_final) at which the transaction is declared
+    definitely unsent while it can still confirm."""
+    for peer_holds in (False, True):
+        for conflict_final in (False, True):
+            unsent = True if rule == "rev1" else conflict_final
+            can_still_confirm = peer_holds and not conflict_final
+            if unsent and can_still_confirm:
+                return (peer_holds, conflict_final)
+    return None
+
+
+def quickunlock_sum(rule: str) -> Optional[tuple]:
+    """DEC-67 / review Opus r2 5e. Touch ID may issue PlatformOp grants
+    capped at the spend limit L. "Accept and pay" asks for a set: a
+    PlatformOp{d1, c1} and a Spend{d2}. Under rev1 the duffs and the credits
+    were each checked against L separately (credits at L x 1000), so the
+    set could reach about 2L in value; under rev2 one combined value
+    sum(duffs) + ceil(sum(credits) / 1000) is checked against L. Returns the
+    first set whose total value exceeds L and is still issued."""
+    L = 1000
+    for d1 in (0, 600, 1000):
+        for c1 in (0, 600_000, 1_000_000):
+            for d2 in (0, 600, 1000):
+                duffs, credits = d1 + d2, c1
+                value = duffs + -(-credits // 1000)
+                if rule == "rev1":
+                    issued = duffs <= L and credits <= L * 1000
+                else:
+                    issued = value <= L
+                if issued and value > L:
+                    return (d1, c1, d2)
+    return None
+
+
 def part2() -> bool:
     ok = True
 
@@ -1325,6 +1422,32 @@ def part2() -> bool:
         f"GPT 6: rebind under a smaller fresh grant: under rev0 a newly signed "
         f"transition above the fresh cap is admitted (spent, fresh, cost {r0}); "
         f"under rev1 the remaining budget is the minimum",
+    )
+    j1, j2 = joined_lock("rev1"), joined_lock("rev2")
+    check(
+        j1 is not None and j2 is None,
+        f"GPT r2 8: lock, unlock, grant, a second lock joining the drain: under rev1 "
+        f"the grant from before the second lock is redeemed after it returned "
+        f"(g1, u, k {j1}); under rev2 every lock request runs its own vault gate",
+    )
+    c1, c2 = rebind_ceiling("rev1"), rebind_ceiling("rev2")
+    check(
+        c1 is not None and c2 is None,
+        f"GPT r2 9: a refund after a rebind: under rev1 it lifts new signing above the "
+        f"fresh cap (c_s, F, x {c1}); under rev2 charges keep their generation",
+    )
+    p1, p2 = repair_resolution("rev1"), repair_resolution("rev2")
+    check(
+        p1 is not None and p2 is None,
+        f"GPT r2 13: Repair on a row of unknown provenance: under rev1 negative "
+        f"observations declare it unsent while a peer holds it {p1}; under rev2 only a "
+        f"ChainLocked conflicting spend does",
+    )
+    q1, q2 = quickunlock_sum("rev1"), quickunlock_sum("rev2")
+    check(
+        q1 is not None and q2 is None,
+        f"DEC-67: Touch ID for \"Accept and pay\": under rev1 the set reaches about "
+        f"twice the spend limit {q1}; under rev2 one combined value is capped",
     )
     bad = creation_race("no-gen-check")
     check(
@@ -1607,11 +1730,288 @@ def part4() -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Part 5: Mode B (no platform PR): funding status, no double pay, step 2
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class F:
+    """One Mode B funding call (create_funded_asset_lock_proof) of a top-up
+    or registration, the engine's view of it, and the user's later choice
+    to fund again."""
+
+    call: str = "idle"  # idle | pre | signed | tracked | sent | ok | err | gone
+    sigs: int = 0  # signatures the engine's signer adapter released in the call
+    marker: bool = False  # the funding step's durable write-ahead marker (GPT r2 12)
+    resolved: Optional[str] = None  # a definite resolution, recorded with the marker
+    outcome: Optional[str] = None  # what the call itself reported
+    row: Optional[str] = None  # the library's tracked row: Built | Broadcast | Proof
+    out: bool = False  # T1 may be on the network (a peer may hold it)
+    onchain: bool = False
+    dead: bool = False  # a conflicting self-spend of its inputs is ChainLocked
+    locked: bool = False
+    power: int = 1  # power losses still allowed
+    t2: bool = False  # a second funding lock was built
+
+
+def f_status(s: F, rule: str) -> Optional[str]:
+    """dispatch_status of the funding, Mode B (review Opus r2 2). rev1 had no
+    Mode B source and read "no entry" as permission; rev2 derives the status
+    from the tracked row (list_tracked_locks), the marker and how the call
+    ended, and is never None."""
+    if rule == "rev1":
+        if s.row in ("Built", "Broadcast"):
+            return "WillBeSent"
+        if s.row == "Proof":
+            return "Sent"
+        return None if s.outcome is None else s.outcome
+    if s.dead:
+        return "NotSent"
+    if s.row == "Proof":
+        return "Sent"
+    if s.row in ("Built", "Broadcast"):
+        return "WillBeSent"
+    if s.resolved == "NotSent":
+        return "NotSent"
+    if not s.marker and s.call == "idle":
+        return "NotSent"  # never started
+    return "MaybeSent"
+
+
+def f_may_fund_again(s: F, rule: str) -> bool:
+    st = f_status(s, rule)
+    if rule == "rev1":
+        return st in (None, "NotSent", "Cancelled")
+    return st == "NotSent"
+
+
+def f_steps(s: F, rule: str) -> Iterator[tuple]:
+    from dataclasses import replace as rp
+
+    if not s.locked:
+        yield "Lock", rp(s, locked=True)
+    if s.call == "idle" and not s.t2:
+        yield "start the funding call", rp(s, call="pre", marker=rule == "rev2")
+    elif s.call == "pre":
+        if s.locked:
+            # The first signature fails: nothing was signed in this call.
+            yield "signer Locked before any signature", rp(
+                s, call="err", outcome="NotSent",
+                resolved="NotSent" if rule == "rev2" else None,
+            )
+        else:
+            yield "sign the asset lock", rp(s, call="signed", sigs=1)
+    elif s.call == "signed":
+        yield "track Built", rp(s, call="tracked", row="Built")
+    elif s.call == "tracked":
+        yield "broadcast", rp(s, call="sent", out=True)
+        yield "transport not ready: the pin untracks and releases", rp(
+            s, call="err", row=None, outcome="NotSent",
+            resolved="NotSent" if rule == "rev2" else None,
+        )
+    elif s.call == "sent":
+        yield "accepted; proof", rp(s, call="ok", row="Proof", outcome="Sent")
+        yield "peer lost after dispatch", rp(s, call="err", row="Broadcast", outcome="MaybeSent")
+    if s.power and s.call not in ("idle",):
+        # wallet.sqlite (NORMAL) may lose the row; the FULL marker survives.
+        lost_row = None if s.row in ("Built", "Broadcast") else s.row
+        yield "power loss: the row is lost", rp(s, call="gone", row=lost_row, outcome=None, power=0)
+    if s.row in ("Built", "Broadcast") and s.call in ("err", "gone", "ok"):
+        yield "catch-up resends the row (pin semantics)", rp(s, out=True)
+    if s.out and not s.onchain and not s.dead:
+        yield "a peer releases T1: it confirms", rp(s, onchain=True)
+    if s.onchain and s.row != "Proof":
+        yield "DP1-05 finds the lock on chain (RecoveredFromChain)", rp(s, row="Proof")
+    if (
+        not s.onchain and not s.dead and s.call in ("err", "gone", "ok")
+        and (s.marker or s.row in ("Built", "Broadcast"))
+    ):
+        yield "Repair: a self-spend of every coin is ChainLocked", rp(s, dead=True)
+    if not s.t2 and s.call in ("err", "gone") and f_may_fund_again(s, rule):
+        yield "the user funds again (retry, discard and register again)", rp(s, t2=True)
+
+
+def f_findings(rule: str) -> dict:
+    init = F()
+    seen = {init: []}
+    frontier = [init]
+    found = {}
+    while frontier:
+        nxt = []
+        for st in frontier:
+            if st.t2 and not st.dead and (st.out or st.row in ("Built", "Broadcast")):
+                found.setdefault("two funding locks can both confirm (double pay)", seen[st])
+            if f_status(st, rule) is None and st.call in ("err", "gone"):
+                found.setdefault("dispatch_status has no answer for a started funding", seen[st])
+            for lab, n in f_steps(st, rule):
+                if n not in seen:
+                    seen[n] = seen[st] + [lab]
+                    nxt.append(n)
+        frontier = nxt
+    return found
+
+
+def f_can_fund_again_after(rule: str) -> set:
+    """Liveness of the rev2 gate: the last step before each reachable
+    "the user funds again", so a definitely-unsent funding never leaves the
+    user stuck."""
+    init = F()
+    seen = {init: []}
+    frontier = [init]
+    after = set()
+    while frontier:
+        nxt = []
+        for st in frontier:
+            for lab, n in f_steps(st, rule):
+                if lab.startswith("the user funds again"):
+                    after.add(seen[st][-1] if seen[st] else "")
+                if n not in seen:
+                    seen[n] = seen[st] + [lab]
+                    nxt.append(n)
+        frontier = nxt
+    return after
+
+
+def step2_findings(rule: str) -> dict:
+    """Mode B registration step 2 (review GPT r2 10, 11): the call signs S1
+    and submits it; a lagging node answers "ChainLock height too low"; the
+    library backs off, signs S2 and submits again. Lock may land anywhere.
+    rev1 called a final signer Locked Cancelled (step 2 as a sole-artifact
+    call) and showed "Funds locked ... Lock stops it here; you'll finish
+    after you unlock" during the call. rev2 calls a signer Locked Cancelled
+    only when the call released no signature, and shows DEC-67's line while
+    a library call runs."""
+    init = ("pre", 0, False, False, False, None, None)
+    # (phase, sigs, s1_out, executed, locked, outcome, copy)
+    seen = {init: []}
+    frontier = [init]
+    found = {}
+
+    def classify(sigs):
+        if rule == "rev1":
+            return "Cancelled"
+        return "Cancelled" if sigs == 0 else "MaybeSent"
+
+    while frontier:
+        nxt = []
+        for st in frontier:
+            phase, sigs, s1_out, executed, locked, outcome, copy = st
+            if outcome == "Cancelled" and s1_out:
+                found.setdefault("step 2 reported Cancelled after S1 was handed off", seen[st])
+            if copy == "stop" and executed == "after_lock":
+                found.setdefault("the Lock copy promised a stop that did not happen", seen[st])
+            succ = []
+            if not locked:
+                running = phase not in ("ok", "err")
+                if rule == "rev1":
+                    shown = "stop"  # funded: "Lock stops it here; you'll finish after you unlock"
+                else:
+                    shown = "may_still_send" if running else "stop"
+                succ.append(("Lock", (phase, sigs, s1_out, executed, True, outcome, shown)))
+            if phase == "pre":
+                if locked:
+                    succ.append(("sign S1: signer Locked", ("err", sigs, s1_out, executed, locked, classify(sigs), copy)))
+                else:
+                    succ.append(("sign S1", ("s1", 1, s1_out, executed, locked, outcome, copy)))
+            elif phase == "s1":
+                succ.append(("submit S1", ("submitted", sigs, True, executed, locked, outcome, copy)))
+            elif phase == "submitted":
+                succ.append(("Platform executes S1", ("ok", sigs, s1_out, "after_lock" if locked else True, locked, "Sent", copy)))
+                succ.append(("a lagging node: ChainLock height too low; back off", ("backoff", sigs, s1_out, executed, locked, outcome, copy)))
+            elif phase == "backoff":
+                if locked:
+                    succ.append(("sign S2: signer Locked", ("err", sigs, s1_out, executed, locked, classify(sigs), copy)))
+                else:
+                    succ.append(("sign and submit S2; accepted", ("ok", 2, s1_out, "after_lock" if locked else True, locked, "Sent", copy)))
+            if s1_out and not executed:
+                succ.append(("S1 executes late (another node had it)", (phase, sigs, s1_out, "after_lock" if locked else True, locked, outcome, copy)))
+            for lab, n in succ:
+                if n not in seen:
+                    seen[n] = seen[st] + [lab]
+                    nxt.append(n)
+        frontier = nxt
+    return found
+
+
+def restart_retry(rule: str) -> Optional[tuple]:
+    """Review Opus r2 1a. A row-less state transition (a withdrawal) ends
+    broadcast_unknown, the app restarts, and the host asks dispatch_status
+    before offering a retry. rev1's contract read "no entry" as "retry
+    allowed"; rev2 answers Unknown, which never allows a retry, unless the
+    identity's nonce shows positive evidence (H16). Returns the first
+    (nonce_state, original_executes) at which a retry is offered while the
+    original can still execute."""
+    for nonce in ("unconsumed", "consumed_by_this", "consumed_by_other"):
+        for original_executes in (False, True):
+            if nonce == "consumed_by_other" and original_executes:
+                continue  # its nonce is gone: it cannot execute
+            if nonce == "consumed_by_this" and not original_executes:
+                continue
+            if rule == "rev1":
+                status = None
+            else:
+                status = {"unconsumed": "Unknown", "consumed_by_this": "Sent",
+                          "consumed_by_other": "NotSent"}[nonce]
+            retry = status is None or status == "NotSent"
+            can_execute = nonce == "unconsumed"
+            if retry and can_execute:
+                return (nonce, original_executes)
+    return None
+
+
+def part5() -> bool:
+    ok = True
+
+    def check(cond: bool, msg: str) -> None:
+        nonlocal ok
+        print(("PASS " if cond else "FAIL ") + msg)
+        ok = ok and cond
+
+    print("Part 5: Mode B (no platform PR)")
+    f1, f2 = f_findings("rev1"), f_findings("rev2")
+    for v, tr in sorted(f1.items()):
+        print(f"       rev1: {v}: {' -> '.join(tr)}")
+    check(
+        bool(f1) and not f2,
+        "Opus r2 2, GPT r2 12: Mode B funding: rev1 has no status source and lets a "
+        "second funding lock be built after a peer-held lock lost its row; rev2 "
+        "derives the status from the tracked row, the marker and the call's end, "
+        "so no double pay is reachable (with power loss and a withholding peer)",
+    )
+    live = f_can_fund_again_after("rev2")
+    check(
+        {"signer Locked before any signature",
+         "transport not ready: the pin untracks and releases",
+         "Repair: a self-spend of every coin is ChainLocked"} <= live,
+        f"rev2 never strands a definitely-unsent funding: funding again is allowed "
+        f"after {sorted(live)}",
+    )
+    s1, s2 = step2_findings("rev1"), step2_findings("rev2")
+    for v, tr in sorted(s1.items()):
+        print(f"       rev1: {v}: {' -> '.join(tr)}")
+    check(
+        "step 2 reported Cancelled after S1 was handed off" in s1
+        and "the Lock copy promised a stop that did not happen" in s1 and not s2,
+        "GPT r2 10, 11: Mode B step 2 with a ChainLock-height retry: rev1 reports "
+        "Cancelled after S1 went out and its funded copy promises a stop; rev2 "
+        "classifies by released signatures and shows DEC-67's line while a call runs",
+    )
+    r1, r2 = restart_retry("rev1"), restart_retry("rev2")
+    check(
+        r1 is not None and r2 is None,
+        f"Opus r2 1a: a restart after broadcast_unknown on a withdrawal: rev1 offers a "
+        f"retry while the original can execute {r1}; rev2 answers Unknown",
+    )
+    return ok
+
+
 def main() -> int:
     ok = part1()
     ok = part2() and ok
     ok = part3() and ok
     ok = part4() and ok
+    ok = part5() and ok
     print("ok" if ok else "FAILED")
     return 0 if ok else 1
 
