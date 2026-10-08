@@ -54,7 +54,7 @@ case "$triple" in
   x86_64-apple-darwin)        variant=macos-x86_64;   swift_triples='"x86_64-apple-macosx"' ;;
   x86_64-unknown-linux-gnu)   variant=linux-x86_64;   swift_triples='"x86_64-unknown-linux-gnu"' ;;
   aarch64-unknown-linux-gnu)  variant=linux-aarch64;  swift_triples='"aarch64-unknown-linux-gnu"' ;;
-  # Windows CI only for now (docs/ci.md): no app is built there yet.
+  # Windows: CI's non-blocking Swift job (docs/ci.md, "Known gaps").
   x86_64-pc-windows-msvc)     variant=windows-x86_64; swift_triples='"x86_64-unknown-windows-msvc"' ;;
   *) echo "build-core: unsupported triple $triple" >&2; exit 2 ;;
 esac

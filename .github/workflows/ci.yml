@@ -28,8 +28,8 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running CI. Every run on main gets its own group (its commit),
-# so a queued main run is never superseded either.
+# A new push cancels its branch's running CI. Each distinct commit on main gets its own group, so a
+# queued main run is not superseded by a later commit's (two runs of the same commit still share one).
 concurrency:
   group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -40,8 +40,9 @@ env:
   PROTOC_VERSION: "29.3"
   # scripts/disk-guard.sh: hosted runners have less free disk than a dev machine.
   DWD_MIN_FREE_GB: "5"
-  # The headless suites of scripts/linux-docker-test.sh.
-  DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests
+  # The headless suites of scripts/linux-docker-test.sh, SwiftCrossUIPatchTests included (Linux and
+  # the Windows headless filter).
+  DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
   lint:
@@ -273,10 +274,9 @@ jobs:
         working-directory: rust
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  # Known gap (docs/ci.md): the Swift app is not built on Windows yet; G-03 brings up
-  # WinUIBackend. This job tracks how far the Swift side gets without failing the run: the
-  # Windows variant of the Rust core bundle, the headless Swift suites, and dash-wallet
-  # (launched with a screenshot once it builds).
+  # Known gap (docs/ci.md): dash-wallet builds with WinUIBackend but its launch crashes (G-03).
+  # This job tracks the Swift side without failing the run: the Windows variant of the Rust core
+  # bundle, the headless Swift suites, and dash-wallet launched with a screenshot.
   windows-swift:
     name: Windows Swift (known gap, non-blocking)
     runs-on: windows-latest
