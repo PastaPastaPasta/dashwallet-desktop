@@ -12,17 +12,24 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
 
-Every action is pinned to a commit SHA (the tag is in a comment). A new push to a branch cancels that
-branch's running CI. Each run on `main` has its own concurrency group (its commit), so neither a running nor
-a queued `main` run is cancelled or superseded. Every `run` step uses bash with `pipefail` (Git Bash on
+Every action a workflow uses directly is pinned to a commit SHA (the tag is in a comment). Actions those
+actions call are not all pinned: `compnerd/gha-setup-swift` (pinned) is a composite action that refers to
+`actions/cache/restore@v6`, `actions/cache/save@v6` and `actions/upload-artifact@v4` by tag. Its cache steps
+are off by default, and the artifact upload runs only when its installer fails. Accepted, as for its
+unverified installer below; pinning them would mean vendoring the action.
+
+A new push to a branch cancels that branch's running CI. Each distinct commit on `main` has its own
+concurrency group, so a running `main` run is never cancelled and a queued one is not superseded by a later
+commit's. Two runs of the same `main` commit (a re-run or a manual dispatch) still share a group. Every `run` step uses bash with `pipefail` (Git Bash on
 Windows) unless it names another shell. A pull request from a `dw/*` branch runs CI twice, once for the
 push and once for the pull request. Checkouts do not keep the job token (`persist-credentials: false`).
 
-**Downloads are pinned and verified** before anything runs them:
+**Downloads are pinned and verified** before anything runs them, except the Windows Swift installer (last
+row):
 
 | What | Where | Check |
 |---|---|---|
-| protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh` | SHA-256 per asset, kept in the script (protobuf publishes none) |
+| protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh`; the `ci/linux` Dockerfiles | SHA-256 per asset, kept in the script and the Dockerfiles (protobuf publishes none) |
 | swiftly 1.1.1 (Linux) | `ci/github/linux-swiftly.sh` | SHA-256 per architecture; swiftly then GPG-verifies the Swift toolchain |
 | Windows App Runtime 1.5 installer | `ci.yml`, windows-swift | the resolved `download.microsoft.com` URL, SHA-256 (`Get-FileHash`) and a valid Microsoft Authenticode signature |
 | Dash Core v24.0.0-rc.2 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
@@ -34,11 +41,11 @@ push and once for the pull request. Checkouts do not keep the job token (`persis
 
 | Job | Runner | Steps |
 |---|---|---|
-| Rust lint | `ubuntu-24.04` | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings` |
+| Rust lint | `ubuntu-24.04` | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked` |
-| Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
-| macOS | `macos-latest` (arm64) | `cargo test --workspace`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
-| Windows (engine) | `windows-latest` | `cargo build --workspace`, `cargo test --workspace --exclude dw-app` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
+| Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` (`SwiftCrossUIPatchTests`, the vendored SwiftCrossUI patches, among them) plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
+| macOS | `macos-latest` (arm64) | `cargo test --workspace --locked`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
+| Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
 | Windows Swift | `windows-latest` | **non-blocking**, see "Known gaps": the Windows core bundle, the headless Swift suites, `dash-wallet` with WinUIBackend, then a launch screenshot if it built |
 
 The Linux Rust jobs install the WebKitGTK development packages first (`ci/github/linux-host-deps.sh rust`,
@@ -162,10 +169,9 @@ first step and says so.
 
 ## Known gaps
 
-1. **No Windows app yet.** Neither UI is built on Windows today: MacUI is macOS-only and SwiftCrossUI's
-   WinUIBackend has never been built in this project (README, "Running the app"; DASHPAY §2.1). The gate
-   decides the Windows stack (G-03 brings up WinUIBackend, G-02 the Tauri build, W-01 the installer after
-   G-04). Until then:
+1. **No working Windows app yet.** MacUI is macOS-only. SwiftCrossUI's `dash-wallet` builds with WinUIBackend
+   in CI, but its launch crashes (below). The gate decides the Windows stack (G-03 fixes WinUIBackend, G-02
+   the Tauri build, W-01 the installer after G-04; DASHPAY §2.1). Until then:
    - the blocking Windows job builds and tests the engine only;
    - the non-blocking "Windows Swift" job records how far the Swift side gets, and uploads
      `screenshots-windows` as soon as `dash-wallet` builds and launches. The screenshot helper itself is
