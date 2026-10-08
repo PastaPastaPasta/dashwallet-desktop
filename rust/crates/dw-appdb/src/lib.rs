@@ -240,6 +240,7 @@ impl AppDb {
             "dp_contest_watch",
             "dp_events",
             "dp_payment_lock",
+            "dp_trust_unverified",
             "dp_prefs",
         ] {
             tx.execute(
