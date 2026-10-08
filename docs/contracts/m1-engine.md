@@ -151,16 +151,23 @@ file on disk is read only when the vault opens and to verify a record write. A d
 installed over the in-memory state, so a passphrase change running beside a wallet import cannot drop the
 imported seed.
 
-**Lock against running operations** (review DW-E0-03 B1). Every signer call holds a vault operation gate from
-its epoch check until its result exists; `reveal_mnemonic`, `export_wallet_secret` and `with_revealed_seed` hold
-it while they read the secret. `lock()`, `unlock()` and every other epoch change take the gate exclusively, so
-`lock()` returns only after those operations already running have finished (a signature takes about a
-millisecond), and every later call is `Locked`. No signature, shared secret, ciphertext or exported key of the
-old epoch is made after `lock()` returns. What a caller does with a secret it read before the lock (the provider
-key `with_revealed_seed`'s closure derives, the dump-wallet keys derived from `export_wallet_secret`) can finish
-after it. Not gated, and pre-existing: `backup_bundle` and `open_backup_bundle` (no grant or epoch; the latter
-returns the decrypted secrets of this vault's own bundle on an unlocked vault) and `enroll_quick_unlock`
-(serialized by the writer lock, which `lock()` does not take).
+**Lock against running operations** (review DW-E0-03 B1, r2 M2). Every signer call holds a vault operation gate
+from its epoch check until its result is released; `reveal_mnemonic`, `export_wallet_secret` and
+`with_revealed_seed` hold it while they read the secret. `lock()`, `unlock()` and every other epoch change take
+the gate exclusively, so `lock()` returns only after those operations already running have finished (a signature
+takes about a millisecond), and every later call is `Locked`. A result leaves the vault only through one release
+check (`dw_vault::Vault::gated`): holding the mutex that every epoch change holds, the epoch the operation started
+under must still be current, or the result is dropped and the call is `Locked`. Because that mutex orders each
+release wholly before or after each epoch change, and `lock()` changes the epoch before it returns, no signature,
+shared secret, ciphertext, exported key or secret read of the old epoch is made or released after `lock()`
+returns. This is structural, not a timing claim; the lock-race tests check it on the vault's own log of releases
+and epoch changes, in that mutex's order, under 16 concurrent signers and 300 locks per vault mode. What a caller
+does with a result released before the lock can finish after it: a signature it already holds, the provider key
+`with_revealed_seed`'s closure derives, the dump-wallet keys derived from `export_wallet_secret`. A flow that must
+not use such a result after a lock ("Lock to cancel", DASHPAY §2.6) checks at its own commit point under a lease
+the lock revokes (E0-04, E0-05). Not gated, and pre-existing: `backup_bundle` and `open_backup_bundle` (no grant
+or epoch; the latter returns the decrypted secrets of this vault's own bundle on an unlocked vault) and
+`enroll_quick_unlock` (serialized by the writer lock, which `lock()` does not take).
 
 **Integrity.** Records and the manifest are authenticated with the data key; a changed, deleted, swapped
 or individually rolled-back record, or a changed manifest, makes unlock and reads fail with

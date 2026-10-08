@@ -448,6 +448,10 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
       `AssetLockFunding::FromExistingAssetLock` once a proof exists.
   - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so
     ("Registration in progress — Lock to cancel").
+  - The vault releases no signature or crypto result of an epoch once `lock()` has returned (E0-03; m1-engine
+    §2.2). A result released just before the lock can still reach the flow, so each flow checks its lease at its
+    own commit point (before it broadcasts a transaction or submits a state transition) and drops the result
+    once the lease is revoked (E0-04).
 - **The background `DashPayCrypto` lease.**
   - It exists while the vault is `Unlocked`, or unencrypted (no passphrase). It does not exist while
     `UnlockedMixingOnly` or `Locked`.
