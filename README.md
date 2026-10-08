@@ -157,15 +157,17 @@ app, dwcli and the tests never rely on the umask:
 
 - The directories on the path to a database or secret are created 0700: the data root and any missing
   parents (a new `~/.local/share` too), the network directories, `backups/` (with storage's
-  `backups/auto`), `spv/` and the vault. The databases, the vault, backups and key exports are 0600
+  `backups/auto`), `avatars/`, `spv/` and the vault. The databases, the vault, backups and key exports are 0600
   (`app.sqlite` too), and so are the settings files and the open-session marker. What dash-spv writes
   inside `spv/` takes the umask's mode, behind the 0700 network directory.
 - Files written outside the data root are created 0600 too: CSV exports (transactions, address book),
   saved PSBTs and the log-export zip. Saving over an existing file replaces it with a new 0600 one.
 - What the app owns loses group and other access when it already has it (an older build created it with
   the umask's mode): the default data root (the Swift app logs it on stderr), and the network
-  directories, `backups/`, `backups/auto/`, `spv/`, the vault directory and `app.sqlite` (the engine
-  logs a warning). The settings files are replaced by 0600 ones on their next write.
+  directories, `backups/`, `backups/auto/`, `avatars/`, `spv/`, the vault directory and `app.sqlite` (the engine
+  logs a warning). The settings files are replaced by 0600 ones on their next write. `avatars/` is a
+  disposable cache: when it cannot be created (a stray file of that name), the engine logs a warning and
+  disables avatars for the session instead of failing to open the network.
 - Modes are changed through a descriptor, never by path: each directory is opened with
   `O_NOFOLLOW` relative to its parent (`rust/crates/dw-fs`, `PrivateFileSystem.swift`; `O_PATH` on
   Linux, so a search-only parent such as a 0711 `/home` is fine), so a symlink swapped in after the

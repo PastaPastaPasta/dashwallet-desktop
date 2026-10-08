@@ -106,7 +106,7 @@ Payload plaintext (JSON):
 | `name` | Display name, or `null`. |
 | `birth_height` | The wallet's birth height; a restore scans from it (0 when `null`). |
 | `created_at` | When the wallet was added on the source device. |
-| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column plus `settings_kv` rows scoped to the wallet. Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
+| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column plus `settings_kv` rows scoped to the wallet; the DashPay `dp_*` rows of the wallet are among them (§3.1). Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
 
 The payload holds this wallet's data only and is built in memory (no temporary file). Backups
 written before review M4 also carry `wallet_sqlite`, a base64 online backup of the whole network's
@@ -125,19 +125,50 @@ it is no longer written.
 4. Store the secret under this vault's DEK and register the wallet (seed-safety order, as
    `import_wallet`), with the payload's name and birth height. A wallet registered with keys
    already: `backup.already_exists`.
-5. Insert the `app_rows` (`INSERT OR IGNORE`; identical rows are skipped), so labels, address
-   book, receive requests, UTXO locks and wallet settings return.
+5. Insert the `app_rows` (`INSERT OR IGNORE`): a row whose primary key or unique index matches
+   an existing row is skipped and the existing row is kept (for `dp_registration_lock`, a restored
+   registration whose asset-lock outpoint is already held by a flow adds no second flow; the
+   existing flow stays). So labels, address book, receive requests, UTXO locks, wallet settings and
+   the wallet's DashPay `dp_*` rows return (§3.1).
 
 Wallet state is rebuilt by the compact-filter scan from the birth height. A restore that fails
 after a wallet was registered (its app rows, or a later bundle of the file) removes the wallets it
 registered, so a failed restore leaves the vault and the wallet list as they were.
+
+### 3.1 DashPay rows (`dp_*`)
+
+The wallet-scoped DashPay tables of `app.sqlite` (`DASHPAY.md` §3.4: `dp_main_identity`,
+`dp_registration`, `dp_contest_watch`, `dp_events`, `dp_payment_lock`, `dp_trust_unverified`,
+`dp_prefs`) have a `wallet_id` column, so they travel in `app_rows` with no change to this format.
+Rowid aliases (`dp_registration.id`, `dp_events.id`) are renumbered on import, in export order, so event
+order and read state survive. `dp_avatar` (the network-wide thumbnail cache index) has no wallet and is
+not exported. Restoring an unverified-entity flag (`dp_trust_unverified`) is the conservative choice.
+
+**Manager decision: `dp_registration` rows ARE restored on another machine**, so a registration whose
+asset lock is already funded resumes there and the locked funds are not stranded. The wallet scan
+rebuilds the asset-lock records, and the signing key is rederived from the seed, not read from the row.
+A row can be behind reality, because automatic backups (§4) are not written on a registration
+transition. The registration engine (DP1-02) therefore holds these conditions (`DASHPAY.md` §3.4,
+"Registration rows"):
+
+1. no funding of a restored row until SPV has synced and identities have been rediscovered;
+2. an existing identity or recovered asset lock is adopted before anything is funded;
+3. the outpoint is written when the lock is built, before it is broadcast;
+4. an automatic backup runs when the flow reaches `FundingSent`.
+
+An **invitation-funded** row does not resume on another machine: its link is a vault record
+(`invitation/<id>`) that a bundle does not carry (§2.1), so the row fails there with a typed error
+(`invitation.invalid`) and does not block a new registration. No funds of the user are involved, because
+the asset lock is the inviter's.
 
 ## 4. Automatic backups (QT-116)
 
 - File: `<network dir>/backups/<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), mode 0600.
 - Written when a wallet is added (create, import, restore, keys attached) and for every wallet
   when a session opens, if the policy keeps any and the DEK is available (vault unlocked or
-  unencrypted); otherwise skipped silently, as dash-qt backs up only what it can.
+  unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A DashPay
+  registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup carries its
+  asset-lock outpoint.
 - Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
   automatic backup of the same wallet can run at the same time: neither writes anything but its
   own destination file (created with `O_EXCL`, mode 0600).

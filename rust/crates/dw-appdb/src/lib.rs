@@ -25,6 +25,9 @@ mod embedded {
     refinery::embed_migrations!("./migrations");
 }
 
+#[cfg(test)]
+mod migration_tests;
+
 /// File name of the metadata database inside a network directory.
 pub const APP_DB_FILE: &str = "app.sqlite";
 
@@ -232,6 +235,13 @@ impl AppDb {
             "tx_meta",
             "receive_requests",
             "utxo_locks",
+            "dp_main_identity",
+            "dp_registration",
+            "dp_contest_watch",
+            "dp_events",
+            "dp_payment_lock",
+            "dp_trust_unverified",
+            "dp_prefs",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
@@ -685,7 +695,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026100501);
+        assert_eq!(db.schema_version().unwrap(), 2026100801);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

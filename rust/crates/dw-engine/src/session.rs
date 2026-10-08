@@ -31,6 +31,8 @@ pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
 pub const WALLET_DB_FILE: &str = "wallet.sqlite";
 /// dash-spv storage directory inside a network dir.
 pub const SPV_DIR: &str = "spv";
+/// DashPay avatar thumbnails inside a network dir (DASHPAY §3.4).
+pub const AVATARS_DIR: &str = "avatars";
 
 /// Network-scoped wallet id (key-wallet folds the network into the digest,
 /// so the same mnemonic has a different id per network).
@@ -134,6 +136,9 @@ struct PumpTask {
 pub struct NetworkSession {
     pub(crate) network: DashNetwork,
     data_dir: PathBuf,
+    /// The avatar cache directory could be created at open; without it
+    /// avatars are off for the session (`avatars_dir`).
+    avatars_ready: bool,
     pub(crate) rt: Handle,
     pub(crate) sink: Arc<dyn EventSink>,
     context: Arc<LazyTrustedContext>,
@@ -203,6 +208,20 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
+        // Owner-only whatever the umask (DASHPAY §3.4). The cache is
+        // disposable, so a stray file, a symlink that cannot be resolved, or
+        // an entry owned by another user (or a symlink loop) named `avatars`
+        // turns avatars off for this session instead of failing the open. A
+        // dangling symlink whose target can be created is followed and the
+        // target created (mode 0700); avatars stay on.
+        let avatars_ready = match create_owned_dir(&data_dir, Path::new(AVATARS_DIR)) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, dir = %data_dir.join(AVATARS_DIR).display(),
+                    "avatar cache directory unusable; avatars are disabled for this session");
+                false
+            }
+        };
         let coinjoin_settings = {
             let db = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::coinjoin::load_settings(&db)).await?
@@ -309,6 +328,7 @@ impl NetworkSession {
         let session = Arc::new(Self {
             network,
             data_dir,
+            avatars_ready,
             rt: Handle::current(),
             sink,
             context,
@@ -412,6 +432,12 @@ impl NetworkSession {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could
+    /// not be created at open: avatars are then disabled for this session.
+    pub fn avatars_dir(&self) -> Option<PathBuf> {
+        self.avatars_ready.then(|| self.data_dir.join(AVATARS_DIR))
     }
 
     /// Runs `fut` on the engine runtime (for callers outside dw-engine whose

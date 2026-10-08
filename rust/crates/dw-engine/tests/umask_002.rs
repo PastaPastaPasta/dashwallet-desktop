@@ -63,6 +63,17 @@ fn open_regtest(root: &Path) -> Result<(), String> {
     result
 }
 
+/// Opens regtest on `root` and reports the session's avatar directory.
+fn open_regtest_avatars(root: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    let engine = engine(root);
+    let result = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .map(|session| session.avatars_dir())
+        .map_err(|e| e.to_string());
+    engine.block_on(engine.shutdown()).unwrap();
+    result
+}
+
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
@@ -95,14 +106,45 @@ fn data_roots_open_under_umask_002() {
     assert_eq!(mode(&net.join(WALLET_DB_FILE)), 0o600);
     assert_eq!(mode(&net.join("backups")), 0o700);
     assert_eq!(mode(&net.join("backups/auto")), 0o700);
+    assert_eq!(mode(&net.join("avatars")), 0o700);
 
     // An existing install whose network directory and app database an older
     // build left group-writable: the engine owns both and restricts them.
+    // The avatar directory is the engine's too.
     chmod(&net, 0o775);
     chmod(&net.join(APP_DB_FILE), 0o664);
+    chmod(&net.join("avatars"), 0o775);
     open_regtest(&root).expect("an existing data root reopens");
     assert_eq!(mode(&net), 0o700);
     assert_eq!(mode(&net.join(APP_DB_FILE)), 0o600);
+    assert_eq!(mode(&net.join("avatars")), 0o700);
+
+    // A symlink swapped in for `avatars` is not followed to change a mode:
+    // what it points at keeps its mode.
+    let elsewhere = base.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    chmod(&elsewhere, 0o755);
+    std::fs::remove_dir(net.join("avatars")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, net.join("avatars")).unwrap();
+    open_regtest(&root).expect("a symlinked avatars directory opens");
+    assert_eq!(mode(&elsewhere), 0o755);
+    std::fs::remove_file(net.join("avatars")).unwrap();
+    open_regtest(&root).expect("a missing avatars directory is recreated");
+    assert_eq!(mode(&net.join("avatars")), 0o700);
+
+    // The cache is disposable (review m4): an entry named `avatars` that is
+    // not a directory disables avatars for the session, and the wallet opens.
+    assert_eq!(open_regtest_avatars(&root), Ok(Some(net.join("avatars"))));
+    std::fs::remove_dir(net.join("avatars")).unwrap();
+    std::fs::write(net.join("avatars"), b"stray").unwrap();
+    assert_eq!(open_regtest_avatars(&root), Ok(None));
+    std::fs::remove_file(net.join("avatars")).unwrap();
+    // A symlink that loops cannot be resolved.
+    std::os::unix::fs::symlink(net.join("avatars"), net.join("avatars")).unwrap();
+    assert_eq!(open_regtest_avatars(&root), Ok(None));
+    std::fs::remove_file(net.join("avatars")).unwrap();
+    assert_eq!(open_regtest_avatars(&root), Ok(Some(net.join("avatars"))));
+    assert_eq!(mode(&net.join("avatars")), 0o700);
 
     // An install whose `backups` and `backups/auto` an older build left
     // group-writable (review D1-r2). The storage refuses to write an automatic

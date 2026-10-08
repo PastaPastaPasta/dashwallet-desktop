@@ -260,9 +260,13 @@ The layered provider's policy (`platform/trust.rs`):
    **Provenance.** The library stores what it fetched without recording which quorum source verified it, and its
    rows carry no modification time. So the engine:
    - while the fallback is in use, has the changeset tap (§3.5) record every entity a changeset touches (identity
-     ids, contact-request ids, DPNS labels) in dw-appdb `dp_trust_unverified(kind, key, since)`;
+     ids, contact-request ids, DPNS labels) in dw-appdb `dp_trust_unverified(wallet_id, kind, key, since)`;
    - once SPV has synced, re-fetches those entities, and clears each row when its re-fetch verifies against SPV;
-   - lets no money move to an entity that still has a row (DP3-04).
+   - lets no money move to an entity that still has a row in **any** wallet (DP3-04): the gate queries
+     `WHERE kind = ? AND key = ?`, not just the current `wallet_id`. wallet.sqlite holds one row per identity (a write
+     from another wallet is a no-op), so wallet A's flag covers an identity wallet B relies on; a verified re-fetch of
+     an identity clears its rows in every wallet. Contact-request and DPNS rows are per wallet there and are cleared
+     by the owning wallet's re-fetch.
 6. **Contracts and the activation height** may still come from the trusted provider; the SDK verifies contract
    fetches through proofs as well.
 
@@ -631,7 +635,7 @@ Nothing secret goes to `settings.json` or SQLite.
 | Store | What DashPay adds |
 |---|---|
 | `wallet.sqlite` (`SqlitePersister`, the library's) | Everything the library persists: identities (with DPNS names and profiles), public identity keys, contacts (alias, note, hidden, accepted accounts, `payment_channel_broken`), ignored senders, asset locks and proofs, invitations, DPNS name states, scan state, the DashPay payments overlay. **Nothing written by us.** |
-| `app.sqlite` (dw-appdb, append-only migrations) | `dp_main_identity(wallet, identity)`; `dp_registration(id, wallet, identity_index, label, temp_label, funding, asset_lock_outpoint, phase, error, retryable, created_at, updated_at)`; `dp_contest_watch(identity, label, ends_at, last_state)`; `dp_events(id, wallet, identity, kind, contact, ref, at, read_at)`; `dp_payment_lock(wallet, identity, contact, txid, since)`; `dp_trust_unverified(kind, key, since)` (§2.2); `dp_avatar(url_sha, content_sha, dhash, status, file, fetched_at, bytes)`; `dp_prefs(identity, key, value)` |
+| `app.sqlite` (dw-appdb, append-only migrations; the wallet column is `wallet_id`, as in every dw-appdb table, so wallet removal and `.dwbackup` export cover these) | `dp_main_identity(wallet_id, identity)`; `dp_registration(id, wallet_id, identity_index, identity, label, temp_label, funding, initial_profile, asset_lock_outpoint, phase, error, retryable, created_at, updated_at)` (`initial_profile`: the profile entered at Draft as JSON, kept until `ProfileCreated`; the outpoint is unique per wallet, so one asset lock funds one flow); `dp_contest_watch(wallet_id, identity, label, ends_at, last_state)`; `dp_events(id, wallet_id, identity, kind, contact, ref, at, read_at)` (contact and ref are `''` when absent; unique on all but id, so journal writes are `INSERT OR IGNORE`); `dp_payment_lock(wallet_id, identity, contact, txid, since)`; `dp_trust_unverified(wallet_id, kind, key, since)` (§2.2; keyed per wallet, but wallet.sqlite stores one row per identity, so another wallet's write is a no-op: the money-move gate blocks when ANY wallet flags the entity, and a verified re-fetch of an identity clears its rows in every wallet; contact-request and DPNS rows are per wallet and cleared by their own wallet's re-fetch); `dp_avatar(url_sha, content_sha, dhash, status, file, fetched_at, bytes)` (network-wide cache index; `status` is the fetch and decode outcome of the URL only, never a verdict on a profile's `avatarHash` or fingerprint, which is checked per profile when reading; thumbnail files are named by content, so rows can share one and rotation counts and unlinks a shared file once, when no row names it); `dp_prefs(wallet_id, identity, key, value)` |
 | `<network>/avatars/` (mode 0700) | engine-re-encoded PNG thumbnails (128 and 256 px) named by SHA-256, never the original bytes; rotated at 200 MB, oldest first |
 | vault | pending invitation links; the Imgur delete hash |
 | UI settings | advanced mode, notifications toggle, contact sort, "load contact pictures" |
@@ -639,7 +643,7 @@ Nothing secret goes to `settings.json` or SQLite.
 **The registration state machine** (one `dp_registration` row per flow):
 
 ```
-Draft{name, contested, funding, temp_name?}          user may edit or discard
+Draft{name, contested, funding, temp_name?, initial_profile?}   user may edit or discard
  → KeysPrepared{identity_index, pubkeys}             public keys pre-persisted through platform-wallet
  → FundingSent{txid, outpoint}                       asset lock broadcast; tracked by platform-wallet
  → ProofWaiting{IS|CL, since}                        InstantSend up to 300 s, then a ChainLock with no time limit;
@@ -654,6 +658,58 @@ Draft{name, contested, funding, temp_name?}          user may edit or discard
 - Every step is idempotent against platform-wallet's own tracking (tracked asset locks, persisted identities, DPNS
   states), so a kill at any transition is safe. Tests kill at every transition.
 - Funds are committed only at `FundingSent`.
+- The profile input (`initial_profile`) lives in the row from Draft, so it survives the ChainLock wait, a restart and a
+  restore; `ProfileCreated` consumes it.
+
+**Registration rows: what DP1-02 and DP5-02 must honour** (conditions from the E0-07 review; `dp_registration` is
+migrated before the engine that writes it, so these are the contract for that engine).
+
+*The `funding` column* is `TEXT NOT NULL` without a CHECK, so its encoding can grow without a rebuild. Nothing in the
+schema defines it; DP1-02 does, before the first row ships:
+
+1. **Versioned and tagged**, e.g. `{"v":1,"kind":"core_balance",…}`. These rows travel in `.dwbackup` files between
+   app versions and are imported by column name. A newer build parses an older row; an older build refuses a newer
+   one cleanly, as a `Failed` row with a code, never a panic.
+2. **`CoreBalance`** carries the locked amount in duffs from the accepted quote, so a resume before `FundingSent`
+   rebuilds the same lock under the grant's cap instead of re-quoting silently across the cap the user approved.
+3. **`ExistingIdentity{id}`**: the id lives in the `identity` column only (set at Draft for this funding kind), never
+   in `funding`, so the two cannot disagree after a partial update.
+4. **`FaucetAssetLock`** (developer builds): its key is a bearer credential and goes to the vault; `funding` is never a
+   secret. The outpoint goes to `asset_lock_outpoint`.
+5. **`Invitation{link_id}`**: the link is a bearer credential held in the vault as `invitation/<id>` (§3.3), and a
+   `.dwbackup` carries no such record. See "Restore" below.
+
+*`updated_at`* is never used as the start of the InstantSend window (§2.6): a touch would extend how long a key is
+kept. The window runs from an in-memory instant taken at broadcast. After a restart the IS-or-CL wait belongs to
+platform-wallet (`resume_asset_lock` takes a relative timeout); a persisted "since" would only move when the UI
+switches from "waiting for InstantSend" to "waiting for a ChainLock", and can be added later as a nullable column.
+
+*Restore.* `dp_*` wallet rows are part of the wallet's `.dwbackup` (`docs/contracts/dwbackup-v1.md` §2.3, §3). The
+manager's decision: **`dp_registration` rows are restored on another machine**, so a registration whose asset lock is
+already funded resumes there and the locked funds are not stranded. The scan rebuilds `wallet.sqlite`, and
+platform-wallet's restore reconstructs finalized asset locks that pay this wallet as `RecoveredFromChain`; the signing
+key is rederived from the seed, not read from the row. A restored row can be behind reality, because automatic backups
+are written when a wallet is added and when a session opens, never on a registration transition (for example the
+backup says `KeysPrepared` while the source machine has already funded and registered). Therefore DP1-02:
+
+1. never funds a restored row (never advances it past `KeysPrepared`) until SPV has synced and the same-seed discovery
+   of identities and the asset-lock reconstruction pass (DP1-05) have run; this extends the §2.2 rule 5 hold on
+   registrations until SPV sync;
+2. before funding, looks for an identity at `identity_index` and for `RecoveredFromChain` registration locks, and
+   adopts what it finds instead of building a new lock;
+3. writes `asset_lock_outpoint` when the lock is **built**, before it is broadcast, so a kill or a snapshot after the
+   broadcast never shows an unfunded phase for a funded flow (the unique index then also keeps a second flow off the
+   same lock; `finish_asset_locks` reuses the stranded lock's row);
+4. runs an automatic backup when the flow reaches `FundingSent`, so the newest backup carries the outpoint;
+5. writes `asset_lock_outpoint` in one canonical text only (lower-case hex txid, `:`, decimal vout, `OutPoint`'s
+   `Display`), and keys any upsert on the lock with the index's predicate:
+   `ON CONFLICT(wallet_id, asset_lock_outpoint) WHERE asset_lock_outpoint IS NOT NULL DO ...` (SQLite rejects the
+   statement without the `WHERE`).
+
+An invitation-funded row (`Invitation{link_id}`) **fails with a typed error on another machine**, for example
+`invitation.invalid` ("open the invitation link again"): the link is in the vault of the source machine only. That is
+safe, because the asset lock is the inviter's and none of the user's funds are stranded. The failed row must neither
+retry forever nor count towards `registration.in_progress`, so a new registration can start.
 
 **Gaps in the library's persister** (verified at the pin; also present at head and on v5.1-dev):
 
@@ -692,6 +748,10 @@ The conventions are m1's: hex wallet ids, base58 identity ids, duffs and credits
 grants by id, one error enum per domain. Records derive `serde` (plus `uniffi` or `specta` in the binding crate only).
 Sync calls read in-memory state; async calls touch the network or persistence.
 
+Note for DP1-02: `dp_registration.asset_lock_outpoint` is unique per wallet byte-wise, and the column has no format
+CHECK. Format it in exactly one place, as lower-case hex txid, `:`, decimal vout (`OutPoint`'s `Display`); no helper
+exists yet, so DP1-02 adds the single writer and a test that `'T:0'`-style upper-case input is normalized or rejected.
+
 ```rust
 // NetworkSession::dashpay(wallet_id) -> Arc<DashPay>
 impl DashPay {
@@ -710,6 +770,7 @@ impl DashPay {
     pub async fn registration_quote(&self, req: RegistrationRequest) -> Result<RegistrationQuote, RegistrationError>;
         // req { label, temporary_label?, funding: CoreBalance | Invitation{link_id} | ExistingIdentity{id}
         //       | FaucetAssetLock{..} (developer builds only), initial_profile? }
+        //   persisted as dp_registration.funding / .initial_profile; encoding and restore rules: §3.4
     pub async fn start_registration(&self, req: RegistrationRequest, grant: String) -> Result<String, RegistrationError>;
     pub fn registrations(&self) -> Vec<RegistrationStatus>;          // phase, label, identity, txid, error, retryable
     pub async fn resume_registration(&self, draft: String, grant: Option<String>) -> Result<(), RegistrationError>;
@@ -814,7 +875,10 @@ Notices: `PlatformTrustMismatch`, `DashPayStartupIncomplete`, and the existing `
     them;
   - decoded with `image` size limits, then re-encoded to PNG;
   - checked against the profile's `avatarHash` and dHash; a mismatch shows the initials avatar;
-  - "Load contact pictures" is on by default and can be turned off.
+  - "Load contact pictures" is on by default and can be turned off;
+  - DP4-02 writes thumbnails through descriptors, never by path: `avatars_dir()` was checked once, at session open, and
+    a user-chosen symlink may stand in for the directory. Open the directory `O_NOFOLLOW|O_DIRECTORY` (or through
+    dw-fs) and create files with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0600. A symlink target keeps its own mode.
 - **Gravatar** e-mail addresses are hashed in Rust and never stored. **Imgur** uploads are anonymous, and the delete
   hash is kept.
 - **Bearer credentials** (invitation links, `dapk` QR payloads, the faucet asset-lock key):
