@@ -36,15 +36,19 @@ extension GtkBackend: BackendFeatures.TextViews {
         if let lineLimitSettings = environment.lineLimitSettings {
             let multilineString = [String](repeating: "a", count: lineLimitSettings.limit)
                 .joined(separator: "\n")
-            updateTextView(
-                measurementCustomLabel,
-                content: "",
-                environment: environment
-            )
-
-            let pango = Pango(for: measurementCustomLabel)
-
-            let (_, heightLimit) = pango.getTextSize(
+            // dashwallet-desktop patch P9: a label (`Text`) is styled for `environment` just
+            // before it is measured, so measure the limit with its own context. Upstream restyled
+            // one shared measurement label for every line-limited text, reloading a display-wide
+            // CSS provider whenever the font or colour differed from the previous text's. Text
+            // editors are styled only at commit and keep the shared label.
+            let limitPango: Pango
+            if widget is CustomLabel {
+                limitPango = pango
+            } else {
+                updateTextView(measurementCustomLabel, content: "", environment: environment)
+                limitPango = Pango(for: measurementCustomLabel)
+            }
+            let (_, heightLimit) = limitPango.getTextSize(
                 multilineString,
                 ellipsize: .none,
                 proposedWidth: nil,
@@ -87,7 +91,7 @@ extension GtkBackend: BackendFeatures.TextViews {
             }
 
         textView.selectable = environment.isTextSelectionEnabled
-        textView.css.clear()
-        textView.css.set(properties: Self.cssProperties(for: environment))
+        // dashwallet-desktop patch P9: one assignment, so unchanged CSS is not reloaded.
+        textView.css.set(properties: Self.cssProperties(for: environment), clear: true)
     }
 }

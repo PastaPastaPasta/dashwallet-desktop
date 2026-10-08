@@ -22,6 +22,9 @@ class _App<AppRoot: App>: ModelObserver {
 
     /// Used by the ``ModelObserver`` protocol to prevent duplicate view updates.
     var currentViewModelObservationID: UUID?
+    /// Before the windows (depth 0): refreshing the scene graph updates them all
+    /// (dashwallet-desktop patch P8).
+    var observationDepth: Int { -1 }
 
     /// Wraps a user's app implementation.
     init(_ app: AppRoot, backend: AppRoot.Backend) {

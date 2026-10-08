@@ -24,8 +24,8 @@ extension GtkBackend: BackendFeatures.TextFields {
             onSubmit()
         }
 
-        textField.css.clear()
-        textField.css.set(properties: Self.cssProperties(for: environment, isControl: true))
+        // dashwallet-desktop patch P9: one assignment, so unchanged CSS is not reloaded.
+        textField.css.set(properties: Self.cssProperties(for: environment, isControl: true), clear: true)
     }
 
     public func setContent(ofTextField textField: Widget, to content: String) {

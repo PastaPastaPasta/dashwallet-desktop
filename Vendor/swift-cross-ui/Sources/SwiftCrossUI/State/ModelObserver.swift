@@ -30,6 +30,11 @@ protocol ModelObserver: AnyObject, Sendable {
     ///
     /// - Parameter backend: The backend passed to the last call to ``observe(with:_:)``.
     func viewModelDidChange<Backend: BaseAppBackend>(backend: Backend)
+
+    /// How deep the observer sits in the scene and view graph (dashwallet-desktop patch P8).
+    /// Pending updates run shallowest first; see ``ModelObserverUpdateQueue``. No default, so
+    /// that every observer states its depth.
+    var observationDepth: Int { get }
 }
 
 extension ModelObserver {
@@ -59,10 +64,68 @@ extension ModelObserver {
         } onChange: { [backend, weak self] in
             backend.runInMainThread {
                 guard
-                    self?.currentViewModelObservationID == observationTrackingID
+                    let self, self.currentViewModelObservationID == observationTrackingID
                 else { return }
-                self?.viewModelDidChange(backend: backend)
+                // dashwallet-desktop patch P8: queue the update instead of running it here.
+                ModelObserverUpdateQueue.enqueue(
+                    depth: self.observationDepth,
+                    isCurrent: { [weak self] in
+                        self?.currentViewModelObservationID == observationTrackingID
+                    },
+                    update: { [weak self] in self?.viewModelDidChange(backend: backend) },
+                    scheduleFlush: { backend.runInMainThread(action: $0) }
+                )
             }
+        }
+    }
+}
+
+/// Coalesces the updates that one batch of model changes triggers (dashwallet-desktop patch P8).
+///
+/// Observation tracking nests: a view graph node lays out its children inside its own
+/// ``ModelObserver/observe(with:_:)`` call, so every ancestor of a view that reads a property
+/// observes that property too. Run one by one, a single change then updates a node, then its
+/// parent (whose observation the child's update did not renew), then the grandparent, and so on,
+/// each re-laying out a larger subtree. In dashwallet-desktop one assignment queued about 950
+/// such updates, which kept the main thread busy for far longer than anyone waited.
+///
+/// Instead, the changes that arrive before the main thread gets to them are collected and run
+/// together, shallowest node first. An ancestor's update recomputes its subtree, which renews
+/// the observations of the descendants it lays out, so their own pending updates are dropped.
+@MainActor
+enum ModelObserverUpdateQueue {
+    private struct Pending {
+        var depth: Int
+        var isCurrent: @MainActor () -> Bool
+        var update: @MainActor () -> Void
+    }
+
+    private static var pending: [Pending] = []
+    private static var isFlushScheduled = false
+
+    /// Queues `update`, which runs at the next flush if `isCurrent` still holds then.
+    /// `scheduleFlush` runs its argument later on the main thread (the backend's
+    /// `runInMainThread`); it is called once per batch.
+    static func enqueue(
+        depth: Int,
+        isCurrent: @escaping @MainActor () -> Bool,
+        update: @escaping @MainActor () -> Void,
+        scheduleFlush: (@escaping @MainActor @Sendable () -> Void) -> Void
+    ) {
+        pending.append(Pending(depth: depth, isCurrent: isCurrent, update: update))
+        guard !isFlushScheduled else { return }
+        isFlushScheduled = true
+        // Runs after the main-thread hops that the same changes have already scheduled.
+        scheduleFlush { flush() }
+    }
+
+    private static func flush() {
+        isFlushScheduled = false
+        // `sort` is stable, so observers at the same depth keep their order.
+        let batch = pending.sorted { $0.depth < $1.depth }
+        pending = []
+        for item in batch where item.isCurrent() {
+            item.update()
         }
     }
 }

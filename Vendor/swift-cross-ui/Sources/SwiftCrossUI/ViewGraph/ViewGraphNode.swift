@@ -63,6 +63,10 @@ public class ViewGraphNode<NodeView: View, Backend: BaseAppBackend>: ModelObserv
     /// Used by the ``ModelObserver`` protocol to prevent duplicate view updates.
     var currentViewModelObservationID: UUID?
 
+    /// The node's depth in the view graph, 1 for a window's root view (dashwallet-desktop
+    /// patch P8). Windows have depth 0 and `_App` -1.
+    let observationDepth: Int
+
     /// Creates a node for a given view while also creating the nodes for its children, creating
     /// the view's widget, and starting to observe its state for changes.
     public init(
@@ -72,6 +76,7 @@ public class ViewGraphNode<NodeView: View, Backend: BaseAppBackend>: ModelObserv
         environment: EnvironmentValues
     ) {
         self.backend = backend
+        self.observationDepth = environment.viewGraphDepth + 1
 
         // Restore node snapshot if present.
         self.view = nodeView
@@ -163,10 +168,13 @@ public class ViewGraphNode<NodeView: View, Backend: BaseAppBackend>: ModelObserv
     }
 
     private func updateEnvironment(_ environment: EnvironmentValues) -> EnvironmentValues {
-        environment.with(\.onResize) { [weak self] _ in
+        var environment = environment.with(\.onResize) { [weak self] _ in
             guard let self else { return }
             self.bottomUpUpdate()
         }
+        // dashwallet-desktop patch P8: children sit one level deeper.
+        environment.viewGraphDepth = observationDepth
+        return environment
     }
 
     /// Recomputes the view's body and computes its layout and the layout of

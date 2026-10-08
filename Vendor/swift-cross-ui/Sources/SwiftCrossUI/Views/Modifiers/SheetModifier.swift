@@ -98,7 +98,9 @@ struct SheetModifier<Content: View, SheetContent: View>: TypeSafeView {
                 let sheetViewGraphNode = ViewGraphNode(
                     for: sheetContent(),
                     backend: backend,
-                    environment: environment
+                    // dashwallet-desktop patch P8: the content root sits one level below this
+                    // modifier (`environment` is the modifier's parent's).
+                    environment: environment.with(\.viewGraphDepth, environment.viewGraphDepth + 1)
                 )
                 let sheetContentNode = AnyViewGraphNode(sheetViewGraphNode)
                 children.sheetContentNode = sheetContentNode

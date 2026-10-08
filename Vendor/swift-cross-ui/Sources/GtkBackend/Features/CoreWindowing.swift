@@ -74,7 +74,12 @@ extension GtkBackend: BackendFeatures.CoreWindowing {
         minimum minimumSize: SIMD2<Int>,
         maximum maximumSize: SIMD2<Int>?
     ) {
-        window.setMinimumSize(to: Size(width: minimumSize.x, height: minimumSize.y))
+        // dashwallet-desktop patch P10: the limit applies to the whole window, so it includes
+        // the menu bar. Upstream gave the window the content's minimum, so a user could shrink
+        // the content one menu bar below its minimum.
+        window.setMinimumSize(
+            to: Size(width: minimumSize.x, height: minimumSize.y + menubarHeight(ofWindow: window))
+        )
 
         // NB: GTK does not support setting maximum sizes for widgets. It just doesn't.
         // https://discourse.gnome.org/t/how-to-build-fixed-size-windows-in-gtk-4/22807/10
@@ -129,13 +134,20 @@ extension GtkBackend: BackendFeatures.CoreWindowing {
         #if os(macOS)
             return 0
         #else
-            if window.showMenuBar {
-                // TODO: Don't hardcode this (if possible), because some Gtk
-                //   themes may affect the height of the menu bar.
-                25
-            } else {
-                0
+            guard window.showMenuBar else { return 0 }
+            // dashwallet-desktop patch P10: measure the menu bar (a direct child of the window)
+            // the way GtkApplicationWindow allocates it, at its minimum height. Upstream assumed
+            // 25 px; a taller menu bar left the content short after every programmatic resize.
+            var child = gtk_widget_get_first_child(window.widgetPointer)
+            while let current = child {
+                if String(cString: gtk_widget_get_css_name(current)) == "menubar" {
+                    var minimum: gint = 0
+                    gtk_widget_measure(current, GTK_ORIENTATION_VERTICAL, -1, &minimum, nil, nil, nil)
+                    return Int(minimum)
+                }
+                child = gtk_widget_get_next_sibling(current)
             }
+            return 25
         #endif
     }
 }

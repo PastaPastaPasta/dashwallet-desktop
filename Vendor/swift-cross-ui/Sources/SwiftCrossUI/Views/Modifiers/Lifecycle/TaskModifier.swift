@@ -54,12 +54,21 @@ struct TaskModifier<Id: Equatable, Content: View> {
 
 extension TaskModifier: View {
     var body: some View {
-        content.onChange(of: id, initial: true) {
-            task?.cancel()
-            task = Task(priority: priority) {
-                await action()
-            }
-        }.onDisappear {
+        // dashwallet-desktop patch P8: started during the update, as upstream does, not after it
+        // like other `.onChange` actions. Deferred, the start could run after the view's
+        // `.onDisappear` and leave a task nobody cancels.
+        OnChangeModifier(
+            body: TupleView1(content),
+            value: id,
+            action: {
+                task?.cancel()
+                task = Task(priority: priority) {
+                    await action()
+                }
+            },
+            initial: true,
+            runsAfterUpdate: false
+        ).onDisappear {
             task?.cancel()
         }
     }

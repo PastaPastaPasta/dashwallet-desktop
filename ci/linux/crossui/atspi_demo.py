@@ -115,6 +115,47 @@ def type_into(report, app, field, value, timeout=15):
     return ok
 
 
+def main_thread_demand(pid):
+    """Seconds the app's main thread has spent on a CPU or runnable and waiting for one
+    (/proc schedstat: run time + run-queue wait); None once the process is gone."""
+    try:
+        with open(f"/proc/{pid}/task/{pid}/schedstat") as fh:
+            run_ns, wait_ns = (int(field) for field in fh.read().split()[:2])
+    except (OSError, ValueError):
+        return None
+    return (run_ns + wait_ns) / 1e9
+
+
+def check_settles(report, app, label, timeout=60, window=2.0, quiet_windows=3, max_busy=0.25):
+    """Hard check that the app's main thread goes idle within `timeout` s: `quiet_windows`
+    consecutive `window`-second windows in each of which it wants at most `max_busy` of a core,
+    while the harness sends no AT-SPI queries. "Wants" counts the time it waited to run as well
+    as the time it ran: on a loaded host a spinning thread gets only its share of a core, so its
+    CPU time alone can look idle. Guards against view updates that never settle (a busy main
+    thread also starves every AT-SPI query)."""
+    pid = safe(lambda: app.get_process_id())
+    deadline = time.monotonic() + timeout
+    samples = []
+    quiet = 0
+    while pid and quiet < quiet_windows and time.monotonic() < deadline:
+        start, before = time.monotonic(), main_thread_demand(pid)
+        time.sleep(window)
+        after = main_thread_demand(pid)
+        if before is None or after is None:
+            samples.append(None)
+            break
+        samples.append((after - before) / (time.monotonic() - start))
+        quiet = quiet + 1 if samples[-1] <= max_busy else 0
+    recent = samples[-12:]
+    shown = ", ".join("gone" if b is None else f"{b:.0%}" for b in recent) or "no app pid"
+    if len(samples) > len(recent):
+        shown = f"… {shown}"
+    report.check("hard", f"{label}: the main thread goes idle within {timeout} s",
+                 quiet >= quiet_windows,
+                 f"{len(samples)} windows of {window:.0f} s, demand (run + wait) {shown} of a core; "
+                 f"needs {quiet_windows} in a row at most {max_busy:.0%}")
+
+
 def onboarding_flow(report, app, out_dir, step):
     """Onboarding on a network without wallets (`--demo onboarding`, or live
     mode on an empty data directory): create, show phrase, verify, encrypt,
@@ -164,6 +205,7 @@ def onboarding_flow(report, app, out_dir, step):
         ready = wait_for(app, has_text(OVERVIEW), 15)
     report.check("hard", "onboarding: the new wallet's Overview is shown", bool(ready))
     record(app, out_dir, f"{step}-done")
+    check_settles(report, app, "onboarding")
 
 
 def send_flow(report, app, out_dir, step):
@@ -188,11 +230,14 @@ def send_flow(report, app, out_dir, step):
     time.sleep(3.5)  # the confirm button counts down 3 s (QT-067)
     if not press(report, app, "Send"):
         return
-    # After the broadcast the app opens the new transaction on the Transactions page.
-    done = wait_for(app, lambda n, i: i["role"] == "list item" and PAY_TO in i["name"] and "-0.25" in i["name"], 20)
+    # After the broadcast the app opens the new transaction on the Transactions page. That takes
+    # a few whole-window layouts (about 15 s in a debug build on an idle agentbox, longer under
+    # load); how long the app stays busy is checked by check_settles below.
+    done = wait_for(app, lambda n, i: i["role"] == "list item" and PAY_TO in i["name"] and "-0.25" in i["name"], 60)
     report.check("hard", "send: the sent payment is listed on the Transactions page", bool(done),
                  done[0][1]["name"] if done else "")
     record(app, out_dir, f"{step}-done")
+    check_settles(report, app, "send")
 
 
 def tools_flow(report, app, out_dir, step):

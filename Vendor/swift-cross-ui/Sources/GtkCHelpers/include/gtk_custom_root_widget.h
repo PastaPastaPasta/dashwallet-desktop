@@ -22,6 +22,8 @@ typedef struct _GtkCustomRootWidget {
     gint allocated_width;
     gint allocated_height;
     gboolean has_been_allocated;
+    /* dashwallet-desktop patch P10: a preempted size whose allocation has not come yet. */
+    gboolean awaiting_preempted_allocation;
 
     void *resize_callback_data;
     void (*resize_callback)(void*, CustomWidgetSize);

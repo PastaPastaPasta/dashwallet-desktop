@@ -13,6 +13,13 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
     private var isFirstUpdate = true
     /// The cached window size. Nil on first run or after a window is resized.
     private var cachedWindowSize: SIMD2<Int>?
+    /// The size last requested with `setSize(ofWindow:to:)`, until the next resize event
+    /// (dashwallet-desktop patch P10; see Vendor/PATCHES.md for backends that never report an
+    /// honoured request).
+    private var requestedWindowSize: SIMD2<Int>?
+    /// A requested size the window did not take, and the size it kept instead, until the
+    /// window gets another size (dashwallet-desktop patch P10).
+    private var refusedWindowSize: (requested: SIMD2<Int>, kept: SIMD2<Int>)?
     /// The environment most recently provided by this node's parent scene.
     private var parentEnvironment: EnvironmentValues
     /// The container used to center the root view in the window.
@@ -22,6 +29,9 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
 
     /// Used by the ``ModelObserver`` protocol to prevent duplicate view updates.
     var currentViewModelObservationID: UUID?
+    /// Windows sit below `_App` (-1) and above their root views (1) (dashwallet-desktop
+    /// patch P8).
+    var observationDepth: Int { 0 }
 
     /// - Parameters:
     ///   - closeHandler: The action to perform when the window is closed. Should
@@ -66,6 +76,22 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
 
         backend.setResizeHandler(ofWindow: window) { [weak self] newSize in
             guard let self else { return }
+            // dashwallet-desktop patch P10: the first resize event after a request answers it.
+            // GtkBackend reports the allocation that follows a request even when it matches.
+            if let requested = self.requestedWindowSize {
+                self.requestedWindowSize = nil
+                if requested == newSize {
+                    // Honoured. The update that made the request has laid the window out at
+                    // this size already.
+                    self.refusedWindowSize = nil
+                    return
+                }
+                // Refused (a window manager constraint, a misjudged menu bar); see
+                // `refusedWindowSize`.
+                self.refusedWindowSize = (requested, newSize)
+            } else if let refused = self.refusedWindowSize, refused.kept != newSize {
+                self.refusedWindowSize = nil
+            }
             self.update(
                 self.scene,
                 proposedWindowSize: newSize,
@@ -238,7 +264,13 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
             )
         )
 
-        if clampedWindowSize.vector != proposedWindowSize && !windowSizeIsFinal {
+        // dashwallet-desktop patch P10: asking again for a size the window has just refused would
+        // bring the same answer, and another resize event, forever.
+        let isRefusedAgain =
+            refusedWindowSize.map {
+                $0.requested == clampedWindowSize.vector && $0.kept == proposedWindowSize
+            } ?? false
+        if clampedWindowSize.vector != proposedWindowSize && !windowSizeIsFinal && !isRefusedAgain {
             // Restart the window update if the content has caused the window to
             // change size.
             return update(
@@ -277,6 +309,7 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
         )
 
         if needsWindowSizeCommit {
+            requestedWindowSize = proposedWindowSize  // dashwallet-desktop patch P10
             backend.setSize(ofWindow: window, to: proposedWindowSize)
         }
         cachedWindowSize = proposedWindowSize
