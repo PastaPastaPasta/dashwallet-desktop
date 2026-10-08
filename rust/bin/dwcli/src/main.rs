@@ -38,6 +38,15 @@ struct Cli {
     /// SPV peer ip:port; repeatable.
     #[arg(long = "peer")]
     peers: Vec<String>,
+    /// PEM CA certificate DAPI TLS is checked against (a dashmate devnet's
+    /// self-signed gateway) in addition to the system roots.
+    #[arg(long)]
+    ca_cert: Option<PathBuf>,
+    /// Protocol version the Platform SDK starts at, used as given (even below
+    /// the network's floor); it still ratchets up from what the network
+    /// reports.
+    #[arg(long)]
+    initial_protocol_version: Option<u32>,
     /// Print engine events to stderr.
     #[arg(long)]
     verbose_events: bool,
@@ -86,6 +95,9 @@ enum Command {
     /// List wallets with names and balances (duffs; `unknown` before the
     /// first scan).
     List,
+    /// Fetch and verify the DPNS contract from DAPI: checks the endpoints,
+    /// TLS (`--ca-cert`), the quorum context and proofs. Needs no wallet.
+    PlatformStatus,
     /// Start SPV, wait until the condition holds, print the sync state and
     /// the wallets, stop SPV. Without `--txid` / `--min-height` it waits
     /// until dash-spv is caught up.
@@ -330,6 +342,8 @@ fn run(cli: Cli) -> Result<(), String> {
         dapi_addresses: cli.dapi,
         quorum_url: cli.quorum_url,
         spv_peers: cli.peers,
+        ca_cert_path: cli.ca_cert,
+        initial_protocol_version: cli.initial_protocol_version,
     };
     let session = engine
         .block_on(engine.open_network(cli.network, opts))
@@ -392,6 +406,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map(|id| println!("wallet_id {id}"))
         }
         Command::List => print_wallets(&session),
+        Command::PlatformStatus => engine.block_on(session.platform_status()).map(|s| {
+            println!(
+                "dpns_contract id={} version={} owner={}",
+                s.dpns_contract_id, s.dpns_contract_version, s.dpns_contract_owner
+            );
+            println!("protocol_version {}", s.protocol_version);
+        }),
         Command::Sync {
             timeout_secs,
             min_height,
@@ -526,6 +547,8 @@ mod tests {
             dapi: vec!["http://127.0.0.1:1".into()],
             quorum_url: None,
             peers: vec![],
+            ca_cert: None,
+            initial_protocol_version: None,
             verbose_events: false,
             passphrase_file: passphrase.then(|| pass.clone()),
             command: cmd,

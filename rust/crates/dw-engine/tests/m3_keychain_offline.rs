@@ -49,6 +49,7 @@ fn open(e: &Engine) -> Arc<NetworkSession> {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
                 spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
             },
         ))
         .unwrap();

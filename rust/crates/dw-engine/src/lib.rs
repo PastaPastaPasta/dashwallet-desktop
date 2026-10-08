@@ -34,6 +34,7 @@ mod labels;
 pub mod masternode_keys;
 mod multiwallet;
 mod network;
+mod platform;
 mod pump;
 mod receive;
 pub(crate) mod send;
@@ -70,6 +71,7 @@ pub use masternode_keys::{
 };
 pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
+pub use platform::PlatformStatus;
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{

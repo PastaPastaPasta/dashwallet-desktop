@@ -8,6 +8,16 @@ use tokio::sync::Mutex;
 use crate::fsutil::create_private_dir;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, SessionOptions};
 
+/// Stack size of the engine runtime's threads: the async workers and the
+/// blocking pool. tokio's default is 2 MiB, which proof descent in the
+/// Platform SDK overflows; platform-wallet's own DashPay loop and both
+/// platform FFI runtimes use 8 MiB (DASHPAY §2.5). The `dw-engine-drop` thread
+/// gets it too. The `dw-quorum-context` retry thread does no proof work and
+/// keeps the platform default, and a future polled by [`Engine::block_on`]
+/// runs on the caller's thread, so Platform calls must hop onto the runtime
+/// (`on_runtime`).
+pub const ENGINE_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Root data directory; each network lives in `<data_root>/<network>/`.
@@ -47,7 +57,11 @@ impl Engine {
         }
         create_private_dir(&config.data_root)?;
         let mut builder = tokio::runtime::Builder::new_multi_thread();
-        builder.enable_all().thread_name("dw-engine");
+        // Applies to the async workers and the blocking pool alike.
+        builder
+            .enable_all()
+            .thread_name("dw-engine")
+            .thread_stack_size(ENGINE_THREAD_STACK_SIZE);
         if let Some(n) = config.worker_threads {
             builder.worker_threads(n);
         }
@@ -180,6 +194,8 @@ impl Drop for Engine {
         let shared = Arc::clone(&self.shared);
         let spawned = std::thread::Builder::new()
             .name("dw-engine-drop".into())
+            // It runs the sessions' close, which may end Platform work.
+            .stack_size(ENGINE_THREAD_STACK_SIZE)
             .spawn(move || {
                 rt.block_on(async move {
                     let mut sessions = shared.sessions.lock().await;

@@ -41,6 +41,7 @@ fn local_opts() -> SessionOptions {
         dapi_addresses: vec!["http://127.0.0.1:1".into()],
         quorum_url: Some("http://127.0.0.1:1".into()),
         spv_peers: vec!["127.0.0.1:1".into()],
+        ..Default::default()
     }
 }
 
@@ -471,4 +472,32 @@ fn import_attaches_keys_to_registered_wallet_without_secret() {
     assert!(s.vault().has_wallet_secret(&id.0));
     assert_eq!(s.wallet_infos().unwrap().len(), 1);
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn bad_options_fail_open_before_anything_is_created() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let ca = dir.path().join("ca.pem");
+    // Starts like a certificate, then stops: used to panic an engine task at
+    // the first DAPI call.
+    std::fs::write(&ca, b"-----BEGIN CERTIFICATE-----\nMIIDHzCCAgegAwIBAgIU").unwrap();
+    let engine = new_engine(&root, Arc::new(Recorder::default()));
+    for opts in [
+        SessionOptions {
+            ca_cert_path: Some(ca),
+            ..local_opts()
+        },
+        SessionOptions {
+            initial_protocol_version: Some(u32::MAX),
+            ..local_opts()
+        },
+    ] {
+        let err = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, opts))
+            .map(drop)
+            .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
+        assert!(!root.join("regtest").exists(), "open created a directory");
+    }
 }
