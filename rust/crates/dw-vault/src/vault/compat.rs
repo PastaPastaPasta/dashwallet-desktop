@@ -26,7 +26,7 @@ use super::{REC_MNEMONIC, REC_PASSPHRASE, REC_SEED, Vault, decode_seed, record_i
 use crate::VaultError;
 use crate::crypto::{self, KdfParams, Key32, SALT_LEN, Sealed, hex_bytes};
 use crate::file;
-use crate::types::{GrantKind, GrantToken, LockState, SeedDerivation, WalletId, WalletSecret};
+use crate::types::{GrantKind, GrantToken, SeedDerivation, WalletId, WalletSecret};
 
 /// Dash Core's seed of `phrase` + `passphrase` (`CMnemonic::ToSeed`), or
 /// `None` when Core's checksum (`CMnemonic::Check`) refuses the phrase.
@@ -262,8 +262,10 @@ impl Vault {
         {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        let dek = self.key_for(token)?;
-        self.read_secret(&dek, wallet)
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, token)?;
+            self.read_secret(&dek, wallet)
+        })
     }
 
     fn read_secret(&self, dek: &Key32, wallet: &WalletId) -> Result<WalletSecret, VaultError> {
@@ -290,21 +292,23 @@ impl Vault {
     /// the stored seed. Reads the secrets internally (full data key needed:
     /// unlocked or unencrypted vault); returns only the verdict.
     pub fn core_mnemonic_check(&self, wallet: &WalletId) -> Result<CoreMnemonicCheck, VaultError> {
-        let dek = self.full_dek()?;
-        let secret = self.read_secret(&dek, wallet)?;
-        if secret.derivation == SeedDerivation::RawSeed || secret.mnemonic.is_empty() {
-            return Ok(CoreMnemonicCheck {
-                has_mnemonic: false,
-                core_compatible: false,
-            });
-        }
-        let core_compatible = match bip39_core_seed(&secret.mnemonic, &secret.mnemonic_passphrase) {
-            Some(core) => bool::from(core[..].ct_eq(&secret.seed[..])),
-            None => false,
-        };
-        Ok(CoreMnemonicCheck {
-            has_mnemonic: true,
-            core_compatible,
+        self.with_loaded_key(|dek| {
+            let secret = self.read_secret(dek, wallet)?;
+            if secret.derivation == SeedDerivation::RawSeed || secret.mnemonic.is_empty() {
+                return Ok(CoreMnemonicCheck {
+                    has_mnemonic: false,
+                    core_compatible: false,
+                });
+            }
+            let core_compatible =
+                match bip39_core_seed(&secret.mnemonic, &secret.mnemonic_passphrase) {
+                    Some(core) => bool::from(core[..].ct_eq(&secret.seed[..])),
+                    None => false,
+                };
+            Ok(CoreMnemonicCheck {
+                has_mnemonic: true,
+                core_compatible,
+            })
         })
     }
 
@@ -436,20 +440,66 @@ impl Vault {
         })
     }
 
-    /// Opens a bundle: recovers its key (through this vault's own data key
-    /// when the bundle came from this vault and the key is available,
-    /// otherwise the slot with `passphrase`), then the wallet's secrets and
-    /// the payload. Stores nothing. Reads versions 1 and 2; any other is
+    /// Whether this vault wrote `bundle` (same vault id and network), so
+    /// its own data key can open it ([`Self::open_backup_bundle`] with a
+    /// `RevealSecret` grant). In-memory read.
+    pub fn wrote_bundle(&self, bundle: &WalletBackupBundle) -> bool {
+        self.inner().file.as_ref().is_some_and(|f| {
+            bool::from(f.vault_id.ct_eq(&bundle.vault_id)) && f.network == bundle.network
+        })
+    }
+
+    /// Whether `bundle` is one this vault wrote whose passphrase slot does
+    /// not take the vault's current passphrase: it has none (an automatic
+    /// backup of the vault before `encrypt`), or its vault-passphrase slot
+    /// was made under an earlier passphrase (other KDF parameters or salt
+    /// than slot P now). Only this vault's key opens such a bundle with the
+    /// current passphrase. In-memory read.
+    pub fn own_key_only(&self, bundle: &WalletBackupBundle) -> bool {
+        if !self.wrote_bundle(bundle) {
+            return false;
+        }
+        let inner = self.inner();
+        let slot_p = inner.file.as_ref().and_then(|f| f.slot_p.as_ref());
+        match (&bundle.slot, slot_p) {
+            (BackupKeySlot::VaultKey, _) => true,
+            (BackupKeySlot::VaultPassphrase { kdf, salt, .. }, Some(p)) => {
+                *kdf != p.kdf || *salt != p.salt
+            }
+            _ => false,
+        }
+    }
+
+    /// Opens a bundle: recovers its key, then the wallet's secrets and the
+    /// payload. Stores nothing. Reads versions 1 and 2; any other is
     /// `Corrupt` here, so callers check [`reads_bundle_version`] first.
     ///
-    /// Errors: `NotEncrypted` (a passphrase slot and no passphrase given —
-    /// the caller's "passphrase required"), `WrongPassphrase`, `Corrupt`.
-    /// Wrong passphrases are not throttled: the bundle is a file the user
-    /// holds, not this vault.
+    /// The key comes from one of:
+    /// - `reveal_grant`, a `RevealSecret` grant for the bundle's wallet
+    ///   (redeemed here, so `GrantInvalid` / `GrantPurposeMismatch` as for
+    ///   [`Self::reveal_mnemonic`]): a bundle this vault wrote
+    ///   ([`Self::wrote_bundle`]) then opens through this vault's data key
+    ///   (or the grant's own), in one gated operation, as a reveal of the
+    ///   phrase does. A grant does not open a bundle of another vault, and
+    ///   is left unredeemed there.
+    /// - otherwise the bundle's passphrase slot, with `passphrase`.
+    ///
+    /// So the phrase never leaves an unlocked vault for less than a
+    /// `RevealSecret` grant needs (review DW-E0-03 r3): on an encrypted
+    /// vault, its passphrase. Before that fix the vault's own key opened
+    /// its bundles with no grant at all.
+    ///
+    /// Errors: `NotEncrypted` (no passphrase given for a passphrase slot,
+    /// or for a bundle of this vault that only its key opens — the caller's
+    /// "passphrase required"), `CredentialRequired` (such a bundle with a
+    /// passphrase but no grant), `WrongPassphrase`, `Corrupt`. Wrong
+    /// passphrases are not throttled: the bundle is a file the user holds,
+    /// not this vault.
     pub fn open_backup_bundle(
         &self,
         bundle: &WalletBackupBundle,
         passphrase: Option<&[u8]>,
+        reveal_grant: Option<&str>,
         header: &[u8],
     ) -> Result<(WalletSecret, Zeroizing<Vec<u8>>), VaultError> {
         let legacy = match bundle.version {
@@ -462,59 +512,40 @@ impl Vault {
             .as_slice()
             .try_into()
             .map_err(|_| VaultError::Corrupt("bundle wallet id".into()))?;
-        let own = self.inner().file.as_ref().is_some_and(|f| {
-            bool::from(f.vault_id.ct_eq(&bundle.vault_id)) && f.network == bundle.network
-        });
-        let own_dek = if own {
-            match self.lock_state() {
-                LockState::Unlocked | LockState::Unencrypted | LockState::NoKeys => {
-                    self.full_dek().ok()
-                }
-                _ => None,
+        let own = self.wrote_bundle(bundle);
+        // A grant opens only this vault's bundles; it is not used up on
+        // another vault's.
+        if let Some(id) = reveal_grant.filter(|_| own) {
+            let token = self.redeem_grant(id, GrantKind::RevealSecret, Some(&wallet))?;
+            return self.gated(VaultError::Locked, |op| {
+                let dek = self.key_for(op, &token)?;
+                let key = own_bundle_key(bundle, &dek, &wallet, legacy)?;
+                open_with_key(bundle, &key, &wallet, legacy, header)
+            });
+        }
+        let key = match &bundle.slot {
+            BackupKeySlot::VaultKey if own => {
+                return Err(if passphrase.is_some() {
+                    VaultError::CredentialRequired
+                } else {
+                    VaultError::NotEncrypted
+                });
             }
-        } else {
-            None
-        };
-        let own_key = match (own_dek, legacy) {
-            (Some(dek), true) => Some(dek),
-            (Some(dek), false) => {
-                let wrapped = bundle
-                    .vault_wrapped_key
-                    .as_ref()
-                    .ok_or_else(|| VaultError::Corrupt("bundle has no vault-wrapped key".into()))?;
-                let opened = crypto::open(
-                    &vault_wrap_key(&dek),
-                    wrapped,
-                    &aad(
-                        VAULT_WRAP_AAD,
-                        &[&bundle.vault_id, bundle.network.as_bytes(), &wallet],
-                    ),
-                )
-                .ok_or_else(|| VaultError::Corrupt("vault-wrapped backup key".into()))?;
-                Some(key32(&opened)?)
-            }
-            (None, _) => None,
-        };
-        let key = match (own_key, &bundle.slot) {
-            (Some(k), _) => k,
-            (None, BackupKeySlot::VaultKey) => {
+            BackupKeySlot::VaultKey => {
                 return Err(VaultError::Corrupt(
                     "the backup can only be opened by the vault that wrote it".into(),
                 ));
             }
-            (
-                None,
-                BackupKeySlot::VaultPassphrase {
-                    kdf,
-                    salt,
-                    wrapped_key,
-                }
-                | BackupKeySlot::BackupPassphrase {
-                    kdf,
-                    salt,
-                    wrapped_key,
-                },
-            ) => {
+            BackupKeySlot::VaultPassphrase {
+                kdf,
+                salt,
+                wrapped_key,
+            }
+            | BackupKeySlot::BackupPassphrase {
+                kdf,
+                salt,
+                wrapped_key,
+            } => {
                 let pw = passphrase.ok_or(VaultError::NotEncrypted)?;
                 let vault_slot = matches!(bundle.slot, BackupKeySlot::VaultPassphrase { .. });
                 let aad = match (legacy, vault_slot) {
@@ -551,36 +582,75 @@ impl Vault {
                 key32(&opened)?
             }
         };
-        let open_record = |kind: &str| -> Result<Option<Zeroizing<Vec<u8>>>, VaultError> {
-            let Some(sealed) = bundle.records.get(kind) else {
-                return Ok(None);
-            };
-            let aad = if legacy {
-                file::record_aad(&bundle.vault_id, &bundle.network, &record_id(&wallet, kind))
-            } else {
-                bundle_record_aad(&bundle.vault_id, &bundle.network, &wallet, kind)
-            };
-            crypto::open(&key, sealed, &aad)
-                .map(Some)
-                .ok_or_else(|| VaultError::Corrupt(format!("backup record {kind}")))
-        };
-        let seed_payload = open_record(REC_SEED)?.ok_or(VaultError::NoSecret)?;
-        let (seed, derivation) = decode_seed(&seed_payload)?;
-        let secret = WalletSecret {
-            mnemonic: open_record(REC_MNEMONIC)?.unwrap_or_default(),
-            mnemonic_passphrase: open_record(REC_PASSPHRASE)?.unwrap_or_default(),
-            seed,
-            derivation,
-        };
-        let key = payload_key(&key, &bundle.payload_salt);
-        let payload = crypto::open(
-            &key,
-            &bundle.payload,
-            &bundle_payload_aad(&wallet, &bundle.vault_id, header),
-        )
-        .ok_or_else(|| VaultError::Corrupt("backup payload failed authentication".into()))?;
-        Ok((secret, payload))
+        open_with_key(bundle, &key, &wallet, legacy, header)
     }
+}
+
+/// The key of a bundle the vault with data key `dek` wrote: v1 bundles are
+/// sealed under the data key itself, v2 under a backup key the vault
+/// wrapped for itself.
+fn own_bundle_key(
+    bundle: &WalletBackupBundle,
+    dek: &Key32,
+    wallet: &WalletId,
+    legacy: bool,
+) -> Result<Key32, VaultError> {
+    if legacy {
+        return Ok(Zeroizing::new(**dek));
+    }
+    let wrapped = bundle
+        .vault_wrapped_key
+        .as_ref()
+        .ok_or_else(|| VaultError::Corrupt("bundle has no vault-wrapped key".into()))?;
+    let opened = crypto::open(
+        &vault_wrap_key(dek),
+        wrapped,
+        &aad(
+            VAULT_WRAP_AAD,
+            &[&bundle.vault_id, bundle.network.as_bytes(), wallet],
+        ),
+    )
+    .ok_or_else(|| VaultError::Corrupt("vault-wrapped backup key".into()))?;
+    key32(&opened)
+}
+
+/// The wallet's secrets and the payload of `bundle`, under its key `key`.
+fn open_with_key(
+    bundle: &WalletBackupBundle,
+    key: &Key32,
+    wallet: &WalletId,
+    legacy: bool,
+    header: &[u8],
+) -> Result<(WalletSecret, Zeroizing<Vec<u8>>), VaultError> {
+    let open_record = |kind: &str| -> Result<Option<Zeroizing<Vec<u8>>>, VaultError> {
+        let Some(sealed) = bundle.records.get(kind) else {
+            return Ok(None);
+        };
+        let aad = if legacy {
+            file::record_aad(&bundle.vault_id, &bundle.network, &record_id(wallet, kind))
+        } else {
+            bundle_record_aad(&bundle.vault_id, &bundle.network, wallet, kind)
+        };
+        crypto::open(key, sealed, &aad)
+            .map(Some)
+            .ok_or_else(|| VaultError::Corrupt(format!("backup record {kind}")))
+    };
+    let seed_payload = open_record(REC_SEED)?.ok_or(VaultError::NoSecret)?;
+    let (seed, derivation) = decode_seed(&seed_payload)?;
+    let secret = WalletSecret {
+        mnemonic: open_record(REC_MNEMONIC)?.unwrap_or_default(),
+        mnemonic_passphrase: open_record(REC_PASSPHRASE)?.unwrap_or_default(),
+        seed,
+        derivation,
+    };
+    let key = payload_key(key, &bundle.payload_salt);
+    let payload = crypto::open(
+        &key,
+        &bundle.payload,
+        &bundle_payload_aad(wallet, &bundle.vault_id, header),
+    )
+    .ok_or_else(|| VaultError::Corrupt("backup payload failed authentication".into()))?;
+    Ok((secret, payload))
 }
 
 #[cfg(test)]
@@ -601,6 +671,13 @@ mod tests {
 
     fn open(dir: &std::path::Path) -> Vault {
         Vault::open(dir, key_wallet::Network::Regtest, "regtest", config()).unwrap()
+    }
+
+    /// A `RevealSecret` grant for `wallet`.
+    fn reveal(v: &Vault, wallet: &WalletId, credential: Credential<'_>) -> String {
+        v.authorize(GrantPurpose::RevealSecret, Some(wallet), credential)
+            .unwrap()
+            .id
     }
 
     fn secret(derivation: SeedDerivation) -> WalletSecret {
@@ -680,33 +757,111 @@ mod tests {
         let dst = open(&dir.path().join("b"));
         dst.create(None).unwrap();
         assert_eq!(
-            dst.open_backup_bundle(&bundle, None, b"hdr").unwrap_err(),
+            dst.open_backup_bundle(&bundle, None, None, b"hdr")
+                .unwrap_err(),
             VaultError::NotEncrypted
         );
         assert!(matches!(
-            dst.open_backup_bundle(&bundle, Some(b"nope"), b"hdr"),
+            dst.open_backup_bundle(&bundle, Some(b"nope"), None, b"hdr"),
             Err(VaultError::WrongPassphrase { .. })
         ));
         assert!(matches!(
-            dst.open_backup_bundle(&bundle, Some(b"vault pw"), b"other header"),
+            dst.open_backup_bundle(&bundle, Some(b"vault pw"), None, b"other header"),
             Err(VaultError::Corrupt(_))
         ));
         let (s, payload) = dst
-            .open_backup_bundle(&bundle, Some(b"vault pw"), b"hdr")
+            .open_backup_bundle(&bundle, Some(b"vault pw"), None, b"hdr")
             .unwrap();
         assert_eq!(&payload[..], b"payload");
         assert_eq!(&s.mnemonic[..], b"phrase");
         assert_eq!(*s.seed, [9; 64]);
 
-        // The source vault opens its own bundle without the passphrase while
-        // unlocked, and needs it once locked.
-        assert!(src.open_backup_bundle(&bundle, None, b"hdr").is_ok());
-        src.lock();
+        // Review DW-E0-03 r3: the source vault opens its own bundle with
+        // its key only under a RevealSecret grant, which on an encrypted
+        // vault takes the passphrase, unlocked or not; without one it needs
+        // the bundle's passphrase like any other vault.
         assert_eq!(
-            src.open_backup_bundle(&bundle, None, b"hdr").unwrap_err(),
+            src.open_backup_bundle(&bundle, None, None, b"hdr")
+                .unwrap_err(),
             VaultError::NotEncrypted
         );
+        assert_eq!(
+            src.authorize(GrantPurpose::RevealSecret, Some(&w), Credential::None)
+                .unwrap_err(),
+            VaultError::CredentialRequired
+        );
+        let grant = reveal(&src, &w, Credential::Passphrase(b"vault pw"));
+        let (s, payload) = src
+            .open_backup_bundle(&bundle, None, Some(&grant), b"hdr")
+            .unwrap();
+        assert_eq!(
+            (&s.mnemonic[..], &payload[..]),
+            (&b"phrase"[..], &b"payload"[..])
+        );
+        // Single use.
+        assert_eq!(
+            src.open_backup_bundle(&bundle, None, Some(&grant), b"hdr")
+                .unwrap_err(),
+            VaultError::GrantInvalid
+        );
+        // Locked: the passphrase grant carries its own key.
+        src.lock();
+        assert_eq!(
+            src.open_backup_bundle(&bundle, None, None, b"hdr")
+                .unwrap_err(),
+            VaultError::NotEncrypted
+        );
+        let grant = reveal(&src, &w, Credential::Passphrase(b"vault pw"));
+        assert!(
+            src.open_backup_bundle(&bundle, None, Some(&grant), b"hdr")
+                .is_ok()
+        );
         src.unlock(b"vault pw", UnlockScope::Full).unwrap();
+        // A grant does not open another vault's bundle: that takes the
+        // bundle's passphrase.
+        let grant = reveal(&dst, &w, Credential::None);
+        assert_eq!(
+            dst.open_backup_bundle(&bundle, None, Some(&grant), b"hdr")
+                .unwrap_err(),
+            VaultError::NotEncrypted
+        );
+    }
+
+    /// Review DW-E0-03 r3: only a `RevealSecret` grant for the bundle's
+    /// wallet opens it through the vault's key.
+    #[test]
+    fn a_bundle_needs_a_reveal_grant_of_its_wallet() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = [5u8; 32];
+        let v = open(dir.path());
+        v.create(None).unwrap();
+        v.store_wallet_secret(&w, &secret(SeedDerivation::Bip39))
+            .unwrap();
+        let bundle = v.backup_bundle(&w, None, b"p", b"h").unwrap();
+        assert!(v.wrote_bundle(&bundle));
+        let other = reveal(&v, &[6; 32], Credential::None);
+        assert_eq!(
+            v.open_backup_bundle(&bundle, None, Some(&other), b"h")
+                .unwrap_err(),
+            VaultError::GrantPurposeMismatch
+        );
+        let sign = v
+            .authorize(GrantPurpose::SignMessage, Some(&w), Credential::None)
+            .unwrap()
+            .id;
+        assert_eq!(
+            v.open_backup_bundle(&bundle, None, Some(&sign), b"h")
+                .unwrap_err(),
+            VaultError::GrantPurposeMismatch
+        );
+        assert_eq!(
+            v.open_backup_bundle(&bundle, None, Some("unknown"), b"h")
+                .unwrap_err(),
+            VaultError::GrantInvalid
+        );
+        let grant = reveal(&v, &w, Credential::None);
+        v.open_backup_bundle(&bundle, None, Some(&grant), b"h")
+            .unwrap();
     }
 
     #[test]
@@ -726,15 +881,30 @@ mod tests {
         let dst = open(&dir.path().join("b"));
         dst.create(None).unwrap();
         assert!(matches!(
-            dst.open_backup_bundle(&own, None, b"h"),
+            dst.open_backup_bundle(&own, None, None, b"h"),
             Err(VaultError::Corrupt(_))
         ));
         let (s, _) = dst
-            .open_backup_bundle(&with_pw, Some(b"backup pw"), b"h")
+            .open_backup_bundle(&with_pw, Some(b"backup pw"), None, b"h")
             .unwrap();
         assert_eq!(s.derivation, SeedDerivation::RawSeed);
         assert!(s.mnemonic.is_empty());
-        assert!(src.open_backup_bundle(&own, None, b"h").is_ok());
+        // The source opens its vault-key bundle under a RevealSecret grant
+        // (no passphrase on an unencrypted vault), and only so.
+        assert_eq!(
+            src.open_backup_bundle(&own, None, None, b"h").unwrap_err(),
+            VaultError::NotEncrypted
+        );
+        assert_eq!(
+            src.open_backup_bundle(&own, Some(b"backup pw"), None, b"h")
+                .unwrap_err(),
+            VaultError::CredentialRequired
+        );
+        let grant = reveal(&src, &w, Credential::None);
+        assert!(
+            src.open_backup_bundle(&own, None, Some(&grant), b"h")
+                .is_ok()
+        );
     }
 
     /// The M2 writer (bundle v1: records as stored, slot wrapping the data
@@ -937,38 +1107,45 @@ mod tests {
         let dst = open(&dir.path().join("b"));
         dst.create(None).unwrap();
         for b in [&before, &legacy] {
-            let (s, payload) = dst.open_backup_bundle(b, Some(b"old pw"), b"hdr").unwrap();
+            let (s, payload) = dst
+                .open_backup_bundle(b, Some(b"old pw"), None, b"hdr")
+                .unwrap();
             assert_eq!(*s.seed, [9; 64]);
             assert_eq!(&payload[..], b"payload");
         }
         assert!(matches!(
-            dst.open_backup_bundle(&before, Some(b"new pw"), b"hdr"),
+            dst.open_backup_bundle(&before, Some(b"new pw"), None, b"hdr"),
             Err(VaultError::WrongPassphrase { .. })
         ));
         assert!(
-            dst.open_backup_bundle(&after, Some(b"new pw"), b"hdr")
+            dst.open_backup_bundle(&after, Some(b"new pw"), None, b"hdr")
                 .is_ok()
         );
         assert!(matches!(
-            dst.open_backup_bundle(&after, Some(b"old pw"), b"hdr"),
+            dst.open_backup_bundle(&after, Some(b"old pw"), None, b"hdr"),
             Err(VaultError::WrongPassphrase { .. })
         ));
 
-        // The source opens its old backup with its own key once unlocked
-        // with the new passphrase, and with the old one while locked.
+        // The source opens its old backup with the old passphrase (its
+        // slot), or with its own key under a grant of the new one.
         src.lock();
         assert!(
-            src.open_backup_bundle(&before, Some(b"old pw"), b"hdr")
+            src.open_backup_bundle(&before, Some(b"old pw"), None, b"hdr")
                 .is_ok()
         );
         src.unlock(b"new pw", UnlockScope::Full).unwrap();
-        assert!(src.open_backup_bundle(&before, None, b"hdr").is_ok());
-        assert!(src.open_backup_bundle(&legacy, None, b"hdr").is_ok());
+        for b in [&before, &legacy] {
+            let grant = reveal(&src, &w, Credential::Passphrase(b"new pw"));
+            assert!(
+                src.open_backup_bundle(b, None, Some(&grant), b"hdr")
+                    .is_ok()
+            );
+        }
         // Unlocked again with the new passphrase, it writes new-passphrase
         // backups.
         let later = src.backup_bundle(&w, None, b"payload", b"hdr").unwrap();
         assert!(
-            dst.open_backup_bundle(&later, Some(b"new pw"), b"hdr")
+            dst.open_backup_bundle(&later, Some(b"new pw"), None, b"hdr")
                 .is_ok()
         );
     }
@@ -991,28 +1168,31 @@ mod tests {
         let legacy = legacy_v1_bundle(&src, &w, None, b"c", b"h");
 
         src.encrypt(b"vault pw", &change_credential(&src)).unwrap();
-        // Locked: the automatic backup needs the vault's own key.
-        assert!(matches!(
-            src.open_backup_bundle(&automatic, None, b"h"),
-            Err(VaultError::Corrupt(_))
-        ));
+        // The automatic backup opens only with the vault's own key, under a
+        // RevealSecret grant, which now takes the vault passphrase.
+        assert_eq!(
+            src.open_backup_bundle(&automatic, None, None, b"h")
+                .unwrap_err(),
+            VaultError::NotEncrypted
+        );
         src.unlock(b"vault pw", UnlockScope::Full).unwrap();
         for (b, payload) in [(&automatic, b"a"), (&with_pw, b"b"), (&legacy, b"c")] {
-            let (s, p) = src.open_backup_bundle(b, None, b"h").unwrap();
+            let grant = reveal(&src, &w, Credential::Passphrase(b"vault pw"));
+            let (s, p) = src.open_backup_bundle(b, None, Some(&grant), b"h").unwrap();
             assert_eq!(*s.seed, [9; 64]);
             assert_eq!(&p[..], payload);
         }
         let dst = open(&dir.path().join("b"));
         dst.create(None).unwrap();
         assert!(
-            dst.open_backup_bundle(&with_pw, Some(b"backup pw"), b"h")
+            dst.open_backup_bundle(&with_pw, Some(b"backup pw"), None, b"h")
                 .is_ok()
         );
         // After encrypt, new backups use the vault passphrase.
         let enc = src.backup_bundle(&w, None, b"d", b"h").unwrap();
         assert!(matches!(enc.slot, BackupKeySlot::VaultPassphrase { .. }));
         assert!(
-            dst.open_backup_bundle(&enc, Some(b"vault pw"), b"h")
+            dst.open_backup_bundle(&enc, Some(b"vault pw"), None, b"h")
                 .is_ok()
         );
     }
@@ -1034,7 +1214,7 @@ mod tests {
         let dst = open(&dir.path().join("b"));
         dst.create(None).unwrap();
         assert!(matches!(
-            dst.open_backup_bundle(&crafted, Some(b"pw"), b"h"),
+            dst.open_backup_bundle(&crafted, Some(b"pw"), None, b"h"),
             Err(VaultError::Corrupt(d)) if d.contains("above the limits")
         ));
     }
@@ -1063,12 +1243,14 @@ mod tests {
             assert!(raw["slot"].get("wrapped_key").is_none(), "{name}");
             let bundle: WalletBackupBundle = serde_json::from_value(raw.clone()).unwrap();
             assert_eq!(bundle.version, LEGACY_BUNDLE_VERSION);
-            let (s, payload) = dst.open_backup_bundle(&bundle, Some(pw), header).unwrap();
+            let (s, payload) = dst
+                .open_backup_bundle(&bundle, Some(pw), None, header)
+                .unwrap();
             assert_eq!(&payload[..], b"fixture payload", "{name}");
             assert_eq!(*s.seed, [9; 64]);
             assert_eq!(&s.mnemonic[..], b"phrase");
             assert!(matches!(
-                dst.open_backup_bundle(&bundle, Some(b"wrong"), header),
+                dst.open_backup_bundle(&bundle, Some(b"wrong"), None, header),
                 Err(VaultError::WrongPassphrase { .. })
             ));
         }
@@ -1091,7 +1273,7 @@ mod tests {
         bundle.version = 3;
         assert_eq!(bundle.version(), 3);
         assert!(matches!(
-            v.open_backup_bundle(&bundle, Some(b"bk"), b"h"),
+            v.open_backup_bundle(&bundle, Some(b"bk"), None, b"h"),
             Err(VaultError::Corrupt(_))
         ));
     }

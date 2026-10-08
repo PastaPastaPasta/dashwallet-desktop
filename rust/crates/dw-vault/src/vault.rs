@@ -11,12 +11,72 @@
 //!   The file on disk is read only at open and for the post-write check.
 //! - `inner` is a short-held mutex over the in-memory state. Argon2id, OS
 //!   store calls and file writes run outside it.
+//! - `ops` is the operation gate. Every signer call holds it shared from its
+//!   epoch check until its result is released, and every use of a grant
+//!   token's key holds it from the token check until the operation is done
+//!   ([`Vault::gated`]): the secret reads (`reveal_mnemonic`,
+//!   `export_wallet_secret`, `with_revealed_seed`, `open_backup_bundle` of
+//!   this vault's own bundle) and the token-authorized writes
+//!   (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`,
+//!   `set_quick_unlock_spend_limit`), whose file write is inside.
+//!   `seed_derivation` and `core_mnemonic_check`, which read a secret with
+//!   the vault's own key, are gated too. Every epoch change (lock, unlock,
+//!   scope change, passphrase change, encrypt, recover, destroy) holds it
+//!   exclusively, so `lock()` returns only once every such operation that
+//!   started before it has finished, and any operation after it sees the
+//!   new epoch and fails `Locked`. Not gated: `backup_bundle`, which takes
+//!   no grant or epoch and returns only ciphertext, `open_backup_bundle`
+//!   through a bundle's passphrase slot (no vault key), and record writes
+//!   under the vault's own key (`store_wallet_secret`,
+//!   `delete_wallet_secret`).
 //!
-//! Lock order: `writer`, then `inner`.
+//!   A holder must not take the gate again, take `writer`, block on another
+//!   lock or wait on anything outside the process (the OS store, which may
+//!   prompt): a waiting epoch change may block new shared holders (std's
+//!   `RwLock` prefers writers on Linux; the policy is OS-dependent), and
+//!   `lock()` waits for every holder. So a gated operation uses only a key
+//!   already in memory, and one that may need the OS store's copy loads it
+//!   before it enters ([`Vault::full_dek`]). Writing the vault file inside
+//!   is allowed; `writer` is then taken before the gate.
+//!
+//! Lock order: `writer`, then `ops`, then `inner`.
+//!
+//! Release (review DW-E0-03 r2 M2). A gated operation's result leaves the
+//! vault only through [`OpGuard::release`], which [`Vault::gated`] calls
+//! last: under `inner`, the epoch the operation started under (read under
+//! `inner` when it entered the gate) must still be the vault's epoch, or the
+//! result is dropped (secret results erase themselves on drop, an
+//! `ExtendedPrivKey` included) and the call fails `Locked`.
+//! Why that is enough for "nothing is released once `lock()` has returned":
+//! - every epoch change writes `inner.epoch` holding `inner`, and every
+//!   release reads it holding `inner`, so the mutex orders each release
+//!   wholly before or wholly after each epoch change;
+//! - an operation that started before a lock's change and releases after
+//!   it reads a newer epoch than the one it started under, and refuses;
+//! - so every result released under epoch `e` was released before the
+//!   change that ended `e`, and `lock()` makes that change before it
+//!   returns. A result released after `lock()` returned would be ordered
+//!   after the change, which the check refuses.
+//!
+//! This holds by the order of the `inner` mutex, not by timing, and does
+//! not depend on the gate: the gate adds that a lock waits for operations
+//! already running (so no gated operation still computes with a key once
+//! `lock()` has returned, and the check never actually refuses one), while
+//! the check states the release rule at the one point where a result
+//! leaves. The lock-race tests log every release and epoch change in
+//! `inner`'s order and check the rule on that log.
+//!
+//! Out of reach of any vault-side check: a result released before the lock
+//! that its caller holds, or has not yet looked at, when `lock()` returns,
+//! and what a caller computes from it afterwards (`with_revealed_seed`'s
+//! closure runs after the release, by design). A flow that must not use
+//! such a result after a lock ("Lock to cancel") hands it to the transport
+//! only while holding a permit of its lease, which the lock takes
+//! exclusively (DASHPAY §2.6, roadmap E0-04).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use key_wallet::Network;
 use sha2::{Digest, Sha256};
@@ -48,6 +108,65 @@ pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
+/// Shared hold of `Shared::ops`: one operation that produces a
+/// secret-derived result (see the module doc). Only [`Vault::gated`]
+/// makes one, and ends it with [`OpGuard::release`].
+pub(crate) struct OpGuard<'a> {
+    vault: &'a Vault,
+    /// The vault's epoch when the operation entered the gate.
+    epoch: u64,
+    _ops: RwLockReadGuard<'a, ()>,
+}
+
+impl OpGuard<'_> {
+    /// Releases `out` if the vault is still in the epoch this operation
+    /// started under; `None` (and `out` dropped) otherwise. The check holds
+    /// `inner`, the mutex every epoch change holds; the module doc
+    /// ("Release") explains why that makes a release after `lock()` has
+    /// returned impossible. `inner` is unlocked, then the gate, when this
+    /// returns.
+    fn release<T>(self, out: T) -> Option<T> {
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut inner = self.vault.inner();
+        let current = bool::from(inner.epoch.ct_eq(&self.epoch));
+        #[cfg(test)]
+        inner.record(if current {
+            GateEvent::Released(self.epoch)
+        } else {
+            GateEvent::Refused(self.epoch)
+        });
+        current.then_some(out)
+    }
+}
+
+/// What the lock-race tests observe of the gate, in `inner`'s order
+/// ([`Vault::start_gate_log`]).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateEvent {
+    /// The vault's epoch is now this (at the start of the log, and at each
+    /// change).
+    Epoch(u64),
+    /// An operation entered the gate under this epoch.
+    Opened(u64),
+    /// An operation that started under this epoch released its result.
+    Released(u64),
+    /// An operation that started under this epoch had its result refused.
+    Refused(u64),
+    /// `lock()` was called; it now waits for the gate.
+    LockCalled,
+}
+
+/// Exclusive hold of `Shared::ops`, which every epoch change needs. Only
+/// [`Vault::epoch_guard`] makes one.
+struct EpochGuard<'a> {
+    _ops: RwLockWriteGuard<'a, ()>,
+}
+
+/// How often an operation that loads an unencrypted vault's key from the
+/// OS store tries again when a concurrent `lock()` dropped it before use
+/// ([`Vault::with_loaded_key`]).
+const KEY_LOAD_ATTEMPTS: usize = 3;
 
 /// Longest accepted vault passphrase, in bytes.
 pub const MAX_PASSPHRASE_BYTES: usize = 1024;
@@ -216,6 +335,17 @@ fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, V
     Ok(Some(payload))
 }
 
+/// How a grant token relates to the vault it is presented to
+/// ([`Vault::token_binding`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenBinding {
+    Current,
+    /// Redeemed by another vault instance.
+    OtherVault,
+    /// Redeemed by this vault before its epoch last changed.
+    EndedEpoch,
+}
+
 /// A grant held in vault memory.
 struct IssuedGrant {
     grant: AuthGrant,
@@ -231,8 +361,9 @@ struct Inner {
     file: Option<VaultFile>,
     dek: Option<Key32>,
     scope: UnlockScope,
-    /// Bumped whenever the vault locks or the unlock scope changes. Grants,
-    /// grant tokens and signers from an older epoch are refused.
+    /// Bumped whenever the vault locks, the unlock scope changes or the
+    /// passphrase changes. Grants, grant tokens and signers from an older
+    /// epoch are refused.
     epoch: u64,
     /// Highest manifest generation seen by this process (rollback check).
     high_water: u64,
@@ -244,16 +375,40 @@ struct Inner {
     /// (`.dwbackup` bundle v2), derived from slot P's KEK whenever the
     /// passphrase is checked or set. Held only while `dek` is; never stored.
     backup_kek: Option<BackupKek>,
+    #[cfg(test)]
+    gate_log: Option<Vec<GateEvent>>,
 }
 
 impl Inner {
     /// Drops the data key, revokes grants and invalidates outstanding signers.
-    fn forget_key(&mut self) {
+    fn forget_key(&mut self, ops: &EpochGuard<'_>) {
         self.dek = None;
         self.backup_kek = None;
         self.scope = UnlockScope::Full;
-        self.epoch += 1;
+        self.revoke(ops);
+    }
+
+    /// Ends the epoch and drops every grant (and any key one holds), so
+    /// every grant, grant token and signer issued before is refused; the
+    /// data key and the lock state are kept.
+    fn revoke(&mut self, _ops: &EpochGuard<'_>) {
+        self.next_epoch();
         self.grants.clear();
+    }
+
+    /// Ends the current epoch. Every caller holds the gate exclusively
+    /// (an [`EpochGuard`]), except a test's [`Vault::bump_epoch_ungated`].
+    fn next_epoch(&mut self) {
+        self.epoch += 1;
+        #[cfg(test)]
+        self.record(GateEvent::Epoch(self.epoch));
+    }
+
+    #[cfg(test)]
+    fn record(&mut self, event: GateEvent) {
+        if let Some(log) = &mut self.gate_log {
+            log.push(event);
+        }
     }
 
     /// Drops grants that expired before `now`, together with any key they
@@ -263,18 +418,21 @@ impl Inner {
     }
 
     /// Installs a data key with `scope`; bumps the epoch when the state changes.
-    fn install_key(&mut self, dek: Key32, scope: UnlockScope) {
+    fn install_key(&mut self, dek: Key32, scope: UnlockScope, ops: &EpochGuard<'_>) {
         let changed = self.dek.is_none() || self.scope != scope;
         self.dek = Some(dek);
         self.scope = scope;
         if changed {
-            self.epoch += 1;
-            self.grants.clear();
+            self.revoke(ops);
         }
     }
 }
 
 pub(crate) struct Shared {
+    /// Random id of this in-memory vault, made at open: a grant token
+    /// carries it, so only the vault that redeemed a token accepts it. Not
+    /// stored, so the same file opened again is another instance.
+    instance: [u8; 32],
     dir: PathBuf,
     network: Network,
     /// Network tag bound into every AAD (`regtest`, `devnet-<name>`, …).
@@ -282,6 +440,8 @@ pub(crate) struct Shared {
     config: VaultConfig,
     /// Serializes file changes and passphrase checks (see the module doc).
     writer: Mutex<()>,
+    /// The operation gate (see the module doc).
+    ops: RwLock<()>,
     inner: Mutex<Inner>,
 }
 
@@ -321,11 +481,13 @@ impl Vault {
         }
         Ok(Self {
             shared: Arc::new(Shared {
+                instance: crypto::random_array()?,
                 dir,
                 network,
                 tag: network_tag.to_owned(),
                 config,
                 writer: Mutex::new(()),
+                ops: RwLock::new(()),
                 inner: Mutex::new(Inner {
                     file,
                     dek: None,
@@ -335,6 +497,8 @@ impl Vault {
                     grants: HashMap::new(),
                     last_passphrase_at: None,
                     backup_kek: None,
+                    #[cfg(test)]
+                    gate_log: None,
                 }),
             }),
         })
@@ -360,6 +524,70 @@ impl Vault {
             .writer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Runs `body` as one gated operation (see the module doc) and releases
+    /// its result with [`OpGuard::release`]: `locked` when the vault's epoch
+    /// is no longer the one `body` started under. The only way to make an
+    /// [`OpGuard`], so no gated result leaves without that check.
+    pub(crate) fn gated<T, E>(
+        &self,
+        locked: E,
+        body: impl FnOnce(&OpGuard<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let ops = self
+            .shared
+            .ops
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let epoch = {
+            #[cfg_attr(not(test), allow(unused_mut))]
+            let mut inner = self.inner();
+            let epoch = inner.epoch;
+            #[cfg(test)]
+            inner.record(GateEvent::Opened(epoch));
+            epoch
+        };
+        let op = OpGuard {
+            vault: self,
+            epoch,
+            _ops: ops,
+        };
+        let out = body(&op)?;
+        op.release(out).ok_or(locked)
+    }
+
+    /// Starts logging the gate's events ([`GateEvent`]) in `inner`'s order.
+    #[cfg(test)]
+    pub(crate) fn start_gate_log(&self) {
+        let mut inner = self.inner();
+        let epoch = inner.epoch;
+        inner.gate_log = Some(vec![GateEvent::Epoch(epoch)]);
+    }
+
+    /// The events logged since [`Self::start_gate_log`]; logging stops.
+    #[cfg(test)]
+    pub(crate) fn take_gate_log(&self) -> Vec<GateEvent> {
+        self.inner().gate_log.take().unwrap_or_default()
+    }
+
+    /// Changes the epoch without the gate, as no production code may: lets a
+    /// test show that [`OpGuard::release`] refuses on its own.
+    #[cfg(test)]
+    pub(crate) fn bump_epoch_ungated(&self) {
+        self.inner().next_epoch();
+    }
+
+    /// Waits for every open operation, then excludes new ones until the
+    /// guard drops: the right to change the epoch.
+    fn epoch_guard(&self) -> EpochGuard<'_> {
+        EpochGuard {
+            _ops: self
+                .shared
+                .ops
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        }
     }
 
     /// A copy of the in-memory file to change under `writer`.
@@ -524,10 +752,11 @@ impl Vault {
         }
         let encrypted = vault_file.slot_p.is_some();
         let now = self.now();
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
-        inner.install_key(dek, UnlockScope::Full);
+        inner.install_key(dek, UnlockScope::Full, &ops);
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
@@ -551,7 +780,9 @@ impl Vault {
             return Err(VaultError::AlreadyEncrypted);
         }
         let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
-        let dek = self.key_for(&token)?;
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
+        // Argon2id runs before the gate: a lock does not wait for it.
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
         let (kdf, kek) = crypto::derive_new_kek(
             &pw,
@@ -560,16 +791,20 @@ impl Vault {
             self.production_network(),
         )?;
         let aad = file::slot_p_aad(&next.vault_id, &next.network, &kdf, &salt);
-        next.slot_p = Some(PassphraseSlot {
-            kdf,
-            salt: salt.to_vec(),
-            wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
-        });
         let old_slot = next.slot_o.take();
-        self.persist(&writer, next)?;
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, &token)?;
+            next.slot_p = Some(PassphraseSlot {
+                kdf,
+                salt: salt.to_vec(),
+                wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
+            });
+            self.persist(&writer, next)
+        })?;
         let status = {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
-            inner.forget_key();
+            inner.forget_key(&ops);
             self.status_of(&inner)
         };
         drop(writer);
@@ -598,8 +833,9 @@ impl Vault {
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
-        inner.install_key(dek, scope);
+        inner.install_key(dek, scope, &ops);
         inner.backup_kek = Some(backup_kek);
         Ok(self.status_of(&inner))
     }
@@ -609,14 +845,30 @@ impl Vault {
     /// grant's own key. Idempotent. On an unencrypted vault this drops the
     /// cached key (it is re-read from the OS store on demand); the state
     /// stays `Unencrypted`.
+    ///
+    /// Waits for the gated operations already running (a signature takes
+    /// about a millisecond, a gated write one file write and its read-back;
+    /// see the module doc), so once it returns no
+    /// signer result (signature, shared secret, ciphertext, exported key)
+    /// of the old epoch is still being made, and no gated secret read is
+    /// still under way; and no result of the old epoch is released after
+    /// it returns (module doc, "Release").
     pub fn lock(&self) -> VaultStatus {
+        #[cfg(test)]
+        self.inner().record(GateEvent::LockCalled);
+        let ops = self.epoch_guard();
         let mut inner = self.inner();
-        inner.forget_key();
+        inner.forget_key(&ops);
         self.status_of(&inner)
     }
 
     /// Re-wraps the data key under `new`; records (and the seed) are
-    /// unchanged. The lock state is preserved.
+    /// unchanged. The lock state is preserved, but the epoch ends (review
+    /// DW-E0-03 r3 m3): every grant, pending or redeemed, every grant token
+    /// and every signer issued before is refused afterwards, including
+    /// those that carry a key unwrapped with the old passphrase. A user who
+    /// changes the passphrase because the old one leaked thus revokes what
+    /// it authorized; new grants need the new one.
     ///
     /// The data key is not rotated (review H2): `.dwbackup` bundles carry a
     /// key of their own and nothing that unwraps the data key, so an old
@@ -645,14 +897,15 @@ impl Vault {
             wrapped_dek: crypto::seal(&kek, &dek[..], &aad)?,
         });
         self.persist(&writer, next)?;
-        {
-            // Backups written from now on open with the new passphrase.
-            let mut inner = self.inner();
-            if inner.dek.is_some() {
-                inner.backup_kek = Some(BackupKek::of(kdf, &salt, &kek));
-            }
+        let ops = self.epoch_guard();
+        let mut inner = self.inner();
+        inner.revoke(&ops);
+        // Backups written from now on open with the new passphrase.
+        if inner.dek.is_some() {
+            inner.backup_kek = Some(BackupKek::of(kdf, &salt, &kek));
         }
-        Ok(self.status())
+        drop(writer);
+        Ok(self.status_of(&inner))
     }
 
     /// Verifies `passphrase` against slot P of the in-memory file and checks
@@ -816,14 +1069,30 @@ impl Vault {
                 )
             }
             Credential::None => {
-                if matches!(
-                    self.lock_state(),
-                    LockState::NoKeys | LockState::Unencrypted
-                ) {
+                // An unencrypted vault's grant is issued only while its key
+                // is in memory, so its token never needs the OS store under
+                // the gate (`key_for`). A lock between the load and the
+                // issue drops the key again: load it again, a bounded number
+                // of times.
+                let mut loads = 0;
+                let mut inner = loop {
+                    let inner = self.inner();
+                    let needs_load = inner.dek.is_none()
+                        && matches!(
+                            Self::state_of(&inner),
+                            LockState::NoKeys | LockState::Unencrypted
+                        );
+                    if !needs_load {
+                        break inner;
+                    }
+                    drop(inner);
+                    if loads == KEY_LOAD_ATTEMPTS {
+                        return Err(VaultError::Locked);
+                    }
+                    loads += 1;
                     // Fails when the OS store cannot produce the data key.
                     self.full_dek()?;
-                }
-                let mut inner = self.inner();
+                };
                 match Self::state_of(&inner) {
                     LockState::NoVault => return Err(VaultError::NoVault),
                     LockState::Locked | LockState::UnlockedMixingOnly | LockState::Unlocked
@@ -1001,34 +1270,129 @@ impl Vault {
         Ok(GrantToken {
             purpose: issued.grant.purpose,
             wallet: issued.grant.wallet,
+            vault_instance: self.shared.instance,
             epoch: inner.epoch,
             key: issued.key,
         })
     }
 
-    /// The full-scope data key a redeemed grant acts with: the grant's own
-    /// key, or the vault's. Refused once the vault locked after redemption.
-    fn key_for(&self, token: &GrantToken) -> Result<Key32, VaultError> {
-        if self.inner().epoch != token.epoch {
-            return Err(VaultError::Locked);
-        }
-        match &token.key {
-            Some(key) => Ok(Zeroizing::new(**key)),
-            None => self.full_dek(),
+    /// Whether `token` was redeemed by this vault instance in its current
+    /// epoch. Both are compared in constant time, and every use of a token
+    /// (its key, or a signer it issues) checks this first, under `inner`
+    /// (review DW-E0-03 r2 M1). The instance id refuses a token of another
+    /// vault (even one with the same wallet id and epoch number) and of an
+    /// earlier opening of this vault's file; the epoch refuses a token
+    /// redeemed before a lock, unlock, scope or passphrase change of this one.
+    fn token_binding(&self, inner: &Inner, token: &GrantToken) -> TokenBinding {
+        let same_vault = self.shared.instance.ct_eq(&token.vault_instance);
+        let same_epoch = inner.epoch.ct_eq(&token.epoch);
+        if !bool::from(same_vault) {
+            TokenBinding::OtherVault
+        } else if !bool::from(same_epoch) {
+            TokenBinding::EndedEpoch
+        } else {
+            TokenBinding::Current
         }
     }
 
+    /// `token`'s binding as the error its use is refused with:
+    /// `GrantInvalid` for a token of another vault, `Locked` for one whose
+    /// epoch has ended (a lock, unlock, scope change or passphrase change
+    /// since redemption).
+    fn token_current(&self, inner: &Inner, token: &GrantToken) -> Result<(), VaultError> {
+        match self.token_binding(inner, token) {
+            TokenBinding::Current => Ok(()),
+            TokenBinding::OtherVault => Err(VaultError::GrantInvalid),
+            TokenBinding::EndedEpoch => Err(VaultError::Locked),
+        }
+    }
+
+    /// The full-scope data key a redeemed grant acts with, inside the gated
+    /// operation `_op`: the grant's own key, or the vault's. The token check
+    /// and the key read are one step under `inner`, inside the gate, so a
+    /// `lock()` either returns before it (and the token is refused) or
+    /// waits until the operation is done (review DW-E0-03 r3 m2). The
+    /// vault's key is taken from memory only: a token without a key of its
+    /// own was redeemed while the full key was in memory, and only an epoch
+    /// change drops it.
+    fn key_for(&self, _op: &OpGuard<'_>, token: &GrantToken) -> Result<Key32, VaultError> {
+        let key = {
+            let inner = self.inner();
+            self.token_current(&inner, token)?;
+            match &token.key {
+                Some(key) => Zeroizing::new(**key),
+                None => Self::memory_dek(&inner)?,
+            }
+        };
+        #[cfg(test)]
+        crate::signer::test_hook::opened();
+        Ok(key)
+    }
+
+    /// The full-scope data key held in memory, inside the gated operation
+    /// `_op`; `Locked` when none is (the caller loads an unencrypted vault's
+    /// key with [`Self::full_dek`] before it enters the gate).
+    fn gated_dek(&self, _op: &OpGuard<'_>) -> Result<Key32, VaultError> {
+        Self::memory_dek(&self.inner())
+    }
+
+    /// The data key in memory, with full scope: `MixingOnly` for an
+    /// encrypted vault unlocked for mixing, `Locked` when there is none.
+    fn memory_dek(inner: &Inner) -> Result<Key32, VaultError> {
+        let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+        match &inner.dek {
+            Some(_) if f.slot_p.is_some() && inner.scope == UnlockScope::MixingOnly => {
+                Err(VaultError::MixingOnly)
+            }
+            Some(dek) => Ok(Zeroizing::new(**dek)),
+            None => Err(VaultError::Locked),
+        }
+    }
+
+    /// Runs `body` with the vault's full key as one gated operation, after
+    /// loading an unencrypted vault's key from the OS store outside the
+    /// gate (review DW-E0-03 r3 m1); inside, only the in-memory key is
+    /// used. A `lock()` between the load and the gate drops the key again,
+    /// and the operation fails `Locked`; an unencrypted vault needs no
+    /// prompt for its key, so the load and the operation are tried again,
+    /// at most [`KEY_LOAD_ATTEMPTS`] times in all.
+    fn with_loaded_key<T>(
+        &self,
+        mut body: impl FnMut(&Key32) -> Result<T, VaultError>,
+    ) -> Result<T, VaultError> {
+        let mut attempt = 1;
+        loop {
+            self.full_dek()?;
+            #[cfg(test)]
+            crate::signer::test_hook::checked();
+            match self.gated(VaultError::Locked, |op| body(&self.gated_dek(op)?)) {
+                Err(VaultError::Locked) if attempt < KEY_LOAD_ATTEMPTS && self.unencrypted() => {
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// Whether the vault has no passphrase slot (its key is in the OS
+    /// store). In-memory read.
+    fn unencrypted(&self) -> bool {
+        self.inner()
+            .file
+            .as_ref()
+            .is_some_and(|f| f.slot_p.is_none())
+    }
+
     /// The data key with full scope: in memory after unlock, or read from
-    /// the OS store for an unencrypted vault.
+    /// the OS store for an unencrypted vault (and kept in memory). Never
+    /// called inside the gate, since the OS store may block (on a keyring
+    /// prompt, for instance) and `lock()` waits for the gate.
     fn full_dek(&self) -> Result<Key32, VaultError> {
         let (service, label) = {
             let inner = self.inner();
             let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
-            if let Some(dek) = &inner.dek {
-                if f.slot_p.is_some() && inner.scope == UnlockScope::MixingOnly {
-                    return Err(VaultError::MixingOnly);
-                }
-                return Ok(Zeroizing::new(**dek));
+            if inner.dek.is_some() {
+                return Self::memory_dek(&inner);
             }
             match (&f.slot_p, &f.slot_o) {
                 (None, Some(o)) => (o.service.clone(), o.label.clone()),
@@ -1076,8 +1440,17 @@ impl Vault {
         dek: &Key32,
         changes: &[(String, Option<&[u8]>)],
     ) -> Result<(), VaultError> {
-        let writer = self.writer();
-        let mut next = self.file_copy(&writer)?;
+        self.commit_records_under(&self.writer(), dek, changes)
+    }
+
+    /// [`Self::commit_records`] under a `writer` guard the caller holds.
+    fn commit_records_under(
+        &self,
+        writer: &WriteGuard<'_>,
+        dek: &Key32,
+        changes: &[(String, Option<&[u8]>)],
+    ) -> Result<(), VaultError> {
+        let mut next = self.file_copy(writer)?;
         let mut manifest = verify_manifest(&next, dek, self.inner().high_water)?;
         for (id, value) in changes {
             match value {
@@ -1097,7 +1470,7 @@ impl Vault {
         }
         manifest.generation += 1;
         next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
-        self.persist(&writer, next)?;
+        self.persist(writer, next)?;
         let high_water = {
             let mut inner = self.inner();
             inner.high_water = inner.high_water.max(manifest.generation);
@@ -1176,13 +1549,15 @@ impl Vault {
             return Ok(false);
         }
         let dek = self.full_dek()?;
-        self.delete_records(wallet, &dek)?;
+        self.delete_records(&self.writer(), wallet, &dek)?;
         Ok(true)
     }
 
     /// Deletes every record of `wallet` under a redeemed `Wipe` grant for that
     /// wallet, with the grant's key when it carries one (a passphrase grant on
-    /// a locked vault). `Ok(false)` when it had none.
+    /// a locked vault). `Ok(false)` when it had none. The deletion is one
+    /// gated operation: it is done before a concurrent `lock()` returns, or
+    /// refused (`Locked`) when that lock came first.
     pub fn wipe_wallet_secret(
         &self,
         wallet: &WalletId,
@@ -1191,12 +1566,18 @@ impl Vault {
         if token.purpose.kind() != GrantKind::Wipe || token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);
         }
+        let writer = self.writer();
         if !self.has_any_record(wallet)? {
             return Ok(false);
         }
-        let dek = self.key_for(token)?;
-        self.delete_records(wallet, &dek)?;
-        Ok(true)
+        self.token_current(&self.inner(), token)?;
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, token)?;
+            self.delete_records(&writer, wallet, &dek)?;
+            Ok(true)
+        })
     }
 
     fn wallet_record_ids(wallet: &WalletId) -> Vec<String> {
@@ -1214,12 +1595,17 @@ impl Vault {
             .any(|id| f.records.contains_key(id)))
     }
 
-    fn delete_records(&self, wallet: &WalletId, dek: &Key32) -> Result<(), VaultError> {
+    fn delete_records(
+        &self,
+        writer: &WriteGuard<'_>,
+        wallet: &WalletId,
+        dek: &Key32,
+    ) -> Result<(), VaultError> {
         let changes: Vec<(String, Option<&[u8]>)> = Self::wallet_record_ids(wallet)
             .into_iter()
             .map(|id| (id, None))
             .collect();
-        self.commit_records(dek, &changes)
+        self.commit_records_under(writer, dek, &changes)
     }
 
     /// Whether the vault holds a seed for `wallet`. In-memory read.
@@ -1232,11 +1618,12 @@ impl Vault {
 
     /// How the stored seed of `wallet` was derived. Needs full scope.
     pub fn seed_derivation(&self, wallet: &WalletId) -> Result<SeedDerivation, VaultError> {
-        let dek = self.full_dek()?;
-        let payload = self
-            .read_record(&dek, &record_id(wallet, REC_SEED))?
-            .ok_or(VaultError::NoSecret)?;
-        Ok(decode_seed(&payload)?.1)
+        self.with_loaded_key(|dek| {
+            let payload = self
+                .read_record(dek, &record_id(wallet, REC_SEED))?
+                .ok_or(VaultError::NoSecret)?;
+            Ok(decode_seed(&payload)?.1)
+        })
     }
 
     /// The recovery phrase and BIP39 passphrase (QT-113, IOS-006). Needs a
@@ -1247,27 +1634,79 @@ impl Vault {
         grant_id: &str,
     ) -> Result<RevealedMnemonic, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
-        let dek = self.key_for(&token)?;
-        let phrase = self
-            .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
-            .ok_or(VaultError::NoSecret)?;
-        let bip39_passphrase = self
-            .read_record(&dek, &record_id(wallet, REC_PASSPHRASE))?
-            .unwrap_or_default();
-        Ok(RevealedMnemonic {
-            phrase,
-            bip39_passphrase,
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, &token)?;
+            let phrase = self
+                .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
+                .ok_or(VaultError::NoSecret)?;
+            let bip39_passphrase = self
+                .read_record(&dek, &record_id(wallet, REC_PASSPHRASE))?
+                .unwrap_or_default();
+            Ok(RevealedMnemonic {
+                phrase,
+                bip39_passphrase,
+            })
         })
     }
 
     /// A signer for every derivation of `wallet`, authorized by a redeemed
-    /// grant for that wallet whose purpose signs (spend, message, platform).
-    /// A grant authorized by passphrase on a locked or mixing-only vault
-    /// hands its own key to the signer. The signer stops working when the
-    /// vault locks or changes unlock scope.
+    /// grant for that wallet whose purpose signs (spend, message). A grant
+    /// authorized by passphrase on a locked or mixing-only vault hands its
+    /// own key to the signer. The signer stops working when the vault locks
+    /// or changes unlock scope. A `PlatformOp` grant gets scoped signers
+    /// ([`Self::platform_signer`]) and the identity-scan key
+    /// ([`Self::scan_key`]), not this signer.
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
-        if !token.purpose.signs() || token.wallet.as_ref() != Some(wallet) {
+        if !token.purpose.signs() {
             return Err(VaultError::GrantPurposeMismatch);
+        }
+        self.token_signer(wallet, token, SignerScope::Full)
+    }
+
+    /// A signer limited to one Platform scope (DASHPAY §3.3):
+    /// [`SignerScope::PlatformIdentity`], [`SignerScope::DashPayCrypto`] or
+    /// [`SignerScope::PlatformFunding`], authorized by a redeemed
+    /// `PlatformOp` grant for `wallet`. One token may issue several (a
+    /// registration needs identity and funding signers). Any other scope is
+    /// `InvalidArgument`; any other grant `GrantPurposeMismatch`. Lifetime
+    /// and own-key rules are those of [`Self::signer`].
+    pub fn platform_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if !matches!(
+            scope,
+            SignerScope::PlatformIdentity
+                | SignerScope::DashPayCrypto
+                | SignerScope::PlatformFunding { .. }
+        ) {
+            return Err(VaultError::InvalidArgument(format!(
+                "{scope:?} is not a Platform signer scope"
+            )));
+        }
+        if token.purpose.kind() != GrantKind::PlatformOp {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        self.token_signer(wallet, token, scope)
+    }
+
+    /// A signer with `scope` under a redeemed grant for `wallet`; the caller
+    /// has checked the grant's purpose.
+    pub(crate) fn token_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if token.wallet.as_ref() != Some(wallet) {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        // A token of another vault is refused before this one loads its
+        // key; the full check is made under the lock that issues the signer.
+        if self.token_binding(&self.inner(), token) == TokenBinding::OtherVault {
+            return Err(VaultError::GrantInvalid);
         }
         let own_key = match &token.key {
             Some(key) => Some(Arc::new(Zeroizing::new(**key))),
@@ -1277,13 +1716,57 @@ impl Vault {
             }
         };
         let inner = self.inner();
-        if token.epoch != inner.epoch {
+        if self.token_binding(&inner, token) != TokenBinding::Current {
             return Err(VaultError::GrantInvalid);
         }
         if own_key.is_none() && inner.dek.is_none() {
             return Err(VaultError::Locked);
         }
-        self.signer_locked(&inner, wallet, SignerScope::Full, own_key)
+        self.signer_locked(&inner, wallet, scope, own_key)
+    }
+
+    /// The background DashPay crypto signer ([`SignerScope::DashPayCrypto`],
+    /// DASHPAY §2.6): no grant, so it exists only while the full key is
+    /// available without a prompt, on an unencrypted vault or one unlocked
+    /// with scope Full. `Locked` and `MixingOnly` otherwise. It can neither
+    /// spend nor sign a state transition; the one key it exports is a
+    /// DIP-15 auto-accept key. Stops working when the vault locks, changes
+    /// unlock scope or changes its passphrase (the vault stays unlocked
+    /// then, and the engine issues a new one). Engine-only: dw-ffi's clippy configuration forbids
+    /// calling it, so no view reaches key material without a grant.
+    pub fn dashpay_crypto_signer(&self, wallet: &WalletId) -> Result<VaultSigner, VaultError> {
+        self.prompt_free_signer(wallet, SignerScope::DashPayCrypto)
+    }
+
+    /// A signer with `scope` under the vault's own full key, issued only in
+    /// the states where that key needs no prompt (see
+    /// [`Self::dashpay_crypto_signer`]). The state is read under the same
+    /// lock that issues the signer, so an unlock for mixing in between is
+    /// refused rather than served with the mixing-only key.
+    fn prompt_free_signer(
+        &self,
+        wallet: &WalletId,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if matches!(
+            self.lock_state(),
+            LockState::NoKeys | LockState::Unencrypted
+        ) {
+            // Loads the data key from the OS store.
+            self.full_dek()?;
+        }
+        let inner = self.inner();
+        match Self::state_of(&inner) {
+            LockState::NoVault => Err(VaultError::NoVault),
+            LockState::Locked => Err(VaultError::Locked),
+            LockState::UnlockedMixingOnly => Err(VaultError::MixingOnly),
+            LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked => {
+                if inner.dek.is_none() || inner.scope != UnlockScope::Full {
+                    return Err(VaultError::Locked);
+                }
+                self.signer_locked(&inner, wallet, scope, None)
+            }
+        }
     }
 
     /// A signer limited to the CoinJoin account (`m/9'/coin'/4'/…`). Works in
@@ -1344,18 +1827,20 @@ impl Vault {
     }
 
     /// Seed of `wallet` for a signer issued at `epoch`, decrypted with the
-    /// signer's own key or the vault's.
+    /// signer's own key or the vault's, inside the operation `op`, which
+    /// must have started in that epoch.
     pub(crate) fn signing_seed(
         &self,
+        op: &OpGuard<'_>,
         wallet: &WalletId,
         epoch: u64,
         own_key: Option<&Key32>,
     ) -> Result<Zeroizing<[u8; 64]>, SignerError> {
+        if op.epoch != epoch {
+            return Err(SignerError::Locked);
+        }
         let dek = {
             let inner = self.inner();
-            if inner.epoch != epoch {
-                return Err(SignerError::Locked);
-            }
             match own_key {
                 Some(key) => Zeroizing::new(**key),
                 None => Zeroizing::new(**inner.dek.as_ref().ok_or(SignerError::Locked)?),
@@ -1382,31 +1867,38 @@ impl Vault {
             return Err(VaultError::NotEncrypted);
         }
         let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
-        let dek = self.key_for(&token)?;
-        let policy = open_policy(&next, &dek)?.unwrap_or_default();
-        let last_passphrase_at = policy
-            .last_passphrase_at
-            .max(self.inner().last_passphrase_at);
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
         let wrap_key = crypto::random_key()?;
-        next.slot_b = Some(QuickUnlockSlot {
-            wrapped_dek: crypto::seal(
-                &wrap_key,
-                &dek[..],
-                &file::slot_b_aad(&next.vault_id, &next.network),
-            )?,
-            enrolled_at: self.now(),
-        });
-        next.quick_unlock = Some(seal_policy(
-            &dek,
-            &next.vault_id,
-            &next.network,
-            PolicyPayload {
-                last_passphrase_at,
-                ..policy
-            },
-        )?);
-        self.persist(&writer, next)?;
-        Ok(Zeroizing::new(wrap_key.to_vec()))
+        let enrolled_at = self.now();
+        // The new slot B key is a credential for the data key: it is made
+        // and released in one gated operation.
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, &token)?;
+            let policy = open_policy(&next, &dek)?.unwrap_or_default();
+            let last_passphrase_at = policy
+                .last_passphrase_at
+                .max(self.inner().last_passphrase_at);
+            next.slot_b = Some(QuickUnlockSlot {
+                wrapped_dek: crypto::seal(
+                    &wrap_key,
+                    &dek[..],
+                    &file::slot_b_aad(&next.vault_id, &next.network),
+                )?,
+                enrolled_at,
+            });
+            next.quick_unlock = Some(seal_policy(
+                &dek,
+                &next.vault_id,
+                &next.network,
+                PolicyPayload {
+                    last_passphrase_at,
+                    ..policy
+                },
+            )?);
+            self.persist(&writer, next)?;
+            Ok(Zeroizing::new(wrap_key.to_vec()))
+        })
     }
 
     /// Deletes slot B. Idempotent; the spending limit is kept for a later
@@ -1457,20 +1949,24 @@ impl Vault {
             return Err(VaultError::NotEncrypted);
         }
         let token = self.redeem_grant(grant_id, GrantKind::ChangeCredential, None)?;
-        let dek = self.key_for(&token)?;
-        let policy = open_policy(&next, &dek)?.unwrap_or_default();
-        next.quick_unlock = Some(seal_policy(
-            &dek,
-            &next.vault_id,
-            &next.network,
-            PolicyPayload {
-                spend_limit_duffs,
-                last_passphrase_at: policy
-                    .last_passphrase_at
-                    .max(self.inner().last_passphrase_at),
-            },
-        )?);
-        self.persist(&writer, next)?;
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
+        self.gated(VaultError::Locked, |op| {
+            let dek = self.key_for(op, &token)?;
+            let policy = open_policy(&next, &dek)?.unwrap_or_default();
+            next.quick_unlock = Some(seal_policy(
+                &dek,
+                &next.vault_id,
+                &next.network,
+                PolicyPayload {
+                    spend_limit_duffs,
+                    last_passphrase_at: policy
+                        .last_passphrase_at
+                        .max(self.inner().last_passphrase_at),
+                },
+            )?);
+            self.persist(&writer, next)
+        })?;
         drop(writer);
         Ok(self.quick_unlock_policy())
     }
@@ -1589,11 +2085,12 @@ impl Vault {
         // if the read-back check below fails, so nothing keeps using the
         // old key.
         {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = Some(next);
             inner.high_water = manifest.generation;
-            inner.forget_key();
-            inner.install_key(Zeroizing::new(*dek), UnlockScope::Full);
+            inner.forget_key(&ops);
+            inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
         }
@@ -1642,11 +2139,12 @@ impl Vault {
         }
         file::remove_all(&self.shared.dir)?;
         {
+            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = None;
             inner.high_water = 0;
             inner.last_passphrase_at = None;
-            inner.forget_key();
+            inner.forget_key(&ops);
         }
         drop(writer);
         if let Some(o) = current.slot_o
@@ -1709,6 +2207,8 @@ fn verify_manifest(f: &VaultFile, dek: &[u8; 32], high_water: u64) -> Result<Man
 #[cfg(test)]
 mod tests {
     use super::*;
+    use key_wallet::bip32::DerivationPath;
+    use std::str::FromStr;
 
     #[test]
     fn throttle_follows_ios_schedule() {
@@ -1780,6 +2280,187 @@ mod tests {
 
     fn step_clock() -> Arc<StepClock> {
         Arc::new(StepClock(std::sync::atomic::AtomicU64::new(1_000)))
+    }
+
+    /// Opens the vault in `dir` with the shared `os_store`.
+    fn open_in(dir: &Path, os_store: &Arc<crate::MemoryOsStore>) -> Vault {
+        let config = VaultConfig {
+            os_store: os_store.clone(),
+            ..test_config(step_clock())
+        };
+        Vault::open(dir.join("vault"), Network::Regtest, "regtest", config).unwrap()
+    }
+
+    /// A new vault in `dir` holding wallet `[1; 32]` with seed `[seed; 64]`.
+    fn vault_with_wallet(dir: &Path, passphrase: Option<&[u8]>, seed: u8) -> Vault {
+        vault_with_wallet_in(
+            dir,
+            &Arc::new(crate::MemoryOsStore::new()),
+            passphrase,
+            seed,
+        )
+    }
+
+    fn vault_with_wallet_in(
+        dir: &Path,
+        os_store: &Arc<crate::MemoryOsStore>,
+        passphrase: Option<&[u8]>,
+        seed: u8,
+    ) -> Vault {
+        let v = open_in(dir, os_store);
+        v.create(passphrase).unwrap();
+        let secret = WalletSecret {
+            mnemonic: Zeroizing::new(b"unused".to_vec()),
+            mnemonic_passphrase: Zeroizing::new(Vec::new()),
+            seed: Zeroizing::new([seed; 64]),
+            derivation: SeedDerivation::Bip39,
+        };
+        v.store_wallet_secret(&[1; 32], &secret).unwrap();
+        v
+    }
+
+    fn redeem(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantToken {
+        let grant = v.authorize(purpose, Some(&[1; 32]), credential).unwrap();
+        v.redeem_grant(&grant.id, purpose.kind(), Some(&[1; 32]))
+            .unwrap()
+    }
+
+    /// Every use, in `v`, of a token redeemed by `from` is refused with
+    /// `GrantInvalid`: a scan key, a Platform signer, a full signer, an
+    /// export and a wipe.
+    fn assert_refuses(v: &Vault, from: &Vault, credential: Credential<'_>, case: &str) {
+        let w = [1u8; 32];
+        let refused = |r: Result<(), VaultError>, what: &str| {
+            assert_eq!(r, Err(VaultError::GrantInvalid), "{case}: {what}");
+        };
+        let platform = || redeem(from, GrantPurpose::PlatformOp, credential);
+        refused(v.scan_key(&w, &platform()).map(drop), "scan key");
+        for scope in [
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+        ] {
+            refused(
+                v.platform_signer(&w, &platform(), scope).map(drop),
+                "Platform signer",
+            );
+        }
+        let spend = redeem(from, GrantPurpose::Spend { max_duffs: 1 }, credential);
+        refused(v.signer(&w, &spend).map(drop), "signer");
+        let reveal = redeem(from, GrantPurpose::RevealSecret, credential);
+        refused(v.export_wallet_secret(&w, &reveal).map(drop), "export");
+        let wipe = redeem(from, GrantPurpose::Wipe, credential);
+        refused(v.wipe_wallet_secret(&w, &wipe).map(drop), "wipe");
+        assert!(v.has_wallet_secret(&w), "{case}: nothing was wiped");
+    }
+
+    /// Review DW-E0-03 r2 M1: a token redeemed by one vault is refused by
+    /// another holding the same wallet id at the same epoch number, whether
+    /// the token would use the receiving vault's key (`Credential::None`)
+    /// or carries its own (a passphrase grant on a locked vault).
+    #[test]
+    fn a_token_of_another_vault_is_refused() {
+        let dirs = [(); 3].map(|_| tempfile::tempdir().unwrap());
+        // Encrypted and unlocked with scope Full, so its own key would serve.
+        let target = vault_with_wallet(dirs[0].path(), Some(b"pw"), 0x5a);
+        let unencrypted = vault_with_wallet(dirs[1].path(), None, 0x7f);
+        assert_eq!(target.inner().epoch, unencrypted.inner().epoch);
+        assert_refuses(&target, &unencrypted, Credential::None, "unencrypted");
+
+        let locked = vault_with_wallet(dirs[2].path(), Some(b"pw"), 0x7f);
+        locked.lock();
+        target.lock();
+        target.unlock(b"pw", UnlockScope::Full).unwrap();
+        locked.lock();
+        assert_eq!(target.inner().epoch, locked.inner().epoch);
+        assert_refuses(&target, &locked, Credential::Passphrase(b"pw"), "own key");
+
+        // The tokens still work in the vault that redeemed them.
+        let token = redeem(&unencrypted, GrantPurpose::PlatformOp, Credential::None);
+        unencrypted.scan_key(&[1; 32], &token).unwrap();
+        let token = redeem(
+            &locked,
+            GrantPurpose::PlatformOp,
+            Credential::Passphrase(b"pw"),
+        );
+        locked.scan_key(&[1; 32], &token).unwrap();
+    }
+
+    /// A token of an earlier opening of the same vault file is refused,
+    /// though it names the same wallet, the same data key and the same
+    /// epoch number: the reopened vault is another instance.
+    #[test]
+    fn a_token_of_an_earlier_opening_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_store = Arc::new(crate::MemoryOsStore::new());
+        vault_with_wallet_in(dir.path(), &os_store, None, 0x5a);
+
+        // Two later openings of that file, each loading the key on demand.
+        let earlier = open_in(dir.path(), &os_store);
+        let token = redeem(&earlier, GrantPurpose::PlatformOp, Credential::None);
+        let reopened = open_in(dir.path(), &os_store);
+        reopened.full_dek().unwrap();
+        assert_eq!(earlier.inner().epoch, reopened.inner().epoch);
+        assert_refuses(&reopened, &earlier, Credential::None, "reopened");
+        earlier.scan_key(&[1; 32], &token).unwrap();
+
+        // Encrypted: both openings unlocked once.
+        let dir = tempfile::tempdir().unwrap();
+        let first = vault_with_wallet(dir.path(), Some(b"pw"), 0x5a);
+        drop(first);
+        let os_store = Arc::new(crate::MemoryOsStore::new());
+        let earlier = open_in(dir.path(), &os_store);
+        earlier.unlock(b"pw", UnlockScope::Full).unwrap();
+        let reopened = open_in(dir.path(), &os_store);
+        reopened.unlock(b"pw", UnlockScope::Full).unwrap();
+        assert_eq!(earlier.inner().epoch, reopened.inner().epoch);
+        // Both unlocked with scope Full, so these passphrase grants carry
+        // no key of their own and would use the receiving vault's.
+        assert_refuses(
+            &reopened,
+            &earlier,
+            Credential::Passphrase(b"pw"),
+            "reopened, unlocked",
+        );
+    }
+
+    /// A token of an earlier unlock of this vault is refused after a lock
+    /// and unlock: `GrantInvalid` for a signer or scan key, `Locked` for a
+    /// use of its key.
+    #[test]
+    fn a_token_of_an_earlier_unlock_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault_with_wallet(dir.path(), Some(b"pw"), 0x5a);
+        let w = [1u8; 32];
+        let platform = redeem(&v, GrantPurpose::PlatformOp, Credential::None);
+        let spend = redeem(&v, GrantPurpose::Spend { max_duffs: 1 }, Credential::None);
+        let reveal = redeem(
+            &v,
+            GrantPurpose::RevealSecret,
+            Credential::Passphrase(b"pw"),
+        );
+        v.lock();
+        v.unlock(b"pw", UnlockScope::Full).unwrap();
+        assert_eq!(
+            v.scan_key(&w, &platform).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.platform_signer(&w, &platform, SignerScope::PlatformIdentity)
+                .map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.signer(&w, &spend).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.export_wallet_secret(&w, &reveal).map(drop),
+            Err(VaultError::Locked)
+        );
+        // A token of this unlock works.
+        let platform = redeem(&v, GrantPurpose::PlatformOp, Credential::None);
+        v.scan_key(&w, &platform).unwrap();
     }
 
     /// Review L2: a grant that carries its own copy of the data key (issued
@@ -1882,6 +2563,109 @@ mod tests {
         // The next successful write carries the reset counter.
         v.change_passphrase(b"pw", b"pw2").unwrap();
         assert_eq!(open().status().failed_attempts, 0);
+    }
+
+    /// Review DW-E0-03 r3 m3: a passphrase change ends the epoch. Grants
+    /// (pending or redeemed), grant tokens and signers issued before it are
+    /// refused, both those that carry a key unwrapped with the old
+    /// passphrase (locked vault) and those that use the vault's key
+    /// (unlocked); the lock state is kept and new grants work. A refused
+    /// change revokes nothing.
+    #[test]
+    fn a_passphrase_change_revokes_grants_tokens_and_signers() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault_with_wallet(dir.path(), Some(b"old-pw"), 0x5a);
+        let w = [1u8; 32];
+        let key = DerivationPath::from_str("m/9'/1'/5'/0'/0'/0'/0'").unwrap();
+        let peer = dashcore::secp256k1::PublicKey::from_secret_key(
+            &dashcore::secp256k1::Secp256k1::new(),
+            &dashcore::secp256k1::SecretKey::from_slice(&[0x42; 32]).unwrap(),
+        );
+
+        v.lock();
+        let old = Credential::Passphrase(b"old-pw");
+        let reveal = redeem(&v, GrantPurpose::RevealSecret, old);
+        let pending = v
+            .authorize(GrantPurpose::RevealSecret, Some(&w), old)
+            .unwrap();
+        let platform = redeem(&v, GrantPurpose::PlatformOp, old);
+        let crypto = v
+            .platform_signer(&w, &platform, SignerScope::DashPayCrypto)
+            .unwrap();
+        crypto.ecdh_shared_secret(&key, &peer).unwrap();
+        v.change_passphrase(b"old-pw", b"new-pw-1").unwrap();
+        assert_eq!(v.lock_state(), LockState::Locked);
+        assert_eq!(
+            v.export_wallet_secret(&w, &reveal).map(drop),
+            Err(VaultError::Locked)
+        );
+        assert_eq!(
+            v.reveal_mnemonic(&w, &pending.id).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.scan_key(&w, &platform).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            crypto.ecdh_shared_secret(&key, &peer).map(drop),
+            Err(SignerError::Locked)
+        );
+        assert!(matches!(
+            v.authorize(GrantPurpose::RevealSecret, Some(&w), old),
+            Err(VaultError::WrongPassphrase { .. })
+        ));
+        let platform = redeem(
+            &v,
+            GrantPurpose::PlatformOp,
+            Credential::Passphrase(b"new-pw-1"),
+        );
+        v.scan_key(&w, &platform).unwrap();
+
+        v.unlock(b"new-pw-1", UnlockScope::Full).unwrap();
+        let crypto = v.dashpay_crypto_signer(&w).unwrap();
+        let spend = redeem(&v, GrantPurpose::Spend { max_duffs: 1 }, Credential::None);
+        let spend_signer = v.signer(&w, &spend).unwrap();
+        let reveal = redeem(
+            &v,
+            GrantPurpose::RevealSecret,
+            Credential::Passphrase(b"new-pw-1"),
+        );
+        assert!(matches!(
+            v.change_passphrase(b"wrong", b"new-pw-2"),
+            Err(VaultError::WrongPassphrase { .. })
+        ));
+        crypto.ecdh_shared_secret(&key, &peer).unwrap();
+        v.change_passphrase(b"new-pw-1", b"new-pw-2").unwrap();
+        assert_eq!(v.lock_state(), LockState::Unlocked);
+        assert_eq!(
+            crypto.ecdh_shared_secret(&key, &peer).map(drop),
+            Err(SignerError::Locked)
+        );
+        assert_eq!(
+            spend_signer
+                .with_key(&key, crate::signer::KeyUse::PublicKey, |_, _| ())
+                .map(drop),
+            Err(SignerError::Locked)
+        );
+        assert_eq!(
+            v.signer(&w, &spend).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            v.export_wallet_secret(&w, &reveal).map(drop),
+            Err(VaultError::Locked)
+        );
+        v.dashpay_crypto_signer(&w)
+            .unwrap()
+            .ecdh_shared_secret(&key, &peer)
+            .unwrap();
+        let reveal = redeem(
+            &v,
+            GrantPurpose::RevealSecret,
+            Credential::Passphrase(b"new-pw-2"),
+        );
+        v.export_wallet_secret(&w, &reveal).unwrap();
     }
 
     #[test]

@@ -27,6 +27,9 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4
 dpp = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
 dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
 rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+# DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
+# vault's Platform signers; the same functions platform-wallet calls.
+platform-encryption = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
 
 # ---- dashpay/rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.

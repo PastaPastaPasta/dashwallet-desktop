@@ -24,6 +24,11 @@ subtle = "=2.6.1"
 sha2 = "0.10"
 key-wallet = { workspace = true }
 dashcore = { workspace = true }
+# DIP-15 contactInfo AES inside the vault (Platform signers, `dip15.rs`).
+# `zeroize` erases the key schedules and CBC state on drop; by feature
+# unification it also covers platform-wallet's own `aes` use.
+aes = { version = "0.8", features = ["zeroize"] }
+cbc = { version = "0.1", features = ["zeroize"] }
 dw-compat = { workspace = true }
 dw-message = { workspace = true }
 dw-uri = { workspace = true }
@@ -44,3 +49,5 @@ dw-vault = { path = ".", features = ["insecure-test-kdf"] }
 dw-testutil = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+# `dip15.rs` must stay byte-identical to the crate platform-wallet calls.
+platform-encryption = { workspace = true }

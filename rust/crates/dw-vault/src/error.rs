@@ -128,9 +128,19 @@ pub enum SignerError {
     /// was issued.
     #[error("vault locked")]
     Locked,
-    /// A mixing-only signer was asked for a path outside the CoinJoin account.
-    #[error("path {0} is outside the CoinJoin account (mixing-only unlock)")]
+    /// The path, or what the call does with its key, is outside the
+    /// signer's scope (a mixing-only signer outside the CoinJoin account, a
+    /// DashPay signer asked to sign, …), or not the shape the operation
+    /// needs.
+    #[error("path {0} is outside this signer's scope")]
     PathNotAllowed(String),
+    /// The key derived at the path is not the on-chain identity key the
+    /// call names; nothing was signed.
+    #[error("the key at {0} is not the requested identity key")]
+    KeyMismatch(String),
+    /// A DashPay ciphertext did not decrypt.
+    #[error("decryption failed: {0}")]
+    Decrypt(String),
     /// The wallet has no seed in the vault.
     #[error("no secret for wallet")]
     NoSecret,

@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use dw_appdb::{SqlValue, TableRows};
-use dw_vault::{LockState, VaultError, WalletBackupBundle};
+use dw_vault::{Credential, GrantPurpose, LockState, Vault, VaultError, WalletBackupBundle};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -286,6 +286,45 @@ fn vault_failure(e: VaultError) -> EngineError {
     }
 }
 
+/// Opens one bundle of a restore. A bundle of another vault opens only with
+/// its passphrase. One this vault wrote also opens with this vault's key,
+/// under a `RevealSecret` grant authorized with the credential a reveal of
+/// the phrase takes (review DW-E0-03 r3): none on an unencrypted vault, the
+/// vault passphrase on an encrypted one. There the bundle's own slot is
+/// used whenever it takes the vault's current passphrase (or is a backup
+/// passphrase slot), since it does not count toward the vault's throttle:
+/// a mistyped backup passphrase must not lock the vault's unlock out. The
+/// passphrase is checked as the vault's (and counted) only for a bundle
+/// that just the vault's key opens with it ([`Vault::own_key_only`]: one
+/// made before a passphrase change, after its slot was tried, or an
+/// automatic backup from before `encrypt`).
+fn open_bundle(
+    vault: &Vault,
+    bundle: &WalletBackupBundle,
+    passphrase: Option<&[u8]>,
+    header: &[u8],
+) -> Result<(dw_vault::WalletSecret, Zeroizing<Vec<u8>>), VaultError> {
+    let by_slot = || vault.open_backup_bundle(bundle, passphrase, None, header);
+    let wallet = match bundle.wallet_id() {
+        Some(w) if vault.wrote_bundle(bundle) => w,
+        _ => return by_slot(),
+    };
+    let credential = if !vault.status().encrypted {
+        Credential::None
+    } else {
+        match (by_slot(), passphrase) {
+            (Err(VaultError::WrongPassphrase { .. } | VaultError::CredentialRequired), Some(p))
+                if vault.own_key_only(bundle) =>
+            {
+                Credential::Passphrase(p)
+            }
+            (opened, _) => return opened,
+        }
+    };
+    let grant = vault.authorize(GrantPurpose::RevealSecret, Some(&wallet), credential)?;
+    vault.open_backup_bundle(bundle, None, Some(&grant.id), header)
+}
+
 impl NetworkSession {
     /// `<network dir>/backups`.
     pub fn backup_directory(&self) -> PathBuf {
@@ -466,6 +505,15 @@ impl NetworkSession {
     ) -> Result<Vec<WalletId>, EngineError> {
         let tag = self.network.dir_name();
         let vault = self.vault.clone();
+        // Refused before any bundle is opened, so no passphrase is checked
+        // (or counted by the vault's throttle) for a restore that cannot
+        // store; checked again below, after the opening.
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted | LockState::NoKeys
+        ) {
+            return Err(BackupFailure::VaultLocked.into());
+        }
         // Read and open every bundle before anything is stored.
         let opened = self
             .on_runtime(async move {
@@ -497,13 +545,13 @@ impl NetworkSession {
                             )
                             .into());
                         }
-                        let (secret, plain) = vault
-                            .open_backup_bundle(
-                                bundle,
-                                passphrase.as_deref().map(|p| &p[..]),
-                                header_line,
-                            )
-                            .map_err(vault_failure)?;
+                        let (secret, plain) = open_bundle(
+                            &vault,
+                            bundle,
+                            passphrase.as_deref().map(|p| &p[..]),
+                            header_line,
+                        )
+                        .map_err(vault_failure)?;
                         let payload: Payload = serde_json::from_slice(&plain)
                             .map_err(|e| BackupFailure::Corrupt(format!("payload: {e}")))?;
                         out.push((id, secret, payload));
@@ -941,7 +989,7 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".backup-"))
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
-        // Each user backup opens in this vault.
+        // Each user backup opens in this vault, with the vault passphrase.
         for r in results {
             let path = r.unwrap().path;
             let bytes = std::fs::read(&path).unwrap();
@@ -949,10 +997,108 @@ mod tests {
             let body_start =
                 MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
             let body: Body = serde_json::from_slice(&bytes[body_start..]).unwrap();
-            session
-                .vault()
-                .open_backup_bundle(&body.bundles[0], None, header_line)
-                .unwrap();
+            open_bundle(session.vault(), &body.bundles[0], Some(b"pw"), header_line).unwrap();
         }
+    }
+
+    /// Review DW-E0-03 r3: a restore opens a bundle of this vault with its
+    /// key only under a `RevealSecret` grant, so on an encrypted vault it
+    /// takes the passphrase; an unencrypted vault's needs none, as a reveal
+    /// of its phrase needs none. The vault's throttle counts a wrong
+    /// passphrase only for a bundle just the vault's key opens.
+    #[test]
+    fn an_own_bundle_opens_with_the_credential_a_reveal_takes() {
+        use dw_vault::{
+            KdfParams, KdfPolicy, MemoryOsStore, SeedDerivation, UnlockScope, VaultConfig,
+        };
+
+        let w = [7u8; 32];
+        let vault = |dir: &Path, passphrase: Option<&[u8]>| {
+            let config = VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..VaultConfig::default()
+            };
+            let v = Vault::open(dir, dashcore::Network::Regtest, "regtest", config).unwrap();
+            v.create(passphrase).unwrap();
+            let secret = dw_vault::WalletSecret {
+                mnemonic: Zeroizing::new(b"phrase".to_vec()),
+                mnemonic_passphrase: Zeroizing::new(Vec::new()),
+                seed: Zeroizing::new([9; 64]),
+                derivation: SeedDerivation::Bip39,
+            };
+            v.store_wallet_secret(&w, &secret).unwrap();
+            v
+        };
+        let dir = dw_testutil::private_tempdir();
+
+        let v = vault(&dir.path().join("enc"), Some(b"old pw"));
+        let bundle = v.backup_bundle(&w, None, b"p", b"h").unwrap();
+        assert_eq!(
+            open_bundle(&v, &bundle, None, b"h").unwrap_err(),
+            VaultError::NotEncrypted
+        );
+        open_bundle(&v, &bundle, Some(b"old pw"), b"h").unwrap();
+        v.change_passphrase(b"old pw", b"new pw").unwrap();
+        // The slot still takes the old passphrase; the new one opens it
+        // through the vault's key, under a grant.
+        open_bundle(&v, &bundle, Some(b"old pw"), b"h").unwrap();
+        let (secret, payload) = open_bundle(&v, &bundle, Some(b"new pw"), b"h").unwrap();
+        assert_eq!(
+            (&secret.mnemonic[..], &payload[..]),
+            (&b"phrase"[..], &b"p"[..])
+        );
+        assert_eq!(v.status().failed_attempts, 0);
+        // A bundle whose slot takes the current passphrase never checks it
+        // as the vault's: a typo is not counted by the vault's throttle.
+        let current = v.backup_bundle(&w, None, b"c", b"h").unwrap();
+        assert!(!v.own_key_only(&current) && v.own_key_only(&bundle));
+        for _ in 0..3 {
+            assert!(matches!(
+                open_bundle(&v, &current, Some(b"wrong"), b"h"),
+                Err(VaultError::WrongPassphrase { .. })
+            ));
+        }
+        assert_eq!(v.status().failed_attempts, 0);
+        open_bundle(&v, &current, Some(b"new pw"), b"h").unwrap();
+        // One made under the old passphrase: only the vault's key opens it
+        // with the new one, so a wrong one is checked (and counted) there.
+        assert!(matches!(
+            open_bundle(&v, &bundle, Some(b"wrong"), b"h"),
+            Err(VaultError::WrongPassphrase { .. })
+        ));
+        assert_eq!(v.status().failed_attempts, 1);
+
+        let v = vault(&dir.path().join("plain"), None);
+        let automatic = v.backup_bundle(&w, None, b"a", b"h").unwrap();
+        let with_pw = v.backup_bundle(&w, Some(b"backup pw"), b"b", b"h").unwrap();
+        assert!(!automatic.has_passphrase_slot());
+        assert_eq!(
+            v.open_backup_bundle(&automatic, None, None, b"h")
+                .unwrap_err(),
+            VaultError::NotEncrypted
+        );
+        open_bundle(&v, &automatic, None, b"h").unwrap();
+
+        // After `encrypt`: the automatic backup opens with the vault
+        // passphrase through the vault's key; a mistyped backup passphrase
+        // stays the bundle's business.
+        let grant = v
+            .authorize(GrantPurpose::ChangeCredential, None, Credential::None)
+            .unwrap();
+        v.encrypt(b"vault pw", &grant.id).unwrap();
+        v.unlock(b"vault pw", UnlockScope::Full).unwrap();
+        assert!(v.own_key_only(&automatic) && !v.own_key_only(&with_pw));
+        assert_eq!(
+            open_bundle(&v, &automatic, None, b"h").unwrap_err(),
+            VaultError::NotEncrypted
+        );
+        open_bundle(&v, &automatic, Some(b"vault pw"), b"h").unwrap();
+        assert!(matches!(
+            open_bundle(&v, &with_pw, Some(b"typo"), b"h"),
+            Err(VaultError::WrongPassphrase { .. })
+        ));
+        assert_eq!(v.status().failed_attempts, 0);
+        open_bundle(&v, &with_pw, Some(b"backup pw"), b"h").unwrap();
     }
 }

@@ -27,6 +27,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.2.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -1607,6 +1608,7 @@ dependencies = [
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "dash-context-provider",
  "dash-sdk",
@@ -1745,8 +1747,10 @@ dependencies = [
 name = "dw-vault"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "argon2",
  "async-trait",
+ "cbc",
  "chacha20poly1305",
  "dashcore",
  "dw-compat",
@@ -1758,6 +1762,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "key-wallet",
+ "platform-encryption",
  "platform-wallet-storage",
  "serde",
  "serde_json",

@@ -40,6 +40,8 @@ tracing = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }
 rand = "0.8"
+# dpp `Signer` and platform-wallet `ContactCryptoProvider` are async traits.
+async-trait = "0.1"
 # .dwbackup container (JSON header/body, base64 of the wallet.sqlite snapshot).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -84,8 +84,9 @@ How the backup key is recovered:
 
 `vault_wrapped_key` is the backup key sealed under `SHA-256("dw-vault/backup-vault-wrap/v2" ‖ DEK)`
 with AAD `dw-vault/backup-vault-wrap/v2 ‖ vault_id ‖ network ‖ wallet_id`: the vault that wrote a
-bundle opens it with its own DEK while that is available (unlocked or unencrypted), whatever the
-slot, also after `encrypt` and `change_passphrase`. Passphrase attempts on a bundle are not
+bundle opens it with its own DEK, whatever the slot, also after `encrypt` and `change_passphrase`,
+but only under a `RevealSecret` grant for the bundle's wallet (review DW-E0-03 r3), so on an
+encrypted vault only with its passphrase. Passphrase attempts on a bundle's slot are not
 throttled: the file is the user's, not the vault's.
 
 A reader refuses passphrase-slot KDF parameters above m = 4 GiB, t = 64 or p = 16 as
@@ -120,7 +121,13 @@ it is no longer written.
 1. Read the file (≤ 1 GiB), check magic, version and network.
 2. Open every bundle (DEK, records, payload) before anything is stored. Wrong passphrase:
    `backup.wrong_passphrase`; a passphrase slot and no passphrase: `backup.passphrase_required`;
-   any authentication failure: `backup.corrupt`.
+   any authentication failure: `backup.corrupt`. A bundle this vault wrote also opens through
+   `vault_wrapped_key`, but only under a `RevealSecret` grant (review DW-E0-03 r3): with no
+   passphrase on an unencrypted vault. On an encrypted one, the vault passphrase, and only for a
+   bundle whose slot does not take the current one (`vault_key`, or a `vault_passphrase` slot made
+   under an earlier passphrase); the passphrase is then checked as the vault's and counts toward
+   its throttle. Every other bundle opens through its slot alone. Without a passphrase:
+   `backup.passphrase_required`.
 3. Check that the seed derives `wallet_id` on this network.
 4. Store the secret under this vault's DEK and register the wallet (seed-safety order, as
    `import_wallet`), with the payload's name and birth height. A wallet registered with keys
