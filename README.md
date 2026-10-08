@@ -165,7 +165,9 @@ app, dwcli and the tests never rely on the umask:
 - What the app owns loses group and other access when it already has it (an older build created it with
   the umask's mode): the default data root (the Swift app logs it on stderr), and the network
   directories, `backups/`, `backups/auto/`, `avatars/`, `spv/`, the vault directory and `app.sqlite` (the engine
-  logs a warning). The settings files are replaced by 0600 ones on their next write.
+  logs a warning). The settings files are replaced by 0600 ones on their next write. `avatars/` is a
+  disposable cache: when it cannot be created (a stray file of that name), the engine logs a warning and
+  disables avatars for the session instead of failing to open the network.
 - Modes are changed through a descriptor, never by path: each directory is opened with
   `O_NOFOLLOW` relative to its parent (`rust/crates/dw-fs`, `PrivateFileSystem.swift`; `O_PATH` on
   Linux, so a search-only parent such as a 0711 `/home` is fine), so a symlink swapped in after the

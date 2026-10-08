@@ -136,6 +136,9 @@ struct PumpTask {
 pub struct NetworkSession {
     pub(crate) network: DashNetwork,
     data_dir: PathBuf,
+    /// The avatar cache directory could be created at open; without it
+    /// avatars are off for the session (`avatars_dir`).
+    avatars_ready: bool,
     pub(crate) rt: Handle,
     pub(crate) sink: Arc<dyn EventSink>,
     context: Arc<LazyTrustedContext>,
@@ -205,8 +208,17 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
-        // Owner-only whatever the umask (DASHPAY §3.4).
-        create_owned_dir(&data_dir, Path::new(AVATARS_DIR))?;
+        // Owner-only whatever the umask (DASHPAY §3.4). The cache is
+        // disposable, so a stray file or a dangling symlink named `avatars`
+        // turns avatars off for this session instead of failing the open.
+        let avatars_ready = match create_owned_dir(&data_dir, Path::new(AVATARS_DIR)) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, dir = %data_dir.join(AVATARS_DIR).display(),
+                    "avatar cache directory unusable; avatars are disabled for this session");
+                false
+            }
+        };
         let coinjoin_settings = {
             let db = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::coinjoin::load_settings(&db)).await?
@@ -313,6 +325,7 @@ impl NetworkSession {
         let session = Arc::new(Self {
             network,
             data_dir,
+            avatars_ready,
             rt: Handle::current(),
             sink,
             context,
@@ -416,6 +429,12 @@ impl NetworkSession {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could
+    /// not be created at open: avatars are then disabled for this session.
+    pub fn avatars_dir(&self) -> Option<PathBuf> {
+        self.avatars_ready.then(|| self.data_dir.join(AVATARS_DIR))
     }
 
     /// Runs `fut` on the engine runtime (for callers outside dw-engine whose
