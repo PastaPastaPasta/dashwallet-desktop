@@ -19,6 +19,10 @@ dpp = { workspace = true }
 dashcore = { workspace = true, features = ["eddsa"] }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
+# Validate the DAPI CA file at open the way the SDK's TLS stack will parse it
+# (already in the graph through tonic).
+rustls-pki-types = "1"
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc"] }
 dw-appdb = { workspace = true }
 # M3 (docs/contracts/m3-engine.md): CoinJoin over dw-coinjoin/dw-p2p.
 dw-coinjoin = { workspace = true }

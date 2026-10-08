@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
 
 use dash_sdk::SdkBuilder;
-use dash_sdk::dapi_grpc::tonic::transport::Certificate;
+use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
@@ -16,6 +16,8 @@ use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::{Error as PemError, PemObject};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -111,8 +113,12 @@ pub struct SessionOptions {
     pub quorum_url: Option<String>,
     /// SPV peers (`ip:port`). When non-empty, SPV connects to these only.
     pub spv_peers: Vec<String>,
-    /// PEM CA certificate the SDK trusts for DAPI TLS, instead of the system
-    /// roots (a dashmate devnet gateway serves a self-signed certificate).
+    /// PEM CA certificate the SDK trusts for DAPI TLS, in addition to the
+    /// system roots (a dashmate devnet gateway serves a self-signed
+    /// certificate). Every certificate in the file must parse; the file may
+    /// be a CA or a self-signed leaf with `CA:FALSE`, and the DAPI host name
+    /// must match its subject alternative names. Replacing the system roots
+    /// (pinning) needs an SDK change and is not offered.
     pub ca_cert_path: Option<PathBuf>,
     /// Protocol version the SDK starts at, used as given (a seed below the
     /// network's floor is not clamped). Auto-detect stays on and ratchets it
@@ -191,6 +197,9 @@ impl NetworkSession {
                     .map_err(|e| EngineError::InvalidArgument(format!("bad SPV peer {p:?}: {e}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // Everything the caller can get wrong, before any directory, vault or
+        // network I/O exists to clean up.
+        let sdk_options = SdkOptions::validate(&opts)?;
         create_owned_dir(&data_dir, Path::new(""))?;
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
         let unclean_previous = marker.exists();
@@ -240,7 +249,7 @@ impl NetworkSession {
             }),
         }
 
-        let sdk = build_sdk(&network, &opts, Arc::clone(&context))?;
+        let sdk = build_sdk(&network, &opts, sdk_options, Arc::clone(&context))?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
         // SqlitePersister creates its backup directory with the umask's mode
@@ -620,11 +629,73 @@ impl NetworkSession {
     }
 }
 
-const CA_PEM_MARKER: &str = "-----BEGIN CERTIFICATE-----";
+/// The SDK options that need parsing, validated once at `open`.
+struct SdkOptions {
+    ca: Option<Certificate>,
+    initial_version: Option<&'static PlatformVersion>,
+}
+
+impl SdkOptions {
+    fn validate(opts: &SessionOptions) -> Result<Self, EngineError> {
+        let ca = opts.ca_cert_path.as_deref().map(load_ca).transpose()?;
+        let initial_version = opts
+            .initial_protocol_version
+            .map(|version| {
+                PlatformVersion::get(version).map_err(|e| {
+                    EngineError::InvalidConfig(format!("initial protocol version {version}: {e}"))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            ca,
+            initial_version,
+        })
+    }
+}
+
+/// Reads and checks a PEM CA file the way the SDK will use it. The SDK parses
+/// it at its first DAPI call and panics the calling task on a bad one
+/// (`rs-dapi-client` `create_channel`: `expect("Failed to set TLS config")`),
+/// so a damaged file has to be rejected here.
+fn load_ca(path: &Path) -> Result<Certificate, EngineError> {
+    let bad_ca = |e: &dyn fmt::Display| {
+        EngineError::InvalidConfig(format!("CA certificate {}: {e}", path.display()))
+    };
+    let pem = std::fs::read(path).map_err(|e| bad_ca(&e))?;
+    // Every PEM block must decode (truncated and bad-base64 ones fail here)...
+    let certs = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| match e {
+            PemError::MissingSectionEnd { .. } => {
+                bad_ca(&"truncated: a CERTIFICATE block has no END line")
+            }
+            PemError::Base64Decode(detail) => {
+                bad_ca(&format_args!("a CERTIFICATE block is not base64: {detail}"))
+            }
+            other => bad_ca(&format_args!("not a PEM certificate: {other:?}")),
+        })?;
+    if certs.is_empty() {
+        return Err(bad_ca(&"no -----BEGIN CERTIFICATE----- block"));
+    }
+    // ...and be a certificate: tonic silently drops a block whose DER does not
+    // parse, which would only show up later as an unknown issuer.
+    for (index, cert) in certs.iter().enumerate() {
+        webpki::anchor_from_trusted_cert(cert)
+            .map_err(|e| bad_ca(&format_args!("certificate {} of the file: {e}", index + 1)))?;
+    }
+    let cert = Certificate::from_pem(pem);
+    // Last, the exact call the SDK makes with it. Cheap, and it holds even if
+    // tonic's parsing changes.
+    Endpoint::from_static("https://localhost")
+        .tls_config(ClientTlsConfig::new().ca_certificate(cert.clone()))
+        .map_err(|e| bad_ca(&e))?;
+    Ok(cert)
+}
 
 fn build_sdk(
     network: &DashNetwork,
     opts: &SessionOptions,
+    sdk_options: SdkOptions,
     context: Arc<LazyTrustedContext>,
 ) -> Result<dash_sdk::Sdk, EngineError> {
     let builder = if opts.dapi_addresses.is_empty() {
@@ -643,25 +714,10 @@ fn build_sdk(
         SdkBuilder::new(list).with_network(network.core_network())
     };
     let mut builder = builder.with_context_provider(SharedContext(context));
-    if let Some(path) = &opts.ca_cert_path {
-        let bad_ca = |e: &dyn fmt::Display| {
-            EngineError::InvalidConfig(format!("CA certificate {}: {e}", path.display()))
-        };
-        // The SDK parses the PEM lazily, at the first TLS handshake; catch a
-        // wrong file here instead of as a transport error.
-        let pem = std::fs::read(path).map_err(|e| bad_ca(&e))?;
-        if !pem
-            .windows(CA_PEM_MARKER.len())
-            .any(|w| w == CA_PEM_MARKER.as_bytes())
-        {
-            return Err(bad_ca(&format_args!("no {CA_PEM_MARKER} block")));
-        }
-        builder = builder.with_ca_certificate(Certificate::from_pem(pem));
+    if let Some(ca) = sdk_options.ca {
+        builder = builder.with_ca_certificate(ca);
     }
-    if let Some(version) = opts.initial_protocol_version {
-        let version = PlatformVersion::get(version).map_err(|e| {
-            EngineError::InvalidConfig(format!("initial protocol version {version}: {e}"))
-        })?;
+    if let Some(version) = sdk_options.initial_version {
         builder = builder.with_initial_version(version);
     }
     Ok(builder.build()?)
@@ -689,14 +745,12 @@ mod tests {
             None,
             Some("http://127.0.0.1:1".into()),
         ));
-        build_sdk(
-            &DashNetwork::Regtest,
-            &SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                ..opts
-            },
-            context,
-        )
+        let opts = SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            ..opts
+        };
+        let sdk_options = SdkOptions::validate(&opts)?;
+        build_sdk(&DashNetwork::Regtest, &opts, sdk_options, context)
     }
 
     #[test]
@@ -728,17 +782,98 @@ mod tests {
         assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
     }
 
-    #[test]
-    fn a_file_without_a_certificate_is_a_config_error() {
+    /// A self-signed `CA:FALSE` certificate (CN=localhost), as a dashmate
+    /// gateway serves; validity is not checked at load.
+    const GOOD_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIDHzCCAgegAwIBAgIUC0UrfHVX7RAdqsyyadadvEUJ9ZMwDQYJKoZIhvcNAQEL\n\
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MTAwODE1NTU0MloXDTI2MTAx\n\
+MDE1NTU0MlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\n\
+AAOCAQ8AMIIBCgKCAQEAzLIVPB7Jw8N3Hl0OwSMiZA9r1gdBGJ7rKFTNtCwZkLU5\n\
+uMm1w9f1YHQcYAWCnLeKBxgvgQrHVGifhrXlVttyJnhiZiE15huWyE1a7AON/7Nx\n\
+vOpWy1j2cidZMou6r2UiBLJ33fjpWyXEWbshgZk3SNL7NSJ+2iANqCcKL2TaInfZ\n\
+v081VzcHMyheMQpxvncR36n0GjvtV9HH7ApX/Mih/DXnkhG6LTvGqiTRKyPcPsHb\n\
+7gLUcJYbQbd4aDdlkoQSJfc+zs3N6Fb2CsZM1zTHZBZ21brxWVS5yuqVVk7EEd+A\n\
+KHm8kRNZMnu2NPAg8ATcpdZ7e3Ns5yTZx1Jm+efCcwIDAQABo2kwZzAdBgNVHQ4E\n\
+FgQUfJ8EmVR6rAgSGiRcGql6Qn8lUyUwHwYDVR0jBBgwFoAUfJ8EmVR6rAgSGiRc\n\
+Gql6Qn8lUyUwGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMAkGA1UdEwQCMAAw\n\
+DQYJKoZIhvcNAQELBQADggEBAJWftMJtNa+9Xn29ESCmkq7D7mpDUemmPi1A6QTS\n\
+HyKU1JvXWyiqbwe+TK+LmTR5vyzgWY29pMFkuZ44hTVF8XlIIMt7OU9u8R9Msq8/\n\
+M3DLDx5xFLWpl53Chu0EkZOrq3Zo/hC/OLGbLSQIElqa/t/+CByg2dT4OtmG2KMb\n\
+IYyg/zrxLd6ckSamTS/peM81T5R92Qa9PnDGusYDGWurZEEm6ZQtCVmtu7joC+NE\n\
+J62k8Vm0RL24O48uZ1hN5XHIBBu8bVYm3zm3k+GS2dLwZna3ciWpEjqwXMZyUiBC\n\
+PRihiNYRunWtfhIwgcXNS8k8Aw/lDZNOwwt4ykNeDyMuBUM=\n\
+-----END CERTIFICATE-----\n\
+";
+
+    fn ca_error(contents: &[u8]) -> EngineError {
         let dir = dw_testutil::private_tempdir();
-        let path = dir.path().join("not-a-cert.pem");
-        std::fs::write(&path, b"-----BEGIN PRIVATE KEY-----\n").unwrap();
-        let err = sdk_with(SessionOptions {
+        let path = dir.path().join("ca.pem");
+        std::fs::write(&path, contents).unwrap();
+        sdk_with(SessionOptions {
             ca_cert_path: Some(path),
             ..Default::default()
         })
-        .unwrap_err();
-        assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
+        .unwrap_err()
+    }
+
+    #[test]
+    fn a_valid_ca_certificate_is_accepted() {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("ca.pem");
+        // A chain: the certificate twice, with a comment line between.
+        std::fs::write(&path, format!("{GOOD_CA_PEM}# again\n{GOOD_CA_PEM}")).unwrap();
+        sdk_with(SessionOptions {
+            ca_cert_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_damaged_ca_file_is_a_config_error() {
+        // Each of these used to pass the open-time check and panic an engine
+        // task at the first DAPI call (or, for the last, trust nothing).
+        let cases: [(&str, Vec<u8>); 7] = [
+            ("empty", Vec::new()),
+            (
+                "key, not a certificate",
+                b"-----BEGIN PRIVATE KEY-----\n".to_vec(),
+            ),
+            ("DER bytes", vec![0x30, 0x82, 0x03, 0x1f, 0x00, 0xff]),
+            (
+                "truncated mid-block",
+                GOOD_CA_PEM.as_bytes()[..300].to_vec(),
+            ),
+            (
+                "no END line",
+                b"-----BEGIN CERTIFICATE-----\nZm9vYmFy\n".to_vec(),
+            ),
+            (
+                "bad base64",
+                b"-----BEGIN CERTIFICATE-----\n!!!!not base64!!!!\n-----END CERTIFICATE-----\n"
+                    .to_vec(),
+            ),
+            (
+                "base64 that is not a certificate",
+                b"-----BEGIN CERTIFICATE-----\nZm9vYmFyZm9vYmFy\n-----END CERTIFICATE-----\n"
+                    .to_vec(),
+            ),
+        ];
+        for (name, contents) in cases {
+            let err = ca_error(&contents);
+            assert!(
+                matches!(err, EngineError::InvalidConfig(_)),
+                "{name}: {err:?}"
+            );
+        }
+        // A good certificate followed by a truncated one is damaged too.
+        let mut chain = GOOD_CA_PEM.as_bytes().to_vec();
+        chain.extend_from_slice(&GOOD_CA_PEM.as_bytes()[..300]);
+        let err = ca_error(&chain);
+        assert!(
+            matches!(err, EngineError::InvalidConfig(_)),
+            "chain: {err:?}"
+        );
     }
 
     #[test]

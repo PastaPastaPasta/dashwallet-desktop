@@ -39,7 +39,7 @@ struct Cli {
     #[arg(long = "peer")]
     peers: Vec<String>,
     /// PEM CA certificate DAPI TLS is checked against (a dashmate devnet's
-    /// self-signed gateway) instead of the system roots.
+    /// self-signed gateway) in addition to the system roots.
     #[arg(long)]
     ca_cert: Option<PathBuf>,
     /// Protocol version the Platform SDK starts at, used as given (even below
