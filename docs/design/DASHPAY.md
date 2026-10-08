@@ -615,6 +615,11 @@ close: cancel a running bring-up → quiesce the loops → stop SPV → manager.
 | `PlatformFunding{max_duffs}` | BIP44, BIP32 and DashPay-receiving inputs, plus asset-lock credit keys `m/9'/c'/5'/{1',2',3'}/…` and the top-up account xpub `m/9'/c'/5'/2'/i'`; capped | registration, top-up (invitation creation in X3) |
 | `Spend{max_duffs}` (exists) | as today | contact payments |
 
+The identity scan's master key (`VaultScanKey`, the `ScanKeyResolver` of §3.2) is not a scope: `Vault::scan_key`
+releases it only under a redeemed `PlatformOp` grant, which the unattended bring-up authorizes without a prompt in
+the prompt-free states. It and the auto-accept key are the only keys that leave dw-vault (E0-03 review;
+`m1-engine.md` §2.2).
+
 **Grants and leases.** `PlatformOp` becomes `PlatformOp{max_duffs, max_credits}`. A flow redeems its grant **once**
 and turns it into a **flow lease**: a signer set held by the engine and bound to one wallet and one flow. Lifetimes,
 parking and the background lease are defined in §2.6. "Accept and pay" gets both of its grants from one credential

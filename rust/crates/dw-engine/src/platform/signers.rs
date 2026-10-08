@@ -143,6 +143,9 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
         ))
     }
 
+    /// dpp's preflight. Each identity index costs one vault operation (seed
+    /// decrypt and derivation); a locked vault or any other signer error
+    /// answers `false`, and the `sign` that follows reports the error.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
             && self.identity_indices.iter().any(|&i| {

@@ -165,6 +165,13 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 /// non-hardened indices). A hardened last step is refused, so no credit key
 /// is ever the top-up account node itself
 /// ([`is_identity_top_up_account`]).
+///
+/// Before invitation creation (roadmap X3) exports an invitation key:
+/// platform-wallet documents it as hardened (`m/9'/coin'/5'/3'/index'`,
+/// `contact_requests.rs:66-71`), while this shape signs non-hardened ones.
+/// A non-hardened child private key exported next to the `5'/3'` account
+/// xpub the wallet holds reveals the account xpriv and every voucher, so X3
+/// must use hardened voucher keys or keep that xpub out of the wallet.
 pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool {
     let p: &[ChildNumber] = path.as_ref();
     if !has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES) || p.len() < 5 {
