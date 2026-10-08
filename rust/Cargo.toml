@@ -14,27 +14,27 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# ---- dashpay/platform, pinned to v5.0-dev@bc321362b9 (DESIGN.md R3) ----
+# ---- dashpay/platform, pinned to v5.0-dev@bc41f1bc23 (DESIGN.md R3) ----
 # Cargo.lock was seeded from the platform checkout's lock at this revision so
 # the shared transitive graph (grovedb, rusqlite, tokio, ...) resolves to the
 # versions upstream builds and tests with.
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938", features = ["bls", "eddsa"] }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", features = ["bls", "eddsa"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03).
 # `shielded` is deliberately off for M0 (halo2 build cost, DESIGN-opus G4).
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938", default-features = false, features = ["sqlite", "secrets"] }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", default-features = false, features = ["sqlite", "secrets"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938", features = ["wallet", "dashpay-contract", "dpns-contract"] }
-dpp = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938" }
-dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938" }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc321362b9ff9c8ac24244f9d4b09ec3de7a5938" }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dpp = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
 
 # ---- dashpay/rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15" }
-key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15" }
-key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15" }
-dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15" }
-dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15" }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
 
 # ---- our crates ----
 dw-appdb = { path = "crates/dw-appdb" }

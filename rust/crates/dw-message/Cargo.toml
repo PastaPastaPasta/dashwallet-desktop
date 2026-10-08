@@ -8,13 +8,13 @@ publish.workspace = true
 description = "Dash Core signmessage / verifymessage (\"DarkCoin Signed Message:\\n\", 65-byte compact signatures, base64)"
 
 [dependencies]
-# Same git source and revision that dashpay/platform bc321362b9 pins.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15", default-features = false, features = ["secp-recovery"] }
+# Same git source and revision that dashpay/platform bc41f1bc23 pins.
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad", default-features = false, features = ["secp-recovery"] }
 dw-uri = { path = "../dw-uri" }
 zeroize = "1.8"
 
 [dev-dependencies]
 # For cross-checking against rust-dashcore's own message-signing helpers.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "e4208c90786a6854bd498315bcb571ef24182c15", default-features = false, features = ["secp-recovery", "base64"] }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad", default-features = false, features = ["secp-recovery", "base64"] }
 serde_json = "1"
 proptest = "1"
