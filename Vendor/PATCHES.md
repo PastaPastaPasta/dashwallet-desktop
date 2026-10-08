@@ -141,3 +141,31 @@ Change (comments `dashwallet-desktop patch P9`):
 Effect, measured with P8 (debug build, demo send flow): the post-send busy period went from
 never ending to about 15 s, and a whole-window update of the Transactions page from about 7 s
 to about 3 s. Upstream `main` has the same code.
+
+### P10 — window sizes: measured menu bar, no re-request of a refused size
+
+Rationale: the live-mode version of the same symptom. After a wallet was created on the live
+engine, the Overview's minimum content height was 787 px and the window's content area was
+785 px. GtkBackend sets a window's size as content plus a hard-coded 25 px menu bar, but the
+app's menu bar (File / Settings / Window / Help) is 27 px with this theme. So every
+`setSize(ofWindow:)` left the content 2 px short, and GTK's allocation (785) did not match the
+preempted size (787). The resize callback fired, `WindowReference` clamped back up to the
+content minimum and requested 787 again, and so on: a resize ping-pong with a whole-window
+layout in each round, at 100 % CPU, with every AT-SPI query timing out ("the new wallet's
+Overview is shown"). Any window that cannot take the requested size behaves the same way, for
+example one a window manager has maximized or tiled on a small screen. Upstream 0.10.0 and `main`
+have the same code (the hard-coded height has a "Don't hardcode this" TODO).
+
+Change (comments `dashwallet-desktop patch P10`):
+- GtkBackend (`Features/CoreWindowing.swift`, `menubarHeight(ofWindow:)`): measure the menu
+  bar, the window's direct child with the CSS name `menubar`, at its minimum height, as
+  GtkApplicationWindow allocates it. The old 25 px stays as the fallback for when GTK has not
+  created the menu bar yet. That was observed at the window's first sizing.
+- SwiftCrossUI (`Scenes/WindowReference.swift`): remember the size last requested with
+  `setSize(ofWindow:to:)`. If the next resize event reports a different size, note the refusal
+  (requested, kept). A later update that would request the same size again while the window
+  still has the kept size lays out at that size instead. Any other window size clears the
+  refusal, so unrelated resizes behave as upstream's do.
+- Test: the demo harness's "the main thread goes idle" checks after the live onboarding and the
+  send flows (`ci/linux/crossui/atspi_demo.py`). `WindowReference` needs a backend, and the
+  vendored package has no test backend.
