@@ -1,33 +1,37 @@
-import { createContext, useContext, useEffect, type CSSProperties } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { createContext, useContext, useEffect } from "react";
+import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
-import { keys, useBackend, useLockStatus, useSyncStatus, useWallets } from "../api/queries";
-import { LoadingState } from "../components/history";
-import { iconFiles } from "../components/icons";
+import { useBackend, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { DashButton, DashLogo } from "../components/basics";
+import { EmptyState, LoadingState } from "../components/history";
 import { Sidebar, StatusBar, Toolbar } from "../components/shell";
-import { ToastHost } from "../components/toast";
+import { showToast, ToastHost } from "../components/toast";
 import { LockScreen } from "../screens/LockScreen";
 import { Overview } from "../screens/Overview";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { mark } from "./startup";
-import { useAppearance } from "./theme";
+import { useThemeAttribute } from "./theme";
 import { ui, useUi } from "./ui";
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
-/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error. */
-function Splash({ error }: { error?: string }) {
-  const logo = { "--logo-url": `url("${iconFiles.dashLogo.light}")` } as CSSProperties;
+/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error with a retry. */
+function Splash({ error, onRetry }: { error: string | null; onRetry: () => void }) {
   return (
     <div className="splash" data-testid="splash">
-      <span className="splash-logo" style={logo} role="img" aria-label="Dash" />
+      <DashLogo className="splash-logo" />
       {error ? (
-        <p className="splash-error" role="alert">
-          Dash Wallet could not open the wallet: {error}
-        </p>
+        <>
+          <p className="splash-error" role="alert">
+            Dash Wallet could not open the wallet: {error}
+          </p>
+          <DashButton variant="plainBlue" onClick={onRetry}>
+            Try again
+          </DashButton>
+        </>
       ) : (
         <>
           <span className="splash-bar" aria-hidden="true" />
@@ -42,7 +46,7 @@ function Splash({ error }: { error?: string }) {
 
 function Shell() {
   const backend = useBackend();
-  const launch = useLaunch();
+  const { network } = useLaunch();
   const page = useUi((s) => s.page);
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
@@ -50,48 +54,61 @@ function Shell() {
   const wallets = useWallets();
   const wallet = wallets.data?.[0];
   const locked = lock.data?.state === "locked";
-  const network = launch.network;
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
   let content;
   if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
+  else if (wallets.isError)
+    content = (
+      <main className="page" data-testid="page-wallets-error">
+        <div className="page-column">
+          <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
+        </div>
+      </main>
+    );
   else if (!wallet)
     content = (
       <main className="page" data-testid="page-no-wallet">
         <div className="page-column">
-          <p className="empty-state-title">No wallet on this network yet.</p>
+          <EmptyState testId="no-wallet" title="No wallet on this network yet" />
         </div>
       </main>
     );
   else if (page === "overview") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
   else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
 
-  const canLock = lock.data?.encrypted === true && lock.data.state !== "locked";
+  const canLock = lock.data?.encrypted === true && !locked;
+  const lockNow = () => backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
+  const sheet = !!(detail && wallet && !locked);
   return (
     <>
-      <div className="app-chrome" inert={locked}>
-        <Toolbar walletName={wallet?.name ?? null} canLock={canLock} onLock={() => void backend.lock()} />
+      {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
+      <div className="app-chrome" inert={locked || sheet}>
+        <Toolbar walletName={wallet?.name ?? null} canLock={canLock} onLock={() => void lockNow()} />
         <div className="app-body">
           <Sidebar />
           {content}
         </div>
-        <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} />
+        <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
       </div>
-      {detail && wallet && !locked && <TxDetailSheet walletId={wallet.walletId} txid={detail} network={network} />}
+      {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
       {locked && <LockScreen network={network} />}
     </>
   );
 }
 
 export function App() {
-  const backend = useBackend();
-  useAppearance();
+  useThemeAttribute();
   // Opening the network loads the wallet database; the splash is up meanwhile.
-  const network = useQuery({ queryKey: keys.network, queryFn: () => backend.openNetwork() });
+  const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);
   return (
     <div className="app" data-testid="app-shell">
-      {network.isSuccess ? <Shell /> : <Splash error={network.isError ? (network.error as { message?: string }).message ?? String(network.error) : undefined} />}
+      {network.isSuccess ? (
+        <Shell />
+      ) : (
+        <Splash error={network.isError ? errorMessage(network.error) : null} onRetry={() => void network.refetch()} />
+      )}
       <ToastHost />
     </div>
   );

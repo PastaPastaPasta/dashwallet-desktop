@@ -1,32 +1,22 @@
 // Overview (Home), UX-SPEC §4.5: hero band with the balance and breakdown strip, the shortcut
 // card straddling its edge, then the recent history in day-group cards.
 
-import { useEffect, useRef } from "react";
-import { useBackend, useBalance, useHistory, useSyncStatus } from "../api/queries";
+import { useEffect } from "react";
 import type { Balances } from "../api/generated/Balances";
-import type { HistoryRequest } from "../api/generated/HistoryRequest";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { ui, useUi } from "../app/ui";
-import { AmountText, DashButton, Icon } from "../components/basics";
-import { EmptyState, LoadingState, TxGroups, type RowContext } from "../components/history";
+import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
+import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
-import { floored, masked } from "../format/amount";
-import { syncPercent } from "../format/sync";
+import { floored, formatWithUnit, masked } from "../format/amount";
+import { isSyncing, syncPercent } from "../format/sync";
 
 /** dash-qt's overview shows this many recent transactions. */
-export const RECENT_COUNT = 5;
-const RECENT_FILTER: Omit<HistoryRequest, "cursor" | "limit"> = { categories: [], text: null, sort: "newestFirst" };
-
-function NetworkCapsule({ network }: { network: NetworkInfo }) {
-  if (network.kind === "mainnet") return <span className="network-capsule-slot" />;
-  return (
-    <span className="network-capsule" data-testid="hero-capsule">
-      {network.kind === "devnet" ? network.dirName.toUpperCase() : network.kind.toUpperCase()}
-    </span>
-  );
-}
+const RECENT_COUNT = 5;
+const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
 function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: string; subtitle: string; amount: string; unitName: string; testId: string }) {
   return (
@@ -40,17 +30,19 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: s
   );
 }
 
-function BalanceHero({ balances, known, network, syncing }: { balances: Balances | null; known: boolean; network: NetworkInfo; syncing: boolean }) {
+function BalanceHero({ balances, network, syncing }: { balances: Balances | null; network: NetworkInfo; syncing: boolean }) {
   const discreet = useUi((s) => s.discreet);
   const fmt = (duffs: number) => (discreet ? masked() : floored(duffs));
+  // dash-qt's `.withUnit` tooltip on amounts (UX-SPEC §5.1); none while masked.
+  const full = (duffs: number) => (discreet ? undefined : formatWithUnit("DASH", duffs, false, "standard", network.kind === "mainnet" ? "main" : "test"));
   const unit = network.unitName;
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
-      <NetworkCapsule network={network} />
+      {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" aria-hidden={!syncing}>
         {syncing ? "Syncing Balance" : " "}
       </span>
-      {known && balances ? (
+      {balances ? (
         <button
           type="button"
           className="hero-amount"
@@ -58,7 +50,7 @@ function BalanceHero({ balances, known, network, syncing }: { balances: Balances
           title={discreet ? "Click to show balance" : "Click to hide balance"}
           onClick={() => ui.set({ discreet: !discreet })}
         >
-          <AmountText text={fmt(balances.total)} unitName={unit} glyphFactor={0.7} />
+          <AmountText text={fmt(balances.total)} unitName={unit} title={full(balances.total)} />
         </button>
       ) : (
         <div className="hero-amount hero-unknown" data-testid="hero-amount" title="Not available until sync completes">
@@ -66,7 +58,7 @@ function BalanceHero({ balances, known, network, syncing }: { balances: Balances
           <span className="hero-unknown-caption">Balance unavailable</span>
         </div>
       )}
-      {known && balances && (
+      {balances && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
           <BreakdownCell title="Available" subtitle="Spendable now" amount={fmt(balances.confirmed)} unitName={unit} testId="breakdown-available" />
           <span className="breakdown-divider" aria-hidden="true" />
@@ -110,28 +102,24 @@ function ShortcutCard() {
 }
 
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
-  const backend = useBackend();
   const balance = useBalance(walletId);
   const sync = useSyncStatus();
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
-  const ctx: RowContext = { unitName: network.unitName, locale: backend.locale, now: backend.now() };
-  const syncing = !!sync.data?.running && !sync.data.caughtUp;
+  const ctx = useRowContext(network);
+  const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
 
-  // Cold start (U5): the first frame that shows the balance and history.
-  const reported = useRef(false);
+  // Cold start (U5): the first frame that shows the balance and history (`mark` is idempotent).
   useEffect(() => {
-    if (reported.current || balance.isPending || recent.isPending) return;
-    reported.current = true;
-    mark("first-paint");
+    if (!balance.isPending && !recent.isPending) mark("first-paint");
   }, [balance.isPending, recent.isPending]);
 
   return (
     <main className="page page-overview" data-testid="page-overview">
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} known={balance.data != null} network={network} syncing={syncing} />
+        <BalanceHero balances={balance.data ?? null} network={network} syncing={syncing} />
         <ShortcutCard />
       </div>
       <div className="page-column">

@@ -185,7 +185,8 @@ function rgba(s: string): [number, number, number, number] | null {
   }
   const nums = s.match(/-?[\d.]+%?/g);
   if (!nums || nums.length < 3) return null;
-  const v = nums.map((x) => (x.endsWith("%") ? Number(x.slice(0, -1)) / 100 : Number(x)));
+  // Percent channels are 0–255 at 100 %; a percent alpha is 0–1 at 100 %.
+  const v = nums.map((x, i) => (x.endsWith("%") ? (Number(x.slice(0, -1)) / 100) * (i < 3 ? 255 : 1) : Number(x)));
   return [v[0], v[1], v[2], v[3] ?? 1];
 }
 

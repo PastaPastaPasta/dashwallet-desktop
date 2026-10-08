@@ -1,23 +1,24 @@
-import { useEffect, useState } from "react";
-import { useUi } from "./ui";
+import { useEffect } from "react";
+import type { ThemeName } from "../api/generated/ThemeName";
+import { ui, useUi } from "./ui";
 
-export type Appearance = "light" | "dark";
+const media = typeof window === "undefined" ? null : window.matchMedia("(prefers-color-scheme: dark)");
+if (media) {
+  const sync = () => ui.set({ system: media.matches ? "dark" : "light" });
+  sync();
+  media.addEventListener("change", sync);
+}
 
-const media = () => window.matchMedia("(prefers-color-scheme: dark)");
+/** The effective appearance: the forced one, else the system's. */
+export function useAppearance(): ThemeName {
+  return useUi((s) => s.theme ?? s.system);
+}
 
-/** Applies a forced appearance as `data-theme` on <html> and returns the effective one. */
-export function useAppearance(): Appearance {
+/** Mirrors a forced appearance into `<html data-theme>` (the token CSS keys off it). Call once. */
+export function useThemeAttribute() {
   const forced = useUi((s) => s.theme);
-  const [system, setSystem] = useState<Appearance>(() => (media().matches ? "dark" : "light"));
-  useEffect(() => {
-    const m = media();
-    const onChange = () => setSystem(m.matches ? "dark" : "light");
-    m.addEventListener("change", onChange);
-    return () => m.removeEventListener("change", onChange);
-  }, []);
   useEffect(() => {
     if (forced) document.documentElement.dataset.theme = forced;
     else delete document.documentElement.dataset.theme;
   }, [forced]);
-  return forced ?? system;
 }

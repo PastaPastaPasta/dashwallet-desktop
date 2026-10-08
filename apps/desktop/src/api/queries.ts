@@ -2,9 +2,12 @@
 // signal names exactly the queries to refetch (events.ts).
 
 import { createContext, useContext } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { HistoryRequest } from "./generated/HistoryRequest";
+
+/** A history query without its paging fields. */
+export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
 
 export const BackendContext = createContext<Backend | null>(null);
 
@@ -21,50 +24,58 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
-  history: (walletId: string, filter: Omit<HistoryRequest, "cursor" | "limit">, limit: number) =>
-    ["history", walletId, filter, limit] as const,
+  history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
 };
 
-export const useLockStatus = () => {
+/** Opens the network; its lock status seeds `lockStatus`, so the shell never renders
+ * one frame unlocked before the lock state is known. */
+export function useOpenNetwork() {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => b.lockStatus() });
-};
-
-export const useWallets = () => {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
-};
-
-export const useBalance = (walletId: string | undefined) => {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.balance(walletId ?? ""), queryFn: () => b.balance(walletId!), enabled: !!walletId });
-};
-
-export const useSyncStatus = () => {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.sync, queryFn: () => b.syncStatus() });
-};
-
-/** Pages of `limit` records; `fetchNextPage` follows the engine's cursor. */
-export function useHistory(walletId: string | undefined, filter: Omit<HistoryRequest, "cursor" | "limit">, limit: number) {
-  const b = useBackend();
-  return useInfiniteQuery({
-    queryKey: keys.history(walletId ?? "", filter, limit),
-    queryFn: ({ pageParam }) => b.historyPage(walletId!, { ...filter, cursor: pageParam, limit }),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.nextCursor,
-    enabled: !!walletId,
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: keys.network,
+    queryFn: async () => {
+      const status = await b.openNetwork();
+      client.setQueryData(keys.lockStatus, status);
+      return status;
+    },
   });
 }
 
-export const useTxDetail = (walletId: string | undefined, txid: string | null) => {
+export function useLockStatus() {
   const b = useBackend();
-  return useQuery({
-    queryKey: keys.txDetail(walletId ?? "", txid ?? ""),
-    queryFn: () => b.txDetail(walletId!, txid!),
-    enabled: !!walletId && !!txid,
-  });
-};
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => b.lockStatus() });
+}
 
+export function useWallets() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
+}
+
+export function useBalance(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
+}
+
+export function useSyncStatus() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.sync, queryFn: () => b.syncStatus() });
+}
+
+/** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */
+export function useHistory(walletId: string, filter: HistoryFilter, limit: number) {
+  const b = useBackend();
+  return useInfiniteQuery({
+    queryKey: keys.history(walletId, filter, limit),
+    queryFn: ({ pageParam }) => b.historyPage(walletId, { ...filter, cursor: pageParam, limit }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+  });
+}
+
+export function useTxDetail(walletId: string, txid: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.txDetail(walletId, txid), queryFn: () => b.txDetail(walletId, txid) });
+}

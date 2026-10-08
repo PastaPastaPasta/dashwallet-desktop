@@ -6,7 +6,7 @@ import { artifactPath, writeJson } from "./helpers";
 test("UX-SPEC §2 checklist holds in every screen and appearance", async ({ page }, info) => {
   await page.goto("/");
   await page.getByTestId("hero").waitFor();
-  const report = await page.evaluate(() => (window as unknown as { __dwSelftest: () => Promise<Report> }).__dwSelftest());
+  const report: Report = await page.evaluate(() => window.__dwSelftest!());
   writeJson(artifactPath(info, "selftest.json"), report);
   const failed = Object.entries(report.screens).flatMap(([screen, r]) => r.checks.filter((c) => c.pass !== true).map((c) => ({ screen, ...c })));
   expect(failed).toEqual([]);

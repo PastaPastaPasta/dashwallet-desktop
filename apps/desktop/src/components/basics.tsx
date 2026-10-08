@@ -1,15 +1,32 @@
-// Small building blocks (UX-SPEC §3.1): icons, the Dash glyph, AmountText (C10), chips (C20)
-// and DashButton (C14). Styles are in styles/app.css and read only --dw-* tokens.
+// Small building blocks (UX-SPEC §3.1): icons, the Dash glyph and wordmark, AmountText (C10),
+// chips and the network capsule (C20) and DashButton (C14). Styles are in styles/app.css and read only --dw-* tokens.
 
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from "react";
 import { useAppearance } from "../app/theme";
-import { iconFiles, type UsedIcon } from "./icons";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import { iconFiles, type IconFiles, type UsedIcon } from "./icons";
 
 export function Icon({ id, size, className }: { id: UsedIcon; size: number; className?: string }) {
   const appearance = useAppearance();
-  const files: { light: string; dark?: string } = iconFiles[id];
+  const files: IconFiles = iconFiles[id];
   const src = appearance === "dark" && files.dark ? files.dark : files.light;
   return <img className={className} src={src} width={size} height={size} alt="" aria-hidden="true" draggable={false} />;
+}
+
+/** The Dash wordmark as a template, tinted by the `.dash-logo` rule's colour. */
+export function DashLogo({ className }: { className: string }) {
+  const style = { "--logo-url": `url("${iconFiles.dashLogo.light}")` } as CSSProperties;
+  return <span className={`dash-logo ${className}`} style={style} role="img" aria-label="Dash" />;
+}
+
+/** The orange capsule naming a non-mainnet network (Overview hero, lock screen). */
+export function NetworkCapsule({ network, testId }: { network: NetworkInfo; testId?: string }) {
+  if (network.kind === "mainnet") return null;
+  return (
+    <span className="network-capsule" data-testid={testId}>
+      {(network.kind === "devnet" ? network.dirName : network.kind).toUpperCase()}
+    </span>
+  );
 }
 
 /** The Dash currency glyph, a template image tinted with the text colour. */
@@ -57,14 +74,15 @@ export function AmountText({
   );
 }
 
-export type Tone = "info" | "success" | "warning" | "danger" | "neutral";
+export type Tone = "info" | "danger";
 
 export function Chip({ tone = "info", children }: { tone?: Tone; children: ReactNode }) {
   return <span className={`chip chip-${tone}`}>{children}</span>;
 }
 
-export type ButtonStyle = "filledBlue" | "tintedBlue" | "tintedGray" | "plainBlue" | "filledWhiteBlue" | "tintedWhite";
-export type ButtonSize = "large" | "medium" | "small" | "extraSmall";
+// The styles and sizes the gate screens use; the rest of DashUIKit's catalogue comes with the screens that need it.
+export type ButtonStyle = "plainBlue" | "filledWhiteBlue";
+export type ButtonSize = "large" | "medium" | "small";
 
 export function DashButton({
   variant,

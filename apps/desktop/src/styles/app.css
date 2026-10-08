@@ -171,9 +171,6 @@ button {
   border-radius: var(--dw-radius-small);
   background: transparent;
   color: var(--dw-role-text-primary);
-  font-size: var(--dw-type-subhead-size);
-  font-weight: var(--dw-type-subhead-weight);
-  line-height: var(--dw-type-subhead-line);
   text-align: left;
   cursor: default;
   transition: background-color var(--dw-motion-hover);
@@ -275,6 +272,12 @@ button {
   vertical-align: baseline;
 }
 
+/* The Dash wordmark as a template; each use sets its size and colour. */
+.dash-logo {
+  -webkit-mask: var(--logo-url) center / contain no-repeat;
+  mask: var(--logo-url) center / contain no-repeat;
+}
+
 /* ------------------------------------------------------------------ chips and buttons (C20, C14) */
 
 .chip {
@@ -297,10 +300,6 @@ button {
   color: var(--dw-role-danger);
 }
 
-.chip-neutral {
-  background: var(--dw-role-neutral-tint);
-  color: var(--dw-role-text-secondary);
-}
 
 .network-capsule {
   display: inline-block;
@@ -362,25 +361,9 @@ button {
   font-weight: var(--dw-type-footnote-medium-weight);
 }
 
-.dash-button-filledBlue {
-  background: var(--dw-c-button-filled-blue-background);
-  color: var(--dw-c-button-filled-blue-content);
-}
 
-.dash-button-filledBlue:disabled {
-  background: var(--dw-c-button-filled-blue-background-disabled);
-  color: var(--dw-c-button-filled-blue-content-disabled);
-}
 
-.dash-button-tintedBlue {
-  background: var(--dw-c-button-tinted-blue-background);
-  color: var(--dw-c-button-tinted-blue-content);
-}
 
-.dash-button-tintedGray {
-  background: var(--dw-c-button-tinted-gray-background);
-  color: var(--dw-role-stroke-gray-content);
-}
 
 .dash-button-plainBlue {
   background: transparent;
@@ -397,10 +380,6 @@ button {
   color: var(--dw-c-button-filled-white-content-disabled);
 }
 
-.dash-button-tintedWhite {
-  background: var(--dw-c-button-tinted-white-background);
-  color: var(--dw-c-button-tinted-white-content);
-}
 
 /* ------------------------------------------------------------------ hero (C4, C5) */
 
@@ -812,6 +791,8 @@ button {
 
 .search-field:focus-within {
   border-color: var(--dw-role-field-stroke);
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: 2px;
 }
 
 .search-field input {
@@ -852,6 +833,14 @@ button {
 
 .tx-sentinel {
   min-height: 1px;
+}
+
+.tx-more-error {
+  padding: var(--dw-space-m) 0;
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
 }
 
 .tx-footer {
@@ -1067,8 +1056,6 @@ button {
   height: 30px;
   margin-bottom: var(--dw-space-s);
   background-color: var(--dw-role-text-on-hero);
-  -webkit-mask: var(--logo-url) center / contain no-repeat;
-  mask: var(--logo-url) center / contain no-repeat;
 }
 
 .lock-title {
@@ -1160,8 +1147,6 @@ button {
   width: 119px; /* 32 h wordmark: 223 × 60 @2x scaled to 32 */
   height: 32px;
   background-color: var(--dw-role-accent);
-  -webkit-mask: var(--logo-url) center / contain no-repeat;
-  mask: var(--logo-url) center / contain no-repeat;
 }
 
 .splash-bar {

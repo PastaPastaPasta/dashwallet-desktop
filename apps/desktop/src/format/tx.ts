@@ -59,9 +59,6 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
       return TxTitle.assetLock;
     case "platformTransfer":
       return TxTitle.internalTransfer;
-    case "dataTransaction":
-    case "other":
-      return amount >= 0 ? TxTitle.received : TxTitle.sent;
     default:
       return MIXING.includes(type) ? TxTitle.mixing : amount >= 0 ? TxTitle.received : TxTitle.sent;
   }
@@ -75,9 +72,9 @@ export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "lab
 export type TxIcon = "received" | "sent" | "internalTransfer" | "mixing" | "mining" | "error";
 
 export function txIcon(type: TxTypeName, status: TxStatusInfo, amount: number): TxIcon {
-  if (status.kind === "conflicted" || status.kind === "abandoned" || status.kind === "notAccepted") return "error";
+  if (isProblem(status)) return "error";
   if (type === "generated") return "mining";
-  if (type === "sendToSelf" || type === "platformTransfer") return "internalTransfer";
+  if (isInternal(type)) return "internalTransfer";
   if (MIXING.includes(type)) return "mixing";
   return amount >= 0 ? "received" : "sent";
 }
@@ -97,12 +94,12 @@ export function txChip(status: TxStatusInfo): string | null {
     case "unconfirmed":
       return status.instantLocked ? TxTitle.chipInstantSend : TxTitle.chipPending;
     case "confirming":
-      if (status.chainLocked) return null;
-      return status.instantLocked ? TxTitle.chipInstantSend : null;
+      return status.instantLocked && !status.chainLocked ? TxTitle.chipInstantSend : null;
   }
 }
 
-export function chipIsProblem(status: TxStatusInfo): boolean {
+/** The transaction failed: the chip is in the danger tone, the title secondary, the icon an error. */
+export function isProblem(status: TxStatusInfo): boolean {
   return status.kind === "conflicted" || status.kind === "abandoned" || status.kind === "notAccepted";
 }
 
@@ -110,9 +107,15 @@ export function trailingStatus(status: TxStatusInfo): string | null {
   return status.kind === "immature" ? TxTitle.locked : null;
 }
 
-/** A payment to yourself or an internal move: no sign on the amount. */
+/** A payment to yourself or an internal move: no sign on the amount (UX-SPEC §5.3). */
 export function isInternal(type: TxTypeName): boolean {
   return type === "sendToSelf" || type === "platformTransfer";
+}
+
+/** The amount a row or detail shows, and whether it carries a sign: internal moves show the
+ * fee they cost without a minus. */
+export function shownAmount(amount: number, type: TxTypeName): { duffs: number; signed: boolean } {
+  return isInternal(type) ? { duffs: Math.abs(amount), signed: false } : { duffs: amount, signed: true };
 }
 
 /** First and last twelve characters around an ellipsis when longer than 24 characters. */

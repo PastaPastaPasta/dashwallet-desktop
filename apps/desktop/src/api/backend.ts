@@ -2,11 +2,11 @@
 // the real engine) and `FixtureBackend` (a sample wallet in TypeScript, for screenshot,
 // Playwright and `--selftest --fixture` runs). Every call maps 1:1 to a dw-app command.
 
+import type { AppError } from "./generated/AppError";
 import type { Balances } from "./generated/Balances";
 import type { EngineSignal } from "./generated/EngineSignal";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { HistoryRows } from "./generated/HistoryRows";
-import type { LaunchInfo } from "./generated/LaunchInfo";
 import type { LockStatus } from "./generated/LockStatus";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
@@ -14,7 +14,6 @@ import type { WalletSummary } from "./generated/WalletSummary";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
-  launchInfo(): Promise<LaunchInfo>;
   openNetwork(): Promise<LockStatus>;
   listWallets(): Promise<WalletSummary[]>;
   lockStatus(): Promise<LockStatus>;
@@ -31,13 +30,12 @@ export interface Backend {
   readonly locale: string | undefined;
 }
 
-/** Error shape every command rejects with (`AppError` in dw-app). */
-export interface BackendError {
-  code: string;
-  message: string;
-  retryAfterSecs: number | null;
+/** Every command rejects with an `AppError` (dw-app's error record). */
+export function isAppError(e: unknown): e is AppError {
+  return typeof e === "object" && e !== null && "code" in e && "message" in e;
 }
 
-export function isBackendError(e: unknown): e is BackendError {
-  return typeof e === "object" && e !== null && "code" in e && "message" in e;
+/** Display text for anything a backend call or a query may throw. */
+export function errorMessage(e: unknown): string {
+  return isAppError(e) || e instanceof Error ? e.message : String(e);
 }

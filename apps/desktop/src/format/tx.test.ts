@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { dayTitle, groupByDay, shortAddress, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { dayTitle, groupByDay, shortAddress, shownAmount, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -38,6 +38,11 @@ describe("chips and icons", () => {
     expect(txIcon("sendToAddress", status({ kind: "conflicted" }), -5)).toBe("error");
     expect(txIcon("sendToSelf", status(), 0)).toBe("internalTransfer");
     expect(txIcon("recvWithAddress", status(), 5)).toBe("received");
+  });
+
+  it("shows internal moves without a sign", () => {
+    expect(shownAmount(-429, "sendToSelf")).toEqual({ duffs: 429, signed: false });
+    expect(shownAmount(-429, "sendToAddress")).toEqual({ duffs: -429, signed: true });
   });
 });
 

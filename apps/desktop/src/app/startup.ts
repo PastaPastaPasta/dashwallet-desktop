@@ -5,16 +5,17 @@
 import { inTauri, tauriTools } from "../api/tauri";
 
 export const milestones: Record<string, number> = { scriptStart: performance.now() };
-const waiting = new Map<string, (ms: number) => void>();
-const reached = new Map<string, Promise<number>>();
+const marks = new Map<string, { promise: Promise<number>; resolve: (ms: number) => void }>();
 
-function deferred(name: string): Promise<number> {
-  let p = reached.get(name);
-  if (!p) {
-    p = new Promise<number>((resolve) => waiting.set(name, resolve));
-    reached.set(name, p);
+function entry(name: string) {
+  let e = marks.get(name);
+  if (!e) {
+    let resolve!: (ms: number) => void;
+    const promise = new Promise<number>((r) => (resolve = r));
+    e = { promise, resolve };
+    marks.set(name, e);
   }
-  return p;
+  return e;
 }
 
 /** Records `name` once, two frames after the call (so the frame is on screen). */
@@ -24,13 +25,12 @@ export function mark(name: string) {
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
       milestones[name] = performance.now();
-      deferred(name);
-      const done = waiting.get(name)!;
-      if (inTauri()) void tauriTools.startupMark(name).then(done);
-      else done(milestones[name]);
+      const { resolve } = entry(name);
+      if (inTauri()) void tauriTools.startupMark(name).then(resolve);
+      else resolve(milestones[name]);
     }),
   );
 }
 
 /** Resolves with the milestone's time since `main` (Tauri) or navigation start (browser). */
-export const whenMarked = (name: string) => deferred(name);
+export const whenMarked = (name: string) => entry(name).promise;

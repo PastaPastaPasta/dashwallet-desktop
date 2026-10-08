@@ -1,6 +1,8 @@
 // Transaction detail sheet (UX-SPEC §4.9, C23 medium): iOS TxDetail header with the dash-qt
 // facts (research 02 §4.6). Abandon/Resend and the label editor are not part of the spike.
 
+import type { ReactNode } from "react";
+import { errorMessage } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
@@ -12,10 +14,10 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { copyWithToast } from "../components/toast";
 import { full } from "../format/amount";
-import { chipIsProblem, detailDate, isInternal, rowDate, txChip, txIcon, txTitle } from "../format/tx";
+import { detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
 /** dash-qt `TransactionDesc::FormatTxStatus`, for the states the engine reports. */
-export function statusText(s: TxStatusInfo): string {
+function statusText(s: TxStatusInfo): string {
   switch (s.kind) {
     case "abandoned":
       return "Abandoned";
@@ -35,7 +37,7 @@ export function statusText(s: TxStatusInfo): string {
   }
 }
 
-function DetailRow({ label, children, testId }: { label: string; children: React.ReactNode; testId?: string }) {
+function DetailRow({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
   return (
     <div className="detail-row" data-testid={testId}>
       <dt className="detail-label">{label}</dt>
@@ -63,7 +65,10 @@ function Body({ d, network }: { d: TxDetails; network: NetworkInfo }) {
   const headerIcon: UsedIcon = icon === "error" ? "txDetailError" : amount < 0 ? "txDetailSent" : "txDetailReceived";
   const chip = txChip(d.status);
   const date = rowDate(d);
-  const counterparty = row?.address ?? d.outputs.find((o) => !o.isChange)?.address ?? null;
+  // The row's address; else, received: our own output, sent: the first output that is not ours.
+  const counterparty =
+    row?.address ?? d.outputs.find((o) => (amount >= 0 ? o.isMine : !o.isMine) && !o.isChange)?.address ?? null;
+  const shown = shownAmount(amount, row?.txType ?? "other");
   const own = d.outputs.some((o) => o.isMine && o.address === counterparty);
   const unit = network.unitName;
   return (
@@ -71,9 +76,9 @@ function Body({ d, network }: { d: TxDetails; network: NetworkInfo }) {
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
         <Icon id={headerIcon} size={50} />
         <h3 className="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
-        <AmountText className="tx-detail-amount" text={full(amount, !(row && isInternal(row.txType)))} unitName={unit} glyphFactor={0.8} />
+        <AmountText className="tx-detail-amount" text={full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
         <div className="tx-detail-status">
-          {chip && <Chip tone={chipIsProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
+          {chip && <Chip tone={isProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
           {date && <span className="tx-detail-date">{detailDate(date, backend.locale)}</span>}
         </div>
       </div>
@@ -136,7 +141,7 @@ export function TxDetailSheet({ walletId, txid, network }: { walletId: string; t
       {detail.data ? (
         <Body d={detail.data} network={network} />
       ) : detail.isError ? (
-        <p role="alert">{String((detail.error as { message?: string }).message ?? detail.error)}</p>
+        <p role="alert">{errorMessage(detail.error)}</p>
       ) : (
         <LoadingState testId="tx-detail-loading" text="Loading transaction" />
       )}

@@ -4,7 +4,7 @@
 // Under Tauri the report also carries the U5 IPC timings and the U6 security probes.
 
 import type { QueryClient } from "@tanstack/react-query";
-import type { Backend } from "../api/backend";
+import { errorMessage, type Backend } from "../api/backend";
 import { FIXTURE_PASSPHRASE } from "../api/fixture";
 import { tauriTools } from "../api/tauri";
 import { milestones, whenMarked } from "./startup";
@@ -40,6 +40,8 @@ export interface Report {
   /** U1: what the screens show, to compare with `dwcli` on the same datadir. */
   shown?: {
     heroAmount: string | null;
+    /** The hero's full-precision `.withUnit` tooltip ("206 014.36392896 tDASH"). */
+    heroFull: string | null;
     rows: { txid: string; recordIndex: number; amount: string }[];
   };
   /** ms since `main`: the first window frame, and the first Overview frame with data. */
@@ -156,10 +158,12 @@ export async function collectReport(backend: Backend, client: QueryClient, onScr
     await settle(client);
     await record(theme, "overview");
     const heroAmount = document.querySelector('[data-testid="hero-amount"] .amount-number')?.textContent ?? null;
+    const heroFull = document.querySelector<HTMLElement>('[data-testid="hero-amount"] .amount')?.title || null;
     ui.set({ page: "transactions" });
     await settle(client);
     shown ??= {
       heroAmount,
+      heroFull,
       rows: [...document.querySelectorAll<HTMLElement>("[data-txid]")].slice(0, 200).map((el) => ({
         txid: el.dataset.txid!,
         recordIndex: Number(el.dataset.testid!.split("-").pop()),
@@ -202,9 +206,15 @@ export async function collectReport(backend: Backend, client: QueryClient, onScr
   };
 }
 
-/** `window.__dwSelftest()` for Playwright and manual runs. */
+declare global {
+  interface Window {
+    /** Playwright and manual runs: the same report `--selftest` writes. */
+    __dwSelftest?: () => Promise<Report>;
+  }
+}
+
 export function exposeSelftest(backend: Backend, client: QueryClient) {
-  (window as unknown as { __dwSelftest: () => Promise<Report> }).__dwSelftest = () => collectReport(backend, client);
+  window.__dwSelftest = () => collectReport(backend, client);
 }
 
 async function refused(f: () => Promise<unknown>): Promise<string> {
@@ -212,14 +222,38 @@ async function refused(f: () => Promise<unknown>): Promise<string> {
     const v = await f();
     return `NOT REFUSED: ${JSON.stringify(v)}`;
   } catch (e) {
-    return `refused: ${e instanceof Error ? e.message : String(e)}`;
+    return `refused: ${errorMessage(e)}`;
   }
+}
+
+/** Resolves with `p`, or with `fallback` after `ms`: the self-test must end even without a wallet. */
+const within = <T,>(p: Promise<T>, ms: number, fallback: T) => Promise.race([p, sleep(ms).then(() => fallback)]);
+
+/** A refused request plus the CSP violation that refused it, so "blocked by CSP" is not
+ * confused with "no network". */
+async function cspProbe(f: () => Promise<unknown>): Promise<string> {
+  const violations: string[] = [];
+  const onViolation = (e: SecurityPolicyViolationEvent) => violations.push(`${e.effectiveDirective} ${e.blockedURI}`);
+  document.addEventListener("securitypolicyviolation", onViolation);
+  const result = await refused(f);
+  await sleep(100);
+  document.removeEventListener("securitypolicyviolation", onViolation);
+  return `${result}; CSP violations: ${violations.length ? violations.join(", ") : "none"}`;
+}
+
+/** `window.open` to a remote page must not create a window. */
+function windowOpenProbe(): string {
+  const w = window.open("https://example.com/", "_blank");
+  if (!w) return "refused: window.open returned null";
+  w.close();
+  return "NOT REFUSED: window.open returned a window";
 }
 
 /** Under Tauri: the report plus IPC timings and security probes, then dw-app writes it and exits. */
 export async function runTauriSelftest(backend: Backend, client: QueryClient, pauseMs: number) {
-  const shellPaintMs = await whenMarked("shell");
-  const firstPaintMs = await whenMarked("first-paint");
+  const shellPaintMs = await within(whenMarked("shell"), 60_000, null);
+  // Never marked without a wallet or when the network does not open; the report says so.
+  const firstPaintMs = await within(whenMarked("first-paint"), 180_000, null);
   const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
   const navigation: Record<string, number> = nav
     ? { responseEnd: round(nav.responseEnd), domInteractive: round(nav.domInteractive), domContentLoaded: round(nav.domContentLoadedEventEnd), load: round(nav.loadEventEnd) }
@@ -230,8 +264,8 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
     await tauriTools.selftestCheckpoint(name);
     await sleep(pauseMs);
   });
-  report.shellPaintMs = shellPaintMs;
-  report.firstPaintMs = firstPaintMs;
+  report.shellPaintMs = shellPaintMs ?? undefined;
+  report.firstPaintMs = firstPaintMs ?? undefined;
   report.startup = { milestones: Object.fromEntries(Object.entries(milestones).map(([k, v]) => [k, round(v)])), navigation };
 
   report.ipc = { ipcBenchRows200: await time(200, () => tauriTools.ipcBenchRows(200)) };
@@ -248,7 +282,8 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
   report.security = {
     unlistedCommand: await refused(() => tauriTools.probeUnlisted()),
     unknownPluginCommand: await refused(() => tauriTools.invokeUnknownPlugin()),
-    remoteFetch: await refused(() => fetch("https://example.com/", { cache: "no-store" })),
+    remoteFetch: await cspProbe(() => fetch("https://example.com/", { cache: "no-store" })),
+    windowOpen: windowOpenProbe(),
   };
   // Navigation probe: if the guard failed, the page would leave and the report below would never
   // arrive, so the first write keeps everything measured so far.

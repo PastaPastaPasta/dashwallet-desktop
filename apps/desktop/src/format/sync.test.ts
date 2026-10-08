@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStatus } from "../api/generated/SyncStatus";
-import { syncPercent } from "./sync";
+import { isSyncing, syncPercent, syncState } from "./sync";
 
 const base: SyncStatus = {
   running: true,
@@ -29,5 +29,16 @@ describe("syncPercent", () => {
     };
     expect(syncPercent(s)).toBe(62.5);
     expect(syncPercent({ ...s, caughtUp: true })).toBe(100);
+  });
+});
+
+describe("syncState", () => {
+  it("names the state without the percentage", () => {
+    expect(syncState(undefined)).toBe("Connecting…");
+    expect(syncState({ ...base, running: false })).toBe("Not syncing");
+    expect(syncState(base)).toBe("Synchronizing with network…");
+    expect(syncState({ ...base, caughtUp: true })).toBe("Up to date");
+    expect(isSyncing(base)).toBe(true);
+    expect(isSyncing({ ...base, caughtUp: true })).toBe(false);
   });
 });

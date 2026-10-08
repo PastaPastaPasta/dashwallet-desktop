@@ -34,18 +34,11 @@ function urlOptions() {
 
 async function boot() {
   const opts = urlOptions();
-  let backend: Backend;
-  if (inTauri()) {
-    const tauri = new TauriBackend();
-    const launch = await tauri.launchInfo();
-    backend = launch.fixture ? new FixtureBackend(launch, opts.variant, { locked: opts.locked }) : tauri;
-    ui.set({ theme: launch.theme ?? opts.theme });
-  } else {
-    backend = new FixtureBackend(FixtureBackend.browserLaunch(), opts.variant, { locked: opts.locked });
-    ui.set({ theme: opts.theme });
-  }
-  const launch = await backend.launchInfo();
+  const tauri = inTauri() ? new TauriBackend() : null;
+  const launch = tauri ? await tauri.launchInfo() : FixtureBackend.browserLaunch();
   milestones.launchInfo = performance.now();
+  const backend: Backend = tauri && !launch.fixture ? tauri : new FixtureBackend(launch, opts.variant, { locked: opts.locked });
+  ui.set({ theme: launch.theme ?? opts.theme });
 
   const client = new QueryClient({
     // Engine data changes only when a signal says so: no polling, no refetch on focus.

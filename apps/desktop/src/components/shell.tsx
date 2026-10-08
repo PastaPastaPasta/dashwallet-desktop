@@ -4,28 +4,22 @@ import type { ReactNode } from "react";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import { ui, useUi, type Page } from "../app/ui";
-import { syncPercent } from "../format/sync";
-
-const SIDEBAR_ICON: Record<string, ReactNode> = {
-  // 18 pt outline glyphs in currentColor; macOS uses SF Symbols here (UX-SPEC §2.7).
-  overview: <path d="M3 9.5 10 3.5l7 6V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V9.5Z" />,
-  send: <path d="M5 15 15 5M8 5h7v7" />,
-  receive: <path d="M15 5 5 15m7 0H5V8" />,
-  transactions: <path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9" />,
-};
+import { isSyncing, syncPercent, syncState } from "../format/sync";
 
 interface SidebarItem {
   id: string;
   title: string;
+  /** 18 pt outline glyph in currentColor; macOS uses SF Symbols here (UX-SPEC §2.7). */
+  icon: ReactNode;
   page?: Page;
   why?: string;
 }
 
 const ITEMS: SidebarItem[] = [
-  { id: "overview", title: "Overview", page: "overview" },
-  { id: "send", title: "Send", why: "Send is not part of the G-01 spike" },
-  { id: "receive", title: "Receive", why: "Receive is not part of the G-01 spike" },
-  { id: "transactions", title: "Transactions", page: "transactions" },
+  { id: "overview", title: "Overview", page: "overview", icon: <path d="M3 9.5 10 3.5l7 6V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V9.5Z" /> },
+  { id: "send", title: "Send", why: "Send is not part of the G-01 spike", icon: <path d="M5 15 15 5M8 5h7v7" /> },
+  { id: "receive", title: "Receive", why: "Receive is not part of the G-01 spike", icon: <path d="M15 5 5 15m7 0H5V8" /> },
+  { id: "transactions", title: "Transactions", page: "transactions", icon: <path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9" /> },
 ];
 
 export function Sidebar() {
@@ -47,7 +41,7 @@ export function Sidebar() {
                 onClick={() => item.page && ui.set({ page: item.page, detail: null })}
               >
                 <svg className="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true">
-                  {SIDEBAR_ICON[item.id]}
+                  {item.icon}
                 </svg>
                 <span>{item.title}</span>
               </button>
@@ -120,26 +114,32 @@ const LOCK_TEXT: Record<LockStatus["state"], string> = {
   unlocked: "Unlocked",
 };
 
-export function StatusBar({ sync, lock, unitName }: { sync: SyncStatus | undefined; lock: LockStatus | undefined; unitName: string }) {
-  const percent = sync ? syncPercent(sync) : null;
-  const left = !sync
-    ? "Connecting…"
-    : !sync.running
-      ? "Not syncing"
-      : sync.caughtUp
-        ? "Up to date"
-        : `Synchronizing with network… ${percent === null ? "" : `${percent.toFixed(1)}%`}`;
+export function StatusBar({
+  sync,
+  lock,
+  unitName,
+  hd,
+}: {
+  sync: SyncStatus | undefined;
+  lock: LockStatus | undefined;
+  unitName: string;
+  hd: boolean;
+}) {
+  const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
   return (
     <footer className="status-bar" data-testid="status-bar">
-      <span className="status-left" role="status">
-        {left}
-        {sync && sync.running && !sync.caughtUp && percent !== null && (
-          <progress className="status-progress" max={100} value={percent} aria-label="Sync progress" />
+      <span className="status-left">
+        <span role="status">{syncState(sync)}</span>
+        {percent !== null && (
+          <>
+            <span aria-hidden="true">{percent.toFixed(1)}%</span>
+            <progress className="status-progress" max={100} value={percent} aria-label="Sync progress" />
+          </>
         )}
       </span>
       <span className="status-right">
         <span>{unitName}</span>
-        <span>HD</span>
+        {hd && <span>HD</span>}
         {lock && <span>{LOCK_TEXT[lock.state]}</span>}
         {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
         {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}

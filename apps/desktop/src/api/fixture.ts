@@ -2,7 +2,9 @@
 // history. Deterministic (seeded PRNG, fixed clock), so screenshots and element boxes are
 // comparable across engines and runs. Passphrase: "demo".
 
-import type { Backend, BackendError } from "./backend";
+import { COIN } from "../format/amount";
+import type { Backend } from "./backend";
+import type { AppError } from "./generated/AppError";
 import type { Balances } from "./generated/Balances";
 import type { EngineSignal } from "./generated/EngineSignal";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -32,7 +34,6 @@ export const XSS_PAYLOADS = {
   contact: `"><svg onload="window.__xss='contact'">`,
 };
 
-const COIN = 100_000_000;
 const TIP = 1_352_000;
 
 function prng(seed: number) {
@@ -172,7 +173,7 @@ const BALANCES: Balances = {
   coinjoin: 0,
 };
 
-function fail(code: string, message: string, retryAfterSecs: number | null = null): BackendError {
+function fail(code: string, message: string, retryAfterSecs: number | null = null): AppError {
   return { code, message, retryAfterSecs };
 }
 
@@ -223,7 +224,6 @@ export class FixtureBackend implements Backend {
     if (id !== FIXTURE_WALLET_ID) throw fail("wallet_not_found", `wallet not found: ${id}`);
   }
 
-  launchInfo = async () => this.launch;
   openNetwork = async () => this.status();
   lockStatus = async () => this.status();
 
@@ -321,7 +321,8 @@ export class FixtureBackend implements Backend {
           previousTxid: hex(64),
           previousVout: Math.floor(rand() * 3),
           address: incoming ? address() : row.address,
-          amount: incoming ? null : value + change + fee,
+          // A send row's amount already includes the fee: inputs = outputs + fee.
+          amount: incoming ? null : value + change,
           isMine: !incoming,
         },
       ],

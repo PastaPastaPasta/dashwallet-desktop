@@ -1,22 +1,19 @@
-// Lock screen (UX-SPEC §4.4): full-window overlay on hero blue with the white wordmark, the
-// dash-qt passphrase prompt and the iOS lockout copy (IOS-012) as UX throttling.
+// Lock screen (UX-SPEC §4.4): full-window overlay on hero blue with the white wordmark and the
+// dash-qt passphrase prompt. The vault's own throttle (retryAfterSecs) gates the next attempt.
 
-import { useState, type CSSProperties, type FormEvent } from "react";
-import { isBackendError } from "../api/backend";
+import { useEffect, useState, type FormEvent } from "react";
+import { errorMessage, isAppError } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { useBackend } from "../api/queries";
-import { DashButton } from "../components/basics";
-import { iconFiles } from "../components/icons";
+import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 
-export const Lock = {
+const Lock = {
   title: "Unlock wallet",
   prompt: "This operation needs your wallet passphrase to unlock the wallet.",
-  attemptsRemaining: (n: number) => (n === 1 ? "1 attempt remaining" : `${n} attempts remaining`),
+  /** dash-qt `AskPassphraseDialog`. */
+  incorrect: "The passphrase entered for the wallet decryption was incorrect.",
   tryAgainIn: (wait: string) => `Wallet disabled, please try again in ${wait}`,
 };
-
-/** IOS-012 as used by the Swift LockViewModel: eight attempts before only restore is offered. */
-const DISABLED_AFTER = 8;
 
 function waitText(secs: number): string {
   if (secs >= 3600) {
@@ -32,36 +29,45 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** When the vault accepts the next attempt (ms since epoch); null when not throttled. */
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (retryAt === null) return;
+    const t = window.setTimeout(() => (setRetryAt(null), setError(null)), Math.max(0, retryAt - Date.now()));
+    return () => window.clearTimeout(t);
+  }, [retryAt]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!passphrase || busy) return;
+    if (!passphrase || busy || retryAt !== null) return;
     setBusy(true);
     setError(null);
     try {
       await backend.unlock(passphrase);
-      setPassphrase("");
     } catch (err) {
-      if (isBackendError(err) && err.code === "vault.throttled" && err.retryAfterSecs) {
-        setError(Lock.tryAgainIn(waitText(err.retryAfterSecs)));
-      } else if (isBackendError(err) && err.code === "vault.wrong_passphrase") {
-        const status = await backend.lockStatus();
-        setError(`The passphrase entered for the wallet decryption was incorrect. ${Lock.attemptsRemaining(Math.max(0, DISABLED_AFTER - status.failedAttempts))}`);
+      const wait = isAppError(err) ? err.retryAfterSecs ?? 0 : 0;
+      if (wait > 0) {
+        // Wrong passphrase with a wait, or throttled: the vault refuses attempts until then.
+        setRetryAt(Date.now() + wait * 1000);
+        setError(`${isAppError(err) && err.code === "vault.wrong_passphrase" ? `${Lock.incorrect} ` : ""}${Lock.tryAgainIn(waitText(wait))}`);
+      } else if (isAppError(err) && err.code === "vault.wrong_passphrase") {
+        setError(Lock.incorrect);
       } else {
-        setError(isBackendError(err) ? err.message : String(err));
+        setError(errorMessage(err));
       }
-      setPassphrase("");
     } finally {
+      // The DOM copy of the passphrase is cleared after every attempt (H-01 note in the G-01 report).
+      setPassphrase("");
       setBusy(false);
     }
   };
 
-  const logo = { "--logo-url": `url("${iconFiles.dashLogo.light}")` } as CSSProperties;
   return (
     <div className="lock-screen" role="dialog" aria-modal="true" aria-labelledby="lock-title" data-testid="lock-screen">
       <div className="lock-column" data-testid="lock-column">
-        <span className="lock-logo" style={logo} role="img" aria-label="Dash" data-testid="lock-logo" />
-        {network.kind !== "mainnet" && <span className="network-capsule">{network.kind.toUpperCase()}</span>}
+        <DashLogo className="lock-logo" />
+        <NetworkCapsule network={network} />
         <h1 id="lock-title" className="lock-title">
           {Lock.title}
         </h1>
@@ -83,7 +89,14 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
           <p id="lock-error" className="lock-error" role="alert">
             {error}
           </p>
-          <DashButton type="submit" variant="filledWhiteBlue" size="large" fill disabled={busy || passphrase.length === 0} data-testid="lock-submit">
+          <DashButton
+            type="submit"
+            variant="filledWhiteBlue"
+            size="large"
+            fill
+            disabled={busy || passphrase.length === 0 || retryAt !== null}
+            data-testid="lock-submit"
+          >
             {busy ? "Unlocking…" : "Unlock"}
           </DashButton>
         </form>

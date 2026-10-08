@@ -75,7 +75,7 @@ test("keyboard only: navigate, open a transaction, close it, lock and unlock", a
   // The passphrase field has focus; a wrong passphrase is announced, the right one unlocks.
   await page.keyboard.type("wrong");
   await page.keyboard.press("Enter");
-  await expect(page.locator("#lock-error")).toContainText("attempts remaining");
+  await expect(page.locator("#lock-error")).toContainText("was incorrect");
   await page.keyboard.type("demo");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("lock-screen")).toHaveCount(0);

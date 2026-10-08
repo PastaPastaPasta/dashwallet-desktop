@@ -5,11 +5,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
+import { errorMessage } from "../api/backend";
 import { useBackend, useHistory } from "../api/queries";
-import { Icon } from "../components/basics";
-import { EmptyState, LoadingState, TxGroups, type RowContext } from "../components/history";
+import { DashButton, Icon } from "../components/basics";
+import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 
-export const PAGE_SIZE = 200;
+const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [
@@ -31,30 +32,28 @@ function useDebounced<T>(value: T, ms: number): T {
 
 export function Transactions({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const backend = useBackend();
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = useState(CATEGORIES[0]);
   const [search, setSearch] = useState("");
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
-  const filter = useMemo(
-    () => ({ categories: CATEGORIES.find((c) => c.id === category)!.categories, text: text || null, sort: "newestFirst" as const }),
-    [category, text],
-  );
-  const history = useHistory(walletId, filter, PAGE_SIZE);
+  // Query keys are hashed structurally, so a fresh filter object per render is fine.
+  const history = useHistory(walletId, { categories: category.categories, text: text || null, sort: "newestFirst" }, PAGE_SIZE);
   const rows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
   const total = history.data?.pages[0]?.totalMatching ?? null;
-  const ctx: RowContext = { unitName: network.unitName, locale: backend.locale, now: backend.now() };
+  const ctx = useRowContext(network);
 
-  // Load the next page when the end of the list scrolls into view.
+  // Load the next page when the end of the list scrolls into view. After a failed page the
+  // observer stays off until the user retries, so a persistent error cannot loop.
   const sentinel = useRef<HTMLDivElement>(null);
-  const { hasNextPage, isFetchingNextPage, fetchNextPage } = history;
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = history;
   useEffect(() => {
     const el = sentinel.current;
-    if (!el || !hasNextPage) return;
+    if (!el || !hasNextPage || isFetchNextPageError) return;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting) && !isFetchingNextPage) void fetchNextPage();
     });
     io.observe(el);
     return () => io.disconnect();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
   return (
     <main className="page page-transactions" data-testid="page-transactions">
@@ -73,16 +72,15 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
               onChange={(e) => setSearch(e.target.value)}
             />
           </label>
-          <div className="filter-chips" role="radiogroup" aria-label="Transaction type" data-testid="tx-categories">
+          <div className="filter-chips" role="group" aria-label="Transaction type" data-testid="tx-categories">
             {CATEGORIES.map((c) => (
               <button
                 key={c.id}
                 type="button"
-                role="radio"
-                aria-checked={category === c.id}
-                className={`filter-chip ${category === c.id ? "is-selected" : ""}`}
+                aria-pressed={category === c}
+                className={`filter-chip ${category === c ? "is-selected" : ""}`}
                 data-testid={`tx-category-${c.id}`}
-                onClick={() => setCategory(c.id)}
+                onClick={() => setCategory(c)}
               >
                 {c.title}
               </button>
@@ -91,8 +89,8 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         </div>
         {history.isPending ? (
           <LoadingState testId="tx-loading" text="Loading transactions" />
-        ) : history.isError ? (
-          <EmptyState testId="tx-error" title="Could not load transactions" message={String((history.error as { message?: string }).message ?? history.error)} />
+        ) : history.isError && rows.length === 0 ? (
+          <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
         ) : rows.length === 0 ? (
           <EmptyState testId="tx-empty" title="There are no transactions to display" />
         ) : (
@@ -102,6 +100,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         )}
         <div ref={sentinel} className="tx-sentinel">
           {isFetchingNextPage && <LoadingState testId="tx-loading-more" text="Loading more transactions…" />}
+          {isFetchNextPageError && (
+            <p className="tx-more-error" role="alert">
+              Could not load more transactions: {errorMessage(history.error)}{" "}
+              <DashButton variant="plainBlue" size="small" onClick={() => void fetchNextPage()}>
+                Try again
+              </DashButton>
+            </p>
+          )}
         </div>
         {total !== null && (
           <footer className="tx-footer" data-testid="tx-footer">
