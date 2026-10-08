@@ -34,6 +34,7 @@ mod labels;
 pub mod masternode_keys;
 mod multiwallet;
 mod network;
+pub mod platform;
 mod pump;
 mod receive;
 pub(crate) mod send;

@@ -1607,6 +1607,7 @@ dependencies = [
 name = "dw-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "dash-context-provider",
  "dash-sdk",
