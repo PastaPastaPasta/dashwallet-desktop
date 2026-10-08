@@ -74,7 +74,7 @@ and `dw/dashpay-design-opus`), and the M4 "Platform parity" workstream in DESIGN
 | E0-10c | *Only if E0-10a fails at the pin; scheduled right away (W3–W5).* Fix dash-spv in rust-dashcore, or adopt #1072/#1075. Prepare it as a backport onto platform's pinned rust-dashcore revision. | E0-10a | M–L | engine | T0, T3 | Y | The spike passes with the fix. Enforcement ships when the desktop's graph carries it (platform's pin, or a graph-wide `[patch]` once the manager allows publishing under DEC-09). |
 | E0-11 | **Carried branch for #4623 + #4997** on pasta's fork `PastaPastaPasta/platform`, on v5.0-dev head; the first push waits for the manager's recorded decision (§5) | E0-01 | S | engine | platform-wallet tests | Y | The branch compiles and passes `rs-platform-wallet`'s tests. A tracking issue exists. The desktop pins the whole platform set to it only when DP3-01 starts, unless the v5.1 move (E0-14) has happened. No upstream PR unless pasta asks. |
 | E0-12 | **Shielded build measurement**: a non-default `shielded` feature that enables `platform-wallet/shielded` + `platform-wallet-storage/shielded` | E0-01 | S | engine | T0, CI | Y | Clean build time, binary-size delta and prover warm-up are recorded in `docs/research/shielded-cost.md`, and the feature build is kept green in nightly CI. |
-| E0-13 | **Bind the facades** for the chosen stack. Tauri: `dw-app` commands, generated TypeScript types and the event bridge. SwiftCrossUI: `dw-ffi` (UniFFI) wrappers and DashKit. The same task binds `Governance` and `Masternodes` later (MG). | G-04, E0-08 | M | engine / UI | T0, CI | N | Every facade call is reachable from the UI layer with generated types; a bindings check runs in CI. |
+| E0-13 | **Bind the facades** for the chosen stack. Tauri: `dw-app` commands, generated TypeScript types and the event bridge. SwiftCrossUI: `dw-ffi` (UniFFI) wrappers and DashKit. The same task binds `Governance` and `Masternodes` later (MG). It also adds E0-02's `SessionOptions.ca_cert_path` and `initial_protocol_version` to the record (UniFFI `dw-ffi`, and `dw-app`), which E0-02 left out so the frozen Swift bindings stay unchanged. | G-04, E0-08 | M | engine / UI | T0, CI | N | Every facade call is reachable from the UI layer with generated types; a bindings check runs in CI. |
 | E0-14 | **Pin train**: one bump per milestone, rebasing E0-11's carried branch at each bump; the v5.1 move when DASHPAY §3.9's criteria hold (which retires the branch) | E0-01 | M per bump | engine | T0, T1, T2, CI | Y | As E0-01, plus the DashPay suites green. |
 
 ### T — Test environments and CI
@@ -85,6 +85,20 @@ and `dw/dashpay-design-opus`), and the M4 "Platform parity" workstream in DESIGN
 | T-02 | **Testnet harness**: two persistent funded wallets (seeds in agentbox's secret store, never in the repo); top-ups through the `dash-faucet` skill's helper within its limits; a scheduled nightly run | D1 | M | infra | T3 | Y | The nightly run reports balances and Platform reachability, and runs the T3 suites as they land. |
 | T-03 | **GitHub Actions** (DEC-13): push `main`. Linux (fmt, clippy, cargo test, UI T0), Windows and macOS (engine build and tests; app build, install, launch and screenshot as artifacts), nightly regtest, and `workflow_dispatch` jobs for the gate branches | D1 | M | infra | CI | Y | Green on `main`. Windows and macOS screenshots can be downloaded from a run. |
 | T-04 | *Contingency.* A Windows 11 evaluation VM under KVM on agentbox, only if the hosted runners cannot do what a task needs (interactive Narrator, Windows Hello) | — | M | infra | GW | Y | An agent builds and runs the app on it over SSH and fetches a screenshot. |
+
+**T-01 notes from the E0-02 review** (`SessionOptions.ca_cert_path` is validated at open, so a damaged file is `invalid_config`, not a
+panic at the first DAPI call). Before E0-02's T-01 acceptance run (`dwcli platform-status` through the self-signed gateway), check
+what dashmate's gateway actually serves:
+
+- The file is **added to** the system roots; it does not replace them. Pinning (only this CA) would need an SDK or tonic change.
+- Give it the CA when the leaf is CA-signed, not the leaf.
+- The certificate's names must match the host in the DAPI URL. With `--dapi https://127.0.0.1:...` and a cert that has only a DNS SAN
+  the handshake fails with `certificate not valid for name "127.0.0.1"`. Use the name (or IP) the cert lists.
+- A **self-signed leaf with `basicConstraints CA:TRUE`** fails with `CaUsedAsEndEntity` (rustls-webpki); one with `CA:FALSE` passes.
+  The engine cannot fix that. If dashmate's gateway cert is a `CA:TRUE` self-signed leaf, E0-02's acceptance cannot pass through this
+  API without an SDK change; record that in T-01 and raise it upstream.
+- Measured with `openssl s_server` (handshake ok, then the gRPC call times out as `s_server` does not speak gRPC): `CA:FALSE`,
+  SAN localhost + 127.0.0.1 passes for both hosts; no `--ca-cert` gives `UnknownIssuer`.
 
 ### G — UI-stack gate (DASHPAY §2.1, a head-to-head)
 
