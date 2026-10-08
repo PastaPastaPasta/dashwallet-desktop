@@ -1,4 +1,6 @@
-// The placeholder `M3Services` for app runs without the engine adapters:
+// The live `M3Services`: the WalletRuntime adapters over the engine
+// (`WalletRuntime/M3/<Domain>Adapters.swift`, built by `M3RuntimeServices`).
+// A runtime without them (one over a test engine) is served by
 // `UnavailableM3Service`, which answers every call with `not_implemented`, so
 // its screens say "Not available yet" instead of showing an empty success
 // state.
@@ -6,6 +8,16 @@ import Foundation
 import WalletRuntime
 
 extension M3Services {
+    /// The M3 services of a live app run: the engine adapters of
+    /// `runtime.m3`, or `not_implemented` everywhere when the runtime's
+    /// engine has none.
+    public static func live(runtime: WalletRuntimeServices) -> M3Services {
+        guard let m3 = runtime.m3 else { return unavailable() }
+        return M3Services(
+            coinJoin: m3.coinJoin, mixedCoins: m3.coinJoin, networkStatistics: m3.networkStatistics,
+            keychain: m3.keychain)
+    }
+
     /// Every M3 domain answering `not_implemented`.
     public static func unavailable() -> M3Services {
         let missing = UnavailableM3Service()

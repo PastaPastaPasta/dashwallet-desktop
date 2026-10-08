@@ -10,6 +10,9 @@ import WalletRuntime
 @MainActor
 public final class MacFeatureModels {
     public let m2: M2Services
+    /// The M3 services (CoinJoin, Network sub-tab, masternode keychain);
+    /// `nil` in the demo, which shows M1/M2 only.
+    public let m3: M3Services?
     public let shell: ShellModel
     public let startup: StartupViewModel
     public let shutdown: ShutdownViewModel
@@ -29,10 +32,11 @@ public final class MacFeatureModels {
     /// One shortcut bar per network (its defaults depend on it, IOS-025).
     private var shortcutBars: [DashNetwork: ShortcutBarViewModel] = [:]
 
-    public init(env: AppEnvironment, m2: M2Services) {
+    public init(env: AppEnvironment, m2: M2Services, m3: M3Services? = nil) {
         self.env = env
         self.m2 = m2
-        shell = ShellModel(env: env, m2: m2)
+        self.m3 = m3
+        shell = ShellModel(env: env, m2: m2, m3: m3)
         startup = StartupViewModel(m2: m2)
         shutdown = ShutdownViewModel(coordinator: m2.shutdown)
         options = OptionsViewModel(env: env, m2: m2)

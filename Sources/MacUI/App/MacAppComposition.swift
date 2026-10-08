@@ -95,8 +95,8 @@ public enum MacAppComposition {
     }
 
     /// The live services: one engine for `dataRoot` (one sub-directory per
-    /// network, plus `settings.json` and `global.json`), the M2 services over
-    /// it and the macOS OS services. Transaction notifications and forwarded
+    /// network, plus `settings.json` and `global.json`), the M2 and M3
+    /// services over it and the macOS OS services. Transaction notifications and forwarded
     /// URIs start here.
     @MainActor
     public static func live(
@@ -123,7 +123,8 @@ public enum MacAppComposition {
                 }
             },
             shutdown: { () throws(ServiceError) in try await runtime.shutdown() })
-        return MacAppServices(environment: environment, m2: m2, lifecycle: lifecycle)
+        return MacAppServices(
+            environment: environment, m2: m2, m3: M3Services.live(runtime: runtime), lifecycle: lifecycle)
     }
 
     /// The macOS implementations of the M2 OS services (m2-swift.md §2.7).

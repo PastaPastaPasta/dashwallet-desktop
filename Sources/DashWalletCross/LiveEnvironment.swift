@@ -1,6 +1,6 @@
 // The live app: WalletRuntime's adapters over the Rust engine
-// (docs/contracts/m1-swift.md §2.2, DESIGN-opus §1.12) and the M2 desktop
-// services over them (m2-swift.md §4), one per app run.
+// (docs/contracts/m1-swift.md §2.2, DESIGN-opus §1.12), the M2 desktop
+// services (m2-swift.md §4) and the M3 adapters over them, one per app run.
 import CrossUI
 import Foundation
 import PlatformServices
@@ -42,7 +42,8 @@ final class LiveSession {
         self.dataRoot = dataRoot
         requestedNetwork = network
         state = CrossAppState(
-            env: env, m2: m2, main: MainViewModel(env: env, m2: m2), capabilities: AppOSServices.capabilities())
+            env: env, m2: m2, m3: M3Services.live(runtime: runtime), main: MainViewModel(env: env, m2: m2),
+            capabilities: AppOSServices.capabilities())
         state.appUsage = AppLaunchOptions.usage
         startup = StartupViewModel(m2: m2)
         startup.start()

@@ -31,17 +31,19 @@ public enum SignVerifyTab: Hashable, Sendable {
 /// Builds the live services once the data directory is known (QT-004).
 public typealias LiveServicesFactory = @MainActor (URL) throws(ServiceError) -> MacAppServices
 
-/// What the composition root hands the model: the environment, the M2
-/// services and how to start and stop them.
+/// What the composition root hands the model: the environment, the M2 and
+/// M3 services and how to start and stop them.
 @MainActor
 public struct MacAppServices {
     public var environment: AppEnvironment
     public var m2: M2Services?
+    public var m3: M3Services?
     public var lifecycle: RuntimeLifecycle?
 
-    public init(environment: AppEnvironment, m2: M2Services?, lifecycle: RuntimeLifecycle?) {
+    public init(environment: AppEnvironment, m2: M2Services?, m3: M3Services? = nil, lifecycle: RuntimeLifecycle?) {
         self.environment = environment
         self.m2 = m2
+        self.m3 = m3
         self.lifecycle = lifecycle
     }
 }
@@ -106,11 +108,12 @@ public final class MacAppModel {
     /// - Parameter lifecycle: starts and stops the services; `nil` when they
     ///   run without one (demo).
     public init(
-        environment: AppEnvironment, m2: M2Services? = nil, launch: LaunchOptions, lifecycle: RuntimeLifecycle? = nil
+        environment: AppEnvironment, m2: M2Services? = nil, m3: M3Services? = nil, launch: LaunchOptions,
+        lifecycle: RuntimeLifecycle? = nil
     ) {
         self.launch = launch
         self.menuBarExtraShown = launch.menuBarExtra && environment.preferences.preferences.showsMenuBarExtra != false
-        install(MacAppServices(environment: environment, m2: m2, lifecycle: lifecycle))
+        install(MacAppServices(environment: environment, m2: m2, m3: m3, lifecycle: lifecycle))
     }
 
     /// The runtime could not be built; the window explains why.
@@ -133,7 +136,7 @@ public final class MacAppModel {
         env = services.environment
         lifecycle = services.lifecycle
         main = MainViewModel(env: services.environment, m2: services.m2)
-        features = services.m2.map { MacFeatureModels(env: services.environment, m2: $0) }
+        features = services.m2.map { MacFeatureModels(env: services.environment, m2: $0, m3: services.m3) }
         features?.options.onCoinControlFeatureChanged = { [weak self] in self?.main?.coinControlFeatureChanged() }
         unavailableReason = nil
     }

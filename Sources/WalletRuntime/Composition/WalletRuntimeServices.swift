@@ -36,6 +36,9 @@ public final class WalletRuntimeServices {
     public let uri: URIService
     public let amounts: EngineAmountFormatter
     public let settings: SettingsStore
+    /// The M3 adapters (CoinJoin, Network sub-tab, masternode keychain);
+    /// `nil` when the engine is not the Rust `EngineClient` (tests' fakes).
+    public let m3: M3RuntimeServices?
 
     /// Builds the services on the Rust engine.
     ///
@@ -97,6 +100,7 @@ public final class WalletRuntimeServices {
         messages = MessageService(context: context)
         uri = URIService(context: context)
         amounts = EngineAmountFormatter(context: context)
+        m3 = (engine as? EngineClient).map { M3RuntimeServices(engine: $0, active: host.active) }
     }
 
     /// Opens the last network (`settings.lastNetwork`), else `defaultNetwork`.

@@ -80,6 +80,9 @@ public struct CrossPlatformCapabilities: Sendable, Hashable {
 public final class CrossAppState {
     public let env: AppEnvironment
     public let m2: M2Services
+    /// The M3 services (CoinJoin, Network sub-tab, masternode keychain);
+    /// `nil` in the demo.
+    public let m3: M3Services?
     public let main: MainViewModel
     /// dash-qt's menus, window title and status icons (QT-011…022).
     public let shell: ShellModel
@@ -126,15 +129,16 @@ public final class CrossAppState {
     @ObservationIgnored private(set) lazy var shutdown = ShutdownViewModel(coordinator: m2.shutdown)
 
     public init(
-        env: AppEnvironment, m2: M2Services, main: MainViewModel, capabilities: CrossPlatformCapabilities,
-        notice: String? = nil
+        env: AppEnvironment, m2: M2Services, m3: M3Services? = nil, main: MainViewModel,
+        capabilities: CrossPlatformCapabilities, notice: String? = nil
     ) {
         self.env = env
         self.m2 = m2
+        self.m3 = m3
         self.main = main
         self.capabilities = capabilities
         self.notice = notice
-        shell = ShellModel(env: env, m2: m2, features: main.features)
+        shell = ShellModel(env: env, m2: m2, features: main.features, m3: m3)
     }
 
     /// The page in the detail area: an explicit page, else the M1 sheet route.
