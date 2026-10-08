@@ -129,13 +129,14 @@ final class Harness<V: View> {
     var graph: ViewGraph<V>!
     var env: EnvironmentValues!
 
-    init(_ view: V) {
+    /// `drain: false` leaves whatever the first update scheduled on the fake main loop.
+    init(_ view: V, drain: Bool = true) {
         var env = EnvironmentValues(backend: backend).with(\.window, FakeWindow())
         env.onResize = { [weak self] _ in self?.windowUpdate() }
         self.env = env
         graph = ViewGraph(for: view, backend: backend, environment: env)
         windowUpdate()
-        FakeMainLoop.drain()
+        if drain { FakeMainLoop.drain() }
         backend.textLayouts = 0
     }
 
@@ -326,7 +327,9 @@ extension PatchTests {
         /// The rule in PATCHES.md (P8): state must not be written while a view lays out. A
         /// write made by backend code that the layout calls (here a widget update's signal
         /// handler) is missed by the ancestors that read the old value earlier in the same
-        /// pass: their observations start only after their layout returns.
+        /// pass: their observations start only after their layout returns. The known issue is
+        /// not intermittent, so this also fails if the root stops being stale, which would
+        /// mean the updates no longer run shallowest first.
         @Test("a write during layout leaves the ancestor stale (the documented limit)")
         func changeDuringLayoutIsTheDocumentedLimit() {
             let m = Model()
@@ -345,6 +348,18 @@ extension PatchTests {
             withKnownIssue("an ancestor that read the old value during the same layout stays stale") {
                 #expect(h.texts.first == "root:C")
             }
+        }
+
+        /// Unlike other `.onChange` actions, `.task` starts its task during the update (upstream's
+        /// behaviour): deferred, the start could come after the view's `.onDisappear`.
+        @Test(".task starts during the update, before the main loop runs")
+        func taskStartsDuringTheUpdate() async {
+            var started = false
+            let h = Harness(Text("t").task { @MainActor in started = true }, drain: false)
+            for _ in 0..<1_000 where !started { await Task.yield() }
+            #expect(started)
+            FakeMainLoop.drain()
+            #expect(h.texts == ["t"])
         }
 
         @Test func twoWindowsShareAModel() {

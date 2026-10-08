@@ -122,10 +122,13 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   its order is random (the review measured 3 stale runs in 12); P8 makes it certain. This is
   why `.onChange` and `.onAppear` now run after the update. Writes made while an update commits
   are safe: every observation of that update has started by then. `.onDisappear` was already
-  deferred (a main-actor `Task` from a `deinit`), and `.task` runs asynchronously. A known path
-  that can still write during layout: `Picker` updates its `GtkDropDown` from `computeLayout`
-  (an upstream TODO), and replacing its options can fire the previous update's selection
-  handler.
+  deferred (a main-actor `Task` from a `deinit`). `.task`, built on `.onChange`, still starts
+  its task during the update (`OnChangeModifier.runsAfterUpdate`): the start writes only its
+  `@State`, which observation does not track, and a deferred start could come after the
+  view's `.onDisappear` and leave a task nobody cancels. The task itself runs later. A known
+  path that can still write during layout: `Picker` updates its `GtkDropDown` from
+  `computeLayout` (an upstream TODO), and replacing its options can fire the previous update's
+  selection handler.
 - Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless), over a fake backend built on
   the vendored `BackendFeatures.BaseStubs` (`FakeBackend.swift`):
   - `ModelObserverUpdateQueueTests`: the queue on its own.
@@ -134,7 +137,8 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
     subtree (over 5 batches). These fail if the hop in `observe` or the depth propagation is
     reverted. Also covered: ancestors that do not read the property, a descendant dropped in the
     same batch, a change before the flush or during commit, two windows, `.onChange` and
-    `.onAppear` writes read by an ancestor, and the rule above as a known issue.
+    `.onAppear` writes read by an ancestor, `.task` starting during the update, and the rule
+    above as a known issue.
   - `WindowSizeTests` (P10).
 
   `container-demo.sh` runs them on Linux, and `swift test` runs them on macOS. They are built as

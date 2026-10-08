@@ -32,6 +32,9 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
     var value: Value
     var action: () -> Void
     var initial: Bool
+    /// Whether `action` waits until after the update (dashwallet-desktop patch P8). Only
+    /// `TaskModifier` turns it off: starting a task writes no observed state.
+    var runsAfterUpdate = true
 
     // dashwallet-desktop patch P8: compared in `commit` (upstream: `computeLayout`) and run after
     // the update, so the ancestors see what `action` writes (the layout rule in
@@ -44,9 +47,9 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
         backend: Backend
     ) {
         if let previousValue, value != previousValue {
-            backend.runInMainThread(action: action)
+            run(action, backend: backend)
         } else if initial, previousValue == nil {
-            backend.runInMainThread(action: action)
+            run(action, backend: backend)
         }
 
         if previousValue != value {
@@ -60,5 +63,13 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
             environment: environment,
             backend: backend
         )
+    }
+
+    private func run<Backend: BaseAppBackend>(_ action: @escaping () -> Void, backend: Backend) {
+        if runsAfterUpdate {
+            backend.runInMainThread(action: action)
+        } else {
+            action()
+        }
     }
 }
