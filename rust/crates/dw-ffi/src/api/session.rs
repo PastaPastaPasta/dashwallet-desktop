@@ -18,6 +18,9 @@ impl From<SessionOptions> for dw_engine::SessionOptions {
             dapi_addresses: o.dapi_addresses,
             quorum_url: o.quorum_url,
             spv_peers: o.spv_peers,
+            // Not on the UniFFI record: the checked-in Swift bindings are
+            // frozen with the old UIs; the next binding (E0-13) adds them.
+            ..Default::default()
         }
     }
 }

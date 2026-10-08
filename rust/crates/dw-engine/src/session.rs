@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use dash_sdk::SdkBuilder;
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
+use dpp::version::PlatformVersion;
 use dw_appdb::{APP_DB_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use key_wallet::wallet::balance::WalletCoreBalance;
@@ -109,6 +110,12 @@ pub struct SessionOptions {
     pub quorum_url: Option<String>,
     /// SPV peers (`ip:port`). When non-empty, SPV connects to these only.
     pub spv_peers: Vec<String>,
+    /// PEM CA certificate the SDK trusts for DAPI TLS, instead of the system
+    /// roots (a dashmate devnet gateway serves a self-signed certificate).
+    pub ca_cert_path: Option<PathBuf>,
+    /// Protocol version the SDK starts at. Auto-detect stays on and ratchets
+    /// it up from what the network reports. `None` = the per-network floor.
+    pub initial_protocol_version: Option<u32>,
 }
 
 /// What a session holds while it is open. Taken out on close so the
@@ -631,9 +638,19 @@ fn build_sdk(
             .map_err(|e| EngineError::InvalidArgument(format!("bad DAPI address list: {e}")))?;
         SdkBuilder::new(list).with_network(network.core_network())
     };
-    Ok(builder
-        .with_context_provider(SharedContext(context))
-        .build()?)
+    let mut builder = builder.with_context_provider(SharedContext(context));
+    if let Some(path) = &opts.ca_cert_path {
+        builder = builder.with_ca_certificate_file(path).map_err(|e| {
+            EngineError::InvalidConfig(format!("CA certificate {}: {e}", path.display()))
+        })?;
+    }
+    if let Some(version) = opts.initial_protocol_version {
+        let version = PlatformVersion::get(version).map_err(|e| {
+            EngineError::InvalidArgument(format!("initial protocol version {version}: {e}"))
+        })?;
+        builder = builder.with_initial_version(version);
+    }
+    Ok(builder.build()?)
 }
 
 #[cfg(test)]
@@ -650,6 +667,51 @@ mod tests {
         assert!("zz".repeat(32).parse::<WalletId>().is_err());
         // The contract's form is lower case only.
         assert!("AB".repeat(32).parse::<WalletId>().is_err());
+    }
+
+    fn sdk_with(opts: SessionOptions) -> Result<dash_sdk::Sdk, EngineError> {
+        let context = Arc::new(LazyTrustedContext::new(
+            dashcore::Network::Regtest,
+            None,
+            Some("http://127.0.0.1:1".into()),
+        ));
+        build_sdk(
+            &DashNetwork::Regtest,
+            &SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                ..opts
+            },
+            context,
+        )
+    }
+
+    #[test]
+    fn initial_protocol_version_seeds_the_sdk() {
+        let sdk = sdk_with(SessionOptions {
+            initial_protocol_version: Some(PlatformVersion::first().protocol_version),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            sdk.protocol_version_number(),
+            PlatformVersion::first().protocol_version
+        );
+        let err = sdk_with(SessionOptions {
+            initial_protocol_version: Some(u32::MAX),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn missing_ca_certificate_is_a_config_error() {
+        let err = sdk_with(SessionOptions {
+            ca_cert_path: Some("/nonexistent/dwd-ca.pem".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
     }
 
     #[test]
