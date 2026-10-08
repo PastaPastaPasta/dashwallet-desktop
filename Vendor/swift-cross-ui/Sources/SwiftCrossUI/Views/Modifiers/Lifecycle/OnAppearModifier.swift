@@ -14,17 +14,20 @@ extension View {
     }
 }
 
-struct OnAppearModifier<Content: View>: View {
+// dashwallet-desktop patch P8: a `LifecycleHookModifier`, so a deferred action is dropped once
+// the view is gone.
+struct OnAppearModifier<Content: View>: LifecycleHookModifier {
     var body: TupleView1<Content>
     var action: @MainActor () -> Void
 
     func asWidget<Backend: BaseAppBackend>(
-        _ children: any ViewGraphNodeChildren,
+        _ children: LifecycleHookChildren,
         backend: Backend
     ) -> Backend.Widget {
         // dashwallet-desktop patch P8: after the update, not while the parent lays out its
-        // children (the layout rule in Vendor/PATCHES.md, P8).
-        backend.runInMainThread(action: action)
-        return defaultAsWidget(children, backend: backend)
+        // children (the layout rule in Vendor/PATCHES.md, P8), and only if the view is still
+        // there then.
+        children.runAfterUpdate(action, backend: backend)
+        return defaultAsWidget(children.wrapped, backend: backend)
     }
 }

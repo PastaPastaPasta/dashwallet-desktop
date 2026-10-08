@@ -106,8 +106,30 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   `runInMainThread`. `OnChangeModifier` compares the value in `commit` (upstream: in
   `computeLayout`, with a "Should this go in computeLayout or commit?" TODO), and
   `OnAppearModifier` schedules its action when it creates its widget (upstream: called it
-  there). This matches SwiftUI, which runs these actions after the update. See the rule below
-  for why.
+  there). See the rule below for why.
+- A deferred action never outlives its view
+  (`Views/Modifiers/Lifecycle/LifecycleHookModifier.swift`). Both modifiers are
+  `LifecycleHookModifier`s: their node's children own a lifetime flag that ends synchronously when
+  the node is released. That is the same moment `OnDisappearModifierChildren` schedules the
+  `.onDisappear` action. A queued action checks the flag and does nothing once it has ended. It
+  holds only the flag, never the children, so it cannot keep the node alive. Without this, a view
+  removed before the main loop reached its queued action (a GTK event handled first, or any update
+  in between) had its cleanup run and then its appear or change action. That action could restart
+  a resource or a task that nothing would stop (review DW-D4 r2).
+
+  The lifecycle guarantees under P8, then:
+  - `.onAppear` and `.onChange` actions run after the update that queued them, outside any
+    observation or layout scope, and only while their view is in the graph.
+  - A view removed before its queued `.onAppear` ran gets no appear action, but its
+    `.onDisappear` action still runs. Cleanup must therefore cope with a resource that was
+    never started (upstream always ran appear first, synchronously).
+  - `.onDisappear` runs from a main-actor `Task` (unchanged), so its timing relative to other
+    queued main-loop work is not fixed. Only the "no action after removal" rule above is.
+  - `.task` starts its task during the update (below), before the view's deferred
+    `.onAppear` runs. A task body can therefore run before the appear action
+    (`taskMayRunBeforeAppear`). Code that needs the appear action's setup should do that setup
+    in the task, or not depend on the order.
+  - None of this matches SwiftUI's ordering exactly. It is what this patch guarantees.
 - Not changed: tracking scopes still merge. The window's root node still observes nearly every
   property read in the window, so nearly any model change costs one whole-window layout (P8
   only stops the chain of them). A deeper fix would track a node's own `body` and layout
@@ -125,7 +147,8 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   deferred (a main-actor `Task` from a `deinit`). `.task`, built on `.onChange`, still starts
   its task during the update (`OnChangeModifier.runsAfterUpdate`): the start writes only its
   `@State`, which observation does not track, and a deferred start could come after the
-  view's `.onDisappear` and leave a task nobody cancels. The task itself runs later. A known
+  view's `.onDisappear` and leave a task nobody cancels (`taskCancelledAfterImmediateRemoval`).
+  The task itself runs later. A known
   path that can still write during layout: `Picker` updates its `GtkDropDown` from
   `computeLayout` (an upstream TODO), and replacing its options can fire the previous update's
   selection handler.
@@ -139,6 +162,10 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
     same batch, a change before the flush or during commit, two windows, `.onChange` and
     `.onAppear` writes read by an ancestor, `.task` starting during the update, and the rule
     above as a known issue.
+  - `LifecycleTests`: queued `.onAppear` and `.onChange` actions (initial and later ones) are
+    dropped when their view goes first, and a late appear cannot start a task. These fail
+    without the lifetime check. Also: `.task` is cancelled when its view goes before the main
+    loop runs, and the task-before-appear order.
   - `WindowSizeTests` (P10).
 
   `container-demo.sh` runs them on Linux, and `swift test` runs them on macOS. They are built as

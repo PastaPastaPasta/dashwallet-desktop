@@ -22,7 +22,9 @@ extension View {
     }
 }
 
-struct OnChangeModifier<Value: Equatable, Content: View>: View {
+// dashwallet-desktop patch P8: a `LifecycleHookModifier`, so a deferred action is dropped once
+// the view is gone.
+struct OnChangeModifier<Value: Equatable, Content: View>: LifecycleHookModifier {
     // TODO: This probably doesn't have to trigger view updates. We're only
     //   really using @State here to persist the data.
     @State var previousValue: Value?
@@ -41,15 +43,15 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
     // Vendor/PATCHES.md, P8).
     func commit<Backend: BaseAppBackend>(
         _ widget: Backend.Widget,
-        children: any ViewGraphNodeChildren,
+        children: LifecycleHookChildren,
         layout: ViewLayoutResult,
         environment: EnvironmentValues,
         backend: Backend
     ) {
         if let previousValue, value != previousValue {
-            run(action, backend: backend)
+            run(action, children: children, backend: backend)
         } else if initial, previousValue == nil {
-            run(action, backend: backend)
+            run(action, children: children, backend: backend)
         }
 
         if previousValue != value {
@@ -58,16 +60,20 @@ struct OnChangeModifier<Value: Equatable, Content: View>: View {
 
         defaultCommit(
             widget,
-            children: children,
+            children: children.wrapped,
             layout: layout,
             environment: environment,
             backend: backend
         )
     }
 
-    private func run<Backend: BaseAppBackend>(_ action: @escaping () -> Void, backend: Backend) {
+    private func run<Backend: BaseAppBackend>(
+        _ action: @escaping () -> Void,
+        children: LifecycleHookChildren,
+        backend: Backend
+    ) {
         if runsAfterUpdate {
-            backend.runInMainThread(action: action)
+            children.runAfterUpdate(action, backend: backend)
         } else {
             action()
         }
