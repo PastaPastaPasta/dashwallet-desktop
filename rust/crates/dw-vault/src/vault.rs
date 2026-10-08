@@ -1261,12 +1261,54 @@ impl Vault {
     }
 
     /// A signer for every derivation of `wallet`, authorized by a redeemed
-    /// grant for that wallet whose purpose signs (spend, message, platform).
-    /// A grant authorized by passphrase on a locked or mixing-only vault
-    /// hands its own key to the signer. The signer stops working when the
-    /// vault locks or changes unlock scope.
+    /// grant for that wallet whose purpose signs (spend, message). A grant
+    /// authorized by passphrase on a locked or mixing-only vault hands its
+    /// own key to the signer. The signer stops working when the vault locks
+    /// or changes unlock scope. A `PlatformOp` grant gets scoped signers
+    /// only ([`Self::platform_signer`]).
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
-        if !token.purpose.signs() || token.wallet.as_ref() != Some(wallet) {
+        if !token.purpose.signs() {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        self.token_signer(wallet, token, SignerScope::Full)
+    }
+
+    /// A signer limited to one Platform scope (DASHPAY §3.3):
+    /// [`SignerScope::PlatformIdentity`], [`SignerScope::DashPayCrypto`] or
+    /// [`SignerScope::PlatformFunding`], authorized by a redeemed
+    /// `PlatformOp` grant for `wallet`. One token may issue several (a
+    /// registration needs identity and funding signers). Any other scope is
+    /// `InvalidArgument`; any other grant `GrantPurposeMismatch`. Lifetime
+    /// and own-key rules are those of [`Self::signer`].
+    pub fn platform_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if !matches!(
+            scope,
+            SignerScope::PlatformIdentity
+                | SignerScope::DashPayCrypto
+                | SignerScope::PlatformFunding { .. }
+        ) {
+            return Err(VaultError::InvalidArgument(format!(
+                "{scope:?} is not a Platform signer scope"
+            )));
+        }
+        if token.purpose.kind() != GrantKind::PlatformOp {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        self.token_signer(wallet, token, scope)
+    }
+
+    fn token_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);
         }
         let own_key = match &token.key {
@@ -1283,7 +1325,50 @@ impl Vault {
         if own_key.is_none() && inner.dek.is_none() {
             return Err(VaultError::Locked);
         }
-        self.signer_locked(&inner, wallet, SignerScope::Full, own_key)
+        self.signer_locked(&inner, wallet, scope, own_key)
+    }
+
+    /// The background DashPay crypto signer ([`SignerScope::DashPayCrypto`],
+    /// DASHPAY §2.6): no grant, so it exists only while the full key is
+    /// available without a prompt, on an unencrypted vault or one unlocked
+    /// with scope Full. `Locked` and `MixingOnly` otherwise. It can neither
+    /// spend nor sign a state transition. Stops working when the vault locks
+    /// or changes unlock scope. Engine-internal, like [`Self::scan_key`]:
+    /// dw-ffi must not expose either, so no view reaches key material
+    /// without a grant.
+    pub fn dashpay_crypto_signer(&self, wallet: &WalletId) -> Result<VaultSigner, VaultError> {
+        self.prompt_free_signer(wallet, SignerScope::DashPayCrypto)
+    }
+
+    /// A signer with `scope` under the vault's own full key, issued only in
+    /// the states where that key needs no prompt (see
+    /// [`Self::dashpay_crypto_signer`]). The state is read under the same
+    /// lock that issues the signer, so an unlock for mixing in between is
+    /// refused rather than served with the mixing-only key.
+    pub(crate) fn prompt_free_signer(
+        &self,
+        wallet: &WalletId,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        if matches!(
+            self.lock_state(),
+            LockState::NoKeys | LockState::Unencrypted
+        ) {
+            // Loads the data key from the OS store.
+            self.full_dek()?;
+        }
+        let inner = self.inner();
+        match Self::state_of(&inner) {
+            LockState::NoVault => Err(VaultError::NoVault),
+            LockState::Locked => Err(VaultError::Locked),
+            LockState::UnlockedMixingOnly => Err(VaultError::MixingOnly),
+            LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked => {
+                if inner.dek.is_none() || inner.scope != UnlockScope::Full {
+                    return Err(VaultError::Locked);
+                }
+                self.signer_locked(&inner, wallet, scope, None)
+            }
+        }
     }
 
     /// A signer limited to the CoinJoin account (`m/9'/coin'/4'/…`). Works in

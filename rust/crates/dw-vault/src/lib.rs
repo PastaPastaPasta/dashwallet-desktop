@@ -12,7 +12,12 @@
 //! - single-use, expiring [`AuthGrant`]s checked here, so a buggy view
 //!   cannot sign, reveal or wipe without one;
 //! - [`VaultSigner`] implements key_wallet's [`key_wallet::Signer`] over the
-//!   stored seed; a mixing-only unlock signs CoinJoin-account paths only.
+//!   stored seed; a mixing-only unlock signs CoinJoin-account paths only;
+//! - Platform signers are scoped ([`SignerScope`], DASHPAY §3.3): identity
+//!   keys, DashPay contact crypto (which never signs) and asset-lock
+//!   funding, each refusing every path outside its own ([`paths`]); the
+//!   identity signatures and DIP-15 crypto run here so derived scalars stay
+//!   in this crate.
 //!
 //! dash-qt parity: "Encrypt wallet" adds slot P and removes slot O, "Change
 //! passphrase" re-wraps the DEK (the seed is unchanged), and there is no
@@ -28,6 +33,8 @@ mod error;
 mod file;
 pub mod mnemonic;
 pub mod os_store;
+pub mod paths;
+mod platform;
 mod signer;
 mod types;
 mod vault;
@@ -35,7 +42,9 @@ mod vault;
 pub use crypto::{CALIBRATION_TARGET, KdfParams, KdfPolicy};
 pub use error::{MnemonicError, SignerError, VaultError};
 pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
-pub use signer::{SignerScope, VaultSigner, WalletSigner, is_bip44_path, is_coinjoin_path};
+pub use paths::{is_bip44_path, is_coinjoin_path};
+pub use platform::{ContactInfoOpened, ContactInfoSealed, ScanKey};
+pub use signer::{SignerScope, VaultSigner, WalletSigner};
 pub use types::{
     AuthGrant, Clock, Credential, DEFAULT_GRANT_TTL_SECS, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
     GrantKind, GrantPurpose, GrantToken, LockState, PASSPHRASE_MAX_AGE_SECS,

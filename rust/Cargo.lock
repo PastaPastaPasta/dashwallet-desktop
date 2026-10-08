@@ -1756,6 +1756,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "key-wallet",
+ "platform-encryption",
  "platform-wallet-storage",
  "serde",
  "serde_json",

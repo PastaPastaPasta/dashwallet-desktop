@@ -137,11 +137,9 @@ impl GrantPurpose {
     }
 
     /// Whether a redeemed grant of this purpose may obtain a full signer.
+    /// `PlatformOp` gets scoped signers only (`Vault::platform_signer`).
     pub(crate) fn signs(&self) -> bool {
-        matches!(
-            self,
-            GrantPurpose::Spend { .. } | GrantPurpose::SignMessage | GrantPurpose::PlatformOp
-        )
+        matches!(self, GrantPurpose::Spend { .. } | GrantPurpose::SignMessage)
     }
 }
 

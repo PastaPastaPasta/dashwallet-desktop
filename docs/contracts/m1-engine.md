@@ -103,6 +103,26 @@ plan. A passphrase
 grant on a locked or mixing-only vault signs, reveals or wipes with its own key and leaves the vault as it
 was.
 
+**Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
+`PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped
+signers from it instead (one token may issue several), and each refuses every path and use outside its scope
+before reading the seed:
+
+| Scope | Uses | Paths |
+|---|---|---|
+| `PlatformIdentity` | sign, public key (no chain code) | DIP-13 ECDSA identity keys `m/9'/coin'/5'/0'/0'/i'/k'` |
+| `DashPayCrypto` | never signs. Public keys; ECDH and the account-reference mask; contactInfo AES keys; export of the auto-accept key | xpubs of `m/9'/coin'/15'/a'/<user>/<friend>` (DIP-14 256-bit children), `m/9'/coin'/16'/expiry'` and `m/44'/coin'/0'`; ECDH and mask with identity keys; contactInfo `…/k'/65536'\|65537'/n'` under an identity key; export of `m/9'/coin'/16'/expiry'` only |
+| `PlatformFunding{max_duffs}` | sign, public key (no chain code); one extended public key | BIP44 and BIP32 addresses, DIP-15 receiving addresses, asset-lock credit keys `m/9'/coin'/5'/{1',2',3'}/…` with a non-hardened last step; the xpub of an identity's top-up account `m/9'/coin'/5'/2'/i'`. The engine checks the cap before signing, as for `Spend`. Until E0-04 puts caps on `PlatformOp` grants, the engine also picks the cap. |
+
+`Vault::dashpay_crypto_signer` (the background crypto signer) and `Vault::scan_key` (the identity-scan master
+key, resolved only when the scan runs) need no grant. They are issued only while the full key needs no prompt
+(`Unencrypted`, or `Unlocked` with scope Full), and refused while `Locked` (`vault.locked`) or
+`UnlockedMixingOnly` (`vault.mixing_only`). Like every signer, they stop working when the vault locks. Neither
+needs a grant, so only the engine may call them, and dw-ffi must not expose them. The
+engine adapters (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`, platform-wallet's
+`ContactCryptoProvider` and `ScanKeyResolver` over these. The derived scalars never leave dw-vault; the one
+exception is the auto-accept key that DIP-15 hands out on purpose.
+
 **Concurrency** (review H1). All changes of the vault file (create, encrypt, change passphrase, record
 writes, throttle updates) and all passphrase checks are serialized by one vault-level writer lock. Each
 write starts from the in-memory file and changes only its own part (a slot, the throttle, or records); the

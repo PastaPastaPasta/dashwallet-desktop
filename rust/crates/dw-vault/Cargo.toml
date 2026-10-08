@@ -24,6 +24,8 @@ subtle = "=2.6.1"
 sha2 = "0.10"
 key-wallet = { workspace = true }
 dashcore = { workspace = true }
+# DIP-15 contact crypto runs inside the vault (Platform signers).
+platform-encryption = { workspace = true }
 dw-compat = { workspace = true }
 dw-message = { workspace = true }
 dw-uri = { workspace = true }
