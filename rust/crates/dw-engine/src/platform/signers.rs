@@ -214,6 +214,7 @@ impl ContactCryptoProvider for VaultContactCrypto {
             .signer
             .export_auto_accept_key(path)
             .map_err(provider_error)?;
+        // The trait's type: a secp256k1 `SecretKey` does not erase itself.
         SecretKey::from_slice(&scalar[..])
             .map_err(|e| PlatformWalletError::InvalidIdentityData(e.to_string()))
     }
@@ -272,7 +273,7 @@ impl ContactCryptoProvider for VaultContactCrypto {
         enc_to_user_id: &[u8; 32],
         private_data_blob: &[u8],
     ) -> Result<ContactInfoOpened, PlatformWalletError> {
-        let opened = self
+        let mut opened = self
             .signer
             .contact_info_open(
                 root_path,
@@ -281,9 +282,11 @@ impl ContactCryptoProvider for VaultContactCrypto {
                 private_data_blob,
             )
             .map_err(provider_error)?;
+        // Moved, not copied: the library's type holds the plaintext from
+        // here in a plain `Vec` this crate cannot erase.
         Ok(ContactInfoOpened {
             contact_id: opened.contact_id,
-            private_data: opened.private_data,
+            private_data: std::mem::take(&mut *opened.private_data),
         })
     }
 }

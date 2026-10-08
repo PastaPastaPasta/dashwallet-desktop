@@ -24,10 +24,10 @@ use zeroize::Zeroizing;
 
 use crate::SignerError;
 use crate::crypto::Key32;
-use crate::paths;
 use crate::signer::{KeyUse, SignerScope, VaultSigner, WalletSigner};
 use crate::types::WalletId;
 use crate::vault::Vault;
+use crate::{dip15, paths};
 
 /// The two DIP-15 contactInfo ciphertexts to publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,11 +38,21 @@ pub struct ContactInfoSealed {
     pub private_data: Vec<u8>,
 }
 
-/// A contactInfo document opened with the wallet's keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A contactInfo document opened with the wallet's keys. `private_data` is
+/// the decrypted alias and note: erased on drop, and never shown by `Debug`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ContactInfoOpened {
     pub contact_id: [u8; 32],
-    pub private_data: Vec<u8>,
+    pub private_data: Zeroizing<Vec<u8>>,
+}
+
+impl std::fmt::Debug for ContactInfoOpened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContactInfoOpened")
+            .field("contact_id", &hex::encode(self.contact_id))
+            .field("private_data_len", &self.private_data.len())
+            .finish()
+    }
 }
 
 /// Whether the compressed public key `derived` is the on-chain identity key
@@ -122,7 +132,7 @@ impl VaultSigner {
 
     /// DIP-15 ECDH between the identity key at `path` (an encryption or
     /// decryption key) and `peer`: `SHA256((y&1|2) ‖ x)` of the shared
-    /// point (`platform_encryption::derive_shared_key_ecdh`).
+    /// point (as `platform_encryption::derive_shared_key_ecdh`).
     pub fn ecdh_shared_secret(
         &self,
         path: &DerivationPath,
@@ -130,10 +140,7 @@ impl VaultSigner {
     ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
         self.require_identity_key(path)?;
         self.with_key(path, KeyUse::Agreement, |_, x| {
-            Zeroizing::new(platform_encryption::derive_shared_key_ecdh(
-                &x.private_key,
-                peer,
-            ))
+            dip15::ecdh(&x.private_key, peer)
         })
     }
 
@@ -148,12 +155,7 @@ impl VaultSigner {
     ) -> Result<u32, SignerError> {
         self.require_identity_key(path)?;
         self.with_key(path, KeyUse::Agreement, |_, x| {
-            platform_encryption::calculate_account_reference(
-                &secret_bytes(x),
-                compact_xpub,
-                account_index,
-                version,
-            )
+            dip15::account_reference(&secret_bytes(x), compact_xpub, account_index, version)
         })
     }
 
@@ -166,11 +168,7 @@ impl VaultSigner {
     ) -> Result<(u32, u32), SignerError> {
         self.require_identity_key(path)?;
         self.with_key(path, KeyUse::Agreement, |_, x| {
-            platform_encryption::unmask_account_reference(
-                account_reference,
-                &secret_bytes(x),
-                compact_xpub,
-            )
+            dip15::unmask_account_reference(account_reference, &secret_bytes(x), compact_xpub)
         })
     }
 
@@ -213,8 +211,8 @@ impl VaultSigner {
     ) -> Result<ContactInfoSealed, SignerError> {
         self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
             ContactInfoSealed {
-                enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(enc_key, contact_id),
-                private_data: platform_encryption::encrypt_private_data(data_key, iv, private_data),
+                enc_to_user_id: dip15::enc_to_user_id(enc_key, contact_id, false),
+                private_data: dip15::encrypt_private_data(data_key, iv, private_data),
             }
         })
     }
@@ -228,11 +226,9 @@ impl VaultSigner {
         private_data: &[u8],
     ) -> Result<ContactInfoOpened, SignerError> {
         self.with_contact_info_keys(root, derivation_index, |enc_key, data_key| {
-            let private_data = platform_encryption::decrypt_private_data(data_key, private_data)
-                .map_err(|e| SignerError::Decrypt(e.to_string()))?;
             Ok(ContactInfoOpened {
-                contact_id: platform_encryption::decrypt_enc_to_user_id(enc_key, enc_to_user_id),
-                private_data,
+                contact_id: dip15::enc_to_user_id(enc_key, enc_to_user_id, true),
+                private_data: dip15::decrypt_private_data(data_key, private_data)?,
             })
         })?
     }

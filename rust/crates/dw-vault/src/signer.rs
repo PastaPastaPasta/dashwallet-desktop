@@ -407,6 +407,15 @@ mod tests {
             .collect()
     }
 
+    /// Every derived key and the per-call master key rely on key-wallet's
+    /// erasing `Drop` for `ExtendedPrivKey` (rust-dashcore `e4208c9`,
+    /// `bip32.rs:373-395`); a pin without it would leave `Op::master`'s
+    /// chain code and `ScanKey::master_key`'s clone unerased.
+    #[test]
+    fn extended_private_keys_erase_on_drop() {
+        assert!(std::mem::needs_drop::<ExtendedPrivKey>());
+    }
+
     #[test]
     fn full_scope_allows_everything() {
         assert_eq!(uses(SignerScope::Full, "m/0"), ALL_USES.to_vec());

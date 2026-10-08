@@ -619,7 +619,11 @@ async fn contact_info_opens_what_it_seals_and_refuses_foreign_ciphertext() {
         .contact_info_open(&root, 3, &sealed.enc_to_user_id, &sealed.private_data)
         .unwrap();
     assert_eq!(opened.contact_id, [0x33; 32]);
-    assert_eq!(opened.private_data, b"alias");
+    assert_eq!(&opened.private_data[..], b"alias");
+    assert!(
+        !format!("{opened:?}").contains("alias"),
+        "Debug shows no plaintext"
+    );
     // Another derivation index has other keys: the private data fails its
     // padding check (or, rarely, opens to garbage), and the id is not ours.
     assert_ne!(
