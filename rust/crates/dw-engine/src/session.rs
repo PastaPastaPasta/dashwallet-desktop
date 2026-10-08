@@ -31,6 +31,8 @@ pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
 pub const WALLET_DB_FILE: &str = "wallet.sqlite";
 /// dash-spv storage directory inside a network dir.
 pub const SPV_DIR: &str = "spv";
+/// DashPay avatar thumbnails inside a network dir (DASHPAY §3.4).
+pub const AVATARS_DIR: &str = "avatars";
 
 /// Network-scoped wallet id (key-wallet folds the network into the digest,
 /// so the same mnemonic has a different id per network).
@@ -203,6 +205,8 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
+        // Owner-only whatever the umask (DASHPAY §3.4).
+        create_owned_dir(&data_dir, Path::new(AVATARS_DIR))?;
         let coinjoin_settings = {
             let db = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::coinjoin::load_settings(&db)).await?
