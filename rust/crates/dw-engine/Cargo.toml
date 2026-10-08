@@ -65,6 +65,10 @@ tokio = { workspace = true, features = ["test-util"] }
 # source for docs/contracts/m4-dashpay-engine.md (both already in the graph).
 syn = { version = "2", features = ["full", "printing"] }
 quote = "1"
+# The listing's fingerprint, and compile-time checks that bearer secrets
+# never serialize, print or copy.
+sha2 = "0.10"
+static_assertions = "1"
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests/umask_002.rs sets the process umask.

@@ -1,36 +1,45 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code:
-`rust/crates/dw-engine/src/platform/{dashpay,records,errors}.rs`. Design background: DASHPAY §2.4 (a plain-Rust facade
-that the binding wraps one to one), §3.1–§3.6. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) still
-applies, with the changes in §1 below.
+Contract-Version: 1
 
-The facade is plain Rust in dw-engine. Its source is every file of `src/platform/` except `mod.rs`, `signers.rs` and
-`status.rs`; the DP tasks may add `impl DashPay` blocks in their domain files (§3.1), and the listing picks them up.
-Records the facade returns stay `pub` in those files; helper types are `pub(crate)`. `dwcli` (E0-09) and the T2/T3 suites drive it directly; E0-13 binds it for the
+Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
+`rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
+one to one), §3.1–§3.6. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) still applies, with the changes
+in §1 below.
+
+The facade is plain Rust in dw-engine. `dwcli` (E0-09) and the T2/T3 suites drive it directly; E0-13 binds it for the
 chosen UI stack (UniFFI `dw-ffi` or Tauri `dw-app`), with `uniffi` or `specta` derives in the binding crate only.
 
 Every call exists now and returns `platform.not_implemented{call}` (§4), where `call` is `"DashPay.<method>"`,
 `"NetworkSession.<method>"` or the free function's name. No call fakes success. Unlike the m2/m3 stubs, these do not
 check the session or their arguments first: E0-08 adds no behaviour, so a stub called after `close_network` still
-returns `platform.not_implemented`. The DP tasks fill in the bodies. **They do not change a signature, a
-record or a code without updating this file in the same change.** `rust/crates/dw-engine/tests/m4_dashpay_contract.rs`
+returns `platform.not_implemented`.
+
+The DP tasks fill in the bodies. **They do not change a signature, a record, a trait impl or a code without updating
+this file and raising `Contract-Version` in the same change.** `rust/crates/dw-engine/tests/m4_dashpay_contract.rs`
 enforces that:
 
-- §3 is generated from the source and must match it byte for byte. After a deliberate change, run
-  `DW_BLESS=1 cargo test -p dw-engine --test m4_dashpay_contract` and review the diff of this file.
-- every call has a §2 row whose Kind (sync or async) and Errors (the first type named) match its signature, and every
-  §2 row names a call;
+- §3 is a listing generated from the source, with its SHA-256 and the version it was approved under. Any difference
+  fails and prints a line diff. To approve a change: raise `Contract-Version` above, run
+  `DW_BLESS=1 cargo test -p dw-engine --test m4_dashpay_contract`, review the diff, and run again without `DW_BLESS`.
+  The bless run always fails ("re-run"), it refuses when `CI` is set, and it refuses a changed surface unless the
+  version was raised.
+- every `pub` item of the facade files is re-exported from `dw_engine::platform` by name (no glob);
+- every call has a §2 row whose Kind (`sync`, `async` or `free, pure`) and Errors (the first type named) match its
+  signature, and every §2 row names a call. Rows are keyed by owner: `NetworkSession.x(…)` names its owner, a free
+  function has Kind `free, pure`, any other row is a `DashPay` call;
 - the §4 rows match each error enum's `code()`, one sample per variant in order; each code names its variant
   (`contact.self` is `IsSelf`), and every error enum in `errors.rs` has a row;
 - every call not in the test's `IMPLEMENTED` list returns `platform.not_implemented` with its own name. A DP task that
-  fills in a body removes the call's stub line from that test and adds the name to `IMPLEMENTED`.
+  fills in a body removes the call's stub line from that test and adds the name to `IMPLEMENTED`;
+- `BearerSecret` implements none of `Serialize`, `Display`, `Clone`, `PartialEq` or `Into<String>`, and
+  `AvatarSource` neither `Serialize` nor `Clone` (compile-time assertions).
 
-## 0. Object model and owners
+## 0. Object model, files and owners
 
 ```
 Engine ──open_network──▶ NetworkSession ──dashpay(wallet_id)──▶ Arc<DashPay>
-                                         ──stash_invitation / invitation_status   (per network, §2.9)
+                                         ──stash / status / pending / forget invitation   (per network, §2.9)
 check_username(label)      (free function, no session)
 ```
 
@@ -40,35 +49,58 @@ once implemented (`wallet_not_found`). A `DashPay` holds its session; once imple
 state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) lives in the session's Platform runtime
 (§3.1 `mod.rs`), never in the handle.
 
-| Owner (ROADMAP) | Calls |
-|---|---|
-| E0-05 bring-up | `status`, `sync_status`, `sync_now` |
-| DP1-01/DP1-05/DP6-01 identity | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
-| DP1-02 registration | `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks` |
-| DP1-03/DP1-04 names | `check_username`, `name_availability`, `register_name`, `contest_status` |
-| DP2-01…DP2-04 contacts | `search_users`, `resolve_user`, `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
-| DP3-01/DP3-02 payments | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
-| DP2-05 notifications | `events`, `unread_count`, `mark_read` |
-| DP4-01/DP4-02 profile | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar` |
-| DP1-06/DP6-02 credits | `cost_table`, `top_up`, `withdraw` |
-| DP5-01/DP5-02 invitations | `NetworkSession.stash_invitation`, `NetworkSession.invitation_status` |
+The facade is every file of `src/platform/` except `mod.rs`, `signers.rs` and `status.rs`, one per domain (DASHPAY
+§3.1). Each domain file holds its records and its own `impl DashPay` block, so parallel DP tasks edit different
+files. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper type is `pub(crate)`.
+
+| File | Owner (ROADMAP) | Calls |
+|---|---|---|
+| `dashpay.rs` | E0-08 | `NetworkSession.dashpay`, `wallet_id`; `BearerSecret` |
+| `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
+| `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
+| `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
+| `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `contest_status`, `search_users`, `resolve_user` |
+| `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
+| `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
+| `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
+| `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar` |
+| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `withdraw_quote`, `withdraw` |
+| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
+| `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
 ## 1. Conventions (changes to m1-engine.md §1)
 
 | Topic | Rule |
 |---|---|
-| Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, invitation links: opaque `String` ids the engine issued. |
+| Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links: opaque `String` ids the engine issued. |
 | Amounts | Duffs and credits are `u64`; the field name or doc says which. |
 | Every call returns `Result` | Including the in-memory reads DASHPAY §3.6 sketched without one (`status`, `identities`, `contacts`, …) and `check_username`. A stub has to return `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`. |
 | Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). Paged or unbounded reads (`events`, `registrations`) are async. |
+| Static tables before Platform answers | `profile_limits` returns the built-in 25 / 140 until the DashPay contract is fetched; `cost_table` returns the fee table of the SDK's current protocol version. Neither waits for the network. |
 | Grants | `grant: String` is a grant id from `Vault.authorize`. The purposes and caps are E0-04's (DASHPAY §2.6). E0-04 may make it a flow-lease id ("Accept and pay" holds one lease across `accept_request` and the payment's `prepare`, §2.3) without changing its type. |
-| Records | Derive `serde` `Serialize` and `Deserialize` (inputs holding a secret: `Deserialize` only). Enums with data are internally tagged with `kind` and snake-case names; unit enums serialize as snake-case strings. Records are also `Debug`, `Clone` and `PartialEq`. |
-| Errors | One enum per domain, with `code()` returning a stable string (§4). `Display` is diagnostic detail for logs. Each domain wraps `PlatformError` in a `Platform` variant, so `platform.*`, `identity.*` and the common codes reach the host from any call. |
-| Secrets | Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): the faucet asset-lock key, invitation links (`stash_invitation`) and scanned payloads that may carry a `dapk` (`verify_scanned`). It deserializes from a JSON string, never serializes, has a redacting `Debug` and is zeroed on drop; `expose()` reads it. The input records that can hold one (`RegistrationRequest`, `RegistrationFunding`) derive `Deserialize` only. `AvatarSource`'s `Debug` hides the Gravatar e-mail and prints only the byte count of a file. |
+| Records | Derive `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. The exceptions are inputs that carry private data, which derive `Deserialize` only: `AvatarSource` (the Gravatar e-mail). Enums with data are internally tagged with `kind` and snake-case names; unit enums serialize as snake-case strings. Byte payloads (`AvatarSource::File.bytes`, `AvatarImage.png`) serialize as standard base64 strings, never as number arrays. |
+| Errors | One enum per domain, with `code()` returning a stable string (§4), and `platform()` returning the wrapped `PlatformError`, if any. `Display` is diagnostic detail for logs. Each domain wraps `PlatformError` in a `Platform` variant, so `platform.*`, `identity.*` and the common codes reach the host from any call. |
+| Secrets | See below. |
+
+**Secrets.** Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): invitation links (`stash_invitation`) and
+scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path carries no secret at all (§5).
+
+- `BearerSecret` deserializes from a JSON string and never serializes. It has no `Display`, `Clone`, `PartialEq` or
+  conversion back to `String`; its `Debug` prints `BearerSecret(..)`; it is zeroed on drop; `expose()` reads it in the
+  engine.
+- **Bindings take secrets as bytes**, as m1's "Secrets in" rule says, because a Swift or JS `String` cannot be zeroed.
+  E0-13 binds `BearerSecret` as a custom type over `Vec<u8>` built with `BearerSecret::from_utf8(Zeroizing<Vec<u8>>)`,
+  never as a host string, and no binding returns one. Residual risk, as in m1: the IPC or JSON payload that carried
+  the bytes is not zeroed.
+- **No error `detail` and no `Display` may quote a `BearerSecret` input or any part of it.** A link parser reports
+  "malformed invitation link", never the link. `from_utf8` already refuses invalid UTF-8 without quoting it.
+- **`dwcli` reads bearer inputs from stdin or a file, never from argv** (argv is visible in `/proc/*/cmdline` and in
+  shell history). E0-09 follows this for `invite claim` and for scans.
+- `AvatarSource`'s `Debug` hides the Gravatar e-mail and prints only the byte count of a file.
 
 ## 2. Calls
 
-Every call's status today: **stub**. "Kind" is sync or async as in §1.
+Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -87,12 +119,13 @@ Every call's status today: **stub**. "Kind" is sync or async as in §1.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total (what the grant must cover), credits left. | `RegistrationError` |
-| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
-| `registrations()` | async | Every `dp_registration` row of the wallet. | `RegistrationError` |
-| `resume_registration(draft, grant)` | async | Advances a parked flow; `grant` when it needs keys again. | `RegistrationError` |
-| `discard_registration(draft)` | async | Before `FundingSent` only. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total (what the grant must cover), credits left. Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
+| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
+| `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5). | `RegistrationError` |
+| `resume_registration(draft, grant)` | async | Advances a parked flow. `grant` is required exactly when the row's `waiting` is `Unlock`, and ignored otherwise. | `RegistrationError` |
+| `discard_registration(draft)` | async | Before `FundingSent` only; after it, `invalid_argument` (§4). | `RegistrationError` |
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. | `RegistrationError` |
+| `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
 ### 2.3 Names
 
@@ -113,14 +146,14 @@ Every call's status today: **stub**. "Kind" is sync or async as in §1.
 | `contact(identity, contact)` | sync | One contact with profile, private details, publish state and payment lock; `None` if unknown. | `ContactError` |
 | `pending_setup_count()` | sync | Contacts waiting for an unlock to finish their crypto ("Unlock to finish setting up N contacts"). | `ContactError` |
 | `eligibility(identity, contact)` | async | Before any prompt: `Ok`, `NoDashPayKeys`, `IsSelf`, `AlreadyContact`, `PendingOutgoing`, `PendingIncoming`. | `ContactError` |
-| `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is `ScannedContact.scan` when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_from_qr`). A scan id lives for the session, until it is used. | `ContactError` |
+| `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is `ScannedContact.scan` when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_from_qr`). A scan id is single-use and lives for the session; a stale id or an expired proof is `contact.scan_expired`. An ineligible target is `contact.ineligible{reason}` with the `eligibility` answer. | `ContactError` |
 | `accept_request(identity, from, grant)` | async | Sends the reverse request. | `ContactError` |
 | `ignore(identity, contact)` | async | Adds to `ignored_senders`. | `ContactError` |
 | `unignore(identity, contact)` | async | Removes it again. | `ContactError` |
 | `set_private_details(identity, contact, d, grant)` | async | Alias, note, hidden. Stored locally; published as an encrypted `contactInfo` once there are ≥ 2 contacts (`DeferredUntilTwoContacts` before that; `grant` is needed to publish). | `ContactError` |
 | `enable_dashpay_keys(identity, grant)` | async | Adds keys 4–5 to an identity that lacks them (F9). | `ContactError` |
 | `my_user_link(identity)` | sync | `dashpay://user?id=&username=`. | `ContactError` |
-| `verify_scanned(text)` | async | A plain user link or a DIP-15 `dash:?du=&dapk=` payload, verified against Platform. A `dapk` proof stays in the engine; the result carries its `scan` id. | `ContactError` |
+| `verify_scanned(text)` | async | A plain user link or a DIP-15 `dash:?du=&dapk=` payload, verified against Platform. A `dapk` proof stays in the engine; the result carries its `scan` id. An expired proof is `contact.scan_expired`. | `ContactError` |
 
 ### 2.5 Payments and activity (the `TxDraft` recipient is in `send/`, §6)
 
@@ -144,482 +177,55 @@ Every call's status today: **stub**. "Kind" is sync or async as in §1.
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `profile(identity)` | sync | The stored profile; `None` if none. | `PlatformError` |
-| `profile_limits()` | sync | From the DashPay contract: 25 / 140. | `PlatformError` |
+| `profile_limits()` | sync | From the DashPay contract: 25 / 140 (§1, before the first fetch). | `PlatformError` |
 | `prepare_avatar(src)` | async | Fetches or decodes `File{bytes, crop}`, `Url{url}` or `Gravatar{email}`, re-encodes to PNG and returns a candidate with a preview (DASHPAY §3.8). | `AvatarError` |
 | `avatar_upload_available()` | sync | An Imgur client id is configured. | `AvatarError` |
-| `upload_avatar(candidate)` | async | Uploads a `File` candidate to Imgur; returns its URL. | `AvatarError` |
+| `upload_avatar(candidate)` | async | Uploads a `File` candidate to Imgur; returns its URL and sets the candidate's `url`. | `AvatarError` |
 | `update_profile(identity, edit, grant)` | async | Publishes the whole new profile (`None` clears a field). | `PlatformError` |
-| `avatar(identity, size)` | async | The cached or fetched thumbnail; `None` if there is no avatar or "Load contact pictures" is off. | `AvatarError` |
+| `avatar(identity, size)` | async | The cached or fetched thumbnail of any identity (a contact, a search hit, the inviter, an own identity); `None` if there is no avatar or "Load contact pictures" is off. The contact and user records carry no image, so this call serves them. | `AvatarError` |
 
 ### 2.8 Credits
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `cost_table()` | sync | Credit costs for "≈ N contact requests" and the low-credit warnings. | `CreditsError` |
-| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance. | `CreditsError` |
-| `withdraw(identity, to, amount, grant)` | async | Credits to the Core address `to`; `All` keeps the fee reserve (DP6-02). | `CreditsError` |
+| `cost_table()` | sync | Credit costs for "≈ N contact requests" and the low-credit warnings (§1, before the first fetch). | `CreditsError` |
+| `top_up_quote(identity, duffs)` | async | The fee and total in duffs (what the grant must cover) and the credits a top-up of `duffs` buys. Refuses below `top_up_min_duffs` (`credits.below_minimum{min}`) and above the spendable balance (`credits.funding_insufficient{needed, available}`). | `CreditsError` |
+| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance; the same refusals as the quote. | `CreditsError` |
+| `withdraw_quote(identity, amount)` | async | The credits taken, the fee in credits and the duffs expected at `to`; `All` leaves the fee reserve (DP6-02). | `CreditsError` |
+| `withdraw(identity, to, amount, grant)` | async | Credits to the Core address `to`. | `CreditsError` |
 
 ### 2.9 Invitations (on `NetworkSession`)
 
 Per network, not per wallet: a link may arrive before any wallet exists (F18, "Paste invitation link" on the welcome
-screen), and the vault is per network.
+screen), and the vault is per network. Before a vault exists (the session's vault is `NoVault`), a stashed link is a
+0600 file in the vault directory; it moves into the vault, and the file is deleted, when the vault is created (DASHPAY
+§2.9, last row). The ids stay the same across the move.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `stash_invitation(link)` | async | Stores the link in the network's vault as `invitation/<id>`; returns the id. | `InvitationError` |
-| `invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
+| `NetworkSession.stash_invitation(link)` | async | Stores the link as the vault record `invitation/<id>`, or as the 0600 file before a vault exists; returns the id. A malformed link is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
+| `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
+| `NetworkSession.pending_invitations()` | async | The ids of the stashed links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
+| `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed link: the user dismissed it, or the claim finished. | `InvitationError` |
 
 ### 2.10 Facade
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `dashpay(wallet_id)` | sync | `NetworkSession`: a new handle for the wallet (§0). **works** | — |
+| `NetworkSession.dashpay(wallet_id)` | sync | A new handle for the wallet (§0). **works** | — |
 | `wallet_id()` | sync | The wallet the facade is bound to. **works** | — |
 
 ## 3. Surface (generated)
 
-The exact public surface: records, enums, error enums and signatures, with the `serde` attributes that fix the JSON
-shape. Do not edit by hand (see the top of this file).
+The exact public surface: records, enums, error enums, signatures and the headers of every trait impl, with the
+`derive`, `serde` and `cfg` attributes that fix what a binding and the JSON see. Do not edit by hand (see the top of
+this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
+<!-- surface-sha256: a0f3973e142b3884b4e87b362c7719626a4153504273d28f337698312baf5e03 version: 1 -->
 
 ```rust
-// src/platform/dashpay.rs
-pub struct DashPay {
-    ..
-}
-impl NetworkSession {
-    pub fn dashpay(self: &Arc<Self>, wallet_id: WalletId) -> Arc<DashPay>;
-    pub async fn stash_invitation(&self, link: BearerSecret) -> Result<String, InvitationError>;
-    pub async fn invitation_status(&self, link_id: String) -> Result<InvitationStatus, InvitationError>;
-}
-pub fn check_username(label: &str) -> Result<UsernameCheck, NameError>;
-impl DashPay {
-    pub fn wallet_id(&self) -> WalletId;
-    pub fn status(&self) -> Result<DashPayStatus, PlatformError>;
-    pub fn sync_status(&self) -> Result<DashPaySyncStatus, PlatformError>;
-    pub async fn sync_now(&self) -> Result<SyncPassReport, PlatformError>;
-    pub fn identities(&self) -> Result<Vec<IdentitySummary>, PlatformError>;
-    pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError>;
-    pub async fn identity_detail(&self, identity: String) -> Result<IdentityDetail, PlatformError>;
-    pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError>;
-    pub async fn discover_identities(&self, grant: String) -> Result<u32, PlatformError>;
-    pub async fn registration_quote(&self, req: RegistrationRequest) -> Result<RegistrationQuote, RegistrationError>;
-    pub async fn start_registration(&self, req: RegistrationRequest, grant: String) -> Result<String, RegistrationError>;
-    pub async fn registrations(&self) -> Result<Vec<RegistrationStatus>, RegistrationError>;
-    pub async fn resume_registration(&self, draft: String, grant: Option<String>) -> Result<(), RegistrationError>;
-    pub async fn discard_registration(&self, draft: String) -> Result<(), RegistrationError>;
-    pub async fn finish_asset_locks(&self, grant: String) -> Result<FinishReport, RegistrationError>;
-    pub async fn name_availability(&self, label: String) -> Result<NameAvailability, NameError>;
-    pub async fn register_name(&self, identity: String, label: String, grant: String) -> Result<NameOutcome, NameError>;
-    pub async fn contest_status(&self, identity: String, label: String) -> Result<ContestStatus, NameError>;
-    pub async fn search_users(&self, prefix: String, limit: u32) -> Result<Vec<UserHit>, NameError>;
-    pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError>;
-    pub fn contacts(&self, identity: String, q: ContactQuery) -> Result<ContactsPage, ContactError>;
-    pub fn contact(&self, identity: String, contact: String) -> Result<Option<ContactDetail>, ContactError>;
-    pub fn pending_setup_count(&self) -> Result<u32, ContactError>;
-    pub async fn eligibility(&self, identity: String, contact: String) -> Result<Eligibility, ContactError>;
-    pub async fn send_request(&self, identity: String, to: String, scan: Option<String>, grant: String) -> Result<RequestOutcome, ContactError>;
-    pub async fn accept_request(&self, identity: String, from: String, grant: String) -> Result<RequestOutcome, ContactError>;
-    pub async fn ignore(&self, identity: String, contact: String) -> Result<(), ContactError>;
-    pub async fn unignore(&self, identity: String, contact: String) -> Result<(), ContactError>;
-    pub async fn set_private_details(&self, identity: String, contact: String, d: PrivateDetails, grant: Option<String>) -> Result<PublishState, ContactError>;
-    pub async fn enable_dashpay_keys(&self, identity: String, grant: String) -> Result<(), ContactError>;
-    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError>;
-    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError>;
-    pub fn payment_lock(&self, identity: String, contact: String) -> Result<Option<PaymentLock>, ContactError>;
-    pub async fn resolve_payment_lock(&self, identity: String, contact: String) -> Result<LockResolution, ContactError>;
-    pub async fn contact_activity(&self, identity: String, contact: String, cursor: Option<String>, f: ActivityFilter) -> Result<ActivityPage, ContactError>;
-    pub fn frequent_contacts(&self, identity: String, limit: u32) -> Result<Vec<ContactSummary>, ContactError>;
-    pub async fn events(&self, identity: String, cursor: Option<u64>, limit: u32) -> Result<EventPage, PlatformError>;
-    pub fn unread_count(&self, identity: String) -> Result<u32, PlatformError>;
-    pub async fn mark_read(&self, identity: String, up_to: u64) -> Result<(), PlatformError>;
-    pub fn profile(&self, identity: String) -> Result<Option<Profile>, PlatformError>;
-    pub fn profile_limits(&self) -> Result<ProfileLimits, PlatformError>;
-    pub async fn prepare_avatar(&self, src: AvatarSource) -> Result<AvatarCandidate, AvatarError>;
-    pub fn avatar_upload_available(&self) -> Result<bool, AvatarError>;
-    pub async fn upload_avatar(&self, candidate: String) -> Result<String, AvatarError>;
-    pub async fn update_profile(&self, identity: String, edit: ProfileEdit, grant: String) -> Result<(), PlatformError>;
-    pub async fn avatar(&self, identity: String, size: AvatarSize) -> Result<Option<AvatarImage>, AvatarError>;
-    pub fn cost_table(&self) -> Result<CostTable, CreditsError>;
-    pub async fn top_up(&self, identity: String, duffs: u64, grant: String) -> Result<TopUpOutcome, CreditsError>;
-    pub async fn withdraw(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawOutcome, CreditsError>;
-}
-// src/platform/errors.rs
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum PlatformError {
-    Unavailable,
-    Timeout,
-    ProofInvalid,
-    TrustMismatch,
-    ContextUnavailable,
-    SignerUnavailable,
-    SeedMismatch,
-    InsufficientCredits { needed: u64, available: u64 },
-    GrantInvalid,
-    GrantExceeded,
-    FeatureOff { feature: String },
-    NotImplemented { call: String },
-    Identity(IdentityError),
-    InvalidArgument { detail: String },
-    NetworkNotOpen,
-    WalletNotFound,
-    Storage { detail: String },
-    Internal { detail: String },
-}
-impl PlatformError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum IdentityError {
-    NotFound,
-    KeysMissing { purpose: KeyPurpose },
-}
-impl IdentityError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RegistrationError {
-    InProgress,
-    FundingInsufficient { needed: u64, available: u64 },
-    IslockTimeout,
-    Recoverable { draft: String },
-    AlreadyHasUsername,
-    Platform(PlatformError),
-}
-impl RegistrationError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum NameError {
-    Invalid { rules: Vec<UsernameRule> },
-    Taken,
-    ContestOpen,
-    Locked,
-    UnavailableForInvite,
-    Platform(PlatformError),
-}
-impl NameError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ContactError {
-    Ineligible,
-    AlreadyContact,
-    RequestPending,
-    IsSelf,
-    ChannelBroken,
-    PaymentLocked { txid: String },
-    Platform(PlatformError),
-}
-impl ContactError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum InvitationError {
-    Invalid,
-    Claimed,
-    Expired,
-    AlreadyHasIdentity,
-    Platform(PlatformError),
-}
-impl InvitationError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AvatarError {
-    TooLarge,
-    Unsupported,
-    FetchFailed,
-    HashMismatch,
-    UploadUnconfigured,
-    Platform(PlatformError),
-}
-impl AvatarError {
-    pub fn code(&self) -> &'static str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CreditsError {
-    Platform(PlatformError),
-}
-impl CreditsError {
-    pub fn code(&self) -> &'static str;
-}
-// src/platform/records.rs
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DashPayStatus {
-    NoIdentity { reason: Option<NoIdentityReason> },
-    Registering { draft: String },
-    ContestPending { identity: String, label: String, ends_at: Option<u64> },
-    Ready { main: String },
-    StartupIncomplete { startup: StartupStatus },
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoIdentityReason {
-    WatchOnly,
-    WaitingForSync,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartupStatus {
-    NotRun,
-    Starting,
-    Ready,
-    NoIdentity,
-    PartialNoIdentity,
-    DiscoveryFailed,
-    PartialAccountsPending,
-    SeedBindingUnverified,
-    IdentityScanIncomplete,
-    IdentityUnsettled,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DashPaySyncStatus {
-    pub startup: StartupStatus,
-    pub last_pass: Option<SyncPassReport>,
-    pub pending_contact_crypto: u32,
-    pub loops: Vec<SyncLoopStatus>,
-    pub quorum_source: QuorumSource,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncPassReport {
-    pub started_at: u64,
-    pub finished_at: u64,
-    pub new_requests: u32,
-    pub new_contacts: u32,
-    pub new_payments: u32,
-    pub failure_code: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncLoopStatus {
-    pub sync_loop: SyncLoop,
-    pub running: bool,
-    pub last_run_at: Option<u64>,
-    pub next_run_at: Option<u64>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SyncLoop {
-    IdentitySync,
-    DashPaySync,
-    DpnsSync,
-    PlatformAddressSync,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QuorumSource {
-    Spv,
-    TrustedFallback,
-    Trusted,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentitySummary {
-    pub identity: String,
-    pub index: u32,
-    pub names: Vec<String>,
-    pub main_name: Option<String>,
-    pub is_main: bool,
-    pub balance: Option<u64>,
-    pub has_dashpay_keys: bool,
-    pub profile: Option<Profile>,
-    pub unverified: bool,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityDetail {
-    pub summary: IdentitySummary,
-    pub revision: Option<u64>,
-    pub public_keys: Vec<IdentityKeyInfo>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityKeyInfo {
-    pub id: u32,
-    pub purpose: KeyPurpose,
-    pub security_level: SecurityLevel,
-    pub key_type: KeyType,
-    pub public_key: String,
-    pub read_only: bool,
-    pub disabled_at: Option<u64>,
-    pub contract_bound: Option<String>,
-    pub contract_bound_document_type: Option<String>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyPurpose {
-    Authentication,
-    Encryption,
-    Decryption,
-    Transfer,
-    System,
-    Voting,
-    Owner,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SecurityLevel {
-    Master,
-    Critical,
-    High,
-    Medium,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyType {
-    EcdsaSecp256k1,
-    Bls12381,
-    EcdsaHash160,
-    Bip13ScriptHash,
-    EddsaHash160,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct RegistrationRequest {
-    pub label: String,
-    pub temporary_label: Option<String>,
-    pub funding: RegistrationFunding,
-    pub initial_profile: Option<InitialProfile>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InitialProfile {
-    pub display_name: Option<String>,
-    pub public_message: Option<String>,
-    pub avatar_candidate: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RegistrationFunding {
-    CoreBalance,
-    Invitation { link_id: String },
-    ExistingIdentity { identity: String },
-    FaucetAssetLock { outpoint: String, private_key: BearerSecret },
-}
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-#[serde(from = "String")]
-pub struct BearerSecret(..);
-impl BearerSecret {
-    pub fn new(secret: String) -> Self;
-    pub fn expose(&self) -> &str;
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistrationQuote {
-    pub contested: bool,
-    pub lock_duffs: u64,
-    pub fee_duffs: u64,
-    pub total_duffs: u64,
-    pub remaining_credits: u64,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistrationStatus {
-    pub draft: String,
-    pub phase: RegistrationPhase,
-    pub label: String,
-    pub temporary_label: Option<String>,
-    pub identity: Option<String>,
-    pub txid: Option<String>,
-    pub proof: Option<ProofKind>,
-    pub contest_ends_at: Option<u64>,
-    pub failed_phase: Option<RegistrationPhase>,
-    pub error: Option<String>,
-    pub retryable: bool,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegistrationPhase {
-    Draft,
-    KeysPrepared,
-    FundingSent,
-    ProofWaiting,
-    IdentityRegistered,
-    NameRequested,
-    NameRegistered,
-    Contested,
-    ProfileCreated,
-    Done,
-    Failed,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProofKind {
-    InstantSend,
-    ChainLock,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FinishReport {
-    pub resumed: u32,
-    pub completed: u32,
-    pub still_pending: u32,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UsernameCheck {
-    pub valid: bool,
-    pub normalized: String,
-    pub contested: bool,
-    pub rules: Vec<UsernameRuleCheck>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UsernameRuleCheck {
-    pub rule: UsernameRule,
-    pub passed: bool,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UsernameRule {
-    MinLength,
-    MaxLength,
-    AllowedCharacters,
-    NoEdgeHyphen,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NameAvailability {
-    Invalid { rules: Vec<UsernameRule> },
-    Available { contested: bool },
-    Taken { owner: Option<String> },
-    ContestOpen { ends_at: Option<u64>, contenders: u32 },
-    Locked,
-    Unknown,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NameOutcome {
-    Registered,
-    ContestStarted { ends_at: Option<u64> },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContestStatus {
-    pub label: String,
-    pub state: ContestState,
-    pub ends_at: Option<u64>,
-    pub contenders: Vec<ContestContender>,
-    pub lock_votes: Option<u32>,
-    pub abstain_votes: Option<u32>,
-    pub temporary_name: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ContestState {
-    Open,
-    Won,
-    Lost { winner: Option<String> },
-    Locked,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContestContender {
-    pub identity: String,
-    pub votes: Option<u32>,
-    pub is_self: bool,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserHit {
-    pub identity: String,
-    pub username: String,
-    pub display_name: Option<String>,
-    pub avatar_url: Option<String>,
-    pub relation: Relation,
-    pub unverified: bool,
-}
+// src/platform/contacts.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Relation {
@@ -730,6 +336,405 @@ pub struct ScannedContact {
     pub relation: Relation,
     pub unverified: bool,
 }
+impl DashPay {
+    pub fn contacts(&self, identity: String, q: ContactQuery) -> Result<ContactsPage, ContactError>;
+    pub fn contact(&self, identity: String, contact: String) -> Result<Option<ContactDetail>, ContactError>;
+    pub fn pending_setup_count(&self) -> Result<u32, ContactError>;
+    pub async fn eligibility(&self, identity: String, contact: String) -> Result<Eligibility, ContactError>;
+    pub async fn send_request(&self, identity: String, to: String, scan: Option<String>, grant: String) -> Result<RequestOutcome, ContactError>;
+    pub async fn accept_request(&self, identity: String, from: String, grant: String) -> Result<RequestOutcome, ContactError>;
+    pub async fn ignore(&self, identity: String, contact: String) -> Result<(), ContactError>;
+    pub async fn unignore(&self, identity: String, contact: String) -> Result<(), ContactError>;
+    pub async fn set_private_details(&self, identity: String, contact: String, d: PrivateDetails, grant: Option<String>) -> Result<PublishState, ContactError>;
+    pub async fn enable_dashpay_keys(&self, identity: String, grant: String) -> Result<(), ContactError>;
+    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError>;
+    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError>;
+}
+// src/platform/credits.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostTable {
+    pub contact_request: u64,
+    pub profile_update: u64,
+    pub contact_info: u64,
+    pub enable_dashpay_keys: u64,
+    pub credits_per_duff: u64,
+    pub top_up_min_duffs: u64,
+    pub low_credits: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpQuote {
+    pub fee_duffs: u64,
+    pub total_duffs: u64,
+    pub credits: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpOutcome {
+    pub txid: String,
+    pub credits_added: Option<u64>,
+    pub balance: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WithdrawAmount {
+    All,
+    Credits { credits: u64 },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawQuote {
+    pub credits: u64,
+    pub fee_credits: u64,
+    pub expected_duffs: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawOutcome {
+    pub credits: u64,
+    pub expected_duffs: Option<u64>,
+    pub remaining_credits: Option<u64>,
+}
+impl DashPay {
+    pub fn cost_table(&self) -> Result<CostTable, CreditsError>;
+    pub async fn top_up_quote(&self, identity: String, duffs: u64) -> Result<TopUpQuote, CreditsError>;
+    pub async fn top_up(&self, identity: String, duffs: u64, grant: String) -> Result<TopUpOutcome, CreditsError>;
+    pub async fn withdraw_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawQuote, CreditsError>;
+    pub async fn withdraw(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawOutcome, CreditsError>;
+}
+// src/platform/dashpay.rs
+pub struct DashPay {
+    ..
+}
+impl NetworkSession {
+    pub fn dashpay(self: &Arc<Self>, wallet_id: WalletId) -> Arc<DashPay>;
+}
+impl DashPay {
+    pub fn wallet_id(&self) -> WalletId;
+}
+#[derive(serde::Deserialize)]
+#[serde(from = "String")]
+pub struct BearerSecret(..);
+impl BearerSecret {
+    pub fn new(secret: String) -> Self;
+    pub fn from_utf8(mut bytes: Zeroizing<Vec<u8>>) -> Result<Self, PlatformError>;
+    pub fn expose(&self) -> &str;
+}
+impl From<String> for BearerSecret;
+impl std::fmt::Debug for BearerSecret;
+// src/platform/errors.rs
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PlatformError {
+    Unavailable,
+    Timeout,
+    ProofInvalid,
+    TrustMismatch,
+    ContextUnavailable,
+    SignerUnavailable,
+    SeedMismatch,
+    InsufficientCredits { needed: u64, available: u64 },
+    GrantInvalid,
+    GrantExceeded,
+    BroadcastUnknown,
+    Cancelled,
+    FeatureOff { feature: String },
+    NotImplemented { call: String },
+    Identity(IdentityError),
+    InvalidArgument { detail: String },
+    NetworkNotOpen,
+    WalletNotFound,
+    Storage { detail: String },
+    Internal { detail: String },
+}
+impl PlatformError {
+    pub fn code(&self) -> &'static str;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityError {
+    NotFound,
+    KeysMissing { purpose: KeyPurpose },
+}
+impl IdentityError {
+    pub fn code(&self) -> &'static str;
+}
+impl From<IdentityError> for PlatformError;
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegistrationError {
+    InProgress,
+    FundingInsufficient { needed: u64, available: u64 },
+    IslockTimeout,
+    Recoverable { draft: String },
+    AlreadyHasUsername,
+    Name(NameError),
+    Invitation(InvitationError),
+    Platform(PlatformError),
+}
+impl RegistrationError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+impl From<NameError> for RegistrationError;
+impl From<InvitationError> for RegistrationError;
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NameError {
+    Invalid { rules: Vec<UsernameRule> },
+    Taken,
+    ContestOpen,
+    Locked,
+    UnavailableForInvite,
+    Platform(PlatformError),
+}
+impl NameError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContactError {
+    Ineligible { reason: Eligibility },
+    AlreadyContact,
+    RequestPending,
+    IsSelf,
+    ChannelBroken,
+    PaymentLocked { txid: String },
+    ScanExpired,
+    Platform(PlatformError),
+}
+impl ContactError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvitationError {
+    Invalid,
+    Claimed,
+    Expired,
+    AlreadyHasIdentity,
+    Platform(PlatformError),
+}
+impl InvitationError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AvatarError {
+    TooLarge,
+    Unsupported,
+    FetchFailed,
+    HashMismatch,
+    UploadUnconfigured,
+    Platform(PlatformError),
+}
+impl AvatarError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CreditsError {
+    FundingInsufficient { needed: u64, available: u64 },
+    BelowMinimum { min: u64 },
+    Platform(PlatformError),
+}
+impl CreditsError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
+// src/platform/identity.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentitySummary {
+    pub identity: String,
+    pub index: u32,
+    pub names: Vec<String>,
+    pub main_name: Option<String>,
+    pub is_main: bool,
+    pub balance: Option<u64>,
+    pub has_dashpay_keys: bool,
+    pub profile: Option<Profile>,
+    pub unverified: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityDetail {
+    pub summary: IdentitySummary,
+    pub revision: Option<u64>,
+    pub public_keys: Vec<IdentityKeyInfo>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityKeyInfo {
+    pub id: u32,
+    pub purpose: KeyPurpose,
+    pub security_level: SecurityLevel,
+    pub key_type: KeyType,
+    pub public_key: String,
+    pub read_only: bool,
+    pub disabled_at: Option<u64>,
+    pub contract_bound: Option<String>,
+    pub contract_bound_document_type: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyPurpose {
+    Authentication,
+    Encryption,
+    Decryption,
+    Transfer,
+    System,
+    Voting,
+    Owner,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityLevel {
+    Master,
+    Critical,
+    High,
+    Medium,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyType {
+    EcdsaSecp256k1,
+    Bls12381,
+    EcdsaHash160,
+    Bip13ScriptHash,
+    EddsaHash160,
+}
+impl DashPay {
+    pub fn identities(&self) -> Result<Vec<IdentitySummary>, PlatformError>;
+    pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError>;
+    pub async fn identity_detail(&self, identity: String) -> Result<IdentityDetail, PlatformError>;
+    pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError>;
+    pub async fn discover_identities(&self, grant: String) -> Result<u32, PlatformError>;
+}
+// src/platform/invitations.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InvitationStatus {
+    Valid { inviter: Option<Counterparty>, funding_duffs: u64, contested_allowed: bool, expires_at: Option<u64> },
+    Claimed,
+    Invalid { reason: InvitationInvalidReason },
+    Expired,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationInvalidReason {
+    Malformed,
+    WrongNetwork,
+    AssetLockNotFound,
+}
+impl NetworkSession {
+    pub async fn stash_invitation(&self, link: BearerSecret) -> Result<String, InvitationError>;
+    pub async fn invitation_status(&self, link_id: String) -> Result<InvitationStatus, InvitationError>;
+    pub async fn pending_invitations(&self) -> Result<Vec<String>, InvitationError>;
+    pub async fn forget_invitation(&self, link_id: String) -> Result<(), InvitationError>;
+}
+// src/platform/names.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsernameCheck {
+    pub valid: bool,
+    pub normalized: String,
+    pub contested: bool,
+    pub rules: Vec<UsernameRuleCheck>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsernameRuleCheck {
+    pub rule: UsernameRule,
+    pub passed: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsernameRule {
+    MinLength,
+    MaxLength,
+    AllowedCharacters,
+    NoEdgeHyphen,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NameAvailability {
+    Invalid { rules: Vec<UsernameRule> },
+    Available { contested: bool },
+    Taken { owner: Option<String> },
+    ContestOpen { ends_at: Option<u64>, contenders: u32 },
+    Locked,
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NameOutcome {
+    Registered,
+    ContestStarted { ends_at: Option<u64> },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestStatus {
+    pub label: String,
+    pub state: ContestState,
+    pub ends_at: Option<u64>,
+    pub contenders: Vec<ContestContender>,
+    pub lock_votes: Option<u32>,
+    pub abstain_votes: Option<u32>,
+    pub temporary_name: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContestState {
+    Open,
+    Won,
+    Lost { winner: Option<String> },
+    Locked,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestContender {
+    pub identity: String,
+    pub votes: Option<u32>,
+    pub is_self: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserHit {
+    pub identity: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub relation: Relation,
+    pub unverified: bool,
+}
+pub fn check_username(label: &str) -> Result<UsernameCheck, NameError>;
+impl DashPay {
+    pub async fn name_availability(&self, label: String) -> Result<NameAvailability, NameError>;
+    pub async fn register_name(&self, identity: String, label: String, grant: String) -> Result<NameOutcome, NameError>;
+    pub async fn contest_status(&self, identity: String, label: String) -> Result<ContestStatus, NameError>;
+    pub async fn search_users(&self, prefix: String, limit: u32) -> Result<Vec<UserHit>, NameError>;
+    pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError>;
+}
+// src/platform/notifications.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventPage {
+    pub pending: Vec<ContactSummary>,
+    pub new: Vec<DashPayEvent>,
+    pub earlier: Vec<DashPayEvent>,
+    pub next_cursor: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DashPayEvent {
+    pub id: u64,
+    pub kind: EventKind,
+    pub contact: Option<String>,
+    pub reference: Option<String>,
+    pub at: u64,
+    pub read_at: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    UsernameRegistered,
+    ContestWon,
+    ContestLost,
+    ContestLocked,
+    RequestReceived,
+    RequestAccepted,
+    ContactEstablished,
+    PaymentReceived,
+}
+impl DashPay {
+    pub async fn events(&self, identity: String, cursor: Option<u64>, limit: u32) -> Result<EventPage, PlatformError>;
+    pub fn unread_count(&self, identity: String) -> Result<u32, PlatformError>;
+    pub async fn mark_read(&self, identity: String, up_to: u64) -> Result<(), PlatformError>;
+}
+// src/platform/payments.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentLock {
     pub txid: String,
@@ -775,33 +780,13 @@ pub struct Counterparty {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventPage {
-    pub pending: Vec<ContactSummary>,
-    pub new: Vec<DashPayEvent>,
-    pub earlier: Vec<DashPayEvent>,
-    pub next_cursor: Option<u64>,
+impl DashPay {
+    pub fn payment_lock(&self, identity: String, contact: String) -> Result<Option<PaymentLock>, ContactError>;
+    pub async fn resolve_payment_lock(&self, identity: String, contact: String) -> Result<LockResolution, ContactError>;
+    pub async fn contact_activity(&self, identity: String, contact: String, cursor: Option<String>, f: ActivityFilter) -> Result<ActivityPage, ContactError>;
+    pub fn frequent_contacts(&self, identity: String, limit: u32) -> Result<Vec<ContactSummary>, ContactError>;
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DashPayEvent {
-    pub id: u64,
-    pub kind: EventKind,
-    pub contact: Option<String>,
-    pub reference: Option<String>,
-    pub at: u64,
-    pub read_at: Option<u64>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventKind {
-    UsernameRegistered,
-    ContestWon,
-    ContestLost,
-    RequestReceived,
-    RequestAccepted,
-    ContactEstablished,
-    PaymentReceived,
-}
+// src/platform/profile.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub display_name: Option<String>,
@@ -829,13 +814,14 @@ pub enum AvatarChange {
     Remove,
     Set { candidate: String },
 }
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AvatarSource {
-    File { bytes: Vec<u8>, crop: Option<CropRect> },
+    File { #[serde(with = "base64_bytes")] bytes: Vec<u8>, crop: Option<CropRect> },
     Url { url: String },
     Gravatar { email: String },
 }
+impl std::fmt::Debug for AvatarSource;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CropRect {
     pub x: u32,
@@ -858,51 +844,189 @@ pub enum AvatarSize {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvatarImage {
-    pub png: Vec<u8>,
+    pub #[serde(with = "base64_bytes")] png: Vec<u8>,
     pub size: AvatarSize,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CostTable {
-    pub contact_request: u64,
-    pub profile_update: u64,
-    pub contact_info: u64,
-    pub enable_dashpay_keys: u64,
-    pub credits_per_duff: u64,
-    pub top_up_min_duffs: u64,
-    pub low_credits: u64,
+impl DashPay {
+    pub fn profile(&self, identity: String) -> Result<Option<Profile>, PlatformError>;
+    pub fn profile_limits(&self) -> Result<ProfileLimits, PlatformError>;
+    pub async fn prepare_avatar(&self, src: AvatarSource) -> Result<AvatarCandidate, AvatarError>;
+    pub fn avatar_upload_available(&self) -> Result<bool, AvatarError>;
+    pub async fn upload_avatar(&self, candidate: String) -> Result<String, AvatarError>;
+    pub async fn update_profile(&self, identity: String, edit: ProfileEdit, grant: String) -> Result<(), PlatformError>;
+    pub async fn avatar(&self, identity: String, size: AvatarSize) -> Result<Option<AvatarImage>, AvatarError>;
+}
+// src/platform/registration.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationRequest {
+    pub label: String,
+    pub temporary_label: Option<String>,
+    pub funding: RegistrationFunding,
+    pub initial_profile: Option<InitialProfile>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TopUpOutcome {
-    pub txid: String,
-    pub credits_added: Option<u64>,
-    pub balance: Option<u64>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WithdrawAmount {
-    All,
-    Credits { credits: u64 },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WithdrawOutcome {
-    pub credits: u64,
-    pub expected_duffs: Option<u64>,
-    pub remaining_credits: Option<u64>,
+pub struct InitialProfile {
+    pub display_name: Option<String>,
+    pub public_message: Option<String>,
+    pub avatar_candidate: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InvitationStatus {
-    Valid { inviter: Option<Counterparty>, funding_duffs: u64, contested_allowed: bool, expires_at: Option<u64> },
-    Claimed,
-    Invalid { reason: InvitationInvalidReason },
-    Expired,
+pub enum RegistrationFunding {
+    CoreBalance,
+    Invitation { link_id: String },
+    ExistingIdentity { identity: String },
+    FaucetAssetLock { key: String, proof: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaucetLockKey {
+    pub key: String,
+    pub public_key: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationQuote {
+    pub contested: bool,
+    pub lock_duffs: u64,
+    pub fee_duffs: u64,
+    pub total_duffs: u64,
+    pub remaining_credits: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationStatus {
+    pub draft: String,
+    pub phase: RegistrationPhase,
+    pub label: String,
+    pub temporary_label: Option<String>,
+    pub identity: Option<String>,
+    pub txid: Option<String>,
+    pub waiting: Option<RegistrationWait>,
+    pub holds_key: bool,
+    pub funds_committed: bool,
+    pub contest_ends_at: Option<u64>,
+    pub failure: Option<RegistrationFailure>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InvitationInvalidReason {
-    Malformed,
-    WrongNetwork,
-    AssetLockNotFound,
+pub enum RegistrationPhase {
+    Draft,
+    KeysPrepared,
+    FundingSent,
+    ProofWaiting,
+    IdentityRegistered,
+    NameRequested,
+    NameRegistered,
+    Contested,
+    ProfileCreated,
+    Done,
+    Failed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationWait {
+    Unlock,
+    Sync,
+    InstantSend,
+    ChainLock,
+    Network,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationFailure {
+    pub phase: RegistrationPhase,
+    pub code: String,
+    pub retryable: bool,
+    pub needed: Option<u64>,
+    pub available: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishReport {
+    pub resumed: u32,
+    pub completed: u32,
+    pub still_pending: u32,
+}
+impl DashPay {
+    pub async fn registration_quote(&self, req: RegistrationRequest) -> Result<RegistrationQuote, RegistrationError>;
+    pub async fn start_registration(&self, req: RegistrationRequest, grant: String) -> Result<String, RegistrationError>;
+    pub async fn registrations(&self) -> Result<Vec<RegistrationStatus>, RegistrationError>;
+    pub async fn resume_registration(&self, draft: String, grant: Option<String>) -> Result<(), RegistrationError>;
+    pub async fn discard_registration(&self, draft: String) -> Result<(), RegistrationError>;
+    pub async fn finish_asset_locks(&self, grant: String) -> Result<FinishReport, RegistrationError>;
+    pub async fn prepare_faucet_lock(&self, grant: String) -> Result<FaucetLockKey, RegistrationError>;
+}
+// src/platform/startup.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DashPayStatus {
+    NoIdentity { reason: Option<NoIdentityReason> },
+    Registering { draft: String },
+    ContestPending { identity: String, label: String, ends_at: Option<u64> },
+    Ready { main: String },
+    StartupIncomplete { startup: StartupStatus },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoIdentityReason {
+    WatchOnly,
+    WaitingForSync,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupStatus {
+    NotRun,
+    Starting,
+    Ready,
+    NoIdentity,
+    PartialNoIdentity,
+    DiscoveryFailed,
+    PartialAccountsPending,
+    SeedBindingUnverified,
+    IdentityScanIncomplete,
+    IdentityUnsettled,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DashPaySyncStatus {
+    pub startup: StartupStatus,
+    pub last_pass: Option<SyncPassReport>,
+    pub pending_contact_crypto: u32,
+    pub loops: Vec<SyncLoopStatus>,
+    pub quorum_source: QuorumSource,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncPassReport {
+    pub started_at: u64,
+    pub finished_at: u64,
+    pub new_requests: u32,
+    pub new_contacts: u32,
+    pub new_payments: u32,
+    pub failure_code: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncLoopStatus {
+    pub sync_loop: SyncLoop,
+    pub running: bool,
+    pub last_run_at: Option<u64>,
+    pub next_run_at: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncLoop {
+    IdentitySync,
+    DashPaySync,
+    DpnsSync,
+    PlatformAddressSync,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuorumSource {
+    Spv,
+    TrustedFallback,
+    Trusted,
+}
+impl DashPay {
+    pub fn status(&self) -> Result<DashPayStatus, PlatformError>;
+    pub fn sync_status(&self) -> Result<DashPaySyncStatus, PlatformError>;
+    pub async fn sync_now(&self) -> Result<SyncPassReport, PlatformError>;
 }
 ```
 
@@ -915,30 +1039,54 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 | Error enum | Codes |
 |---|---|
-| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
+| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.cancelled`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
-| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked` |
+| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
-| `CreditsError` | |
+| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
-  `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here.
+  `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
+  host's code table (`ServiceErrorCode`) needs both.
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.
-- Every other enum wraps `PlatformError` in its `Platform` variant; `code()` passes the inner code through.
-- `CreditsError` has no codes of its own yet: the credit and funding refusals are `platform.insufficient_credits` and
-  `platform.grant_exceeded`. DP1-06 or DP6-02 adds `credits.*` codes here if they need them.
+- Every other enum wraps `PlatformError` in its `Platform` variant; `code()` passes the inner code through and
+  `platform()` returns it.
+- **`RegistrationError` also wraps `NameError` and `InvitationError`**: a registration refuses its label with `name.*`
+  (including `name.unavailable_for_invite`) and its invitation funding with `invitation.*`. Converting either into a
+  `RegistrationError` moves its `Platform` variant to `RegistrationError::Platform`, so each code has one
+  representation.
+- **`platform.broadcast_unknown` and `platform.cancelled`** are E0-04's `MaybeSent` and `Cancelled` outcomes (DASHPAY
+  §2.6, "Commit points"; E0-04 owns their semantics). Every write that hands off a signed artifact can return them:
+  `send_request`, `accept_request`, `set_private_details` (when it publishes), `enable_dashpay_keys`, `register_name`,
+  `update_profile`, `top_up` and `withdraw`. For registration the state machine records the outcome in the row
+  instead (`waiting`, or a `Failed` phase with `retryable`).
+  - `broadcast_unknown`: the artifact may have been sent. **The UI never offers a blind retry**: it says "may have
+    been sent", re-queries (`sync_now`, the read models, `resolve_payment_lock`) and offers a retry only once a
+    re-query shows nothing was sent. A retry after a `broadcast_unknown` top-up could pay twice. This mirrors m1's
+    `send.broadcast_unknown`.
+  - `cancelled`: Lock won before the hand-off; nothing was sent, and a retry is safe after an unlock.
+- **Credits.** A top-up spends Core duffs, so its shortfall is `credits.funding_insufficient{needed, available}` in
+  duffs, not `platform.insufficient_credits` (credits, "top up your credits"). A cap hit is `platform.grant_exceeded`;
+  below `top_up_min_duffs` is `credits.below_minimum{min}`. A withdrawal larger than the balance is
+  `platform.insufficient_credits`.
+- **Contacts.** `contact.ineligible{reason}` carries the `Eligibility` that refused (never `Ok`), so `NoDashPayKeys`
+  leads to "Enable DashPay keys". `contact.scan_expired` is an expired `dapk` proof or a stale or used scan id: "this
+  QR code has expired; ask for a new one".
 - Refusals §3.6 names no code for, so that every DP task uses the same one:
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
     that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`;
-  - `discard_registration` at or after `FundingSent`, and an unknown draft or candidate id: `invalid_argument`;
-  - a call for a feature the build or the settings leave off (the faucet, Imgur): `platform.feature_off{feature}`.
-- Parameters: `insufficient_credits{needed, available}` and `funding_insufficient{needed, available}` (credits and
-  duffs), `feature_off{feature}`, `not_implemented{call}`, `keys_missing{purpose}`, `recoverable{draft}`,
-  `invalid{rules}`, `payment_locked{txid}`.
+  - `discard_registration` at or after `FundingSent`, an unknown draft, candidate or faucet key id, an
+    `initial_profile` avatar candidate without a URL: `invalid_argument`;
+  - a call for a feature the build or the settings leave off (the faucet, Imgur): `platform.feature_off{feature}`;
+  - an outcome that is unknown after a hand-off, or a flow cancelled by Lock before one: `platform.broadcast_unknown`,
+    `platform.cancelled` (above).
+- Parameters: `insufficient_credits{needed, available}` (credits), `funding_insufficient{needed, available}` (duffs,
+  both domains), `below_minimum{min}` (duffs), `feature_off{feature}`, `not_implemented{call}`,
+  `keys_missing{purpose}`, `recoverable{draft}`, `invalid{rules}`, `ineligible{reason}`, `payment_locked{txid}`.
 
 ## 5. Records
 
@@ -952,19 +1100,41 @@ The shapes are in §3. What they mean, where the name does not say:
   at the first unlock.
 - **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact`: the data was verified only
   through the trusted fallback (§2.2 rule 2) and still has a `dp_trust_unverified` row. "As of" times for offline
-  data come from `sync_status().last_pass`.
+  data come from `sync_status().last_pass`. `Counterparty` and the inviter in `InvitationStatus::Valid` carry no flag:
+  they are display data, and DP3-04's money-move gate checks `dp_trust_unverified` itself before any payment, whatever
+  the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2 if E0-10a fails).
-- **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state; the data the state machine
-  attaches to a phase is in flat optional fields: `proof` (`ProofWaiting`), `contest_ends_at` (`Contested`), and for
-  `Failed`, `failed_phase`, `error` (a code) and `retryable`.
-- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id), `ExistingIdentity{identity}`
-  (the id goes to the row's `identity` column), `FaucetAssetLock{outpoint, private_key}` (developer builds only; the
-  key goes to the vault, the outpoint to `asset_lock_outpoint`).
+- **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
+  - `waiting` says what a parked or slow flow waits for, and so which line the UI shows: `Unlock` ("Unlock to finish";
+    the flow parked keyless, and `resume_registration` needs a grant, exactly in this case), `Sync` ("Waiting for the
+    network to sync": a restored row held until SPV sync, §3.4 Restore rule 1, or a write held by §2.2 rule 5),
+    `InstantSend` and `ChainLock` (the proof wait), `Network` (DAPI or the peers unreachable; retried on reconnect).
+    `None` while the flow runs, and after it ends.
+  - `holds_key`: a lease holds a key for this flow ("Registration in progress — Lock to cancel").
+  - `funds_committed`: true from `FundingSent` on ("Funds locked — finishing", F2).
+  - `contest_ends_at` while `Contested`; `failure` when `Failed`: the phase it stopped in, the code, `retryable`, and
+    `needed`/`available` for the `*funding_insufficient*` and `insufficient_credits` codes.
+- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id),
+  `ExistingIdentity{identity}` (the id goes to the row's `identity` column), and `FaucetAssetLock{key, proof}` for
+  developer builds:
+  - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
+    (hex), the txid and the credits. So the engine keeps the key: `prepare_faucet_lock` derives a fresh registration
+    asset-lock key (`m/9'/c'/5'/1'/…`, the `PlatformFunding` scope) and returns its id and public key; the host posts
+    the public key to the faucet; `FaucetAssetLock{key, proof}` carries the id and the proof. No private key crosses
+    the facade, so the variant needs no `BearerSecret`, and the legacy `/api/faucet` route that returns keys is not
+    used.
+  - The lock is not one this wallet built or tracks, so DP1-02 funds it through the **invitation-claim path** (the
+    proof plus a key the engine holds, as `claim_invitation` does), not through
+    `AssetLockFunding::FromExistingAssetLock`, which needs a tracked lock and re-derives its own credit-key path.
+  - The outpoint comes from the proof. DP1-02 writes it to `asset_lock_outpoint` in the one canonical text of the §3.6
+    note (lower-case hex txid, `:`, decimal vout) and refuses a proof it cannot parse with `invalid_argument`.
 - **`InitialProfile`** is the profile entered at Draft, kept in `dp_registration.initial_profile` until
-  `ProfileCreated`, across restarts and restores. The engine resolves `avatar_candidate` to the published URL, hash
-  and fingerprint when it creates the draft (uploading a file candidate first), so the row never holds a candidate id,
-  which lives only in memory.
+  `ProfileCreated`, across restarts and restores. `avatar_candidate` must name a candidate whose `url` is set: one
+  prepared from `Url` or `Gravatar`, or a `File` candidate after `upload_avatar`. The engine stores that URL with the
+  candidate's hash and fingerprint, never the candidate id, and **registration never uploads**: no third-party call in
+  the funding flow, no image published before funds are committed, and a quote that does not upload. A candidate
+  without a URL is `invalid_argument`.
 - **`RegistrationQuote`.** `total_duffs = lock_duffs + fee_duffs` is what the `PlatformFunding` grant must cover.
 - **`UsernameCheck.rules`** is the whole checklist with a pass mark per rule. `NameAvailability::Invalid{rules}` and
   `NameError::Invalid{rules}` list only the broken ones.
@@ -977,14 +1147,18 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`ScannedContact.scan`**: set when the payload carried a `dapk` auto-accept proof; pass it to `send_request`.
 - **`IdentityKeyInfo.contract_bound`** and **`contract_bound_document_type`**: keys 4–5 are bound to the DashPay
   contract's `contactRequest`.
-- **`EventKind`** covers the §3.5 journal: `UsernameRegistered`, `ContestWon`, `ContestLost`, `RequestReceived`,
-  `RequestAccepted`, `ContactEstablished`, `PaymentReceived`. `DashPayEvent.reference` is a txid or a request id.
+- **`EventKind`** covers the §3.5 journal: `UsernameRegistered`, `ContestWon`, `ContestLost`, `ContestLocked`,
+  `RequestReceived`, `RequestAccepted`, `ContactEstablished`, `PaymentReceived`. **`DashPayEvent.reference` per kind:**
+  the label for the name kinds (`UsernameRegistered`, `Contest*`: "You won @alice"), the contact-request id for the
+  request kinds, the txid for `PaymentReceived`. `contact` is empty for the name kinds. The journal's `ref` column holds
+  the same value.
 - **`ProfileEdit`** is the whole new profile. `AvatarChange`: `Keep`, `Remove`, or `Set{candidate}` with a
   `prepare_avatar` candidate (after `upload_avatar` when `needs_upload`).
 - **`AvatarSize`.** `Small` is 128 px, `Large` 256 px. `AvatarImage.png` is the engine-re-encoded thumbnail, never
-  the original bytes.
+  the original bytes, as base64 in JSON.
 - **`CostTable`.** Credits per action, `credits_per_duff` (1000), the top-up minimum in duffs and the low-credit
-  threshold.
+  threshold. **`TopUpQuote`**: `total_duffs = duffs + fee_duffs` is what the grant must cover. **`WithdrawQuote`**:
+  the credits taken, the fee in credits and the duffs expected.
 - **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02); here it is also
   the inviter in `InvitationStatus::Valid`.
 
@@ -999,11 +1173,12 @@ changes code paths or bindings that would otherwise need behaviour now:
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13 | E0-05, E0-10b, E0-13 |
 | `EngineEvent::Platform{network, wallet_id, change}` (§3.5) | E0-06 |
-| Mapping `PlatformWalletError`, `dash_sdk::Error`, `EngineError` and `VaultError` into these enums (§3.1 `errors.rs`), as one shared `From` impl per source rather than one per task. `EngineError::InsufficientCredits` (code `insufficient_credits`, from E0-01) maps to `platform.insufficient_credits`, the code hosts see from this facade | the first DP task that needs it (likely DP1-06), for every task after |
+| **The error mapping**: one shared `From` impl per source into `PlatformError`, in `errors.rs`, for `PlatformWalletError`, `dash_sdk::Error`, `EngineError` and `VaultError` (§3.1), with `Internal{detail}` as the fallback. `EngineError::InsufficientCredits` (code `insufficient_credits`, from E0-01) maps to `platform.insufficient_credits`, the code hosts see from this facade. Every later task maps through these impls and extends them in place. | **E0-05** (W3): its `sync_now` is the first facade body that returns real library errors, and it lands before every DP task that does (ROADMAP E0-05 row) |
 
 ## 7. Decisions on DASHPAY §3.6
 
-§3.6 is a sketch. Where it was ambiguous or contradictory, this contract decided as follows:
+§3.6 is a sketch. Where it was ambiguous or contradictory, this contract decided as follows (review DW-E0-08 r1 agreed
+with 1–21 and changed 5, 8, 9, 10, 12 and 16; the result is below):
 
 1. **Every call returns `Result`.** The sketch has sync reads with bare return types, but a stub must return
    `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`.
@@ -1012,36 +1187,51 @@ changes code paths or bindings that would otherwise need behaviour now:
 3. **`identity.*` has no calls of its own.** The sketch's identity calls return `PlatformError`, while the code table
    lists an `identity.*` domain. `IdentityError` is a leaf enum inside `PlatformError::Identity`, so the sketch's
    signatures stand and every domain can return `identity.keys_missing{purpose}`.
-4. **`platform.*` reaches every domain.** The ROADMAP requires `platform.not_implemented{call}` from every call,
-   including those typed `RegistrationError`, `ContactError` and so on. Each domain enum wraps `PlatformError`.
+4. **`platform.*` reaches every domain.** Each domain enum wraps `PlatformError`, and `RegistrationError` also wraps
+   `NameError` and `InvitationError`, whose refusals its own flows raise (§4).
 5. **The m1 common codes** live in `PlatformError`, unprefixed. §3.6 does not list them, but m1 §4 makes them common
    to every domain.
-6. **`CreditsError` has no codes.** The sketch's `top_up` and `withdraw` return `CreditsError`, but the table has no
-   `credits.*` row. The enum exists, with only `Platform`, so the signatures need not change when DP1-06 or DP6-02 adds
-   codes.
+6. **`CreditsError` has its own codes**: `credits.funding_insufficient{needed, available}` (duffs) and
+   `credits.below_minimum{min}`, since a top-up spends duffs and `platform.insufficient_credits` is the wrong unit and
+   the wrong copy. Top-up and withdraw gain quote calls, so the host can size the grant.
 7. **`eligibility` takes `identity`.** The sketch's `eligibility(contact)` cannot answer `IsSelf`, `AlreadyContact` or
    `Pending*` without knowing which of the wallet's identities asks, and every other contact call takes it.
 8. **`search_users`, `resolve_user` and `verify_scanned` keep the sketch's arguments**; their `relation` is relative to
    the main identity.
 9. **The `contact.self` code's variant is `ContactError::IsSelf`**, because `Self` is a Rust keyword.
 10. **`keys_missing{purpose}`** is typed as `KeyPurpose`, the enum `IdentityKeyInfo.purpose` uses.
-11. **`FaucetAssetLock{..}`** is `{outpoint, private_key: BearerSecret}`. §3.4 says the key is a bearer credential
-    for the vault and the outpoint goes to `asset_lock_outpoint`.
+11. **`FaucetAssetLock` is `{key, proof}` and carries no secret.** The faucet's proof API takes a public key, so the
+    engine derives and keeps the key (`prepare_faucet_lock`). DP1-02 funds it through the invitation-claim path, not
+    `FromExistingAssetLock` (§5).
 12. **Records the sketch only names** (`SyncPassReport`, `FinishReport`, `ContestStatus`, `CostTable`, `TopUpOutcome`,
     `WithdrawOutcome`, `ActivityPage`, `AvatarCandidate` and the rest) are defined from DASHPAY §3.2–§3.5, §4 (the view
     models) and §5 (the feature catalogue). Their owners may extend them under the rule at the top of this file.
 13. **The notices** listed in §3.6 are not added to `NoticeCode` yet (§6).
 14. **The invitation calls are on `NetworkSession`.** The sketch puts them on the wallet-bound `DashPay`, but F18 takes
-    a link before any wallet exists, and the vault is per network.
+    a link before any wallet exists, and the vault is per network. Before a vault exists the link is a 0600 file that
+    moves into the vault at creation; `pending_invitations` and `forget_invitation` serve the replay and the dismissal
+    (§2.9).
 15. **`send_request` takes `scan: Option<String>`.** The sketch has no way to pass a `dapk` auto-accept proof from
-    `verify_scanned` to the request (§3.1 `contacts.rs`: "dapk scan").
+    `verify_scanned` to the request (§3.1 `contacts.rs`: "dapk scan"). A stale id or expired proof is
+    `contact.scan_expired`, and `contact.ineligible` carries its `reason`.
 16. **`events` and `registrations` are async.** They read app.sqlite (a paged journal and the registration rows), which
     m1 rule 3 keeps off the caller's thread.
-17. **`initial_profile` is an `InitialProfile`, not a `ProfileEdit`.** `ProfileEdit`'s avatar is an in-memory
-    candidate id, which would mean nothing in a row restored after a restart or on another machine (§3.4).
+17. **`initial_profile` is an `InitialProfile`, not a `ProfileEdit`,** and its avatar must already have a URL.
+    `ProfileEdit`'s avatar is an in-memory candidate id, which would mean nothing in a row restored after a restart or
+    on another machine (§3.4), and an upload inside registration would add a third-party call to the funding flow.
 18. **Bearer credentials are `BearerSecret`**, including `stash_invitation(link)` and `verify_scanned(text)`, which the
-    sketch types as `String` (§3.8: never logged).
+    sketch types as `String` (§3.8: never logged). Bindings pass them as bytes, errors never quote them, and `dwcli`
+    reads them from stdin (§1).
 19. **`StartupStatus` gains `IdentityUnsettled`** for §3.2's locked-vault bring-up, which none of the nine values
     named there covers.
 20. **Records gain `unverified`**, which §2.2 rule 2 requires ("marked unverified") but the sketch does not carry.
-21. **Refusal codes** §3.6 leaves open are assigned in §4.
+21. **Refusal codes** §3.6 leaves open are assigned in §4, including `platform.broadcast_unknown` and
+    `platform.cancelled` for E0-04's `MaybeSent` and `Cancelled`.
+22. **`RegistrationStatus` says why a flow waits** (`waiting`, `holds_key`, `funds_committed`), so the resume UX and
+    the one-prompt rule of §2.6 need no new field later; `failure` keeps a failed code's parameters.
+23. **The records are split into the §3.1 domain files**, each with its own `impl DashPay` block, and re-exported by
+    name, so parallel DP tasks do not conflict and a `pub` helper never becomes API silently.
+24. **Byte payloads are base64 strings in JSON**, which fixes the JSON shape E0-09 prints and Tauri carries (a 5 MiB
+    avatar would otherwise be about 21 MB of number arrays).
+25. **The engine and SDK error mapping has one owner, E0-05**, the first task that returns real errors through the
+    facade (§6; ROADMAP E0-05 row).
