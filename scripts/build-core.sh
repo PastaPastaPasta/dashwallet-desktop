@@ -112,7 +112,10 @@ echo "build-core: cargo rustc -p dw-ffi ($triple, $profile) -> $CARGO_TARGET_DIR
 (cd "$RUST_DIR" && cargo rustc -p dw-ffi --lib --profile "$profile" ${target_args[@]+"${target_args[@]}"} \
     -- --print native-static-libs) 2>&1 | tee "$log"
 
-native_libs="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1)"
+# Without colour codes: under CARGO_TERM_COLOR=always (CI) the line ends in an ANSI reset, which
+# would turn the last library, -lc, into a link directive for "c<ESC>[0m".
+esc="$(printf '\033')"
+native_libs="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1 | sed "s/${esc}\[[0-9;]*m//g")"
 if [[ -z "$native_libs" ]]; then
   echo "build-core: rustc printed no native-static-libs line" >&2
   exit 1
