@@ -65,7 +65,9 @@ pub use history::{
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
 pub use labels::{BookEntryInfo, LabelsFailure};
-pub use masternode_keys::{MasternodeFailure, MasternodeKeyRole};
+pub use masternode_keys::{
+    MasternodeFailure, MasternodeKeyInfo, MasternodeKeyRole, RevealedMasternodeKey,
+};
 pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};

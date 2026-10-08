@@ -42,6 +42,7 @@ use crate::types::{
 use crate::{SignerError, VaultError};
 
 mod compat;
+mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 

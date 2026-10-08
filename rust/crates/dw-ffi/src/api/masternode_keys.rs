@@ -8,7 +8,7 @@
 //! (a `RevealSecret` grant), as the mnemonic does through
 //! `Vault.reveal_mnemonic`.
 
-use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
+use crate::api::common::{ensure_open, parse_wallet_id};
 use crate::{NetworkSession, Vault};
 
 /// A provider key family (DIP3 paths under DIP9 feature 3').
@@ -152,7 +152,9 @@ impl From<dw_engine::EngineError> for MasternodeError {
 #[uniffi::export]
 impl NetworkSession {
     /// Derived provider keys of `role` for indexes `start..start+count`
-    /// (count ≤ 100). Public data, no grant.
+    /// (count ≤ 100). Public data, no grant. Platform node keys come from
+    /// the wallet's pre-derived pool (20 keys); indexes past it are left
+    /// out.
     pub async fn masternode_keys(
         &self,
         wallet_id: String,
@@ -160,22 +162,36 @@ impl NetworkSession {
         start: u32,
         count: u32,
     ) -> Result<Vec<MasternodeKeyInfo>, MasternodeError> {
-        let _ = (role, start);
-        parse_wallet_id(&wallet_id)?;
-        if count > 100 {
+        let id = parse_wallet_id(&wallet_id)?;
+        if count > dw_engine::masternode_keys::MAX_KEYS_PER_CALL {
             return Err(MasternodeError::InvalidArgument {
                 detail: "count must be at most 100".to_string(),
             });
         }
         ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.masternode_keys")
+        let keys = self
+            .inner
+            .masternode_keys(id, role.into(), start, count)
+            .await?;
+        Ok(keys
+            .into_iter()
+            .map(|k| MasternodeKeyInfo {
+                role: k.role.into(),
+                index: k.index,
+                derivation_path: k.derivation_path,
+                address: k.address,
+                public_key_hex: k.public_key_hex,
+                legacy_public_key_hex: k.legacy_public_key_hex,
+                platform_node_id: k.platform_node_id,
+            })
+            .collect())
     }
 }
 
 #[uniffi::export]
 impl Vault {
     /// Reveals one provider private key of a wallet (IOS-083).
-    /// `RevealSecret` grant for that wallet.
+    /// `RevealSecret` grant for that wallet; the grant is consumed.
     pub async fn reveal_masternode_key(
         &self,
         wallet_id: String,
@@ -183,9 +199,16 @@ impl Vault {
         index: u32,
         grant_id: String,
     ) -> Result<RevealedMasternodeKey, MasternodeError> {
-        let _ = (role, index, grant_id);
-        parse_wallet_id(&wallet_id)?;
+        let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.session)?;
-        not_implemented("Vault.reveal_masternode_key")
+        let revealed = self
+            .session
+            .reveal_masternode_key(id, role.into(), index, grant_id)
+            .await?;
+        Ok(RevealedMasternodeKey {
+            private_key_hex: revealed.private_key_hex.to_vec(),
+            wif: revealed.wif.map(|w| w.to_vec()),
+            tenderdash_key: revealed.tenderdash_key.map(|t| t.to_vec()),
+        })
     }
 }

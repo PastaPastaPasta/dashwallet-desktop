@@ -14,7 +14,9 @@ dash-sdk = { workspace = true }
 dash-context-provider = { workspace = true }
 rs-sdk-trusted-context-provider = { workspace = true }
 dpp = { workspace = true }
-dashcore = { workspace = true }
+# `eddsa`: the masternode keychain's platform node keys (already on in the
+# graph through platform-wallet).
+dashcore = { workspace = true, features = ["eddsa"] }
 key-wallet = { workspace = true }
 dash-spv = { workspace = true }
 dw-appdb = { workspace = true }
