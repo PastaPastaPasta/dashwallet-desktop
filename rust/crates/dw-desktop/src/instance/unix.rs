@@ -11,7 +11,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +38,9 @@ pub(crate) fn runtime_dir() -> Result<PathBuf, DesktopError> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     let dir = std::env::temp_dir().join(format!("dashwallet-{uid}"));
-    match std::fs::create_dir(&dir) {
+    // 0700 from creation rather than the umask's mode until the chmod, which
+    // only matters under a umask that masks owner bits.
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),
