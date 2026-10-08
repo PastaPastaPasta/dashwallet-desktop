@@ -63,6 +63,9 @@ esac
 #      exists (the dev Mac's one shared target dir);
 #   4. rust/target. Linux hosts that build several worktrees at once (agentbox)
 #      keep one target dir per checkout and share compiles through sccache.
+# A relative CARGO_TARGET_DIR or DWD_DEPS_DIR is taken from the directory the
+# script runs in: cargo runs in rust/ and would resolve it there, while the
+# artifact is looked up from here.
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
   if [[ -n "${DWD_DEPS_DIR:-}" ]]; then
     export CARGO_TARGET_DIR="$DWD_DEPS_DIR/target"
@@ -72,6 +75,7 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
     export CARGO_TARGET_DIR="$RUST_DIR/target"
   fi
 fi
+[[ "$CARGO_TARGET_DIR" == /* ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"

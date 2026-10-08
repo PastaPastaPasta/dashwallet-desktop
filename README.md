@@ -72,6 +72,8 @@ first and aborts below 15 GB free (`DWD_MIN_FREE_GB` overrides).
    Mac's one shared target dir);
 4. `rust/target`.
 
+A relative `CARGO_TARGET_DIR` or `DWD_DEPS_DIR` is taken from the directory you run the script in.
+
 Linux hosts that build several worktrees at once (agentbox) keep one target dir per checkout
 (case 4) and share compiles through sccache instead. Build only the `dev` profile locally.
 
