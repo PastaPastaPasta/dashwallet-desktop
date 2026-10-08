@@ -165,10 +165,12 @@ if !headless {
                 "DashUICross", "DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
         ),
-        // The vendored SwiftCrossUI's patches that need no backend (Vendor/PATCHES.md).
+        // The vendored SwiftCrossUI's patches (Vendor/PATCHES.md), over a fake backend. Swift 5
+        // mode, like the vendored package: the fake implements its Swift 5 backend protocols.
         .testTarget(
             name: "SwiftCrossUIPatchTests",
-            dependencies: [.product(name: "SwiftCrossUI", package: "swift-cross-ui")]
+            dependencies: [.product(name: "SwiftCrossUI", package: "swift-cross-ui")],
+            swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(

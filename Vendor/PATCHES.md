@@ -126,9 +126,21 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   that can still write during layout: `Picker` updates its `GtkDropDown` from `computeLayout`
   (an upstream TODO), and replacing its options can fire the previous update's selection
   handler.
-- Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless). `container-demo.sh` runs
-  it on Linux. It is built as the `DashWalletDesktopPackageTests` product because plain
-  `swift test` also builds swift-winui's Windows-only C target there.
+- Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless), over a fake backend built on
+  the vendored `BackendFeatures.BaseStubs` (`FakeBackend.swift`):
+  - `ModelObserverUpdateQueueTests`: the queue on its own.
+  - `ViewGraphUpdateTests`: real view graphs. The updates wait for one flush, each node's depth
+    is its parent's plus one, and a batch costs exactly one update of the shallowest affected
+    subtree (over 5 batches). These fail if the hop in `observe` or the depth propagation is
+    reverted. Also covered: ancestors that do not read the property, a descendant dropped in the
+    same batch, a change before the flush or during commit, two windows, `.onChange` and
+    `.onAppear` writes read by an ancestor, and the rule above as a known issue.
+  - `WindowSizeTests` (P10).
+
+  `container-demo.sh` runs them on Linux, and `swift test` runs them on macOS. They are built as
+  the `DashWalletDesktopPackageTests` product because plain `swift test` also builds
+  swift-winui's Windows-only C target there. `scripts/linux-docker-test.sh` does not run them:
+  its image has no GTK, and its headless package graph leaves out every SwiftCrossUI target.
 
 ### P9 — GTK CSS reloaded only when it changes
 
@@ -209,6 +221,10 @@ Change (comments `dashwallet-desktop patch P10`):
   AppKitBackend never reports an honoured request either. The request stays until the user
   resizes, which then counts as a refusal. That is harmless there, because AppKit keeps the
   content at least at its minimum itself.
-- Test: the demo harness's "the main thread goes idle" checks after the live onboarding and the
-  send flows (`ci/linux/crossui/atspi_demo.py`). `WindowReference` needs a backend, and the
-  vendored package has no test backend.
+- Tests: `Tests/SwiftCrossUIPatchTests/WindowSizeTests.swift` drives a real `WindowReference`
+  over the fake backend with the app's numbers (a 1100x760 default window, a content minimum
+  of 787). The checks: the window grows to the minimum and the report costs no update, a later
+  shrink below the minimum is re-requested (not taken for a refusal), and a request a window
+  manager refuses is not repeated.
+  The demo harness's "the main thread goes idle" checks run after the live onboarding and the
+  send flows (`ci/linux/crossui/atspi_demo.py`).
