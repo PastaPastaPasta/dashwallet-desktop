@@ -449,13 +449,133 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
   - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so
     ("Registration in progress — Lock to cancel").
   - The vault releases no signature or crypto result of an epoch once `lock()` has returned (E0-03; m1-engine
-    §2.2). A result released just before the lock can still reach the flow, so each flow checks its lease at its
-    own commit point (before it broadcasts a transaction or submits a state transition) and drops the result
-    once the lease is revoked (E0-04).
+    §2.2). A result released just before the lock can still reach the flow; the commit-point rule below is what
+    keeps it from going out (E0-04).
+- **Commit points: Lock against a flow's hand-off** (E0-04; review DW-E0-03 r3 M1). This is an ordering rule, not
+  a check before acting.
+  - **The rule.** A flow's *commit* is the hand-off of a signed artifact to a transport: the call after which its
+    bytes may leave the process.
+    - Every commit is made while holding a shared *permit* of the flow's lease. The flow takes the permit, then
+      checks the lease under it, and hands off only if the lease is not revoked.
+    - Revocation takes the permit exclusively: the engine's lock (`NetworkSession::lock_vault`) revokes every
+      lease by taking its permit exclusively, marking it revoked and releasing it.
+    - So each hand-off is ordered wholly before or wholly after the revocation. Before: it has finished when
+      `lock_vault` returns. After: it finds the lease revoked and hands nothing off.
+    - The one exception is a hand-off that outruns its deadline H ("At lock time"). `lock_vault` stops waiting
+      for it, so its outcome is unknown: its bytes may reach the network after `lock_vault` returns. It is
+      reported `MaybeSent`, never "cancelled".
+    - A check made outside the permit ("if not revoked, broadcast") does not comply: a lock that lands between
+      the check and the hand-off returns first, and the bytes go out after the UI said "cancelled".
+    - The permit covers the hand-off only. It never covers signing, a prompt or the wait for the outcome
+      (InstantSend lock, peer echo, proof). It does cover the dispatch itself: a local dispatch into dash-spv,
+      or one DAPI broadcast request with its retries. That is why every hand-off has the deadline H.
+  - **Commit points at the pin** (`bc41f1bc23`; `PW` = `packages/rs-platform-wallet/src`).
+
+    | Flow | Signed artifact | Hand-off |
+    |---|---|---|
+    | Registration, top-up and invitation funding | asset-lock transaction | `self.broadcaster.broadcast(&tx)` (`PW/wallet/asset_lock/build.rs:1142`) → `SpvBroadcaster` → dash-spv `DashSpvClient::broadcast_transaction` |
+    | Identity registration | IdentityCreate | `put_to_platform_and_wait_for_response_with_signer` (`PW/wallet/identity/network/registration.rs:228, 252`) → rs-sdk `BroadcastStateTransition::broadcast` |
+    | Identity top-up | IdentityTopUp | `top_up_identity_with_signer_with_metadata` (`registration.rs:470, 493`) |
+    | Identity key update | IdentityUpdate | `broadcast_and_wait` (`PW/wallet/identity/network/update.rs:188, 317`) |
+    | DPNS name, profile, contactInfo, contact request and accept | document transitions | `put_to_platform_and_wait_for_response` (`PW/wallet/identity/network/document.rs:316`, `sdk_writer.rs:270`) |
+    | Contact payment | Core transaction | `self.broadcaster.broadcast(&tx)` (`PW/wallet/identity/network/payments.rs:1446`) |
+    | Invitation (X3) | asset lock, then the invitation identity | as funding above, then `put_to_platform_and_wait_for_response_with_private_key` (`PW/wallet/identity/network/invitation.rs:551`) |
+    | Re-dispatch of bytes already signed | the same transaction again | asset-lock resume (`PW/wallet/asset_lock/sync/recovery.rs:1176, 1491`), unconfirmed sends at load (`PW/manager/load.rs:491-530`), dash-spv's rebroadcast timer |
+
+    Data-contract creation (`PW/wallet/identity/network/contract.rs:297, 545`) is not a DashPay flow. In every row but the last,
+    platform-wallet signs and hands off inside one library call: the engine sees only its `Signer` adapter,
+    which runs before the release.
+  - **How E0-04 reaches them: a platform-wallet hook, not a wrapper.** Wrapping each library call under the permit
+    was rejected:
+    - The permit would span signing and the network wait. `SpvBroadcaster::broadcast` returns only after
+      dash-spv's acceptance verdict (`broadcast_acceptance_timeout` plus 5 s), and
+      `put_to_platform_and_wait_for_response` only after the proof wait. Lock would wait for the network, and
+      bounding that wait breaks the ordering: a hand-off could follow a lock that gave up waiting.
+    - platform-wallet re-dispatches from its own tasks (the last row), outside any engine call, where no wrapper
+      reaches.
+    - An aborted call tells the library nothing. A hook's refusal returns its definite "not sent" verdict, so the
+      library cleans up after it.
+
+    The hook is a **dispatch fence** that the manager accepts and calls at every hand-off with the wallet and the
+    kind of dispatch, `First` or `Resend`. It returns a refusal, or a permit that carries the deadline H.
+    - The library wraps the transport call in a timeout at that deadline and drops the permit once the call
+      returns or times out.
+    - A timeout is `MaybeSent`, because the library cannot tell whether the bytes left.
+    - **Core transactions.** `SpvRuntime::broadcast_transaction_and_wait` (`PW/spv/runtime.rs:323-338`) calls
+      dash-spv's `broadcast_transaction_and_wait` (rust-dashcore `40268cc0`, `dash-spv/src/client/transactions.rs:68`)
+      as one call, so the PR splits it. platform-wallet subscribes to dash-spv's sync events, calls
+      `DashSpvClient::broadcast_transaction` under the permit, and then waits for the acceptance event without
+      it, as dash-spv's own wait does.
+      - `broadcast_transaction` is a local dispatch into dash-spv's mempool manager with no network round trip.
+        It does await dash-spv's network mutex, which has no bound, and the deadline covers that.
+      - `DapiBroadcaster` holds the permit around its `broadcastTransaction` request.
+      - A refusal is `BroadcastError::Rejected` (provably never sent). platform-wallet then untracks the `Built`
+        asset-lock row and releases the inputs, as for any pre-send rejection.
+    - **State transitions.** platform-wallet uses the SDK's separate steps: build and sign, then
+      `BroadcastStateTransition::broadcast` under the permit, then `wait_for_response` without it. A refusal is
+      an error raised before any request.
+    - **`Resend`** carries the same signed bytes again. It commits nothing new and is idempotent for the
+      network, so the fence admits it without a lease. Refusing it would release the inputs of a transaction
+      that may already be on the wire.
+      - The consequence is accepted. A first hand-off that hit its deadline is `MaybeSent`, and its `Built` row
+        stays resumable. A later `Resend` can then complete it after the lock.
+      - This is the same unknown outcome as the exception in the rule, and the UI reports it the same way:
+        "may have been sent".
+    - **Upstream.** The desktop may carry the hook only as a cherry-pick of a public upstream PR (DEC-18), and
+      opening one needs pasta's go-ahead (DECISIONS-PENDING B5). Until the pin carries it, the library-driven
+      flows offer no "Lock to cancel" once they have signed. The lock still refuses every later signature, and
+      the UI says "Locking stops new signatures; a send already signed may still go out". E0-04 is not done
+      for those flows until the hook is in.
+  - **At lock time.**
+    - **Waiting.** `lock_vault` locks the vault first and so stops every signature (E0-03). That waits only
+      for gated vault operations already running: a signature takes about a millisecond, a gated vault write
+      one file write and its read-back. It then revokes every lease, waiting for permits already held.
+      - Since that can take up to H, E0-04 makes `lock_vault` async, and the FFI's `Vault.lock()` with it (sync
+        today, m1-engine §2.1). The vault part still completes before its first await.
+      - Each hand-off runs under a deadline H, which E0-04 sets at no more than 10 s. For state transitions,
+        the broadcast request's `PutSettings` timeout, retries included, fits within H. For Core transactions,
+        the local dispatch normally takes milliseconds.
+      - When H expires, the library's timeout drops the hand-off future and its permit with it, so `lock_vault`
+        returns within H plus one poll. The hand-off is then the rule's exception: `MaybeSent`.
+      - While it waits, the UI shows "Locking — finishing a send already handed off".
+    - **A hand-off that may already be out.** Lock does not undo a hand-off ordered before it.
+      - The flow reports `Sent`, or `MaybeSent` when the transport could not tell or H expired, and never
+        "cancelled".
+      - platform-wallet keeps the inputs reserved and keeps tracking acceptance, which needs no key.
+      - The UI says "sent before the lock" or "may have been sent".
+    - **Saved signed results.**
+      - The engine persists no signed artifact of a lease: no queue of signed bytes and no saved transition.
+      - The library persists one before its hand-off: the `Built` asset-lock row. A refused hand-off returns
+        `Rejected`, so the row is removed and nothing resumable is left.
+      - After the user unlocks again, a parked flow signs again under its new lease. It never hands off,
+        stores or reuses a signature or transition of a revoked lease.
+      - Only a `Resend` of bytes that may already be out passes without a lease.
+    - **The background drain is not a flow.**
+      - It hands nothing to a transport: its scope cannot sign a state transition or a spend.
+      - What it stores (contact accounts, decrypted contact xpubs) is public-key data that a lock need not
+        cancel.
+      - A crypto product made for a submission (the encrypted xpub of a contact request) goes out only in a
+        flow whose lease covers that submission.
+  - **Tests** (E0-04 acceptance), in the style of the vault race tests. A fake transport records each hand-off,
+    and the hook is in place.
+    - **Barrier 1: pause before the check.** A flow that holds a released signature pauses before it takes the
+      permit. `lock_vault` runs and returns. When the flow resumes, it hands nothing off (the fake records
+      nothing) and reports Cancelled, and the library's `Built` row is gone with its inputs released.
+    - **Barrier 2: pause between the check and the hand-off.** The flow takes the permit, passes the check and
+      pauses before it calls the transport. `lock_vault`, called on another thread, has not returned after
+      200 ms. When the flow resumes, it hands off once, and only then does `lock_vault` return. The recorded
+      order is the hand-off, then the lock's return, and the flow reports Sent.
+      - Variant: the transport stalls past H. `lock_vault` returns within H plus one poll, and the flow reports
+        MaybeSent, never Cancelled.
+    - **Mutation.** A check-then-act build (the check outside the permit) fails barrier 2.
+    - **Coverage.** Each test runs for a Core transaction (`TransactionBroadcaster`) and a state transition
+      (`BroadcastStateTransition::broadcast`). A further test shows a `Resend` passing under a revoked lease.
 - **The background `DashPayCrypto` lease.**
   - It exists while the vault is `Unlocked`, or unencrypted (no passphrase). It does not exist while
     `UnlockedMixingOnly` or `Locked`.
   - It is dropped on lock.
+  - A passphrase change ends the vault's epoch while the vault stays unlocked (E0-03 review r3 m3). The lease's
+    signer then fails `Locked`, and the engine issues a new one.
   - It lets the sweep build contact accounts without a prompt, and it can neither spend nor sign a state transition.
 - **The `DashPayCrypto` scope** may derive exactly the contactInfo children `65536'`/`65537'` under the identity-auth
   root, and nothing else there. *(Amended by E0-03.)* It also needs the identity keys themselves for ECDH and the
