@@ -152,8 +152,8 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
   path that can still write during layout: `Picker` updates its `GtkDropDown` from
   `computeLayout` (an upstream TODO), and replacing its options can fire the previous update's
   selection handler.
-- Tests: `Tests/SwiftCrossUIPatchTests` (root package, not headless), over a fake backend built on
-  the vendored `BackendFeatures.BaseStubs` (`FakeBackend.swift`):
+- Tests: `Tests/SwiftCrossUIPatchTests` (root package, also in the headless graph), over a fake
+  backend built on the vendored `BackendFeatures.BaseStubs` (`FakeBackend.swift`):
   - `ModelObserverUpdateQueueTests`: the queue on its own.
   - `ViewGraphUpdateTests`: real view graphs. The updates wait for one flush, each node's depth
     is its parent's plus one, and a batch costs exactly one update of the shallowest affected
@@ -168,10 +168,11 @@ Change (`Sources/SwiftCrossUI/State/ModelObserver.swift`, `ViewGraph/ViewGraphNo
     loop runs, and the task-before-appear order.
   - `WindowSizeTests` (P10).
 
-  `container-demo.sh` runs them on Linux, and `swift test` runs them on macOS. They are built as
-  the `DashWalletDesktopPackageTests` product because plain `swift test` also builds
-  swift-winui's Windows-only C target there. `scripts/linux-docker-test.sh` does not run them:
-  its image has no GTK, and its headless package graph leaves out every SwiftCrossUI target.
+  The target needs only the framework core (no GTK, no backend), so `DWD_HEADLESS=1` keeps it.
+  `scripts/linux-docker-test.sh` runs it on Linux without GTK. `container-demo.sh` also runs it,
+  before the GUI sessions, built as the `DashWalletDesktopPackageTests` product, because in the
+  full graph a plain `swift test` also builds swift-winui's Windows-only C target on Linux.
+  `swift test` runs it on macOS.
 
 ### P9 — GTK CSS reloaded only when it changes
 

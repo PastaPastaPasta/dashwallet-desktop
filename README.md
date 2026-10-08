@@ -192,10 +192,12 @@ scripts/linux-docker-test.sh
 Builds `ci/linux/Dockerfile.swift` (swift:6.3.3-noble + Rust 1.98.1 + protoc)
 if missing, copies the repo into the container, builds the Linux artifact
 variant, checks the committed bindings, and runs `DashKitTests`,
-`DesignTokensTests`, `RepoChecksTests`, `WalletRuntimeTests`, `WalletFeaturesTests` and
-`PlatformServicesDesktopTests` with `DWD_HEADLESS=1`. That variable
-removes the SwiftCrossUI targets from the package graph (the dependency stays
-declared, so `Package.resolved` is unchanged), so no GTK is needed.
+`DesignTokensTests`, `RepoChecksTests`, `WalletRuntimeTests`, `WalletFeaturesTests`,
+`PlatformServicesDesktopTests` and `SwiftCrossUIPatchTests` with `DWD_HEADLESS=1`. That variable
+removes the SwiftCrossUI app targets from the package graph (the dependency stays
+declared, so `Package.resolved` is unchanged), so no GTK is needed. `SwiftCrossUIPatchTests`
+stays: it tests the vendored SwiftCrossUI's patches over a fake backend, with the framework core
+only.
 `DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` sets cargo jobs (default: 8 on macOS;
 elsewhere the host's `CARGO_BUILD_JOBS`, else 8); `DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and
 inside the container.
@@ -307,8 +309,8 @@ Xvfb. It drives the onboarding and send flows through AT-SPI, in demo mode and l
 engine (results: `docs/screenshots/m1/linux/RESULTS.md`). With `DWD_CROSSUI_SUITE=m2` it runs the M1
 flows as a regression check and then the M2 flows: menus and title, Options and coin selection,
 Tools, PSBT, Wallets / Security / About / transaction details, and a live `-choosedatadir` run
-(results: `docs/screenshots/m2/linux/RESULTS.md`). Before the GUI sessions it runs
-`SwiftCrossUIPatchTests`, the unit tests of the vendored SwiftCrossUI's patches. After the send
+(results: `docs/screenshots/m2/linux/RESULTS.md`). Before the GUI sessions it also runs
+`SwiftCrossUIPatchTests` (built as the test product). After the send
 and onboarding flows it checks that the app's main thread goes idle.
 
 ### dash-qt command-line options

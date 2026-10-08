@@ -5,7 +5,8 @@
 // scripts/build-core.sh into Artifacts/ (gitignored). Run that script before
 // `swift build`.
 //
-// DWD_HEADLESS=1 drops every SwiftCrossUI-based target. The swift-cross-ui
+// DWD_HEADLESS=1 drops every SwiftCrossUI-based target except SwiftCrossUIPatchTests,
+// which needs only the framework core (no GTK, no backend). The swift-cross-ui
 // dependency stays declared, so headless resolution keeps its dependencies'
 // pins in Package.resolved; SwiftPM only builds the targets that remain. Use
 // it for headless CI and Linux containers without GTK.
@@ -123,6 +124,14 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(name: "RepoChecksTests"),
+    // The vendored SwiftCrossUI's patches (Vendor/PATCHES.md), over a fake backend: the framework
+    // core only, no GTK and no backend, so it stays in the headless graph. Swift 5 mode, like
+    // the vendored package: the fake implements its Swift 5 backend protocols.
+    .testTarget(
+        name: "SwiftCrossUIPatchTests",
+        dependencies: [.product(name: "SwiftCrossUI", package: "swift-cross-ui")],
+        swiftSettings: [.swiftLanguageMode(.v5)]
+    ),
     // DashKit: the umask 002 test opens the engine on a prepared data root.
     .testTarget(
         name: "PlatformServicesDesktopTests", dependencies: ["PlatformServicesDesktop", "PlatformServices", "DashKit"]),
@@ -164,13 +173,6 @@ if !headless {
             dependencies: [
                 "DashUICross", "DesignTokens", .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
-        ),
-        // The vendored SwiftCrossUI's patches (Vendor/PATCHES.md), over a fake backend. Swift 5
-        // mode, like the vendored package: the fake implements its Swift 5 backend protocols.
-        .testTarget(
-            name: "SwiftCrossUIPatchTests",
-            dependencies: [.product(name: "SwiftCrossUI", package: "swift-cross-ui")],
-            swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Composition root: live runtime over the engine, or the --demo services.
         .executableTarget(

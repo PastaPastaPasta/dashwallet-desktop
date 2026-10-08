@@ -23,8 +23,9 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # Every headless test target that has tests on Linux (MacUITests and
-# DashUIMacSnapshotTests compile to nothing there).
-filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests}"
+# DashUIMacSnapshotTests compile to nothing there). SwiftCrossUIPatchTests: the vendored
+# SwiftCrossUI's patches over a fake backend (Vendor/PATCHES.md).
+filter="${DWD_SWIFT_TEST_FILTER:-DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests}"
 
 # Separate target volume from the Rust-only image (dwd-linux-target): this
 # image is Ubuntu noble (glibc 2.39), that one Debian bookworm (glibc 2.36),
