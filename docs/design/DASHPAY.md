@@ -447,11 +447,14 @@ dw-engine; the open question was who sequences it against SPV (Fable §2.1 puts 
     - If the flow falls back to the ChainLock wait, which has no time limit, it drops the key and parks in
       `ProofWaiting`.
     - It asks again at identity creation ("Finish registering @alice").
-    - Parking needs no aborted future. The engine builds the lock with the library's `build_asset_lock_transaction`
-      (`PW/wallet/asset_lock/build.rs:91`), lets platform-wallet track it, and registers with
-      `AssetLockFunding::FromExistingAssetLock` once a proof exists.
-  - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so
-    ("Registration in progress — Lock to cancel").
+    - Parking needs no aborted future. The flow is two library calls: `create_funded_asset_lock_proof`
+      (`PW/wallet/asset_lock/build.rs:806`), which builds, tracks and broadcasts the lock and returns its 300 s
+      InstantSend timeout instead of falling back, then `AssetLockFunding::FromExistingAssetLock`, called only once
+      the tracked row holds a proof. The build-only `build_asset_lock_transaction` returns an untracked, unsent lock
+      and is never used for a hand-off (E0-04 design §4.4).
+  - **Lock always wins.** `lock()` revokes every lease. While a lease holds a key on a locked vault, the UI says so:
+    "Registration in progress — Lock to cancel" before the funds are committed, "Funds locked — finishing. Lock stops
+    it here; you'll finish after you unlock" after (E0-04 design §4.6).
   - The vault releases no signature or crypto result of an epoch once `lock()` has returned (E0-03; m1-engine
     §2.2). A result released just before the lock can still reach the flow; the commit-point rule below is what
     keeps it from going out (E0-04).

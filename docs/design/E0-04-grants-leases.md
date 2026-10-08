@@ -1,76 +1,169 @@
 # E0-04: grants and leases — design
 
-**Status:** design (D) for review under DEC-57. It is not normative until that review closes. Once approved, it
-replaces the **DRAFT** E0-04 text in [`DASHPAY.md`](DASHPAY.md) §2.6 ("Commit points", "At lock time" and the
-open-issues list) and the draft clauses of the E0-04 row in [`ROADMAP.md`](ROADMAP.md).
+**Status:** design (D), **rev1**, for the DEC-57 closure check. rev0 (6b4cdf9) was reviewed by GPT r1
+(REWORK) and Opus r1 (APPROVE-WITH-CHANGES); the manager's rulings and every finding's disposition are in
+"Changes in rev1" below. DEC-65 accepted rev0's Q2–Q20; Q1 (the platform PR) is still pasta's call (B5), so this
+revision specifies both outcomes (§2a). Once approved, it replaces the **DRAFT** E0-04 text in
+[`DASHPAY.md`](DASHPAY.md) §2.6 ("Commit points", "At lock time" and the open-issues list) and the draft clauses of
+the E0-04 row in [`ROADMAP.md`](ROADMAP.md).
 
 **Inputs:**
 - DASHPAY §2.6 and §3.3–3.4;
 - the design-input checks `docs/design/checks/e0_04_{dispatch_model,split_model,mutations}.py`;
 - E0-03's merged vault code (`rust/crates/dw-vault`, `rust/crates/dw-engine/src/platform/`);
 - reviews DW-E0-03 r3 (Opus) and r4 (GPT), and the fix4 findings listed in DASHPAY §2.6;
-- DEC-18, DEC-57 and DECISIONS-PENDING B5.
+- reviews DW-E0-04-design r1 (GPT, `~/workspace/node-program/reviews/DW-E0-04-design-r1-gpt.md`) and r1 (Opus,
+  `…-r1-opus.md`), with the reviewers' scratch probes;
+- the m4 DashPay contract on `dw/e0-08-dashpay-facade` at cf9ba8e;
+- DEC-18, DEC-57, DEC-65 and DECISIONS-PENDING B5.
 
 **Pins read:**
 - platform `bc41f1bc23`. `PW` = `packages/rs-platform-wallet/src`, `PWS` = `packages/rs-platform-wallet-storage/src`,
   `SDK` = `packages/rs-sdk/src`.
 - rust-dashcore `40268cc0` (`dash-spv`, `key-wallet`).
 
-**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 15 s).
+**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 70 s; 67 checks).
+
+## Changes in rev1
+
+**Summary.** The core stays as both reviews found it: the host-owned journal, the single compare-and-set under J,
+revocation at the lock call, host-enforced deadlines and `lock_gen`. rev1 makes these changes:
+- it specifies a design for each outcome of Q1 (§2a);
+- it closes GPT's seven majors, each reproduced in the model, where it fails under rev0's rule and passes under
+  rev1's;
+- it adds the escaping mutation GPT found, and judges every definite verdict from the actual send history;
+- it adds the "will be sent" outcome, a journal check before any retry or discard, and `DispatchResolved`;
+- it fixes the Lock copy and the lock-state UX;
+- it writes out the E0-08 contract changes (§16);
+- it releases the build's in-broadcast pin on a cancelled artifact;
+- it closes every Opus minor.
+
+**Manager rulings for rev1** (2026-10-08), each applied:
+1. All seven GPT majors are accepted. Each is fixed and added to the model, and so is GPT's missed mutation.
+2. Q1 fallback: two modes with separate acceptance lists. E0-04 and DP1-02 can close in Mode B, and everything
+   common to both modes lands first (§2a, §13).
+3. No double pay through the UI: a "will be sent" outcome, retry and discard consult the journal, and an event
+   fires when a provisional outcome resolves (§4.6, §5.7 H11–H12).
+4. Lock UX: Lock "pauses" once funds are committed; a "key held" lock state with a working Lock control; the four
+   departures from mobile conventions are fixed (§4.6, §4.8).
+5. The E0-08 contract changes (§16).
+6. Releasing the in-broadcast pin on cancel; the model splits reservation and pin (§5.5).
+7. All Opus minors.
+
+**GPT r1 dispositions**
+
+| # | Finding | Disposition | Where | Model |
+|---|---|---|---|---|
+| 1 | A concurrent row-less resend outlives a definite refusal and released inputs | **Fixed.** Every attempt, a Resend included, holds an attempt guard tracked under J. A row-less artifact is settled definitely unsent only when no attempt still runs and none may have let it out. A Core send settled that way is tombstoned, so its inputs are released once and any later copy is refused. The release decision comes from that settlement, never from one attempt. | §5.5 "the row-less set" | `rowless-concurrent` scenario; GPT's trace replays as a violation under `rowless-rev0` and is not admitted under rev1 |
+| 2 | Waiting for old permits does not close the interval before the vault gate runs | **Fixed.** The table owns a lock barrier that covers both the vault gate's completion and the drain. Every lease insert (H8) waits for the barrier and re-reads `lock_gen` at insert. The barrier is cleared by a detached coordinator task, so a dropped caller cannot leave it set, and concurrent locks join it. | §8.1, §8.3, H8 | Part 2 `gate_window`: rev0 admits a First after return; rev1 does not |
+| 3 | Cross-process row-less refusal depends on a marker with no write-ahead rule | **Fixed.** A resumable row-less step writes a durable (`FULL`) write-ahead step marker, keyed by step and artifact hash, in its First's J step and before any transport. H10 consumes the marker, not the flow's phase. | §5.5, §6.2, §7.6, H10 | `rowless-resume` and `rowless-resigned` scenarios; `no-step-marker` replays GPT's trace |
+| 4 | The own-key split still has an invisible ChainLock fallback, including in registration's second call | **Fixed in Mode A**: the PR adds `FallbackPolicy::Surface`, so every ChainLock fallback returns `ChainLockFallbackRequired` to the engine, which parks at that moment and continues only under a new grant. Step 2 runs only once the row holds a proof. **Mode B** keeps the documented residual (the key is bounded by `key_until`), and a signer `Locked` out of step 2 maps to Parked, never Failed. | §4.4, L17 | Part 4: rev0 shows the key held through a hidden wait and a funded registration Failed; Mode A shows neither; Mode B shows exactly the documented residual |
+| 5 | The FULL journal can preserve a possible send that the load catch-up cannot fence or resume | **Fixed in Mode A.** `register` stores a recovery payload: the signed transaction, its input outpoints and the funding metadata. Load reconciles `Dispatching`/`PreFence` entries that have no row: it restores the row (L16), installs a pending-spend fence on the inputs (L12, cleared only by an observed spend), then resumes. **Mode B**: a documented residual (§2a). | §6.2, §7.2, H6 | `flow+power` scenario (power loss separate from a crash); `no-payload` replays GPT's trace |
+| 6 | Rebind can restore signing above the new grant's cap | **Fixed.** A rebind sets each purpose's remaining budget to min(old remaining, fresh grant's cap); a purpose the fresh grant lacks drops to 0; charges and permits already made stand. A mixed grant set sums its caps per purpose. | §4.3 | Part 2 `rebind_cap`: rev0 admits a transition above the fresh cap; rev1 does not |
+| 7 | "Nothing in flight" is not evidence of a cancelled flow | **Fixed.** Every lease keeps a monotone history of its artifacts' commits. The lock report derives each flow's outcome from that history: Sent, WillBeSent, MaybeSent, or Cancelled only when no artifact was ever committed (or every committed one is settled definitely unsent). Multi-artifact flows report per artifact. | §8.4 | GPT's trace replays as a violation under `snapshot-outcome`; the design reports Sent |
+| 8 | The model's oracle can forget a successful send; its coverage claim is too broad | **Fixed.** The oracle judges "may send" from the immutable send history, the attempts still running and the journal. GPT's `forget-rowless-history` mutation is in the list and is caught. Power loss is a separate transition; the concurrent caller, row-less crashes, the post-freeze creation window and the lock outcome are all modelled. The header now states what the state space covers. | §10 | 29 mutations, all caught |
+
+**Opus r1 dispositions**
+
+| # | Finding | Disposition | Where |
+|---|---|---|---|
+| 1 | A declined Q1 has no end state | **Fixed.** Mode B: call permits around each library write call, the vault gate stops new signatures, and the journal's step markers and lock history apply. It has its own acceptance list, and E0-04 and DP1-02 can close against it. The mode-independent work lands first. | §2a, §13 |
+| 2 | Outcomes the journal can still resend are reported as plain MaybeSent, inviting a second payment | **Fixed.** A new `WillBeSent` outcome (`platform.broadcast_pending`). `funds_committed` holds for any artifact not definitely unsent. Retries and `discard_registration` consult `dispatch_status`. `EngineEvent::DispatchResolved` fires when a provisional outcome resolves, including a reload that refuses and cleans up. | §4.6, H11, H12, §16 |
+| 3 | "Lock to cancel" after funding; no Lock control while the vault is locked | **Fixed.** The copy is keyed on `funds_committed` ("Lock to stop; you'll finish after you unlock"). A fourth lock state, "Locked, key held by a flow", and a Lock action that stays enabled while an own-key lease exists. `Vault.lock()` on a locked vault still revokes leases. UX-SPEC is edited in this branch. | §4.6, UX-SPEC §4.1 |
+| 4 | E0-08's m4 contract cannot carry the design | **Fixed:** the exact changes are in §16, passed to the E0-08 fix round. | §16 |
+| 5 | The cleanup leaves the in-broadcast pin pending | **Fixed.** The cleanup and the drop guard settle the pin released; `Deferred`, `Committed` and L13 keep it pending. The model splits `reserved` from `pinned`, and the tests assert that the inputs can be selected again. | §5.5, L6, L14 |
+| 6 | The PR's shape | **Fixed.** A fence-aware `SpvBroadcaster`, not a decorator; `admit` between subscribe and enqueue; a `DispatchContext{wallet, tracked_row, site}` passed by every F1 site; `DispatchScope{wallet, origin, step}` in rs-sdk; the DAPI broadcaster's retries clamped; P3 is L. | §5.1–5.3, §11 |
+| 7 | P2 understated; the async FFI lock collides with the frozen Swift shells | **Fixed.** P2 is now P2a + P2b (L in all). The FFI `Vault.lock()` stays synchronous: it does the freeze and the vault gate before it returns, and reports the drain through `LockProgress` and `LockReport` events. E0-04 is L–XL. | §8.1, §13 |
+| 8 | Stale DASHPAY §2.6 and ROADMAP DP1-02 text name the build-only API | **Fixed in this branch:** both now name the two-call split. | DASHPAY §2.6, ROADMAP DP1-02 |
+| 9 | Registration's step 2 has hidden ChainLock fallbacks | **Fixed** with GPT 4. | §4.4 |
+| 10 | dispatch.sqlite lifecycle gaps | **Fixed.** `remove_wallet` with a `Wipe` grant secure-erases the wallet's entries once it has no tracked row. Seeding goes through the library's loaded rows (`list_tracked_locks`), per wallet, so it no longer depends on PWS's schema. A journal schema newer than the build disables the fence rather than failing. The journal is per network and closed with the session. | §6.2, §6.5 |
+| 11 | Ambiguous, L13 and Deferred rows are not driven again until the next launch | **Fixed.** H6's resume pass re-runs on every SPV peers 0 → >0 transition and after the journal recovers from a write failure. | H6 |
+| 12 | L2 is broader than its reason | **Fixed.** L2 forbids the wallet-manager guard and `build_persist_serial` only across `register` and the `admit`s that do journal I/O. `payment_guard` is explicitly allowed. | L2 |
+| 13 | The contact-payment cancelled code is scheduled only for P5 | **Fixed.** `send.cancelled` and its m1/m1-swift rows move to DP3-01. `DispatchRefused` maps to it; the release uses the finalized handle's owner-guarded path, only when the row-less settlement is definitely unsent, and keeps the reserved DIP-15 address. "Accept and pay" partial copy is added. | §4.6, §16 |
+| 14 | Four departures from mobile conventions | **Fixed.** Rebind from the vault key without a prompt on `Unlocked(Full)`, within the remaining budget. Auto lock is `lock_vault`. The drain is non-modal. `QuickUnlock` issues `PlatformOp` under limits. | §3.7, §4.3, §4.8 |
+| 15 | Rows with no journal entry leave the user stuck | **Fixed.** Tools ▸ Repair "Unrecorded asset locks": "Send it" (registers it under a fresh lease and makes a First) or "Discard" (after the inputs are seen unspent and the transaction is not on chain). | §6.5 |
+| 16 | A refusal in rs-sdk skips the nonce refresh | **Fixed.** The refusal path calls `refresh_identity_nonce(owner)`, and the PR tests it. | §5.1, L19 |
+| nits 1–6 | "five" vs "four"; the model's "Deferred after H" label; `WalletClosed`; H9/H10 order; the `funding_signer` cap; a third copy line | **Fixed.** | §4.3, §4.6, §4.7, §5.7, §10, A.1 |
+
 
 ## 0. Decisions at a glance
 
-1. **The dispatch record moves out of platform-wallet and into a journal the host owns.** It is a small SQLite file,
-   `<network>/dispatch.sqlite`, opened with `synchronous=FULL`, and only the engine's dispatch fence writes it. The
-   asset-lock row, its changeset merge and its SQLite upsert stay exactly as they are at the pin. Every persistence
-   problem the review found (M-B a–d) was a problem of carrying the record through that merge, so the record no
-   longer goes there.
-2. **One step under one mutex decides every hand-off.** The fence's `admit` holds the lease table's mutex J and in
-   that step reads the artifact's journal entry, checks the origin lease, charges the budget, and either
-   compare-and-sets `Unsent → Committing` (with a permit) or `Unsent → Revoked`. Nothing about the decision is read
-   earlier. That closes M-A. `admit` takes no library lock and never waits on anything but J and its own journal write,
-   so the lock-order deadlock M-A describes cannot happen (§5.8).
-3. **The commit is that compare-and-set.** A First hand-off of a registered artifact starts its transport only after
-   its `Dispatching` write has returned durably. A failed or ambiguous write makes the entry `Ambiguous`: it is never
-   cleaned up, and it is resent only after a later write succeeds.
-4. **Registration before tracking.** platform-wallet registers an asset lock with the fence (durable `Unsent` plus its
-   origin lease) before it tracks the `Built` row, and makes the row durable before it asks to hand it off. When the
-   journal is created it is seeded with a `PreFence` entry, counted as possibly sent, for every asset-lock row already
-   in `wallet.sqlite`. This closes M-B (d). A row with no entry at all has unknown provenance and is neither sent nor
-   cleaned up, so the decision never rests on what a call site says about the row.
-5. **Row-less bytes are remembered too.** The fence keeps, per process, the ids of row-less artifacts it admitted as a
-   First. A later hand-off of the same bytes (a `TxDraft` repeat, a re-signed state transition with identical bytes)
-   is a Resend, never a definite refusal of something that may already be on the wire.
-6. **Revocation happens at the call, not in the drain.** `lock_vault` revokes every lease and snapshots the permits in
-   one synchronous step under J, before its first await. Its drain then only waits. Each permit carries a deadline
-   (its grant + H), and the host enforces that deadline whatever the library does. So `lock_vault` returns within
-   `max(H, vault-gate wait)` of its call, for any number of leases. A dropped future, or a second call, changes
-   nothing. A lease whose creation began before the call and finished after it is refused (`lock_gen`). This closes
-   M-C.
-7. **Exactly one party cleans up, and nothing can drop the cleanup.** Only the caller whose compare-and-set made
-   `Revoked` cleans up. The cleanup runs as a library-spawned task, so dropping the caller cannot lose it, and a build
-   dropped before `admit` abandons its row through a synchronous drop guard. The release is owner-guarded by the
-   build's reservation token.
-8. **A catch-up at load.** dw has none today. E0-04 adds one: after the journal is loaded and before user flows, every
-   tracked `Built` or `Broadcast` row is resumed, and the journal decides. Possibly-sent rows get their inputs reserved
-   again. Never-dispatched rows are cleaned up.
-9. **Leases** are engine objects with a 128-bit random id. A lease is bound to one wallet and one flow, and holds
-   scoped signers and per-purpose budgets. Its tokens are dropped once the signers are issued. On a locked vault it
-   also holds one `KeyHold`, the only strong reference to the grant's own key. It drops the hold when the library's
-   InstantSend window, reported through `proof_wait_started`, ends, or when the flow falls back to the ChainLock
-   wait.
-10. **Grants:**
-    - `PlatformOp{max_duffs, max_credits}`.
-    - A new `IdentityScan` purpose, the only one that releases the scan master key.
-    - `authorize_set`: several grants from one credential check, for "Accept and pay".
-    - `platform_signer` takes the funding cap from the token.
-    - `Vault::epoch()`, so the engine sees every epoch change.
-11. **One upstream PR** (B5) puts the fence at two choke points, each wrapping every call site of its kind:
-    - platform-wallet's `TransactionBroadcaster` dispatch;
-    - rs-sdk's `BroadcastStateTransition::broadcast`.
+1. **Two modes.** Mode A has the platform PR (Q1, pasta's call); Mode B does without it (§2a). Everything common to
+   both lands first. E0-04 and DP1-02 can close in either.
+2. **The dispatch record moves out of platform-wallet and into a journal the host owns.** It is a small SQLite file,
+   `<network>/dispatch.sqlite`, opened with `synchronous=FULL`, and only the engine's fence writes it. The asset-lock
+   row, its changeset merge and its SQLite upsert stay exactly as at the pin.
+   - In Mode A the journal holds registered artifacts with a recovery payload, and step markers.
+   - In Mode B it holds step markers only.
+3. **One step under one mutex decides every hand-off.** The fence's `admit` holds the lease table's mutex J and, in
+   that step:
+   - reads the artifact's entry;
+   - checks the origin lease;
+   - charges the budget;
+   - either compare-and-sets `Unsent → Committing` (with a permit) or `Unsent → Revoked`.
 
-    It also adds the registration call and the library's obligations (§5.6). Until that PR is in the pin, flows
-    driven by the library keep DASHPAY's interim wording ("a send already signed may still go out").
+   Nothing about the decision is read earlier. `admit` takes no library lock, and it waits on nothing but J and its
+   own journal write.
+4. **The commit is that compare-and-set** (or, for a row-less artifact, its permit's grant). A registered artifact,
+   or a resumable row-less step, starts its transport only after its durable record (`Dispatching`, or the step
+   marker) has returned. A failed or ambiguous write is `Ambiguous`: it is never cleaned up, and it is resent only
+   after a later write succeeds.
+5. **Registration before tracking** (Mode A). An asset lock is registered with its recovery payload (durable
+   `Unsent`) before its `Built` row is tracked, and the row is durable before it is handed off.
+   - Rows that predate the fence are seeded as `PreFence`, possibly sent.
+   - A row with no entry is neither sent nor cleaned up; Tools ▸ Repair offers a way out.
+   - A row lost to a power loss is restored from the payload, and its inputs are fenced.
+6. **Row-less bytes are tracked per attempt.** The fence keeps every admitted row-less artifact and its running
+   attempts. It settles one as definitely unsent only when no attempt still runs and none may have let it out. A
+   settled Core send is tombstoned.
+7. **Revocation happens at the call, and a barrier closes the gate window.** `lock_vault` revokes every lease and
+   snapshots the permits in one synchronous step under J.
+   - A table-owned lock barrier, which covers both the vault gate's completion and the drain, keeps every lease
+     insert out until both are done.
+   - Permit deadlines (grant + H) are enforced by the host.
+   - So `lock_vault` returns within `max(H, vault-gate wait)` of its call, for any number of leases. A dropped
+     future, or a second call, changes nothing.
+8. **Outcomes come from history.** A flow's lock outcome derives from its artifacts' commit history, not from what
+   was in flight:
+   - `Sent`;
+   - `WillBeSent`: committed, and the engine will resend it;
+   - `MaybeSent`;
+   - `Cancelled`, only for a flow that never committed anything.
+
+   No retry or discard is offered unless the journal says the artifact is definitely unsent, and
+   `DispatchResolved` fires when a provisional outcome resolves.
+9. **Exactly one party cleans up, nothing can drop it, and it frees the inputs.** Only the compare-and-set winner
+   cleans up, as a spawned task (a drop guard covers a dropped build). It releases the reservation owner-guarded, and
+   it settles the in-broadcast pin released, so the inputs are selectable again.
+10. **A catch-up at load and on reconnect.**
+    - Possibly-sent entries get a pending-spend fence on their inputs (and, in Mode A, a restored row if one was
+      lost) before any build can run.
+    - Every tracked row is resumed after SPV starts, and again on each peers 0 → >0 transition.
+11. **Leases** are engine objects with a 128-bit random id, bound to one wallet and one flow.
+    - A lease holds scoped signers and per-purpose budgets.
+    - A rebind never raises its authority: each budget becomes the minimum of what remains and what the fresh grant
+      caps.
+    - On a locked vault a lease holds one `KeyHold`. In Mode A it is dropped at the library's InstantSend window's
+      end and at every ChainLock fallback. In Mode B it is bounded by `key_until`.
+    - The facade carries a lease across "Accept and pay"'s two calls (§16).
+12. **Grants:**
+    - `PlatformOp{max_duffs, max_credits}`;
+    - `IdentityScan`;
+    - `authorize_set`;
+    - `platform_signer` capped by its token;
+    - `Vault::epoch()`;
+    - `QuickUnlock` for `PlatformOp` under limits.
+13. **One upstream PR** in Mode A (B5). It makes these changes:
+    - a fence-aware `SpvBroadcaster`;
+    - the rs-sdk broadcast hook, with nonce refresh and clamped retries;
+    - `register`, `abandon` and their drop guard;
+    - the recovery payload and its restore;
+    - the pending-spend re-fencing;
+    - `proof_wait_started`;
+    - the surfaced ChainLock fallback.
+
+    In Mode B, flows driven by the library keep DASHPAY's weaker wording: "Locking stops new signatures; a send
+    already signed may still go out".
 
 | Open issue (DASHPAY §2.6) | Resolution | Checked by |
 |---|---|---|
@@ -106,6 +199,11 @@ These facts were checked at the pins. Everything below depends on them.
 | F13 | `SdkBuilder` cannot take a custom request executor (`SDK/sdk.rs:309, 778`), so the host cannot intercept a state-transition broadcast without an rs-sdk change. | SDK |
 | F14 | The library holds `generation.payment_guard()`, a lifecycle read lock, across a broadcast (`manager/load.rs:605`, `signed_payment_registry.rs:423`). The DashPay registration path falls back to the ChainLock proof internally (`registration.rs:171-200`), where its caller cannot see it. | PW |
 | F15 | `change_passphrase`, `encrypt`, `recover` and `destroy` reach the vault through the generic `vault_op` (`dw-engine/src/keys.rs:119-136`; `dw-ffi/src/api/vault.rs:519-531`). That emits `VaultLockState` only when the lock state changes (`keys.rs:202-210`), and a passphrase change ends the epoch without changing it. | dw |
+| F16 | `AssetLockFunding::FromExistingAssetLock` takes an outpoint and a voucher flag, not a proof (`orchestration.rs:227-238`). Registration's step 2 resolves the proof again: on an InstantSend timeout it falls back to `upgrade_to_chain_lock_proof(&out_point, None)` inside the call (`registration.rs:169-197`). When Platform rejects an IS proof at submit it does the same (`:240-259`), and top-up does likewise (`:479-502`). `create_funded_asset_lock_proof` alone returns its 300 s timeout to the caller (`build.rs:1265-1300`). | PW |
+| F17 | The build's `InBroadcastPin` is taken at build time (`build.rs:376`). Its `Drop` settles as a pending spend unless it was settled released (`core/generation.rs:634-656`), and a pending-spend fence clears only on an observed spend, with no timer (`:537-576`). Pending-spend fences are process-only (`:107-165`, `:242-252`). | PW |
+| F18 | dw's `remove_wallet` calls `persister.delete_wallet` (`dw-engine/src/wallets.rs:223-232`), which cascade-deletes and secure-erases the wallet's rows (`PWS/sqlite/persister.rs:740-790`). | dw, PWS |
+| F19 | The production broadcaster is a concrete per-wallet `Arc<SpvBroadcaster>`, monomorphized into `CoreWallet`, `IdentityWallet` and `AssetLockManager` (`platform_wallet.rs:312-325, 663-700`). `DapiBroadcaster` is one `sdk.execute` with the SDK's retries across nodes (`broadcaster.rs:131-149`). | PW |
+| F20 | `StateTransition::broadcast` refreshes the identity nonce only on the failure arm after `broadcast_with_retries` (`SDK/platform/transition/broadcast.rs:161-168`). | SDK |
 
 ## 2. Terms
 
@@ -129,6 +227,128 @@ These facts were checked at the pins. Everything below depends on them.
   drain waits for permits only, and stops waiting for each one at its deadline.
 - **H:** the hand-off deadline, 10 s (Q6).
 - **J:** the lease table's `std::sync::Mutex`, held only for in-memory updates, never across an await or any I/O.
+- **Resumable step:** a row-less flow step that a later process may sign again with identical bytes (F10): the
+  identity transition of a registration or top-up from an existing lock, and any step the engine declares
+  resumable. Its First writes a durable step marker (§7.6).
+- **Lock barrier:** the table-owned state of a running lock, set at its freeze and cleared once both its vault gate
+  and its drain are done (§8.1).
+- **Outcomes:** `Sent`, `WillBeSent` (committed, the engine will resend it), `MaybeSent`, `Cancelled` (never
+  committed), and for a single attempt `NotSent` (definitely not sent by this attempt).
+
+## 2a. Two modes: with and without the platform PR
+
+Q1 (opening one platform PR and carrying its cherry-pick) is pasta's call (B5). Both outcomes are designs with their
+own acceptance list, and E0-04 and DP1-02 can close in either.
+
+### 2a.1 What both modes share
+
+All of the following land first (P1, P2a; §13) and work without any library change:
+- **The vault.** The grants of §3: caps, `IdentityScan`, `authorize_set`, `KeyHold`, `Vault::epoch()` and
+  `QuickUnlock` for `PlatformOp`.
+- **The lease table** (§4):
+  - leases, their lifecycle and budgets;
+  - the rebind minimum;
+  - the facade's lease handle;
+  - the background lease, `LeaseView` and the events.
+- **The lock** (§8):
+  - the freeze, the vault gate, the drain and the barrier;
+  - deadlines and `lock_gen`;
+  - the revoking session methods and `vault_op`'s epoch check;
+  - close;
+  - the synchronous FFI lock with its events;
+  - outcomes from history.
+- **Engine-owned hand-offs**, those whose bytes the engine builds itself (`TxDraft`: contact payments, and M1 sends
+  in P5). The engine is the fence there: the row-less set with its attempt tracking and tombstone, the Spend charge
+  bound to the txid, and the release and pin settling.
+- **The journal's step markers** for resumable steps (§7.6), with H10's reading of them.
+- **The UI and contract surface:**
+  - `WillBeSent`, `funds_committed`, `dispatch_status` and `DispatchResolved`;
+  - the Lock copy and states;
+  - §16.
+- **The catch-up's resume pass** (H6 part 2), through the public `resume_asset_lock`.
+
+### 2a.2 Mode A: with the platform PR
+
+Everything in §5 holds as written: per-artifact admission at every hand-off, registered artifacts with their
+recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at load, the exact key window
+(`proof_wait_started`) and the surfaced ChainLock fallback. The theorem of §9.2 holds at hand-off granularity.
+
+### 2a.3 Mode B: without it
+
+- **Call permits.** The engine wraps each library write call in a call permit:
+  - `create_funded_asset_lock_proof`;
+  - registration and top-up `FromExistingAssetLock`;
+  - contact requests and accepts, profile, contactInfo, DPNS, key updates, withdraw, transfer.
+
+  The permit is taken in a J step that checks the lease is live, charges the budget from the call's quote, and,
+  for a resumable step, writes its step marker durably first. Its deadline is the grant + H, and the drain waits for
+  it as for a First permit.
+- **Signatures.** The vault gate ends the epoch at the lock, so every signer issued before fails `Locked` after it.
+- **Outcome per call:**
+  - `Sent` when the call returned Ok;
+  - `Cancelled` when it failed with a signer's `Locked` and it is a call that signs its only artifact before handing
+    anything off. That covers `create_funded_asset_lock_proof`, a registration or top-up step 2 and every
+    single-document write; for DPNS, only when the preorder's signature failed;
+  - `MaybeSent` otherwise, including a call still running when the drain ends;
+  - `DispatchResolved` follows when the library's row status or a re-query settles it.
+- **Funding cap.** The engine refuses a call whose `amount + fee_bound_worst` exceeds the funding budget, where
+  `fee_bound_worst` is the fee of spending every spendable UTXO, a true upper bound. The exact debit is checked only
+  in Mode A (at `register`).
+- **Re-dispatch keeps the pin's semantics.** A resume, the deferred task or the catch-up may resend a `Built` row
+  that was signed before a lock. That is the r4 M1 shape, and it is allowed under Mode B's weaker promise.
+- **Weaker theorem.** After `lock_vault` returns:
+  - nothing is signed under a lease it revoked;
+  - no library call under such a lease starts.
+
+  A call already running, or a row it left, may still hand off bytes signed before the lock; it reports MaybeSent.
+- **Copy:** "Locking stops new signatures; a send already signed may still go out".
+- **Documented residuals** (each closed by Mode A):
+  - a signed-but-unsent `Built` row can go out after a lock (r4 M1);
+  - a power loss can orphan a possible send (GPT 5); DP1-05's reconstruction recovers it once the lock is on the
+    chain;
+  - a possibly-sent row's inputs are not fenced at load (F7). The engine mitigates this for its own builds: `TxDraft`
+    coin control excludes the outpoints of tracked `Built` and `Broadcast` rows;
+  - the own key is bounded by `key_until`, not by the fallback moment. A hidden ChainLock wait (F16) may keep it
+    until `key_until`, and a later signer `Locked` maps to Parked, never Failed (model Part 4's "Mode B residual");
+  - there is no exact key window: the key is held for the whole `create_funded_asset_lock_proof` call, at most
+    300 s + `A` (§4.4).
+
+### 2a.4 Acceptance
+
+**Mode B** (closes E0-04 if Q1 is declined or still undecided at P4; DP1-02 closes against it):
+1. The vault tests (§12 "dw-vault").
+2. The lease table tests (§12), the rebind minimum and the facade lease handle included.
+3. The lock tests (§12 "Bound" and "Barrier"):
+   - zero permits, a delayed blocking pool, a gate wait longer than H, dropped callers and double locks;
+   - the synchronous FFI lock with `LockProgress`.
+4. Engine-owned `TxDraft` hand-offs (§12 "Fence conformance", Core variants), with:
+   - the row-less repeat and the concurrent caller;
+   - inputs that are selectable again after a cancel.
+5. Call permits:
+   - paused before the call: Cancelled, nothing recorded;
+   - running at the lock: `lock_vault` waits at most H; Sent if it returned, MaybeSent if it outran H;
+   - a signer `Locked` out of a single-artifact call: Cancelled; out of a DPNS domain call after its preorder:
+     MaybeSent.
+6. Step markers: the kill matrix for resumable steps (kill before and after the broadcast, before the response,
+   before the phase write); a later refusal reads MaybeSent.
+7. Outcomes from history, `WillBeSent`, `dispatch_status` gating retry and discard, and `DispatchResolved`.
+8. The Lock copy, the "key held" lock state and its Lock control (§4.6).
+9. For DP1-02, with pin re-dispatch semantics:
+   - the kill matrix at every transition;
+   - the funding cap holds, by the worst-case fee bound;
+   - a testnet registration;
+   - a registration Lock during the InstantSend wait parks keyless.
+
+**Mode A** (closes E0-04 when the PR is in the pin):
+1. All of Mode B's list.
+2. Fence conformance at hand-off granularity for Core transactions and state transitions (barriers 1, 2 and 2 with
+   a stall).
+3. The dispatch-record cases 1–10 (§12).
+4. The power-loss recovery tests (payload restore, pending-spend fences).
+5. The surfaced-fallback tests (§4.4).
+6. The SPV split and the rs-sdk hook tests (nonce refresh and clamping included).
+7. The stress run and the kill matrix at hand-off granularity.
+8. The PR's L-tests.
 
 ## 3. Grants (dw-vault)
 
@@ -188,11 +408,25 @@ including clones held inside a library call, so "the lease drops its key" would 
 ### 3.6 Contract changes (m1-engine §2.2)
 
 - The purpose list adds `PlatformOp{max_duffs, max_credits}` and `IdentityScan`.
-- The credential table puts `IdentityScan` in the `Spend` column.
+- The credential table puts `IdentityScan` in the `Spend` column. `QuickUnlock` gains `PlatformOp` under §3.7's
+  limits.
 - `authorize_set` gets a row.
-- `Vault.lock()` becomes async and returns a `LockReport` (§8.4).
-- The `PlatformFunding` note changes from "advisory today" to "capped by the token; the debit is checked at the fence
-  (§4.2)".
+- `Vault.lock()` stays synchronous. It returns after the freeze and the vault gate, revokes every lease even on a
+  vault that is already `Locked`, and reports the drain through `LockProgress` and `LockReport` (§8.1).
+- The `PlatformFunding` note changes from "advisory today" to "capped by the token; the debit is checked at
+  `register` (Mode A) or against the worst-case fee bound (Mode B)".
+
+### 3.7 `QuickUnlock` for `PlatformOp` (review Opus 14)
+
+iOS uses biometrics for DashPay writes, while rev0 made every one of them, and "Accept and pay", need the typed
+passphrase on a Mac with Touch ID. rev1 lets `QuickUnlock` issue `PlatformOp{max_duffs, max_credits}` under the
+quick-unlock policy:
+- `max_duffs ≤ spend_limit_duffs`;
+- `max_credits ≤ spend_limit_duffs × CREDITS_PER_DUFF` (1000, Platform's fixed rate), so one limit bounds both;
+- the passphrase was entered within `PASSPHRASE_MAX_AGE_SECS`, as for `Spend`.
+
+`authorize_set` with `QuickUnlock` applies the limits to the set's sums. Anything above them asks for the
+passphrase. `IdentityScan` stays prompt-free only in the prompt-free states, as before.
 
 ## 4. Leases (dw-engine `platform/lease.rs`)
 
@@ -219,14 +453,17 @@ struct LeaseEntry {                      // inside LeaseTable, under J
 
 - A lease is created from one or more grants with `NetworkSession::begin_lease(wallet, flow, grant_ids)`, in three
   steps:
-  1. read `lock_gen`;
+  1. wait until no lock barrier is set (§8.1), then read `lock_gen`. A barrier covers a lock's vault gate as well as
+     its drain, so a grant issued before a lock is dead (cleared by that gate) before anyone can redeem it here
+     (review GPT 2);
   2. redeem every grant (so the 120 s grant lifetime cannot run out mid-flow, DASHPAY §2.3), build the one `KeyHold`
      and issue every signer the lease's purposes need, then drop the tokens;
-  3. insert into the table, in a J step that refuses if `lock_gen` has changed since step 1. If only the vault's
-     epoch moved since step 2 (an unlock or a scope change, not a lock), the lease is inserted as `NeedsGrant`, since
-     its tokens are already dead.
+  3. insert into the table, in a J step that refuses if a barrier is set or `lock_gen` has changed since step 1. If
+     only the vault's epoch moved since step 2 (an unlock or a scope change, not a lock), the lease is inserted as
+     `NeedsGrant`, since its tokens are already dead.
 
-  If step 3 refuses, the hold and the signers are dropped and the call fails `lease.locked`; the flow asks again.
+  If step 3 refuses, the hold and the signers are dropped and the call fails `lease.locked`
+  (`platform.cancelled`, §16); the flow asks again.
 - Every token must be for the lease's wallet.
 - A lease is ended by `Lease::end()` (or by dropping the last `Arc`). The table keeps its entry until its last permit
   has dropped.
@@ -249,6 +486,8 @@ struct LeaseEntry {                      // inside LeaseTable, under J
     charges the `Funding` budget and fails if it does not fit;
   - for a row-less Core send under a lease, which is always engine-built (`TxDraft`), the engine charges the `Spend`
     budget at `prepare`, before signing. The fence charges nothing more.
+- **Mode B** has no `register`. Its call permit charges the call's quote: for funding, `amount + fee_bound_worst`
+  (§2a.3), corrected to the actual debit from the tracked row once the call returns.
 - **Credit cost:** the explicit credits the transition moves out of the identity (transfer, withdrawal, top-up from
   credits) plus `fee_bound(st)`. `fee_bound` comes from DP1-06's cost table; until that lands, it is a conservative
   constant per transition type, documented next to the table. See Q7.
@@ -261,7 +500,8 @@ struct LeaseEntry {                      // inside LeaseTable, under J
 - **Refunds:**
   - a `register` whose artifact ends `Revoked` (refused or abandoned) refunds its Funding charge, because it was
     never sent;
-  - a row-less First that finishes `NotSent` refunds its charge;
+  - a row-less artifact refunds its charge when it settles `DefinitelyUnsent` (every attempt definitely rejected,
+    none possibly out, §5.5);
   - a committed registered artifact keeps its charge.
 - **Pre-sign check.** Where the engine builds the transaction itself (`TxDraft`), the debit is checked against the
   remaining budget before signing, as m1 does today. The test "a lease cannot sign a BIP44 spend above its cap"
@@ -294,8 +534,8 @@ struct LeaseEntry {                      // inside LeaseTable, under J
 | `Active` | yes | yes | if it was issued on a locked or mixing-only vault |
 | `AwaitingProof` | yes, until `key_until` | yes | yes, until `key_until` |
 | `Parked{ProofWaiting}` | no (`LeaseError::Parked`) | yes | no |
-| `NeedsGrant` | no; `rebind` takes a fresh grant and keeps the id, budgets and permits | yes | no |
-| `Revoked{Lock \| Close \| PassphraseChange \| WalletRemoved}` | no | no (refused) | no; dropped in the revoking J step |
+| `NeedsGrant` | no; `rebind` takes fresh authority and keeps the id, the charges made and the permits, with each budget capped (below) | yes | no |
+| `Revoked{Lock \| Close \| PassphraseChange \| WalletRemoved \| WalletClosed}` | no | no (refused) | no; dropped in the revoking J step |
 | `Ended` | no | no | no |
 
 - **Firsts while parked.** `Parked` and `NeedsGrant` still admit Firsts, because nothing in them needs a key. A
@@ -307,42 +547,73 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   - Every other vault call runs through `vault_op`, which compares `Vault::epoch()` before and after. A changed epoch
     moves every lease to `NeedsGrant`, drops every `KeyHold` and re-creates the background lease, whatever the lock
     state did (F15).
+- **Rebind never raises authority** (review GPT 6).
+  - In one J step, `rebind` checks the wallet. Then, for each of the lease's purposes, it sets the remaining budget
+    to `min(old remaining, the fresh grants' cap for that purpose)`, summing a mixed set's caps per purpose. A
+    purpose the fresh grants do not cover drops to 0.
+  - Charges already made and permits already granted stand. Artifacts signed before the epoch change keep
+    dispatching under the lease as before (Q5). Only new signatures need the fresh authority, and they are capped by
+    it.
+  - A purpose at 0 refuses its signer (`platform.needs_grant{purpose}`).
+- **Rebind without a second prompt** (review Opus 14).
+  - When the vault is now `Unlocked` with scope Full, the engine rebinds from the vault key with an internal grant,
+    without asking. The grant is `Credential::None`, capped at exactly the remaining budgets.
+  - That grants no new authority, only the remainder of what the user already approved, so "require authentication
+    for every payment" does not prompt again for a flow it already authorized.
+  - On a locked or mixing-only vault the rebind needs a credential (`RegistrationWait::Authorize`, §16).
 
 ### 4.4 Key hold on a locked vault
 
 An own-key lease, one issued on a `Locked` or `UnlockedMixingOnly` vault, holds a `KeyHold` (§3.5).
 
-- **Which flows may hold one.** An own-key registration or top-up runs as two library calls, so that the ChainLock
-  fallback is visible to the engine:
-  1. `AssetLockManager::create_funded_asset_lock_proof` (`build.rs:806`). It builds, registers, tracks and
-     broadcasts the lock through the fence, then waits 300 s for a proof inside the library (`build.rs:1265-1300`),
-     and returns a timeout rather than falling back to the ChainLock wait.
-  2. `AssetLockFunding::FromExistingAssetLock` with the proof, which signs and submits the identity transition.
+- **Which flows may hold one.** An own-key registration or top-up runs as two library calls, so that the end of the
+  InstantSend wait is visible to the engine:
+  1. `AssetLockManager::create_funded_asset_lock_proof` (`build.rs:806`). It builds, registers (Mode A), tracks and
+     broadcasts the lock, then waits 300 s for a proof inside the library (`build.rs:1265-1300`), and returns its
+     timeout rather than falling back.
+  2. `AssetLockFunding::FromExistingAssetLock{out_point}`, which signs and submits the identity transition.
+     - It takes no proof (F16). It resolves the row's proof again, so it is called **only once the row holds a
+       proof**: status `InstantSendLocked` or `ChainLocked`. Then that resolution short-circuits to the stored proof
+       and waits for nothing.
+     - The flow checks the tracked status before it calls step 2 (Opus 9).
 
-  The one-call path (`register_identity_with_funding` on Core balance) falls back to the ChainLock proof inside the
-  library, where the engine cannot see it (F14), so it may run only under a vault-key lease.
-- **What a leased flow must never use.** `build_asset_lock_transaction` is build-only. It returns the transaction
-  unsent, untracked and without its reservation token (`build.rs:91-117`, `:144`), and the pin has no public API to
-  track a prebuilt lock. A leased flow therefore never hands off an asset lock built that way. The fence enforces this:
-  an asset-lock transaction (special type 8) arriving as a row-less First is refused (§5.4), because every asset lock
-  must be registered.
+  The one-call path (`register_identity_with_funding` on Core balance) falls back inside the library (F16), so it
+  may run only under a vault-key lease.
+- **Hidden fallbacks in step 2 (F16, reviews GPT 4 and Opus 9).**
+  - Even with a proof on the row, step 2 falls back to an unbounded ChainLock wait inside the call when Platform
+    rejects the InstantSend proof at submit (`registration.rs:240-259`, top-up `:479-502`).
+  - **Mode A:** the PR adds `FallbackPolicy::Surface` (L17), passed by the engine on both calls. Every place that
+    would call `upgrade_to_chain_lock_proof(…, None)` returns `ChainLockFallbackRequired{out_point}` instead.
+    - The engine parks the lease at that moment (`lease.park(ProofWaiting)` drops the key), and the row records
+      `ProofWaiting{CL}`.
+    - When the ChainLock proof is on the row, the continuation runs step 2 again under a **new grant and a new
+      lease**.
+    - No signature is ever made with the old authority after a fallback.
+  - **Mode B:** the fallback stays hidden.
+    - The `KeyHold` timer drops the key at `key_until` whatever the library is doing, so the key is bounded but may
+      be usable into the hidden wait.
+    - A signer `Locked` out of step 2 under an expired or revoked lease is mapped to `Parked` ("Unlock to finish"),
+      never `Failed`: the funds are committed and the flow can finish.
+  - Model Part 4 checks both modes and rev0.
+- **What a leased flow must never use.**
+  - `build_asset_lock_transaction` is build-only. It returns the transaction unsent, untracked and without its
+    reservation token (`build.rs:91-117`, `:144`), and the pin has no public API to track a prebuilt lock.
+  - The fence enforces this in Mode A: an asset-lock transaction (special type 8) arriving as a row-less First is
+    refused (§5.4).
 - **Without a proof wait:** `key_until = created + 120 s`, the grant TTL.
-- **The InstantSend window:**
-  - The library's proof wait starts only after its broadcaster's acceptance wait (§5.1, step 3), which can take 65 s
-    or more (F2). So the PR adds an informational callback, `DispatchFence::proof_wait_started(wallet, txid,
-    timeout)`. `create_funded_asset_lock_proof` calls it right before its 300 s wait, and the fence sets the origin
-    lease's `key_until = now + timeout` and moves it to `AwaitingProof`.
-  - The key therefore lasts exactly as long as the library's own InstantSend window, which is the window of DASHPAY
-    §2.6, started from an in-memory instant. Nothing persisted moves it (DASHPAY §3.4).
-  - Without that callback (an older pin), the floor is `finish + 300 s + A`, where `A` is the acceptance wait's
-    configured bound (65 s at the pin). The key then outlives the window by at most `A`, which is the price of not
-    seeing its start.
+- **The InstantSend window.**
+  - **Mode A:** `create_funded_asset_lock_proof` calls `DispatchFence::proof_wait_started(wallet, txid, timeout)`
+    right before its 300 s wait (L15). The fence sets the origin lease's `key_until = now + timeout` and moves it to
+    `AwaitingProof`. So the key lasts exactly as long as the library's own window: DASHPAY §2.6's window, from an
+    in-memory instant that nothing persisted moves.
+  - **Mode B:** the floor is the call permit's grant + 300 s + `A`, where `A` is the acceptance wait's configured
+    bound (65 s at the pin, F2). The key outlives the window by at most `A`.
 - **Expiry:** a timer task drops the `KeyHold` at `key_until` and moves the lease to `Parked{ProofWaiting}`.
-- **ChainLock fallback:** when `create_funded_asset_lock_proof` returns its timeout, the flow calls
-  `lease.park(ProofWaiting)`, which drops the key at once. The registration row records `ProofWaiting{CL}` and waits
-  for the ChainLock without any key.
+- **InstantSend timeout of step 1:** when `create_funded_asset_lock_proof` returns its timeout, the flow calls
+  `lease.park(ProofWaiting)`, which drops the key at once. The row records `ProofWaiting{CL}` and waits for the
+  ChainLock without any key.
 - **Resuming:** a parked registration resumes with a new grant and a new lease ("Finish registering @alice"), through
-  step 2.
+  step 2 once the row holds the ChainLock proof.
 - **Unlocked vault (vault-key leases):** no `KeyHold`. The lease lives until the flow ends or a revoking call ends it.
 
 ### 4.5 The background `DashPayCrypto` lease
@@ -374,18 +645,61 @@ pub struct LeaseView {
                                      //   | NeedsGrant | Revoked{cause} | Ended
     pub own_key: bool,
     pub key_expires_in_secs: Option<u64>,
+    pub funds_committed: bool,       // some artifact of this flow is not definitely unsent
     pub budgets: Vec<BudgetView>,    // {purpose, cap, spent}
     pub in_flight: u32,              // permits held now
 }
 ```
 
 - `NetworkSession::leases() -> Vec<LeaseView>`.
-- Events: `EngineEvent::LeaseChanged{network, lease}`, and
-  `EngineEvent::LockProgress{network, phase: Draining{in_flight, deadline_in_ms} | Done(LockReport)}`.
-- UI copy, following DASHPAY §2.6:
-  - an own-key lease in `Active` or `AwaitingProof`: "Registration in progress — Lock to cancel";
-  - while a drain has permits in flight: "Locking — finishing a send already handed off";
-  - outcomes: "sent before the lock" or "may have been sent".
+- `NetworkSession::dispatch_status(wallet, artifact) -> DispatchStatus`, where the status is one of:
+  - `DefinitelyUnsent` (`Revoked`, or settled unsent, with the cleanup done);
+  - `Committed{will_resend: bool}`;
+  - `Sent`;
+  - `Unknown`.
+- Events:
+  - `EngineEvent::LeaseChanged{network, lease}`;
+  - `EngineEvent::LockProgress{network, phase: Draining{in_flight, deadline_in_ms} | Done(LockReport)}`;
+  - `EngineEvent::DispatchResolved{network, wallet, artifact, outcome: Sent | NotSent}`, raised when a provisional
+    outcome settles: a Resend accepted, the wallet seeing the transaction, a reload refusing and cleaning up an
+    `Unsent` row, a row-less settlement, or an `Ambiguous` write retried to durable.
+
+**Outcomes and their copy** (reviews GPT 7, Opus 2). Every flow outcome is one of four:
+
+| Outcome | Meaning | Copy | Retry or discard |
+|---|---|---|---|
+| `Sent` | handed off and seen accepted, or handed off before the lock | "Sent before the lock" / "Sent" | — |
+| `WillBeSent` | committed (`Dispatching`, `PreFence` or `Ambiguous`, with a tracked row); the engine resends it on resume, catch-up and reconnect | "Will be sent when the network is back" | **never**; the flow waits for `DispatchResolved` |
+| `MaybeSent` | handed off, outcome unknown | "May have been sent" | only after `DispatchResolved(NotSent)` or a `dispatch_status` of `DefinitelyUnsent` |
+| `Cancelled` | nothing of the flow was ever committed, or every committed row-less artifact settled unsent | "Cancelled" | allowed |
+
+- **Two rules prevent paying twice:**
+  - `funds_committed` holds as soon as any registered artifact of the flow is not definitely unsent;
+  - no UI path builds a second asset lock, or a second payment, for a step whose artifact is `WillBeSent` or
+    `MaybeSent` (H11, §16).
+- **Lock copy** (review Opus 3):
+  - before any funds are committed, an own-key lease in `Active` shows "Registration in progress — Lock to cancel".
+    In Mode B that holds only between calls. While a library call runs, the copy is "Locking stops new signatures;
+    a send already signed may still go out", because the call may have signed already (§2a.3);
+  - once `funds_committed`: "Funds locked — finishing. Lock stops it here; you'll finish after you unlock". Lock no
+    longer cancels anything: the asset lock is out, and the flow parks.
+  - After the lock, `Cancelled`, `Sent`, `WillBeSent` and `MaybeSent` each get their copy from the table above.
+- **The drain is not a modal** (review Opus 14).
+  - The vault is locked in step 2 of `lock_vault`, before the drain, so the lock screen shows at once.
+  - While the drain has permits in flight, a non-blocking status line under it reads "Finishing a send already
+    handed off" and disappears at `LockProgress::Done`.
+- **The "key held" lock state** (review Opus 3, UX-SPEC §4.1).
+  - While any own-key lease is `Active` or `AwaitingProof` on a locked vault, the status-bar lock icon shows a
+    fourth state: an orange `lock.fill` with a badge. Its tooltip names the flow and the seconds left from
+    `key_expires_in_secs`.
+  - The toolbar and menu "Lock" action stays enabled in that state, and runs `lock_vault`, which revokes the lease
+    even though the vault is already locked.
+- **Contact payments** (review Opus 13, DP3-01).
+  - A `TxDraft` contact payment refused by Lock reports `send.cancelled`, not `send.broadcast_rejected`.
+  - Its reservation is released through the finalized handle's owner-guarded path, only when the row-less
+    settlement is definitely unsent. The reserved DIP-15 address stays on the draft (DASHPAY §2.3 step 5).
+  - "Accept and pay" with the accept `Sent` and the payment `Cancelled` shows "Accepted — payment cancelled. Pay
+    now?".
 
 ### 4.7 API sketch
 
@@ -398,59 +712,95 @@ impl NetworkSession {
 }
 impl Lease {
     pub fn identity_signer(&self, identity_indices: &[u32]) -> Result<VaultIdentitySigner, LeaseError>;
-    pub fn funding_signer(&self) -> Result<VaultSigner, LeaseError>;   // PlatformFunding{remaining}
+    pub fn funding_signer(&self) -> Result<VaultSigner, LeaseError>;   // PlatformFunding, cap fixed at issue;
+                                                                      // the remaining budget is charged at register
     pub fn contact_crypto(&self) -> Result<VaultContactCrypto, LeaseError>;
     pub fn spend(&self) -> Result<LeaseSpend<'_>, LeaseError>;        // for TxDraft::prepare_with_lease
     pub fn scope<F: Future>(&self, f: F) -> impl Future<Output = F::Output>;  // DispatchScope::lease(self.id)
     pub fn park(&self, reason: ParkReason);
-    pub fn rebind(&self, grant_id: &str) -> Result<(), LeaseError>;
+    pub fn rebind(&self, grant_ids: &[String]) -> Result<(), LeaseError>;   // §4.3: budgets capped by the fresh grants
     pub fn end(self: Arc<Self>);
 }
 ```
 
+The facade carries one lease across several calls (review Opus 4). `NetworkSession::begin_flow(wallet, flow,
+grants) -> String` returns a lease id, which every facade call accepts wherever it takes a `grant: String`, and
+`end_flow(id)` ends it. "Accept and pay" takes one prompt (`authorize_set`), opens one flow, and passes its id to
+`accept_request` and then to the payment's `TxDraft.prepare`.
+
+An idle reaper ends a vault-key lease after 10 minutes with no call and no permit. An own-key lease's key already
+ends at `key_until`. So a host that abandons a sheet does not leak entries.
+
+### 4.8 Auto lock and the other mobile conventions (review Opus 14)
+
+- **Auto lock** (UX-SPEC §4.13) runs `lock_vault`, exactly like the Lock button.
+  - A visible flow-progress screen does not count as activity, so a long ChainLock wait does not keep the wallet
+    unlocked.
+  - An auto lock during a flow shows "Locked automatically — unlock to finish" on the flow's row.
+- **A second prompt after an unlock** is gone (§4.3, rebind from the vault key).
+- **The lock drain** is not a modal (§4.6).
+- **Touch ID** issues `PlatformOp` within the quick-unlock limits (§3.7).
+
+
 ## 5. The dispatch fence
 
-### 5.1 Where the library calls it
+### 5.1 Where the library calls it (Mode A)
 
-**Core transactions.** When the host installs a fence, platform-wallet wraps its broadcaster in a `FencedBroadcaster`.
-Every site of F1 goes through it, so one wrapper covers every Core hand-off. The PR also splits
-`SpvRuntime::broadcast_transaction_and_wait` into three steps:
-1. subscribe to dash-spv's events (no permit);
-2. `DashSpvClient::broadcast_transaction`, the local enqueue of F3, under the permit;
-3. wait for the acceptance event (no permit).
+**Core transactions.** The broadcaster is a concrete per-wallet `Arc<SpvBroadcaster>`, monomorphized into three
+wallet types (F19). A decorator around `broadcast(&tx)` would hold the permit through the whole acceptance wait, so
+the PR makes `SpvBroadcaster` itself fence-aware (review Opus 6). Its `broadcast` takes a
+`DispatchContext{wallet, tracked_row, site}`, which every F1 site passes, and runs four steps:
+1. check the transport is ready (client started, peers > 0); if not, `Rejected` before any `admit` (L8);
+2. subscribe to dash-spv's events (no permit);
+3. `fence.admit(…)`, then, for `First`, `DashSpvClient::broadcast_transaction`, the local enqueue of F3, under the
+   permit and `timeout_at(permit.deadline())`;
+4. wait for the acceptance event (no permit).
 
-`client.read()` is held only for step 2, which also stops a pending wait from blocking `stop()` (an E0-05 concern).
-`DapiBroadcaster` holds the permit around its one request. dw's PSBT path builds its own `SpvBroadcaster` (F2),
-outside the manager, so it bypasses the wrapper. That is acceptable because those bytes are `Unleased(External)`, and
-P4 routes it through the fenced broadcaster anyway, so every Core hand-off in dw has one path.
+`client.read()` is held only for step 3, which also stops a pending wait from blocking `stop()` (an E0-05 concern).
+
+`DapiBroadcaster` is one `sdk.execute` with the SDK's retries across nodes (F19). Its retries are clamped exactly like
+rs-sdk's: each attempt's timeout is `min(configured, deadline - now)`, and no attempt starts after the deadline.
+
+dw's PSBT path builds its own `SpvBroadcaster` (F2). P4 passes it a `DispatchContext` with `Unleased(External)`, so
+every Core hand-off in dw has one path.
 
 **State transitions.** `Sdk::with_dispatch_fence` (new), called by `StateTransition::broadcast`
-(`SDK/platform/transition/broadcast.rs:125`). Every `put_to_platform*` path and every `broadcast_and_wait` reaches
-it, so all the platform-wallet call sites the inventory found (identity, documents, DPNS, contactInfo, contact
-requests, transfers, withdrawals, tokens, platform addresses, masternode withdrawal) are covered by one call.
-`broadcast_with_retries` runs inside one permit:
-- each attempt's timeout is clamped to the time left before the permit's deadline;
-- no retry starts after the deadline.
+(`SDK/platform/transition/broadcast.rs:125`).
+- Every `put_to_platform*` path and every `broadcast_and_wait` reaches it, so all the platform-wallet call sites
+  the inventory found (identity, documents, DPNS, contactInfo, contact requests, transfers, withdrawals, tokens,
+  platform addresses, masternode withdrawal) are covered by one call.
+- The hook sits **inside** the retry closure of `broadcast_with_retries`. That has two effects:
+  - one permit covers all of the attempts. Each attempt's timeout is clamped to the time left before the permit's
+    deadline, and no retry starts after it;
+  - a refusal returns through the existing failure arm, which calls `refresh_identity_nonce(owner)`
+    (`broadcast.rs:161-168`, F20). The bumped nonce a refused transition took is therefore never left as a gap in
+    the cache (review Opus 16, L19).
 
-**Registration.** At the asset-lock build (`build.rs`, before `track_asset_lock` at `:1098`), platform-wallet calls
-`fence.register`. It also calls `fence.abandon` on every exit that would untrack a row that was never handed off
-(§5.5).
+**Registration and fallbacks.**
+- At the asset-lock build (`build.rs`, before `track_asset_lock` at `:1098`), platform-wallet calls
+  `fence.register` with the recovery payload (§6.2).
+- It calls `fence.abandon` on every exit that would untrack a row that was never handed off (§5.5).
+- It honours `FallbackPolicy::Surface` in `create_funded_asset_lock_proof`, in step 2 and in top-up (L17, §4.4).
 
 ### 5.2 Origin: `DispatchScope`
 
-- platform-wallet defines a task-local `DispatchScope` (the PR) with the values `Lease(OriginTag)` and
-  `Unleased(UnleasedKind)`.
-- The engine wraps every library call that can hand off, either in `lease.scope(…)` or in
-  `DispatchScope::unleased(kind, …)`.
+- The task-local `DispatchScope{wallet, origin, step}` lives in **rs-sdk's** dispatch module, so that both rs-sdk's
+  hook and platform-wallet can read it (rs-sdk cannot depend on platform-wallet), and platform-wallet re-exports it
+  (review Opus 6).
+  - `origin` is `Lease(OriginTag)` or `Unleased(UnleasedKind)`.
+  - `step` is `Option<StepId>` for a resumable step (§7.6).
+  - A state transition carries no wallet id at `StateTransition::broadcast`, so the scope supplies it.
+- The engine wraps every library call that can hand off, either in `lease.scope(…)` (with the step for a resumable
+  one) or in `DispatchScope::unleased(kind, …)`.
 - The library reads the scope at `register` and `admit`. Where it spawns its own task to finish a hand-off it began
   in a scope, it captures the scope and re-installs it in that task (L11). The engine does the same for its own
   spawns: `tx_actions.rs:414` hands off inside `tokio::spawn`, so the scope is installed inside that future (H7).
-- A hand-off with no scope gets no origin. The journal then decides for a registered artifact. A row-less artifact is
-  refused: it **fails closed** (Q12), which is safe because a refusal never sends.
+- A hand-off with no scope gets no origin. The journal then decides for a registered artifact. A row-less artifact
+  gets `Deferred` and a `Notice`: it **fails closed** with no false verdict (Q12).
 
 | `UnleasedKind` | Paths (dw-engine) | Drained by `lock_vault` |
 |---|---|---|
-| `Send` | `TxDraft::broadcast` for M1 sends (`send/mod.rs:1072-1079`); see Q2 | no |
+| `Send` | `TxDraft::broadcast` for M1 sends, both the mixed and the finalized paths (`send/mod.rs:1072-1079`), until P5 leases them (Q2) | no |
 | `Mixing` | CoinJoin denomination and collateral transactions (`coinjoin.rs:1539, 2255`) | no; mixing stops on lock anyway |
 | `External` | PSBT broadcast of bytes signed elsewhere (`send/psbt.rs:469`) | no |
 | `Rebroadcast` | `tx_actions` resend of a transaction already in the wallet's records (`tx_actions.rs:415`) | no |
@@ -461,38 +811,53 @@ requests, transfers, withdrawals, tokens, platform addresses, masternode withdra
 ### 5.3 Types
 
 ```rust
+pub struct DispatchContext { pub wallet: WalletId, pub tracked_row: bool, pub site: DispatchSite }
 pub struct DispatchRequest<'a> {
-    pub wallet: WalletId,
-    pub artifact: ArtifactRef<'a>,  // CoreTx{tx, tracked_row: bool} | StateTransition{st, hash}
-    pub origin: Option<DispatchOrigin>,  // from DispatchScope; None when unscoped
-    pub site: DispatchSite,         // diagnostic only; never decides the kind
+    pub ctx: DispatchContext,
+    pub artifact: ArtifactRef<'a>,       // CoreTx{tx} | StateTransition{st, hash}
+    pub scope: Option<DispatchScope>,    // the task-local; None when unscoped
 }
 pub enum Verdict {
-    First(DispatchPermit),          // hand off now, under the permit, until permit.deadline()
-    FirstUnleased,                  // Unleased origin: hand off now, no permit
-    Resend,                         // a recorded possible dispatch: hand off now, no permit
-    Refused { cleanup: bool },      // provably never sent and never will be; `cleanup` only for the CAS winner
-    Deferred,                       // not now; outcome unknown (MaybeSent): keep the row and the reservation
-                                    // (also a tracked row with no entry: unknown provenance, with a Notice)
+    First(DispatchPermit),               // hand off now, under the permit, until permit.deadline()
+    FirstUnleased(AttemptGuard),         // Unleased origin: hand off now, no permit
+    Resend(AttemptGuard),                // a recorded possible dispatch: hand off now, no permit
+    Refused { cleanup: bool, step_possibly_dispatched: bool },
+                                         // this artifact provably never sent; `cleanup` only for the CAS winner;
+                                         // `step_possibly_dispatched`: an earlier artifact of the same step may
+                                         // have been (H10), so the flow reports MaybeSent, not Cancelled
+    Deferred,                            // not now; outcome unknown (MaybeSent): keep the row and the reservation
+                                         // (also a tracked row with no entry: unknown provenance, with a Notice)
 }
 #[async_trait] pub trait DispatchFence: Send + Sync {
-    /// Durable Unsent{origin}, after charging `debit_duffs` to the origin lease's Funding budget.
-    async fn register(&self, wallet: WalletId, txid: Txid, debit_duffs: u64) -> Result<(), FenceError>;
+    /// Durable Unsent{origin, payload}, after charging `payload.debit_duffs` to the origin lease's Funding budget.
+    async fn register(&self, wallet: WalletId, payload: AssetLockPayload) -> Result<(), FenceError>;
     async fn admit(&self, req: DispatchRequest<'_>) -> Verdict;
     /// One J step, no I/O; callable from Drop.
     fn abandon(&self, wallet: WalletId, txid: Txid) -> Abandon;   // Revoked{cleanup} | Committed
     /// Informational: the library's proof wait for this asset lock starts now (§4.4).
     fn proof_wait_started(&self, wallet: WalletId, txid: Txid, timeout: Duration);
+    /// Informational: a surfaced ChainLock fallback for this asset lock (§4.4, L17).
+    fn chainlock_fallback(&self, wallet: WalletId, txid: Txid);
+}
+pub struct AssetLockPayload {            // everything needed to rebuild the Built row (GPT 5)
+    pub tx: Transaction, pub inputs: Vec<OutPoint>, pub out_point: OutPoint, pub debit_duffs: u64,
+    pub funding_type: AssetLockFundingType, pub account_index: u32, pub identity_index: u32, pub amount: u64,
 }
 impl DispatchPermit {
     pub fn deadline(&self) -> Instant;
-    pub fn finish(self, outcome: Outcome);   // Drop = finish(MaybeSent)
+    pub fn finish(self, outcome: Outcome) -> Settlement;   // Drop = finish(MaybeSent)
 }
+impl AttemptGuard { pub fn finish(self, outcome: Outcome) -> Settlement; }   // Drop = finish(MaybeSent)
+pub enum Settlement { DefinitelyUnsent, MaybeOut, Sent }   // for the whole artifact, not this attempt
 ```
 
 `tracked_row` is a fact about the artifact: it has a persisted row. It does not say First or Resend. Only the journal
-decides that for such an artifact. A tracked row the journal does not know is `Deferred`, never resent, because of
+decides that for such an artifact. A tracked row the journal does not know is `Deferred`, never resent because of
 `tracked_row` alone (Q16).
+
+The library derives its error and its release decision from the `Settlement`, never from its own attempt (L6):
+- only `DefinitelyUnsent` is a definite rejection, which releases inputs;
+- `MaybeOut` is the unknown outcome.
 
 ### 5.4 `admit`: the one decision
 
@@ -504,12 +869,12 @@ admit(req):
     e = journal_mem.get(req.wallet, artifact_id)
     match e:
       Revoked                → Refused{cleanup: false}
-      Dispatching | PreFence → Resend
+      Dispatching | PreFence → Resend(guard)
       Committing(other)      → Deferred                            // the other caller resolves it; no waiting
       Ambiguous              → e := Committing(retry), spawn the Dispatching write; unlock; await it
                                  ok: e := Dispatching → Resend    fail: e := Ambiguous → Deferred
       Unsent{origin: L}      → if live(L) and L.wallet == req.wallet:
-                                   e := Committing(me); p := new permit(L, now + H);
+                                   e := Committing(me); p := new permit(L, now + H); record L's commit;
                                    spawn the Dispatching write (it owns e from now on); unlock; await it
                                      ok, now < p.deadline: e := Dispatching → First(p)
                                      ok, deadline passed:  e := Dispatching → Deferred
@@ -517,15 +882,23 @@ admit(req):
                                else: e := Revoked; refund L's Funding charge → Refused{cleanup: true}
       none, tracked_row      → Deferred + Notice{DispatchRecordMissing}
                                // unknown provenance: never sent, never cleaned up (Q16)
-      none, row-less         → if id ∈ rowless_admitted: → Resend          // the same bytes again (§5.5)
-                               else if req is an asset-lock tx: → Refused{cleanup: false}   // must be registered
-                               else match req.origin:
+      none, row-less         → r = rowless[id]
+                               if r is Revoked:  → Refused{cleanup: false}            // a settled Core send
+                               if r is Admitted: r.attempts += 1 → Resend(guard)     // the same bytes again
+                               if req is an asset-lock tx: → Refused{cleanup: false}   // must be registered
+                               match req.scope.origin:
                                  Lease(L) live, and a ST whose Credits fit, or a Core tx with
-                                 a Spend charge recorded for this txid (TxDraft) → p := new permit;
-                                                                  insert id → First(p)
-                                 Lease(L) otherwise             → Refused{cleanup: false}
-                                 Unleased(_)                    → insert id → FirstUnleased
-                                 None                           → Deferred + Notice   // fail closed, no false verdict
+                                 a Spend charge recorded for this txid (TxDraft) →
+                                   if req.scope.step is a resumable step:              // §7.6, GPT 3
+                                     e := Committing(me) for (step, id); p := new permit;
+                                     spawn the step marker's write; unlock; await it
+                                       ok, in time: e := Dispatching; rowless[id] := Admitted{1} → First(p)
+                                       otherwise:   e := Ambiguous or Dispatching          → Deferred
+                                   else: p := new permit; rowless[id] := Admitted{1}; record L's commit → First(p)
+                                 Lease(L) otherwise → Refused{cleanup: rl_inputs and first refusal,
+                                                              step_possibly_dispatched: marker(step) exists}
+                                 Unleased(_)        → rowless[id] := Admitted{1} → FirstUnleased(guard)
+                                 None               → Deferred + Notice   // fail closed, no false verdict
   unlock J
 ```
 
@@ -538,25 +911,31 @@ admit(req):
 - **The write is spawned inside the J step**, on the blocking pool, and that task owns the resolution of
   `Committing`. A dropped `admit` future therefore never leaves an entry in `Committing` without a writer; the
   orphaned write still resolves it to `Dispatching` or `Ambiguous` (the model's `W` steps).
+- **Every grant records the commit on its lease's history** (§8.4). The history only grows. A lock outcome is read
+  from it, never from what was in flight (review GPT 7).
 - **Fail closed without a false verdict.** An unscoped row-less call that is not in the set gets `Deferred`, not
-  `Refused`. Nothing is handed off, but nothing is called definitely not sent either, since its history is unknown (a
+  `Refused`. Nothing is handed off, and nothing is called definitely not sent either, since its history is unknown (a
   load replay, say). A missing scope is an engine bug, and the debug assertion and the `Notice` make it visible in
   tests, even when the answer is a `Resend`.
 - **No waiting on another caller.** A caller that finds `Committing(other)` gets `Deferred` at once and keeps
   everything. The committer resolves the entry within H. A resume that was deferred simply ends, and the next resume
   finds `Dispatching`.
 
-### 5.5 `register`, `abandon`, cleanup, the row-less set and `finish`
+### 5.5 `register`, `abandon`, cleanup, row-less attempts and `finish`
 
-- **`register(wallet, txid, debit)`:**
-  - Its origin comes from the scope, and it must be `Lease(L)` with `L` live, or it fails.
-  - It charges `debit` to `L`'s Funding budget, under J, and fails if that does not fit.
-  - It writes `Unsent{origin: L.id, process: P}` to the journal durably, then puts it in memory.
+- **`register(wallet, payload)`:**
+  - Its origin comes from the scope, and it must be `Lease(L)` with `L` live and no lock barrier set, or it fails.
+  - It charges `payload.debit_duffs` to `L`'s Funding budget, under J, and fails if that does not fit.
+  - It writes `Unsent{origin: L.id, process: P, payload}` to the journal durably, in one `FULL` transaction, then
+    puts it in memory. The payload is what the load catch-up needs to rebuild a row that `wallet.sqlite` lost (GPT
+    5): the signed transaction, its input outpoints, the lock's outpoint and the funding metadata.
   - Registering the same txid again with the same origin is a no-op. With another origin it fails. That is safe
     because the credit output's key index is consumed at signing (`asset_lock_builder.rs:578-620`), so a rebuild of
     the same flow gets a new txid.
-  - If `register` fails, the library aborts the build before it tracks anything: it releases the reservation with
-    the build's token, nothing is left behind, and it reports a definite not-sent.
+  - If `register` fails, the library aborts the build before it tracks anything:
+    - it releases the reservation with the build's token;
+    - it settles the build's in-broadcast pin released (F17);
+    - nothing is left behind, and it reports a definite not-sent.
 - **`abandon(wallet, txid)`:**
   - It is synchronous: one J step with no I/O, since `Revoked` is never persisted.
   - The build calls it on every exit that would untrack a row never handed off: a failed store or flush, a transport
@@ -564,68 +943,87 @@ admit(req):
     future dropped in that window (a host-cancelled call) still abandons (L14).
   - `Unsent` becomes `Revoked`, the Funding charge is refunded, and the answer is `Revoked{cleanup: true}`.
   - `Revoked` is answered `Revoked{cleanup: false}`.
-  - `Committing`, `Dispatching` or `Ambiguous` is answered `Committed`: the build keeps its row and reservation and
-    reports MaybeSent.
+  - `Committing`, `Dispatching` or `Ambiguous` is answered `Committed`: the build keeps its row, its reservation
+    and its pin pending, and reports MaybeSent (WillBeSent).
 - **Cleanup:**
-  - It is done only by the caller that got `cleanup: true`, so it happens at most once per artifact per process, and
-    on a reload the catch-up (H6) refuses the row again.
-  - The library runs it as a **spawned task** (`shared_handle()`), not inline in the caller's future (L6). So a
-    caller dropped right after the verdict, or a drop guard (which cannot await), still gets its row cleaned up.
-  - The task untracks the row (overriding resume claims, since `Revoked` proves the bytes never left and never can).
-  - It releases the funding reservation owner-guarded by the build's token. The PR keeps the token and the funding
-    accounts with the in-memory row, so a resume that wins the CAS can release them too.
-  - It queues the row's removal.
-  - After a reload there is no token and nothing of this row reserved (F7, L12), so the cleanup only untracks.
-  - Other refused callers drop their claims and report Cancelled.
-- **The row-less set.**
-  - The fence keeps, in memory and per process, the ids of row-less artifacts it answered `First` or `FirstUnleased`.
-  - An id leaves the set when its permit finishes `NotSent` (a definite rejection), unless an earlier hand-off of
-    the same bytes finished `Sent` or `MaybeSent`. That way a definite not-sent does not turn a later identical
-    signature (F10) into a lease-free Resend.
-  - A later `admit` of an id still in the set is a `Resend`, whatever its origin. That covers:
+  - **Who runs it:**
+    - It is done only by the caller that got `cleanup: true`, so it happens at most once per artifact per process.
+      On a reload the catch-up (H6) refuses the row again.
+    - The library runs it as a **spawned task** (`shared_handle()`), not inline in the caller's future (L6). So a
+      caller dropped right after the verdict, or a drop guard (which cannot await), still gets its row cleaned up.
+  - **What it does:**
+    - It untracks the row, overriding resume claims, since `Revoked` proves the bytes never left and never can.
+    - It releases the funding reservation, owner-guarded by the build's token. The PR keeps the token, the funding
+      accounts and the in-broadcast pin with the in-memory row, so a resume that wins the compare-and-set can
+      release them too.
+    - It **settles the in-broadcast pin released** (`settle_released`; review Opus 5, F17). Otherwise the pin settles
+      as a pending spend on drop and the inputs stay unselectable for the session. The drop guard and the cleanup
+      task own the pin with `settle_released_on_drop()` set as soon as `abandon` or `admit` answers
+      `cleanup: true`. `Deferred`, `Committed` and L13 keep it pending, as the pin does.
+    - It queues the row's removal.
+  - **After a reload** there is no token, pin or reservation of this row left (F7, F17). The catch-up installs
+    fences only for possibly-sent rows (L12), so the cleanup of an `Unsent` row only untracks.
+  - **Other refused callers** drop their claims and report Cancelled.
+- **Row-less attempts** (review GPT 1). The fence keeps, in memory and per process, an entry for every row-less
+  artifact it admitted:
+  - **The entry:** `Admitted{attempts, possibly_out}` or `Revoked`.
+  - **Attempt guards.**
+    - Every attempt (the First, and every Resend of the same bytes) holds a permit or an `AttemptGuard`.
+    - `possibly_out` becomes true, and stays true, when any attempt finishes `Sent` or `MaybeSent`, or is dropped.
+    - `finish` returns the **artifact's** `Settlement`. It is `DefinitelyUnsent` only when this attempt was a
+      definite rejection, no other attempt is still running, and `possibly_out` is false; otherwise it is `MaybeOut`
+      (or `Sent`).
+  - **On `DefinitelyUnsent`:**
+    - the budget is refunded;
+    - a state transition's id is forgotten, since it has nothing to release, so an identical later signature is a
+      fresh First under a live lease;
+    - a Core send's entry becomes `Revoked`, and its engine releases the draft's reservation and pin exactly once
+      (the release runs only for that `Settlement`). Any later copy of those bytes is refused.
+  - **A refusal of an id never admitted** is definite. For a Core send it makes the entry `Revoked`, and only that
+    refusal's caller releases.
+  - **What it covers:**
     - a `TxDraft` repeat (`send/mod.rs:1052-1080`);
     - a user resend (`tx_actions.rs:415`);
-    - a registration re-run from an existing lock that signs identical bytes (F10).
-
-    Under a revoked lease those bytes would otherwise get a "definite" refusal while dash-spv may still be
-    rebroadcasting them (F3).
-  - The set is not persisted, and does not need to be. Row-less bytes are handed off only in the process that signed
-    them (dash-spv's broadcast set is not persisted either, F3, and dw has no load replay, F8). The exception is a
-    flow that resumes in a later process and signs identical bytes again (F10). Such a flow must read a `Refused`
-    as MaybeSent whenever its own persisted state (the `dp_registration` phase, say) records an earlier hand-off
-    of the same step (H10).
+    - a registration re-run that signs identical bytes (F10);
+    - a second holder of the same bytes running concurrently.
+  - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
+    set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
+    durable marker instead (§7.6).
 - **`finish(outcome)`:**
-  - It records `Sent`, `MaybeSent` (also the drop default) or `NotSent` on the permit.
+  - It records `Sent`, `MaybeSent` (also the drop default) or `NotSent`.
   - It feeds the lock report and, for a funding permit, the floor of the IS window (§4.4).
-  - It refunds the budget on a row-less `NotSent`.
   - For a registered artifact, a definite transport rejection after `Dispatching` does **not** untrack or release
-    (L13). The row stays and is resent later (Q13). The library runs its readiness check (client started, peers > 0)
-    **before** `admit`, and a not-ready transport is handled through `abandon`, so this case reduces to a peer loss
-    in the moment between the check and the enqueue.
+    (L13). The row stays and is resent later (Q13): its outcome is `WillBeSent`. The library runs its readiness
+    check (client started, peers > 0) **before** `admit`, and a not-ready transport is handled through `abandon`,
+    so this case reduces to a peer loss in the moment between the check and the enqueue.
 
-### 5.6 What the library must do (the PR's obligations)
+### 5.6 What the library must do (the PR's obligations, Mode A)
 
 | # | Obligation |
 |---|---|
 | L1 | Call `admit` at every hand-off of F1 and F9. Never decide First or Resend itself. |
-| L2 | Hold no wallet-manager guard, `payment_guard`, `build_persist_serial` or other library lock while it awaits `admit` or `register`. The fence takes none of them, so this is not needed to keep the drain from deadlocking. It is needed so that the journal write, an fsync, never stalls every wallet reader. Model Part 3 also shows why the fence itself must never take the wallet guard. |
+| L2 | Hold no wallet-manager guard and no `build_persist_serial` while it awaits `register` or a registered artifact's `admit`, the calls that do journal I/O. The fence takes neither, so this is not needed to keep the drain deadlock-free. It is needed so that an fsync never stalls every wallet reader. `payment_guard` is explicitly allowed across an `admit`: those sites are row-less, and a non-resumable row-less `admit` does no I/O and takes only J, a leaf. The pin holds it on purpose, to linearize wallet teardown against a payment (review Opus 12). |
 | L3 | Make the row durable before `admit` for a tracked row: propagate the `store` result (no log-and-continue as in `queue_asset_lock_changeset`) and `flush` when `!store_commits_inline()`. |
-| L4 | Call `register` before tracking an asset lock, with the debit of the inputs it selected, and abort if it fails. |
+| L4 | Call `register` with the recovery payload, including the debit of the inputs it selected, before tracking an asset lock, and abort if it fails. |
 | L5 | `First(p)`: call the transport only if `now < p.deadline()`, under `timeout_at(p.deadline())`; then `finish`. A timeout is MaybeSent. |
-| L6 | `Refused{cleanup: true}` and `Abandon::Revoked{cleanup: true}`: spawn the cleanup of §5.5 as a library task (overriding resume claims), then report the definite not-sent error (`DispatchRefused`). `cleanup: false`: drop the claim and report the same error. Never map `Refused` onto a release path without a token (F7). |
+| L6 | `Refused{cleanup: true}` and `Abandon::Revoked{cleanup: true}`: spawn the cleanup of §5.5 as a library task, overriding resume claims, releasing the reservation owner-guarded and settling the in-broadcast pin released. Then report the definite not-sent error (`DispatchRefused`). `cleanup: false`: drop the claim and report the same error. Derive every release from the `Settlement`, never from the attempt, and never map `Refused` onto a release path without a token (F7). |
 | L7 | `Deferred` and `Abandon::Committed`: keep the row, the reservation and the in-broadcast fence; report the unknown outcome (`TransactionBroadcastUnconfirmed`). |
 | L8 | Run the transport readiness check before `admit`; if it fails, `abandon` (for a tracked row) and report the definite rejection. |
 | L9 | Never insert an outgoing transaction into the wallet's records, or into dash-spv's broadcast set, before its admitted hand-off. A test checks this. |
-| L10 | Split the SPV broadcast as §5.1; in rs-sdk, clamp each attempt to the permit's deadline. |
+| L10 | Split the SPV broadcast as §5.1; in rs-sdk and `DapiBroadcaster`, clamp each attempt to the permit's deadline. |
 | L11 | Capture `DispatchScope` across the library's own spawns of hand-off work. |
-| L12 | Provide a load-time re-reservation: reserve the inputs of a tracked row the host names (owner: the row), released when the row reaches a terminal status. The host calls it for every possibly-sent row in its catch-up (H6). |
+| L12 | Provide a load-time **pending-spend fence** for named outpoints. It is not a key-wallet reservation, which expires after 24 blocks: it clears only on an observed spend of the outpoint, or when the row reaches a terminal status (review GPT, closure note). The host calls it for every possibly-sent entry's inputs in its catch-up (H6). |
 | L13 | After `admit` returned `First` for a tracked row (its `Dispatching` record is durable), a transport rejection neither untracks the row nor releases its inputs. The pin's `Rejected` arm (`build.rs:1144-1233`) applies only before `admit`, through `abandon`. |
-| L14 | Hold a drop guard from `track` until `admit` has decided, whose `Drop` calls `abandon` and spawns its cleanup. |
+| L14 | Hold a drop guard from `track` until `admit` has decided, owning the build's in-broadcast pin. Its `Drop` calls `abandon`, spawns its cleanup, and settles the pin released on `cleanup: true`. |
 | L15 | `create_funded_asset_lock_proof` calls `fence.proof_wait_started` right before its proof wait (§4.4). |
+| L16 | Provide `AssetLockManager::restore_tracked_lock(payload)`, which re-tracks a `Built` row from a journal payload, for an entry whose row `wallet.sqlite` lost (GPT 5). |
+| L17 | `FallbackPolicy::Surface` for `create_funded_asset_lock_proof`, registration's step 2 and top-up: every place that would call `upgrade_to_chain_lock_proof(…, None)` returns `ChainLockFallbackRequired{out_point}` and calls `fence.chainlock_fallback` instead (§4.4, GPT 4). |
+| L18 | A fence-aware `SpvBroadcaster` (§5.1) and a `DispatchContext` at every F1 site; `DispatchScope{wallet, origin, step}` in rs-sdk. |
+| L19 | The rs-sdk hook sits inside the retry closure, so a refusal reaches the failure arm's `refresh_identity_nonce` (F20, review Opus 16). |
 
 With no fence installed, the library behaves exactly as at the pin, so other hosts (iOS) are unaffected.
 
-### 5.7 What the host must do
+### 5.7 What the host must do (both modes, unless marked)
 
 | # | Obligation |
 |---|---|
@@ -634,11 +1032,14 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H3 | Every permit has a deadline of grant + H, and the drain treats a permit past its deadline as ended, whether or not the library dropped it. |
 | H4 | Revocation (the freeze) and the permit snapshot happen in one J step, before `lock_vault`'s first await. |
 | H5 | Lease ids are 128-bit random. The journal stores the id, the wallet and the process nonce, and every check compares the wallet too. |
-| H6 | **Catch-up at load**, in two parts. (1) Synchronously, after the journal is loaded and before any user flow or build can run, the engine re-reserves the inputs of every tracked row at `Dispatching` or `PreFence` (L12). (2) After SPV has started (E0-05's bring-up), it spawns, and does not await, an unscoped resume of every tracked `Built` or `Broadcast` row, so the journal decides. Resumes of `Broadcast` rows wait for proofs, and an early resume would only miss the 15 s readiness wait and defer for up to 10 minutes (`recovery.rs:211, 929-932`). The catch-up, the deferred-resume task and a user's "Finish registration" can overlap safely, because each is decided by the journal. Both parts run again when a closed wallet is opened. |
+| H6 | **Catch-up at load and on reconnect**, in two parts. (1) Synchronously, after the journal is loaded and before any user flow or build can run: for every entry at `Dispatching` or `PreFence`, restore its row from the payload if `wallet.sqlite` lost it (Mode A, L16) and install a pending-spend fence on its inputs (L12; in Mode B, `TxDraft` coin control excludes tracked rows' outpoints). (2) After SPV has started (E0-05's bring-up), spawn, and do not await, an unscoped resume of every tracked `Built` or `Broadcast` row, so the journal decides (pin semantics in Mode B). Part 2 runs again on every SPV peers 0 → >0 transition and after the journal recovers from a write failure, so `Ambiguous`, `Deferred` and L13 rows are driven within the session (review Opus 11). Both parts run again when a closed wallet is opened. |
 | H7 | Every engine call site that can hand off runs inside a `DispatchScope`, including hand-offs inside a task the engine spawns (`tx_actions.rs:414`). |
-| H8 | Every way a lease enters the table (`begin_lease`, the background lease's creation and re-creation, `rebind`) reads `lock_gen` before it takes a token or signer, and its insert refuses if `lock_gen` changed (§4.1, §4.5, §8.3). An insert that finds only the vault epoch moved inserts `NeedsGrant`. |
-| H10 | A flow that resumes in a later process treats a `Refused` (or `Cancelled`) of a step as MaybeSent when its persisted state records an earlier hand-off of that step (§5.5). DP1-02's registration rows and DP3-01's payment locks carry that record. |
+| H8 | Every way a lease enters the table (`begin_lease`, the background lease's creation and re-creation, `rebind`) first waits until no lock barrier is set, then reads `lock_gen` before it takes a token or signer. Its insert refuses if a barrier is set or `lock_gen` changed. An insert that finds only the vault epoch moved inserts `NeedsGrant` (§4.1, §8.3; GPT 2). |
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
+| H10 | A resumable step's First writes its durable step marker before any transport (§7.6). A flow resumed in a later process reads `Refused{step_possibly_dispatched: true}` as MaybeSent, never Cancelled. The marker, not the flow's own phase, is the evidence (GPT 3). |
+| H11 | No retry and no discard of a step is offered unless `dispatch_status` of its artifact is `DefinitelyUnsent`. `discard_registration` consults it for the registration's asset lock; a top-up retry, a payment retry and "Register again" do too (review Opus 2). |
+| H12 | `DispatchResolved` is emitted for every provisional outcome when it settles (§4.6). DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. |
+| H13 | Mode B: each library write call runs under a call permit, taken in a J step that checks the lease, charges the call's quoted budget and writes the step marker of a resumable step durably first (§2a.3). |
 
 ### 5.8 Lock order and why nothing can deadlock
 
@@ -681,24 +1082,40 @@ The library keeps its row exactly as at the pin. That row now serves funds track
   - it needs a stricter durability setting than `app.sqlite`;
   - it must not take part in `.dwbackup` row export, which takes every table with a `wallet_id` column
     (`dw-appdb/src/rows.rs:69-89`);
-  - it must outlive wallet removal (§6.5).
+  - its lifecycle differs: it is per network, opened at session open and closed with the session (§8.5), and its
+    rows are erased per wallet only by a wiping `remove_wallet` (§6.5).
 - **Code:** a module of dw-appdb (`dispatch.rs`) with its own embedded migrations. One connection behind a mutex,
   used only from the blocking pool.
-- **Pragmas:** `journal_mode=WAL`, `synchronous=FULL`, `busy_timeout=2000`, and on Apple platforms `fullfsync=ON`
-  and `checkpoint_fullfsync=ON` (macOS `fsync` does not flush the disk cache).
+- **Pragmas:**
+  - `journal_mode=WAL`, `synchronous=FULL`, `busy_timeout=2000`;
+  - `secure_delete=ON`, so an erased wallet's rows are overwritten (§6.5);
+  - on Apple platforms, `fullfsync=ON` and `checkpoint_fullfsync=ON`, because macOS `fsync` does not flush the disk
+    cache.
+- **Version gate:** `meta.schema` is read at open. A schema newer than the build disables the fence (leased Firsts
+  refused, `Notice{DispatchJournalUnavailable}`) rather than failing a CHECK on an unknown state (review Opus 10).
 - **Schema:**
 
 ```sql
-CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;   -- schema version, created_at
-CREATE TABLE dispatch (
+CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
+  -- schema, created_at, and seeded:<wallet hex> per wallet (§6.5)
+CREATE TABLE dispatch (                                      -- registered artifacts (asset locks), Mode A
   wallet       BLOB NOT NULL CHECK (length(wallet) = 32),
   txid         BLOB NOT NULL CHECK (length(txid) = 32),
-  origin_lease BLOB NOT NULL CHECK (length(origin_lease) = 16),
-  process      BLOB NOT NULL CHECK (length(process) = 16),   -- per-session nonce, diagnostics
+  origin_lease BLOB CHECK (origin_lease IS NULL OR length(origin_lease) = 16),  -- NULL for PreFence
+  process      BLOB CHECK (process IS NULL OR length(process) = 16),           -- per-session nonce, diagnostics
   state        INTEGER NOT NULL CHECK (state IN (0, 1, 2)),  -- 0 Unsent, 1 Dispatching, 2 PreFence
+  payload      BLOB NOT NULL,                                 -- AssetLockPayload, versioned (GPT 5)
   registered_at INTEGER NOT NULL,
   dispatched_at INTEGER,
   PRIMARY KEY (wallet, txid)
+) WITHOUT ROWID;
+CREATE TABLE step (                                          -- resumable steps' write-ahead markers, both modes
+  wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id   TEXT NOT NULL,                                   -- e.g. "registration/<draft>/identity"
+  artifact  BLOB NOT NULL CHECK (length(artifact) = 32),     -- ST hash or txid (Mode A); call id (Mode B)
+  state     INTEGER NOT NULL CHECK (state = 1),              -- written only as "possibly dispatched"
+  at        INTEGER NOT NULL,
+  PRIMARY KEY (wallet, step_id, artifact)
 ) WITHOUT ROWID;
 ```
 
@@ -706,7 +1123,9 @@ CREATE TABLE dispatch (
   - `register`: `INSERT … ON CONFLICT DO NOTHING`, then a read-back. A row with another origin is an error.
   - `Dispatching`: `UPDATE dispatch SET state = 1, dispatched_at = ? WHERE wallet = ? AND txid = ? AND state = 0`,
     or a no-op if the row is already 1.
-  - No statement sets `state` to 0, and none deletes a row.
+  - Step marker: `INSERT … ON CONFLICT DO NOTHING`, `FULL`, before the step's transport (§7.6).
+  - No statement sets `state` to 0. The only deletes are the wiping `remove_wallet` of §6.5 and the repair's discard
+    of §6.5.
 
 ### 6.3 States
 
@@ -738,36 +1157,58 @@ CREATE TABLE dispatch (
     lock.
   - At the next load the file decides. 1 means Resend. 0 means the transport was never called, because I1 guarantees
     that, so the row is refused and cleaned up.
-- **The journal cannot be opened:** the fence refuses every registered-artifact `register` and every leased First,
-  and raises a `Notice{DispatchJournalUnavailable}`. Tracked rows get `Deferred`, so nothing is sent or cleaned up
-  without the journal. Unleased paths still work.
+- **A step marker's write fails:** like `Dispatching`. The step is `Ambiguous`, the transport is not called, and
+  the flow reports MaybeSent. A retry first makes the marker durable.
+- **The journal cannot be opened, or its schema is newer:** the fence refuses every registered-artifact `register`
+  and every leased First, and raises a `Notice{DispatchJournalUnavailable}`, which maps to `platform.storage` (§16).
+  Tracked rows get `Deferred`, so nothing is sent or cleaned up without the journal. Unleased paths still work.
+- **After a write failure recovers** (the next write succeeds), H6's resume pass runs again (review Opus 11).
 
 ### 6.5 Load, loss, rollback, GC
 
-- **Seeding.** When the session opens and `dispatch.sqlite` has no `meta.seeded` row (the first session with the
-  fence, or a journal that was deleted), the fence reads every asset-lock row of every wallet from `wallet.sqlite`.
-  It uses the read-only connection dw already uses for history (`dw-engine/src/history_ops.rs:86`), so wallets the
-  user closed are included. It then inserts a `PreFence` entry for each row whose status is not `consumed`, and sets
-  `meta.seeded`, in one transaction. No fence-era row can exist yet: the fence admits nothing before the seeding is
-  done.
-- **Load:** at session open, after the seeding and before `start_wallet_subsystems` or any `admit`, the fence reads
-  every row into memory. Until then `admit` answers `Deferred` and `register` fails (in practice no flow can run that
-  early). The catch-up (H6) runs right after.
-- **Wallet removal:** journal rows are kept. A wallet removed and imported again finds its old entries, and the
-  library's rows for it come back only from `wallet.sqlite`, which has the matching entries.
+- **Seeding** (Mode A), per wallet, through the library rather than PWS's schema (review Opus 10).
+  - When a wallet is loaded and `meta` has no `seeded:<wallet>` row, the fence asks platform-wallet for the wallet's
+    tracked asset locks (`list_tracked_locks`). That happens on the first session with the fence, after a deleted
+    journal, and when a closed wallet is opened for the first time since.
+  - For each lock whose status is not `Consumed`, it inserts a `PreFence` entry with its payload, built from the
+    row's transaction. Then it sets `seeded:<wallet>`, all in one transaction.
+  - No fence-era row of that wallet can exist yet: the fence admits nothing for a wallet before its seeding is done.
+  - This depends only on the library's public row type, not on the `asset_locks` table's columns, labels or outpoint
+    encoding.
+- **Load:** at session open, after the seeding of the loaded wallets and before `start_wallet_subsystems` or any
+  `admit`, the fence reads every row into memory. Until then `admit` answers `Deferred` and `register` fails (in
+  practice no flow can run that early). The catch-up (H6) runs right after.
+- **A row lost to a power loss** (GPT 5). `wallet.sqlite` runs `synchronous=NORMAL` (F5, DEC-65), so a power loss can
+  drop a `Built` row whose `Dispatching` entry the `FULL` journal kept. The catch-up's part 1 then:
+  1. restores the row from the entry's payload (L16);
+  2. installs a pending-spend fence on its inputs (L12) before any build can select them;
+  3. hands the row to part 2's resume, which resends it.
+
+  An `Unsent` entry with no row needs nothing: its transport was never called (I1).
+- **Wallet removal** (review Opus 10, F18).
+  - dw's `remove_wallet` secure-erases the wallet's rows in `wallet.sqlite`.
+  - Once the wallet has no tracked row left, a `remove_wallet` with its `Wipe` grant also deletes the wallet's
+    `dispatch` and `step` rows and its `seeded:` mark, with `secure_delete=ON` and a WAL checkpoint (TRUNCATE).
+  - A wallet removed while it still tracks a possibly-sent lock keeps those entries until the lock is consumed, and
+    the removal says so.
+  - If PWS's auto-backup is later restored, its rows meet no entry: kept, not sent, with a `Notice` (safe).
 - **The journal is deleted or reset:** the next session seeds it again, so every current row becomes `PreFence` and
   is resent. That is safe for funds (nothing possibly sent is cleaned up). It can send an asset lock the user had
   cancelled, but only after someone deletes a file by hand.
-- **`app.sqlite`** is irrelevant here; the journal does not live there.
-- **The journal is rolled back** to an older copy by hand, with `wallet.sqlite` newer: a row registered after the copy
-  has no entry, so it is kept and not sent, with a `Notice` (safe). A row dispatched after the copy reads `Unsent`
-  and is refused, so its row is untracked even though it may be on the wire. DP1-05's asset-lock reconstruction
-  recovers that lock from the chain (`RecoveredFromChain`). dw never restores this file, so this is the only
-  residual, and it needs manual file surgery.
-- **`wallet.sqlite` is restored or rolled back:** every row meets its entry. A row from before the seeding that the
-  seeding never saw has no entry, so it is kept and not sent; platform-wallet still tracks its proofs, which need no
-  hand-off. Safe both ways.
-- **GC:** none in 1.0 (Q10). A row is about 120 bytes, one per asset lock ever built.
+- **The journal is rolled back** to an older copy by hand, with `wallet.sqlite` newer:
+  - a row registered after the copy has no entry, so it is kept and not sent, with a `Notice` (safe);
+  - a row dispatched after the copy reads `Unsent` and is refused, so its row is untracked even though it may be on
+    the wire. DP1-05's asset-lock reconstruction recovers that lock from the chain (`RecoveredFromChain`).
+
+  dw never restores this file, so this is the only residual, and it needs manual file surgery.
+- **`wallet.sqlite` is restored or rolled back:** every row meets its entry, or has none and is kept. Safe both ways.
+- **A way out for rows with no entry** (review Opus 15). Tools ▸ Repair "Unrecorded asset locks" lists them, with two
+  actions:
+  - **"Send it"** registers the row's transaction under a fresh lease (a prompt). The lock's owner is the user, so it
+    commits as a First like any other.
+  - **"Discard"** is offered only after the inputs are seen unspent and the transaction is not on the chain or in the
+    mempool. It writes an `Unsent` entry with a dead origin and refuses it, so the ordinary cleanup runs.
+- **GC:** none in 1.0 (Q10). A row is about 120 bytes plus its payload, one per asset lock ever built.
 
 ## 7. Commit points and crash consistency
 
@@ -785,6 +1226,7 @@ CREATE TABLE dispatch (
 |---|---|---|
 | 1. sign (lease's funding signer) | nothing | nothing to do; inputs are free |
 | 2. `register` (entry 0) | entry 0 | orphan entry; no row; nothing to do |
+| 2a. (the payload is part of step 2's transaction) | entry 0 with payload | as 2 |
 | 3. track `Built`, `store` inline (L3) | entry 0, row | row with entry 0 → refused → untracked (nothing of it reserved after load) |
 | 4. readiness check; on failure `abandon` → cleanup | as 3, or removal queued | as 3 (a removal that did not land is refused again) |
 | 5. `admit`: `Committing`, permit, charge (under J) | as 3 | as 3 |
@@ -795,9 +1237,14 @@ CREATE TABLE dispatch (
 | 10. status `Built → Broadcast` (`store`) | entry 1, row `Broadcast` | as 7, through the Broadcast arm (a Resend) |
 | 11. proof wait (no permit), IS window (§4.4) | — | platform-wallet's tracking; DP1-02 resumes its flow |
 
-Power loss is the one case the table does not cover. `wallet.sqlite` runs `synchronous=NORMAL` (F5), so the row of
-step 3 can be lost while entry 1 of step 7 survives. The lock is then on the chain but has no `Built` row, and DP1-05's
-reconstruction finds it as `RecoveredFromChain` (Q11).
+**Power loss** is a separate case (GPT 5). `wallet.sqlite` runs `synchronous=NORMAL` (F5), so it can lose the row of
+step 3, or its later status, while the `FULL` journal keeps entry 1:
+- **Mode A:** load restores the row from the payload, fences its inputs and resends it (§6.5), whether or not the
+  bytes ever left.
+- **Mode B:** there is no payload. Once the lock reaches the chain, DP1-05's reconstruction finds it as
+  `RecoveredFromChain`. Before then its inputs are not fenced; that is Mode B's documented residual (§2a.3).
+
+An `Unsent` entry whose row was lost is a lock that was never sent (I1).
 
 ### 7.3 Row-less Core transactions
 
@@ -805,6 +1252,8 @@ reconstruction finds it as `RecoveredFromChain` (Q11).
 - A First permit covers the enqueue, and its grant records the id in the row-less set.
 - After a lock the lease is revoked. A first hand-off of new bytes under it is refused, and since nothing was
   enqueued, nothing can be rebroadcast. A repeat of bytes already admitted is a Resend (§5.5).
+- A definite rejection settles the artifact unsent only when no other attempt of the same bytes is running and none
+  may have let them out (§5.5). Only then are the inputs and the pin released, and the artifact is tombstoned.
 
 ### 7.4 State transitions
 
@@ -822,6 +1271,31 @@ reconstruction finds it as `RecoveredFromChain` (Q11).
 | load replay (`load.rs:620`) | CoreTx, row-less, unscoped | never runs in dw (F8); if it did, it would get `Deferred` and a `Notice`: nothing sent now, and no false "definitely not sent" for bytes that were probably sent before |
 | dash-spv's 600 s rebroadcast (F3) | not at all | an entry exists only after a fenced hand-off, so membership is the record |
 | shielded redrives (F11, 1.1) | state transition, persisted before dispatch | must be registered artifacts, keyed by ST hash, before the shielded work ships (X-phase) |
+| a resumed resumable step (§7.6) | the step's transition, scoped with its step id | the step marker: identical bytes are a Resend; other bytes under a revoked lease are `Refused{step_possibly_dispatched}` |
+
+### 7.6 Resumable row-less steps (review GPT 3)
+
+A registration's or top-up's identity transition from an existing lock is row-less, but a later process signs it
+again (F10). The per-process set dies with the process, and the flow's own phase is written only after the library
+returns, too late to record a hand-off. So:
+- **Declaring.** The engine scopes such a step as resumable:
+  `DispatchScope{step: Some("registration/<draft>/identity")}`.
+- **Writing.** In Mode A, the step's First takes `Committing` for `(step, artifact hash)` in its J step, and spawns
+  the marker's durable write (`FULL`). Its transport starts only after the write returned. In Mode B the engine
+  writes the marker under the call permit, before it calls the library.
+- **Reading, in a later process:**
+  - identical bytes find their marker: a Resend;
+  - different bytes for the same step, under a revoked lease, get `Refused{step_possibly_dispatched: true}`, which
+    the flow reports as MaybeSent;
+  - no marker means the step was never handed off: its write-ahead precedes any transport.
+- **Failure.** A marker write that fails or is ambiguous behaves like a `Dispatching` failure (§6.4).
+
+| Kill point | Durable afterwards | Next process |
+|---|---|---|
+| before the marker write | nothing | a fresh First, needs a live lease; refused → Cancelled (truly never sent) |
+| marker write in progress | marker or nothing | as the row above, or as the row below |
+| after the marker, before or after the broadcast | marker | identical bytes: Resend; otherwise MaybeSent |
+| after the response, before the phase write | marker | as above; the flow's re-query then finds the identity |
 
 ## 8. Lock, close and other revocations
 
@@ -829,28 +1303,43 @@ reconstruction finds it as `RecoveredFromChain` (Q11).
 
 ```rust
 pub async fn lock_vault(self: &Arc<Self>) -> Result<LockReport, EngineError> {
-    let _op = self.try_enter()?;                     // as today; a closing session handles leases itself
+    let _op = self.try_enter()?;               // as today; a closing session handles leases itself
     self.cancel_relock();
-    let drain = self.leases.freeze(Cause::Lock);     // (1) one J step, synchronous
-    let vault = self.vault.clone();
-    let gate = self.rt.spawn_blocking(move || vault.lock()); // (2) the vault gate (E0-03)
-    let report = drain.wait().await;                 // (3) the drain
-    let status = gate.await?;
-    Ok(LockReport { status, ..report })
+    let done = self.leases.lock(Cause::Lock);  // (1) freeze + barrier, sync; spawns the coordinator
+    Ok(done.await?)                            // (2)+(3) gate and drain, owned by the coordinator
 }
+// LeaseTable::lock (sync):
+//   J { revoke every lease, drop every KeyHold and the background lease, S := permits,
+//       lock_gen += 1, barrier := Barrier{gen, gate_done: false, drain_done: false} }
+//   spawn coordinator { spawn_blocking(vault.lock()) → J{barrier.gate_done}; drain(S) → J{barrier.drain_done};
+//                       when both: J{clear barrier}, notify; emit LockProgress::Done(report) }
 ```
 
-1. **Freeze.** In one J step:
+1. **Freeze and barrier** (synchronous, before the first await). In one J step:
    - every lease that is not `Ended` becomes `Revoked{Lock}`, and every `KeyHold` is dropped;
    - the background lease is dropped;
    - the in-flight permits are snapshotted into `S`, and `deadline_max = max(p.deadline for p in S)`;
-   - `lock_gen` is incremented.
-2. **Vault gate.** `vault.lock()` ends the epoch and waits for gated vault operations already running. It is started
-   before the first await and runs to completion even if the future is dropped.
-3. **Drain.** The future waits until every `p ∈ S` has dropped or is past its deadline. It wakes on the permits'
-   notify or a timer, so it is not polling. It emits `LockProgress::Draining` while it waits.
+   - `lock_gen` is incremented;
+   - the **lock barrier** is set.
+2. **Vault gate.** `vault.lock()` ends the epoch and every grant issued before it, and waits for gated vault
+   operations already running. It runs on the blocking pool under the coordinator.
+3. **Drain.** The coordinator waits until every `p ∈ S` has dropped or is past its deadline. It wakes on the permits'
+   notify or a timer, so it is not polling, and emits `LockProgress::Draining` while it waits.
 
-`relock_after`'s timer runs the same three steps. The FFI's `Vault.lock()` becomes async and calls `lock_vault`.
+**The barrier** (review GPT 2).
+- It is cleared only when both the gate and the drain are done. Until then no lease enters the table (H8): not
+  `begin_lease`, not the background lease, not `rebind`.
+- So nobody can redeem a grant issued before the lock in the window after the freeze and before the gate ends its
+  epoch. The coordinator is a spawned task, so a dropped `lock_vault` caller cannot leave the barrier set.
+- A second `lock` while a barrier is set joins the running coordinator: it waits for the same completion. Its own
+  freeze, made first, revokes nothing new, since no lease can have entered.
+
+**Callers.**
+- `relock_after`'s timer and auto lock (§4.8) run the same steps.
+- The FFI's `Vault.lock()` stays **synchronous** (review Opus 7; the Swift shells are frozen). It runs step 1 and
+  waits for step 2 on the calling thread, which the FFI already runs on a blocking thread, then returns the
+  `VaultStatus`. The drain's end arrives as `LockProgress::Done(LockReport)`.
+- The engine's async `lock_vault` (dwcli, tests, the chosen stack's binding in E0-13) returns after both.
 
 ### 8.2 The bound
 
@@ -858,15 +1347,16 @@ Let `t0` be the moment of the freeze, which happens before `lock_vault`'s first 
 
 - Every permit in `S` was granted before `t0` (J orders them), so its deadline is less than `t0 + H`.
 - No permit is granted after `t0` under a lease that existed at `t0`, because all of them are revoked at `t0`.
-- No new lease is created while the drain has unexpired permits (§8.3), so no permit outside `S` can appear for the
-  drain to wait on.
+- No lease enters the table while the barrier is set (H8), so no permit outside `S` can appear for the drain to wait
+  on, and no grant issued before the lock can be redeemed after the freeze.
 - The drain ends at the first instant at which every `p ∈ S` has dropped or passed its deadline. That is at most
   `max_{p∈S} deadline < t0 + H`. The host enforces this itself (H3), so a library that ignores its deadline cannot
   stretch it.
 - The vault gate ends at `t0 + T_gate`.
 
-So **`lock_vault` returns by `t0 + max(H, T_gate) + ε`**, where ε is the timer's wakeup latency (tokio's 1 ms
-granularity plus scheduling). This holds for any number of leases and permits.
+So **`lock_vault` returns, and the barrier clears, by `t0 + max(H, T_gate) + ε`**, where ε is the timer's wakeup
+latency (tokio's 1 ms granularity plus scheduling). This holds for any number of leases and permits, and for a gate
+wait longer than H. The synchronous FFI `Vault.lock()` returns by `t0 + T_gate`.
 
 - `T_gate` is the E0-03 gate wait: about 1 ms per in-flight signature, or one vault-file write and its read-back.
   H does not bound it.
@@ -886,30 +1376,43 @@ granularity plus scheduling). This holds for any number of leases and permits.
 - **`begin_lease` across a freeze.** `begin_lease` reads `lock_gen` before it redeems anything, and its insert
   refuses if `lock_gen` changed (H8). So a lease whose redemption began before a lock's call and whose insert would
   come after it never exists. Its tokens were redeemed under the old epoch and are dropped unused, and the flow
-  asks again. That closes the window in which such a lease could sign before the vault gate ends the epoch.
-- **`begin_lease` during a drain** also waits until no permit granted before the latest freeze is still in flight
-  and unexpired. That condition is computed from the permit table, not from a flag the lock future owns, so a dropped
-  future cannot wedge it. The wait is at most H.
-- **Unlocking during a drain** works: the vault was locked in step 2. A grant during the drain also works; only the
-  lease made from it waits. So "lock_vault returned" is a clean boundary for the UI (nit 4).
+  asks again.
+- **`begin_lease` after a freeze and before the gate** (review GPT 2). It waits for the barrier, which clears only
+  after the gate has ended the epoch. A grant issued before the lock is then dead, so its redemption fails. The
+  barrier is table-owned and cleared by the coordinator, so a dropped future cannot wedge it. The wait is at most
+  `max(H, T_gate)`.
+- **Unlocking during a lock** waits for the gate. `unlock` takes the vault's exclusive gate, which orders it after
+  the lock's own epoch change. A grant issued in the new epoch is usable, but only the lease made from it, and only
+  after the barrier. So "lock_vault returned" is a clean boundary for the UI (nit 4).
 
-### 8.4 Outcomes
+### 8.4 Outcomes (review GPT 7)
 
 ```rust
 pub struct LockReport {
     pub status: VaultStatus,
-    pub revoked: Vec<LeaseSummary>,             // {id, flow, wallet}
-    pub in_flight: Vec<(LeaseSummary, Outcome)>, // each permit of S: Sent | MaybeSent | NotSent
+    pub flows: Vec<FlowReport>,                  // every revoked lease
+}
+pub struct FlowReport {
+    pub lease: LeaseSummary,                     // {id, flow, wallet}
+    pub outcome: Outcome,                        // Sent | WillBeSent | MaybeSent | Cancelled
+    pub artifacts: Vec<(ArtifactId, Outcome)>,   // per artifact, for multi-artifact flows
 }
 ```
 
-A flow whose lease was revoked reports one of four outcomes:
-- **Cancelled:** its First was refused, or it had nothing in flight. It is definite, and its registered artifact (if
-  any) is `Revoked` and cleaned up.
-- **Sent:** its permit finished `Sent` before the drain ended ("sent before the lock").
-- **MaybeSent:** its permit expired, or its outcome is unknown ("may have been sent").
-- **Committed, not yet sent:** a registered artifact stuck in `Ambiguous` or `Deferred`. It is reported as MaybeSent,
-  and a later Resend may send it.
+- **A permit says only what the drain waits for.** Every lease keeps a monotone history of its artifacts. Each grant
+  of a First, each `Dispatching` write and each settlement is recorded under J, and nothing removes an entry.
+- **Each artifact's outcome comes from that history and the journal, never from the permit snapshot:**
+  - `Sent`: an attempt finished `Sent`;
+  - `WillBeSent`: a registered artifact at `Dispatching`, `PreFence` or `Ambiguous` with its row tracked, which the
+    engine resends. Every rejected-after-commit attempt (L13) lands here;
+  - `MaybeSent`: committed, outcome unknown (an expired permit, a row-less `MaybeOut`);
+  - `Cancelled`: never committed, or a row-less artifact settled `DefinitelyUnsent`.
+- **The flow's outcome is the strongest of its artifacts'**, in the order `Sent` > `WillBeSent` > `MaybeSent` >
+  `Cancelled`, so a flow is `Cancelled` only when every artifact is. Example: a registration whose funding lock is
+  `Sent` and whose identity transition was never committed reports `Sent`, with the artifacts listed. The UI says
+  "Funds locked — unlock to finish".
+- A registration waiting for its proof, with no permit in flight, is therefore `Sent` or `WillBeSent`, never
+  `Cancelled`.
 
 ### 8.5 Close
 
@@ -922,13 +1425,15 @@ A flow whose lease was revoked reports one of four outcomes:
 Flows hold the session's `OpGuard` while they run, so the abort must come before `gate.close()`, which waits for
 guards. A flow aborted after the drain is outside every permit, or inside an expired one. The library's drop handling
 (sticky claims, `InBroadcastPin::drop`) then settles it as pending, and a committed asset lock is resent at the next
-session. E0-05 owns the cancelation of the bring-up task. This design adds only the lease steps.
+session. The journal is closed last, after the manager's shutdown: it is per network, so switching networks closes
+one journal and opens the other. E0-05 owns the cancelation of the bring-up task. This design adds only the lease
+steps.
 
 ### 8.6 Other revocations and epoch changes
 
 | Event | Leases | Drain | Background lease |
 |---|---|---|---|
-| `lock_vault`, relock timer, FFI `Vault.lock()` | all `Revoked{Lock}` | yes | dropped |
+| `lock_vault`, relock timer, auto lock (§4.8), FFI `Vault.lock()` (also on a vault already `Locked`) | all `Revoked{Lock}` | yes | dropped |
 | close | all `Revoked{Close}` | yes, then abort flows | dropped |
 | `change_passphrase` (vault stays unlocked; epoch ends) | all `Revoked{PassphraseChange}` (Q4) | yes | re-created |
 | `remove_wallet` | that wallet's, `Revoked{WalletRemoved}` | yes (that wallet's permits) | that wallet's dropped |
@@ -958,30 +1463,50 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
 - **I4. A refusal is definite.** `Refused` or `Revoked{…}` ⇒ the entry was `Unsent` (I3) ⇒ no `Dispatching` write
   ever succeeded ⇒ no transport call ever happened (I1) and none can (I3). So the cleanup, which happens only on
   `cleanup: true`, never touches bytes that may be on the wire. For a row-less artifact a refusal is given only to an
-  id that was never admitted in this process (the row-less set), and row-less bytes are handed off only in the
-  process that signed them (§5.5).
+  id that was never admitted in this process, or to a tombstoned Core send whose every attempt settled definitely
+  unsent (§5.5). A resumable step's earlier hand-off in an earlier process is visible through its marker, and its
+  refusal says `step_possibly_dispatched` (§7.6).
 - **I5. The drain is complete.** `lock_vault` returns only after every permit granted before its freeze has dropped or
   expired (H3, H4).
-- **I6. One owner-guarded cleanup that cannot be dropped.** Only the CAS winner cleans up, at most once per process.
-  The cleanup is a spawned task, so dropping the caller cannot lose it. A build dropped before `admit` abandons
-  through its drop guard. The release takes the build's token, so it never frees another build's hold.
+- **I6. One owner-guarded cleanup that cannot be dropped, and that frees the inputs.** Only the CAS winner cleans
+  up, at most once per process. The cleanup is a spawned task, so dropping the caller cannot lose it, and a build
+  dropped before `admit` abandons through its drop guard. The release takes the build's token, so it never frees
+  another build's hold, and it settles the in-broadcast pin released, so the inputs are selectable again.
 - **I7. Origins die with the process.** Lease ids are random and in memory only.
 - **I8. The row is durable before its hand-off** (L3). That is for funds tracking, not for the cancel promise.
-- **I9. No lease outlives the freeze it raced.** Every lease in the table at a freeze is revoked by it, and a lease
-  whose creation began before a freeze is never inserted after it (H8).
+- **I9. No lease outlives the lock it raced.** Every lease in the table at a freeze is revoked by it. A lease whose
+  creation began before a freeze is never inserted after it, and no lease is inserted while a lock's barrier (gate
+  and drain) is set (H8).
+- **I10. A row-less settlement is aggregate.** A row-less artifact is settled definitely unsent only when no attempt
+  is running and none may have let it out; a Core send settled so is tombstoned (§5.5).
+- **I11. Resumable steps are write-ahead.** Their transport follows a durable step marker (§7.6).
+- **I12. A possible send survives a power loss** (Mode A). Every `Dispatching` or `PreFence` entry carries a payload
+  that rebuilds its row and fences its inputs at load (§6.5).
+- **I13. A rebind never raises authority.** Every budget is the minimum of what remains and what the fresh grants cap
+  (§4.3).
+- **I14. Lock outcomes come from history.** `Cancelled` requires that nothing of the flow was ever committed, or that
+  every committed artifact settled definitely unsent (§8.4).
 
 ### 9.2 The ordering theorem
 
-> After `lock_vault` returns, no artifact signed under a lease it revoked makes a hand-off whose commit was not
-> ordered before the `lock_vault` call. Every hand-off whose commit was ordered before the call has ended (Sent or
-> NotSent) or is reported MaybeSent.
+> **Mode A.** After `lock_vault` returns, no artifact signed under a lease it revoked makes a hand-off whose commit
+> was not ordered before the `lock_vault` call. Every hand-off whose commit was ordered before the call has ended
+> (Sent or NotSent) or is reported MaybeSent or WillBeSent.
+>
+> **Mode B.** After `lock_vault` returns, nothing is signed under a lease it revoked, and no library call under such
+> a lease starts. A call already running, or a row it left, may still hand off bytes signed before the call. Every
+> such call is reported MaybeSent unless it returned.
 
 - **Proof.** By I2, every commit under a revoked lease precedes the freeze in J's order, and the freeze happens at the
   call. A First's commit is the grant of its permit. If that permit's hand-off had not ended by the return, I5 means
   it was past its deadline, so it is reported MaybeSent. A registered artifact's later Resends (resume, load) all
   follow its `Dispatching` write (I1), which belongs to that same commit.
-- **Corollary (Lock to cancel).** A flow whose First is refused reports Cancelled. By I4 nothing of it ever leaves,
-  and its row and reservation are released once, by a cleanup nothing can drop (I6).
+- **Mode B proof.** I2 and I9 hold for call permits as for First permits. The vault gate ends the epoch, so every
+  signer issued before fails `Locked` (E0-03). A call already running is either done or past its permit's deadline
+  when the drain ends.
+- **Corollary (Lock to cancel).** A flow whose First (Mode A) or call (Mode B, before it signed) is refused reports
+  Cancelled. By I4 nothing of it ever leaves, and its row, reservation and pin are released once, by a cleanup
+  nothing can drop (I6). Once funds are committed, Lock pauses the flow; it cannot cancel it (§4.6).
 
 ### 9.3 Liveness
 
@@ -989,52 +1514,69 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
   at every load (H6), with its inputs reserved again (L12). Cleanup, which needs `Unsent`, can never reach it (I3).
 - **A never-dispatched row is cleaned up** at once by the CAS winner in this process, or by the catch-up at the next
   load (H6), since its lease died with the process.
+- **Provisional outcomes resolve within the session.** H6's resume pass re-runs on every peers 0 → >0 transition and
+  after a journal write recovers, and every resolution emits `DispatchResolved` (H12).
 - **No deadlock** (§5.8).
 
 ## 10. The model check
 
 ### 10.1 What it models, and its limits
 
-`docs/design/checks/e0_04_design_model.py`:
+`docs/design/checks/e0_04_design_model.py` (67 checks):
 - **Part 1** explores every interleaving of these actors:
-  - O, the original flow, which may be dropped between track and admit;
-  - R, a resume of the same row; after a crash, R is the catch-up at load (H6);
+  - O, the original flow, which may be dropped between track and admit, and may repeat its hand-off;
+  - R, a resume of the same row, or in the row-less scenarios a second holder of the same bytes; after a crash, R
+    is the catch-up at load (H6);
   - K, a spawned cleanup task;
   - W, an orphaned journal write;
   - L, `lock_vault`;
   - B, another build that may take freed inputs after a reload;
-  - one crash with every partial outcome, and the reload.
+  - one crash, or one power loss, with every partial outcome, and the reload.
 
-  Its seven scenarios are:
+  The twelve scenarios:
   - `flow`;
   - `flow+crash`;
-  - `restart`, an unsent row at load;
+  - `flow+power`, where `wallet.sqlite` may lose rows the journal kept;
+  - `restart`;
   - `ambiguous`;
-  - `legacy`, a `PreFence` row;
-  - `rowless`, a row-less First, then a repeat of the same bytes, then the lock;
-  - `unknown`, a row with no entry.
-- **Part 2** is a tick simulation of the bound. It also checks the race between lease creation and the freeze.
+  - `legacy`;
+  - `rowless`, a state transition with a repeat;
+  - `rowless-resume` and `rowless-resigned`, a resumable step across a crash, with identical or new bytes;
+  - `rowless-core`, a `TxDraft` with inputs;
+  - `rowless-concurrent`, GPT 1's second holder;
+  - `unknown`.
+- **Part 2** is a tick simulation of the bound with up to three leases. It also checks the lease-creation race, the
+  window between the freeze and the gate (GPT 2), and the rebind cap (GPT 6).
 - **Part 3** explores the lock order: the draft's permit lock, the design's non-blocking admit, and an admit that
   would take the wallet guard.
+- **Part 4** explores an own-key registration's key hold against the ChainLock fallback, under rev0, Mode A and Mode B.
+
+**The oracle** (review GPT 8). Every definite verdict (`Cancelled`, `Failed`, `NotSent`) is judged against the
+immutable send history, the attempts still running and the journal, never against the bookkeeping under test. The
+`forget-rowless-history` mutation that escaped rev0 is caught.
 
 Atomic steps:
 - each J critical section is one step: `admit`'s decision, `abandon`, the freeze, a permit drop;
 - each durable write is one step with three outcomes: ok, failed, and failed but durable;
 - each transport call has its outcomes: sent, rejected, deadline passed, then bytes leaving late or never.
 
-Limits. What the model does not cover:
-- more than one registered artifact, lease, resume or crash;
-- the library's internals (claims, the in-broadcast pin), which are abstracted to "row tracked" and "inputs reserved";
-- budgets and caps, which are plain arithmetic under J and are covered by unit tests (§12);
-- epoch changes other than the lock, and the background lease (§4.3, §8.6; unit tests);
+Limits. What the model does **not** cover:
+- more than one registered artifact, lease or crash;
+- more than two concurrent row-less callers;
+- the library's internals (claims; the in-broadcast pin is modelled only as "pinned");
+- budgets and caps, beyond the rebind check: they are plain arithmetic under J, covered by unit tests (§12);
+- epoch changes other than the lock, the background lease and the facade's lease handle (unit tests);
+- Mode B's call permits, beyond Part 4. They follow the same freeze and drain rules as First permits, which Part 2
+  covers;
 - the vault gate's own ordering, which E0-03's lock-race tests cover.
 
+The claim is therefore: within these state spaces, every property of §10.2 holds and every listed wrong rule is
+caught. It is not a proof about the code.
+
 Some checks are confirmations rather than discoveries, and they are labelled as such. In Part 2, "no First after
-the call", "a second call joins" and the creation race (a `lock_gen` read and compare) follow from revocation at the
-freeze and from H8, so the design passes them by construction.
-Their teeth are the rejected rules, which fail them. Part 1's "deadlock" check ignores only the step that drops
-`lock_vault`'s future, so a holder that could never end would show; no mutation produces one, and Part 3 covers lock
-order.
+the call", "a second call joins", the creation race and GPT 2's gate window follow from revocation at the freeze and
+from H8, so the design passes them by construction; their teeth are the rejected rules, which fail them. Part 1's
+"deadlock" check ignores only the step that drops `lock_vault`'s future.
 
 It is a model of this design's decisions, not a test of the code.
 
@@ -1054,6 +1596,11 @@ It is a model of this design's decisions, not a test of the code.
 | H6, L12 | "inputs of a possibly-sent row left selectable after load"; "a genuine possible dispatch was not resent" |
 | liveness | "a never-dispatched row left reserved"; "a genuine possible dispatch was not resent" (ambiguous and pre-fence rows); "deadlock" |
 | unknown provenance | "a hand-off without a durable Dispatching record"; "a row of unknown provenance cleaned up" |
+| I10, I11 | "reported not sent, but sent or still sendable" in the row-less and resumable scenarios |
+| I12 | "inputs of a possibly-sent row left selectable after load" (with or without its row); "a genuine possible dispatch was not resent" after a power loss |
+| I13 | Part 2 `rebind_cap` |
+| I14 | "the lock report says Cancelled for a possibly-sent flow" |
+| I6 (the pin) | "inputs of a definitely-unsent artifact left unselectable" |
 | bound | Part 2: the drain ends within H for 1–3 leases; the rejected timing rules fail |
 | lock order | Part 3: no reachable state without a step, for the design's admit |
 
@@ -1096,38 +1643,99 @@ It is a model of this design's decisions, not a test of the code.
 | `permit-ends-at-first` | the permit is dropped when the transport starts | lock_vault returned while a hand-off ran |
 | `rowless-keep-on-notsent` | a row-less id stays in the set after a definite not-sent | a first actual send after lock_vault returned |
 
+| `forget-rowless-history` | GPT r1's escaping mutation: a rejected row-less repeat forgets earlier hand-offs | reported not sent, but sent |
+| `rowless-rev0` | rev0: a row-less id is forgotten on one attempt's own rejection (GPT 1) | reported not sent, but still sendable |
+| `pin-left-pending` | rev0: the cleanup leaves the in-broadcast pin pending (Opus 5) | inputs of a definitely-unsent artifact left unselectable |
+| `snapshot-outcome` | rev0: Cancelled for a flow with nothing in flight (GPT 7) | the lock report says Cancelled for a possibly-sent flow |
+| `no-step-marker` | rev0: no write-ahead marker for a resumable step (GPT 3) | reported not sent, but sent |
+| `no-payload` | rev0: no recovery payload for a lost row (GPT 5) | inputs of a possibly-sent row left selectable after load |
+
 - `split-cas`, a split read and act whose act is a compare-and-set, passes. It is what the single J step guarantees.
-- Part 2 fails each of `sequential`, `transport-deadline`, `host-waits`, `drop-reopens` and `no-gen-check`.
+- Part 2 fails each of `sequential`, `transport-deadline`, `host-waits`, `drop-reopens` and `no-gen-check`, and
+  checks GPT 2 (`gate_window`) and GPT 6 (`rebind_cap`) under rev0 and rev1.
 - Part 3 finds the draft's deadlock, and the one an `admit` taking the wallet guard would cause.
+- Part 4 (own-key registration and the ChainLock fallback) finds rev0's key held through a hidden wait and its failed
+  funded registration. It finds nothing in Mode A, and exactly the documented residual in Mode B.
+
+**GPT r1's reproductions** (majors 1, 3, 5 and 7) replay the reviewer's exact traces. Under the rev0 rule each one
+breaks, each is admitted and ends in a violation; under rev1 it is not admitted, and its scenario explores clean.
+Majors 2, 4 and 6 are the Part 2 and Part 4 checks above.
 
 The three draft inputs stay unchanged as history. The design check replaces `e0_04_dispatch_model.py` as the spec
 check DASHPAY §2.6 names.
 
-## 11. The upstream PR (B5) and the interim
+## 11. The upstream PR (B5, Mode A)
 
-- **Content:** one PR against platform `v5.1-dev`, with two commits:
-  - (1) rs-sdk: `DispatchFence` trait and types in a small module that platform-wallet re-exports;
-    `Sdk::with_dispatch_fence`; the call and the per-attempt clamping in `StateTransition::broadcast`;
-  - (2) platform-wallet: `FencedBroadcaster`, the SPV split, `register` with the debit, the synchronous `abandon`
-    and its drop guard, the spawned cleanup with the token kept on the in-memory row, the load-time re-reservation,
-    `DispatchScope`, `proof_wait_started`, and the obligations L1–L15 with
-    their tests.
+- **Content:** one PR against platform `v5.1-dev`, in two commits.
+  1. **rs-sdk:**
+     - the `DispatchFence` trait and types, and `DispatchScope{wallet, origin, step}`, in a small module that
+       platform-wallet re-exports;
+     - `Sdk::with_dispatch_fence`;
+     - the hook inside `broadcast_with_retries`' closure, with per-attempt clamping and the nonce refresh on refusal
+       (L19).
+  2. **platform-wallet:**
+     - the fence-aware `SpvBroadcaster` with `DispatchContext` at every F1 site, and the SPV split (L18);
+     - `DapiBroadcaster`'s clamped retries;
+     - `register` with the recovery payload;
+     - the synchronous `abandon` and its drop guard owning the pin;
+     - the spawned cleanup with the token and pin kept on the in-memory row;
+     - the load-time pending-spend fence (L12) and `restore_tracked_lock` (L16);
+     - `proof_wait_started`, and `FallbackPolicy::Surface` (L17);
+     - the obligations L1–L19 with their tests.
 
-  With no fence installed, behaviour is unchanged.
+  With no fence installed, behaviour is unchanged. The PR is L (review Opus 6).
 - **Carriage:** the desktop carries it as a cherry-pick onto its pin branch (DEC-18), next to E0-11's carried branch.
-  The PR is opened only with pasta's go-ahead (B5), which this design asks for at its approval.
-- **Interim, until the pin carries it:**
-  - P1 and P2 ship (§13).
-  - Engine-owned hand-offs (`TxDraft`) can already hold a permit, taken around the whole library call and cut at H,
-    since the library's broadcast-and-wait is not split yet. That gives a correct but coarse MaybeSent for a send
-    still waiting for acceptance.
-  - Flows driven by the library keep DASHPAY's interim wording: "Locking stops new signatures; a send already signed
-    may still go out." E0-04 is not done for them until P4.
+  The PR is opened only with pasta's go-ahead (B5).
+- **Without it** the design runs in Mode B (§2a.3), which is a complete, closable design, not an interim.
 
 ## 12. Test plan
 
 All tests follow the vault race tests' style. They use a recording fake transport, and real-time stress runs use the
-abortable rendezvous from E0-03 `a79b3a9`.
+abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both modes) or **[A]** (Mode A only).
+
+**[A+B] Lock barrier and outcomes (rev1)**
+- **Barrier** (GPT 2):
+  - with zero permits, a delayed blocking pool, a gate wait longer than H, a dropped `lock_vault` caller and a
+    second lock, a `begin_lease` started after the freeze and before the gate waits for the barrier, and its
+    pre-lock grant then fails to redeem;
+  - no First under it after `lock_vault` returned;
+  - the background lease's re-creation and `rebind` wait the same way.
+- **Outcomes from history** (GPT 7): a registration with its funding `Sent` and its identity transition uncommitted,
+  locked during the proof wait, reports `Sent` (with the artifacts listed), never `Cancelled`. A rejected-after-commit
+  asset lock reports `WillBeSent`.
+- **Rebind** (GPT 6): smaller, zero, wrong-purpose and partial fresh grants; each purpose's remaining budget becomes
+  the minimum; charges and permits stand; a new 100-credit transition under a fresh 1-credit grant is refused.
+- **No double pay** (Opus 2):
+  - a top-up whose lock is `Ambiguous`, then a re-query that shows nothing: no retry offered until `DispatchResolved`;
+  - a `MaybeSent` registration before `FundingSent`: `discard_registration` refused until `dispatch_status` says
+    `DefinitelyUnsent`;
+  - a reload that refuses and cleans up a never-sent row emits `DispatchResolved(NotSent)` and the row becomes
+    retryable.
+- **Lock UX** (Opus 3):
+  - copy keyed on `funds_committed`;
+  - the "key held" lock state with an enabled Lock action;
+  - `Vault.lock()` on a `Locked` vault revokes an own-key lease;
+  - the lock screen shows before the drain ends.
+- **The synchronous FFI lock:** it returns after the gate; `LockProgress::Done` carries the report.
+- **The facade lease handle** (Opus 4): "Accept and pay" through `begin_flow` across `accept_request` and `prepare`,
+  with the Spend part used after a 90 s accept; the idle reaper ends an abandoned vault-key lease.
+- **QuickUnlock for `PlatformOp`:** within and just above the limits, and with a stale passphrase.
+
+**[A+B] Row-less attempts and step markers (rev1)**
+- **Concurrent holders** (GPT 1): O's First and R's Resend of the same bytes; O definitely rejected, the lock comes,
+  O repeats. That repeat is a Resend, nothing is released, and R's send is never reported Cancelled. When both are
+  definitely rejected the artifact settles unsent once and the inputs are selectable again.
+- **Resumable steps** (GPT 3), for each kill point of §7.6: the next process's identical signature is a Resend; a
+  different signature under a revoked lease reads MaybeSent.
+
+**[A] Power loss** (GPT 5), as a separate harness from the kill matrix: drop `wallet.sqlite`'s WAL tail after a
+`Dispatching` commit. Load restores the row from the payload, fences its inputs before a conflicting payment can
+select them, and resends; a withheld-then-released lock confirms once.
+
+**[A] Surfaced fallback** (GPT 4): a fake library whose step 2 gets an IS-proof rejection 20 s into the window
+returns `ChainLockFallbackRequired`. The engine parks at once, the key is dropped, and the continuation signs only
+under a new lease. In Mode B the same fake keeps the hidden wait; the key drops at `key_until`, and a signer
+`Locked` maps to Parked.
 
 **dw-vault (P1)**
 - `PlatformOp` caps:
@@ -1148,7 +1756,8 @@ abortable rendezvous from E0-03 `a79b3a9`.
   - an engine-built BIP44 spend over the remaining `Spend` budget is refused before signing ("a lease cannot sign a
     BIP44 spend above its cap");
   - a fenced Core First over the `Funding` budget is refused, with Revoked and cleanup;
-  - a row-less `NotSent` is refunded.
+  - a row-less artifact settled `DefinitelyUnsent` is refunded; one attempt's `NotSent` while another attempt runs
+    is not.
 - `DashPayCrypto` signs no transaction and no state transition: every hand-off purpose is refused, and the scope
   refuses signing (E0-03 tests stay).
 - Background lease:
@@ -1189,7 +1798,8 @@ abortable rendezvous from E0-03 `a79b3a9`.
 **Fence conformance (P2 against a fake library, P4 against platform-wallet)**. Each case runs for a Core transaction
 and for a state transition.
 - **Barrier 1:** a flow holding a released signature pauses before `admit`; `lock_vault` runs and returns; the flow
-  resumes. Nothing is recorded, it reports Cancelled, and the `Built` row is gone with its inputs released once.
+  resumes. Nothing is recorded, it reports Cancelled, and the `Built` row is gone with its inputs released once and
+  selectable again by a new build.
 - **Barrier 2:** the flow pauses after `admit` returned `First`, before the transport. `lock_vault` on another thread
   has not returned after 200 ms; the flow hands off once, and only then does `lock_vault` return. It reports Sent.
 - **Barrier 2 with a stalled transport:** `lock_vault` returns within `max(H, T_gate)`; the flow reports MaybeSent,
@@ -1206,8 +1816,9 @@ and for a state transition.
   by the acceptance bound keeps the key until the wait's own end, and a timeout from
   `create_funded_asset_lock_proof` drops it at once.
 - **A dropped build:** the build future is dropped after `track` and before `admit` decides. The drop guard
-  abandons, the spawned cleanup untracks the row and releases its inputs once, and nothing is recorded. The same
-  holds when the CAS winner's future is dropped right after its verdict.
+  abandons, the spawned cleanup untracks the row, releases its reservation once and settles its pin released, and
+  nothing is recorded. **A new build can select the same inputs at once** (review Opus 5). The same holds when the
+  CAS winner's future is dropped right after its verdict.
 - **Mutation build:** a fence that checks the lease outside J (check-then-act) fails barrier 2.
 
 **Dispatch-record cases (P4, asset locks through platform-wallet)**
@@ -1259,26 +1870,32 @@ and for a state transition.
 - Kill -9, restart, and check the outcome column. This is the base DP1-02's kill matrix grows from.
 
 **FFI and integration (P4)**
-- `Vault.lock()` is async in dw-ffi and both UI shells, and `LockReport` maps to the UI copy.
+- `Vault.lock()` stays synchronous in dw-ffi (the Swift shells are frozen); `LockProgress::Done(LockReport)` maps to
+  the UI copy, and the chosen stack binds the async variant in E0-13.
 - Regtest: a registration with lock during the IS wait gives MaybeSent or Sent, then a keyless park. Lock before the
   funding hand-off gives Cancelled with no transaction in the mempool.
 - Devnet (T2): DAPI blackholed during an identity create gives MaybeSent at H; the proof arrives later or not.
 
 ## 13. Phase plan
 
-| Phase | Content | Needs | Size | Done when |
-|---|---|---|---|---|
-| P0 | this design, design review (DEC-57) | — | — | review closed; open questions decided |
-| P1 | dw-vault: §3 (caps, `IdentityScan`, `authorize_set`, cap from token, `KeyHold`); m1-engine §2.2 updated | P0 | S | P1 tests green; second-agent review |
-| P2 | dw-engine: lease table (with `lock_gen`), background lease, `LeaseView` and events, async `lock_vault` and close steps, the revoking session methods and `vault_op`'s epoch check (H9), FFI async lock, `dispatch.sqlite` journal with its seeding, `EngineFence` (row-less set included) against a fake library harness | P1 | M | lease, journal and fence-conformance tests green, including the stress checker on the fake library; model check passes |
-| P3 | the platform PR (§11) and its tests; the cherry-pick on the dw pin branch | P0, B5 | M–L | PR open upstream; cherry-pick builds with dw; the PR's L-tests green |
-| P4 | wiring: install the fence on the manager and the SDK; scopes on every engine call site (§5.2, H7), PSBT through the fenced broadcaster; the catch-up at load (H6) in the bring-up; the dispatch-record cases, stress and kill matrix; DASHPAY §2.6 and ROADMAP updated | P2, P3, E0-05 (bring-up order, flow-task cancelation) | M | the E0-04 ROADMAP acceptance list (as amended by §15) green |
-| P5 | (if Q2 = yes) `TxDraft` leases for M1 sends; m1 contract and both shells updated | P4 | S | send flow tests updated; `send.cancelled_by_lock` |
+| Phase | Content | Mode | Needs | Size | Done when |
+|---|---|---|---|---|---|
+| P0 | this design, and its DEC-57 closure check | both | — | — | review closed |
+| P1 | dw-vault: §3 (caps, `IdentityScan`, `authorize_set`, cap from token, `KeyHold`, `epoch()`, `QuickUnlock` for `PlatformOp`); m1-engine §2.2 updated | both | P0 | S | P1 tests green; second-agent review |
+| P2a | dw-engine, mode-independent: lease table (barrier, `lock_gen`, rebind minimum, history), background lease, `LeaseView` and events, the lock coordinator, the synchronous FFI lock and its events, close steps, the revoking session methods and `vault_op`'s epoch check (H9); `dispatch.sqlite` with its step markers; the engine fence for engine-owned hand-offs (row-less attempts, tombstone, Spend charge bound to the txid, release and pin settling); `dispatch_status`, `DispatchResolved`, outcomes; the facade lease handle and §16's contract | both | P1, E0-08 fix round | L | the [A+B] tests green, the stress checker on the fake library included; model check passes |
+| P2b | Mode B wiring: call permits around every library write call (H13), step markers written under them, the worst-case funding bound, the catch-up's resume pass (H6 part 2, pin semantics), `TxDraft` coin control excluding tracked rows' outpoints, the Mode B copy | B (and the interim for A) | P2a, E0-05 | M | Mode B's acceptance list (§2a.4) green; **E0-04 can close here** if Q1 is declined or undecided |
+| P3 | the platform PR (§11) and its tests; the cherry-pick on the dw pin branch | A | P0, B5 | L | PR open upstream; cherry-pick builds with dw; the PR's L-tests green |
+| P4 | Mode A wiring: install the fence on the manager and the SDK; the journal's registered artifacts, seeding, payload restore and pending-spend fences (H6 part 1); the surfaced fallback; PSBT through the fenced broadcaster; the dispatch-record cases, power loss, stress and kill matrix at hand-off granularity | A | P2b, P3 | M | Mode A's acceptance list (§2a.4) green |
+| P5 | `TxDraft` leases for M1 sends, both the mixed and the finalized paths (DEC-65 Q2); m1 contract and both shells updated | both | P2a | S | send flow tests updated; `send.cancelled_by_lock` |
 
-P1 and P2 need no upstream change and can start as soon as the review closes. DP1-02 can build against P2's API and
-the fake library while P3 waits on B5.
+- **Sizes.** E0-04 as a whole is L–XL. ROADMAP's row is updated (§15).
+- **DP1-02** builds against P2a's API and the fake library at once, and closes against P2b (Mode B) or P4 (Mode A).
+- **Order of work.** P2b also serves as Mode A's interim, so it lands whatever pasta decides; P4 then replaces call
+  permits with per-artifact admission site by site.
 
 ## 14. Open questions
+
+DEC-65 accepted Q2–Q20 as recommended below. Q1 is still pasta's (B5). rev1 adds Q21–Q23.
 
 Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager's (DEC-22 practice) or the review's.
 
@@ -1301,27 +1918,87 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
 | Q15 | Shielded redrives (1.1) persist signed state transitions. | **Rule:** they become registered artifacts, keyed by ST hash, before shielded ships. The X-phase task adds `register` on their persist path. |
 | Q16 | A tracked row with no journal entry: Resend it (trust the library's `tracked_row` and assume pre-fence) or keep it unsent? | **Keep it unsent**, with a `Notice`. The seeding gives every real pre-fence row an entry, so a row without one is either a bug (a missed `register`) or a file restored by hand. Resending would reopen the r4 shape: a possible dispatch inferred from the call site. Keeping the row loses nothing, since platform-wallet tracks its proofs without a hand-off. |
 | Q17 | The catch-up at load (H6) and the re-reservation (L12) are new behaviour. dw had no catch-up at all, and the pin never reserves a loaded row's inputs again (F7). Make them part of E0-04, the re-reservation in the platform PR? | **Yes.** Without the catch-up, a row whose bytes never left (killed between the write and the enqueue) is never resent, and an `Unsent` row is never cleaned up. Without the re-reservation, another build can spend the inputs of a lock that may be on the wire. Both gaps exist at the pin today; E0-04 is where they first matter. |
-| Q18 | The row-less set is per process, not persisted. Enough? | **Yes** (§5.5). Row-less bytes are handed off only in the process that signed them, and a flow resumed later signs again and carries its own record of the earlier outcome. Persisting the set would add a journal write to every send for no case that needs it. |
+| Q18 | The row-less set is per process, not persisted. Enough? | **Yes** (§5.5). Row-less bytes are handed off only in the process that signed them. The steps a later process may sign again carry a durable write-ahead step marker instead (rev1, GPT 3, §7.6); the flow's own phase is not evidence. Persisting the whole set would add a journal write to every send for no case that needs it. rev1 also tracks attempts within the process (GPT 1). |
 | Q19 | Should a leased flow use the two-call split (`create_funded_asset_lock_proof`, then `FromExistingAssetLock`) everywhere, or only where an own key is held? | **Only for own-key registration and top-up** (§4.4), where the ChainLock fallback must be visible. Vault-key leases may use the library's one-call paths. Either way, never `build_asset_lock_transaction` for a hand-off. |
 | Q20 | `proof_wait_started` (L15) is a second, informational fence callback in the PR. Worth it, or accept the `finish + 300 s + A` floor? | **Add it.** It is one call at one site, and without it an own key outlives DASHPAY's window by up to the acceptance bound (65 s or more, F2). |
+| Q21 | `QuickUnlock` for `PlatformOp`: the credits limit is the spend limit × 1000 credits per duff (§3.7). One limit for both, or a separate setting? | **One limit.** It matches the user's mental model ("Touch ID up to X Dash"), and a separate setting would be a new Security row with no mobile counterpart. |
+| Q22 | Rebinding without a prompt on `Unlocked(Full)` (§4.3) even with "require authentication for every payment" on? | **Yes.** It is the remainder of an authority the user already approved, capped, and it removes the second prompt mobile wallets never show. |
+| Q23 | Auto lock: does a visible flow-progress screen count as activity? | **No** (§4.8). A long ChainLock wait must not keep the wallet unlocked; the flow parks and resumes after unlock. |
 
-## 15. Changes to other documents after the review
+## 15. Changes to other documents
 
+**Made in this branch (rev1):**
+- **DASHPAY §2.6 "Parking needs no aborted future"** and **ROADMAP DP1-02** now name the two-call split
+  (`create_funded_asset_lock_proof`, then `FromExistingAssetLock` once the row holds a proof) instead of the
+  build-only `build_asset_lock_transaction` (review Opus 8).
+- **UX-SPEC §4.1:** the fourth lock state, "Locked, key held by a flow", with its tooltip, and the Lock action
+  enabled in that state. **§4.13:** auto lock is `lock_vault`, and flow progress is not activity (review Opus 3,
+  14).
+
+**After the review closes:**
 - **DASHPAY §2.6:**
-  - replace the DRAFT bullet (from "Commit points" to the end of "Open issues") with a summary of §0, §5, §7 and §8
-    and a pointer here;
+  - replace the DRAFT bullet (from "Commit points" to the end of "Open issues") with a summary of §0, §2a, §5, §7 and
+    §8 and a pointer here;
   - correct the "re-dispatch" row of the commit-point table: dw has no launch catch-up until H6 (F6);
   - the spec check becomes `e0_04_design_model.py`;
-  - §3.3 gets `IdentityScan` and `authorize_set`;
+  - §3.3 gets `IdentityScan`, `authorize_set` and `QuickUnlock` for `PlatformOp`;
   - §3.4's store table gets `dispatch.sqlite`.
 - **ROADMAP E0-04:**
   - drop "(draft)";
   - "within H" becomes "within `max(H, T_gate)` of the call";
-  - replace the acceptance's dispatch-record list with §12's dispatch-record cases 1–7 and "two leases" with the
-    bound tests;
-  - add the phases of §13.
-- **m1-engine §2.1 and §2.2:** as §3.6, plus async `Vault.lock()` and `LockReport`.
-- **DECISIONS-PENDING B5:** name §11's PR content.
+  - the acceptance list becomes §2a.4's two lists;
+  - the size becomes L–XL;
+  - add the phases of §13;
+  - DP1-02 "Depends" names P2b or P4.
+- **m1-engine §2.1 and §2.2:** as §3.6, with `Vault.lock()` synchronous plus `LockProgress` and `LockReport`.
+- **m1-engine and m1-swift for DP3-01:** `send.cancelled` (§4.6).
+- **m4** (E0-08): §16.
+- **DECISIONS-PENDING B5:** name §11's PR content and say that Mode B is the "no" branch.
+
+## 16. E0-08 contract changes (m4-dashpay-engine, Contract-Version 2)
+
+Passed to the E0-08 fix round (review Opus 4). Against m4 at cf9ba8e:
+
+1. **A lease handle** (§4.7).
+   - Add `NetworkSession.begin_flow(wallet_id, flow: FlowKind, grants: Vec<String>) -> Result<String, PlatformError>`,
+     which returns a lease id, and `end_flow(id)`.
+   - Every call that takes `grant: String` accepts a lease id too: §1 "Grants" already allows this, and it now says
+     so. A lease id is accepted by any call of its wallet whose purpose it carries.
+   - The idle reaper ends a vault-key lease after 10 minutes with no call and no permit.
+   - "Accept and pay": one `authorize_set` prompt, one `begin_flow`, the id passed to `accept_request` and to
+     `TxDraft.prepare`.
+2. **Quotes say what to authorize.**
+   - `RegistrationQuote`, `TopUpQuote` and `WithdrawQuote` gain `grant: GrantRequest{max_duffs: u64, max_credits:
+     u64}`.
+   - Add `grant_request(action: WriteAction) -> GrantRequest` for `send_request`, `accept_request`, `register_name`,
+     `update_profile`, `set_private_details` and `enable_dashpay_keys`.
+   - The engine charges exactly what it quoted: the same `fee_bound` function, and the worst-case funding bound in
+     Mode B.
+3. **`RegistrationWait`** gains `Authorize`, for `NeedsGrant` or a budget shortfall on an unlocked vault ("Confirm to
+   finish"). `RegistrationStatus` gains `needs_grant: bool`, true while the row's lease is `Parked{ProofWaiting}`, so
+   the resume asks for a grant once the ChainLock proof is on the row.
+4. **Error mapping.**
+   - `lease.locked` → `platform.cancelled`.
+   - `LeaseError::Parked` and `NeedsGrant` → new `platform.needs_grant{purpose}`.
+   - A budget refusal → `platform.grant_exceeded{purpose, needed, remaining}`; today the code has no parameters.
+   - An unavailable or newer journal → `platform.storage`, with the notice.
+   - New: `platform.broadcast_pending` for `WillBeSent`: "will be sent when the network is back; never retry".
+5. **`holds_key`** = `LeaseView.own_key && state ∈ {Active, AwaitingProof}`. **`funds_committed`** = any registered
+   artifact of the flow (or, in Mode B, its funding call) that is not definitely unsent.
+6. **Retry and discard.**
+   - `discard_registration` is allowed only when its asset lock's `dispatch_status` is `DefinitelyUnsent`, or it has
+     none. The §4 retry rule for `broadcast_unknown` becomes "after `DispatchResolved(NotSent)` or a
+     `DefinitelyUnsent` status", not "after a re-query shows nothing was sent".
+   - Add `dispatch_status(wallet_id, artifact) -> DispatchStatus`.
+7. **Events.** `DispatchResolved{network, wallet_id, artifact, outcome: Sent | NotSent}`, `LeaseChanged` and
+   `LockProgress` join m4's event list.
+8. **Notices.** `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` join §6's `NoticeCode`
+   list, owned by E0-04.
+9. **Lock.** `Vault.lock()` stays synchronous and revokes leases even on a locked vault; `LockReport` arrives in
+   `LockProgress::Done` (§8.1).
+10. **Copy.** `holds_key`'s "Registration in progress — Lock to cancel" applies only while `!funds_committed`; after
+    it, "Funds locked — finishing. Lock stops it here; you'll finish after you unlock" (§4.6).
+11. **DP3-01.** `send.cancelled` joins m1's `SendError` for a contact payment that Lock refused (§4.6).
 
 ## Appendix A. Closure of DASHPAY §2.6's open-issues list
 
@@ -1354,7 +2031,7 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
     straddles a freeze is never inserted.
   - Model Part 2 covers all of this, including the creation race.
 - **m-1.** 128-bit random ids, wallet compared too (H5); the `lease-reuse` mutation.
-- **m-2.** Part 2 is a per-lease tick simulation with the freeze as an event; four wrong rules fail it.
+- **m-2.** Part 2 is a per-lease tick simulation with the freeze as an event; five wrong rules fail it.
 - **m-3.** The atomicity is stated in §10.1 and made checkable by the `split-*` variants.
 
 ### A.2 Nits

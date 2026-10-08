@@ -1,68 +1,68 @@
 #!/usr/bin/env python3
-"""Spec check for the E0-04 design (docs/design/E0-04-grants-leases.md).
+"""Spec check for the E0-04 design, rev1 (docs/design/E0-04-grants-leases.md).
 
 Run: python3 -I docs/design/checks/e0_04_design_model.py   (exit 0 = pass)
 
-It checks every safety and timing property the design claims, by exhaustive
-exploration, and runs each wrong rule the design rejects to show that the
-check catches it. It replaces e0_04_dispatch_model.py, e0_04_split_model.py
-and e0_04_mutations.py, which stay as the design's inputs.
+Within the state spaces below it checks the safety and timing properties of
+the design's section 10.2, by exhaustive exploration. It runs each wrong rule
+the design rejects, rev0's rules included, to show that the check catches it,
+and it replays the reproducing interleavings of review DW-E0-04-design r1 (GPT)
+under rev0's rule (a violation) and rev1's (none). It replaces
+e0_04_dispatch_model.py, e0_04_split_model.py and e0_04_mutations.py, which
+stay as the design's inputs. It is a model of the design's decisions, not a test
+of the code, and it does not cover what section 10.1 lists as out of scope.
 
 What is modelled, at the granularity of the design's atomic steps:
 
 - The fence's journal entry for one registered artifact (an asset lock):
-  on disk `Unsent`, `Dispatching` or `PreFence` (seeded when the journal
-  is created, for rows that predate it) or none, in memory also
-  `Committing`, `Ambiguous` and `Revoked`. Every
-  read-and-change of the in-memory entry is one step under the lease
-  table's mutex J; the durable writes are separate steps outside J.
-- The original flow O: register (durable Unsent), track the Built row and
-  reserve its inputs, flush the row, admit, write Dispatching, transport.
-  Its future may be dropped between track and admit (a drop guard
-  abandons), and it may hand the same bytes off again.
-- A resume R of the same row (platform-wallet's recovery) in the same
-  process; after a crash, R is the engine's catch-up at load (H6), which
-  first reserves a possibly-sent row's inputs again (L12).
-- K, the cleanup task the library spawns for the refusal's CAS winner; W,
-  a journal write whose admit future was dropped; B, another build that
-  may reserve inputs left free after a reload.
-- lock_vault L: freeze (revoke every lease, snapshot the permits), drain
-  (wait until each snapshotted permit is dropped or past its deadline),
-  return; or its future is dropped mid-drain.
-- A crash at any step, with every outcome of the write or transport call
-  in progress, followed by a reload (leases are per process, so dead).
+  on disk `Unsent`, `Dispatching` or `PreFence` (seeded for rows that predate
+  the fence), with the row's recovery payload, or none; in memory also
+  `Committing`, `Ambiguous` and `Revoked`. Every read-and-change of the
+  in-memory entry is one step under the lease table's mutex J; the durable
+  writes are separate steps outside J.
+- The original flow O: register (durable Unsent and payload), track the Built
+  row (reserving the inputs and pinning them in-broadcast), flush the row,
+  admit, write Dispatching, transport. Its future may be dropped between track
+  and admit (a drop guard abandons), and it may hand the same bytes off again.
+- A resume R of the same row in the same process; after a crash or a power
+  loss, R is the engine's catch-up at load (H6), which first restores a lost
+  row from its payload and fences a possibly-sent row's inputs (L12, L16).
+- Row-less artifacts: a state transition, a TxDraft send with inputs, a
+  second holder of the same bytes (review GPT 1), and a resumable step with its
+  durable write-ahead marker, across a crash, re-signed with identical or new
+  bytes (GPT 3).
+- K, the cleanup task the library spawns for the refusal's CAS winner; W, a
+  journal write whose admit future was dropped; B, another build that may
+  reserve inputs left free after a reload.
+- lock_vault L: freeze (revoke every lease, snapshot the permits), drain,
+  return with an outcome per flow judged from its history (GPT 7); or its
+  future is dropped mid-drain.
+- One crash, or one power loss (which may drop wallet.sqlite rows the FULL
+  journal kept, GPT 5), at any step, with every outcome of the write or
+  transport call in progress, followed by a reload.
 
-Part 1 explores seven scenarios and checks that no violation is reachable:
-`flow` (O, R and L interleaved), `flow+crash` (the same with one crash and
-a reload at any point), `restart` (a never-dispatched row found at load),
-`ambiguous` (a genuine possible dispatch, then the lock), `legacy` (a row
-written before the fence existed), `rowless` (a row-less First, a repeat
-of the same bytes and the lock) and `unknown` (a row with no entry, which
-must be neither sent nor cleaned up). It replays review DW-E0-03 r4 M1's
-counterexample under the r3 rule (a violation) and shows the design does
-not admit it, replays the M-A split-step trace's design counterpart, and
-replays the acceptance tests' barriers 1 and 2.
+The oracle judges every definite verdict against the immutable send history,
+the attempts still running and the journal, never against the bookkeeping
+under test (GPT 8).
 
-Part 2 is a tick-by-tick simulation of the lock bound with up to three
-leases, each with its own admit time, record-write time and transport
-time, and the freeze as an event. It checks that lock_vault returns within
-max(H, vault gate wait) of its call however many leases there are, that no
-First is admitted once lock_vault was called, and that a second lock_vault
-during a drain returns within the same bound. The rejected timing rules
-(sequential revocation, a deadline that starts at the transport call, a
-host that waits for the library, revocation deferred to the end of the
-drain) each fail it. It also checks that a lease whose creation began
-before the call is never inserted after it (the lock_gen rule).
+Part 1 explores twelve scenarios and checks that no violation is reachable.
+It replays review DW-E0-03 r4 M1's counterexample under the r3 rule (a
+violation) and shows the design does not admit it; replays the M-A split-step
+trace's design counterpart; replays the acceptance tests' barriers 1 and 2;
+and replays GPT r1's reproductions of majors 1, 3, 5 and 7.
 
-Part 3 explores the lock order between the permits, the wallet-manager
-guard G and the drain: the draft's FIFO permit lock deadlocks when a task
-asks for a permit while holding G; the design's non-blocking admit and
-host-side deadline cannot; and an admit that took G itself would deadlock
-a caller holding G behind a queued writer, which is why the design's
-admit takes no library lock.
+Part 2 is a tick-by-tick simulation of the lock bound with up to three leases
+and the freeze as an event; five rejected timing rules fail it. It also checks
+the lease-creation race (lock_gen), the window between the freeze and the
+vault gate (GPT 2) and the rebind cap (GPT 6), each under rev0 and rev1.
 
-This is a model of the design's decisions, not a test of the code, which
-does not exist yet.
+Part 3 explores the lock order between the permits, the wallet-manager guard
+G and the drain.
+
+Part 4 explores an own-key registration's key hold against the ChainLock
+fallback (GPT 4, Opus 9) under rev0, Mode A (surfaced fallback) and Mode B
+(hidden fallback, bounded by key_until): Mode A has no finding, Mode B exactly
+the documented residual.
 """
 
 from __future__ import annotations
@@ -103,6 +103,17 @@ class S:
     rowless: bool = False  # the artifact has no row (a TxDraft send, an ST)
     rl_admitted: bool = False  # a row-less First was admitted in this process
     rl_out: bool = False  # a hand-off of those row-less bytes may have let them out
+    rl_active: frozenset = frozenset()  # actors with a row-less attempt still running
+    rl_inputs: bool = False  # the row-less artifact is a Core send with inputs
+    rl_revoked: bool = False  # its inputs were released: tombstoned for this process
+    resumable: bool = False  # a row-less step a later process may sign again (GPT 3)
+    resigned: bool = False  # the resumed flow signs different bytes for the step
+    step_marked: bool = False  # after a reload: the step's write-ahead marker exists
+    lease_proc: int = 0  # the process the lease belongs to
+    power: int = 0  # power losses still allowed (separate from crashes, GPT 5)
+    payload: bool = False  # the journal holds the row's recovery payload (GPT 5)
+    lock_outcome: Optional[str] = None  # what lock_vault's report says for O's flow
+    pinned: bool = False  # the build's in-broadcast fence on the inputs
     pre_running: frozenset = frozenset()  # Firsts running at the freeze
     repeats: int = 0  # times O may hand the same bytes off again
     k: str = "none"  # a spawned cleanup task, with the verdict it settles
@@ -157,9 +168,9 @@ def lease_admits(s: S, m: frozenset) -> bool:
 def grant(s: S, who: str) -> S:
     """A First permit, granted in a J step: the commit."""
     s = replace(s, permits=s.permits | {who}, expired=s.expired - {who}, committed=True)
-    if s.proc == 0 and s.lock != "idle":
+    if s.lock not in ("idle", "gone"):
         s = flag(s, "late_commit")
-    if s.proc != 0:
+    if s.lease_proc != s.proc:
         s = flag(s, "foreign_commit")
     return s
 
@@ -189,7 +200,6 @@ def send(s: S, who: str) -> S:
     before_lock = s.committed and "late_commit" not in s.flags
     if (
         not s.sends
-        and s.proc == 0
         and s.lock in ("returned", "dropped")
         and s.j_disk != P
         and not before_lock
@@ -206,8 +216,16 @@ def refuse(s: S, who: str, m: frozenset) -> S:
     if "r3" in m:
         return put(s, who, "cleanup")  # the r3 rule writes no record
     if s.rowless:
-        # The engine releases the inputs of a refused TxDraft send.
-        return spawn_cleanup(put(s, who, "done", verdict), "rowless")
+        # A Core send's refusal releases its inputs once, by the caller whose
+        # compare-and-set tombstones the id; a state transition has nothing
+        # to release. A resumed step whose marker exists may have been sent
+        # by an earlier process: MaybeSent, never Cancelled (H10).
+        if s.step_marked and "no-step-marker" not in m:
+            verdict = "MaybeSent" if who == "O" else None
+        n = put(s, who, "done", verdict)
+        if s.rl_inputs and not s.rl_revoked:
+            return spawn_cleanup(replace(n, rl_revoked=True), "rowless")
+        return n
     if s.mir == U or (s.mir == P and "legacy-unsent" in m):
         n = replace(s, mir=T)
         if "inline-cleanup" in m:
@@ -235,13 +253,20 @@ def admit(s: S, who: str, m: frozenset) -> Iterator[tuple]:
 
 def decide(s: S, who: str, seen: Optional[str], m: frozenset) -> Iterator[tuple]:
     if seen is None and s.rowless:
-        if s.rl_admitted and "rowless-no-memory" not in m:
+        if s.rl_revoked and "rowless-rev0" not in m:
+            yield "row-less Revoked: refused", refuse(s, who, m)
+        elif s.rl_admitted and "rowless-no-memory" not in m:
             yield "row-less, admitted before in this process: Resend", to_transport(
-                s, who, False
+                replace(s, rl_active=s.rl_active | {who}), who, False
             )
         elif lease_admits(s, m):
-            n = grant(replace(s, rl_admitted=True), who)
-            yield "row-less First: permit", to_transport(n, who, True, m)
+            n = replace(s, rl_admitted=True, rl_active=s.rl_active | {who})
+            if s.resumable and "no-step-marker" not in m:
+                # The durable write-ahead marker is the commit: written, like
+                # Dispatching, before any transport call (GPT 3).
+                yield "row-less step First: write-ahead marker and permit", start_commit(n, who, m)
+            else:
+                yield "row-less First: permit", to_transport(grant(n, who), who, True, m)
         else:
             yield "row-less First refused", refuse(s, who, m)
         return
@@ -266,7 +291,7 @@ def decide(s: S, who: str, seen: Optional[str], m: frozenset) -> Iterator[tuple]
         else:
             yield "Dispatching: Resend", to_transport(s, who, False)
     elif seen == C:
-        yield "commit in progress elsewhere: Deferred after H", put(
+        yield "commit in progress elsewhere: Deferred", put(
             s, who, "done", "MaybeSent"
         )
     elif seen == A:
@@ -337,18 +362,11 @@ def transport_steps(s: S, who: str, permit: bool, m: frozenset) -> Iterator[tupl
     drop = s.permits - {who}
     if s.rowless:
         out = replace(s, rl_out=True)
+        done = replace(out, rl_active=s.rl_active - {who})
         yield "transport returns: sent", put(
-            replace(send(out, who), permits=drop), who, "done", "Sent"
+            replace(send(done, who), permits=drop), who, "done", "Sent"
         )
-        # A definite rejection: these bytes did not leave in this call. The
-        # fence forgets the id (and refunds) unless an earlier hand-off of
-        # them may have let them out.
-        n = replace(s, permits=drop)
-        if not s.rl_out:
-            n = replace(n, tcalled=False, committed=False)
-            if "rowless-keep-on-notsent" not in m:
-                n = replace(n, rl_admitted=False)
-        yield "transport rejects: definitely not sent", put(n, who, "done", "NotSent" if not s.rl_out else "MaybeSent")
+        yield from rowless_rejected(s, who, drop, m)
         if permit and who not in s.expired:
             yield "permit deadline passes: MaybeSent", put(
                 replace(out, permits=drop, expired=s.expired | {who}), who, "late", "MaybeSent"
@@ -370,11 +388,55 @@ def transport_steps(s: S, who: str, permit: bool, m: frozenset) -> Iterator[tupl
         yield "resend times out: MaybeSent", put(s, who, "late", "MaybeSent")
 
 
+def rowless_rejected(s: S, who: str, drop: frozenset, m: frozenset) -> Iterator[tuple]:
+    """A definite rejection of one row-less attempt: its bytes did not leave
+    in this call. Under J the fence settles the artifact as definitely
+    unsent (forget the id, refund, and let the engine release the inputs)
+    only if no hand-off of these bytes may have let them out and no other
+    attempt is still running (review GPT 1). Otherwise the attempt reports
+    MaybeSent and nothing is released."""
+    n = replace(s, permits=drop, rl_active=s.rl_active - {who})
+    label = "transport rejects: definitely not sent"
+    if s.resumable and s.j_disk == D:
+        # Its durable marker is a commit, as for a registered artifact.
+        yield "transport rejects: not sent, marker kept", put(n, who, "done", "MaybeSent")
+        return
+    if "forget-rowless-history" in m:
+        # GPT r1's escaping mutation: a rejected repeat forgets every earlier
+        # hand-off and reports NotSent.
+        n = replace(n, rl_admitted=False, rl_out=False, committed=False)
+        yield label, put(n, who, "done", "NotSent")
+        return
+    if "rowless-rev0" in m:
+        # rev0: forget on this attempt's own rejection unless an earlier one
+        # finished possibly-out; concurrent attempts are not counted.
+        if not s.rl_out:
+            n = replace(n, committed=False, rl_admitted=False)
+            yield label, put(n, who, "done", "NotSent")
+        else:
+            yield label, put(n, who, "done", "MaybeSent")
+        return
+    unsent = not s.rl_out and not (s.rl_active - {who})
+    if unsent:
+        n = replace(n, committed=False)
+        if "rowless-keep-on-notsent" not in m:
+            n = replace(n, rl_admitted=False)
+        # The aggregate is definitely unsent: for a Core send the engine
+        # releases the draft's inputs (owner-guarded) and its pin.
+        n = put(n, who, "done", "NotSent")
+        yield label, spawn_cleanup(replace(n, rl_revoked=True), "rowless") if s.rl_inputs else n
+    else:
+        yield label, put(n, who, "done", "MaybeSent")
+
+
 def cleaned_up(s: S, m: frozenset) -> list:
     """Untrack the row and release the build's reservation (owner-guarded):
     the states with the row's removal flushed, and not yet flushed."""
     base = replace(
         s, row_mem=False, reserved=False, cleaned=True,
+        # Settle the in-broadcast pin released (review Opus 5); the rev0
+        # cleanup left it pending, so the inputs stayed unselectable.
+        pinned=s.pinned and "pin-left-pending" in m,
         releases=s.releases + (1 if s.reserved else 0),
         cleanups=s.cleanups + 1,
     )
@@ -405,13 +467,16 @@ def cleanup_steps(s: S, who: str, verdict: str, m: frozenset) -> Iterator[tuple]
 def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
     st = actor(s, who)
     if who == "O" and st == "start":
+        # The entry carries the row's recovery payload (signed bytes, input
+        # outpoints, funding metadata), written in the same FULL transaction.
         yield "register (journal Unsent, durable)", replace(
-            s, o="track", j_disk=U, mir=U
+            s, o="track", j_disk=U, mir=U, payload="no-payload" not in m
         )
         yield "register fails: nothing tracked", replace(s, o="done", o_verdict="Failed")
     elif who == "O" and st == "track":
+        # The build holds a key-wallet reservation and an in-broadcast pin.
         yield "track Built, reserve inputs", replace(
-            s, o="flush", row_mem=True, reserved=True
+            s, o="flush", row_mem=True, reserved=True, pinned=True
         )
     elif who == "R" and st == "idle":
         if s.row_mem:
@@ -469,8 +534,9 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
     elif st == "resend":
         yield from transport_steps(s, who, False, m)
     elif st == "late":
-        yield "bytes leave late", put(send(s, who), who, "done")
-        yield "bytes never leave", put(s, who, "done")
+        end = replace(s, rl_active=s.rl_active - {who})
+        yield "bytes leave late", put(send(end, who), who, "done")
+        yield "bytes never leave", put(end, who, "done")
     elif st == "cleanup":
         yield from cleanup_steps(s, who, "Cancelled" if who == "O" else "Refused", m)
     if who == "O" and st in ("flush", "admit") and not s.rowless:
@@ -484,7 +550,10 @@ def flow_steps(s: S, who: str, m: frozenset) -> Iterator[tuple]:
             )
         else:
             yield "build future dropped: entry not Unsent, keep", replace(s, o="done")
-    if who == "O" and st == "done" and s.repeats > 0 and s.o_verdict in ("Sent", "MaybeSent", "NotSent"):
+    if (
+        who == "O" and st == "done" and s.repeats > 0 and not s.cleaned and s.k == "none"
+        and s.o_verdict in ("Sent", "MaybeSent", "NotSent")
+    ):
         # A new call: its verdict replaces the earlier one.
         yield "hand the same bytes off again", replace(
             s, o="admit", repeats=s.repeats - 1, o_verdict=None
@@ -511,7 +580,10 @@ def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
             if actor(s, x) in ("commit", "transport") and x not in s.expired
         }
         if not held or "no-drain-wait" in m:
-            n = replace(s, lock="returned", snap=frozenset(), pre_running=frozenset())
+            n = replace(
+                s, lock="returned", snap=frozenset(), pre_running=frozenset(),
+                lock_outcome=lock_outcome(s, m),
+            )
             if running:
                 n = flag(n, "early_return")
             if "revoke-in-drain" in m and n.lease == "live":
@@ -523,25 +595,83 @@ def lock_steps(s: S, m: frozenset) -> Iterator[tuple]:
 DROP_LOCK = "lock_vault future dropped mid-drain"
 
 
+def lock_outcome(s: S, m: frozenset) -> str:
+    """What the lock report says for O's flow when the drain ends."""
+    if "snapshot-outcome" in m:
+        # rev0 §8.4, literally: Cancelled when the flow had nothing in flight.
+        return "MaybeSent" if "O" in s.pre_running else "Cancelled"
+    # rev1: from the flow's monotone dispatch history (GPT 7).
+    if s.sends:
+        return "Sent"
+    if s.mir in (D, P) and s.row_mem:
+        return "WillBeSent"
+    if may_send(s) or s.committed:
+        return "MaybeSent"
+    return "Cancelled"
+
+
 def crash_steps(s: S, m: frozenset) -> Iterator[tuple]:
-    if s.proc != 0 or s.crashes == 0:
+    if s.proc != 0:
         return
     if s.rowless:
+        if s.resumable and s.crashes:
+            yield from resumable_reload(s, m)
         return
+    if s.crashes:
+        yield from reload_steps(s, m, power=False)
+    if s.power:
+        yield from reload_steps(s, m, power=True)
+
+
+def resumable_reload(s: S, m: frozenset) -> Iterator[tuple]:
+    """A crash during a resumable row-less step; the flow resumes in the next
+    process under a new lease and signs the step again, identical bytes or
+    (resigned) different ones; a lock may come there too."""
     writing = "commit" in (s.o, s.r) or "retry" in (s.o, s.r) or s.w == "write"
     j_opts = sorted({s.j_disk, D} if writing else {s.j_disk}, key=str)
     flying = [x for x in ("O", "R") if actor(s, x) in ("transport", "resend", "late")]
     send_opts = [s.sends] + [s.sends + ((x, 0),) for x in flying]
     for j, snd in itertools.product(j_opts, send_opts):
-        yield f"crash and reload (journal {j}, {len(snd)} sends)", replace(
+        yield f"crash; the flow resumes (marker {j}, {len(snd)} sends)", replace(
+            s, proc=1, j_disk=j, mir=None if s.resigned else j,
+            step_marked=s.resigned and j == D, sends=snd,
+            lease="live", lease_proc=1, lock="idle", snap=frozenset(),
+            permits=frozenset(), pending_write=False, o="admit", o_verdict=None,
+            r="done", w="none", k="none", crashes=s.crashes - 1, cleanups=0,
+            expired=frozenset(), rl_admitted=False, rl_active=frozenset(),
+            # A durable marker is a commit made before anything in this
+            # process, the lock included.
+            rl_out=False, repeats=0, committed=j == D, lock_outcome=None,
+        )
+
+
+def reload_steps(s: S, m: frozenset, power: bool) -> Iterator[tuple]:
+    writing = "commit" in (s.o, s.r) or "retry" in (s.o, s.r) or s.w == "write"
+    j_opts = sorted({s.j_disk, D} if writing else {s.j_disk}, key=str)
+    flying = [x for x in ("O", "R") if actor(s, x) in ("transport", "resend", "late")]
+    send_opts = [s.sends] + [s.sends + ((x, 0),) for x in flying]
+    # A power loss can lose wallet.sqlite rows (synchronous=NORMAL, Q11); the
+    # FULL journal keeps what it acknowledged.
+    row_opts = sorted({s.row_disk, False}) if power else [s.row_disk]
+    kind = "power loss" if power else "crash"
+    for j, snd, row in itertools.product(j_opts, send_opts, row_opts):
+        restore = (
+            not row and j in (D, P) and s.payload and "no-payload" not in m
+        )
+        row = row or restore
+        held = row and j in (D, P) and "no-rereserve" not in m
+        yield f"{kind} and reload (journal {j}, {len(snd)} sends, row {row})", replace(
             s,
-            proc=1, j_disk=j, mir=j, sends=snd,
+            proc=1, j_disk=j, mir=j, sends=snd, row_disk=row,
             lease="live" if "lease-reuse" in m else "dead",
             lock="gone", snap=frozenset(), permits=frozenset(),
-            pending_write=False, row_mem=s.row_disk,
-            # The catch-up at load (H6) re-reserves a possibly-sent row (L12).
-            reserved=s.row_disk and j in (D, P) and "no-rereserve" not in m,
-            o="gone", r="idle", w="none", k="none", crashes=s.crashes - 1,
+            pending_write=False, row_mem=row,
+            # The catch-up at load (H6): a possibly-sent entry gets its row
+            # back from the journal's payload if wallet.sqlite lost it (GPT
+            # 5), and its inputs a pending-spend fence (L12).
+            reserved=held, pinned=held,
+            o="gone", r="idle", w="none", k="none",
+            crashes=s.crashes - (0 if power else 1), power=s.power - (1 if power else 0),
             cleanups=0, expired=frozenset(),
         )
 
@@ -568,7 +698,7 @@ def steps(s: S, m: frozenset, with_crash: bool = True) -> Iterator[tuple]:
         yield "W: queued D write lands", replace(
             s, pending_write=False, j_disk=D, mir=D if s.mir == C else s.mir
         )
-    if s.proc == 1 and not s.foreign and not s.reserved and s.row_mem and not s.rowless:
+    if s.proc == 1 and not s.foreign and not s.reserved and not s.pinned and s.row_mem and not s.rowless:
         # The pin does not re-reserve a loaded row's inputs, so a new build
         # may take them.
         yield "B: another build reserves the row's inputs", replace(s, foreign=True)
@@ -587,10 +717,17 @@ def all_done(s: S) -> bool:
     )
 
 
+def in_flight(s: S) -> bool:
+    return any(actor(s, x) in ("transport", "resend", "late") for x in ("O", "R"))
+
+
 def may_send(s: S) -> bool:
-    """The artifact went out or can still go out (now, or after a reload)."""
+    """The artifact went out or can still go out (now, or after a reload).
+    Judged from the immutable send history, the attempts still running and
+    the journal, never from the bookkeeping under test (review GPT 8)."""
     return (
-        s.tcalled or s.mir in (C, D, A, P) or s.j_disk in (D, P) or s.pending_write
+        bool(s.sends) or in_flight(s) or s.mir in (C, D, A, P)
+        or s.j_disk in (D, P) or s.pending_write
     )
 
 
@@ -608,9 +745,14 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
         out.append("an artifact both Revoked and Dispatching")
     if scenario == "unknown" and s.cleaned:
         out.append("a row of unknown provenance cleaned up")
-    if s.proc == 1 and s.row_mem and s.mir in (D, P) and not s.reserved:
+    if s.proc == 1 and not s.rowless and s.j_disk in (D, P) and not (s.reserved and s.pinned):
+        # With or without its wallet.sqlite row (GPT 5).
         out.append("inputs of a possibly-sent row left selectable after load")
+    if s.lock_outcome == "Cancelled" and may_send(s):
+        out.append("the lock report says Cancelled for a possibly-sent flow")
     if all_done(s):
+        if s.cleaned and (s.reserved or s.pinned) and not may_send(s):
+            out.append("inputs of a definitely-unsent artifact left unselectable")
         if (
             s.j_disk not in (D, P)
             and s.mir in (U, T)
@@ -620,6 +762,11 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
             out.append("a never-dispatched row left reserved")
         if scenario in ("ambiguous", "legacy") and not s.r_tcalled:
             out.append("a genuine possible dispatch was not resent")
+        if (
+            scenario in ("flow+crash", "flow+power") and s.proc == 1
+            and s.j_disk == D and not s.r_tcalled
+        ):
+            out.append("a genuine possible dispatch was not resent")
     elif not any(lab != "L: " + DROP_LOCK for lab, _ in steps(s, m, with_crash=False)):
         out.append("deadlock")
     return out
@@ -627,11 +774,16 @@ def violations(s: S, scenario: str, m: frozenset) -> list:
 
 def scenarios() -> dict:
     flow = S()
-    built = S(j_disk=U, mir=U, row_disk=True, row_mem=True, reserved=True)
+    built = S(j_disk=U, mir=U, row_disk=True, row_mem=True, reserved=True, pinned=True)
     return {
         "flow": flow,
         "flow+crash": replace(flow, crashes=1),
-        "restart": replace(built, proc=1, lease="dead", lock="gone", o="absent"),
+        # A power loss instead: wallet.sqlite may lose rows the FULL journal
+        # kept (GPT 5).
+        "flow+power": replace(flow, power=1),
+        "restart": replace(
+            built, proc=1, lease="dead", lock="gone", o="absent", reserved=False, pinned=False
+        ),
         "ambiguous": replace(
             built, j_disk=D, mir=D, committed=True, tcalled=True,
             lease="revoked", lock="returned", o="late", o_verdict="MaybeSent",
@@ -645,12 +797,31 @@ def scenarios() -> dict:
         ),
         # A row with no entry at all: an old copy of wallet.sqlite restored
         # by hand, or a library that skipped register. Neither send nor clean.
-        # A row-less send (TxDraft, a state transition): its First, a
-        # repeat of the same bytes, and the lock.
-        "rowless": S(rowless=True, o="admit", r="done", reserved=True, repeats=1),
+        # A row-less state transition: its First, a repeat of the same bytes
+        # (an identical re-signature, F10) and the lock.
+        "rowless": S(rowless=True, o="admit", r="done", repeats=1),
+        # A resumable row-less step (an identity transition from an existing
+        # lock): a crash, then the flow signs the identical bytes again in the
+        # next process, where a lock may win (GPT 3).
+        "rowless-resume": S(rowless=True, resumable=True, o="admit", r="done", crashes=1),
+        # The same, re-signed into different bytes for the same step.
+        "rowless-resigned": S(
+            rowless=True, resumable=True, resigned=True, o="admit", r="done", crashes=1
+        ),
+        # A row-less Core send (TxDraft) with reserved and pinned inputs.
+        "rowless-core": S(
+            rowless=True, rl_inputs=True, o="admit", r="done", reserved=True,
+            pinned=True, repeats=1,
+        ),
+        # The same, with an independent caller R handing off the identical
+        # bytes concurrently (review GPT 1).
+        "rowless-concurrent": S(
+            rowless=True, rl_inputs=True, o="admit", r="admit", reserved=True,
+            pinned=True, repeats=1,
+        ),
         "unknown": replace(
             built, proc=1, j_disk=None, mir=None, lease="dead", lock="gone",
-            o="absent",
+            o="absent", reserved=False, pinned=False,
         ),
     }
 
@@ -743,6 +914,43 @@ BARRIER_2_STALL = BUILT + [
     "O: bytes leave late",
 ]
 
+# Review DW-E0-04 r1 (GPT), majors 1, 3, 5 and 7: the reviewer's reproducing
+# interleavings, with the rev0 rule each one breaks. Under that rule the
+# trace is admitted and ends in a violation; under rev1 it is not admitted
+# (and the scenario explores clean, above).
+GPT_R1_REPLAYS = [
+    ("GPT 1: concurrent row-less resend after Cancelled", "rowless-concurrent", "rowless-rev0", [
+        "O: row-less First: permit",
+        "R: row-less, admitted before in this process: Resend",
+        "O: transport rejects: definitely not sent",
+        "L: lock_vault called: freeze",
+        "L: drain done: lock_vault returns",
+        "O: hand the same bytes off again",
+        "O: row-less First refused",
+        "K: cleanup task: row removed, inputs released; removal flushed",
+        "R: transport returns: sent",
+    ]),
+    ("GPT 3: a resumable row-less step without a write-ahead marker", "rowless-resume", "no-step-marker", [
+        "O: row-less First: permit",
+        "crash; the flow resumes (marker None, 1 sends)",
+        "L: lock_vault called: freeze",
+        "O: row-less First refused",
+    ]),
+    ("GPT 5: a Dispatching orphan after a power loss", "flow+power", "no-payload", BUILT + [
+        "O: First: commit and permit",
+        "O: D write ok: hand off under the permit",
+        "power loss and reload (journal Dispatching, 0 sends, row False)",
+    ]),
+    ("GPT 7: an empty permit snapshot reported as Cancelled", "flow", "snapshot-outcome", BUILT + [
+        "O: First: commit and permit",
+        "O: D write ok: hand off under the permit",
+        "O: transport returns: sent",
+        "L: lock_vault called: freeze",
+        "L: drain done: lock_vault returns",
+    ]),
+]
+
+
 # Each wrong rule the design rejects, and what it stands for.
 MUTATIONS = {
     "r3": "the r3 rule: kind from the call path, pin's claim exclusion",
@@ -768,6 +976,12 @@ MUTATIONS = {
     "every-refuser-cleans": "every refused caller cleans up, not just the CAS winner",
     "permit-ends-at-first": "the permit is dropped when the transport call starts",
     "rowless-keep-on-notsent": "a row-less id stays admitted after a definite not-sent",
+    "forget-rowless-history": "a rejected row-less repeat forgets earlier hand-offs (GPT r1)",
+    "rowless-rev0": "rev0: a row-less id is forgotten on one attempt's rejection (GPT 1)",
+    "pin-left-pending": "rev0: the cleanup leaves the in-broadcast pin pending (Opus 5)",
+    "snapshot-outcome": "rev0: the lock report says Cancelled for a flow with nothing in flight (GPT 7)",
+    "no-step-marker": "rev0: a resumable row-less step has no write-ahead marker (GPT 3)",
+    "no-payload": "rev0: the journal keeps no recovery payload for a lost row (GPT 5)",
 }
 
 
@@ -790,6 +1004,7 @@ def part1() -> bool:
         check(not found, f"design, scenario '{name}': no violation ({n} states)")
 
     sc = scenarios()
+    sc_all = sc
     end = replay(sc["flow"], R4_TRACE_R3, frozenset({"r3"}))
     check(
         end is not None
@@ -836,6 +1051,17 @@ def part1() -> bool:
         "barrier 2, stalled transport: lock_vault returns at the deadline, "
         "MaybeSent, late bytes allowed",
     )
+
+    print("       review DW-E0-04 r1 (GPT) reproductions, rev0 rule vs rev1:")
+    for name, sc, mut, tr in GPT_R1_REPLAYS:
+        init = sc_all[sc]
+        r0 = replay(init, tr, frozenset({mut}))
+        bad = r0 is not None and bool(violations(r0, sc, frozenset({mut})))
+        r1 = replay(init, tr, design)
+        fixed = r1 is None or not violations(r1, sc, design)
+        if r0 is not None:
+            print(f"         {name}: rev0 -> {violations(r0, sc, frozenset({mut}))}")
+        check(bad and fixed, f"{name}: a violation under rev0's rule, none under rev1's")
 
     print("       mutations (each must be caught):")
     for mut, what in MUTATIONS.items():
@@ -972,6 +1198,53 @@ def creation_race(rule: str) -> Optional[tuple]:
     return None
 
 
+def gate_window(rule: str) -> Optional[tuple]:
+    """Review GPT 2. lock_vault is called at tick 0: its freeze revokes every
+    lease in the table, and its vault gate, run on the blocking pool, ends
+    the vault epoch (and with it every grant issued before) at tick g, which
+    may be later than H. No permit is in flight, so the drain is empty and
+    lock_vault returns at max(0, g). A grant G was issued before the call. A
+    creator begins at tick b >= 0, after the freeze, so lock_gen does not
+    stop it: it redeems G at the tick it starts, inserts, signs, and its
+    flow tries a First at tick a. Under rev0 the creator waits only for
+    pre-freeze permits (none); under rev1 it waits for the table's lock
+    barrier, which ends when both the gate and the drain have.
+    Returns the first (g, b, a) at which a First under G's authority is
+    admitted after lock_vault returned."""
+    H = 4
+    for g in range(0, H + 3):
+        ret = g
+        for b in range(0, H + 3):
+            start = b if rule == "rev0" else max(b, g)
+            if start >= g:
+                continue  # G died with the epoch the gate ended: nothing redeems it
+            for a in range(start, 3 * H):
+                if a >= ret:
+                    return (g, b, a)
+    return None
+
+
+def rebind_cap(rule: str) -> Optional[tuple]:
+    """Review GPT 6. A lease has a Credits cap of 1000 with `spent` charged.
+    It moves to NeedsGrant and is rebound with a fresh grant capping
+    credits at `fresh`. Under rev0 the lease keeps its old remaining budget
+    (and the vault issues PlatformIdentity for any nonzero cap); under rev1
+    the remaining budget becomes min(old remaining, fresh) and the charges
+    already made stand. Returns the first (spent, fresh, cost) at which a
+    newly signed transition costing more than the fresh grant is admitted."""
+    for spent in (0, 400, 1000):
+        for fresh in (0, 1, 500, 2000):
+            for cost in (1, 100, 600, 1000):
+                remaining = 1000 - spent
+                if rule == "rev0":
+                    allowed = remaining if fresh > 0 else 0
+                else:
+                    allowed = min(remaining, fresh)
+                if cost <= allowed and cost > fresh:
+                    return (spent, fresh, cost)
+    return None
+
+
 def part2() -> bool:
     ok = True
 
@@ -1038,6 +1311,21 @@ def part2() -> bool:
         for c in two for k in range(0, H + 1)
     )
     check(w2 <= H, f"a second lock_vault during the drain ends within H of the first call (worst {w2})")
+    g0, g1 = gate_window("rev0"), gate_window("rev1")
+    check(
+        g0 is not None and g1 is None,
+        f"GPT 2: a lease created after the freeze but before the vault gate ends: "
+        f"under rev0 it admits a First after lock_vault returned (gate, begin, "
+        f"First at {g0}); under rev1 it waits for the lock barrier, and the "
+        f"pre-lock grant is dead by then",
+    )
+    r0, r1 = rebind_cap("rev0"), rebind_cap("rev1")
+    check(
+        r0 is not None and r1 is None,
+        f"GPT 6: rebind under a smaller fresh grant: under rev0 a newly signed "
+        f"transition above the fresh cap is admitted (spent, fresh, cost {r0}); "
+        f"under rev1 the remaining budget is the minimum",
+    )
     bad = creation_race("no-gen-check")
     check(
         creation_race("design") is None and bad is not None,
@@ -1219,10 +1507,111 @@ def part3() -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Part 4: an own-key registration and the ChainLock fallback (GPT 4, Opus 9)
+# ---------------------------------------------------------------------------
+
+
+def keyhold_steps(st: tuple, rule: str) -> Iterator[tuple]:
+    """One own-key registration after its funding: step 1
+    (create_funded_asset_lock_proof) waits for an InstantSend proof; step 2
+    (FromExistingAssetLock) signs and submits the identity transition with
+    the lease's held key. `rule`: `rev0` (the pin: step 2 falls back to the
+    ChainLock wait inside the library on an IS-proof rejection, and a
+    signer `Locked` afterwards is a failed registration); `modeA` (the
+    platform PR's surfaced fallback: the library returns
+    ChainLockFallbackRequired, the engine parks and drops the key at once,
+    and the continuation needs a new grant); `modeB` (no PR: the fallback
+    stays hidden, the KeyHold timer bounds the key, and a signer `Locked`
+    out of step 2 under an expired lease maps to Parked, Opus 9)."""
+    phase, key, flags = st
+    if key and phase not in ("done", "failed", "parked", "step2_new"):
+        yield "key_until passes: KeyHold dropped", (phase, False, flags)
+    if phase == "step1":
+        yield "IS proof within the window", ("step2", key, flags)
+        yield "step 1 times out: the engine parks", ("parked", False, flags)
+    elif phase == "step2":
+        if not key:
+            yield "step 2 signer Locked: park", ("parked", False, flags)
+            return
+        yield "Platform accepts", ("done", key, flags)
+        if rule == "modeA":
+            yield "IS proof rejected: fallback surfaced, the engine parks", ("parked", False, flags)
+        else:
+            yield "IS proof rejected: hidden ChainLock wait", ("cl_hidden", key, flags)
+    elif phase == "cl_hidden":
+        if key:
+            yield "ChainLock proof: the library re-signs with the held key", (
+                "done", key, flags | {"signed_old"}
+            )
+        elif rule == "rev0":
+            yield "ChainLock proof: signer Locked, registration Failed", (
+                "failed", key, flags | {"failed_committed"}
+            )
+        else:
+            yield "ChainLock proof: signer Locked, mapped to Parked", ("parked", key, flags)
+    elif phase == "parked":
+        yield "proof arrives; a new grant and a new lease", ("step2_new", True, flags)
+    elif phase == "step2_new":
+        yield "Platform accepts (new lease)", ("done", False, flags)
+
+
+def keyhold_findings(rule: str) -> set:
+    init = ("step1", True, frozenset())
+    seen = {init}
+    frontier = [init]
+    found = set()
+    while frontier:
+        nxt = []
+        for st in frontier:
+            phase, key, flags = st
+            if phase == "cl_hidden" and key:
+                found.add("own key held during a hidden ChainLock wait")
+            if "signed_old" in flags:
+                found.add("signed under the old authority after a ChainLock fallback")
+            if "failed_committed" in flags:
+                found.add("registration reported Failed with its funds committed")
+            for _, n in keyhold_steps(st, rule):
+                if n not in seen:
+                    seen.add(n)
+                    nxt.append(n)
+        frontier = nxt
+    return found
+
+
+def part4() -> bool:
+    ok = True
+
+    def check(cond: bool, msg: str) -> None:
+        nonlocal ok
+        print(("PASS " if cond else "FAIL ") + msg)
+        ok = ok and cond
+
+    print("Part 4: own-key registration and the ChainLock fallback (GPT 4, Opus 9)")
+    r0, ra, rb = (keyhold_findings(r) for r in ("rev0", "modeA", "modeB"))
+    print(f"       rev0: {sorted(r0)}")
+    print(f"       Mode B residual: {sorted(rb)}")
+    check(
+        "own key held during a hidden ChainLock wait" in r0
+        and "registration reported Failed with its funds committed" in r0 and not ra,
+        "GPT 4: under rev0 the key stays usable through a hidden ChainLock wait and "
+        "a later signer Locked fails a funded registration; Mode A (surfaced "
+        "fallback) parks at the fallback itself",
+    )
+    check(
+        rb == {"own key held during a hidden ChainLock wait",
+               "signed under the old authority after a ChainLock fallback"},
+        "Mode B: no failed funded registration; the documented residual is a key "
+        "held (and usable) into a hidden ChainLock wait, bounded by key_until",
+    )
+    return ok
+
+
 def main() -> int:
     ok = part1()
     ok = part2() and ok
     ok = part3() and ok
+    ok = part4() and ok
     print("ok" if ok else "FAILED")
     return 0 if ok else 1
 
