@@ -11,9 +11,13 @@
 //! with the key there ([`KeyUse`]); a refused path or use is
 //! [`SignerError::PathNotAllowed`] before the seed is read.
 //!
-//! Every call is one [`Op`]: it holds the vault's operation gate from the
-//! epoch check until its result exists, so [`Vault::lock`] waits for calls
-//! already running and every later call is [`SignerError::Locked`].
+//! Every call is one [`Op`] run by [`VaultSigner::run`] inside the vault's
+//! operation gate ([`Vault::gated`]): from the epoch check until its result
+//! is released, so [`Vault::lock`] waits for calls already running and every
+//! later call is [`SignerError::Locked`]. A result is released only if the
+//! signer's epoch is still the vault's, checked under the mutex every epoch
+//! change holds, so none is released once `lock()` has returned (vault
+//! module doc, "Release").
 
 use std::sync::Arc;
 
@@ -27,7 +31,7 @@ use crate::SignerError;
 use crate::crypto::Key32;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::WalletId;
-use crate::vault::{OpGuard, Vault};
+use crate::vault::Vault;
 
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -216,26 +220,37 @@ impl VaultSigner {
         }
     }
 
-    /// Opens one operation that will use the keys `uses`: every use passes
-    /// the scope check before the seed is read, then the operation gate is
-    /// taken and the epoch checked.
-    pub(crate) fn op(&self, uses: &[(KeyUse, &DerivationPath)]) -> Result<Op<'_>, SignerError> {
+    /// Runs `body` as one operation on the keys `uses`, the only way a
+    /// signer reaches a key: every use passes the scope check before the
+    /// seed is read; then, inside the vault's gate, the signer's epoch must
+    /// be the one the operation started under, the seed is decrypted and
+    /// `body` runs on the [`Op`]. The master key is erased when `body`
+    /// returns, and its result is released only if that epoch is still
+    /// current ([`Vault::gated`]), else [`SignerError::Locked`].
+    pub(crate) fn run<T>(
+        &self,
+        uses: &[(KeyUse, &DerivationPath)],
+        body: impl FnOnce(&Op<'_>) -> Result<T, SignerError>,
+    ) -> Result<T, SignerError> {
         for (key_use, path) in uses {
             self.check(*key_use, path)?;
         }
-        let gate = self.vault.op_guard();
-        let seed =
-            self.vault
-                .signing_seed(&gate, &self.wallet_id, self.epoch, self.own_key.as_deref())?;
-        let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
-            .map_err(|e| SignerError::Derivation(e.to_string()))?;
-        #[cfg(test)]
-        test_hook::fire(test_hook::OpPoint::Opened);
-        Ok(Op {
-            signer: self,
-            master,
-            secp: Secp256k1::new(),
-            _gate: gate,
+        self.vault.gated(SignerError::Locked, |gate| {
+            let seed = self.vault.signing_seed(
+                gate,
+                &self.wallet_id,
+                self.epoch,
+                self.own_key.as_deref(),
+            )?;
+            let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
+                .map_err(|e| SignerError::Derivation(e.to_string()))?;
+            #[cfg(test)]
+            test_hook::fire(test_hook::OpPoint::Opened);
+            body(&Op {
+                signer: self,
+                master,
+                secp: Secp256k1::new(),
+            })
         })
     }
 
@@ -247,18 +262,16 @@ impl VaultSigner {
         key_use: KeyUse,
         f: impl FnOnce(&Secp256k1<All>, &ExtendedPrivKey) -> T,
     ) -> Result<T, SignerError> {
-        self.op(&[(key_use, path)])?.with_key(path, key_use, f)
+        self.run(&[(key_use, path)], |op| op.with_key(path, key_use, f))
     }
 }
 
-/// One signer call ([`VaultSigner::op`]): the wallet's master key and the
-/// vault's operation gate, held until the call's result exists. On drop the
-/// master key is erased, then the gate is released.
+/// One signer call inside the gate ([`VaultSigner::run`]): the wallet's
+/// master key, erased on drop, before the call's result is released.
 pub(crate) struct Op<'a> {
     signer: &'a VaultSigner,
     master: ExtendedPrivKey,
     secp: Secp256k1<All>,
-    _gate: OpGuard<'a>,
 }
 
 impl Op<'_> {
@@ -290,7 +303,8 @@ impl Drop for Op<'_> {
 }
 
 /// Observes [`Op`]s on the current thread, for the lock-race tests: `Opened`
-/// once the epoch check passed, `Closing` just before the gate is released.
+/// once the epoch check passed, `Closing` once the master key is erased,
+/// before the result is released and the gate with it.
 #[cfg(test)]
 pub(crate) mod test_hook {
     use std::cell::RefCell;

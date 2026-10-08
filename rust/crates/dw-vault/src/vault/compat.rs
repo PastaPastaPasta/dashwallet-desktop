@@ -262,11 +262,12 @@ impl Vault {
         {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        let _op = self.op_guard();
-        let dek = self.key_for(token)?;
-        #[cfg(test)]
-        crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
-        self.read_secret(&dek, wallet)
+        self.gated(VaultError::Locked, |_| {
+            let dek = self.key_for(token)?;
+            #[cfg(test)]
+            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            self.read_secret(&dek, wallet)
+        })
     }
 
     fn read_secret(&self, dek: &Key32, wallet: &WalletId) -> Result<WalletSecret, VaultError> {

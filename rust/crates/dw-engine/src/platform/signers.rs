@@ -20,6 +20,14 @@
 //! this module: the auto-accept key DIP-15 hands out on purpose, and the
 //! master key [`VaultScanKey`] resolves for the identity scan, released only
 //! under a `PlatformOp` grant.
+//!
+//! Lock: every product these adapters return was released by the vault
+//! under the epoch its operation started in, and none is released once
+//! `lock()` has returned (dw-vault `Vault::gated`). What they do with a
+//! released product (copy a signature into `BinaryData`, hand it to
+//! platform-wallet) can still finish after a lock that came later; a flow
+//! that must not use such a result ("Lock to cancel") fences at its own
+//! commit point under an E0-04 lease, not here.
 
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey};

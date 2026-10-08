@@ -1,15 +1,16 @@
-//! `lock()` against signer calls already running (review DW-E0-03 B1/m1):
-//! once `lock()` has returned, no signature, shared secret, ciphertext or
-//! exported key of the old epoch is still being made.
+//! `lock()` against signer calls already running (review DW-E0-03 B1/m1,
+//! r2 M2): once `lock()` has returned, no signature, shared secret,
+//! ciphertext or exported key of the old epoch is still being made, and none
+//! is released.
 //!
-//! The [`test_hook`] stamps each operation when it passes its epoch check
-//! (`Opened`) and just before it releases the operation gate (`Closing`),
-//! by which point its result exists.
+//! The barrier tests pause an operation inside the gate with the
+//! [`test_hook`] (`Opened`, once it passed its epoch check). The stress tests
+//! check the vault's own log of releases and epoch changes
+//! ([`GateEvent`]), kept in the order of the mutex both hold, instead of
+//! timing.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::mpsc;
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -22,6 +23,7 @@ use zeroize::Zeroizing;
 
 use crate::signer::KeyUse;
 use crate::signer::test_hook::{self, OpPoint};
+use crate::vault::GateEvent;
 use crate::{
     Credential, GrantPurpose, GrantToken, KdfParams, KdfPolicy, MemoryOsStore, ScanKey,
     SeedDerivation, SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig,
@@ -70,11 +72,6 @@ fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantT
 fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
     let token = token(v, GrantPurpose::PlatformOp, credential);
     v.platform_signer(&W, &token, scope).unwrap()
-}
-
-fn spend_signer(v: &Vault) -> VaultSigner {
-    let purpose = GrantPurpose::Spend { max_duffs: 1 };
-    v.signer(&W, &token(v, purpose, Credential::None)).unwrap()
 }
 
 fn peer() -> PublicKey {
@@ -204,23 +201,77 @@ fn lock_waits_for_a_secret_read_already_running() {
     });
 }
 
-/// One call a worker made: its round, its gate stamps (`None` when it never
-/// passed the epoch check) and whether it returned a result.
-struct Call {
-    round: usize,
-    stamps: Option<(u64, u64)>,
-    ok: bool,
-}
-
 /// The signers of one round, all issued in the same epoch.
 struct Round {
-    index: usize,
     crypto: VaultSigner,
     identity: VaultSigner,
     spend: VaultSigner,
+    /// The mixing signer; on a locked vault, which has none, the spend
+    /// signer (it signs the same CoinJoin path).
     mixing: VaultSigner,
     scan: ScanKey,
     key_data: [u8; 33],
+}
+
+/// The vault states the stress test runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Unencrypted: the data key comes from the OS store.
+    Unencrypted,
+    /// Encrypted and unlocked with scope Full before each round.
+    Unlocked,
+    /// Encrypted and locked: every signer carries its passphrase grant's
+    /// own copy of the data key.
+    LockedOwnKey,
+}
+
+impl Mode {
+    fn vault(self, dir: &tempfile::TempDir) -> Vault {
+        let v = vault(dir, (self != Mode::Unencrypted).then_some(PASS));
+        if self == Mode::LockedOwnKey {
+            v.lock();
+        }
+        v
+    }
+
+    /// The signers of a new round (the vault was locked by the last one).
+    fn round(self, v: &Vault) -> Round {
+        let credential = match self {
+            Mode::Unencrypted => Credential::None,
+            Mode::Unlocked => {
+                v.unlock(PASS, UnlockScope::Full).unwrap();
+                Credential::None
+            }
+            Mode::LockedOwnKey => Credential::Passphrase(PASS),
+        };
+        let identity = platform_signer(v, SignerScope::PlatformIdentity, credential);
+        let spend = v
+            .signer(
+                &W,
+                &token(v, GrantPurpose::Spend { max_duffs: 1 }, credential),
+            )
+            .unwrap();
+        let (crypto, mixing) = match self {
+            Mode::LockedOwnKey => (
+                platform_signer(v, SignerScope::DashPayCrypto, credential),
+                spend.clone(),
+            ),
+            _ => (
+                v.dashpay_crypto_signer(&W).unwrap(),
+                v.mixing_signer(&W).unwrap(),
+            ),
+        };
+        Round {
+            key_data: identity_public_key(&identity),
+            crypto,
+            identity,
+            spend,
+            mixing,
+            scan: v
+                .scan_key(&W, &token(v, GrantPurpose::PlatformOp, credential))
+                .unwrap(),
+        }
+    }
 }
 
 /// One call of kind `n` on the round's signers.
@@ -258,128 +309,126 @@ fn call(rt: &tokio::runtime::Runtime, r: &Round, n: usize) -> Result<(), SignerE
     }
 }
 
+/// What [`check_gate_log`] counted.
+#[derive(Debug, Default)]
+struct GateStats {
+    released: usize,
+    /// Results released between a `lock()` call and its epoch change: the
+    /// operations that lock had to wait for.
+    released_while_lock_waited: usize,
+    locks: usize,
+}
+
+/// Checks the release rule on the vault's own log, which records every
+/// release and every epoch change in the order of the mutex both hold
+/// (vault module doc, "Release"): the epoch is rebuilt from the change
+/// events alone, and every result must be released under the epoch it
+/// started in, before the change that ends it.
+fn check_gate_log(log: &[GateEvent]) -> GateStats {
+    let Some(&GateEvent::Epoch(mut epoch)) = log.first() else {
+        panic!("the log starts with the epoch");
+    };
+    let mut stats = GateStats::default();
+    let mut lock_waiting = false;
+    for (i, event) in log.iter().enumerate().skip(1) {
+        match *event {
+            GateEvent::Epoch(next) => {
+                assert!(next > epoch, "event {i}: the epoch went back");
+                epoch = next;
+                lock_waiting = false;
+            }
+            GateEvent::Opened(started) => {
+                assert_eq!(started, epoch, "event {i}: opened under an ended epoch");
+            }
+            GateEvent::Released(started) => {
+                assert_eq!(
+                    started, epoch,
+                    "event {i}: a result of epoch {started} was released in epoch {epoch}"
+                );
+                stats.released += 1;
+                stats.released_while_lock_waited += usize::from(lock_waiting);
+            }
+            GateEvent::LockCalled => {
+                lock_waiting = true;
+                stats.locks += 1;
+            }
+        }
+    }
+    stats
+}
+
 /// Many threads call every kind of signer operation while `lock()` runs
-/// round after round. Every call that returned a result must have made it
-/// (reached `Closing`) before the `lock()` ending its round returned.
-#[test]
-fn no_result_is_made_after_lock_returns() {
+/// round after round (review DW-E0-03 r2 M2). The vault logs each release
+/// and epoch change in the order of the mutex both take; no result may be
+/// released under an epoch a lock has ended, and every result a caller got
+/// is one of those releases.
+fn no_result_is_released_after_its_epoch(mode: Mode) {
     const ROUNDS: usize = 300;
-    const WORKERS: usize = 8;
+    const WORKERS: usize = 16;
 
     let dir = tempfile::tempdir().unwrap();
-    // Unencrypted: each round's signers come without a KDF run.
-    let v = vault(&dir, None);
-    let clock = Arc::new(AtomicU64::new(0));
+    let v = mode.vault(&dir);
     let current: Arc<Mutex<Option<Arc<Round>>>> = Arc::default();
     let barrier = Arc::new(Barrier::new(WORKERS + 1));
-    let calls: Arc<Mutex<Vec<Call>>> = Arc::default();
+    let results = Arc::new(AtomicUsize::new(0));
+    let refused = Arc::new(AtomicUsize::new(0));
 
     let workers: Vec<_> = (0..WORKERS)
         .map(|w| {
-            let (clock, current, barrier, calls) = (
-                clock.clone(),
+            let (current, barrier, results, refused) = (
                 current.clone(),
                 barrier.clone(),
-                calls.clone(),
+                results.clone(),
+                refused.clone(),
             );
             thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .build()
                     .unwrap();
-                let stamps: Rc<RefCell<(Option<u64>, Option<u64>)>> = Rc::default();
-                {
-                    let (stamps, clock) = (stamps.clone(), clock.clone());
-                    test_hook::set(move |point| {
-                        let now = clock.fetch_add(1, SeqCst);
-                        let mut s = stamps.borrow_mut();
-                        match point {
-                            OpPoint::Opened => s.0 = Some(now),
-                            OpPoint::Closing => s.1 = Some(now),
-                        }
-                    });
-                }
-                let mut mine = Vec::new();
                 for _ in 0..ROUNDS {
                     barrier.wait();
                     let round = current.lock().unwrap().clone().unwrap();
                     for n in w.. {
-                        *stamps.borrow_mut() = (None, None);
-                        let result = call(&rt, &round, n);
-                        let (opened, closing) = *stamps.borrow();
-                        mine.push(Call {
-                            round: round.index,
-                            stamps: opened.zip(closing),
-                            ok: result.is_ok(),
-                        });
-                        match result {
-                            Ok(()) => {}
-                            Err(SignerError::Locked) => break,
-                            Err(e) => panic!("call {n}: {e}"),
-                        }
+                        match call(&rt, &round, n) {
+                            Ok(()) => results.fetch_add(1, SeqCst),
+                            Err(SignerError::Locked) => {
+                                refused.fetch_add(1, SeqCst);
+                                break;
+                            }
+                            Err(e) => panic!("{mode:?}, call {n}: {e}"),
+                        };
                     }
                     barrier.wait();
                 }
-                calls.lock().unwrap().extend(mine);
             })
         })
         .collect();
 
-    let mut lock_calls = Vec::with_capacity(ROUNDS);
-    let mut lock_returns = Vec::with_capacity(ROUNDS);
+    v.start_gate_log();
     for index in 0..ROUNDS {
-        let identity = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
-        let key_data = identity_public_key(&identity);
-        *current.lock().unwrap() = Some(Arc::new(Round {
-            index,
-            crypto: v.dashpay_crypto_signer(&W).unwrap(),
-            identity,
-            spend: spend_signer(&v),
-            mixing: v.mixing_signer(&W).unwrap(),
-            scan: v
-                .scan_key(&W, &token(&v, GrantPurpose::PlatformOp, Credential::None))
-                .unwrap(),
-            key_data,
-        }));
+        *current.lock().unwrap() = Some(Arc::new(mode.round(&v)));
         barrier.wait();
         thread::sleep(Duration::from_micros(50 + (index as u64 * 37) % 400));
-        lock_calls.push(clock.fetch_add(1, SeqCst));
         v.lock();
-        lock_returns.push(clock.fetch_add(1, SeqCst));
         barrier.wait();
     }
     for w in workers {
         w.join().unwrap();
     }
 
-    let calls = calls.lock().unwrap();
-    let ok: Vec<_> = calls.iter().filter(|c| c.ok).collect();
-    let late: Vec<_> = ok
-        .iter()
-        .filter(|c| c.stamps.is_none_or(|(_, end)| end > lock_returns[c.round]))
-        .collect();
-    // Calls that had passed their epoch check when lock() was called and
-    // were still running: the ones lock() had to wait for.
-    let raced = ok
-        .iter()
-        .filter(|c| {
-            c.stamps.is_some_and(|(start, end)| {
-                start < lock_calls[c.round] && end > lock_calls[c.round]
-            })
-        })
-        .count();
-    let refused = calls.iter().filter(|c| !c.ok).count();
+    let stats = check_gate_log(&v.take_gate_log());
+    let (results, refused) = (results.load(SeqCst), refused.load(SeqCst));
     eprintln!(
-        "{} calls: {} results, {} refused Locked, {raced} in flight when lock() was called, \
-         {} results made after lock() returned",
-        calls.len(),
-        ok.len(),
-        refused,
-        late.len()
+        "{mode:?}: {WORKERS} workers, {} locks: {results} results, {refused} refused Locked, \
+         {} released ({} while lock() waited for them), 0 released under an ended epoch",
+        stats.locks, stats.released, stats.released_while_lock_waited
     );
-    assert!(
-        late.is_empty(),
-        "{} results outlived their lock",
-        late.len()
+    assert_eq!(stats.locks, ROUNDS);
+    // Each round's setup releases one result (the identity public key).
+    assert_eq!(
+        stats.released,
+        results + ROUNDS,
+        "every result a caller got is a logged release"
     );
     assert_eq!(
         refused,
@@ -387,9 +436,66 @@ fn no_result_is_made_after_lock_returns() {
         "every worker ends its round Locked"
     );
     assert!(
-        raced >= ROUNDS / 10,
-        "only {raced} calls were in flight at a lock: the race was not exercised"
+        stats.released_while_lock_waited >= ROUNDS / 10,
+        "only {} results were released while a lock waited: the race was not exercised",
+        stats.released_while_lock_waited
     );
+}
+
+#[test]
+fn no_result_is_released_after_its_epoch_unencrypted() {
+    no_result_is_released_after_its_epoch(Mode::Unencrypted);
+}
+
+#[test]
+fn no_result_is_released_after_its_epoch_unlocked() {
+    no_result_is_released_after_its_epoch(Mode::Unlocked);
+}
+
+#[test]
+fn no_result_is_released_after_its_epoch_with_grant_keys() {
+    no_result_is_released_after_its_epoch(Mode::LockedOwnKey);
+}
+
+/// The release check refuses on its own: an epoch change that skips the gate
+/// (which no production code does) between an operation's start and its
+/// release drops the result, for a signer and a gated secret read.
+#[test]
+fn a_result_is_not_released_in_a_later_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, None);
+    let crypto = v.dashpay_crypto_signer(&W).unwrap();
+    let key = path(IDENTITY_KEY);
+    v.start_gate_log();
+    let r = crypto.run(&[(KeyUse::Agreement, &key)], |op| {
+        let secret = op.with_key(&key, KeyUse::Agreement, |_, x| {
+            crate::dip15::ecdh(&x.private_key, &peer())
+        })?;
+        v.bump_epoch_ungated();
+        Ok(secret)
+    });
+    assert_eq!(r.map(drop), Err(SignerError::Locked));
+    let r = v.gated(crate::VaultError::Locked, |_| {
+        v.bump_epoch_ungated();
+        Ok(())
+    });
+    assert_eq!(r, Err(crate::VaultError::Locked));
+    let log = v.take_gate_log();
+    assert!(
+        !log.iter().any(|e| matches!(e, GateEvent::Released(_))),
+        "{log:?}"
+    );
+    // The signer belongs to the ended epoch; a new one, and the gated read,
+    // release when nothing changes the epoch.
+    assert_eq!(
+        crypto.ecdh_shared_secret(&key, &peer()).map(drop),
+        Err(SignerError::Locked)
+    );
+    let crypto = v.dashpay_crypto_signer(&W).unwrap();
+    v.start_gate_log();
+    crypto.ecdh_shared_secret(&key, &peer()).unwrap();
+    v.gated(crate::VaultError::Locked, |_| Ok(())).unwrap();
+    assert_eq!(check_gate_log(&v.take_gate_log()).released, 2);
 }
 
 /// A scope change (full unlock → mixing-only) ends the epoch as a lock does,

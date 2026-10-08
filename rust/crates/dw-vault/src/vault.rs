@@ -12,19 +12,50 @@
 //! - `inner` is a short-held mutex over the in-memory state. Argon2id, OS
 //!   store calls and file writes run outside it.
 //! - `ops` is the operation gate. Every signer call holds it shared from its
-//!   epoch check until its result exists, and `reveal_mnemonic`,
+//!   epoch check until its result is released, and `reveal_mnemonic`,
 //!   `export_wallet_secret` and `with_revealed_seed` hold it while they read
-//!   the secret. Every epoch change (lock, unlock, scope change, encrypt,
-//!   recover, destroy) holds it exclusively, so `lock()` returns only once
-//!   every such operation that started before it has finished, and any
-//!   operation after it sees the new epoch and fails `Locked`. Not gated:
-//!   the backup bundles (`backup_bundle`, `open_backup_bundle`), which take
-//!   no grant or epoch, and `enroll_quick_unlock`, serialized by `writer`.
-//!   A holder must not take the gate again, take `writer` or block on any
-//!   other lock: a waiting epoch change may block new shared holders (std's
-//!   `RwLock` prefers writers on Linux; the policy is OS-dependent).
+//!   the secret ([`Vault::gated`]). Every epoch change (lock, unlock, scope
+//!   change, encrypt, recover, destroy) holds it exclusively, so `lock()`
+//!   returns only once every such operation that started before it has
+//!   finished, and any operation after it sees the new epoch and fails
+//!   `Locked`. Not gated: the backup bundles (`backup_bundle`,
+//!   `open_backup_bundle`), which take no grant or epoch, and
+//!   `enroll_quick_unlock`, serialized by `writer`. A holder must not take
+//!   the gate again, take `writer` or block on any other lock: a waiting
+//!   epoch change may block new shared holders (std's `RwLock` prefers
+//!   writers on Linux; the policy is OS-dependent).
 //!
 //! Lock order: `writer`, then `ops`, then `inner`.
+//!
+//! Release (review DW-E0-03 r2 M2). A gated operation's result leaves the
+//! vault only through [`OpGuard::release`], which [`Vault::gated`] calls
+//! last: under `inner`, the epoch the operation started under (read under
+//! `inner` when it entered the gate) must still be the vault's epoch, or the
+//! result is dropped (erasing what it holds) and the call fails `Locked`.
+//! Why that is enough for "nothing is released once `lock()` has returned":
+//! - every epoch change writes `inner.epoch` holding `inner`, and every
+//!   release reads it holding `inner`, so the mutex orders each release
+//!   wholly before or wholly after each epoch change;
+//! - a release ordered after a lock's change reads a newer epoch than the
+//!   one its operation started under, and refuses;
+//! - so every result released under epoch `e` was released before the
+//!   change that ended `e`, and `lock()` makes that change before it
+//!   returns. A result released after `lock()` returned would be ordered
+//!   after the change, which the check refuses.
+//!
+//! This holds by the order of the `inner` mutex, not by timing, and does
+//! not depend on the gate: the gate adds that a lock waits for operations
+//! already running (so none still computes with a key once `lock()` has
+//! returned, and the check never actually refuses one), while the check
+//! states the release rule at the one point where a result leaves. The
+//! lock-race tests log every release and epoch change in `inner`'s order
+//! and check the rule on that log.
+//!
+//! Out of reach of any vault-side check: a result released before the lock
+//! that its caller holds, or has not yet looked at, when `lock()` returns.
+//! A flow that must not use such a result after a lock ("Lock to cancel")
+//! fences at its own point of use, under a lease the lock revokes (roadmap
+//! E0-04/E0-05).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -61,10 +92,53 @@ pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;
 /// Shared hold of `Shared::ops`: one operation that produces a
-/// secret-derived result (see the module doc). Only [`Vault::op_guard`]
-/// makes one.
+/// secret-derived result (see the module doc). Only [`Vault::gated`]
+/// makes one, and ends it with [`OpGuard::release`].
 pub(crate) struct OpGuard<'a> {
+    vault: &'a Vault,
+    /// The vault's epoch when the operation entered the gate.
+    epoch: u64,
     _ops: RwLockReadGuard<'a, ()>,
+}
+
+impl OpGuard<'_> {
+    /// The epoch this operation started under.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Releases `out` if the vault is still in the epoch this operation
+    /// started under; `None` (and `out` dropped) otherwise. The check holds
+    /// `inner`, the mutex every epoch change holds; the module doc
+    /// ("Release") explains why that makes a release after `lock()` has
+    /// returned impossible. `inner` is unlocked, then the gate, when this
+    /// returns.
+    fn release<T>(self, out: T) -> Option<T> {
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut inner = self.vault.inner();
+        if !bool::from(inner.epoch.ct_eq(&self.epoch)) {
+            return None;
+        }
+        #[cfg(test)]
+        inner.record(GateEvent::Released(self.epoch));
+        Some(out)
+    }
+}
+
+/// What the lock-race tests observe of the gate, in `inner`'s order
+/// ([`Vault::start_gate_log`]).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateEvent {
+    /// The vault's epoch is now this (at the start of the log, and at each
+    /// change).
+    Epoch(u64),
+    /// An operation entered the gate under this epoch.
+    Opened(u64),
+    /// An operation released its result under this epoch.
+    Released(u64),
+    /// `lock()` was called; it now waits for the gate.
+    LockCalled,
 }
 
 /// Exclusive hold of `Shared::ops`, which every epoch change needs. Only
@@ -279,6 +353,8 @@ struct Inner {
     /// (`.dwbackup` bundle v2), derived from slot P's KEK whenever the
     /// passphrase is checked or set. Held only while `dek` is; never stored.
     backup_kek: Option<BackupKek>,
+    #[cfg(test)]
+    gate_log: Option<Vec<GateEvent>>,
 }
 
 impl Inner {
@@ -288,7 +364,16 @@ impl Inner {
         self.backup_kek = None;
         self.scope = UnlockScope::Full;
         self.epoch += 1;
+        #[cfg(test)]
+        self.record(GateEvent::Epoch(self.epoch));
         self.grants.clear();
+    }
+
+    #[cfg(test)]
+    fn record(&mut self, event: GateEvent) {
+        if let Some(log) = &mut self.gate_log {
+            log.push(event);
+        }
     }
 
     /// Drops grants that expired before `now`, together with any key they
@@ -304,6 +389,8 @@ impl Inner {
         self.scope = scope;
         if changed {
             self.epoch += 1;
+            #[cfg(test)]
+            self.record(GateEvent::Epoch(self.epoch));
             self.grants.clear();
         }
     }
@@ -378,6 +465,8 @@ impl Vault {
                     grants: HashMap::new(),
                     last_passphrase_at: None,
                     backup_kek: None,
+                    #[cfg(test)]
+                    gate_log: None,
                 }),
             }),
         })
@@ -405,15 +494,59 @@ impl Vault {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Opens one operation (shared hold of the gate; see the module doc).
-    pub(crate) fn op_guard(&self) -> OpGuard<'_> {
-        OpGuard {
-            _ops: self
-                .shared
-                .ops
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        }
+    /// Runs `body` as one gated operation (see the module doc) and releases
+    /// its result with [`OpGuard::release`]: `locked` when the vault's epoch
+    /// is no longer the one `body` started under. The only way to make an
+    /// [`OpGuard`], so no gated result leaves without that check.
+    pub(crate) fn gated<T, E>(
+        &self,
+        locked: E,
+        body: impl FnOnce(&OpGuard<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let ops = self
+            .shared
+            .ops
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let epoch = {
+            #[cfg_attr(not(test), allow(unused_mut))]
+            let mut inner = self.inner();
+            let epoch = inner.epoch;
+            #[cfg(test)]
+            inner.record(GateEvent::Opened(epoch));
+            epoch
+        };
+        let op = OpGuard {
+            vault: self,
+            epoch,
+            _ops: ops,
+        };
+        let out = body(&op)?;
+        op.release(out).ok_or(locked)
+    }
+
+    /// Starts logging the gate's events ([`GateEvent`]) in `inner`'s order.
+    #[cfg(test)]
+    pub(crate) fn start_gate_log(&self) {
+        let mut inner = self.inner();
+        let epoch = inner.epoch;
+        inner.gate_log = Some(vec![GateEvent::Epoch(epoch)]);
+    }
+
+    /// The events logged since [`Self::start_gate_log`]; logging stops.
+    #[cfg(test)]
+    pub(crate) fn take_gate_log(&self) -> Vec<GateEvent> {
+        self.inner().gate_log.take().unwrap_or_default()
+    }
+
+    /// Changes the epoch without the gate, as no production code may: lets a
+    /// test show that [`OpGuard::release`] refuses on its own.
+    #[cfg(test)]
+    pub(crate) fn bump_epoch_ungated(&self) {
+        let mut inner = self.inner();
+        inner.epoch += 1;
+        let epoch = inner.epoch;
+        inner.record(GateEvent::Epoch(epoch));
     }
 
     /// Waits for every open operation, then excludes new ones until the
@@ -683,8 +816,11 @@ impl Vault {
     /// about a millisecond; see the module doc), so once it returns no
     /// signer result (signature, shared secret, ciphertext, exported key)
     /// of the old epoch is still being made, and no gated secret read is
-    /// still under way.
+    /// still under way; and no result of the old epoch is released after
+    /// it returns (module doc, "Release").
     pub fn lock(&self) -> VaultStatus {
+        #[cfg(test)]
+        self.inner().record(GateEvent::LockCalled);
         let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.forget_key(&ops);
@@ -1347,19 +1483,20 @@ impl Vault {
         grant_id: &str,
     ) -> Result<RevealedMnemonic, VaultError> {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
-        let _op = self.op_guard();
-        let dek = self.key_for(&token)?;
-        #[cfg(test)]
-        crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
-        let phrase = self
-            .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
-            .ok_or(VaultError::NoSecret)?;
-        let bip39_passphrase = self
-            .read_record(&dek, &record_id(wallet, REC_PASSPHRASE))?
-            .unwrap_or_default();
-        Ok(RevealedMnemonic {
-            phrase,
-            bip39_passphrase,
+        self.gated(VaultError::Locked, |_| {
+            let dek = self.key_for(&token)?;
+            #[cfg(test)]
+            crate::signer::test_hook::fire(crate::signer::test_hook::OpPoint::Opened);
+            let phrase = self
+                .read_record(&dek, &record_id(wallet, REC_MNEMONIC))?
+                .ok_or(VaultError::NoSecret)?;
+            let bip39_passphrase = self
+                .read_record(&dek, &record_id(wallet, REC_PASSPHRASE))?
+                .unwrap_or_default();
+            Ok(RevealedMnemonic {
+                phrase,
+                bip39_passphrase,
+            })
         })
     }
 
@@ -1540,19 +1677,20 @@ impl Vault {
     }
 
     /// Seed of `wallet` for a signer issued at `epoch`, decrypted with the
-    /// signer's own key or the vault's, inside the operation `_op`.
+    /// signer's own key or the vault's, inside the operation `op`, which
+    /// must have started in that epoch.
     pub(crate) fn signing_seed(
         &self,
-        _op: &OpGuard<'_>,
+        op: &OpGuard<'_>,
         wallet: &WalletId,
         epoch: u64,
         own_key: Option<&Key32>,
     ) -> Result<Zeroizing<[u8; 64]>, SignerError> {
+        if op.epoch() != epoch {
+            return Err(SignerError::Locked);
+        }
         let dek = {
             let inner = self.inner();
-            if inner.epoch != epoch {
-                return Err(SignerError::Locked);
-            }
             match own_key {
                 Some(key) => Zeroizing::new(**key),
                 None => Zeroizing::new(**inner.dek.as_ref().ok_or(SignerError::Locked)?),

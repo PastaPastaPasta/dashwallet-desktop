@@ -178,7 +178,8 @@ impl VaultSigner {
     /// Runs `f` on the `(encToUserId, privateData)` contactInfo AES keys
     /// `root/65536'/derivation_index'` and `root/65537'/derivation_index'`
     /// (`root` an identity key), in one operation, so whatever `f` makes
-    /// with them exists before any later lock returns.
+    /// with them exists before any later lock returns and is released only
+    /// under the epoch it was made in.
     fn with_contact_info_keys<T>(
         &self,
         root: &DerivationPath,
@@ -192,13 +193,19 @@ impl VaultSigner {
         let index = step(derivation_index)?;
         let enc_path = root.extend([step(DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD)?, index]);
         let data_path = root.extend([step(DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD)?, index]);
-        let op = self.op(&[
-            (KeyUse::ContactInfo, &enc_path),
-            (KeyUse::ContactInfo, &data_path),
-        ])?;
-        let enc_key = op.with_key(&enc_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
-        let data_key = op.with_key(&data_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
-        Ok(f(&enc_key, &data_key))
+        self.run(
+            &[
+                (KeyUse::ContactInfo, &enc_path),
+                (KeyUse::ContactInfo, &data_path),
+            ],
+            |op| {
+                let enc_key =
+                    op.with_key(&enc_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
+                let data_key =
+                    op.with_key(&data_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
+                Ok(f(&enc_key, &data_key))
+            },
+        )
     }
 
     /// DIP-15 contactInfo seal: `encToUserId` (AES-256-ECB) and
