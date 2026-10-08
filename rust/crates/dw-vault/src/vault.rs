@@ -1260,10 +1260,10 @@ impl Vault {
     }
 
     /// A signer for every derivation of `wallet`, authorized by a redeemed
-    /// grant for that wallet whose purpose signs (spend, message, masternode,
-    /// governance, platform). A grant authorized by passphrase on a locked or
-    /// mixing-only vault hands its own key to the signer. The signer stops
-    /// working when the vault locks or changes unlock scope.
+    /// grant for that wallet whose purpose signs (spend, message, platform).
+    /// A grant authorized by passphrase on a locked or mixing-only vault
+    /// hands its own key to the signer. The signer stops working when the
+    /// vault locks or changes unlock scope.
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
         if !token.purpose.signs() || token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);

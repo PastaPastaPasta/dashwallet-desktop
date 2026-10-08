@@ -105,18 +105,6 @@ pub enum EngineEvent {
         network: DashNetwork,
         wallet_id: WalletId,
     },
-    /// M3 (QT-026, QT-128…134): governance sync progressed, or objects,
-    /// votes or pending proposals changed. At most once a second, trailing
-    /// edge kept. Hosts re-query what they show.
-    Governance {
-        network: DashNetwork,
-    },
-    /// M3 (QT-118…122, IOS-080…082): the masternode list, owned detection
-    /// or tracked masternodes changed. Coalesced as dash-qt: at most every
-    /// 3 s, every 30 s while SPV is not caught up.
-    Masternodes {
-        network: DashNetwork,
-    },
 }
 
 /// Non-fatal conditions the UI may surface.

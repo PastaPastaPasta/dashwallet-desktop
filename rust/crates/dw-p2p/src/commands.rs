@@ -1,5 +1,5 @@
-//! Wire command names (Dash Core `src/protocol.cpp`) that CoinJoin and
-//! governance send or receive. dashcore's `NetworkMessage` types `senddsq`;
+//! Wire command names (Dash Core `src/protocol.cpp`) that CoinJoin sends or
+//! receives. dashcore's `NetworkMessage` types `senddsq`;
 //! the rest are carried as `Unknown { command, payload }` by this crate.
 
 /// `CCoinJoinAccept`: the client asks a masternode to start or join a
@@ -21,11 +21,3 @@ pub const DSSTATUSUPDATE: &str = "dssu";
 pub const DSTX: &str = "dstx";
 /// Ask the peer to (not) relay `dsq` messages.
 pub const SENDDSQUEUE: &str = "senddsq";
-/// Governance sync request (object hash or zero, bloom filter of known votes).
-pub const MNGOVERNANCESYNC: &str = "govsync";
-/// A governance object.
-pub const MNGOVERNANCEOBJECT: &str = "govobj";
-/// A governance vote.
-pub const MNGOVERNANCEOBJECTVOTE: &str = "govobjvote";
-/// Sync status count (item type, count) sent after a sync batch.
-pub const SYNCSTATUSCOUNT: &str = "ssc";

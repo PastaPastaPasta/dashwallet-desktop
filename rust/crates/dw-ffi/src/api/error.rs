@@ -93,14 +93,11 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Send(_) | E::Labels(_) => Self::Wallet { detail },
             E::OutpointNotFound(_) => Self::InvalidArgument { detail },
             // Their domains (CompatError, BackupError, PsbtError and the M3
-            // CoinJoinError, GovernanceError, MasternodeError) carry the
+            // CoinJoinError, MasternodeError) carry the
             // codes; M0 calls never produce them.
-            E::Compat(_)
-            | E::Backup(_)
-            | E::Psbt(_)
-            | E::CoinJoin(_)
-            | E::Governance(_)
-            | E::Masternode(_) => Self::Wallet { detail },
+            E::Compat(_) | E::Backup(_) | E::Psbt(_) | E::CoinJoin(_) | E::Masternode(_) => {
+                Self::Wallet { detail }
+            }
         }
     }
 }

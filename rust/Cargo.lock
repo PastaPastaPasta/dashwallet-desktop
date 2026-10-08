@@ -1616,10 +1616,8 @@ dependencies = [
  "dw-appdb",
  "dw-coinjoin",
  "dw-compat",
- "dw-governance",
  "dw-message",
  "dw-p2p",
- "dw-protx",
  "dw-psbt",
  "dw-units",
  "dw-uri",
@@ -1649,9 +1647,7 @@ dependencies = [
  "dw-console",
  "dw-desktop",
  "dw-engine",
- "dw-governance",
  "dw-message",
- "dw-protx",
  "dw-psbt",
  "dw-units",
  "dw-uri",
@@ -1663,15 +1659,6 @@ dependencies = [
  "tokio",
  "uniffi",
  "zeroize",
-]
-
-[[package]]
-name = "dw-governance"
-version = "0.1.0"
-dependencies = [
- "dashcore",
- "dw-p2p",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1694,14 +1681,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "dw-protx"
-version = "0.1.0"
-dependencies = [
- "dashcore",
- "thiserror 2.0.18",
 ]
 
 [[package]]

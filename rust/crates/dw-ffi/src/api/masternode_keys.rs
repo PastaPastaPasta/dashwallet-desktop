@@ -1,30 +1,27 @@
-//! M3 masternode keychain (IOS-083), tracked masternodes with attached keys
-//! (IOS-082) and evonode tools (IOS-081). Owner: R3 (platform-wallet's
-//! tracked masternodes and withdrawal, `dw-protx` keychain). Contract:
-//! docs/contracts/m3-engine.md §2.5.
+//! M3 masternode keychain (IOS-083): a wallet's DIP3 provider keys and the
+//! reveal of one private key. Contract: docs/contracts/m3-engine.md §2.5.
+//! Masternode list, ProTx, tracked masternodes and evonode tools stay in
+//! Dash Core (repo CLAUDE.md "Product scope"; parked on the branches
+//! m3/r2-governance and m3/r3-protx).
 //!
 //! Private keys leave the engine only through `Vault.reveal_masternode_key`
 //! (a `RevealSecret` grant), as the mnemonic does through
-//! `Vault.reveal_mnemonic`. Keys attached to tracked masternodes are kept
-//! in the vault, encrypted under the data key (DESIGN-opus §1.8).
-//!
-//! Evonode credit status and withdrawal need Platform queries and state
-//! transitions (iOS: `fetchClaimableBalance`, `masternodeWithdraw`). They
-//! are part of this contract but may land with M4's Platform work; until
-//! then they return `NotImplemented` with a `.platform` call name.
-
-use zeroize::Zeroize;
+//! `Vault.reveal_mnemonic`.
 
 use crate::api::common::{ensure_open, not_implemented, parse_wallet_id};
-use crate::api::masternode::parse_pro_tx_hash;
-use crate::{MasternodeError, MasternodeKeyRole, MasternodeRow, NetworkSession, Vault};
+use crate::{NetworkSession, Vault};
 
-/// Where a keychain key is used (IOS-083 "Used at ip:port" / revoked).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct MasternodeKeyUsage {
-    pub pro_tx_hash: String,
-    pub service: Option<String>,
-    pub revoked: bool,
+/// A provider key family (DIP3 paths under DIP9 feature 3').
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum MasternodeKeyRole {
+    /// secp256k1, `m/9'/coin'/3'/2'/i`.
+    Owner,
+    /// secp256k1, `m/9'/coin'/3'/1'/i`.
+    Voting,
+    /// BLS operator key, `m/9'/coin'/3'/3'/i`.
+    Operator,
+    /// ed25519 Tenderdash node key (evonodes), `m/9'/coin'/3'/4'/i'`.
+    PlatformNode,
 }
 
 /// One derived provider key (public data only).
@@ -32,7 +29,7 @@ pub struct MasternodeKeyUsage {
 pub struct MasternodeKeyInfo {
     pub role: MasternodeKeyRole,
     pub index: u32,
-    /// e.g. `m/9'/5'/3'/1'/0'` (DIP3/DIP9 provider key paths).
+    /// e.g. `m/9'/5'/3'/1'/0` (DIP3/DIP9 provider key paths).
     pub derivation_path: String,
     /// P2PKH address for secp256k1 roles.
     pub address: Option<String>,
@@ -41,7 +38,6 @@ pub struct MasternodeKeyInfo {
     pub legacy_public_key_hex: Option<String>,
     /// Tenderdash node id of a platform node key (40 hex).
     pub platform_node_id: Option<String>,
-    pub used_by: Vec<MasternodeKeyUsage>,
 }
 
 /// A revealed provider private key. ASCII bytes, held by the host in a
@@ -56,54 +52,107 @@ pub struct RevealedMasternodeKey {
     pub tenderdash_key: Option<Vec<u8>>,
 }
 
-/// What a tracked masternode's attached keys allow (platform-wallet
-/// `MasternodeCapabilities`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
-pub struct TrackedCapabilities {
-    /// Owner or payout key: evonode credit withdrawal.
-    pub can_withdraw: bool,
-    /// Operator key: Update Service / unban, revoke.
-    pub can_update_service: bool,
-    /// Owner key: Update Registrar.
-    pub can_update_registrar: bool,
-    /// Voting key: governance and contested-name votes.
-    pub can_vote: bool,
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum MasternodeError {
+    /// Code `masternode.watch_only`.
+    #[error("watch-only wallet")]
+    WatchOnly,
+    /// Code `masternode.vault_locked`.
+    #[error("vault locked")]
+    VaultLocked,
+    /// Code `masternode.grant_invalid`.
+    #[error("grant invalid")]
+    GrantInvalid,
+    /// Code `invalid_argument`.
+    #[error("invalid argument: {detail}")]
+    InvalidArgument { detail: String },
+    /// Code `network_not_open`.
+    #[error("network not open: {detail}")]
+    NetworkNotOpen { detail: String },
+    /// Code `wallet_not_found`.
+    #[error("wallet not found: {detail}")]
+    WalletNotFound { detail: String },
+    /// Code `storage`.
+    #[error("storage: {detail}")]
+    Storage { detail: String },
+    /// Code `not_implemented`.
+    #[error("not implemented: {call}")]
+    NotImplemented { call: String },
+    /// Code `internal`.
+    #[error("internal: {detail}")]
+    Internal { detail: String },
 }
 
-/// A tracked masternode (IOS-082).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct TrackedMasternode {
-    pub row: MasternodeRow,
-    pub label: Option<String>,
-    pub attached_roles: Vec<MasternodeKeyRole>,
-    pub capabilities: TrackedCapabilities,
+crate::api::common::domain_error_common!(@not_implemented MasternodeError);
+crate::api::common::export_error_code!(MasternodeError);
+
+impl MasternodeError {
+    /// Stable code (docs/contracts/m3-engine.md §4).
+    fn code_str(&self) -> &'static str {
+        match self {
+            Self::WatchOnly => "masternode.watch_only",
+            Self::VaultLocked => "masternode.vault_locked",
+            Self::GrantInvalid => "masternode.grant_invalid",
+            Self::InvalidArgument { .. } => "invalid_argument",
+            Self::NetworkNotOpen { .. } => "network_not_open",
+            Self::WalletNotFound { .. } => "wallet_not_found",
+            Self::Storage { .. } => "storage",
+            Self::NotImplemented { .. } => "not_implemented",
+            Self::Internal { .. } => "internal",
+        }
+    }
 }
 
-/// Evonode Platform status (IOS-080 claimable balance, epoch blocks;
-/// IOS-081 status request).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct EvonodePlatformStatus {
-    pub pro_tx_hash: String,
-    /// Owner identity's claimable credits.
-    pub claimable_credits: Option<u64>,
-    /// Blocks the node proposed in the current epoch.
-    pub epoch_proposed_blocks: Option<u32>,
-    pub epoch_index: Option<u32>,
+impl From<MasternodeKeyRole> for dw_engine::MasternodeKeyRole {
+    fn from(r: MasternodeKeyRole) -> Self {
+        match r {
+            MasternodeKeyRole::Owner => Self::Owner,
+            MasternodeKeyRole::Voting => Self::Voting,
+            MasternodeKeyRole::Operator => Self::Operator,
+            MasternodeKeyRole::PlatformNode => Self::PlatformNode,
+        }
+    }
 }
 
-/// Where withdrawn evonode credits go (iOS withdrawal sheet).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum CreditWithdrawalDestination {
-    /// The registered payout address (no choice with only the payout key).
-    PayoutAddress,
-    /// Any Core address (needs the owner key).
-    Address { address: String },
+impl From<dw_engine::MasternodeKeyRole> for MasternodeKeyRole {
+    fn from(r: dw_engine::MasternodeKeyRole) -> Self {
+        use dw_engine::MasternodeKeyRole as R;
+        match r {
+            R::Owner => Self::Owner,
+            R::Voting => Self::Voting,
+            R::Operator => Self::Operator,
+            R::PlatformNode => Self::PlatformNode,
+        }
+    }
+}
+
+impl From<dw_engine::EngineError> for MasternodeError {
+    fn from(e: dw_engine::EngineError) -> Self {
+        use dw_engine::EngineError as E;
+        use dw_engine::MasternodeFailure as F;
+        use dw_vault::VaultError as V;
+        let detail = e.to_string();
+        match e {
+            E::Masternode(F::WatchOnly) | E::Vault(V::NoSecret) => Self::WatchOnly,
+            E::Masternode(F::VaultLocked) | E::Vault(V::NoVault | V::Locked | V::MixingOnly) => {
+                Self::VaultLocked
+            }
+            E::Masternode(F::GrantInvalid)
+            | E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,
+            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
+            E::WalletNotFound(_) => Self::WalletNotFound { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            _ => Self::Internal { detail },
+        }
+    }
 }
 
 #[uniffi::export]
 impl NetworkSession {
     /// Derived provider keys of `role` for indexes `start..start+count`
-    /// (count ≤ 100), with where each is used. Public data, no grant.
+    /// (count ≤ 100). Public data, no grant.
     pub async fn masternode_keys(
         &self,
         wallet_id: String,
@@ -121,140 +170,21 @@ impl NetworkSession {
         ensure_open(&self.inner)?;
         not_implemented("NetworkSession.masternode_keys")
     }
-
-    /// Finds masternodes in the list by IP, `IP:port`, proTxHash, owner /
-    /// voting / payout address or operator key (IOS-082 "Track any
-    /// masternode").
-    pub async fn locate_masternodes(
-        &self,
-        query: String,
-    ) -> Result<Vec<MasternodeRow>, MasternodeError> {
-        let _ = query;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.locate_masternodes")
-    }
-
-    pub async fn tracked_masternodes(&self) -> Result<Vec<TrackedMasternode>, MasternodeError> {
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.tracked_masternodes")
-    }
-
-    pub async fn track_masternode(
-        &self,
-        pro_tx_hash: String,
-        label: Option<String>,
-    ) -> Result<TrackedMasternode, MasternodeError> {
-        let _ = label;
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.track_masternode")
-    }
-
-    /// Stops tracking and deletes its attached keys from the vault.
-    /// `false` when it was not tracked.
-    pub async fn untrack_masternode(&self, pro_tx_hash: String) -> Result<bool, MasternodeError> {
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.untrack_masternode")
-    }
-
-    pub async fn set_tracked_masternode_label(
-        &self,
-        pro_tx_hash: String,
-        label: Option<String>,
-    ) -> Result<(), MasternodeError> {
-        let _ = label;
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.set_tracked_masternode_label")
-    }
-
-    /// Attaches a private key to a tracked masternode: WIF or hex for
-    /// secp256k1 roles, hex for BLS, hex/base64 for ed25519. The key must
-    /// match the masternode's registered key for `role`
-    /// (`masternode.invalid_key`). Stored in the vault; `MasternodeOp`
-    /// grant. The bytes are wiped when the call returns.
-    pub async fn attach_masternode_key(
-        &self,
-        pro_tx_hash: String,
-        role: MasternodeKeyRole,
-        mut key: Vec<u8>,
-        grant_id: String,
-    ) -> Result<(), MasternodeError> {
-        key.zeroize();
-        let _ = (role, grant_id);
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.attach_masternode_key")
-    }
-
-    pub async fn detach_masternode_key(
-        &self,
-        pro_tx_hash: String,
-        role: MasternodeKeyRole,
-    ) -> Result<(), MasternodeError> {
-        let _ = role;
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.detach_masternode_key")
-    }
-
-    /// Evonode Platform status (IOS-080/081). Platform query: may land in
-    /// M4 (`NotImplemented { call: "NetworkSession.evonode_status.platform" }`
-    /// until then).
-    pub async fn evonode_status(
-        &self,
-        pro_tx_hash: String,
-    ) -> Result<EvonodePlatformStatus, MasternodeError> {
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.evonode_status.platform")
-    }
-
-    /// Withdraws evonode credits to Core (IOS-081, tracked withdraw
-    /// IOS-082). Signs with the owner or payout key a wallet derives or a
-    /// tracked masternode has attached; `MasternodeOp` grant. Platform state
-    /// transition: may land in M4 (`.platform` call name until then).
-    /// Returns the withdrawal's state-transition id.
-    pub async fn withdraw_evonode_credits(
-        &self,
-        pro_tx_hash: String,
-        amount: u64,
-        destination: CreditWithdrawalDestination,
-        grant_id: String,
-    ) -> Result<String, MasternodeError> {
-        let _ = (amount, destination, grant_id);
-        parse_pro_tx_hash(&pro_tx_hash)?;
-        ensure_open(&self.inner)?;
-        not_implemented("NetworkSession.withdraw_evonode_credits.platform")
-    }
 }
 
 #[uniffi::export]
 impl Vault {
-    /// Reveals one provider private key of a wallet (IOS-083) or attached
-    /// to a tracked masternode (`wallet_id = None`, `index` ignored).
-    /// `RevealSecret` grant.
+    /// Reveals one provider private key of a wallet (IOS-083).
+    /// `RevealSecret` grant for that wallet.
     pub async fn reveal_masternode_key(
         &self,
-        wallet_id: Option<String>,
-        pro_tx_hash: Option<String>,
+        wallet_id: String,
         role: MasternodeKeyRole,
         index: u32,
         grant_id: String,
     ) -> Result<RevealedMasternodeKey, MasternodeError> {
         let _ = (role, index, grant_id);
-        if let Some(w) = &wallet_id {
-            parse_wallet_id(w)?;
-        }
-        if let Some(h) = &pro_tx_hash {
-            parse_pro_tx_hash(h)?;
-        }
-        if wallet_id.is_some() == pro_tx_hash.is_some() {
-            return Err(MasternodeError::InvalidArgument {
-                detail: "pass exactly one of wallet_id and pro_tx_hash".to_string(),
-            });
-        }
+        parse_wallet_id(&wallet_id)?;
         ensure_open(&self.session)?;
         not_implemented("Vault.reveal_masternode_key")
     }

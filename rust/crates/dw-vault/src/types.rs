@@ -94,8 +94,6 @@ pub enum GrantPurpose {
     SignMessage,
     ChangeCredential,
     Wipe,
-    MasternodeOp,
-    Governance,
     PlatformOp,
 }
 
@@ -107,8 +105,6 @@ pub enum GrantKind {
     SignMessage,
     ChangeCredential,
     Wipe,
-    MasternodeOp,
-    Governance,
     PlatformOp,
 }
 
@@ -120,8 +116,6 @@ impl GrantPurpose {
             GrantPurpose::SignMessage => GrantKind::SignMessage,
             GrantPurpose::ChangeCredential => GrantKind::ChangeCredential,
             GrantPurpose::Wipe => GrantKind::Wipe,
-            GrantPurpose::MasternodeOp => GrantKind::MasternodeOp,
-            GrantPurpose::Governance => GrantKind::Governance,
             GrantPurpose::PlatformOp => GrantKind::PlatformOp,
         }
     }
@@ -146,11 +140,7 @@ impl GrantPurpose {
     pub(crate) fn signs(&self) -> bool {
         matches!(
             self,
-            GrantPurpose::Spend { .. }
-                | GrantPurpose::SignMessage
-                | GrantPurpose::MasternodeOp
-                | GrantPurpose::Governance
-                | GrantPurpose::PlatformOp
+            GrantPurpose::Spend { .. } | GrantPurpose::SignMessage | GrantPurpose::PlatformOp
         )
     }
 }

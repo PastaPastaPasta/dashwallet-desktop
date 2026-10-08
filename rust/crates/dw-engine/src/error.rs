@@ -117,12 +117,9 @@ pub enum EngineError {
     /// A CoinJoin call failed (`coinjoin.*` codes, M3).
     #[error("coinjoin: {0}")]
     CoinJoin(crate::coinjoin::CoinJoinFailure),
-    /// A governance call failed (`governance.*` codes, M3).
-    #[error("governance: {0}")]
-    Governance(crate::governance::GovernanceFailure),
-    /// A masternode or ProTx call failed (`masternode.*` codes, M3).
+    /// A masternode keychain call failed (`masternode.*` codes, M3).
     #[error("masternode: {0}")]
-    Masternode(crate::masternodes::MasternodeFailure),
+    Masternode(crate::masternode_keys::MasternodeFailure),
 }
 
 impl EngineError {
@@ -168,7 +165,6 @@ impl EngineError {
             EngineError::Backup(_) => "backup",
             EngineError::Psbt(_) => "psbt",
             EngineError::CoinJoin(_) => "coinjoin",
-            EngineError::Governance(_) => "governance",
             EngineError::Masternode(_) => "masternode",
         }
     }

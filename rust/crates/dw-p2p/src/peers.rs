@@ -5,9 +5,7 @@
 //! `AddUsedMasternode`/`IsUsedMasternode`/`RemoveUsedMasternodes`,
 //! `src/masternode/meta.h`; the 90 %/70 % trimming of
 //! `CCoinJoinClientManager::DoAutomaticDenominating`,
-//! `src/coinjoin/client.cpp:1231-1242`). Governance asks any full node; the
-//! SPV list only knows masternodes (every one is a full node), so
-//! [`PeerPicker::full_nodes`] returns them plus the configured peers.
+//! `src/coinjoin/client.cpp:1231-1242`).
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -32,15 +30,13 @@ pub struct PeerEntry {
 #[derive(Debug, Clone, Default)]
 pub struct PeerPicker {
     entries: Vec<PeerEntry>,
-    extra_full_nodes: Vec<SocketAddr>,
     used: VecDeque<[u8; 32]>,
 }
 
 impl PeerPicker {
-    pub fn new(entries: Vec<PeerEntry>, extra_full_nodes: Vec<SocketAddr>) -> Self {
+    pub fn new(entries: Vec<PeerEntry>) -> Self {
         Self {
             entries,
-            extra_full_nodes,
             used: VecDeque::new(),
         }
     }
@@ -61,17 +57,6 @@ impl PeerPicker {
     /// `ForEachMN(onlyValid=true)` count, the `enabled` of Core's list counts.
     pub fn enabled_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_valid).count()
-    }
-
-    /// Addresses of full nodes: valid masternodes, then the configured peers.
-    pub fn full_nodes(&self) -> Vec<SocketAddr> {
-        let mut out: Vec<SocketAddr> = self.masternodes().filter_map(|e| e.service).collect();
-        for a in &self.extra_full_nodes {
-            if !out.contains(a) {
-                out.push(*a);
-            }
-        }
-        out
     }
 
     pub fn by_pro_tx_hash(&self, hash: &[u8; 32]) -> Option<&PeerEntry> {
@@ -135,10 +120,7 @@ mod tests {
 
     #[test]
     fn picks_only_valid_unused_masternodes() {
-        let mut p = PeerPicker::new(
-            vec![entry(1, true), entry(2, false), entry(3, true)],
-            vec![],
-        );
+        let mut p = PeerPicker::new(vec![entry(1, true), entry(2, false), entry(3, true)]);
         assert_eq!(p.enabled_count(), 2);
         p.mark_used([1; 32]);
         for _ in 0..20 {
@@ -151,7 +133,7 @@ mod tests {
     #[test]
     fn trims_the_used_ring_like_core() {
         let entries: Vec<_> = (1..=10).map(|i| entry(i, true)).collect();
-        let mut p = PeerPicker::new(entries, vec![]);
+        let mut p = PeerPicker::new(entries);
         for i in 1..=10 {
             p.mark_used([i; 32]);
         }
@@ -159,12 +141,5 @@ mod tests {
         p.trim_used();
         assert_eq!(p.used_count(), 6);
         assert!(!p.is_used(&[1; 32]) && p.is_used(&[10; 32]));
-    }
-
-    #[test]
-    fn full_nodes_include_configured_peers_once() {
-        let extra = SocketAddr::from(([127, 0, 0, 1], 19899));
-        let p = PeerPicker::new(vec![entry(1, true)], vec![extra, extra]);
-        assert_eq!(p.full_nodes().len(), 2);
     }
 }

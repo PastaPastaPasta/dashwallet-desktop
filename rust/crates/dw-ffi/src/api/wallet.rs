@@ -232,7 +232,6 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::Backup(_)
             | E::Psbt(_)
             | E::CoinJoin(_)
-            | E::Governance(_)
             | E::Masternode(_)
             | E::Internal(_) => Self::Internal { detail },
         }

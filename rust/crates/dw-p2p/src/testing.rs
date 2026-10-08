@@ -1,5 +1,5 @@
 //! An in-process mock peer for tests of this crate and its consumers
-//! (CoinJoin and governance sessions): it listens on loopback, answers the
+//! (CoinJoin sessions): it listens on loopback, answers the
 //! handshake like Dash Core, and lets the test read and write raw messages.
 
 use std::net::SocketAddr;

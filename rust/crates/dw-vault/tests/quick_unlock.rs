@@ -131,8 +131,6 @@ fn test_IOS_011_quick_unlock_never_reveals_wipes_or_changes_credentials() {
         (GrantPurpose::RevealSecret, Some(wallet(1))),
         (GrantPurpose::Wipe, Some(wallet(1))),
         (GrantPurpose::ChangeCredential, None),
-        (GrantPurpose::MasternodeOp, Some(wallet(1))),
-        (GrantPurpose::Governance, Some(wallet(1))),
         (GrantPurpose::PlatformOp, Some(wallet(1))),
     ] {
         assert_eq!(

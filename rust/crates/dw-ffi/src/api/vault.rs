@@ -102,10 +102,6 @@ pub enum GrantPurpose {
     ChangeCredential,
     /// `NetworkSession::remove_wallet`.
     Wipe,
-    /// ProTx operations (M3).
-    MasternodeOp,
-    /// Governance votes and proposals (M3).
-    Governance,
     /// Identity, DPNS, DashPay, credits, shielded (M4).
     PlatformOp,
 }
@@ -334,8 +330,6 @@ impl From<GrantPurpose> for dw_vault::GrantPurpose {
             GrantPurpose::SignMessage => Self::SignMessage,
             GrantPurpose::ChangeCredential => Self::ChangeCredential,
             GrantPurpose::Wipe => Self::Wipe,
-            GrantPurpose::MasternodeOp => Self::MasternodeOp,
-            GrantPurpose::Governance => Self::Governance,
             GrantPurpose::PlatformOp => Self::PlatformOp,
         }
     }
@@ -350,8 +344,6 @@ impl From<dw_vault::GrantPurpose> for GrantPurpose {
             P::SignMessage => Self::SignMessage,
             P::ChangeCredential => Self::ChangeCredential,
             P::Wipe => Self::Wipe,
-            P::MasternodeOp => Self::MasternodeOp,
-            P::Governance => Self::Governance,
             P::PlatformOp => Self::PlatformOp,
         }
     }

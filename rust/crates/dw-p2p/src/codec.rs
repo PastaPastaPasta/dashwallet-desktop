@@ -3,7 +3,7 @@
 //! the first 4 bytes of the payload's double SHA-256, then the payload.
 //!
 //! The crate frames every message itself and leaves payloads as bytes:
-//! CoinJoin and governance messages have no typed `NetworkMessage` variant
+//! CoinJoin messages have no typed `NetworkMessage` variant
 //! in dashcore, and decoding unrelated traffic (headers, inv, addr) would
 //! only add ways for a session to fail.
 

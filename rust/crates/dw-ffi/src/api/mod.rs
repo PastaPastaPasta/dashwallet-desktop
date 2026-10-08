@@ -35,16 +35,13 @@ mod r2_tests;
 pub mod tools;
 pub mod tx_actions;
 pub mod vault_m2;
-// M3 (docs/contracts/m3-engine.md). Owners: coinjoin + network_stats R1,
-// governance R2, masternode + protx + masternode_keys R3.
+// M3 (docs/contracts/m3-engine.md): CoinJoin, the Network sub-tab and the
+// masternode keychain.
 pub mod coinjoin;
-pub mod governance;
 #[cfg(test)]
 mod m3_tests;
-pub mod masternode;
 pub mod masternode_keys;
 pub mod network_stats;
-pub mod protx;
 
 pub use backup::*;
 pub use coinjoin::*;
@@ -56,15 +53,12 @@ pub use desktop::*;
 pub use engine::*;
 pub use error::*;
 pub use fees::*;
-pub use governance::*;
 pub use history::*;
 pub use labels::*;
-pub use masternode::*;
 pub use masternode_keys::*;
 pub use message::*;
 pub use multiwallet::*;
 pub use network_stats::*;
-pub use protx::*;
 pub use psbt::*;
 pub use receive::*;
 pub use send::*;
