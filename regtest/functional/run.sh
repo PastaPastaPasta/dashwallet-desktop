@@ -28,6 +28,7 @@ umask 077
 dashcore=${DASHCORE_DIR:-/opt/dashcore}
 scratch=${DWD_FUNC_TMP:-${TMPDIR:-/tmp}/dwd-functional}
 mkdir -p "$scratch"
+chmod 700 "$scratch"  # an older run may have left it group-writable
 
 for bin in dashd dash-cli dash-util dash-wallet; do
     if [ ! -x "$dashcore/bin/$bin" ]; then
