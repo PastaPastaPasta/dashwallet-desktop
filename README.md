@@ -153,13 +153,22 @@ app, dwcli and the tests never rely on the umask:
 
 - The directories on the path to a database or secret are created 0700: the data root and any missing
   parents (a new `~/.local/share` too), the network directories, `backups/` (with storage's
-  `backups/auto`), `spv/` and the vault. The databases, the vault, backups and exports are 0600
+  `backups/auto`), `spv/` and the vault. The databases, the vault, backups and key exports are 0600
   (`app.sqlite` too), and so are the settings files and the open-session marker. What dash-spv writes
   inside `spv/` takes the umask's mode, behind the 0700 network directory.
+- Files written outside the data root are created 0600 too: CSV exports (transactions, address book),
+  saved PSBTs and the log-export zip. Saving over an existing file replaces it with a new 0600 one.
 - What the app owns loses group and other access when it already has it (an older build created it with
   the umask's mode): the default data root (the Swift app logs it on stderr), and the network
-  directories, `backups/`, `spv/` and `app.sqlite` (the engine logs a warning). The settings files
-  become 0600 on their next write. Symlinks are left alone.
+  directories, `backups/`, `backups/auto/`, `spv/`, the vault directory and `app.sqlite` (the engine
+  logs a warning). The settings files are replaced by 0600 ones on their next write.
+- Modes are changed through a descriptor, never by path: each directory is opened with
+  `O_NOFOLLOW` relative to its parent (`rust/crates/dw-fs`, `PrivateFileSystem.swift`; `O_PATH` on
+  Linux, so a search-only parent such as a 0711 `/home` is fine), so a symlink swapped in after the
+  check is not followed. A symlink in place of one of the app's directories is followed but nothing
+  behind it changes, and nothing changes below a directory another user can write; both are logged.
+  One of the app's directories that another user owns is an error naming it. Root and the owner of
+  `/` (root inside a Flatpak or other user namespace) count as the user, as in the storage check.
 - An existing `--datadir` or chosen directory, and every existing parent, keep their mode: they are
   the user's. If one is group-writable, opening the network fails and the storage error (on stderr)
   names it and the `chmod go-w` that fixes it. On agentbox `~/workspace/dw-wt` is 0775, so do not
