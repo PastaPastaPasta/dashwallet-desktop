@@ -189,8 +189,9 @@ targets build and test in the pinned `swift:6.3.3-noble` image:
 scripts/linux-docker-test.sh
 ```
 
-Builds `ci/linux/Dockerfile.swift` (swift:6.3.3-noble + Rust 1.98.1 + protoc)
-if missing, copies the repo into the container, builds the Linux artifact
+Builds `ci/linux/Dockerfile.swift` (swift:6.3.3-noble + Rust 1.98.1 + protoc) as
+`dwd-linux-swift:<first 12 hex digits of the Dockerfile's SHA-256>` if missing, so an edited
+Dockerfile gets a new image (`DWD_LINUX_IMAGE` names another image), copies the repo into the container, builds the Linux artifact
 variant, checks the committed bindings, and runs `DashKitTests`,
 `DesignTokensTests`, `RepoChecksTests`, `WalletRuntimeTests`, `WalletFeaturesTests`,
 `PlatformServicesDesktopTests` and `SwiftCrossUIPatchTests` with `DWD_HEADLESS=1`. That variable

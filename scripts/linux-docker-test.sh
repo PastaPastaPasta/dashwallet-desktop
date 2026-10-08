@@ -12,9 +12,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${DWD_LINUX_IMAGE:-dwd-linux-swift}"
 # shellcheck source=scripts/docker-volumes.sh
 source "$ROOT/scripts/docker-volumes.sh"
+# Tagged by the Dockerfile's hash: an edited Dockerfile gets a new image instead of a stale one.
+if command -v sha256sum >/dev/null 2>&1; then
+  dockerfile_hash="$(sha256sum "$ROOT/ci/linux/Dockerfile.swift" | cut -c1-12)"
+else
+  dockerfile_hash="$(shasum -a 256 "$ROOT/ci/linux/Dockerfile.swift" | cut -c1-12)"
+fi
+IMAGE="${DWD_LINUX_IMAGE:-dwd-linux-swift:$dockerfile_hash}"
 
 "$ROOT/scripts/disk-guard.sh"
 
