@@ -1,0 +1,368 @@
+# CI on Linux, macOS and Windows (DEC-13, roadmap T-03).
+#
+# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux.
+# - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
+#   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
+#   under Xvfb with a screenshot.
+# - macos: engine tests, every Swift suite (MacUITests render the screens offscreen),
+#   the macOS app built with XcodeGen + xcodebuild, installed to /Applications and launched,
+#   with screenshots.
+# - windows: engine build, tests and clippy (MSVC). windows-swift builds the Swift side and
+#   dash-wallet (WinUIBackend), whose launch still crashes; it does not fail the run
+#   (docs/ci.md, "Known gaps").
+#
+# Every `run` step uses bash with pipefail (Git Bash on Windows) unless it says otherwise.
+# Screenshots and logs are uploaded as the `screenshots-<os>` artifacts.
+name: CI
+
+on:
+  push:
+    branches: [main, "dw/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# A new push cancels its branch's running CI. Every run on main gets its own group (its commit),
+# so a queued main run is never superseded either.
+concurrency:
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  # scripts/disk-guard.sh: hosted runners have less free disk than a dev machine.
+  DWD_MIN_FREE_GB: "5"
+  # The headless suites of scripts/linux-docker-test.sh.
+  DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests
+
+jobs:
+  lint:
+    name: Rust lint (fmt, clippy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Linux packages for the workspace (WebKitGTK for dw-app)
+        working-directory: .
+        run: ci/github/linux-host-deps.sh rust
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rust-linux:
+    name: Rust tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        working-directory: .
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Linux packages for the workspace (WebKitGTK for dw-app)
+        working-directory: .
+        run: ci/github/linux-host-deps.sh rust
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - run: cargo test --workspace --no-run --locked
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  swift-linux:
+    name: Swift + UI T0 (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: Linux packages (GTK 4, Xvfb, AT-SPI)
+        run: ci/github/linux-host-deps.sh swiftcrossui
+      - name: Swift 6.3.3 (swiftly)
+        run: ci/github/linux-swiftly.sh 6.3.3
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/repositories
+            ~/.cache/org.swift.swiftpm
+          key: swiftpm-linux-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-linux-
+      - name: Rust core bundle (and check the committed bindings)
+        run: scripts/build-core.sh --check-bindings
+      # By product: a plain `swift build --build-tests` also compiles swift-winui's
+      # Windows-only C targets, which fail on Linux.
+      - name: swift build (test product and dash-wallet, with GTK)
+        run: |
+          swift build --product DashWalletDesktopPackageTests
+          swift build --product dash-wallet
+      - name: swift test (headless suites + DashUICrossTests)
+        run: |
+          "$(swift build --show-bin-path)/DashWalletDesktopPackageTests.xctest" --testing-library swift-testing \
+            --filter "$DWD_SWIFT_LINUX_SUITES|DashUICrossTests"
+      - name: Launch dash-wallet --demo under Xvfb and take a screenshot
+        env:
+          DWD_SHOT_SETTLE: "60"
+        run: ci/github/linux-launch-screenshot.sh "$(swift build --show-bin-path)/dash-wallet" screenshots 20
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots-linux
+          path: screenshots/
+          if-no-files-found: warn
+
+  macos:
+    name: macOS (engine, Swift, app)
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          df -h /System/Volumes/Data
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/repositories
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-macos-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-macos-
+      - name: cargo test --workspace
+        working-directory: rust
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Rust core bundle (and check the committed bindings)
+        run: scripts/build-core.sh --check-bindings
+      - name: swift build
+        run: swift build --build-tests
+      - name: swift test (every suite; MacUITests also write the offscreen screenshots)
+        env:
+          DWD_WRITE_SCREENSHOTS: "1"
+        run: swift test --skip-build
+      - name: Build the macOS app (XcodeGen + xcodebuild)
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          (cd Apps/macOS && xcodegen generate)
+          xcodebuild -quiet -project Apps/macOS/DashWallet.xcodeproj -scheme DashWallet -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' -derivedDataPath .derived build
+      - name: Install to /Applications
+        run: |
+          sudo ditto ".derived/Build/Products/Debug/Dash Wallet.app" "/Applications/Dash Wallet.app"
+          codesign --verify --verbose "/Applications/Dash Wallet.app"
+      - name: Launch the installed app (demo, light and dark) and take screenshots
+        run: |
+          app="/Applications/Dash Wallet.app"
+          ci/github/macos-launch-screenshot.sh macos-app-light screenshots 20 "$app" --demo --appearance light
+          ci/github/macos-launch-screenshot.sh macos-app-dark screenshots 20 "$app" --demo --appearance dark
+      # Known gap (docs/ci.md): this development build crashes at launch on the runner; G-03
+      # measures SwiftCrossUI on macOS. On a crash, an lldb backtrace is uploaded with the screenshots.
+      - name: Launch dash-wallet (SwiftCrossUI, AppKitBackend) and take a screenshot
+        continue-on-error: true
+        run: |
+          bin="$(swift build --show-bin-path)/dash-wallet"
+          ci/github/macos-launch-screenshot.sh macos-crossui-demo screenshots 20 "$bin" --demo && exit 0
+          perl -e 'alarm shift; exec @ARGV' 120 lldb --batch -o run -k 'thread backtrace all' -k quit -- "$bin" --demo \
+            > screenshots/macos-crossui-demo-backtrace.txt 2>&1 || true
+          grep -m1 -A40 'stop reason' screenshots/macos-crossui-demo-backtrace.txt || tail -n 40 screenshots/macos-crossui-demo-backtrace.txt
+          exit 1
+      - name: Collect the offscreen renders and crash reports
+        if: always()
+        run: |
+          mkdir -p screenshots/crash-reports
+          find ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports -maxdepth 1 \( -name 'dash-wallet*' -o -name 'Dash Wallet*' \) \
+            -exec cp {} screenshots/crash-reports/ \; 2>/dev/null || true
+          [[ ! -d docs/screenshots/ux/mac ]] || cp -R docs/screenshots/ux/mac screenshots/offscreen
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots-macos
+          path: screenshots/
+          if-no-files-found: warn
+
+  windows:
+    name: Windows (engine)
+    runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      # Long paths for cargo's git checkouts; LF checkouts so the committed bindings and scripts
+      # compare and run as on the other OSes.
+      - name: Git for Windows settings
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Disk space
+        run: df -h . || true
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - name: cargo build --workspace
+        working-directory: rust
+        run: cargo build --workspace --locked
+      # dw-app (Tauri, G-01) is left out until its test binaries embed the Common Controls v6
+      # manifest: without it they fail to load on Windows (tauri#13419; docs/ci.md, "Known gaps").
+      # Until dw-app exists cargo only warns about the exclusion.
+      - name: cargo test --workspace (without dw-app)
+        working-directory: rust
+        run: cargo test --workspace --exclude dw-app --locked --no-fail-fast
+      - name: cargo clippy (the Windows code paths)
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # Known gap (docs/ci.md): the Swift app is not built on Windows yet; G-03 brings up
+  # WinUIBackend. This job tracks how far the Swift side gets without failing the run: the
+  # Windows variant of the Rust core bundle, the headless Swift suites, and dash-wallet
+  # (launched with a screenshot once it builds).
+  windows-swift:
+    name: Windows Swift (known gap, non-blocking)
+    runs-on: windows-latest
+    timeout-minutes: 150
+    continue-on-error: true
+    env:
+      # As in the windows job (ci/windows/unistd-shim/unistd.h).
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      # Long paths for cargo's git checkouts; LF checkouts so the committed bindings and scripts
+      # compare and run as on the other OSes.
+      - name: Git for Windows settings
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
+        with:
+          swift-version: swift-6.3.3-release
+          swift-build: 6.3.3-RELEASE
+      - name: Rust core bundle (windows-x86_64 variant)
+        run: scripts/build-core.sh --check-bindings
+      - name: swift build (headless)
+        id: headless
+        shell: pwsh
+        env:
+          DWD_HEADLESS: "1"
+        run: |
+          swift --version
+          swift build --build-tests
+      - name: swift test (headless suites)
+        if: ${{ !cancelled() && steps.headless.outcome == 'success' }}
+        shell: pwsh
+        env:
+          DWD_HEADLESS: "1"
+        run: swift test --skip-build --filter "$env:DWD_SWIFT_LINUX_SUITES"
+      - name: swift build dash-wallet (WinUIBackend)
+        id: app
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: swift build --product dash-wallet
+      # WinUIBackend needs the Windows App Runtime 1.5, which windows-latest lacks: without it the
+      # app stops at "This application requires the Windows App Runtime" (run 37804634973).
+      # Pinned: the installer aka.ms/windowsappsdk/1.5/latest resolved to on 2026-10-08, which installs
+      # Microsoft.WindowsAppRuntime.1.5 5001.373.1736.0. Checked by SHA-256 and by a valid
+      # Authenticode signature from Microsoft Corporation before it runs.
+      - name: Windows App Runtime 1.5
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $url = 'https://download.microsoft.com/download/4f5a8b87-f017-485d-8cf7-c16e82671dbe/WindowsAppRuntimeInstall-x64.exe'
+          $sha256 = '7418DC8DC18CFEE1CDC1B087A326EA6FD66E2E3A5E1C76D49FA948737A83A45E'
+          $installer = Join-Path $env:RUNNER_TEMP 'WindowsAppRuntimeInstall-x64.exe'
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($hash -ne $sha256) { throw "Windows App Runtime installer SHA-256 $hash, expected $sha256" }
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation,') {
+            throw "Windows App Runtime installer signature: $($signature.Status), $($signature.SignerCertificate.Subject)"
+          }
+          Write-Host "verified: SHA-256 $hash, signed by $($signature.SignerCertificate.Subject)"
+          & $installer --quiet --force
+          if ($LASTEXITCODE -ne 0) { throw "Windows App Runtime installer exited with $LASTEXITCODE" }
+          Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime.1.5*' | Select-Object Name, Version | Format-Table
+      - name: Launch dash-wallet --demo and take a screenshot
+        # !cancelled(): without a status function `if` also requires every earlier step to pass.
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $bin = swift build --show-bin-path
+          ci/github/windows-launch-screenshot.ps1 -Name windows-crossui-demo -OutDir screenshots `
+            -Exe (Join-Path $bin 'dash-wallet.exe') -ArgumentList '--demo'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots-windows
+          path: screenshots/
+          if-no-files-found: ignore

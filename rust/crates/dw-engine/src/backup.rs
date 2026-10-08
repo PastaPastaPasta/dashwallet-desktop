@@ -902,6 +902,8 @@ mod tests {
     /// Review M4: a user backup and an automatic backup of the same wallet
     /// at the same time both succeed and touch no shared file; the network
     /// directory gets no temporary copy (it can even be read-only).
+    // Unix modes: the network directory is made read-only and backups must be 0600.
+    #[cfg(unix)]
     #[test]
     fn user_and_automatic_backups_of_one_wallet_run_together() {
         use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};

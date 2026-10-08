@@ -8,7 +8,8 @@
 # Outputs:
 #   Sources/DashWalletCore/Generated/DashWalletCore.swift      (committed)
 #   Artifacts/DashWalletCore.artifactbundle/<variant>/          (gitignored)
-#       libdashwallet_core.a, source-stamp (hash of rust/ sources)
+#       libdashwallet_core.a (dashwallet_core.lib on Windows),
+#       source-stamp (hash of rust/ sources)
 #       include/DashWalletCoreFFI.h, include/module.modulemap
 #   Artifacts/DashWalletCore.artifactbundle/info.json           (variants built from
 #                                                                the current sources)
@@ -34,7 +35,7 @@ while [[ $# -gt 0 ]]; do
     --no-bindings) bindings=0; shift ;;
     # Do not write bindings; fail if the committed ones differ (CI check).
     --check-bindings) bindings=0; check_bindings=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "build-core: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -53,6 +54,8 @@ case "$triple" in
   x86_64-apple-darwin)        variant=macos-x86_64;   swift_triples='"x86_64-apple-macosx"' ;;
   x86_64-unknown-linux-gnu)   variant=linux-x86_64;   swift_triples='"x86_64-unknown-linux-gnu"' ;;
   aarch64-unknown-linux-gnu)  variant=linux-aarch64;  swift_triples='"aarch64-unknown-linux-gnu"' ;;
+  # Windows CI only for now (docs/ci.md): no app is built there yet.
+  x86_64-pc-windows-msvc)     variant=windows-x86_64; swift_triples='"x86_64-unknown-windows-msvc"' ;;
   *) echo "build-core: unsupported triple $triple" >&2; exit 2 ;;
 esac
 
@@ -112,19 +115,22 @@ echo "build-core: cargo rustc -p dw-ffi ($triple, $profile) -> $CARGO_TARGET_DIR
 (cd "$RUST_DIR" && cargo rustc -p dw-ffi --lib --profile "$profile" ${target_args[@]+"${target_args[@]}"} \
     -- --print native-static-libs) 2>&1 | tee "$log"
 
-native_libs="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1)"
+# Without colour codes: under CARGO_TERM_COLOR=always (CI) the line ends in an ANSI reset, which
+# would turn the last library, -lc, into a link directive for "c<ESC>[0m".
+esc="$(printf '\033')"
+native_libs="$(sed -n 's/.*native-static-libs: //p' "$log" | tail -1 | sed "s/${esc}\[[0-9;]*m//g")"
 if [[ -z "$native_libs" ]]; then
   echo "build-core: rustc printed no native-static-libs line" >&2
   exit 1
 fi
 
-lib="$out_dir/libdashwallet_core.a"
-[[ -f "$lib" ]] || { echo "build-core: $lib not found" >&2; exit 1; }
-
 case "$triple" in
-  *apple-darwin) dylib="$out_dir/libdashwallet_core.dylib" ;;
-  *) dylib="$out_dir/libdashwallet_core.so" ;;
+  *apple-darwin) lib_name=libdashwallet_core.a; dylib="$out_dir/libdashwallet_core.dylib" ;;
+  *windows-msvc) lib_name=dashwallet_core.lib; dylib="$out_dir/dashwallet_core.dll" ;;
+  *) lib_name=libdashwallet_core.a; dylib="$out_dir/libdashwallet_core.so" ;;
 esac
+lib="$out_dir/$lib_name"
+[[ -f "$lib" ]] || { echo "build-core: $lib not found" >&2; exit 1; }
 
 gen_tmp="$(mktemp -d "${TMPDIR:-/tmp}/uniffi-gen.XXXXXX")"
 trap 'rm -f "$log"; rm -rf "$gen_tmp"' EXIT
@@ -154,7 +160,32 @@ rm -rf "$vdir"
 mkdir -p "$vdir/include"
 cp "$gen_tmp/DashWalletCoreFFI.h" "$vdir/include/DashWalletCoreFFI.h"
 # Same filesystem: hard link (dev archives are several hundred MB). Else copy.
-ln -f "$lib" "$vdir/libdashwallet_core.a" 2>/dev/null || cp "$lib" "$vdir/libdashwallet_core.a"
+# MSVC: some import libraries come from crates rather than the Windows SDK (windows-targets
+# ships windows.0.52.0.lib in its own directory), and a Swift link does not search there. Merge
+# them into the static library, and leave them out of the module map below.
+merged_libs=" "
+if [[ "$triple" == *windows-msvc ]]; then
+  crate_libs=()
+  # Git Bash: native Windows paths, and no MSYS rewriting of llvm-lib's -out: argument.
+  winpath() { cygpath -w "$1"; }
+  for native in $native_libs; do
+    [[ "$native" == *.lib && "$merged_libs" != *" $native "* ]] || continue
+    # The target architecture's copy (windows_x86_64_msvc-*/lib/, not windows_aarch64_msvc-*),
+    # newest version first when the registry holds several.
+    found="$( (find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path "*_${triple%%-*}_msvc-*/lib/$native" \
+      2>/dev/null || true) | sort -V | tail -n 1)"
+    if [[ -n "$found" ]]; then
+      crate_libs+=("$(winpath "$found")"); merged_libs+="$native "
+    elif [[ "$native" == windows*.lib ]]; then
+      echo "build-core: warning: $native not found in the cargo registry; the Swift link will need it" >&2
+    fi
+  done
+  if (( ${#crate_libs[@]} )); then
+    echo "build-core: merging crate import libraries into $lib_name:${merged_libs% }"
+    MSYS_NO_PATHCONV=1 llvm-lib "-out:$(winpath "$vdir/$lib_name")" "$(winpath "$lib")" "${crate_libs[@]}"
+  fi
+fi
+[[ -f "$vdir/$lib_name" ]] || ln -f "$lib" "$vdir/$lib_name" 2>/dev/null || cp "$lib" "$vdir/$lib_name"
 
 # Our own module map: uniffi's generated one carries `use "Darwin"`, which
 # does not exist on Linux.
@@ -170,6 +201,9 @@ ln -f "$lib" "$vdir/libdashwallet_core.a" 2>/dev/null || cp "$lib" "$vdir/libdas
            # libc / libSystem are always linked by the Swift driver.
            [[ "$name" == "c" || "$name" == "System" ]] || echo "    link \"$name\""
            shift ;;
+      # MSVC prints import libraries by file name (kernel32.lib) and /defaultlib: for the CRT,
+      # which the Swift driver links itself.
+      *.lib) [[ "$merged_libs" == *" $1 "* ]] || echo "    link \"${1%.lib}\""; shift ;;
       *) shift ;;
     esac
   done
@@ -180,7 +214,7 @@ echo "$stamp" > "$vdir/source-stamp"
 
 cat > "$vdir/variant.json" <<EOF
         {
-          "path": "$variant/libdashwallet_core.a",
+          "path": "$variant/$lib_name",
           "supportedTriples": [$swift_triples],
           "staticLibraryMetadata": {
             "headerPaths": ["$variant/include"],

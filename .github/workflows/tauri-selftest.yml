@@ -1,0 +1,145 @@
+# Build and launch the Tauri app (G-01: apps/desktop + rust/crates/dw-app) on macOS and Windows
+# runners for G-02 (DASHPAY §2.1, U2/U3/U8). Manual only:
+#
+#   gh workflow run tauri-selftest.yml --ref <branch> -f os=both
+#
+# Per OS: `pnpm tauri build --no-bundle` (release binary), then
+#   1. `dash-wallet <selftest_args> --selftest selftest-<os>.json`: the app renders the four screens in
+#      light and dark, writes the data-testid boxes, style checks, IPC timings and security probes,
+#      and exits (apps/desktop/README.md);
+#   2. `dash-wallet --fixture --theme <theme>` launched again, with a screenshot.
+# Both land in the artifact tauri-<os>. The ref must contain the Tauri app (G-01 or later).
+name: Tauri selftest
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runners
+        type: choice
+        options: [both, macos, windows]
+        default: both
+      selftest_args:
+        description: Arguments before --selftest (default the TypeScript fixture wallet)
+        type: string
+        default: --fixture
+      theme:
+        description: Theme of the screenshot launch
+        type: choice
+        options: [light, dark]
+        default: light
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  DWD_MIN_FREE_GB: "5"
+  SELFTEST_ARGS: ${{ inputs.selftest_args }}
+  THEME: ${{ inputs.theme }}
+
+jobs:
+  selftest:
+    name: Tauri on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os == 'both' && '["macos","windows"]' || format('["{0}"]', inputs.os)) }}
+    runs-on: ${{ fromJSON('{"macos":"macos-latest","windows":"windows-latest"}')[matrix.os] }}
+    timeout-minutes: 240
+    env:
+      # The matrix value for `run:` steps, through the environment rather than an expression.
+      MATRIX_OS: ${{ matrix.os }}
+      # As in ci.yml's Windows jobs (ci/windows/unistd-shim/unistd.h); unused on macOS.
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      - name: Git for Windows settings (long paths, LF checkouts)
+        if: ${{ matrix.os == 'windows' }}
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tauri app present
+        run: |
+          if [[ ! -f apps/desktop/package.json || ! -d rust/crates/dw-app ]]; then
+            echo "::error::${GITHUB_REF_NAME} has no Tauri app (apps/desktop, rust/crates/dw-app). Dispatch on a ref that contains G-01."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/tauri-out"
+          echo "OUT=$RUNNER_TEMP/tauri-out" >> "$GITHUB_ENV"
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: tauri-release
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: pnpm tauri build --no-bundle (renderer + release binary)
+        working-directory: apps/desktop
+        run: |
+          pnpm tauri build --no-bundle
+          exe=dash-wallet; [[ "$MATRIX_OS" != windows ]] || exe=dash-wallet.exe
+          echo "APP=$GITHUB_WORKSPACE/rust/target/release/$exe" >> "$GITHUB_ENV"
+      - name: WebView2 runtime (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          $key = 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $pv = (Get-ItemProperty -Path "HKLM:\$key" -ErrorAction SilentlyContinue).pv
+          if ($pv) { Write-Host "WebView2 runtime $pv" } else { Write-Host "::warning::no WebView2 runtime registered; the app may not start" }
+      - name: --selftest
+        run: |
+          read -ra args <<<"$SELFTEST_ARGS"
+          report="$OUT/selftest-$MATRIX_OS.json"
+          # macOS runners have no coreutils `timeout`; perl's alarm survives the exec.
+          run_limited() { if command -v timeout >/dev/null; then timeout 600 "$@"; else perl -e 'alarm shift; exec @ARGV' 600 "$@"; fi; }
+          start=$(date +%s)
+          run_limited "$APP" ${args[@]+"${args[@]}"} --selftest "$report" >"$OUT/selftest.log" 2>&1 \
+            || { tail -n 40 "$OUT/selftest.log"; echo "::error::--selftest failed or timed out"; exit 1; }
+          [[ -s "$report" ]] || { echo "::error::--selftest wrote no report"; exit 1; }
+          # The app exits 0 whatever it found: judge the report (apps/desktop/src/app/selftest.ts).
+          jq -r --arg os "$MATRIX_OS" --arg took "$(( $(date +%s) - start ))" '
+            "### Tauri --selftest on \($os) (\($took) s)",
+            "- checks: \(.checksTotal) total, \(.checksFailed) failed, \(.checksNotApplicable) not applicable",
+            "- first paint: \(.firstPaintMs // "n/a") ms; shell paint: \(.shellPaintMs // "n/a") ms",
+            (.security // {} | to_entries[] | "- security \(.key): \(.value)")' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The final report only: a checkpoint (final false) lacks the navigation probe.
+          jq -e '.final != false and .security.navigation != null and .checksFailed == 0
+                 and ([.security | .[] | select(startswith("NOT REFUSED"))] | length == 0)' \
+            "$report" >/dev/null || { echo "::error::--selftest reported failed checks or an unrefused security probe"; exit 1; }
+      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (macOS)
+        if: ${{ matrix.os == 'macos' }}
+        run: ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" --fixture --theme "$THEME"
+      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          ci/github/windows-launch-screenshot.ps1 -Name "tauri-windows-$env:THEME" -OutDir $env:OUT -Seconds 30 `
+            -Exe $env:APP -ArgumentList '--fixture', '--theme', $env:THEME
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: tauri-${{ matrix.os }}
+          path: ${{ runner.temp }}/tauri-out/
+          if-no-files-found: warn

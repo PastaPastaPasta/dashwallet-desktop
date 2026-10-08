@@ -167,11 +167,14 @@ fn reopening_and_rerunning_change_nothing() {
 #[test]
 fn shipped_migrations_are_unchanged() {
     let runner = embedded::migrations::runner();
-    let shipped: Vec<(i64, String, u64)> = runner
+    let mut shipped: Vec<(i64, String, u64)> = runner
         .get_migrations()
         .iter()
         .map(|m| (i64::from(m.version()), m.name().to_string(), m.checksum()))
         .collect();
+    // refinery embeds the files in directory-listing order, which the filesystem decides
+    // (descending on the GitHub Linux runner).
+    shipped.sort_unstable();
     assert_eq!(
         shipped,
         [
