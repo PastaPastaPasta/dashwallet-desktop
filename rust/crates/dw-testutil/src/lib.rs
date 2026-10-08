@@ -8,6 +8,7 @@
 /// its directory with the umask's mode: 0775 under Ubuntu's default umask 002,
 /// which fails every engine test.
 pub fn private_tempdir() -> tempfile::TempDir {
+    #[allow(unused_mut)] // only Unix sets a mode
     let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
     {

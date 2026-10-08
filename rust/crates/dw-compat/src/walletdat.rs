@@ -415,11 +415,23 @@ fn pubkey_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
 /// a URI authority) stay part of the path. Opened `mode=ro` and
 /// `immutable=1`: nothing in the user's file or directory is written.
 fn sqlite_uri(path: &Path) -> Result<String, WalletDatError> {
-    use std::os::unix::ffi::OsStrExt;
+    // The drive colon stays as is on Windows, so SQLite sees `/C:` and drops the `/`.
+    const KEEP: &[u8] = if cfg!(windows) { b"/-._~:" } else { b"/-._~" };
     let abs = std::fs::canonicalize(path).map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        abs.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let bytes = windows_uri_path(
+        abs.to_str()
+            .ok_or_else(|| WalletDatError::Unreadable("path is not valid Unicode".into()))?,
+    )
+    .into_bytes();
     let mut uri = String::from("file://");
-    for &b in abs.as_os_str().as_bytes() {
-        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+    for b in bytes {
+        if b.is_ascii_alphanumeric() || KEEP.contains(&b) {
             uri.push(char::from(b));
         } else {
             uri.push_str(&format!("%{b:02X}"));
@@ -427,6 +439,27 @@ fn sqlite_uri(path: &Path) -> Result<String, WalletDatError> {
     }
     uri.push_str("?mode=ro&immutable=1");
     Ok(uri)
+}
+
+/// The URI path (UTF-8, `/` separators) of a canonical Windows path:
+/// `\\?\C:\dir\file` becomes `/C:/dir/file`, and the network path
+/// `\\?\UNC\server\share\file` becomes `//server/share/file`, which Win32
+/// opens after `file://`'s empty authority.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_uri_path(canonical: &str) -> String {
+    let path = match canonical.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => canonical
+            .strip_prefix(r"\\?\")
+            .unwrap_or(canonical)
+            .to_owned(),
+    }
+    .replace('\\', "/");
+    if path.starts_with("//") {
+        path
+    } else {
+        format!("/{path}")
+    }
 }
 
 /// A wallet whose last writes are still in a `-wal` (or a hot rollback
@@ -726,22 +759,48 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn windows_paths_become_sqlite_uri_paths() {
+        assert_eq!(
+            windows_uri_path(r"\\?\C:\a b\wallet.dat"),
+            "/C:/a b/wallet.dat"
+        );
+        assert_eq!(
+            windows_uri_path(r"\\?\UNC\srv\share\x.dat"),
+            "//srv/share/x.dat"
+        );
+        assert_eq!(windows_uri_path(r"D:\Wället\w.dat"), "/D:/Wället/w.dat");
+    }
+
     /// Review L5: odd characters and a leading `//` stay in the path; a
     /// pending `-wal` is reported instead of being read stale.
     #[test]
     fn sqlite_paths_are_uri_safe_and_pending_logs_are_reported() {
         let dir = tempfile::tempdir().unwrap();
-        let odd = dir.path().join("we?ird #dir %41");
+        // `?` is not allowed in Windows file names.
+        let odd = dir.path().join(if cfg!(windows) {
+            "we ird #dir %41"
+        } else {
+            "we?ird #dir %41"
+        });
         std::fs::create_dir(&odd).unwrap();
         let path = odd.join("wallet.dat");
         std::fs::copy(vector("desc_plain.dat"), &path).unwrap();
         assert!(read_sqlite(&path).unwrap().is_descriptor_wallet());
-        let slashes = PathBuf::from(format!("/{}", path.display()));
-        assert!(slashes.to_string_lossy().starts_with("//"));
-        assert!(read_sqlite(&slashes).unwrap().is_descriptor_wallet());
+        #[cfg(unix)]
+        {
+            let slashes = PathBuf::from(format!("/{}", path.display()));
+            assert!(slashes.to_string_lossy().starts_with("//"));
+            assert!(read_sqlite(&slashes).unwrap().is_descriptor_wallet());
+        }
         let uri = sqlite_uri(&path).unwrap();
         assert!(uri.starts_with("file:///"), "{uri}");
-        assert!(uri.contains("we%3Fird%20%23dir%20%2541"), "{uri}");
+        let encoded = if cfg!(windows) {
+            "we%20ird%20%23dir%20%2541"
+        } else {
+            "we%3Fird%20%23dir%20%2541"
+        };
+        assert!(uri.contains(encoded), "{uri}");
 
         // An empty -wal is harmless; a non-empty one is reported.
         let wal = odd.join("wallet.dat-wal");
