@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
 
 use dash_sdk::SdkBuilder;
+use dash_sdk::dapi_grpc::tonic::transport::Certificate;
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
@@ -113,8 +114,9 @@ pub struct SessionOptions {
     /// PEM CA certificate the SDK trusts for DAPI TLS, instead of the system
     /// roots (a dashmate devnet gateway serves a self-signed certificate).
     pub ca_cert_path: Option<PathBuf>,
-    /// Protocol version the SDK starts at. Auto-detect stays on and ratchets
-    /// it up from what the network reports. `None` = the per-network floor.
+    /// Protocol version the SDK starts at, used as given (a seed below the
+    /// network's floor is not clamped). Auto-detect stays on and ratchets it
+    /// up from what the network reports. `None` = the per-network floor.
     pub initial_protocol_version: Option<u32>,
 }
 
@@ -618,6 +620,8 @@ impl NetworkSession {
     }
 }
 
+const CA_PEM_MARKER: &str = "-----BEGIN CERTIFICATE-----";
+
 fn build_sdk(
     network: &DashNetwork,
     opts: &SessionOptions,
@@ -640,13 +644,23 @@ fn build_sdk(
     };
     let mut builder = builder.with_context_provider(SharedContext(context));
     if let Some(path) = &opts.ca_cert_path {
-        builder = builder.with_ca_certificate_file(path).map_err(|e| {
+        let bad_ca = |e: &dyn fmt::Display| {
             EngineError::InvalidConfig(format!("CA certificate {}: {e}", path.display()))
-        })?;
+        };
+        // The SDK parses the PEM lazily, at the first TLS handshake; catch a
+        // wrong file here instead of as a transport error.
+        let pem = std::fs::read(path).map_err(|e| bad_ca(&e))?;
+        if !pem
+            .windows(CA_PEM_MARKER.len())
+            .any(|w| w == CA_PEM_MARKER.as_bytes())
+        {
+            return Err(bad_ca(&format_args!("no {CA_PEM_MARKER} block")));
+        }
+        builder = builder.with_ca_certificate(Certificate::from_pem(pem));
     }
     if let Some(version) = opts.initial_protocol_version {
         let version = PlatformVersion::get(version).map_err(|e| {
-            EngineError::InvalidArgument(format!("initial protocol version {version}: {e}"))
+            EngineError::InvalidConfig(format!("initial protocol version {version}: {e}"))
         })?;
         builder = builder.with_initial_version(version);
     }
@@ -701,13 +715,26 @@ mod tests {
             ..Default::default()
         })
         .unwrap_err();
-        assert!(matches!(err, EngineError::InvalidArgument(_)), "{err:?}");
+        assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
     }
 
     #[test]
     fn missing_ca_certificate_is_a_config_error() {
         let err = sdk_with(SessionOptions {
             ca_cert_path: Some("/nonexistent/dwd-ca.pem".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidConfig(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_file_without_a_certificate_is_a_config_error() {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("not-a-cert.pem");
+        std::fs::write(&path, b"-----BEGIN PRIVATE KEY-----\n").unwrap();
+        let err = sdk_with(SessionOptions {
+            ca_cert_path: Some(path),
             ..Default::default()
         })
         .unwrap_err();

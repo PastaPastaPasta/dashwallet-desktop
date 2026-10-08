@@ -42,8 +42,9 @@ struct Cli {
     /// self-signed gateway) instead of the system roots.
     #[arg(long)]
     ca_cert: Option<PathBuf>,
-    /// Protocol version the Platform SDK starts at; it still ratchets up from
-    /// what the network reports.
+    /// Protocol version the Platform SDK starts at, used as given (even below
+    /// the network's floor); it still ratchets up from what the network
+    /// reports.
     #[arg(long)]
     initial_protocol_version: Option<u32>,
     /// Print engine events to stderr.

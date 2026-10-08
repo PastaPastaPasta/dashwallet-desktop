@@ -3,6 +3,8 @@
 //! custom CA), the quorum context and proof verification end to end, with no
 //! wallet or identity involved.
 
+use std::sync::Arc;
+
 use dash_sdk::platform::Fetch;
 use dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dpp::platform_value::string_encoding::Encoding;
@@ -26,20 +28,28 @@ pub struct PlatformStatus {
 }
 
 impl NetworkSession {
-    /// Fetches the DPNS data contract with proof verification.
-    pub async fn platform_status(&self) -> Result<PlatformStatus, EngineError> {
-        let _op = self.enter().await?;
-        let manager = self.manager()?;
-        let sdk = manager.sdk_arc();
-        let id = SystemDataContract::DPNS.id();
-        let contract = DataContract::fetch(&sdk, id)
-            .await?
-            .ok_or_else(|| EngineError::Sdk(format!("the DPNS contract {id} was not found")))?;
-        Ok(PlatformStatus {
-            dpns_contract_id: contract.id().to_string(Encoding::Base58),
-            dpns_contract_version: contract.version(),
-            dpns_contract_owner: contract.owner_id().to_string(Encoding::Base58),
-            protocol_version: sdk.protocol_version_number(),
+    /// Fetches the DPNS data contract with proof verification. Runs on the
+    /// engine runtime, so proof descent gets its 8 MiB stack whatever thread
+    /// the caller polls from.
+    pub async fn platform_status(self: &Arc<Self>) -> Result<PlatformStatus, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let sdk = this.manager()?.sdk_arc();
+            let id = SystemDataContract::DPNS.id();
+            let contract = DataContract::fetch(&sdk, id).await?.ok_or_else(|| {
+                EngineError::Sdk(format!(
+                    "the DPNS contract {} was not found",
+                    id.to_string(Encoding::Base58)
+                ))
+            })?;
+            Ok(PlatformStatus {
+                dpns_contract_id: contract.id().to_string(Encoding::Base58),
+                dpns_contract_version: contract.version(),
+                dpns_contract_owner: contract.owner_id().to_string(Encoding::Base58),
+                protocol_version: sdk.protocol_version_number(),
+            })
         })
+        .await
     }
 }
