@@ -11,11 +11,13 @@
 //! SPV syncs, until a verified re-fetch records it. Before the latch (no
 //! fallback ever used here) every fetch was proof-verified against the
 //! provider in use, and nothing is unverified. The latch is durable before
-//! the fallback serves anything (DEC-135, DEC-139): [`Provenance::fallback_in_use`]
-//! commits it and checkpoints the WAL (so it survives power loss), and the
-//! caller refuses the fallback when either fails, so a reopened session can
-//! never forget it. In memory it only caches the
-//! durable value, except that a latch that cannot be read counts as set.
+//! the fallback serves anything (DEC-135, DEC-139, DEC-143):
+//! [`Provenance::fallback_in_use`] commits it and checkpoints the WAL (so it
+//! survives power loss), and the caller refuses the fallback when either
+//! fails, so a reopened session can never forget it. Durability is
+//! established in each process, never inferred: a latch read back at open
+//! counts for classification (as does one that cannot be read), but the
+//! first fallback use still checkpoints.
 //!
 //! Reads are in memory (the facade's `identities()` is), loaded at open and
 //! written through.
@@ -54,7 +56,9 @@ pub(crate) struct Provenance {
     appdb: Arc<AppDb>,
     /// The latch as far as reads go: on file, or unreadable.
     fallback_used: AtomicBool,
-    /// The latch is known to be on file (read back, or written here).
+    /// The latch is power-loss durable: a full checkpoint after it
+    /// succeeded in this process (DEC-143). Never inferred from a row read
+    /// back, which may be a committed but unsynced WAL frame.
     latch_durable: AtomicBool,
     verified: Mutex<HashSet<(String, String)>>,
 }
@@ -63,13 +67,11 @@ impl Provenance {
     /// Loads the latch and the records. A latch that cannot be read counts
     /// as set (fail closed). Blocking (app.sqlite).
     pub(crate) fn open(appdb: Arc<AppDb>) -> Self {
-        let (fallback_used, latch_durable) = match appdb
-            .setting(dw_appdb::GLOBAL_SCOPE, TRUST_FALLBACK_USED_KEY)
-        {
-            Ok(latch) => (latch.is_some(), latch.is_some()),
+        let fallback_used = match appdb.setting(dw_appdb::GLOBAL_SCOPE, TRUST_FALLBACK_USED_KEY) {
+            Ok(latch) => latch.is_some(),
             Err(e) => {
                 tracing::warn!(error = %e, "could not read the trust latch: treating data as unverified");
-                (true, false)
+                true
             }
         };
         let verified = appdb.verified_entities().unwrap_or_else(|e| {
@@ -79,7 +81,7 @@ impl Provenance {
         Self {
             appdb,
             fallback_used: AtomicBool::new(fallback_used),
-            latch_durable: AtomicBool::new(latch_durable),
+            latch_durable: AtomicBool::new(false),
             verified: Mutex::new(verified.into_iter().collect()),
         }
     }
@@ -88,8 +90,11 @@ impl Provenance {
     /// of a record means unverified. On `Err` the latch is not on file and
     /// the caller must not use the fallback for this fetch: it fails or
     /// degrades as if there were none. Idempotent, and concurrent first
-    /// callers each return only once the write has committed. Blocking
-    /// (app.sqlite) until the latch is known durable.
+    /// callers each return only once the write has committed and been
+    /// checkpointed. Each process checkpoints once before its first `Ok`,
+    /// even over a latch already on file (DEC-143): a row left by a refused
+    /// checkpoint is readable but not durable. Blocking (app.sqlite) until
+    /// then.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "E0-10b's quorum provider calls it")
@@ -107,8 +112,10 @@ impl Provenance {
             true,
         )?;
         self.appdb.checkpoint_full()?;
-        self.latch_durable.store(true, Ordering::SeqCst);
+        // Classification first: a caller taking the fast path below must
+        // never find the latch durable but not yet counted.
         self.fallback_used.store(true, Ordering::SeqCst);
+        self.latch_durable.store(true, Ordering::SeqCst);
         Ok(())
     }
 

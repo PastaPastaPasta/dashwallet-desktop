@@ -1420,11 +1420,12 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact` (DEC-125, positive
   provenance): once the trusted-quorum fallback has served a read in this installation (a persisted latch, the
   global setting `trust.fallback_used_at`), Platform data counts as unverified unless dw-appdb's `dp_trust_verified`
-  has a record for it. The latch is durable before use (DEC-135, DEC-139): the fallback serves a fetch only after the
-  latch is committed and a full WAL checkpoint has made it power-loss durable (app.sqlite runs `synchronous=NORMAL`,
-  under which a commit alone is not synced); if either fails, that fetch fails or degrades as if there were no
-  fallback. In memory the latch
-  only caches the durable value; a latch that cannot be read counts as set, and the next use still writes it. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
+  has a record for it. The latch is durable before use (DEC-135, DEC-139, DEC-143): the fallback serves a fetch only
+  after the latch is committed and a full WAL checkpoint has made it power-loss durable (app.sqlite runs
+  `synchronous=NORMAL`, under which a commit alone is not synced); if either fails, that fetch fails or degrades as
+  if there were no fallback. Durability is established, never inferred: each process checkpoints before its first
+  fallback use, even when the latch is already on file, since a row left by a refused checkpoint is readable but
+  unsynced. A latch read back at open, or one that cannot be read, still counts as set for classification. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
   `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
   `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
   exported, so a restored wallet's data verifies again. Absence fails closed: data the library keeps in memory after
@@ -1519,14 +1520,16 @@ The shapes are in §3. What they mean, where the name does not say:
   - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
     `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
     and `ContactEstablished` once it has either of them.
-  - **catch-up (DEC-114, DEC-125 monotone boundary, DEC-135, DEC-139):** each wallet has a catch-up boundary, the
-    local, unexported setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start moves it to
-    `max(boundary, now)` in one atomic upsert whose returned value the cache takes (also only ever raised), so
-    overlapping starts cannot lower it. The phase starts are `discover_identities`, a names pass, and a bring-up
-    that starts a recovery: a restore's (no identity on file, not created here), or that of a wallet with
-    identities a discovery stored since its last bring-up took the marker, whichever path admitted it (the bring-up the
-    discovery queues, or the one that replaces it when SPV was stopped). The discovery marker is in memory: a
-    session closed, or the wallet unloaded, before that bring-up drops it, like the names pass it owes. A plain warm start is no recovery
+  - **catch-up (DEC-114, DEC-125 monotone boundary, DEC-135, DEC-139, DEC-143):** each wallet has a catch-up
+    boundary, the local, unexported setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start
+    moves it to `max(boundary, now)` in one atomic upsert whose returned value the cache takes (also only ever
+    raised), so overlapping starts cannot lower it. The phase starts are `discover_identities`, a names pass, and a
+    bring-up that starts a recovery, at its Platform pass's admission (after key acquisition): a restore's (no
+    identity on file, not created here), or that of a wallet with identities a discovery stored that no bring-up has
+    replayed yet, whichever path admitted it (the bring-up the discovery queues, or the one that replaces it when SPV
+    was stopped). That discovery marker is consumed only after the advance it guards has completed, so an attempt
+    stopped before its pass (or during the advance), or an advance that could not be stored, leaves it for the next. The marker is in memory: a session
+    closed, or the wallet unloaded, before that bring-up drops it, like the names pass it owes. A plain warm start is no recovery
     and never moves the boundary, so what arrived while the app was closed is news and notifies. The first
     bring-up in this installation sets the boundary if absent. Apart from the discovery marker, nothing is carried
     between phases, and nothing moves the boundary back. An event is stored read (no OS notification, DASHPAY §2.7) when its **authoritative** time predates the

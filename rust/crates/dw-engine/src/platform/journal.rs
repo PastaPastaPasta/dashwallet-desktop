@@ -342,9 +342,10 @@ impl ChangesetTap {
     }
 
     /// A recovery phase of `id` starts: its catch-up boundary becomes
-    /// `max(boundary, now)`, so it never moves back. Blocking (app.sqlite).
-    pub(crate) fn advance_catch_up(&self, id: WalletId) {
-        self.move_boundary(id, false);
+    /// `max(boundary, now)`, so it never moves back. Whether a boundary at
+    /// least now is on file afterwards. Blocking (app.sqlite).
+    pub(crate) fn advance_catch_up(&self, id: WalletId) -> bool {
+        self.move_boundary(id, false)
     }
 
     /// The first bring-up of `id` in this installation: the boundary starts
@@ -354,16 +355,17 @@ impl ChangesetTap {
         self.move_boundary(id, true);
     }
 
-    fn move_boundary(&self, id: WalletId, first_only: bool) {
-        self.move_boundary_to(id, unix_now(), first_only);
+    fn move_boundary(&self, id: WalletId, first_only: bool) -> bool {
+        self.move_boundary_to(id, unix_now(), first_only)
     }
 
     /// Raises the boundary to `at` (DEC-135): one upsert computes
     /// `max(stored, at)` (with `first_only`, keeps any stored value) and the
     /// cache takes what it returns, so overlapping phase starts cannot lower
     /// it. A stored value that is not a time is left alone (more news, never
-    /// less).
-    pub(super) fn move_boundary_to(&self, id: WalletId, at: u64, first_only: bool) {
+    /// less). Whether a time is on file afterwards (`false`: not stored, or
+    /// not a time).
+    pub(super) fn move_boundary_to(&self, id: WalletId, at: u64, first_only: bool) -> bool {
         let scope = dw_appdb::local_scope(&id.to_string());
         match self
             .appdb
@@ -372,13 +374,16 @@ impl ChangesetTap {
             Ok(stored) => match stored.parse() {
                 Ok(stored) => {
                     self.remember(id, stored);
+                    true
                 }
                 Err(_) => {
                     tracing::warn!(wallet_id = %id, value = %stored, "the catch-up time on file is not a time");
+                    false
                 }
             },
             Err(e) => {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the catch-up time");
+                false
             }
         }
     }
@@ -515,9 +520,11 @@ impl ChangesetTap {
 
 impl NetworkSession {
     /// [`ChangesetTap::advance_catch_up`] off the caller's thread: a
-    /// recovery phase of `id` starts.
-    pub(super) async fn advance_catch_up(&self, id: WalletId) {
-        self.with_tap(move |tap| tap.advance_catch_up(id)).await;
+    /// recovery phase of `id` starts. Whether the advance completed.
+    pub(super) async fn advance_catch_up(&self, id: WalletId) -> bool {
+        self.with_tap(move |tap| tap.advance_catch_up(id))
+            .await
+            .unwrap_or(false)
     }
 
     /// [`ChangesetTap::note_first_bring_up`] off the caller's thread.
@@ -525,13 +532,15 @@ impl NetworkSession {
         self.with_tap(move |tap| tap.note_first_bring_up(id)).await;
     }
 
-    async fn with_tap(&self, f: impl FnOnce(&ChangesetTap) + Send + 'static) {
-        let Ok(live) = self.live() else {
-            return;
-        };
-        let tap = live.tap;
-        if let Err(e) = tokio::task::spawn_blocking(move || f(&tap)).await {
-            tracing::warn!(error = %e, "could not store the catch-up time");
-        }
+    /// `None` when the session is closed or the blocking task failed.
+    async fn with_tap<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&ChangesetTap) -> R + Send + 'static,
+    ) -> Option<R> {
+        let tap = self.live().ok()?.tap;
+        tokio::task::spawn_blocking(move || f(&tap))
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, "could not store the catch-up time"))
+            .ok()
     }
 }

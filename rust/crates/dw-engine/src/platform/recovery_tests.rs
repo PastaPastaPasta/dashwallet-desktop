@@ -28,7 +28,7 @@ use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
-use super::runtime::guard;
+use super::runtime::{TestPause, guard};
 use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
@@ -971,6 +971,128 @@ fn a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up() {
             true
         )]
     );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r4 R4-2's order (DEC-143): with SPV stopped, a discovery stores an
+/// identity; the next start's bring-up is stopped after its keys, before its
+/// Platform pass. The discovery marker is consumed only once a bring-up has
+/// advanced the boundary at its pass, so it survives, and the start after
+/// that advances before replaying: a name Platform dates after the stopped
+/// attempt is stored read.
+#[test]
+fn a_recovery_stopped_before_its_platform_pass_advances_at_the_next_start() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        replayed_names: vec![(ALICE, "between")],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    engine.block_on(s.stop_spv()).unwrap();
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+
+    let pause = Arc::new(TestPause {
+        reached: AtomicBool::new(false),
+        release: Notify::new(),
+    });
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the keys", || pause.reached.load(Ordering::SeqCst));
+    engine.block_on(s.stop_spv()).unwrap();
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1, "no pass ran");
+    // The boundary as the stopped attempt left it (the discovery's: the
+    // attempt stopped before its advance). The name is dated after it and a
+    // second before the next start.
+    let attempted = boundary(&engine, &s, id).unwrap();
+    let between_ms = (attempted + 1) * 1_000 + 1;
+    while crate::events::unix_now() < attempted + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    persist_name_row(&s, id, ALICE, "between", between_ms);
+
+    start(&engine, &s);
+    wait_until("the replacement bring-up", || {
+        !journal(&engine, &s, id).is_empty()
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("between@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r4 R4-1's probe (DEC-143): a reader pins app.sqlite's WAL, so the
+/// latch commits but its checkpoint is refused. Reopened with the reader
+/// still there, the session reads the latch back (its data counts as
+/// unverified) but does not take it for durable: the fallback is refused
+/// again until a checkpoint succeeds, and then the latch is in the database
+/// file itself.
+#[test]
+fn a_reopen_after_a_refused_checkpoint_checkpoints_before_the_fallback() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform::default());
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    restore(&engine, &s);
+    let app_db = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    let latch_in_file_alone = || {
+        let copy = dir.path().join("file-alone.sqlite");
+        std::fs::copy(&app_db, &copy).unwrap();
+        let found = rusqlite::Connection::open(&copy)
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [
+                    dw_appdb::GLOBAL_SCOPE,
+                    super::provenance::TRUST_FALLBACK_USED_KEY,
+                ],
+                |_| Ok(()),
+            )
+            .is_ok();
+        std::fs::remove_file(&copy).unwrap();
+        found
+    };
+    engine
+        .block_on(s.appdb_op(|db| db.checkpoint_full()))
+        .unwrap();
+    let reader = rusqlite::Connection::open(&app_db).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT * FROM settings_kv;")
+        .unwrap();
+    let provenance = s.live().unwrap().provenance;
+    assert!(provenance.fallback_in_use().is_err(), "checkpoint refused");
+    assert!(!latch_in_file_alone());
+    drop(provenance);
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let (engine, s) = reopen(dir.path(), platform);
+    let provenance = s.live().unwrap().provenance;
+    assert!(provenance.is_unverified(super::provenance::kind::IDENTITY, "x"));
+    assert!(
+        provenance.fallback_in_use().is_err(),
+        "a committed row is not a durable one"
+    );
+    assert!(!latch_in_file_alone());
+    reader.execute_batch("ROLLBACK").unwrap();
+    provenance.fallback_in_use().unwrap();
+    assert!(latch_in_file_alone());
+    drop(provenance);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

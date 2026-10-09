@@ -133,8 +133,9 @@ pub(crate) struct Recovery {
     snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
     /// Wallets with identities a discovery stored that no bring-up has
-    /// taken yet: the next bring-up that runs starts a recovery phase
-    /// (DEC-139). Dropped with the wallet's other state on unload or close.
+    /// replayed yet: the next bring-up to reach its Platform pass starts a
+    /// recovery phase and then consumes it (DEC-139, DEC-143). Dropped with
+    /// the wallet's other state on unload or close.
     discovered: Mutex<HashSet<WalletId>>,
     /// Per wallet, the admission of its explicit discoveries (review r1 M3,
     /// r2 M3-R2).
@@ -261,9 +262,14 @@ impl Recovery {
     }
 
     /// Whether a discovery stored identities for `id` that no bring-up has
-    /// taken yet; a bring-up past its early returns takes it.
-    pub(super) fn take_discovered(&self, id: &WalletId) -> bool {
-        guard(&self.discovered).remove(id)
+    /// replayed yet.
+    pub(super) fn is_discovered(&self, id: &WalletId) -> bool {
+        guard(&self.discovered).contains(id)
+    }
+
+    /// A bring-up's recovery advance for `id` has completed (DEC-143).
+    pub(super) fn consume_discovered(&self, id: &WalletId) {
+        guard(&self.discovered).remove(id);
     }
 
     /// Forgets a removed or closed wallet.

@@ -936,6 +936,8 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
         .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some("garbled"))
         .unwrap();
     h.tap.note_first_bring_up(other);
+    // No boundary is held: a bring-up keeps its discovery marker (DEC-143).
+    assert!(!h.tap.advance_catch_up(other));
     assert_eq!(
         h.appdb
             .setting(&scope, CATCH_UP_BEFORE_KEY)
