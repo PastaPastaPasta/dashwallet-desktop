@@ -81,8 +81,8 @@ engine and FFI tests (review H2).
 | `Vault.unlock(passphrase, scope: Full\|MixingOnly)` | async | Unwraps the DEK. Failed attempts count toward the IOS-012 throttle (`6^(n−3)·60 s`), which is persisted in the vault file and survives a restart. Attempts (unlock, change passphrase, passphrase grants) run one at a time, so parallel attempts cannot all pass the throttle check. | `vault.wrong_passphrase{failed_attempts, retry_after_secs}`, `vault.throttled`, `vault.not_encrypted` | QT-111, QT-112, IOS-012/013 | **works** |
 | `Vault.lock()` | sync | Drops the DEK, revokes all grants and invalidates redeemed grants and signers (including those holding a grant's own key). Idempotent. **E0-04** (P2a) keeps it synchronous. It first revokes every flow lease and sets the lock barrier, even on a vault that is already `Locked` (so an own-key lease loses its key), then runs its own vault gate inline and returns the `VaultStatus`. The drain of hand-offs already admitted ends engine-side as `LockProgress::Done(LockReport)` (§2.1; E0-04 design §8.1). | — | QT-111, IOS-015 | **works** (the E0-04 part: P2a) |
 | `Vault.change_passphrase(old, new)` | async | Re-wraps the DEK; records and seed unchanged; lock state unchanged. Ends the vault's epoch (review DW-E0-03 r3 m3): every grant (pending or redeemed), grant token and signer issued before it is refused afterwards, so a leaked old passphrase authorizes nothing more. | `vault.wrong_passphrase`, `vault.throttled`, `vault.passphrase_rejected`, `vault.not_encrypted` | QT-111 | **works** |
-| `Vault.authorize(purpose, wallet_id: Option<String>, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`, single use, TTL 120 s. **Wallet binding** (review M-6): `wallet_id` is required for every purpose except `ChangeCredential`, which takes `None` (else `invalid_argument`); the grant is refused for any other wallet. **Credentials**: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted` (= no credential); see the requirement table below. A passphrase does **not** change the lock state (dash-qt re-lock parity, review M4): on a `Locked` or `UnlockedMixingOnly` vault the unwrapped key is held by this grant only and is dropped when the grant is used, expires, is revoked or the vault locks. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `PlatformOp` (`MasternodeOp` and `Governance` were removed in M3 with the parked masternode and governance domains, m3-engine.md). E0-04 (P1) makes it `PlatformOp{max_duffs, max_credits}` and adds `IdentityScan`, wallet-scoped and uncapped (E0-04 design §3.1, §3.2). | `vault.wrong_passphrase`, `vault.throttled`, `vault.not_encrypted`, `vault.locked`, `vault.mixing_only`, `vault.credential_required`, `vault.quick_unlock_unavailable`, `invalid_argument` (wallet binding) | IOS-016/017 | **works** |
-| `Vault.authorize_set(purposes, wallet_id: Option<String>, credential)` | async | **E0-04** (design §3.3). One credential check (one Argon2id run, one throttle count) issues one grant per purpose, all with the same wallet binding and TTL; every purpose must be allowed for the credential, or nothing is issued. On a vault with no full-scope key each grant carries its own copy of the key, as single grants do. "Accept and pay" asks for `[PlatformOp{0, accept_cost}, Spend{amount + fee}]` and prompts once. With `QuickUnlock`, the combined value of the whole set must be within the spend limit (below). | as `authorize` | DASHPAY §2.3 | E0-04 P1 in dw-vault; the host binding comes with E0-13 (the Swift shells are frozen) |
+| `Vault.authorize(purpose, wallet_id: Option<String>, credential)` | async | Issues `AuthGrant { id, purpose, expires_at, single_use }`, single use, TTL 120 s. **Wallet binding** (review M-6): `wallet_id` is required for every purpose except `ChangeCredential`, which takes `None` (else `invalid_argument`); the grant is refused for any other wallet. **Credentials**: `Passphrase{bytes}`, `QuickUnlock{wrap_key}` (M2), `Unencrypted` (= no credential); see the requirement table below. A passphrase does **not** change the lock state (dash-qt re-lock parity, review M4): on a `Locked` or `UnlockedMixingOnly` vault the unwrapped key is held by this grant only and is dropped when the grant is used, expires, is revoked or the vault locks. Purposes: `Spend{max_duffs}`, `RevealSecret`, `SignMessage`, `ChangeCredential`, `Wipe`, `PlatformOp{max_duffs, max_credits}`, `IdentityScan` (`MasternodeOp` and `Governance` were removed in M3 with the parked masternode and governance domains, m3-engine.md). `PlatformOp`'s `max_duffs` caps Core funding (asset locks) and `max_credits` state-transition spending; a cap of 0 grants nothing of that kind. `IdentityScan` is wallet-scoped and uncapped, and is the only grant `Vault::scan_key` takes (E0-04 design §3.1, §3.2). In dw-vault since E0-04 P1. The frozen FFI enum still has a cap-less `PlatformOp`, which dw-ffi maps to `PlatformOp{0, 0}` (no funding, no credits) and which has no `IdentityScan`; E0-13 binds both. | `vault.wrong_passphrase`, `vault.throttled`, `vault.not_encrypted`, `vault.locked`, `vault.mixing_only`, `vault.credential_required`, `vault.quick_unlock_unavailable`, `vault.quick_unlock_limit_exceeded`, `vault.passphrase_stale`, `invalid_argument` (wallet binding) | IOS-016/017 | **works** |
+| `Vault.authorize_set(purposes, wallet_id: Option<String>, credential)` | async | **E0-04** (design §3.3; `dw_vault::Vault::authorize_set`). One credential check (one Argon2id run, one throttle count) issues one grant per purpose, all with the same wallet binding and TTL; every purpose must be allowed for the credential, or nothing is issued. On a vault with no full-scope key each grant carries its own copy of the key, as single grants do. "Accept and pay" asks for `[PlatformOp{0, accept_cost}, Spend{amount + fee}]` and prompts once. With `QuickUnlock`, the combined value of the whole set must be within the spend limit (below). An empty set is `invalid_argument`. `authorize` is the one-purpose set. | as `authorize` | DASHPAY §2.3 | **works** in dw-vault (E0-04 P1, `dw-vault/tests/grants.rs`); the host binding comes with E0-13 (the Swift shells are frozen) |
 | `Vault.revoke_grant(grant_id)` | sync | Unknown ids ignored. | — | IOS-017 | **works** |
 | `Vault.reveal_mnemonic(wallet_id, grant_id)` | async | `RevealedMnemonic { phrase, bip39_passphrase }` as bytes (DESIGN R1: passphrase shown on reveal). `RevealSecret` grant for `wallet_id`. | `vault.no_secret`, `vault.grant_invalid`, `vault.grant_purpose_mismatch` (other purpose or other wallet), `vault.locked` | QT-113, IOS-006 | **works** |
 | `Vault.enroll_quick_unlock(grant_id)` / `remove_quick_unlock()` | async | Biometric slot B (M2). | `vault.quick_unlock_unavailable` | IOS-011 | stub (M2): `NotImplemented` from dw-vault |
@@ -98,11 +98,17 @@ engine and FFI tests (review H2).
 | `UnlockedMixingOnly` | passphrase (else `vault.credential_required`) | passphrase (else `vault.mixing_only`) |
 | `Unlocked` | passphrase (else `vault.credential_required`) | none or passphrase; the host decides with "require authentication for every payment" |
 
-`QuickUnlock` will stand in for the passphrase once slot B exists (M2); until then it returns
-`vault.quick_unlock_unavailable`. With E0-04 (P1), `QuickUnlock` may also issue `PlatformOp`, capped at the spend
-limit: a grant's value is `max_duffs + ceil(max_credits / 1000)` (1000 credits per duff), `authorize_set` checks one
-sum over the whole set, `Spend` grants included, and the passphrase must be fresh, as for `Spend` (DEC-67; E0-04
-design §3.7). Anything above the limit asks for the passphrase.
+`QuickUnlock` stands in for the passphrase where slot B is enrolled (M2); without it, it returns
+`vault.quick_unlock_unavailable`. It issues `Spend`, `SignMessage` and, since E0-04 (P1), `PlatformOp`, capped at the
+spend limit: a grant's value is `max_duffs` for `Spend`, `max_duffs + ceil(max_credits / 1000)` for `PlatformOp`
+(`dw_vault::CREDITS_PER_DUFF` = 1000 credits per duff) and 0 for `SignMessage`. `authorize_set` checks one sum over
+the whole set, `Spend` grants included, and the passphrase must be fresh, as for `Spend`
+(`vault.passphrase_stale`; DEC-67; E0-04 design §3.7). Anything above the limit is
+`vault.quick_unlock_limit_exceeded`, and the host asks for the passphrase. `RevealSecret`, `Wipe`,
+`ChangeCredential` and `IdentityScan` (which releases the master key) are never issued by quick unlock
+(`vault.credential_required`). Every `PlatformOp` yields the `DashPayCrypto` scope (below), so a quick-unlock
+`PlatformOp{0, 0}`, of value 0, gives a flow contact crypto (never a signature) even at a spend limit of 0, as
+DEC-67 intends for Touch ID DashPay writes.
 
 **Using a grant.** The call a grant authorizes redeems it (consumes it) and names the wallet it acts on:
 `TxDraft.prepare` (`Spend`, the draft's wallet), `sign_message` (`SignMessage`), `remove_wallet` (`Wipe`),
@@ -125,23 +131,24 @@ same seed).
 **Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
 `PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped
 signers from it instead (one token may issue several), and each refuses every path and use outside its scope
-before reading the seed. Today the same token also releases the identity-scan key (`Vault::scan_key`, below), which
-is the master key, so any `PlatformOp` token is as strong as the wallet. E0-04 (P1) gives the scan its own grant,
-`IdentityScan`, and `scan_key` then refuses a `PlatformOp` token (`vault.grant_purpose_mismatch`), so a capped
-flow token cannot release it (E0-04 design §3.2).
+before reading the seed. The token's caps bound the scopes (E0-04 design §3.4; `vault.grant_purpose_mismatch`
+otherwise): `PlatformFunding{max_duffs}` needs a token `max_duffs` that is not 0 and at least the scope's (the
+engine asks for the funding budget left), `PlatformIdentity` a token `max_credits` that is not 0, and
+`DashPayCrypto` comes with any `PlatformOp`. The identity-scan key (`Vault::scan_key`, below), which is the master
+key, has its own grant, `IdentityScan`: `scan_key` refuses a `PlatformOp` token (`vault.grant_purpose_mismatch`),
+so a capped flow token cannot release it (E0-04 design §3.2).
 
 | Scope | Uses | Paths |
 |---|---|---|
 | `PlatformIdentity` | sign, public key (no chain code) | DIP-13 ECDSA identity keys `m/9'/coin'/5'/0'/0'/i'/k'` |
 | `DashPayCrypto` | never signs. Public keys; ECDH and the account-reference mask; contactInfo AES keys; export of the auto-accept key | xpubs of `m/9'/coin'/15'/a'/<user>/<friend>` (DIP-14 256-bit children), `m/9'/coin'/16'/expiry'` and `m/44'/coin'/0'`; ECDH and mask with identity keys; contactInfo `…/k'/65536'\|65537'/n'` under an identity key; export of `m/9'/coin'/16'/expiry'` only |
-| `PlatformFunding{max_duffs}` | sign, public key (no chain code); one extended public key | BIP44 and BIP32 addresses, DIP-15 receiving addresses, asset-lock credit keys `m/9'/coin'/5'/{1',2',3'}/…` with a non-hardened last step; the xpub of an identity's top-up account `m/9'/coin'/5'/2'/i'`. The vault signs sighashes and cannot check the debit, so the cap is enforced in two places (E0-04 design §3.4, §3.6). E0-04 (P1) caps the scope by the token: `platform_signer` refuses a `max_duffs` above the token's. The engine checks the debit: exactly at `register` in Mode A, or against the worst-case fee bound before the library call in Mode B. No engine flow builds one yet (registration is DP1-02). |
+| `PlatformFunding{max_duffs}` | sign, public key (no chain code); one extended public key | BIP44 and BIP32 addresses, DIP-15 receiving addresses, asset-lock credit keys `m/9'/coin'/5'/{1',2',3'}/…` with a non-hardened last step; the xpub of an identity's top-up account `m/9'/coin'/5'/2'/i'`. The vault signs sighashes and cannot check the debit, so the cap is enforced in two places (E0-04 design §3.4, §3.6): capped by the token (`platform_signer` refuses a `max_duffs` above the token's, E0-04 P1); the debit is checked at `register` (Mode A) or against the worst-case fee bound before the library call (Mode B), engine-side (E0-04 P2). No engine flow builds one yet (registration is DP1-02). |
 
 `Vault::dashpay_crypto_signer` (the background crypto signer) needs no grant. It is issued only while the full
 key needs no prompt (`Unencrypted`, or `Unlocked` with scope Full), and refused while `Locked` (`vault.locked`)
 or `UnlockedMixingOnly` (`vault.mixing_only`). It signs nothing; the one key it exports is a DIP-15 auto-accept
-key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `PlatformOp` grant for its wallet (an
-`IdentityScan` grant from E0-04 P1), which the unattended bring-up authorizes with `Credential::None`, so it
-too works without a prompt only in those two
+key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `IdentityScan` grant for its wallet, which
+the unattended bring-up authorizes with `Credential::None`, so it too works without a prompt only in those two
 states. Both stop working when the vault locks, changes unlock scope or changes its passphrase. Both are engine-only:
 `crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key`,
 `VaultScanKey::resolve`/`resolver` and `open_backup_bundle` (review DW-E0-03 r3) in dw-ffi
@@ -160,6 +167,19 @@ Derived scalars stay in dw-vault, with two exceptions:
   drop) for that call. A key already resolved is outside the vault: `lock()` cannot revoke it, and it is erased
   only when dropped. E0-05 must therefore cancel (drop) a running bring-up on lock, so the guard drops with it.
   Follow-up: ask upstream for a resolver that derives and returns the probed public keys instead.
+
+**Key holds and the epoch** (E0-04 design §3.5, P1; engine-internal). A grant authorized on a vault with no
+full-scope key (`Locked`, `UnlockedMixingOnly`) carries its own copy of the data key. `Vault::hold_key(tokens)`
+moves that copy out of every token of a grant set into one `KeyHold` (`None` when no token has its own key), and
+`Vault::platform_signer_held` / `signer_held` issue signers that reference the hold weakly. Dropping the hold
+erases the key whatever signer clones are still held: an operation under way finishes with the copy it took inside
+the vault gate, and every later call is `vault.locked` (a held token then issues no signer either). Only this
+vault's tokens of the current epoch that have issued no signer yet are held: a signer issued from a token directly
+(`signer`, `platform_signer`) keeps its own copy, as before, which no hold could erase, so a lease holds the key
+first and `*_held` refuses a token its hold does not hold (`invalid_argument`). `Vault::epoch()` (not secret)
+changes on every lock, every unlock that changes the lock state or scope, and every passphrase change, encrypt,
+recover and destroy, each of which ends every grant, token and signer of the old epoch, held ones included; the
+engine compares it around vault calls (E0-04 design §8.6).
 
 **Concurrency** (review H1). All changes of the vault file (create, encrypt, change passphrase, record
 writes, throttle updates) and all passphrase checks are serialized by one vault-level writer lock. Each
