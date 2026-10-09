@@ -23,7 +23,7 @@ use crate::{NetworkSession, WalletId};
 /// the session, so any number of handles may exist for one wallet.
 pub struct DashPay {
     pub(super) session: Arc<NetworkSession>,
-    wallet_id: WalletId,
+    pub(super) wallet_id: WalletId,
 }
 
 impl NetworkSession {

@@ -692,6 +692,18 @@ impl AppDb {
         Ok(())
     }
 
+    /// Every `(identity, key, value)` of the wallet's `dp_prefs` rows, by
+    /// identity and key, from one statement: one snapshot of the rows, so a
+    /// write between two reads cannot mix their generations.
+    pub fn wallet_dp_prefs(&self, wallet_id: &str) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, key, value FROM dp_prefs WHERE wallet_id = ?1 ORDER BY identity, key",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Every `(identity, value)` of the wallet's `dp_prefs` rows for `key`,
     /// by identity.
     pub fn dp_prefs(&self, wallet_id: &str, key: &str) -> Result<Vec<(String, String)>> {
@@ -799,9 +811,18 @@ mod tests {
         db.set_dp_pref(W, "id2", "main_name", None).unwrap();
         assert_eq!(prefs(W), vec![("id1".into(), "bobby".into())]);
 
+        assert_eq!(
+            db.wallet_dp_prefs(W).unwrap(),
+            vec![
+                ("id1".into(), "main_name".into(), "bobby".into()),
+                ("id1".into(), "other".into(), "x".into()),
+            ]
+        );
+
         db.delete_wallet(W).unwrap();
         assert_eq!(db.main_identity(W).unwrap(), None);
         assert!(prefs(W).is_empty());
+        assert!(db.wallet_dp_prefs(W).unwrap().is_empty());
         assert_eq!(prefs(W2), vec![("id1".into(), "carol".into())]);
     }
 

@@ -1264,16 +1264,28 @@ impl Vault {
         expected: GrantKind,
         wallet: Option<&WalletId>,
     ) -> Result<(), VaultError> {
+        self.grant_purpose(grant_id, expected, wallet).map(|_| ())
+    }
+
+    /// [`Vault::check_grant`], returning the grant's purpose: lets a caller
+    /// hold a cost against the grant's caps and refuse with the grant left
+    /// for another try.
+    pub fn grant_purpose(
+        &self,
+        grant_id: &str,
+        expected: GrantKind,
+        wallet: Option<&WalletId>,
+    ) -> Result<GrantPurpose, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
         let state = Self::state_of(&inner);
-        let own_key = Self::valid_grant(&mut inner, grant_id, expected, wallet, now)
-            .map(|issued| issued.key.is_some());
-        match own_key {
-            Ok(true) => return Ok(()),
+        let found = Self::valid_grant(&mut inner, grant_id, expected, wallet, now)
+            .map(|issued| (issued.key.is_some(), issued.grant.purpose));
+        match found {
+            Ok((true, purpose)) => return Ok(purpose),
             // A missing grant on a locked vault was most likely revoked by
             // the lock, so the lock is reported first.
-            Ok(false) | Err(VaultError::GrantInvalid) => match state {
+            Ok((false, _)) | Err(VaultError::GrantInvalid) => match state {
                 LockState::NoVault => return Err(VaultError::NoVault),
                 LockState::Locked => return Err(VaultError::Locked),
                 LockState::UnlockedMixingOnly => return Err(VaultError::MixingOnly),
@@ -1281,7 +1293,7 @@ impl Vault {
             },
             Err(_) => {}
         }
-        own_key.map(|_| ())
+        found.map(|(_, purpose)| purpose)
     }
 
     /// Checks and consumes a grant. `wallet` is the wallet the call acts on

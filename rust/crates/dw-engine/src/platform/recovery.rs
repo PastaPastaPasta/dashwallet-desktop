@@ -22,28 +22,38 @@
 //!
 //! The main identity is ours (§1): the `dp_main_identity` row while that
 //! identity is still the wallet's, else the lowest identity index. The main
-//! name is the `dp_prefs` `main_name` row while the identity still owns that
-//! label, else the name acquired first. Both rows are wallet rows, so a
-//! `.dwbackup` brings them back; a restore from the phrase alone gets the
-//! defaults, which are what a fresh choice would show on every machine.
+//! name is DP1-03's rule ([`resolve_main_name`]): the `dp_prefs` `main_name`
+//! row while the identity still owns that label, else its temporary or won
+//! contested name, else the name acquired first, over the names Platform
+//! evidence shows it owns ([`evident_names`]: a label whose write may be in
+//! flight is none). The rows are wallet rows, so a `.dwbackup` brings them
+//! back; a restore from the phrase alone gets the defaults, which are what a
+//! fresh choice would show on every machine.
 //!
 //! The choice API other tasks build on (DP1-03's main-name choice and
 //! contest outcomes; stable from DP1-05):
 //!
 //! - `NetworkSession::set_main_name(wallet, identity, Some(label) | None)`
 //!   stores (or clears, back to the default) an identity's main name in
-//!   `dp_prefs` under [`MAIN_NAME_PREF`] and updates the cache;
-//!   `set_main_identity_of` is `DashPay::set_main_identity`'s body. Both
-//!   serialize with each other and with loads, so the cache ends as the
-//!   database does. Write the rows only through them, never directly.
-//! - [`main_name`] is the selection rule; `identities()` applies it, so a
-//!   caller that needs an identity's main name reads `identities()`.
+//!   `dp_prefs` under [`MAIN_NAME_PREF`]; `set_name_pref` does the same for
+//!   DP1-03's other main-name rows ([`MainNamePrefs`]), and `name_prefs`
+//!   reads them; `set_main_identity_of` is `DashPay::set_main_identity`'s
+//!   body and updates the cache. All serialize with each other and with
+//!   loads, so the cache ends as the database does. Write the rows only
+//!   through them, never directly.
+//! - Which names show is never the cache's to say (DEC-124): `identities()`
+//!   reads the main-name rows from the database on every call, in one read,
+//!   and filters the library's list with them; the last snapshot, read while
+//!   a sync pass holds that list, shows no names (DEC-138).
+//! - [`resolve_main_name`] is the selection rule; `identities()` and
+//!   `DashPay::main_name` apply it.
 //! - dw-appdb's `main_identity`/`set_main_identity` and
 //!   `dp_prefs`/`set_dp_pref` are the storage underneath.
 //!
-//! `identities()` is a sync read (m4 §1): it reads the library's in-memory
-//! identity state when its lock is free and the last snapshot otherwise, and
-//! the choices from a cache loaded at open, at each bring-up and on writes.
+//! `identities()` is a sync call (m4 §1): it reads the library's in-memory
+//! identity state when its lock is free and the last snapshot otherwise, the
+//! main identity from a cache loaded at open, at each bring-up and on writes,
+//! and the main-name rows from the database.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
@@ -68,6 +78,7 @@ use super::bringup::until;
 use super::errors::{IdentityError, PlatformError};
 use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
+use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
 use super::profile::Profile;
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
@@ -75,7 +86,7 @@ use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// The `dp_prefs` key of an identity's chosen main name (DP1-03 writes it
-/// when the user picks one or a contest resolves).
+/// when the user picks one).
 pub(crate) const MAIN_NAME_PREF: &str = "main_name";
 /// The longest a names pass may take: a DPNS walk is a few queries per
 /// identity, so this is generous; a pass cut off is finished by `dpns_sync`.
@@ -92,17 +103,21 @@ pub(super) struct OwnedIdentity {
     /// The owned DPNS labels in the library's order, each with when it was
     /// acquired (ms), if known.
     pub(super) names: Vec<(String, Option<u64>)>,
+    /// The labels it contends for (DP1-03): not names yet.
+    pub(super) open_contests: Vec<String>,
+    /// The labels (normalized) a marketplace row says it owns.
+    pub(super) row_owned: Vec<String>,
     pub(super) balance: Option<u64>,
     pub(super) has_dashpay_keys: bool,
     pub(super) profile: Option<Profile>,
 }
 
-/// The wallet's identity choices, as stored.
+/// The wallet's identity choices, as stored: the main identity (cached) and
+/// identity → its main-name rows (read from the database for each call).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct IdentityChoices {
     pub(super) main_identity: Option<String>,
-    /// identity → its chosen main name.
-    pub(super) main_names: HashMap<String, String>,
+    pub(super) names: HashMap<String, MainNamePrefs>,
 }
 
 /// The session's recovery state: the choices cache, the last identity
@@ -276,34 +291,19 @@ pub(super) trait MockPlatform: Send + Sync {
 #[cfg(test)]
 pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
-/// The name shown for an identity: `preferred` while the identity still
-/// owns it (as DPNS compares labels: homograph-normalized), else the name
-/// acquired first (unknown times last, then the library's order). `None`
-/// while it owns none: a label still in a contest is not a name yet, and
-/// the temporary name is an owned one (F5).
-pub(super) fn main_name(
-    names: &[(String, Option<u64>)],
-    preferred: Option<&str>,
-) -> Option<String> {
-    if let Some(preferred) = preferred.map(convert_to_homograph_safe_chars)
-        && let Some((label, _)) = names
-            .iter()
-            .find(|(label, _)| convert_to_homograph_safe_chars(label) == preferred)
-    {
-        return Some(label.clone());
-    }
-    names
-        .iter()
-        .enumerate()
-        .min_by_key(|(i, (_, at))| (at.is_none(), *at, *i))
-        .map(|(_, (label, _))| label.clone())
-}
-
 /// The read model: identities by index, the main identity marked, each with
-/// its main name.
+/// the names Platform evidence shows it owns and its main name.
+///
+/// `current`: `owned` was read from the library now, and the pending and
+/// refused labels decide ([`evident_names`]). Otherwise it is an older
+/// snapshot, which may predate any settlement, refusal or departure since,
+/// and whatever it holds that looks like evidence is as old (DEC-138): it
+/// shows no names and no main name, and says so with `names_updating`.
+/// Identity, profile and balance still come from it.
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
+    current: bool,
 ) -> Vec<IdentitySummary> {
     owned.sort_by(|a, b| (a.index, &a.identity).cmp(&(b.index, &b.identity)));
     let main = choices
@@ -315,11 +315,20 @@ pub(super) fn summaries(
         .into_iter()
         .enumerate()
         .map(|(i, o)| {
-            let preferred = choices.main_names.get(&o.identity).map(String::as_str);
+            let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
+            let names = if current {
+                evident_names(o.names, &prefs, |label| {
+                    o.row_owned
+                        .contains(&convert_to_homograph_safe_chars(label))
+                })
+            } else {
+                Vec::new()
+            };
             IdentitySummary {
-                main_name: main_name(&o.names, preferred),
+                main_name: resolve_main_name(&names, &o.open_contests, &prefs),
                 is_main: i == main,
-                names: o.names.into_iter().map(|(label, _)| label).collect(),
+                names: shown_names(&names, &o.open_contests),
+                names_updating: !current,
                 identity: o.identity,
                 index: o.index,
                 balance: o.balance,
@@ -363,6 +372,18 @@ pub(super) fn owned_names(
         .collect()
 }
 
+/// The labels (normalized) of `identity` that a marketplace row says it
+/// owns: Platform's evidence for a label the library listed after a write.
+pub(super) fn row_owned(
+    identity: Identifier,
+    rows: &BTreeMap<Identifier, DpnsNameStateEntry>,
+) -> Vec<String> {
+    rows.values()
+        .filter(|row| row.wallet_identity_id == identity && row.status == DpnsNameSaleStatus::Owned)
+        .map(|row| row.normalized_label.clone())
+        .collect()
+}
+
 /// The wallet's identities from the library's state.
 fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdentity> {
     info.identity_manager
@@ -373,6 +394,8 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
                 // Every identity in a wallet's bucket has one.
                 index: m.identity_index?,
                 names: owned_names(m.identity.id(), &m.dpns_names, &info.dpns_name_states),
+                open_contests: m.contested_dpns_names.clone(),
+                row_owned: row_owned(m.identity.id(), &info.dpns_name_states),
                 balance: Some(m.identity.balance()),
                 has_dashpay_keys: missing_dashpay_purposes(m.identity.public_keys().values())
                     .is_empty(),
@@ -390,7 +413,9 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
 }
 
 impl NetworkSession {
-    /// `DashPay::identities`: in-memory only (m4 §1).
+    /// `DashPay::identities`: in memory, but for one database read of the
+    /// main-name rows, which decide the names shown (DEC-124); without that
+    /// read the call fails rather than show a name it cannot vouch for.
     pub(super) fn identity_summaries(
         &self,
         id: WalletId,
@@ -400,7 +425,10 @@ impl NetworkSession {
         let manager = self.manager()?;
         let wm = manager.wallet_manager_arc();
         let recovery = &self.platform.recovery;
-        let owned = match wm.try_read() {
+        // Before the identity state: a name settled or refused after this
+        // read is at worst hidden by it, never shown.
+        let names = wallet_name_prefs(&self.live()?.appdb, id)?;
+        let (owned, current) = match wm.try_read() {
             Ok(wm) => {
                 let owned = wm
                     .get_wallet_info(&id.0)
@@ -408,16 +436,20 @@ impl NetworkSession {
                     .unwrap_or_default();
                 drop(wm);
                 guard(&recovery.snapshots).insert(id, owned.clone());
-                owned
+                (owned, true)
             }
             // A writer holds the lock (a sync pass applying its results):
             // the last snapshot, which that write is about to replace.
-            Err(_) => guard(&recovery.snapshots)
-                .get(&id)
-                .cloned()
-                .unwrap_or_default(),
+            Err(_) => {
+                let snapshot = guard(&recovery.snapshots).get(&id).cloned();
+                (snapshot.unwrap_or_default(), false)
+            }
         };
-        Ok(summaries(owned, &recovery.choices_of(&id)))
+        let choices = IdentityChoices {
+            names,
+            ..recovery.choices_of(&id)
+        };
+        Ok(summaries(owned, &choices, current))
     }
 
     /// Takes the identity snapshot after a pass of ours changed the
@@ -445,7 +477,7 @@ impl NetworkSession {
             .appdb_op(move |db| {
                 Ok(IdentityChoices {
                     main_identity: db.main_identity(&wallet)?,
-                    main_names: db.dp_prefs(&wallet, MAIN_NAME_PREF)?.into_iter().collect(),
+                    names: HashMap::new(),
                 })
             })
             .await;
@@ -489,28 +521,44 @@ impl NetworkSession {
     }
 
     /// Records `label` as `identity`'s main name; `None` returns it to the
-    /// default. DP1-03's main-name choice and its contest outcomes call it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-03's main-name choice calls it")
-    )]
+    /// default. DP1-03's main-name choice calls it.
     pub(crate) async fn set_main_name(
         &self,
         id: WalletId,
         identity: String,
         label: Option<String>,
     ) -> Result<(), EngineError> {
-        let (wallet, who, value) = (id.to_string(), identity.clone(), label.clone());
+        self.set_name_pref(id, identity, MAIN_NAME_PREF, label)
+            .await
+    }
+
+    /// Stores one of `identity`'s main-name rows ([`MainNamePrefs::set`]),
+    /// or deletes it for `None`. No cache holds them (DEC-124).
+    pub(crate) async fn set_name_pref(
+        &self,
+        id: WalletId,
+        identity: String,
+        key: &'static str,
+        value: Option<String>,
+    ) -> Result<(), EngineError> {
+        let wallet = id.to_string();
         let _writer = self.platform.recovery.choice_writer.lock().await;
-        self.appdb_op(move |db| db.set_dp_pref(&wallet, &who, MAIN_NAME_PREF, value.as_deref()))
-            .await?;
-        self.platform.recovery.update_choices(id, |c| {
-            match label {
-                Some(label) => c.main_names.insert(identity, label),
-                None => c.main_names.remove(&identity),
-            };
-        });
-        Ok(())
+        self.appdb_op(move |db| db.set_dp_pref(&wallet, &identity, key, value.as_deref()))
+            .await
+    }
+
+    /// `identity`'s main-name rows as stored.
+    pub(crate) async fn name_prefs(
+        &self,
+        id: WalletId,
+        identity: String,
+    ) -> Result<MainNamePrefs, EngineError> {
+        let _writer = self.platform.recovery.choice_writer.lock().await;
+        self.appdb_op(move |db| {
+            let mut all = read_name_prefs(db, id)?;
+            Ok(all.remove(&identity).unwrap_or_default())
+        })
+        .await
     }
 
     async fn owns_identity(&self, id: WalletId, identity: &str) -> Result<bool, EngineError> {
@@ -695,6 +743,31 @@ fn scan_key_for(
         None => vault.scan_key(&id.0, token)?,
     };
     Ok((scan, hold))
+}
+
+/// The wallet's main-name rows, identity → rows, from one SELECT (DEC-129):
+/// one snapshot of every row, never assembled from several reads.
+fn read_name_prefs(
+    db: &dw_appdb::AppDb,
+    id: WalletId,
+) -> Result<HashMap<String, MainNamePrefs>, dw_appdb::AppDbError> {
+    let mut all = HashMap::<String, MainNamePrefs>::new();
+    for (identity, key, value) in db.wallet_dp_prefs(&id.to_string())? {
+        // Another task's row is no main-name row (`set` ignores it).
+        all.entry(identity).or_default().set(&key, Some(value));
+    }
+    Ok(all)
+}
+
+/// [`read_name_prefs`] for the sync `identities()`.
+fn wallet_name_prefs(
+    db: &dw_appdb::AppDb,
+    id: WalletId,
+) -> Result<HashMap<String, MainNamePrefs>, EngineError> {
+    read_name_prefs(db, id).map_err(|e| {
+        tracing::warn!(wallet_id = %id, error = %e, "could not read the main-name rows");
+        EngineError::from(e)
+    })
 }
 
 /// The ids of the wallet's identities.

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 5
+Contract-Version: 7
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_net.rs` and `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -66,7 +66,7 @@ type is `pub(crate)`.
 | `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
 | `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
 | `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
-| `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `contest_status`, `search_users`, `resolve_user` |
+| `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
 | `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
@@ -108,8 +108,9 @@ scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path car
 
 ## 2. Calls
 
-Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `set_main_identity` and
-`discover_identities` (§2.1). Kind is `sync`, `async` or `free, pure` (§1).
+Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and
+`discover_identities` (§2.1), and DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
+`register_name`, `set_main_name`, `main_name`). Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -118,7 +119,7 @@ Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `s
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
-| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `main_name` is the identity's `dp_prefs` `main_name` while it still owns that label, else the name acquired first; `None` while it owns none (a label in a contest is not a name yet). Read from the library's memory, or the last snapshot while a sync pass writes it. **Implemented (DP1-05).** | `PlatformError` |
+| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance; `None` = not found on Platform yet. | `PlatformError` (`identity.not_found`) |
@@ -140,9 +141,11 @@ Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `s
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `check_username(label)` | free, pure | The rule checklist (F4: 3–23 characters, `[A-Za-z0-9-]`, no edge hyphen), the normalized label and whether it is contested. A bad label is `valid: false`, not an error. | `NameError` |
+| `check_username(label)` | free, pure | The rule checklist (F4: 3–23 characters, `[A-Za-z0-9-]`, no edge hyphen, no `--`), the normalized label and whether it is contested. A bad label is `valid: false`, not an error. | `NameError` |
 | `name_availability(label)` | async | `Invalid{rules}`, `Available{contested}`, `Taken{owner}`, `ContestOpen{ends_at, contenders}`, `Locked` or `Unknown`. | `NameError` |
-| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. | `NameError` |
+| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. Its cost is budgeted, not capped: an estimated fee bound plus, for a contested label, the contest fund to join, which the grant's `max_credits` and the identity's balance must cover before the grant is redeemed or anything is sent (`platform.grant_exceeded`, `platform.insufficient_credits`; a refused grant stays usable). The fee bound is an estimate until DP1-06's cost table and E0-04's per-transition accounting; Platform may charge more. A contested label returns `ContestStarted{ends_at}`; joining another identity's contest whose join deadline is unknown is `platform.unavailable`, with nothing spent. A plain name registered while the identity's own contest is open becomes its temporary name. What became of a write comes from Platform only: a label whose write may be in flight is no owned name, and a retry (or the identity's next registration) asks Platform and records the answer. | `NameError` |
+| `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own by Platform's evidence (a label whose write may be in flight included) is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). | `NameError` |
+| `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the name it got first by Platform's acquisition time (the marketplace row's `$transferredAt`, else `$createdAt`, else the library's stamp; untimed names last). `None` if it owns none. | `NameError` |
 | `contest_status(identity, label)` | async | The own contest: state, deadline, contenders and votes, the temporary name. | `NameError` |
 | `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI. `relation` is relative to the main identity. | `NameError` |
 | `resolve_user(username)` | async | Exact lookup; `None` if no such name. `relation` as in `search_users`. | `NameError` |
@@ -231,7 +234,7 @@ screen), and the vault is per network. Before a vault exists (the session's vaul
 | `NetworkSession.begin_flow(wallet_id, flow, grants)` | async | Redeems every grant id into one lease for `flow` (E0-04 `begin_lease`) and returns the lease id, which the calls of that wallet accept as their `grant` for the purposes the lease carries (§1). Waits while a lock drain runs. A lock that lands meanwhile is `platform.cancelled` (`lease.locked`); ask again. | `PlatformError` |
 | `NetworkSession.end_flow(lease)` | sync | Releases the lease; idempotent. In-flight hand-offs finish first (E0-04 §4.1). | `PlatformError` |
 | `NetworkSession.leases()` | sync | The live leases as `LeaseView`s (E0-04 §4.6): flow, state, own key and its seconds left, `funds_committed`, budgets, permits in flight, and whether a library call of the flow runs (which picks the copy, E0-04 §16.10). Re-queried on E0-04's `LeaseChanged` (§6). | `PlatformError` |
-| `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action; the engine never charges more. | `PlatformError` |
+| `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action, which the engine budgets against (E0-04 owns enforcing it). `RegisterName` is implemented (DP1-03): no duffs, credits for the estimated fee bound plus the label's fund to join at the contest's current size; until DP1-06 and E0-04's accounting the fee part is an estimate, not a ceiling the engine enforces. | `PlatformError` |
 | `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
 
 ## 3. Surface (generated)
@@ -241,7 +244,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: b5596978c2bea9d9d266e7303ed483da73a5c308da9da978858e9ea5b3fb5eda version: 5 -->
+<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 7 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -680,6 +683,7 @@ pub struct IdentitySummary {
     pub index: u32,
     pub names: Vec<String>,
     pub main_name: Option<String>,
+    pub names_updating: bool,
     pub is_main: bool,
     pub balance: Option<u64>,
     pub has_dashpay_keys: bool,
@@ -781,6 +785,7 @@ pub enum UsernameRule {
     MaxLength,
     AllowedCharacters,
     NoEdgeHyphen,
+    NoDoubleHyphen,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -835,6 +840,8 @@ pub fn check_username(label: &str) -> Result<UsernameCheck, NameError>;
 impl DashPay {
     pub async fn name_availability(&self, label: String) -> Result<NameAvailability, NameError>;
     pub async fn register_name(&self, identity: String, label: String, grant: String) -> Result<NameOutcome, NameError>;
+    pub async fn set_main_name(&self, identity: String, label: Option<String>) -> Result<(), NameError>;
+    pub async fn main_name(&self, identity: String) -> Result<Option<String>, NameError>;
     pub async fn contest_status(&self, identity: String, label: String) -> Result<ContestStatus, NameError>;
     pub async fn search_users(&self, prefix: String, limit: u32) -> Result<Vec<UserHit>, NameError>;
     pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError>;
@@ -1550,3 +1557,21 @@ renames or reshapes them takes the next version bump:
     `dispatch_status(txid) == Some(NotSent)`, or a ChainLocked conflicting spend of one of the payment's inputs; never
     "not found on chain or in the wallet". `LockResolution::Unknown` reads like `MaybeSent` and `None`, and the lock
     stays (§2.5).
+35. **Names (DP1-03, versions 6 and 7).** `UsernameRule::NoDoubleHyphen`: dash-platform-queries' `is_valid_username` and
+    the iOS register path refuse `--`, so the checklist does too. `set_main_name` and `main_name` are new: the main
+    name is a per-identity pick in `dp_prefs` that sync never rewrites (#4978); a pick the identity no longer owns is
+    skipped, not deleted. Review r1 (no surface change): `register_name` budgets a conservative fee bound per
+    document transition (E0-04 §4.2 Q7, until DP1-06's cost table) plus the contest fund against the grant and the
+    balance, and refuses before consuming the grant; a new contender needs a known join deadline; the
+    oldest-name fallback uses DP1-05's acquisition times. Review r2: Platform is the only source of name state. A
+    label is stored before its write only as a record that the write may be in flight; it is never owned, shown or
+    pickable. Retries derive their kind from Platform's state at the time; any definitive answer (owned,
+    contending, taken, locked, a closed contest) clears it, and a refusal also drops the library's provisional
+    copy. Never the pick. On DP1-05 (R5): one main-name rule and one evidence filter, applied by `main_name` and
+    `identities()` alike; every main-name row goes through DP1-05's writer. Review r3 (DEC-124): name visibility
+    comes from one app-database read of the main-name rows per call, never the choices cache; a refusal for good
+    moves a pending label to a refused row before it returns. Review r4 (DEC-129): the rows come from one SELECT, and
+    the older snapshot is default-deny. Review r5 (DEC-138, version 7, superseding that default-deny): anything on the
+    fallback path that looks like ownership evidence (the snapshot's marketplace rows, a retained pick) is as old as
+    the snapshot, so the older snapshot shows no names and no main name, and `IdentitySummary` gains
+    `names_updating: bool`, `true` exactly then, so the UI shows "updating". The markers govern the live list only.

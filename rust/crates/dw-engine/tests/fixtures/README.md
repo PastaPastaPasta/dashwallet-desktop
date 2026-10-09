@@ -78,3 +78,24 @@ python3 -I <this dir>/dp1_01_identity_key_vectors.build.py /tmp/dp101-python.jso
   <this dir>/e0_03_signer_vectors.json <this dir>/dp1_01_identity_key_vectors.json
 git -C <platform checkout> worktree remove --force /tmp/platform-dp101
 ```
+
+## `dp1_03_username_vectors.json`
+
+Username rule vectors (roadmap DP1-03, `tests/dp1_03_names.rs`), homographs included. Every expectation is an
+assertion of an upstream test or rule at the pin `bc41f1bc233dec4607d387101c1d9c2f111019b2`, cited per vector:
+
+- `dash-platform-queries/src/dpns_usernames.rs` tests (`is_valid_username`, `is_contested_username`,
+  `convert_to_homograph_safe_chars`, the functions `check_username` builds on);
+- `rs-sdk/tests/dpns_unit_tests.rs` (validation, special and Unicode characters, the homograph table);
+- `rs-sdk-ffi/src/dpns/helpers.rs` `dash_sdk_dpns_get_validation_message` (which rule an invalid label breaks);
+- the DPNS contract schema `dpns-contract/schema/v1/dpns-contract-documents.json` (label pattern, the contested
+  regex `^[a-zA-Z01-]{3,19}$`);
+- the desktop's 23-character cap: DASHPAY §2.9 and iOS `DW_MAX_USERNAME_LENGTH` (dashwallet-ios `37c0e78a2f`,
+  `DWDashPayConstants.m`).
+
+`dpns_valid` is the upstream verdict; `valid` adds only the 23-character cap. In `homograph_collisions` the first
+spelling of each set and its normalized form are the cited literals, and the other spellings apply the cited folding
+rule (`o`/`O` → `0`; `i`, `I`, `l`, `L` → `1`; lower case). The test also checks every vector against the pinned
+functions themselves, so a pin bump that changes them fails here.
+
+To regenerate: `python3 -I dp1_03_username_vectors.gen.py dp1_03_username_vectors.json`.

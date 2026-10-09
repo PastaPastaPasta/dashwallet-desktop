@@ -24,9 +24,9 @@ use zeroize::Zeroizing;
 
 use super::bringup::NO_IDENTITY_KEY;
 use super::errors::PlatformError;
+use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
-    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, main_name, owned_names,
-    summaries,
+    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
 use super::runtime::guard;
 use super::{SpvState, StartupStatus};
@@ -38,6 +38,15 @@ use crate::{
 
 fn names(list: &[(&str, Option<u64>)]) -> Vec<(String, Option<u64>)> {
     list.iter().map(|(l, at)| ((*l).to_owned(), *at)).collect()
+}
+
+/// DP1-03's rule with only a pick: DP1-05's cases.
+fn main_name(names: &[(String, Option<u64>)], preferred: Option<&str>) -> Option<String> {
+    let prefs = MainNamePrefs {
+        pick: preferred.map(str::to_owned),
+        ..MainNamePrefs::default()
+    };
+    resolve_main_name(names, &[], &prefs)
 }
 
 #[test]
@@ -130,6 +139,8 @@ fn owned(identity: &str, index: u32, list: &[(&str, Option<u64>)]) -> OwnedIdent
         identity: identity.into(),
         index,
         names: names(list),
+        open_contests: Vec::new(),
+        row_owned: Vec::new(),
         balance: Some(1),
         has_dashpay_keys: true,
         profile: None,
@@ -145,7 +156,7 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         ]
     };
     let shown = |choices: &IdentityChoices| {
-        summaries(list(), choices)
+        summaries(list(), choices, true)
             .into_iter()
             .map(|s| (s.identity, s.index, s.is_main, s.main_name))
             .collect::<Vec<_>>()
@@ -159,7 +170,13 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
     );
     let chosen = IdentityChoices {
         main_identity: Some("second".into()),
-        main_names: HashMap::from([("second".into(), "gone".into())]),
+        names: HashMap::from([(
+            "second".into(),
+            MainNamePrefs {
+                pick: Some("gone".into()),
+                ..MainNamePrefs::default()
+            },
+        )]),
     };
     assert_eq!(
         shown(&chosen),
@@ -173,8 +190,89 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         main_identity: Some("elsewhere".into()),
         ..IdentityChoices::default()
     };
-    assert!(summaries(list(), &stale)[0].is_main);
-    assert!(summaries(Vec::new(), &chosen).is_empty());
+    assert!(summaries(list(), &stale, true)[0].is_main);
+    assert!(summaries(Vec::new(), &chosen, true).is_empty());
+}
+
+/// Review DP1-03 R5: `identities()` shows what `DashPay::main_name` does. A
+/// label whose write may be in flight is no name unless a marketplace row
+/// says so, a label in a contest is none yet, and while that contest is
+/// open the temporary name is the main name.
+#[test]
+fn identities_show_only_names_platform_shows_owned() {
+    let mut alice = owned(
+        "alice",
+        0,
+        &[("carol", Some(100)), ("pend", None), ("bob", Some(200))],
+    );
+    let choices = |prefs: MainNamePrefs| IdentityChoices {
+        names: HashMap::from([("alice".into(), prefs)]),
+        ..IdentityChoices::default()
+    };
+    let pending = MainNamePrefs {
+        pick: Some("pend".into()),
+        pending: vec!["pend".into()],
+        ..MainNamePrefs::default()
+    };
+    let shown = |o: &OwnedIdentity, c: &IdentityChoices| {
+        let s = summaries(vec![o.clone()], c, true).remove(0);
+        (s.names, s.main_name)
+    };
+    assert_eq!(
+        shown(&alice, &choices(pending.clone())),
+        (vec!["carol".into(), "bob".into()], Some("carol".into()))
+    );
+    alice.row_owned = vec!["pend".into()];
+    assert_eq!(
+        shown(&alice, &choices(pending)),
+        (
+            vec!["carol".into(), "pend".into(), "bob".into()],
+            Some("pend".into())
+        )
+    );
+
+    alice.open_contests = vec!["carol".into()];
+    let temporary = MainNamePrefs {
+        temporary: Some("bob".into()),
+        ..MainNamePrefs::default()
+    };
+    assert_eq!(
+        shown(&alice, &choices(temporary)),
+        (vec!["pend".into(), "bob".into()], Some("bob".into()))
+    );
+}
+
+/// Review DP1-03 r5 (DEC-138): the older snapshot shows no names and no
+/// main name, whatever it holds that looks like evidence (a marketplace
+/// row, the stored pick), and says they are updating; the identity's other
+/// fields still show. The current list shows the names.
+#[test]
+fn an_older_snapshot_shows_no_names() {
+    let mut alice = owned("alice", 0, &[("carol", Some(100)), ("dash", Some(50))]);
+    alice.row_owned = vec![convert_to_homograph_safe_chars("carol")];
+    let choices = IdentityChoices {
+        names: HashMap::from([(
+            "alice".into(),
+            MainNamePrefs {
+                pick: Some("carol".into()),
+                ..MainNamePrefs::default()
+            },
+        )]),
+        ..IdentityChoices::default()
+    };
+    let shown = |current| summaries(vec![alice.clone()], &choices, current).remove(0);
+    let live = shown(true);
+    assert_eq!(live.names, ["carol", "dash"]);
+    assert_eq!(live.main_name.as_deref(), Some("carol"));
+    assert!(!live.names_updating);
+    let old = shown(false);
+    assert!(old.names.is_empty());
+    assert_eq!(old.main_name, None);
+    assert!(old.names_updating);
+    assert_eq!(
+        (old.identity, old.index, old.balance, old.is_main),
+        (live.identity, live.index, live.balance, live.is_main)
+    );
 }
 
 // ---- recovery against a mocked Platform ----
@@ -461,6 +559,21 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
     wait_until("SPV", || s.spv_state().unwrap() == SpvState::Running);
 }
 
+/// Waits until `identities()` shows `want`. A read while a sync pass holds
+/// the wallet manager comes from the older snapshot, which hides a name
+/// without ownership evidence (DEC-129), so one read may show less.
+fn assert_shown(
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+    want: Vec<(String, Vec<String>, Option<String>, bool)>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shown(s, id) != want && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(shown(s, id), want);
+}
+
 /// (identity, names, main name, is main) as `identities()` shows them.
 fn shown(
     s: &Arc<NetworkSession>,
@@ -517,7 +630,7 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
             true,
         )]
     };
-    assert_eq!(shown(&s, id), alice("alice"));
+    assert_shown(&s, id, alice("alice"));
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
 
@@ -525,11 +638,11 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     engine
         .block_on(s.set_main_name(id, base58(ALICE), Some("tmp-alice-1".into())))
         .unwrap();
-    assert_eq!(shown(&s, id), alice("tmp-alice-1"));
+    assert_shown(&s, id, alice("tmp-alice-1"));
     engine
         .block_on(s.set_main_name(id, base58(ALICE), None))
         .unwrap();
-    assert_eq!(shown(&s, id), alice("alice"));
+    assert_shown(&s, id, alice("alice"));
 
     // No third pass of ours.
     std::thread::sleep(Duration::from_millis(300));

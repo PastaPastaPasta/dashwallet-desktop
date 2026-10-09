@@ -15,6 +15,10 @@ pub struct IdentitySummary {
     pub index: u32,
     pub names: Vec<String>,
     pub main_name: Option<String>,
+    /// `names` and `main_name` are not known right now (a sync pass holds
+    /// the wallet's identity state): both are empty until a later read, and
+    /// the UI shows "updating" rather than "no name" (DEC-138).
+    pub names_updating: bool,
     pub is_main: bool,
     /// Credits.
     pub balance: Option<u64>,
