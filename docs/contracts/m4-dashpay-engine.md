@@ -80,7 +80,7 @@ type is `pub(crate)`.
 
 | Topic | Rule |
 |---|---|
-| Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links: opaque `String` ids the engine issued. |
+| Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links, activity cursors: opaque `String` ids the engine issued, each 1–64 characters of `[0-9a-z_-]` (`dwcli dashpay session` checks them by that form), as is the `<id>` of a funding step id (`registration/<id>/funding`, `topup/<id>/funding`). |
 | Amounts | Duffs and credits are `u64`; the field name or doc says which. |
 | Every call returns `Result` | Including the in-memory reads DASHPAY §3.6 sketched without one (`status`, `identities`, `contacts`, …) and `check_username`. A stub has to return `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`. |
 | Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). Paged or unbounded reads (`events`, `registrations`) are async. |
@@ -124,13 +124,34 @@ status 1.
   line in order with that command's line plus `id` (none for a line that is not a JSON object), refuses nesting and a
   request's own `--spv`, and ends with `{"ok":true,"result":{"requests":N}}`, exit status 0, whatever the requests
   returned. A line holds at most 64 KiB before its LF or CR LF.
-- Session lines are read and parsed into zeroizing buffers only. A bearer-shaped value in `args` (`dashpay://invite`,
-  `dapk=`, any `dash:` URI, an invitation link's `pk=` or `assetlocktx=`) is refused before it is parsed as an
-  argument. No refusal quotes the line or its `args`.
+- Session lines are read and parsed into zeroizing buffers only, `id` included: an accepted request's `id` is written
+  from that buffer into its answer. Integers follow JSON's grammar (no leading zero). Before clap sees `args`, each
+  token is checked against the command grammar in place: a subcommand of the command reached so far, one of its
+  options (`--name`, `--name value`, `--name=value`; a separate value never starts with `-`), or a value of the
+  type its option or the next positional takes. The types are a wallet id (64 lower-case hex), an identity or
+  contact id (Base58 of 32 bytes), an engine-issued id (drafts, invitation links, faucet keys, activity cursors:
+  1–64 of `[0-9a-z_-]`), a `dispatch-status` artifact (64 lower-case hex, or `registration/<id>/funding` or
+  `topup/<id>/funding`), a Dash address (26–35 Base58 characters), a decimal integer, an enum's serde name, a DPNS
+  label (3–63 of `[A-Za-z0-9-]`, no edge hyphen; `name search` takes 1–63 of those characters, and
+  `name resolve` a label with `.dash` or without), an `http(s)://` URL (up to 2048 printable ASCII characters), a
+  path (1–4096 of `[A-Za-z0-9._/ +@,~-]`), and free text. `name check` takes free text, so that it reports the
+  rules a bad label breaks. Anything else (an unknown option or command, a surplus
+  value, a value of the wrong form) refuses the request by its position. No refusal quotes the line or its `args`.
+- **Every `args` value is public by contract; a credential travels only in `input`.** clap copies the values it
+  parses without wiping them, and no form check can tell a key from an id of the same shape. Free text is
+  `--display-name`, `--alias`, `--text` and `name check`'s label (up to 256 bytes each) and `--public-message` and
+  `--note` (up to 1024 bytes each), with no control characters but LF and tab. Free text, a URL or a path that looks
+  like a bearer input (`dashpay://invite`, `dapk=`, `dash:?`, an invitation link's host, `pk=` or `assetlocktx=`)
+  is refused anyway, as a diagnostic.
 - A panic answers with `internal` ("the outcome is unknown": a write may or may not have gone through; check before
-  retrying), and the panic hook prints only its location. In one-shot mode that is the command's one line, with exit
-  status 1. In a session it answers the request and the session goes on, unless the engine no longer answers, which
-  ends the session with `session_poisoned` and exit status 1.
+  retrying), and the panic hook prints only its location. A panic in an engine task counts the same: the engine's
+  error for it is `internal` with the detail `engine task panicked (message withheld)` (`dw_engine::TASK_PANICKED`),
+  never the panic's message. In one-shot mode that is the command's one line, with exit status 1. In a session it
+  answers the request, then a health probe runs: the session must be open, the vault must answer without panicking,
+  the wallet list without an error, and the engine runtime must run a task, all within 10 s. The session goes on if
+  the probe passes. Otherwise it prints `session_poisoned` as its last line and exits with status 1 at once, without
+  the engine's shutdown (which may never finish). A facade error for a panicking engine task is `internal` with the
+  detail `TASK_PANICKED`, and counts the same.
 - `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with
   `platform.feature_off{feature: "platform"}` before anything is opened.
 - Arguments clap refuses exit with status 2 and no JSON line. stderr names the error kind, the arguments involved where

@@ -25,15 +25,17 @@
 //! dies with a one-shot process. `dashpay session` keeps one engine open
 //! and runs one command per stdin line: `{"args":[…],"input":…,"id":…}`
 //! in, the command's JSON line (with `id`) out. A request line is read and
-//! parsed into zeroizing buffers only (`request.rs`); a bearer-shaped value
-//! in `args` is refused before clap copies it. A panic answers its request
-//! with `internal` (outcome unknown) and the session goes on, unless the
-//! engine no longer answers, which ends it with `session_poisoned`.
+//! parsed into zeroizing buffers only (`request.rs`), and its `args` are
+//! checked against the command grammar (`grammar.rs`) before clap copies
+//! them. A panic, in dwcli or in an engine task, answers its request with
+//! `internal` (outcome unknown) and the session goes on, unless the health
+//! probe then fails, which ends it with `session_poisoned`.
 
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use dw_engine::platform::{
@@ -43,7 +45,7 @@ use dw_engine::platform::{
     PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding, RegistrationRequest,
     RegistrationWait, WithdrawAmount, check_username,
 };
-use dw_engine::{Engine, EngineError, NetworkSession};
+use dw_engine::{Engine, EngineError, NetworkSession, TASK_PANICKED};
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -51,6 +53,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::pay::{credential, wallet_id};
 
+mod grammar;
 mod request;
 
 pub(crate) use request::ZeroStdin;
@@ -550,6 +553,9 @@ pub(crate) struct CliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,
     pub(crate) params: Value,
+    /// A panic (dwcli's, or an engine task's) caused it: the outcome is
+    /// unknown, and a session checks the engine's health.
+    panicked: bool,
 }
 
 impl CliError {
@@ -558,7 +564,20 @@ impl CliError {
             code,
             message: message.to_string(),
             params,
+            panicked: false,
         }
+    }
+
+    /// Whether this is a facade's `internal` error for a panicking engine
+    /// task: its `detail` is [`TASK_PANICKED`], or ends with it (the
+    /// engine error's `Display`).
+    fn is_task_panic(&self) -> bool {
+        self.code.ends_with("internal")
+            && self
+                .params
+                .get("detail")
+                .and_then(Value::as_str)
+                .is_some_and(|d| d.ends_with(TASK_PANICKED))
     }
 
     /// `invalid_argument` and `internal` carry `detail`, as the facade's
@@ -568,7 +587,7 @@ impl CliError {
     }
 
     fn is_panic(&self) -> bool {
-        self.code == "internal" && self.message.starts_with("dwcli panicked")
+        self.panicked
     }
 
     fn detail(code: &'static str, detail: String) -> Self {
@@ -686,7 +705,11 @@ macro_rules! facade_error {
     ($($ty:ty => $params:ident),* $(,)?) => {$(
         impl From<$ty> for CliError {
             fn from(e: $ty) -> Self {
-                Self::new(e.code(), &e, $params(&e))
+                let e = Self::new(e.code(), &e, $params(&e));
+                if e.is_task_panic() {
+                    return panic_error("an engine task", "the call");
+                }
+                e
             }
         }
     )*};
@@ -712,6 +735,7 @@ impl From<EngineError> for CliError {
     fn from(e: EngineError) -> Self {
         match e {
             EngineError::Vault(v) => v.into(),
+            e if e.is_task_panic() => panic_error("an engine task", "the call"),
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -871,18 +895,20 @@ pub fn refuse_no_platform() -> Result<(), String> {
 /// printed. The panic hook prints only where it happened.
 pub fn report_panic() {
     if !REPORTED.load(Ordering::SeqCst) {
-        let e = panic_error("the command");
+        let e = panic_error("dwcli", "the command");
         println!("{}", envelope(&Err(e)));
     }
 }
 
 /// What a panic answers: `internal`, saying the outcome is unknown (a write
 /// may or may not have gone through) and never quoting the payload.
-fn panic_error(what: &str) -> CliError {
-    CliError::detail(
+fn panic_error(who: &str, what: &str) -> CliError {
+    let mut e = CliError::detail(
         "internal",
-        format!("dwcli panicked; {what}'s outcome is unknown"),
-    )
+        format!("{who} panicked; {what}'s outcome is unknown"),
+    );
+    e.panicked = true;
+    e
 }
 
 /// The panic hook for DashPay commands: the payload may quote an input, so
@@ -928,15 +954,47 @@ pub(crate) fn clap_error_text(e: &clap::Error) -> String {
     text
 }
 
-/// Debug builds only: `DWCLI_FAULT_INJECT=panic` makes `dashpay status`
-/// panic (with a bearer-shaped payload the hook must withhold), and
-/// `panic-poison` also makes the session's health probe panic.
+/// Debug builds only, `DWCLI_FAULT_INJECT`: with `panic`, `dashpay status`
+/// panics (with a bearer-shaped payload the hooks must withhold); with
+/// `task-panic` an engine task it runs does. A `-poison` suffix also makes
+/// the session's health probe panic.
+#[cfg(debug_assertions)]
 fn injected_fault(point: &str) -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("DWCLI_FAULT_INJECT").is_ok_and(|v| match point {
-            "panic" => v.starts_with("panic"),
-            _ => v == point,
-        })
+    std::env::var("DWCLI_FAULT_INJECT").is_ok_and(|v| {
+        let fault = v.strip_suffix("-poison").unwrap_or(&v);
+        if point == "poison" {
+            v.ends_with("-poison")
+        } else {
+            fault == point
+        }
+    })
+}
+
+/// The injected `dashpay status` faults (see [`injected_fault`]).
+#[cfg(debug_assertions)]
+fn inject_status_faults(ctx: &Ctx, cmd: &DashPayCommand) -> Result<(), CliError> {
+    let status = matches!(
+        cmd,
+        DashPayCommand::Dashpay {
+            cmd: StatusCmd::Status,
+            ..
+        }
+    );
+    if status && injected_fault("panic") {
+        panic!("injected fault carrying dashpay://invite?pk=PANIC-SECRET");
+    }
+    if status && injected_fault("task-panic") {
+        ctx.block_on(ctx.session.run_on_engine::<(), _>(async {
+            panic!("injected task fault carrying dashpay://invite?pk=PANIC-SECRET")
+        }))?;
+    }
+    Ok(())
+}
+
+/// Whether a command's result is a session that ended poisoned: it printed
+/// its last line, and the engine may never shut down.
+pub fn poisoned(result: &Result<Value, CliError>) -> bool {
+    result.as_ref().is_err_and(|e| e.code == "session_poisoned")
 }
 
 fn common(cmd: &mut DashPayCommand) -> &mut Common {
@@ -979,7 +1037,10 @@ fn exec(
         } => session_loop(&ctx, stdin, stdout),
         cmd => dispatch(&ctx, cmd, stdin),
     };
-    if spv && let Err(e) = engine.block_on(session.stop_spv()) {
+    if spv
+        && !poisoned(&result)
+        && let Err(e) = engine.block_on(session.stop_spv())
+    {
         // The result stands: a write that went through must not read as
         // failed (and be retried).
         eprintln!("warning: stopping SPV: {e}");
@@ -1032,39 +1093,89 @@ fn session_loop(
         requests += 1;
         let (id, result) = session_line(ctx, content);
         let poisoned = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
-        let mut answer = envelope(&result);
-        if let (Value::Object(a), Some(id)) = (&mut answer, id) {
-            a.insert("id".into(), id);
+        // The id goes from its zeroizing buffer straight into the line.
+        let answer = envelope(&result).to_string();
+        match &id {
+            Some(id) => {
+                let open = answer.strip_suffix('}').expect("an answer is an object");
+                write!(stdout, r#"{open},"id":"#)?;
+                id.write_json(stdout)?;
+                writeln!(stdout, "}}")?;
+            }
+            None => writeln!(stdout, "{answer}")?,
         }
-        writeln!(stdout, "{answer}")?;
         stdout.flush()?;
         if poisoned {
-            return Err(CliError::new(
+            // Printed here: `main` exits without the engine's shutdown,
+            // which may never finish.
+            let end = Err(CliError::new(
                 "session_poisoned",
-                "the engine stopped answering after a panic; the session ends",
+                "the engine failed its health probe after a panic; the session ends",
                 json!({}),
             ));
+            writeln!(stdout, "{}", envelope(&end))?;
+            stdout.flush()?;
+            REPORTED.store(true, Ordering::SeqCst);
+            return end;
         }
     }
     Ok(json!({"requests": requests}))
 }
 
-/// Whether the engine still answers after a panic: a poisoned lock panics
-/// on its next use.
+/// How long the health probe may take.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether the engine still works after a panic. It fails closed: the
+/// session must be open, the vault must answer without panicking (its
+/// status has no error), the wallet list without an error, and the engine
+/// runtime must run a task, all within [`PROBE_TIMEOUT`]. A panic, an error
+/// or the timeout fails it. The probe runs on its own thread, so a wedged
+/// engine cannot hang the session (that thread is then left behind).
 fn engine_healthy(ctx: &Ctx) -> bool {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if injected_fault("panic-poison") {
-            panic!("injected poison");
+    let session = Arc::clone(ctx.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probe = std::thread::Builder::new()
+        .name("dwcli-health-probe".into())
+        .spawn(move || {
+            let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(debug_assertions)]
+                if injected_fault("poison") {
+                    panic!("injected poison");
+                }
+                let _ = session.vault().status();
+                session.is_open()
+                    && session.wallet_infos().is_ok()
+                    && wait(session.run_on_engine(async {})).is_ok()
+            }));
+            let _ = tx.send(healthy.unwrap_or(false));
+        });
+    probe.is_ok() && rx.recv_timeout(PROBE_TIMEOUT).unwrap_or(false)
+}
+
+/// Polls `fut` to completion on this thread, which runs no runtime (the
+/// probe's: the engine's own `block_on` needs the engine, which stays with
+/// the session).
+fn wait<F: std::future::Future>(fut: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
         }
-        let _ = ctx.session.vault().status();
-        let _ = ctx.session.wallet_infos();
-    }))
-    .is_ok()
+    }
+    let waker = Arc::new(Unpark(std::thread::current())).into();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let std::task::Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::thread::park();
+    }
 }
 
 /// Runs one request line (without its line ending): its `id`, if it has
 /// one, and its result. A panic in the request is caught and answered.
-fn session_line(ctx: &Ctx, line: &[u8]) -> (Option<Value>, Result<Value, CliError>) {
+fn session_line(ctx: &Ctx, line: &[u8]) -> (Option<request::Id>, Result<Value, CliError>) {
     if line.len() > MAX_LINE {
         let over = format!("request line over {MAX_LINE} bytes");
         return (None, Err(CliError::invalid(over)));
@@ -1072,17 +1183,14 @@ fn session_line(ctx: &Ctx, line: &[u8]) -> (Option<Value>, Result<Value, CliErro
     let request::Parsed { id, request } = request::parse(line);
     let result = request.map_err(CliError::invalid).and_then(|req| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session_request(ctx, req)))
-            .unwrap_or_else(|_| Err(panic_error("the request")))
+            .unwrap_or_else(|_| Err(panic_error("dwcli", "the request")))
     });
     (id, result)
 }
 
 fn session_request(ctx: &Ctx, req: request::Request) -> Result<Value, CliError> {
-    if req.args.iter().any(|a| request::bearer_shaped(a)) {
-        return Err(CliError::invalid(
-            "a bearer input goes in \"input\", never in \"args\"",
-        ));
-    }
+    // Nothing reaches clap, which copies it, before the grammar admits it.
+    grammar::check(&req.args).map_err(|why| CliError::invalid(format!("bad arguments: {why}")))?;
     let mut cmd = RequestArgs::try_parse_from(req.args.iter().map(|a| a.as_str()))
         .map_err(|e| CliError::invalid(format!("bad arguments: {}", clap_error_text(&e))))?
         .cmd;
@@ -1105,16 +1213,8 @@ fn session_request(ctx: &Ctx, req: request::Request) -> Result<Value, CliError> 
 }
 
 fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Value, CliError> {
-    if matches!(
-        &cmd,
-        DashPayCommand::Dashpay {
-            cmd: StatusCmd::Status,
-            ..
-        }
-    ) && injected_fault("panic")
-    {
-        panic!("injected fault carrying dashpay://invite?pk=PANIC-SECRET");
-    }
+    #[cfg(debug_assertions)]
+    inject_status_faults(ctx, &cmd)?;
     match cmd {
         DashPayCommand::Dashpay { cmd, .. } => status_cmd(ctx, cmd),
         DashPayCommand::Identity { cmd, .. } => identity_cmd(ctx, cmd),
@@ -1765,6 +1865,34 @@ mod tests {
         assert_eq!(have, want);
     }
 
+    /// Identity ids for the table's `I` and `C`.
+    const ID1: &str = "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2";
+    const ID2: &str = "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3";
+
+    /// Every table row, with real ids for its placeholders, is admitted by
+    /// a session's grammar and parsed by clap.
+    #[test]
+    fn every_command_passes_the_session_grammar() {
+        let hex = "ab".repeat(32);
+        for (line, _) in TABLE {
+            let args: Vec<Zeroizing<String>> = line
+                .split_whitespace()
+                .map(|t| match t {
+                    "I" => ID1,
+                    "C" => ID2,
+                    "L" | "D" => "d1",
+                    "yA" => "yTw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp",
+                    "ab12" => &hex,
+                    t => t,
+                })
+                .map(|t| Zeroizing::new(t.to_string()))
+                .collect();
+            assert_eq!(grammar::check(&args), Ok(()), "{line:?}");
+            let parsed = RequestArgs::try_parse_from(args.iter().map(|a| a.as_str()));
+            assert!(parsed.is_ok(), "{line:?}");
+        }
+    }
+
     #[test]
     fn global_options_parse_on_either_side_of_the_subcommand() {
         let w = "00".repeat(32);
@@ -2102,6 +2230,61 @@ mod tests {
             (lines[10]["id"].clone(), call(10)),
             (json!(5), json!("DashPay.sync_now"))
         );
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Review DW-E0-09 r2 finding 4: the probe fails on an error, not only
+    /// on a panic. A closed session answers `network_not_open`.
+    #[test]
+    fn the_health_probe_fails_closed() {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, session) = session(&dir.path().join("data"));
+        let ctx = Ctx {
+            engine: &engine,
+            session: &session,
+            passphrase: None,
+            wallet: None,
+        };
+        assert!(engine_healthy(&ctx));
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        assert!(session.wallet_infos().is_err());
+        assert!(!engine_healthy(&ctx));
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Review DW-E0-09 r2 finding 3: an engine task's panic is a panic
+    /// error (outcome unknown, health probed) that quotes nothing, through
+    /// the engine's error and through a facade error's `detail`.
+    #[test]
+    fn engine_task_panics_are_panics() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine(&dir.path().join("data"));
+        let session = open(&engine);
+        let e: CliError = engine
+            .block_on(session.run_on_engine::<(), _>(async {
+                panic!("task panic carrying dashpay://invite?pk=PANIC-SECRET")
+            }))
+            .unwrap_err()
+            .into();
+        assert!(e.is_panic());
+        let line = envelope(&Err(e));
+        assert_eq!(line["error"]["code"], "internal");
+        assert_eq!(
+            line["error"]["params"]["detail"],
+            "an engine task panicked; the call's outcome is unknown"
+        );
+        assert!(!line.to_string().contains("PANIC-SECRET"), "{line}");
+        let facade: CliError = PlatformError::Internal {
+            detail: TASK_PANICKED.into(),
+        }
+        .into();
+        assert!(facade.is_panic());
+        let other: CliError = PlatformError::Internal { detail: "x".into() }.into();
+        assert!(!other.is_panic());
         engine.block_on(engine.shutdown()).unwrap();
     }
 

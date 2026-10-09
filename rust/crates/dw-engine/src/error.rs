@@ -263,10 +263,23 @@ impl From<dash_sdk::Error> for EngineError {
     }
 }
 
+/// The detail of the `Internal` error a panicking engine task becomes. The
+/// panic's message is withheld: it may quote the task's inputs, and this
+/// text reaches hosts and logs.
+pub const TASK_PANICKED: &str = "engine task panicked (message withheld)";
+
+impl EngineError {
+    /// Whether this is a panicking engine task's error (`TASK_PANICKED`):
+    /// the task's outcome is unknown.
+    pub fn is_task_panic(&self) -> bool {
+        matches!(self, EngineError::Internal(d) if d == TASK_PANICKED)
+    }
+}
+
 impl From<tokio::task::JoinError> for EngineError {
     fn from(e: tokio::task::JoinError) -> Self {
         if e.is_panic() {
-            EngineError::Internal(format!("engine task panicked: {e}"))
+            EngineError::Internal(TASK_PANICKED.into())
         } else {
             EngineError::Internal(format!("engine task cancelled: {e}"))
         }
@@ -281,6 +294,29 @@ mod tests {
     use dpp::consensus::codes::ErrorWithCode;
     use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dpp::prelude::Identifier;
+
+    /// A task's panic message never reaches the error (review DW-E0-09 r2
+    /// finding 3), and the error says it was a panic.
+    #[test]
+    fn a_task_panic_withholds_its_message() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let e: EngineError = rt
+            .block_on(async {
+                tokio::spawn(async {
+                    panic!("task panic carrying dashpay://invite?pk=PANIC-SECRET")
+                })
+                .await
+            })
+            .unwrap_err()
+            .into();
+        assert!(e.is_task_panic());
+        assert_eq!(e.code(), "internal");
+        assert_eq!(e.to_string(), format!("internal error: {TASK_PANICKED}"));
+        assert!(!format!("{e:?}").contains("PANIC-SECRET"));
+        assert!(!EngineError::Internal("other".into()).is_task_panic());
+    }
 
     const IDENTITY: [u8; 32] = [9u8; 32];
 

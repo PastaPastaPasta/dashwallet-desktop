@@ -1,8 +1,9 @@
-//! Review DW-E0-09 r1 (GPT) finding 1: no heap block that held a bearer
-//! input may be freed unwiped. A scanning allocator checks every block this
-//! thread frees while armed for a marker, as the review's probe did, over
-//! the session's request paths: literal and escaped inputs, a refused
-//! shape, a bearer put in `args`, and the bearer reader.
+//! Review DW-E0-09 r1 (GPT) finding 1 and r2 (Sol) findings 1–2: no heap
+//! block that held a bearer input may be freed unwiped. A scanning
+//! allocator checks every block this thread frees while armed for a marker,
+//! as the reviews' probes did, over the session's request paths: literal
+//! and escaped inputs, a refused shape, a secret in `args` in any form or
+//! position the grammar refuses, a secret `id`, and the bearer reader.
 //!
 //! Reading freed blocks may touch bytes that were never initialized; that
 //! is acceptable in this test-only allocator.
@@ -93,7 +94,11 @@ fn session_requests_free_no_unwiped_secret() {
         passphrase: None,
         wallet: None,
     };
-    let cases: Vec<Vec<u8>> = [
+    let long_name = format!(
+        r#"{{"args":["profile","set","--display-name","HEAP-SECRET-PROBE-ONLY{}"]}}"#,
+        "x".repeat(300)
+    );
+    let mut cases: Vec<Vec<u8>> = [
         // The review's four reproductions.
         r#"{"args":["invite","stash"],"input":"dash:?invite=HEAP-SECRET-PROBE-ONLY","id":1}"#,
         r#"{"args":["invite","stash"],"input":"dash:?invite=HEAP-SECRET-PROBE-ONLY"}"#,
@@ -106,6 +111,40 @@ fn session_requests_free_no_unwiped_secret() {
         r#"{"args":["invite","stash"],"input":"HEAP-SECRET-PROBE-ONLY"#,
         r#"{"input":"dash:?invite=HEAP-SECRET-PROBE-ONLY\n","args":["contact","scan"]}"#,
         r#"{"args":["invite","stash"],"input":["HEAP-SECRET-PROBE-ONLY"]}"#,
+        // r2 (Sol) finding 1: percent-encoded, split and bare secrets in
+        // `args`, which no pattern list catches.
+        r#"{"args":["invite","stash","dashpay%3A%2F%2Finvite%3Fpk%3DHEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","dashpay","://","invite?pk","=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","HEAP-SECRET-PROBE-ONLY"]}"#,
+        // One refused value per type, then unknown names in each slot.
+        r#"{"args":["identity","list","--wallet","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","set-main","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","discard","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["dashpay","dispatch-status","registration/HEAP-SECRET-PROBE-ONLY/funding"]}"#,
+        r#"{"args":["identity","withdraw","--credits","5","--to","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","top-up","--duffs","1HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["name","search","abc","--limit","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["contact","list","--sort","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["name","register","dash:?invite=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["name","check","dash:?invite=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["name","resolve","HEAP-SECRET-PROBE-ONLY.dash.dash"]}"#,
+        r#"{"args":["profile","set","--avatar-url","dashpay://invite?pk=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["profile","set","--avatar-url","https://invitations.dashpay.io/applink?du=a&assetlocktx=b&pk=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","--input-file","/invitations.dashpay.io/HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","--input-file","dash:?invite=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["contact","details","29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2","--note","dash:?invite=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["contact","details","29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2","--alias","HEAP-SECRET-PROBE-ONLY\u0007"]}"#,
+        long_name.as_str(),
+        r#"{"args":["HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","--HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["invite","stash","--link=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","list","--spv=HEAP-SECRET-PROBE-ONLY"]}"#,
+        r#"{"args":["identity","list","-HEAP-SECRET-PROBE-ONLY"]}"#,
+        // r2 (Sol) finding 2: a secret `id` on a malformed line and on a
+        // refused shape.
+        r#"{"args":[],"id":"dash:?invite=HEAP-SECRET-PROBE-ONLY","input":"\q"}"#,
+        r#"{"args":false,"id":"dash:?invite=HEAP-SECRET-PROBE-ONLY"}"#,
     ]
     .into_iter()
     .map(|s| s.as_bytes().to_vec())
@@ -117,6 +156,17 @@ fn session_requests_free_no_unwiped_secret() {
         assert!(result.is_err(), "{}", String::from_utf8_lossy(line));
         assert_eq!(hits, 0, "{}", String::from_utf8_lossy(line));
     }
+    // The whole loop, answers included: an accepted request's `id` is
+    // written from its zeroizing buffer, never copied.
+    cases.push(
+        br#"{"args":["name","check","alice"],"id":"dash:?invite=HEAP-SECRET-PROBE-ONLY"}"#.to_vec(),
+    );
+    let stream = cases.join(&b'\n');
+    let hits = unwiped_frees(|| {
+        let done = session_loop(&ctx, &mut &stream[..], &mut std::io::sink()).unwrap();
+        assert_eq!(done, json!({"requests": cases.len()}));
+    });
+    assert_eq!(hits, 0);
     // The one-shot bearer reader, from stdin and from a file.
     let file = dir.path().join("link");
     std::fs::write(&file, "dash:?invite=HEAP-SECRET-PROBE-ONLY\n").unwrap();

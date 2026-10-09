@@ -8,14 +8,16 @@
 //! to the raw string first, so it never reallocates. Errors never quote the
 //! line.
 //!
+//! A string `id` stays in a zeroizing buffer too, and is written straight
+//! to the answer line ([`Id::write_json`]) without a copy (review DW-E0-09
+//! r2 finding 2).
+//!
 //! [`ZeroStdin`] reads stdin into a zeroizing buffer instead of std's
-//! stdin buffer, and [`bearer_shaped`] spots a bearer input put in `args`
-//! before clap copies it.
+//! stdin buffer.
 
 use std::fs::File;
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, Read, Write};
 
-use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
 /// A parsed request.
@@ -24,10 +26,28 @@ pub(super) struct Request {
     pub(super) input: Option<Zeroizing<String>>,
 }
 
+/// A request's `id`, echoed with its answer.
+#[derive(Debug, PartialEq)]
+pub(super) enum Id {
+    Str(Zeroizing<String>),
+    Int(i64),
+}
+
+impl Id {
+    /// Writes the id as JSON. serde_json escapes a string straight into
+    /// `w`, with no intermediate copy.
+    pub(super) fn write_json(&self, w: &mut dyn Write) -> io::Result<()> {
+        match self {
+            Id::Str(s) => serde_json::to_writer(w, s.as_str()).map_err(io::Error::from),
+            Id::Int(n) => write!(w, "{n}"),
+        }
+    }
+}
+
 /// What a line parses to: its `id` (when the line is a JSON object whose
 /// `id` is a string or an integer) and the request or why it is refused.
 pub(super) struct Parsed {
-    pub(super) id: Option<Value>,
+    pub(super) id: Option<Id>,
     pub(super) request: Result<Request, String>,
 }
 
@@ -69,7 +89,7 @@ struct Syntax(usize);
 struct Fields {
     args: Option<Vec<Zeroizing<String>>>,
     input: Option<Zeroizing<String>>,
-    id: Option<Value>,
+    id: Option<Id>,
     seen: [bool; 3],
     /// The first shape error; parsing goes on so `id` is still found.
     refusal: Option<String>,
@@ -163,13 +183,13 @@ impl Parser<'_> {
             }
             (1, Some(b'"')) => f.input = Some(self.string()?),
             (1 | 2, Some(b'n')) => self.literal(b"null")?,
-            (2, Some(b'"')) => f.id = Some(Value::String(self.string()?.to_string())),
+            (2, Some(b'"')) => f.id = Some(Id::Str(self.string()?)),
             (2, Some(b'-' | b'0'..=b'9')) => {
                 let start = self.i;
                 self.number()?;
                 let digits = std::str::from_utf8(&self.b[start..self.i]).unwrap_or_default();
                 match digits.parse::<i64>() {
-                    Ok(n) => f.id = Some(n.into()),
+                    Ok(n) => f.id = Some(Id::Int(n)),
                     Err(_) => f.refuse(SHAPE),
                 }
             }
@@ -303,6 +323,8 @@ impl Parser<'_> {
         char::from_u32(code).ok_or(Syntax(*k))
     }
 
+    /// A JSON number (RFC 8259 §6): the integer part is `0` or starts with
+    /// a nonzero digit.
     fn number(&mut self) -> Result<(), Syntax> {
         let digits = |p: &mut Self| {
             let s = p.i;
@@ -314,7 +336,11 @@ impl Parser<'_> {
         if self.peek() == Some(b'-') {
             self.i += 1;
         }
-        digits(self)?;
+        if self.peek() == Some(b'0') {
+            self.i += 1;
+        } else {
+            digits(self)?;
+        }
         if self.peek() == Some(b'.') {
             self.i += 1;
             digits(self)?;
@@ -380,26 +406,6 @@ impl Parser<'_> {
             _ => self.err(),
         }
     }
-}
-
-/// Whether `arg` looks like a bearer input: the patterns DASHPAY §3.8's log
-/// redaction uses (`dashpay://invite`, `dapk=`), any `dash:` URI (DIP-15
-/// contact payloads; no DashPay argument takes one) and the mobile
-/// invitation link's key fields. Compared without making a copy.
-pub(super) fn bearer_shaped(arg: &str) -> bool {
-    const PATTERNS: [&[u8]; 7] = [
-        b"dashpay://invite",
-        b"dash:",
-        b"dapk=",
-        b"?pk=",
-        b"&pk=",
-        b"assetlocktx=",
-        b"invitations.dashpay",
-    ];
-    let b = arg.as_bytes();
-    PATTERNS
-        .iter()
-        .any(|p| b.windows(p.len()).any(|w| w.eq_ignore_ascii_case(p)))
 }
 
 /// Stdin through a zeroizing buffer that is wiped as it is consumed. It
@@ -474,13 +480,24 @@ impl BufRead for ZeroStdin {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
+
+    impl Id {
+        fn value(&self) -> Value {
+            match self {
+                Id::Str(s) => s.as_str().into(),
+                Id::Int(n) => (*n).into(),
+            }
+        }
+    }
 
     fn ok(line: &str) -> (Option<Value>, Vec<String>, Option<String>) {
         let p = parse(line.as_bytes());
         let r = p.request.unwrap_or_else(|e| panic!("{line}: {e}"));
         (
-            p.id,
+            p.id.as_ref().map(Id::value),
             r.args.iter().map(|a| a.to_string()).collect(),
             r.input.map(|i| i.to_string()),
         )
@@ -489,7 +506,7 @@ mod tests {
     fn refused(line: &str) -> (Option<Value>, String) {
         let p = parse(line.as_bytes());
         (
-            p.id,
+            p.id.as_ref().map(Id::value),
             p.request.err().unwrap_or_else(|| panic!("{line} parsed")),
         )
     }
@@ -561,24 +578,43 @@ mod tests {
         assert!(refused(&deep).1.starts_with("malformed request"));
     }
 
+    /// Review DW-E0-09 r2 finding 5: integers as JSON writes them, no
+    /// leading zero.
     #[test]
-    fn bearer_shapes() {
-        for s in [
-            "dashpay://invite?x",
-            "DASH:?du=a&DAPK=b",
-            "https://invitations.dashpay.io/applink?du=a&assetlocktx=b&pk=c",
-            "x?pk=1",
-            "dash:?invite=x",
+    fn numbers_follow_the_json_grammar() {
+        for (line, col) in [
+            (r#"{"args":[],"id":01}"#, 18),
+            (r#"{"args":[],"id":-01}"#, 19),
+            (r#"{"args":[],"id":00}"#, 18),
+            (r#"{"args":[],"x":012.5}"#, 17),
+            (r#"{"args":[],"id":-}"#, 18),
         ] {
-            assert!(bearer_shaped(s), "{s}");
+            assert_eq!(
+                refused(line),
+                (None, format!("malformed request at column {col}")),
+                "{line}"
+            );
         }
-        for s in [
-            "dashpay://user?id=a&username=b",
-            "--invitation-id",
-            "alice",
-            "pkg=1",
+        for (id, want) in [("0", 0), ("-0", 0), ("10", 10), ("-120", -120)] {
+            let line = format!(r#"{{"args":[],"id":{id}}}"#);
+            assert_eq!(ok(&line).0, Some(want.into()), "{line}");
+            assert!(serde_json::from_str::<Value>(&line).is_ok());
+        }
+        assert_eq!(
+            refused(r#"{"args":[],"x":0.5e+3,"id":1}"#).0,
+            Some(1.into())
+        );
+    }
+
+    #[test]
+    fn ids_are_written_as_json() {
+        for (id, want) in [
+            (Id::Int(-3), "-3"),
+            (Id::Str(Zeroizing::new("a\"\n".into())), r#""a\"\n""#),
         ] {
-            assert!(!bearer_shaped(s), "{s}");
+            let mut out = Vec::new();
+            id.write_json(&mut out).unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), want);
         }
     }
 }

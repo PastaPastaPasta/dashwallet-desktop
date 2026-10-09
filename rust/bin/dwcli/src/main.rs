@@ -519,6 +519,11 @@ fn run(cli: Cli) -> Result<(), String> {
             // Unlocks itself, so a failed unlock is a JSON error too, and
             // prints its JSON line once the engine is shut down.
             let result = dashpay::run(&engine, &session, passphrase.as_ref(), cmd);
+            if dashpay::poisoned(&result) {
+                // The session printed its last line. An engine that failed
+                // its health probe may never shut down: exit without it.
+                std::process::exit(1);
+            }
             let teardown = engine
                 .block_on(engine.shutdown())
                 .map_err(|e| format!("shutdown: {e}"));
