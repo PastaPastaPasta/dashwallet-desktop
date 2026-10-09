@@ -1,6 +1,6 @@
 //! Public value types of the vault.
 
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
@@ -218,19 +218,26 @@ pub(crate) enum KeySource {
     Own(Arc<Key32>),
     /// A grant's own key moved into a [`KeyHold`]; usable only while the
     /// hold lives (E0-04 design §3.5).
-    Held(Weak<Key32>),
+    Held(Arc<HeldKey>),
 }
 
 impl KeySource {
-    /// The own key for one use: `Ok(None)` for the vault's key, `Locked`
-    /// once a held key's [`KeyHold`] has dropped. Callers upgrade inside the
-    /// vault's gate and drop the result when the operation ends, so a hold
-    /// dropped meanwhile erases the key as soon as that operation is done.
-    pub(crate) fn own(&self) -> Result<Option<Arc<Key32>>, VaultError> {
+    /// A copy of the own key for one use: `Ok(None)` for the vault's key,
+    /// `Locked` once a held key's [`KeyHold`] has dropped. Every use of a
+    /// held key starts here, so none begins after the drop.
+    pub(crate) fn copy(&self) -> Result<Option<Key32>, VaultError> {
         match self {
             KeySource::Vault => Ok(None),
-            KeySource::Own(key) => Ok(Some(key.clone())),
-            KeySource::Held(key) => key.upgrade().map(Some).ok_or(VaultError::Locked),
+            KeySource::Own(key) => Ok(Some(Zeroizing::new(***key))),
+            KeySource::Held(held) => held.copy().map(Some),
+        }
+    }
+
+    /// `Locked` once a held key's [`KeyHold`] has dropped; makes no copy.
+    pub(crate) fn check(&self) -> Result<(), VaultError> {
+        match self {
+            KeySource::Held(held) if !held.live() => Err(VaultError::Locked),
+            _ => Ok(()),
         }
     }
 
@@ -243,26 +250,68 @@ impl KeySource {
     }
 }
 
-/// The one strong reference to a grant set's own data key (E0-04 design
-/// §3.5), made by [`crate::Vault::hold_key`]. Signers issued from the held
-/// tokens ([`crate::Vault::platform_signer_held`],
-/// [`crate::Vault::signer_held`]) reference it weakly: when the hold drops,
-/// the key is erased, an operation already under way finishes with the
-/// copy it took, and every later call fails `Locked`. Not cloneable.
+/// The key of one [`KeyHold`], present until the hold drops. Liveness is
+/// this mutex's state, not a reference count: every use copies the key
+/// while holding the mutex, and the hold's `Drop` drops the key in place
+/// (erasing its bytes) holding the same mutex. So each use is ordered wholly before
+/// or after the drop, and one that begins after it finds nothing, however
+/// many copies operations already under way still hold (review
+/// DW-E0-04-P1 r1 GPT, high).
+pub(crate) struct HeldKey(Mutex<Option<Key32>>);
+
+impl HeldKey {
+    fn slot(&self) -> MutexGuard<'_, Option<Key32>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn copy(&self) -> Result<Key32, VaultError> {
+        self.slot()
+            .as_ref()
+            .map(|key| Zeroizing::new(**key))
+            .ok_or(VaultError::Locked)
+    }
+
+    pub(crate) fn live(&self) -> bool {
+        self.slot().is_some()
+    }
+}
+
+/// The one holder of a grant set's own data key (E0-04 design §3.5), made
+/// by [`crate::Vault::hold_key`]. The held tokens issue signers only through
+/// it ([`crate::Vault::platform_signer_held`], [`crate::Vault::signer_held`],
+/// [`crate::Vault::scan_key_held`]; anywhere else they are refused with
+/// `InvalidArgument`). Dropping it erases the key: an operation already
+/// under way finishes with the copy it took, and every later call of a
+/// signer it issued fails `Locked`. Not cloneable.
 pub struct KeyHold {
-    pub(crate) key: Arc<Key32>,
+    pub(crate) key: Arc<HeldKey>,
+}
+
+impl KeyHold {
+    pub(crate) fn new(key: Key32) -> Self {
+        Self {
+            key: Arc::new(HeldKey(Mutex::new(Some(key)))),
+        }
+    }
+
+    /// Whether `token`'s own key was moved into this hold.
+    pub fn holds(&self, token: &GrantToken) -> bool {
+        matches!(&token.key, KeySource::Held(k) if Arc::ptr_eq(k, &self.key))
+    }
+}
+
+impl Drop for KeyHold {
+    fn drop(&mut self) {
+        // Dropped in place, under the mutex: `Zeroizing` erases the bytes
+        // where they live. (`take()` would move them out and erase only
+        // the copy, leaving the slot's bytes behind.)
+        *self.key.slot() = None;
+    }
 }
 
 impl std::fmt::Debug for KeyHold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("KeyHold(<redacted>)")
-    }
-}
-
-impl KeyHold {
-    /// Whether `token`'s own key was moved into this hold.
-    pub fn holds(&self, token: &GrantToken) -> bool {
-        matches!(&token.key, KeySource::Held(k) if std::ptr::eq(k.as_ptr(), Arc::as_ptr(&self.key)))
     }
 }
 

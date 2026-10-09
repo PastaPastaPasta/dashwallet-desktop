@@ -38,9 +38,9 @@ use crate::signer::test_hook;
 use crate::vault::GateEvent;
 use crate::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantPurpose, GrantToken, KdfParams, KdfPolicy,
-    MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation, SignerError, SignerScope,
-    SystemClock, UnlockScope, Vault, VaultConfig, VaultError, VaultSigner, WalletSecret,
-    WalletSigner,
+    KeyHold, MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation, SignerError,
+    SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultError, VaultSigner,
+    WalletSecret, WalletSigner,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -94,9 +94,40 @@ fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantT
     v.redeem_grant(&grant.id, purpose.kind(), Some(&W)).unwrap()
 }
 
-fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
-    let token = token(v, PLATFORM_OP, credential);
-    v.platform_signer(&W, &token, scope).unwrap()
+/// A redeemed grant of `purpose`, its key held when it carries its own
+/// (a passphrase grant on a locked vault): own-key Platform and scan
+/// tokens issue signers only through a hold.
+fn held_token(
+    v: &Vault,
+    purpose: GrantPurpose,
+    credential: Credential<'_>,
+) -> (GrantToken, Option<KeyHold>) {
+    let mut tokens = [token(v, purpose, credential)];
+    let hold = v.hold_key(&mut tokens).unwrap();
+    let [token] = tokens;
+    (token, hold)
+}
+
+fn platform_signer(
+    v: &Vault,
+    scope: SignerScope,
+    credential: Credential<'_>,
+) -> (VaultSigner, Option<KeyHold>) {
+    let (token, hold) = held_token(v, PLATFORM_OP, credential);
+    let signer = match &hold {
+        Some(hold) => v.platform_signer_held(&W, hold, &token, scope),
+        None => v.platform_signer(&W, &token, scope),
+    };
+    (signer.unwrap(), hold)
+}
+
+fn scan_key(v: &Vault, credential: Credential<'_>) -> (ScanKey, Option<KeyHold>) {
+    let (token, hold) = held_token(v, GrantPurpose::IdentityScan, credential);
+    let scan = match &hold {
+        Some(hold) => v.scan_key_held(&W, hold, &token),
+        None => v.scan_key(&W, &token),
+    };
+    (scan.unwrap(), hold)
 }
 
 fn peer() -> PublicKey {
@@ -175,7 +206,7 @@ fn lock_waits_for_the_operation_already_running() {
 
     // A passphrase grant on a locked vault, whose signer holds the grant's
     // own copy of the data key: an identity signature.
-    let identity = platform_signer(
+    let (identity, _hold) = platform_signer(
         &v,
         SignerScope::PlatformIdentity,
         Credential::Passphrase(PASS),
@@ -244,6 +275,8 @@ struct Round {
     mixing: VaultSigner,
     scan: ScanKey,
     key_data: [u8; 33],
+    /// The holds of the own-key signers (locked vault), kept for the round.
+    _holds: Vec<KeyHold>,
 }
 
 /// The vault states the stress test runs in.
@@ -277,7 +310,10 @@ impl Mode {
             }
             Mode::LockedOwnKey => Credential::Passphrase(PASS),
         };
-        let identity = platform_signer(v, SignerScope::PlatformIdentity, credential);
+        let (identity, identity_hold) =
+            platform_signer(v, SignerScope::PlatformIdentity, credential);
+        let (scan, scan_hold) = scan_key(v, credential);
+        let mut holds: Vec<KeyHold> = identity_hold.into_iter().chain(scan_hold).collect();
         let spend = v
             .signer(
                 &W,
@@ -285,10 +321,11 @@ impl Mode {
             )
             .unwrap();
         let (crypto, mixing) = match self {
-            Mode::LockedOwnKey => (
-                platform_signer(v, SignerScope::DashPayCrypto, credential),
-                spend.clone(),
-            ),
+            Mode::LockedOwnKey => {
+                let (crypto, hold) = platform_signer(v, SignerScope::DashPayCrypto, credential);
+                holds.extend(hold);
+                (crypto, spend.clone())
+            }
             _ => (
                 v.dashpay_crypto_signer(&W).unwrap(),
                 v.mixing_signer(&W).unwrap(),
@@ -300,9 +337,8 @@ impl Mode {
             identity,
             spend,
             mixing,
-            scan: v
-                .scan_key(&W, &token(v, GrantPurpose::IdentityScan, credential))
-                .unwrap(),
+            scan,
+            _holds: holds,
         }
     }
 }
@@ -1104,67 +1140,89 @@ fn a_lock_between_the_key_load_and_the_gate_reloads_the_key() {
 /// A redeemed `PlatformOp` token of a passphrase grant on the locked vault
 /// `v`, its key moved into a hold, and an identity signer on that hold
 /// (E0-04 design §3.5).
-fn held_identity(v: &Vault) -> (crate::KeyHold, VaultSigner) {
-    let mut tokens = vec![token(v, PLATFORM_OP, Credential::Passphrase(PASS))];
-    let hold = v.hold_key(&mut tokens).unwrap();
+fn held_identity(v: &Vault) -> (KeyHold, GrantToken, VaultSigner) {
+    let (token, hold) = held_token(v, PLATFORM_OP, Credential::Passphrase(PASS));
+    let hold = hold.expect("a passphrase grant on a locked vault has its own key");
     let signer = v
-        .platform_signer_held(&W, &hold, &tokens[0], SignerScope::PlatformIdentity)
+        .platform_signer_held(&W, &hold, &token, SignerScope::PlatformIdentity)
         .unwrap();
-    (hold, signer)
+    (hold, token, signer)
 }
 
-/// Dropping a `KeyHold` erases the key while signer clones are still held
-/// (no strong reference is left), and an operation already under way
-/// finishes with the copy it took inside the gate.
+/// GPT's interleaving (review DW-E0-04-P1 r1, high), made deterministic: an
+/// operation A takes its copy of the held key and pauses holding it; the
+/// hold drops. Then no new use may begin: a signature B on another clone,
+/// an identity signer and a scan key from the held tokens all fail
+/// `Locked`, and the key is gone from the hold. A, already under way,
+/// finishes with its copy. (With liveness read off a reference count, A's
+/// live reference let B begin.)
 #[test]
-fn dropping_a_key_hold_erases_the_key_and_lets_a_running_operation_finish() {
+fn no_use_begins_after_a_key_hold_dropped_while_an_operation_holds_a_copy() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir, Some(PASS));
     v.lock();
-    let (hold, identity) = held_identity(&v);
+    let mut tokens = [
+        token(&v, PLATFORM_OP, Credential::Passphrase(PASS)),
+        token(&v, GrantPurpose::IdentityScan, Credential::Passphrase(PASS)),
+    ];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
+    let identity = v
+        .platform_signer_held(&W, &hold, &tokens[0], SignerScope::PlatformIdentity)
+        .unwrap();
+    let scan = v.scan_key_held(&W, &hold, &tokens[1]).unwrap();
     let key_data = identity_public_key(&identity);
-    let weak = Arc::downgrade(&hold.key);
-    let clones: Vec<_> = (0..4).map(|_| identity.clone()).collect();
+    let cell = hold.key.clone();
+    let sign = |s: &VaultSigner| {
+        s.sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
+            .map(drop)
+    };
 
-    // Pause a signature inside the gate, drop the hold, then let it finish.
-    let (entered_tx, entered_rx) = mpsc::channel();
+    let (taken_tx, taken_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
-    let running = clones[0].clone();
+    let running = identity.clone();
     let worker = thread::spawn(move || {
-        test_hook::set(move || {
-            entered_tx.send(()).unwrap();
+        test_hook::set_key_taken(move || {
+            taken_tx.send(()).unwrap();
             release_rx.recv().unwrap();
         });
         running
             .sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
             .map(drop)
     });
-    entered_rx.recv().unwrap();
+    taken_rx.recv().unwrap();
+    // A holds its copy now; drop the hold.
     drop(hold);
-    assert_eq!(
-        weak.strong_count(),
-        0,
-        "the key outlived its hold: a signer kept a strong reference"
-    );
-    release_tx.send(()).unwrap();
-    assert_eq!(
-        worker.join().unwrap(),
-        Ok(()),
-        "the running operation finishes"
-    );
-
-    for s in clones.iter().chain([&identity]) {
-        assert_eq!(
-            s.sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
-                .map(drop),
-            Err(SignerError::Locked)
-        );
+    assert!(!cell.live(), "the hold's key outlived the hold");
+    assert_eq!(sign(&identity.clone()), Err(SignerError::Locked));
+    assert_eq!(scan.master_key().map(drop), Err(SignerError::Locked));
+    // Nor can a new signer come from the held tokens: only their own hold
+    // issues for them, and a borrow of it cannot outlive its drop.
+    let other = held_identity(&v);
+    for (token, scope) in [
+        (&tokens[0], SignerScope::DashPayCrypto),
+        (&tokens[0], SignerScope::PlatformIdentity),
+    ] {
+        assert!(matches!(
+            v.platform_signer(&W, token, scope),
+            Err(VaultError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            v.platform_signer_held(&W, &other.0, token, scope),
+            Err(VaultError::InvalidArgument(_))
+        ));
     }
+    release_tx.send(()).unwrap();
+    assert_eq!(worker.join().unwrap(), Ok(()), "A finishes with its copy");
+    assert_eq!(sign(&identity), Err(SignerError::Locked));
 }
 
 /// 16 threads sign with clones of one held signer while the coordinator
-/// drops the hold, round after round (300 drops). No call that began after
-/// the drop returned succeeds, and every worker ends its round `Locked`.
+/// drops the hold, round after round (300 drops). Half of them pause after
+/// taking their copy of the key, so drops land while copies are held (the
+/// interleaving of review DW-E0-04-P1 r1, which
+/// `no_use_begins_after_a_key_hold_dropped_while_an_operation_holds_a_copy`
+/// pins deterministically). No call that began after the drop returned
+/// succeeds, and every worker ends its round `Locked`.
 #[test]
 fn no_signature_begins_after_its_key_hold_dropped() {
     const ROUNDS: usize = 300;
@@ -1189,7 +1247,7 @@ fn no_signature_begins_after_its_key_hold_dropped() {
         JOIN_GRACE,
         WORKERS,
         ROUNDS,
-        |_| {
+        |w| {
             let (current, results, across_drop, refused) = (
                 current.clone(),
                 results.clone(),
@@ -1197,6 +1255,9 @@ fn no_signature_begins_after_its_key_hold_dropped() {
                 refused.clone(),
             );
             move || {
+                if w % 2 == 0 {
+                    test_hook::set_key_taken(|| thread::sleep(Duration::from_micros(150)));
+                }
                 let round = current.lock().unwrap().clone().unwrap();
                 // Each worker signs with its own clone of the held signer.
                 let signer = round.identity.clone();
@@ -1224,7 +1285,7 @@ fn no_signature_begins_after_its_key_hold_dropped() {
             }
         },
         |_| {
-            let (hold, identity) = held_identity(&v);
+            let (hold, _token, identity) = held_identity(&v);
             *current.lock().unwrap() = Some(Arc::new(HeldRound {
                 hold: Mutex::new(Some(hold)),
                 key_data: identity_public_key(&identity),

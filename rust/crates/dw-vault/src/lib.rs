@@ -22,8 +22,9 @@
 //!   in this crate. Two keys leave it: the DIP-15 auto-accept key, and the
 //!   master key of an identity scan ([`ScanKey`], under an `IdentityScan`
 //!   grant), which platform-wallet's `ScanKeyResolver` requires;
-//! - a lease's own key is held by one [`KeyHold`] its signers reference
-//!   weakly, so dropping the hold erases it (E0-04 design §3.5).
+//! - a lease's own key is held by one [`KeyHold`], through which alone its
+//!   tokens issue signers; dropping the hold erases the key and no use
+//!   begins after it (E0-04 design §3.5).
 //!
 //! dash-qt parity: "Encrypt wallet" adds slot P and removes slot O, "Change
 //! passphrase" re-wraps the DEK (the seed is unchanged), and there is no

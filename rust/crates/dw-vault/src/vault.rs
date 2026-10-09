@@ -1364,8 +1364,8 @@ impl Vault {
         let key = {
             let inner = self.inner();
             self.token_current(&inner, token)?;
-            match token.key.own()? {
-                Some(key) => Zeroizing::new(**key),
+            match token.key.copy()? {
+                Some(key) => key,
                 None => Self::memory_dek(&inner)?,
             }
         };
@@ -1697,26 +1697,54 @@ impl Vault {
     /// A signer for every derivation of `wallet`, authorized by a redeemed
     /// grant for that wallet whose purpose signs (spend, message). A grant
     /// authorized by passphrase on a locked or mixing-only vault hands its
-    /// own key to the signer, which keeps it alive (use
-    /// [`Self::signer_held`] for a key a lease can drop). The signer stops
-    /// working when the vault locks or changes unlock scope. A `PlatformOp`
-    /// grant gets scoped signers ([`Self::platform_signer`]) and an
-    /// `IdentityScan` grant the identity-scan key ([`Self::scan_key`]), not
-    /// this signer.
+    /// own key to the signer, which keeps it alive: the M1 flows (send,
+    /// PSBT, message, CoinJoin) drop their token as soon as they hold the
+    /// signer, so a weak signer would die at once. That is the one exception
+    /// to E0-04 design §3.5, until P5 moves those flows onto holds; a lease
+    /// uses [`Self::signer_held`]. The signer stops working when the vault
+    /// locks or changes unlock scope. A `PlatformOp` grant gets scoped
+    /// signers ([`Self::platform_signer`]) and an `IdentityScan` grant the
+    /// identity-scan key ([`Self::scan_key`]), not this signer. A held token
+    /// is `InvalidArgument` here.
     pub fn signer(&self, wallet: &WalletId, token: &GrantToken) -> Result<VaultSigner, VaultError> {
+        self.spend_signer(wallet, None, token)
+    }
+
+    /// [`Self::signer`] for a token whose key `hold` holds: the signer stops
+    /// when the hold drops. A token `hold` does not hold is
+    /// `InvalidArgument`.
+    pub fn signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        self.spend_signer(wallet, Some(hold), token)
+    }
+
+    fn spend_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
         if !token.purpose.signs() {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        self.token_signer(wallet, token, SignerScope::Full)
+        self.token_signer(wallet, token, SignerScope::Full, hold)
     }
 
     /// A signer limited to one Platform scope (DASHPAY §3.3):
     /// [`SignerScope::PlatformIdentity`], [`SignerScope::DashPayCrypto`] or
     /// [`SignerScope::PlatformFunding`], authorized by a redeemed
-    /// `PlatformOp` grant for `wallet`. One token may issue several (a
-    /// registration needs identity and funding signers). Any other scope is
-    /// `InvalidArgument`; any other grant `GrantPurposeMismatch`. Lifetime
-    /// and own-key rules are those of [`Self::signer`].
+    /// `PlatformOp` grant for `wallet` whose key is the vault's (the vault
+    /// held its full-scope key when the grant was authorized). One token
+    /// may issue several (a registration needs identity and funding
+    /// signers). Any other scope is `InvalidArgument`; any other grant
+    /// `GrantPurposeMismatch`. A token with its own key issues signers only
+    /// through its hold ([`Self::platform_signer_held`]); here it is
+    /// `InvalidArgument`. The signer stops working when the vault locks or
+    /// changes unlock scope.
     ///
     /// The token's caps bound the scope (E0-04 design §3.4), else
     /// `GrantPurposeMismatch`: `PlatformFunding{max_duffs}` needs a token
@@ -1726,6 +1754,30 @@ impl Vault {
     pub fn platform_signer(
         &self,
         wallet: &WalletId,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        self.scoped_signer(wallet, None, token, scope)
+    }
+
+    /// [`Self::platform_signer`] for a token whose key `hold` holds: dropping
+    /// `hold` erases the key, and the signer then fails `Locked` (an
+    /// operation already under way finishes). A token `hold` does not hold
+    /// is `InvalidArgument`.
+    pub fn platform_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+        scope: SignerScope,
+    ) -> Result<VaultSigner, VaultError> {
+        self.scoped_signer(wallet, Some(hold), token, scope)
+    }
+
+    fn scoped_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
         token: &GrantToken,
         scope: SignerScope,
     ) -> Result<VaultSigner, VaultError> {
@@ -1756,87 +1808,90 @@ impl Vault {
         if !granted {
             return Err(VaultError::GrantPurposeMismatch);
         }
-        self.token_signer(wallet, token, scope)
+        self.token_signer(wallet, token, scope, hold)
     }
 
-    /// Moves the own data key out of `tokens` into one [`KeyHold`] (E0-04
-    /// design §3.5): the hold is made from the first token that qualifies
-    /// (below), and every qualifying token's copy is erased; those tokens
-    /// then issue signers only while the hold lives. Every own key of a grant
-    /// set is this vault's data key, so one hold serves the whole set
-    /// ("Accept and pay"'s two grants). `None` when no token qualifies.
+    /// Moves the own data key of a grant set into one [`KeyHold`] (E0-04
+    /// design §3.5): every token's copy is erased and the tokens then issue
+    /// signers only through the hold, while it lives. Every own key of a
+    /// grant set is this vault's data key, so one hold serves the whole set
+    /// ("Accept and pay"'s two grants).
     ///
-    /// Only tokens this vault redeemed in its current epoch, that carry
-    /// their own key (authorized while the vault held no full-scope key)
-    /// and have issued no signer yet are held; any other is left as it is
-    /// and [`KeyHold::holds`] says no for it. A signer issued earlier would
-    /// keep a copy the hold cannot erase, so a lease holds the key first,
-    /// then issues its signers ([`Self::platform_signer_held`] refuses a
-    /// token the hold does not hold).
-    pub fn hold_key(&self, tokens: &mut [GrantToken]) -> Option<KeyHold> {
-        let inner = self.inner();
-        let mut hold: Option<KeyHold> = None;
-        for token in tokens.iter_mut() {
-            let KeySource::Own(key) = &token.key else {
-                continue;
-            };
-            if Arc::strong_count(key) > 1
-                || self.token_binding(&inner, token) != TokenBinding::Current
-            {
-                continue;
+    /// The hold covers every token or the call fails, changing nothing: each
+    /// must carry its own key (authorized while the vault held no
+    /// full-scope key), have been redeemed by this vault in its current
+    /// epoch (`GrantInvalid`, `Locked`), not be held already and have issued
+    /// no signer, whose copy no hold could erase (`InvalidArgument`).
+    /// `Ok(None)` when no token carries its own key (the vault's key serves
+    /// them, and needs no hold); a set mixing both kinds is
+    /// `InvalidArgument`.
+    pub fn hold_key(&self, tokens: &mut [GrantToken]) -> Result<Option<KeyHold>, VaultError> {
+        let own = tokens
+            .iter()
+            .filter(|t| !matches!(t.key, KeySource::Vault))
+            .count();
+        if own == 0 {
+            return Ok(None);
+        }
+        if own != tokens.len() {
+            return Err(VaultError::InvalidArgument(
+                "a hold covers a set whose tokens all carry their own key".into(),
+            ));
+        }
+        let key = {
+            let inner = self.inner();
+            for token in tokens.iter() {
+                self.token_current(&inner, token)?;
+                match &token.key {
+                    KeySource::Own(key) if Arc::strong_count(key) == 1 => {}
+                    KeySource::Own(_) => {
+                        return Err(VaultError::InvalidArgument(
+                            "a token that issued a signer cannot be held".into(),
+                        ));
+                    }
+                    _ => {
+                        return Err(VaultError::InvalidArgument(
+                            "the token is already held".into(),
+                        ));
+                    }
+                }
             }
-            let hold = hold.get_or_insert_with(|| KeyHold {
-                key: Arc::new(Zeroizing::new(***key)),
-            });
-            token.key = KeySource::Held(Arc::downgrade(&hold.key));
+            // One key serves the set: every token's must be the same (it
+            // is, for one vault and epoch; checked, not assumed).
+            let first = tokens[0].key.copy()?;
+            for token in &tokens[1..] {
+                let same = match (&first, token.key.copy()?) {
+                    (Some(a), Some(b)) => bool::from(a[..].ct_eq(&b[..])),
+                    _ => false,
+                };
+                if !same {
+                    return Err(VaultError::InvalidArgument(
+                        "the tokens of a hold carry different keys".into(),
+                    ));
+                }
+            }
+            first
+        };
+        let hold = KeyHold::new(key.ok_or_else(|| VaultError::Internal("no own key".into()))?);
+        for token in tokens.iter_mut() {
+            token.key = KeySource::Held(hold.key.clone());
         }
-        hold
+        Ok(Some(hold))
     }
 
-    /// [`Self::platform_signer`] for a token whose key `hold` holds: the
-    /// signer references the key weakly, so dropping `hold` erases it and
-    /// the signer then fails `Locked` (an operation already under way
-    /// finishes). A token not held by `hold` is `InvalidArgument`.
-    pub fn platform_signer_held(
-        &self,
-        wallet: &WalletId,
-        hold: &KeyHold,
-        token: &GrantToken,
-        scope: SignerScope,
-    ) -> Result<VaultSigner, VaultError> {
-        Self::check_held(hold, token)?;
-        self.platform_signer(wallet, token, scope)
-    }
-
-    /// [`Self::signer`] for a token whose key `hold` holds; see
-    /// [`Self::platform_signer_held`].
-    pub fn signer_held(
-        &self,
-        wallet: &WalletId,
-        hold: &KeyHold,
-        token: &GrantToken,
-    ) -> Result<VaultSigner, VaultError> {
-        Self::check_held(hold, token)?;
-        self.signer(wallet, token)
-    }
-
-    fn check_held(hold: &KeyHold, token: &GrantToken) -> Result<(), VaultError> {
-        if hold.holds(token) {
-            Ok(())
-        } else {
-            Err(VaultError::InvalidArgument(
-                "the token's key is not in this hold".into(),
-            ))
-        }
-    }
-
-    /// A signer with `scope` under a redeemed grant for `wallet`; the caller
-    /// has checked the grant's purpose.
+    /// A signer with `scope` under a redeemed grant for `wallet`, through
+    /// `hold` when one is given; the caller has checked the grant's purpose.
+    /// Which tokens may issue it (review DW-E0-04-P1 r1 ruling): a held
+    /// token only through its own hold; an own-key token directly only for
+    /// a purpose that signs (`Spend`, `SignMessage`: the M1 exception of
+    /// [`Self::signer`]); a vault-key token directly. Anything else is
+    /// `InvalidArgument`.
     pub(crate) fn token_signer(
         &self,
         wallet: &WalletId,
         token: &GrantToken,
         scope: SignerScope,
+        hold: Option<&KeyHold>,
     ) -> Result<VaultSigner, VaultError> {
         if token.wallet.as_ref() != Some(wallet) {
             return Err(VaultError::GrantPurposeMismatch);
@@ -1846,7 +1901,21 @@ impl Vault {
         if self.token_binding(&self.inner(), token) == TokenBinding::OtherVault {
             return Err(VaultError::GrantInvalid);
         }
-        if token.key.own()?.is_none() {
+        let refused = |why: &str| Err(VaultError::InvalidArgument(why.into()));
+        match (&token.key, hold) {
+            (_, Some(hold)) if !hold.holds(token) => {
+                return refused("the token's key is not in this hold");
+            }
+            (KeySource::Held(_), None) => {
+                return refused("a held token issues signers through its hold");
+            }
+            (KeySource::Own(_), None) if !token.purpose.signs() => {
+                return refused("an own-key token of this purpose issues signers through a hold");
+            }
+            _ => {}
+        }
+        token.key.check()?;
+        if matches!(token.key, KeySource::Vault) {
             self.full_dek()?;
         }
         let inner = self.inner();
@@ -1973,13 +2042,15 @@ impl Vault {
         if op.epoch != epoch {
             return Err(SignerError::Locked);
         }
-        // A held key is upgraded here, inside the gate, and the strong
-        // reference drops with this copy's scope: a `KeyHold` dropped while
-        // the operation runs erases the key once the copy is made.
-        let dek = match key.own()? {
-            Some(key) => Zeroizing::new(**key),
+        // A held key is copied here, inside the gate, under its hold's
+        // mutex: a use that begins after the hold dropped fails `Locked`,
+        // and one already past this point finishes with its own copy.
+        let dek = match key.copy()? {
+            Some(key) => key,
             None => Zeroizing::new(**self.inner().dek.as_ref().ok_or(SignerError::Locked)?),
         };
+        #[cfg(test)]
+        crate::signer::test_hook::key_taken();
         let payload = self
             .read_record(&dek, &record_id(wallet, REC_SEED))?
             .ok_or(SignerError::NoSecret)?;
@@ -2518,12 +2589,13 @@ mod tests {
         // The tokens still work in the vault that redeemed them.
         let token = redeem(&unencrypted, GrantPurpose::IdentityScan, Credential::None);
         unencrypted.scan_key(&[1; 32], &token).unwrap();
-        let token = redeem(
+        let mut tokens = [redeem(
             &locked,
             GrantPurpose::IdentityScan,
             Credential::Passphrase(b"pw"),
-        );
-        locked.scan_key(&[1; 32], &token).unwrap();
+        )];
+        let hold = locked.hold_key(&mut tokens).unwrap().unwrap();
+        locked.scan_key_held(&[1; 32], &hold, &tokens[0]).unwrap();
     }
 
     /// `authorize_set` issues nothing unless it issues every grant (E0-04
@@ -2571,8 +2643,9 @@ mod tests {
         assert!(v.inner().grants.values().all(|g| g.key.is_some()));
     }
 
-    /// `hold_key` holds only the keys this vault's tokens carry: another
-    /// vault's token keeps its own key and stays usable in its vault.
+    /// `hold_key` refuses a set with a token another vault redeemed, and
+    /// changes no token: each keeps its own key and stays usable in its
+    /// vault.
     #[test]
     fn a_hold_takes_no_key_of_another_vault() {
         let dirs = [(); 2].map(|_| tempfile::tempdir().unwrap());
@@ -2582,15 +2655,24 @@ mod tests {
         );
         a.lock();
         b.lock();
-        let mut tokens = vec![
-            redeem(&b, PLATFORM_OP, Credential::Passphrase(b"pw")),
+        let mut tokens = [
             redeem(&a, PLATFORM_OP, Credential::Passphrase(b"pw")),
+            redeem(&b, PLATFORM_OP, Credential::Passphrase(b"pw")),
         ];
-        assert!(a.hold_key(&mut tokens[..1]).is_none());
-        let hold = a.hold_key(&mut tokens).unwrap();
-        assert!(!hold.holds(&tokens[0]) && hold.holds(&tokens[1]));
-        assert!(matches!(tokens[0].key, KeySource::Own(_)));
-        b.platform_signer(&[1; 32], &tokens[0], SignerScope::DashPayCrypto)
+        assert_eq!(
+            a.hold_key(&mut tokens).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert_eq!(
+            a.hold_key(&mut tokens[1..]).map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+        assert!(tokens.iter().all(|t| matches!(t.key, KeySource::Own(_))));
+        let hold = b.hold_key(&mut tokens[1..]).unwrap().unwrap();
+        b.platform_signer_held(&[1; 32], &hold, &tokens[1], SignerScope::DashPayCrypto)
+            .unwrap();
+        let hold = a.hold_key(&mut tokens[..1]).unwrap().unwrap();
+        a.platform_signer_held(&[1; 32], &hold, &tokens[0], SignerScope::DashPayCrypto)
             .unwrap();
     }
 
@@ -2797,10 +2879,13 @@ mod tests {
         let pending = v
             .authorize(GrantPurpose::RevealSecret, Some(&w), old)
             .unwrap();
-        let platform = redeem(&v, PLATFORM_OP, old);
-        let scan = redeem(&v, GrantPurpose::IdentityScan, old);
+        let mut held = [
+            redeem(&v, PLATFORM_OP, old),
+            redeem(&v, GrantPurpose::IdentityScan, old),
+        ];
+        let hold = v.hold_key(&mut held).unwrap().unwrap();
         let crypto = v
-            .platform_signer(&w, &platform, SignerScope::DashPayCrypto)
+            .platform_signer_held(&w, &hold, &held[0], SignerScope::DashPayCrypto)
             .unwrap();
         crypto.ecdh_shared_secret(&key, &peer).unwrap();
         v.change_passphrase(b"old-pw", b"new-pw-1").unwrap();
@@ -2814,7 +2899,7 @@ mod tests {
             Err(VaultError::GrantInvalid)
         );
         assert_eq!(
-            v.scan_key(&w, &scan).map(drop),
+            v.scan_key_held(&w, &hold, &held[1]).map(drop),
             Err(VaultError::GrantInvalid)
         );
         assert_eq!(
@@ -2825,12 +2910,13 @@ mod tests {
             v.authorize(GrantPurpose::RevealSecret, Some(&w), old),
             Err(VaultError::WrongPassphrase { .. })
         ));
-        let scan = redeem(
+        let mut scan = [redeem(
             &v,
             GrantPurpose::IdentityScan,
             Credential::Passphrase(b"new-pw-1"),
-        );
-        v.scan_key(&w, &scan).unwrap();
+        )];
+        let hold = v.hold_key(&mut scan).unwrap().unwrap();
+        v.scan_key_held(&w, &hold, &scan[0]).unwrap();
 
         v.unlock(b"new-pw-1", UnlockScope::Full).unwrap();
         let crypto = v.dashpay_crypto_signer(&w).unwrap();

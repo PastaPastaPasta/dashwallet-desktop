@@ -600,8 +600,8 @@ async fn the_scan_key_needs_an_identity_scan_grant_for_its_wallet() {
         .unwrap_err(),
         VaultError::Locked
     );
-    // With the passphrase, the grant's own key serves the scan until the
-    // next lock.
+    // With the passphrase, the grant's own key, held, serves the scan
+    // until the next lock.
     let grant = v
         .authorize(
             GrantPurpose::IdentityScan,
@@ -609,10 +609,11 @@ async fn the_scan_key_needs_an_identity_scan_grant_for_its_wallet() {
             Credential::Passphrase(PASS),
         )
         .unwrap();
-    let token = v
+    let mut tokens = [v
         .redeem_grant(&grant.id, GrantKind::IdentityScan, Some(&wallet(1)))
-        .unwrap();
-    let scan = v.scan_key(&wallet(1), &token).unwrap();
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
+    let scan = v.scan_key_held(&wallet(1), &hold, &tokens[0]).unwrap();
     assert_eq!(scan.master_key().unwrap().depth, 0);
     v.lock();
     assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
@@ -646,11 +647,12 @@ async fn a_passphrase_platform_grant_on_a_locked_vault_lives_until_the_next_lock
     let grant = v
         .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::Passphrase(PASS))
         .unwrap();
-    let token = v
+    let mut tokens = [v
         .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
-        .unwrap();
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
     let identity = v
-        .platform_signer(&wallet(1), &token, SignerScope::PlatformIdentity)
+        .platform_signer_held(&wallet(1), &hold, &tokens[0], SignerScope::PlatformIdentity)
         .unwrap();
     let key = path("m/9'/1'/5'/0'/0'/0'/0'");
     identity.public_key(&key).await.unwrap();

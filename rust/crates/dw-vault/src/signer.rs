@@ -303,11 +303,26 @@ pub(crate) mod test_hook {
     thread_local! {
         static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
         static CHECKED: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static KEY_TAKEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
     /// Calls `f` whenever an operation of this thread is opened.
     pub(crate) fn set(f: impl FnMut() + 'static) {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    /// Calls `f` whenever an operation of this thread has taken its copy
+    /// of a grant's own key inside the gate, before it reads the seed.
+    pub(crate) fn set_key_taken(f: impl FnMut() + 'static) {
+        KEY_TAKEN.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn key_taken() {
+        KEY_TAKEN.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
     }
 
     /// Calls `f` whenever an operation of this thread has checked (or
