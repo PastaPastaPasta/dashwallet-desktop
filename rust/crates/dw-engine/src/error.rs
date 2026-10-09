@@ -3,6 +3,7 @@ use dw_vault::{SignerError, VaultError};
 use platform_wallet::PlatformWalletError;
 use platform_wallet::error::promote_identity_insufficient_balance;
 use platform_wallet_storage::WalletStorageError;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Engine error. The `Display` text is diagnostic detail for logs; the UI maps
 /// the variant (and `code()`) to localized copy and never shows this text raw.
@@ -263,10 +264,45 @@ impl From<dash_sdk::Error> for EngineError {
     }
 }
 
+/// The detail of the `Internal` error a panicking engine task becomes. The
+/// panic's message is withheld: it may quote the task's inputs, and this
+/// text reaches hosts and logs.
+pub const TASK_PANICKED: &str = "engine task panicked (message withheld)";
+
+impl EngineError {
+    /// Whether this is a panicking engine task's error (`TASK_PANICKED`):
+    /// the task's outcome is unknown.
+    pub fn is_task_panic(&self) -> bool {
+        matches!(self, EngineError::Internal(d) if d == TASK_PANICKED)
+    }
+}
+
+/// Set once an engine task panicked (DEC-110). Never cleared.
+static POISONED: AtomicBool = AtomicBool::new(false);
+
+/// Whether an engine task has panicked in this process: the engine may be
+/// wedged, whatever became of the task's result (an error mapped to text,
+/// a timeout waiting for state the task never set, a logged warning, or a
+/// task nobody awaits). A host checks it before stopping SPV or shutting
+/// the engine down, and probes the engine if it is set.
+///
+/// The panic hook the first [`crate::Engine::new`] installs sets it for a
+/// panic on the engine's threads, and calls the hook it replaced; a host
+/// that sets its own hook later must call the one it replaces for this to
+/// hold. A task's panic that becomes [`TASK_PANICKED`] sets it too.
+pub fn engine_poisoned() -> bool {
+    POISONED.load(Ordering::SeqCst)
+}
+
+pub(crate) fn poison() {
+    POISONED.store(true, Ordering::SeqCst);
+}
+
 impl From<tokio::task::JoinError> for EngineError {
     fn from(e: tokio::task::JoinError) -> Self {
         if e.is_panic() {
-            EngineError::Internal(format!("engine task panicked: {e}"))
+            poison();
+            EngineError::Internal(TASK_PANICKED.into())
         } else {
             EngineError::Internal(format!("engine task cancelled: {e}"))
         }
@@ -281,6 +317,31 @@ mod tests {
     use dpp::consensus::codes::ErrorWithCode;
     use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dpp::prelude::Identifier;
+
+    /// A task's panic message never reaches the error (review DW-E0-09 r2
+    /// finding 3), and the error says it was a panic.
+    #[test]
+    fn a_task_panic_withholds_its_message() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let e: EngineError = rt
+            .block_on(async {
+                tokio::spawn(async {
+                    panic!("task panic carrying dashpay://invite?pk=PANIC-SECRET")
+                })
+                .await
+            })
+            .unwrap_err()
+            .into();
+        assert!(e.is_task_panic());
+        assert_eq!(e.code(), "internal");
+        assert_eq!(e.to_string(), format!("internal error: {TASK_PANICKED}"));
+        assert!(!format!("{e:?}").contains("PANIC-SECRET"));
+        assert!(!EngineError::Internal("other".into()).is_task_panic());
+        // The conversion marks the engine poisoned (DEC-110).
+        assert!(engine_poisoned());
+    }
 
     const IDENTITY: [u8; 32] = [9u8; 32];
 

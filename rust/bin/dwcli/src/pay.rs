@@ -169,19 +169,32 @@ pub(crate) fn ensure_spv_running(
     session: &Arc<NetworkSession>,
     timeout: Duration,
 ) -> Result<(), String> {
-    if !session.spv_running().map_err(|e| e.to_string())? {
-        engine
-            .block_on(session.start_spv())
-            .map_err(|e| e.to_string())?;
+    spv_running_within(engine, session, timeout).map_err(|e| e.to_string())?
+}
+
+/// [`ensure_spv_running`] with the engine's own error (outer), so a caller
+/// keeps its classification (an engine task's panic), apart from the start
+/// that failed or timed out (inner). The task that starts SPV is not this
+/// call's: its panic is a timeout here, and the engine-wide mark
+/// ([`dw_engine::engine_poisoned`]) has the engine probed at teardown.
+pub(crate) fn spv_running_within(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    timeout: Duration,
+) -> Result<Result<(), String>, EngineError> {
+    #[cfg(debug_assertions)]
+    crate::dashpay::inject_spv_start_fault(engine, session)?;
+    if !session.spv_running()? {
+        engine.block_on(session.start_spv())?;
     }
     let start = Instant::now();
     loop {
-        match session.spv_state().map_err(|e| e.to_string())? {
-            SpvState::Running => return Ok(()),
+        match session.spv_state()? {
+            SpvState::Running => return Ok(Ok(())),
             // The start failed (the engine sent `Notice{SpvError}`).
-            SpvState::Stopped => return Err("SPV did not start".into()),
+            SpvState::Stopped => return Ok(Err("SPV did not start".into())),
             SpvState::Starting if start.elapsed() > timeout => {
-                return Err(format!("SPV did not start in {timeout:?}"));
+                return Ok(Err(format!("SPV did not start in {timeout:?}")));
             }
             SpvState::Starting => std::thread::sleep(Duration::from_millis(100)),
         }

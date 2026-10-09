@@ -15,11 +15,18 @@ dw-units = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
 hex = { workspace = true }
+# The DashPay commands print the facade's records as JSON (E0-09).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 dw-vault = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 # Engine and dash-spv logs on stderr when DWCLI_LOG is set (regtest debugging).
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Debug builds' fault injection (`-spawn-fail`) lowers RLIMIT_NPROC.
+libc = "0.2"
 
 [dev-dependencies]
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.

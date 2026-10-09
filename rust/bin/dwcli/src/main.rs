@@ -3,7 +3,11 @@
 
 mod coinjoin;
 mod compat;
+mod dashpay;
 mod pay;
+mod teardown;
+#[cfg(test)]
+mod test_stub;
 mod tools;
 
 use std::io::Read;
@@ -18,7 +22,7 @@ use dw_engine::{
     HistoryQuery, HistorySort, ImportOptions, NetworkSession, SessionOptions, WalletId,
 };
 use dw_vault::{LockState, UnlockScope, VaultConfig};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
 #[command(name = "dwcli", about = "dashwallet-desktop engine CLI")]
@@ -48,7 +52,8 @@ struct Cli {
     #[arg(long)]
     initial_protocol_version: Option<u32>,
     /// The chain has no Platform (a plain dashd regtest): no DashPay
-    /// bring-up before SPV, no Platform sync loops.
+    /// bring-up before SPV, no Platform sync loops, and every DashPay
+    /// command refuses up front with `platform.feature_off`.
     #[arg(long)]
     no_platform: bool,
     /// Print engine events to stderr.
@@ -58,6 +63,16 @@ struct Cli {
     /// the new vault with it; other commands unlock an encrypted vault with it.
     #[arg(long)]
     passphrase_file: Option<PathBuf>,
+    /// Seconds stopping SPV and shutting the engine down may each take;
+    /// past it dwcli exits with status 1 without them (DEC-110).
+    #[arg(
+        long,
+        env = "DWCLI_SHUTDOWN_TIMEOUT",
+        value_name = "SECS",
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    shutdown_timeout: u64,
     #[command(subcommand)]
     command: Command,
 }
@@ -141,6 +156,8 @@ enum Command {
     Compat(compat::CompatCommand),
     #[command(flatten)]
     CoinJoin(coinjoin::CoinJoinCommand),
+    #[command(flatten)]
+    DashPay(dashpay::DashPayCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -204,6 +221,16 @@ fn unlock_if_needed(
     session: &Arc<NetworkSession>,
     passphrase: Option<&Zeroizing<Vec<u8>>>,
 ) -> Result<(), String> {
+    unlock(engine, session, passphrase).map_err(|e| e.to_string())
+}
+
+/// [`unlock_if_needed`] with the engine's error, for callers that report
+/// its code.
+fn unlock(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+) -> Result<(), EngineError> {
     let Some(passphrase) = passphrase else {
         return Ok(());
     };
@@ -214,7 +241,6 @@ fn unlock_if_needed(
     engine
         .block_on(session.vault_op(move |v| v.unlock(&passphrase, UnlockScope::Full)))
         .map(drop)
-        .map_err(|e| e.to_string())
 }
 
 fn print_wallets(session: &Arc<NetworkSession>) -> Result<(), EngineError> {
@@ -317,12 +343,13 @@ fn sync(
         std::thread::sleep(Duration::from_millis(250));
     };
     let printed = outcome.and_then(|()| print_wallets(session));
-    engine.block_on(session.stop_spv())?;
+    teardown::stop_spv(session, false)?;
     printed
 }
 
 fn run(cli: Cli) -> Result<(), String> {
-    let passphrase = cli
+    teardown::set_deadline(Duration::from_secs(cli.shutdown_timeout));
+    let mut passphrase = cli
         .passphrase_file
         .as_deref()
         .map(read_passphrase)
@@ -356,7 +383,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
     let result = match cli.command {
         Command::InitVault { unencrypted } => {
-            let secret = match (unencrypted, passphrase) {
+            let secret = match (unencrypted, passphrase.take()) {
                 (true, None) => None,
                 (false, Some(p)) => Some(p),
                 (true, Some(_)) => {
@@ -470,26 +497,17 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Tools(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = tools::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::Pay(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = pay::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::Compat(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::CoinJoin(cmd) => {
             // `coinjoin-mix --mixing-only` unlocks for mixing only itself.
@@ -497,16 +515,69 @@ fn run(cli: Cli) -> Result<(), String> {
                 unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             }
             let result = coinjoin::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
+        }
+        Command::DashPay(cmd) => {
+            // Unlocks itself, so a failed unlock is a JSON error too, and
+            // prints its JSON line once the engine is shut down. A panic on
+            // this thread is answered too, and the engine still ends through
+            // `teardown`, never by unwinding on this thread.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dashpay::run(&engine, &session, passphrase.as_ref(), cmd)
+            }))
+            .unwrap_or_else(|_| Err(dashpay::panic_error("dwcli", "the command")));
+            return match teardown::shut_down(engine, &session, dashpay::probe_fault()) {
+                Ok(done) => {
+                    // DEC-106: wiped before the last line, whose write may
+                    // block.
+                    drop(passphrase);
+                    dashpay::report(result, done.map_err(|e| format!("shutdown: {e}")))
+                }
+                Err(why) => abandon(passphrase, &why, Some(&result)),
+            };
         }
     };
-    engine
-        .block_on(engine.shutdown())
-        .map_err(|e| e.to_string())?;
-    result.map_err(|e| e.to_string())
+    finish(
+        engine,
+        &session,
+        passphrase,
+        result.map_err(|e| e.to_string()),
+    )
+}
+
+/// Shuts the engine down after a command ([`teardown::shut_down`]): the
+/// shutdown's error, else the command's result. If the engine is abandoned
+/// instead, exits ([`abandon`]).
+fn finish(
+    engine: Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<Zeroizing<Vec<u8>>>,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match teardown::shut_down(engine, session, false) {
+        Ok(done) => done.map_err(|e| e.to_string()).and(result),
+        Err(why) => abandon(passphrase, &why, None),
+    }
+}
+
+/// Exits with status 1 without the rest of the engine's shutdown, which may
+/// never finish (DEC-110). `exit` runs no destructor, so the passphrase is
+/// wiped first, before the last lines (a DashPay command's), whose write may
+/// block.
+fn abandon(
+    mut passphrase: Option<Zeroizing<Vec<u8>>>,
+    why: &str,
+    dashpay: Option<&Result<serde_json::Value, dashpay::CliError>>,
+) -> ! {
+    if let Some(p) = passphrase.as_mut() {
+        p.zeroize();
+    }
+    dashpay::report_wiped(passphrase.as_ref());
+    eprintln!("error: {why}; exiting without the engine's shutdown");
+    if let Some(result) = dashpay {
+        dashpay::report_abandoned(result);
+    }
+    std::process::exit(1)
 }
 
 fn main() -> ExitCode {
@@ -517,13 +588,62 @@ fn main() -> ExitCode {
             .with_writer(std::io::stderr)
             .init();
     }
-    match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return parse_failure(&e),
+    };
+    if !matches!(cli.command, Command::DashPay(_)) {
+        return match run(cli) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // DashPay commands print one JSON line whatever happens, and a panic's
+    // payload never reaches stderr (it may quote an input).
+    if cli.no_platform {
+        return dashpay::refuse_no_platform().map_or(ExitCode::FAILURE, |()| ExitCode::SUCCESS);
+    }
+    dashpay::quiet_panics();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            dashpay::report_setup_failure(&e);
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+        Err(_) => {
+            dashpay::report_panic();
+            ExitCode::FAILURE
+        }
     }
+}
+
+/// A refused command line. clap's own text quotes the refused argument,
+/// which may be a bearer input (review DW-E0-09 r1), so only the error
+/// kind, the names of the arguments involved and the usage are printed.
+/// Help and version print as usual.
+fn parse_failure(e: &clap::Error) -> ExitCode {
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
+    let code = u8::try_from(e.exit_code()).unwrap_or(2);
+    if matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        let _ = e.print();
+        return ExitCode::from(code);
+    }
+    eprintln!(
+        "error: {}\n\n{}\n\nFor more information, try '--help'.",
+        dashpay::clap_error_text(e),
+        Cli::command().render_usage()
+    );
+    ExitCode::from(code)
 }
 
 #[cfg(test)]
@@ -543,6 +663,7 @@ mod tests {
 
     #[test]
     fn create_then_list_round_trips_through_cli_paths() {
+        let _exclusive = teardown::exclusive();
         let dir = dw_testutil::private_tempdir();
         let pass = dir.path().join("pass");
         std::fs::write(&pass, "dwcli test passphrase\n").unwrap();
@@ -557,6 +678,7 @@ mod tests {
             no_platform: false,
             verbose_events: false,
             passphrase_file: passphrase.then(|| pass.clone()),
+            shutdown_timeout: 10,
             command: cmd,
         };
         // Without a vault there is nowhere to keep the seed.
