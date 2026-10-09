@@ -43,7 +43,8 @@
 //!   through them, never directly.
 //! - Which names show is never the cache's to say (DEC-124): `identities()`
 //!   reads the main-name rows from the database on every call, in one read,
-//!   and filters the library's list, or the last snapshot of it, with them.
+//!   and filters the library's list with them; the last snapshot, read while
+//!   a sync pass holds that list, shows no names (DEC-138).
 //! - [`resolve_main_name`] is the selection rule; `identities()` and
 //!   `DashPay::main_name` apply it.
 //! - dw-appdb's `main_identity`/`set_main_identity` and
@@ -77,7 +78,7 @@ use super::bringup::until;
 use super::errors::{IdentityError, PlatformError};
 use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
-use super::names::{MainNamePrefs, evident_names, resolve_main_name, same_name, shown_names};
+use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
 use super::profile::Profile;
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
@@ -295,12 +296,10 @@ pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Outpu
 ///
 /// `current`: `owned` was read from the library now, and the pending and
 /// refused labels decide ([`evident_names`]). Otherwise it is an older
-/// snapshot, which may predate any settlement or refusal since, so it is
-/// default-deny (DEC-129): a label shows, and may be the main name, only
-/// with positive ownership evidence, a marketplace row saying the identity
-/// owns it or the stored pick (made only of an owned name), whatever the
-/// markers say. A real name may hide while the lock is held; none shows
-/// that the identity may not own.
+/// snapshot, which may predate any settlement, refusal or departure since,
+/// and whatever it holds that looks like evidence is as old (DEC-138): it
+/// shows no names and no main name, and says so with `names_updating`.
+/// Identity, profile and balance still come from it.
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
@@ -317,23 +316,19 @@ pub(super) fn summaries(
         .enumerate()
         .map(|(i, o)| {
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
-            let row_owned = |label: &str| {
-                o.row_owned
-                    .contains(&convert_to_homograph_safe_chars(label))
-            };
             let names = if current {
-                evident_names(o.names, &prefs, row_owned)
+                evident_names(o.names, &prefs, |label| {
+                    o.row_owned
+                        .contains(&convert_to_homograph_safe_chars(label))
+                })
             } else {
-                let picked =
-                    |label: &str| prefs.pick.as_deref().is_some_and(|p| same_name(p, label));
-                let mut names = o.names;
-                names.retain(|(label, _)| row_owned(label) || picked(label));
-                names
+                Vec::new()
             };
             IdentitySummary {
                 main_name: resolve_main_name(&names, &o.open_contests, &prefs),
                 is_main: i == main,
                 names: shown_names(&names, &o.open_contests),
+                names_updating: !current,
                 identity: o.identity,
                 index: o.index,
                 balance: o.balance,

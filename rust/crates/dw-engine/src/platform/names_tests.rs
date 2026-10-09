@@ -299,6 +299,9 @@ impl EventSink for NullSink {
 
 const IDENTITY: [u8; 32] = [7; 32];
 
+/// What `identities()` shows from the older snapshot (DEC-138).
+const UPDATING: (Vec<String>, Option<String>, bool) = (Vec::new(), None, true);
+
 fn identity_id() -> String {
     Identifier::from(IDENTITY).to_string(Encoding::Base58)
 }
@@ -845,6 +848,13 @@ impl Fixture {
         all.extend(listed.iter().map(|l| l.to_string()));
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         self.sync_names(&all, DpnsFetch::Partial);
+    }
+
+    /// The identity's `(names, main_name, names_updating)` as `identities()`
+    /// shows them.
+    fn summary(&self) -> (Vec<String>, Option<String>, bool) {
+        let s = self.dp().identities().unwrap().remove(0);
+        (s.names, s.main_name, s.names_updating)
     }
 
     /// Runs `body` while a writer holds the wallet manager, so
@@ -1490,10 +1500,9 @@ fn an_older_snapshot_shows_no_refused_name() {
     assert_eq!(f.labels().0, ["carol"]);
     assert!(f.prefs().pending.is_empty());
 
-    // A writer holds the wallet manager: the older snapshot is read, and
-    // it shows only names with evidence (DEC-129), so not `alice`, and
-    // `carol`, with no marketplace row, hides until the lock is free.
-    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
+    // A writer holds the wallet manager: the older snapshot is read, and it
+    // shows no names, `carol` included, until the lock is free (DEC-138).
+    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
     assert_eq!(shown(), carol);
 }
 
@@ -1523,7 +1532,7 @@ fn review_r4_split_read_during_contention() {
     ));
     assert!(f.prefs().pending.is_empty());
     assert_eq!(f.prefs().contested.as_deref(), Some("alice"));
-    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
+    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
     assert_eq!(f.main_name(), None);
 }
 
@@ -1552,7 +1561,70 @@ fn review_r4_two_contenders_in_older_snapshot() {
     ));
     assert!(f.prefs().pending.is_empty());
     assert_eq!(f.labels().1.len(), 2);
-    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
+    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
     assert_eq!(shown(), (vec![], None));
     assert_eq!(f.main_name(), None);
+}
+
+/// Review DP1-03 r5 R5-1 (DEC-138): a name owned, with its marketplace row,
+/// when the snapshot was taken, then transferred away. The older snapshot
+/// still holds the name and the row saying it was owned; it shows no names.
+/// Once the lock is free the live read has it gone.
+#[test]
+fn review_r5_transferred_name_in_older_snapshot() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["Al1ce"]);
+    f.give_rows(vec![row(
+        1,
+        "Al1ce",
+        DpnsNameSaleStatus::Owned,
+        Some(100),
+        None,
+    )]);
+    let owned = (vec!["Al1ce".to_string()], Some("Al1ce".to_string()), false);
+    assert_eq!(f.summary(), owned);
+    f.give_rows(vec![row(
+        1,
+        "Al1ce",
+        DpnsNameSaleStatus::Transferred { to: id(9) },
+        Some(100),
+        Some(200),
+    )]);
+    assert_eq!(f.main_name(), None);
+    assert_eq!(f.pick("alice").unwrap_err().code(), "invalid_argument");
+
+    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    assert_eq!(f.summary(), (vec![], None, false));
+}
+
+/// Review DP1-03 r5 R5-2 (DEC-138): the pick of a name the identity owned,
+/// kept after the name left; a later retry of it cut short, then refused
+/// for good. The older snapshot holds the provisional copy matching the
+/// pick; it shows no names. Once the lock is free the live read shows none
+/// either, and the pick stays stored.
+#[test]
+fn review_r5_retained_pick_and_refused_retry_in_older_snapshot() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["Al1ce"]);
+    f.pick("alice").unwrap();
+    assert_eq!(f.prefs().pick.as_deref(), Some("Al1ce"));
+    f.with_identity(|m, p| m.set_dpns_names(Vec::new(), p));
+    assert_eq!(f.main_name(), None);
+
+    f.cut_short(&["alice"], &["Al1ce"]);
+    assert_eq!(f.summary(), (vec![], None, false));
+    let net = Arc::new(FakeNet::new(vec![Lookup::verdict(
+        NameAvailability::Locked,
+    )]));
+    assert_eq!(
+        f.register(&net, "alice", "no grant").unwrap_err().code(),
+        "name.locked"
+    );
+    assert_eq!(f.labels().0, Vec::<String>::new());
+    assert_eq!(f.prefs().refused, ["alice"]);
+
+    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    assert_eq!(f.summary(), (vec![], None, false));
+    assert_eq!(f.main_name(), None);
+    assert_eq!(f.prefs().pick.as_deref(), Some("Al1ce"));
 }

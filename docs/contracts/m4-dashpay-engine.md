@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 6
+Contract-Version: 7
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -119,7 +119,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
-| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden; from the older snapshot, a label shows only with positive ownership evidence (a marketplace row, or the stored pick), so a real name may hide while a sync pass holds the lock but none shows that the identity may not own. **Implemented (DP1-05).** | `PlatformError` |
+| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance; `None` = not found on Platform yet. | `PlatformError` (`identity.not_found`) |
@@ -244,7 +244,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: d0f4e21b8dbcba0cf3214280c72dd6677f2f18924a2526f8e890e9d77594575b version: 6 -->
+<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 7 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -683,6 +683,7 @@ pub struct IdentitySummary {
     pub index: u32,
     pub names: Vec<String>,
     pub main_name: Option<String>,
+    pub names_updating: bool,
     pub is_main: bool,
     pub balance: Option<u64>,
     pub has_dashpay_keys: bool,
@@ -1556,7 +1557,7 @@ renames or reshapes them takes the next version bump:
     `dispatch_status(txid) == Some(NotSent)`, or a ChainLocked conflicting spend of one of the payment's inputs; never
     "not found on chain or in the wallet". `LockResolution::Unknown` reads like `MaybeSent` and `None`, and the lock
     stays (§2.5).
-35. **Names (DP1-03, version 6).** `UsernameRule::NoDoubleHyphen`: dash-platform-queries' `is_valid_username` and
+35. **Names (DP1-03, versions 6 and 7).** `UsernameRule::NoDoubleHyphen`: dash-platform-queries' `is_valid_username` and
     the iOS register path refuse `--`, so the checklist does too. `set_main_name` and `main_name` are new: the main
     name is a per-identity pick in `dp_prefs` that sync never rewrites (#4978); a pick the identity no longer owns is
     skipped, not deleted. Review r1 (no surface change): `register_name` budgets a conservative fee bound per
@@ -1570,5 +1571,7 @@ renames or reshapes them takes the next version bump:
     `identities()` alike; every main-name row goes through DP1-05's writer. Review r3 (DEC-124): name visibility
     comes from one app-database read of the main-name rows per call, never the choices cache; a refusal for good
     moves a pending label to a refused row before it returns. Review r4 (DEC-129): the rows come from one SELECT, and
-    the older snapshot is default-deny: a label shows there only with a marketplace row or as the stored pick, the
-    markers governing only the live list.
+    the older snapshot is default-deny. Review r5 (DEC-138, version 7, superseding that default-deny): anything on the
+    fallback path that looks like ownership evidence (the snapshot's marketplace rows, a retained pick) is as old as
+    the snapshot, so the older snapshot shows no names and no main name, and `IdentitySummary` gains
+    `names_updating: bool`, `true` exactly then, so the UI shows "updating". The markers govern the live list only.

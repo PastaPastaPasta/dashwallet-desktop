@@ -242,47 +242,36 @@ fn identities_show_only_names_platform_shows_owned() {
     );
 }
 
-/// Review DP1-03 r4 (DEC-129): the older snapshot is default-deny. With no
-/// marker at all, a label there shows, and is the main name, only with a
-/// marketplace row or as the stored pick; the current list shows it.
+/// Review DP1-03 r5 (DEC-138): the older snapshot shows no names and no
+/// main name, whatever it holds that looks like evidence (a marketplace
+/// row, the stored pick), and says they are updating; the identity's other
+/// fields still show. The current list shows the names.
 #[test]
-fn an_older_snapshot_shows_only_evidenced_names() {
-    let mut alice = owned(
-        "alice",
-        0,
-        &[("carol", Some(100)), ("dash", Some(50)), ("eve", None)],
-    );
-    let choices = |pick: Option<&str>| IdentityChoices {
+fn an_older_snapshot_shows_no_names() {
+    let mut alice = owned("alice", 0, &[("carol", Some(100)), ("dash", Some(50))]);
+    alice.row_owned = vec![convert_to_homograph_safe_chars("carol")];
+    let choices = IdentityChoices {
         names: HashMap::from([(
             "alice".into(),
             MainNamePrefs {
-                pick: pick.map(str::to_owned),
+                pick: Some("carol".into()),
                 ..MainNamePrefs::default()
             },
         )]),
         ..IdentityChoices::default()
     };
-    let shown = |o: &OwnedIdentity, pick, current| {
-        let s = summaries(vec![o.clone()], &choices(pick), current).remove(0);
-        (s.names, s.main_name)
-    };
+    let shown = |current| summaries(vec![alice.clone()], &choices, current).remove(0);
+    let live = shown(true);
+    assert_eq!(live.names, ["carol", "dash"]);
+    assert_eq!(live.main_name.as_deref(), Some("carol"));
+    assert!(!live.names_updating);
+    let old = shown(false);
+    assert!(old.names.is_empty());
+    assert_eq!(old.main_name, None);
+    assert!(old.names_updating);
     assert_eq!(
-        shown(&alice, None, true),
-        (
-            vec!["carol".into(), "dash".into(), "eve".into()],
-            Some("dash".into())
-        )
-    );
-    assert_eq!(shown(&alice, None, false), (vec![], None));
-    alice.row_owned = vec![convert_to_homograph_safe_chars("carol")];
-    assert_eq!(
-        shown(&alice, None, false),
-        (vec!["carol".into()], Some("carol".into()))
-    );
-    // The stored pick, as DPNS compares labels.
-    assert_eq!(
-        shown(&alice, Some("EVE"), false),
-        (vec!["carol".into(), "eve".into()], Some("eve".into()))
+        (old.identity, old.index, old.balance, old.is_main),
+        (live.identity, live.index, live.balance, live.is_main)
     );
 }
 

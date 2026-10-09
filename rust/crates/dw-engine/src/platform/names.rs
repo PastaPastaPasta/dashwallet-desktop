@@ -74,8 +74,8 @@ const PREF_CONTESTED_NAME: &str = "contested_name";
 /// became of it.
 const PREF_PENDING_NAME: &str = "pending_name";
 /// Labels Platform refused for good after the engine had written them, one
-/// per line: the library listed each after its write, so an older snapshot
-/// of its list may still hold it (DEC-124). A label moves here from the
+/// per line: the library listed each after its write, so its list may still
+/// hold it (DEC-124). A label moves here from the
 /// pending labels (this row written first) and leaves only when Platform
 /// shows the identity owns or contends for it ([`DashPay::settle`]).
 const PREF_REFUSED_NAME: &str = "refused_name";
@@ -255,7 +255,7 @@ fn valid_label(label: &str) -> Result<UsernameCheck, NameError> {
 }
 
 /// Whether two labels are one DPNS name (homograph folding).
-pub(crate) fn same_name(a: &str, b: &str) -> bool {
+fn same_name(a: &str, b: &str) -> bool {
     convert_to_homograph_safe_chars(a) == convert_to_homograph_safe_chars(b)
 }
 
