@@ -8,7 +8,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 | Workflow | Triggers | What it runs |
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; app launches with screenshots |
-| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the Linux GUI (AT-SPI) demo |
+| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the engine with its `shielded` feature; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
 
@@ -104,11 +104,13 @@ preinstalled .NET, Android, GHC and CodeQL trees first (`ci/github/linux-free-di
 | Job | What |
 |---|---|
 | Regtest suites (T1) | `dwcli` built on the runner; the regtest image built; then, once that setup has passed, each as its own step so one failure does not hide the rest: the harness smoke tests, `l1-sync`, `l1-send`, `l2-tools`, `restore`, the functional tests `dwd_mn_chainlock.py` and `dwd_coinjoin_probe.py` (Docker), and the `coinjoin` suite (`dwd_coinjoin_client.py`) on the host against the verified v24 release from `regtest/scripts/fetch-dashcore.sh`. JUnit XML and logs are uploaded as `regtest-logs`. |
+| Engine with shielded feature (E0-12) | `dw-engine`'s non-default `shielded` feature (`platform-wallet/shielded` and `platform-wallet-storage/shielded`: halo2, orchard), which no PR job builds: `cargo build -p dwcli --features dw-engine/shielded --locked`; the `shielded_warmup` example; `cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings`; then the example run, which builds the Halo 2 proving key in a cold process (no network). Cold cost: [`docs/research/shielded-cost.md`](research/shielded-cost.md). |
 | SwiftCrossUI AT-SPI demo (GUI, Linux) | **non-blocking** (see "Known gaps"): `scripts/crossui-linux-demo.sh` with `DWD_CROSSUI_SUITE=m2` (the M1 flows, then the M2 flows), uploaded as `crossui-linux-demo` |
 
 GitHub runs `schedule` triggers only from the repository's default branch (see "Known gaps"). Until then,
 start it by hand: `gh workflow run nightly.yml --ref main`. The nightly's overall status is the regtest
-job's: the AT-SPI demo shows its own red X without failing the run, so check its log separately.
+and shielded jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
+separately.
 
 ## `gate.yml` (UI gate, G-02 and G-03)
 
