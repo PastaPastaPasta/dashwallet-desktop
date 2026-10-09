@@ -873,8 +873,11 @@ pub fn run(
     let result = crate::unlock(engine, session, passphrase)
         .map_err(CliError::from)
         .and_then(|()| exec(&base, cmd, &mut ZeroStdin::new(), &mut std::io::stdout()));
+    // An abandoned engine is left alone: nothing more starts on its way
+    // out (a refused `-spawn-fail` thread has also used up the process's
+    // threads).
     #[cfg(debug_assertions)]
-    if injected_fault("stall") {
+    if injected_fault("stall") && crate::teardown::abandoned().is_none() {
         wedge_engine(session);
     }
     result
@@ -1040,13 +1043,14 @@ fn injected_fault(point: &str) -> bool {
 }
 
 /// Blocks every worker of the engine runtime: parks tasks until one no
-/// longer starts. The threads that spawned them are left behind.
+/// longer starts. The threads that spawned them are left behind. A thread
+/// that cannot start ends it, without a panic.
 #[cfg(debug_assertions)]
 fn wedge_engine(session: &Arc<NetworkSession>) {
     loop {
         let (tx, rx) = std::sync::mpsc::channel();
         let session = Arc::clone(session);
-        std::thread::spawn(move || {
+        let spawned = std::thread::Builder::new().spawn(move || {
             crate::teardown::wait(session.run_on_engine(async move {
                 let _ = tx.send(());
                 loop {
@@ -1054,7 +1058,7 @@ fn wedge_engine(session: &Arc<NetworkSession>) {
                 }
             }))
         });
-        if rx.recv_timeout(Duration::from_secs(1)).is_err() {
+        if spawned.is_err() || rx.recv_timeout(Duration::from_secs(1)).is_err() {
             return;
         }
     }
@@ -1163,8 +1167,9 @@ fn exec(
         && let Err(e) = crate::teardown::stop_spv(session, probe_fault())
     {
         // The result stands: a write that went through must not read as
-        // failed (and be retried).
-        eprintln!("warning: stopping SPV: {e}");
+        // failed (and be retried). Best effort: a panic here would drop the
+        // engine on this thread.
+        let _ = writeln!(std::io::stderr(), "warning: stopping SPV: {e}");
     }
     result
 }
@@ -1759,14 +1764,21 @@ mod tests {
         "invite",
     ];
 
-    /// The calls with real bodies (DP1-05). On the tests' wallet, with no
-    /// identity and no Platform, they answer with a result or their own
-    /// error, never a stub's.
-    const IMPLEMENTED: &[&str] = &[
-        "DashPay.identities",
-        "DashPay.set_main_identity",
-        "DashPay.discover_identities",
+    /// The rows whose calls have real bodies (DP1-05), with the line each
+    /// prints on the tests' wallet, which has no identity and no Platform.
+    const IMPLEMENTED: &[(&str, &str)] = &[
+        ("dashpay events", NO_IDENTITY),
+        ("identity list", r#"{"ok":true,"result":[]}"#),
+        ("identity show", NO_IDENTITY),
+        ("identity set-main I", NO_IDENTITY),
+        (
+            "identity discover",
+            r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#,
+        ),
+        ("pay-contact C --amount 1", NO_IDENTITY),
     ];
+
+    const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
 
     /// What tests feed a command that reads a bearer input.
     const SECRET: &[u8] = b"  dash:?du=alice&dapk=SECRET-MATERIAL\n";
@@ -1774,8 +1786,8 @@ mod tests {
     /// Every DashPay command but `dashpay session` with the facade call it
     /// reaches first while the bodies are stubs. A write asks for its grant
     /// first, so its first call is its quote or `grant_request`. A DP task
-    /// that fills in a body moves its rows on to the next stub, or names
-    /// the call in [`IMPLEMENTED`].
+    /// that fills in a body moves its rows on to the next stub, or gives
+    /// the row its line in [`IMPLEMENTED`].
     const TABLE: &[(&str, &str)] = &[
         ("dashpay status", "DashPay.status"),
         ("dashpay sync", "DashPay.sync_now"),
@@ -2364,14 +2376,15 @@ mod tests {
     fn every_command_reports_its_stub_as_a_json_error() {
         let dir = dw_testutil::private_tempdir();
         let (engine, session) = session(&dir.path().join("data"));
+        for (row, _) in IMPLEMENTED {
+            assert!(TABLE.iter().any(|(args, _)| args == row), "{row:?}");
+        }
         for (args, call) in TABLE {
             let line = envelope(&run(&engine, &session, args));
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
-            if IMPLEMENTED.contains(call) {
-                assert_ne!(
-                    line["error"]["code"], "platform.not_implemented",
-                    "{args:?}"
-                );
+            if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
+                let want: Value = serde_json::from_str(want).unwrap();
+                assert_eq!(line, want, "{args:?}");
                 continue;
             }
             assert_eq!(

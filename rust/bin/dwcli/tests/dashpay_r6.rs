@@ -8,7 +8,10 @@
 //! The debug-build fault hook `DWCLI_FAULT_INJECT=stall-spawn-fail` parks
 //! every engine worker after the DashPay command (`stall`), then starts no
 //! teardown thread, and on Linux lowers `RLIMIT_NPROC` so that the engine
-//! drop's own thread is refused too, as with an OS out of threads.
+//! drop's own thread is refused too, as with an OS out of threads. With
+//! `--spv` the first refused thread is SPV's stop; nothing starts after it
+//! (Sol r7 R7-1: the stall's own thread was refused and panicked, and the
+//! engine unwound on the caller).
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -19,11 +22,11 @@ use serde_json::{Value, json};
 
 /// The shutdown deadline the runs set: the abandonment must come far
 /// sooner.
-const DEADLINE_SECS: u64 = 120;
+const DEADLINE_SECS: u64 = 300;
 
-/// Covers vault and engine start-up and the worker parking under a loaded
-/// machine; a run still going then is killed.
-const BOUND: Duration = Duration::from_secs(40);
+/// Covers vault, engine and SPV start-up and the worker parking under a
+/// loaded machine; a run still going then is killed.
+const BOUND: Duration = Duration::from_secs(120);
 
 const WIPED: &str = "dwcli: forced exit, passphrase wiped";
 
@@ -44,6 +47,8 @@ fn dwcli(dir: &Path, args: &[&str], fault: Option<&str>, stdin: &[u8]) -> Run {
         .arg(dir.join("pass"))
         .args(args)
         .env("TOKIO_WORKER_THREADS", "2")
+        .env_remove("DWCLI_LOG")
+        .env_remove("DWCLI_FAULT_INJECT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -101,15 +106,16 @@ fn vault(dir: &Path) {
     }
 }
 
-/// Exit 1 well within the deadline, the abandonment on stderr, the
-/// passphrase wiped and no shutdown (no `SessionClosed`).
-fn assert_abandoned(run: &Run) {
+/// Exit 1 well within the deadline, `step`'s refused thread as the
+/// abandonment on stderr, the passphrase wiped, no panic and no shutdown
+/// (no `SessionClosed`).
+fn assert_abandoned(run: &Run, step: &str) {
     assert_eq!(run.code, Some(1), "{:?}: {}", run.elapsed, run.stderr);
     let err = &run.stderr;
     assert!(
         err.contains(&format!(
-            "error: the engine's shutdown could not start its thread ({}), which counts as \
-             missing its {DEADLINE_SECS}s deadline; exiting without the engine's shutdown",
+            "error: {step} could not start its thread ({}), which counts as missing its \
+             {DEADLINE_SECS}s deadline; exiting without the engine's shutdown",
             std::io::Error::from(std::io::ErrorKind::WouldBlock)
         )),
         "{err}"
@@ -117,7 +123,20 @@ fn assert_abandoned(run: &Run) {
     assert!(err.contains(WIPED), "{err}");
     assert!(!err.contains("SessionClosed"), "{err}");
     assert!(!err.contains("health probe"), "{err}");
+    assert!(!err.contains("dwcli: panic at"), "{err}");
     assert!(run.elapsed < BOUND, "{:?}", run.elapsed);
+}
+
+/// The one-shot line `dashpay status` prints while its body is a stub.
+fn stub_line() -> Value {
+    json!({
+        "ok": false,
+        "error": {
+            "code": "platform.not_implemented",
+            "message": "not implemented: DashPay.status",
+            "params": {"call": "DashPay.status"},
+        },
+    })
 }
 
 /// Sol r6 finding 1: a stalled, unpoisoned engine whose shutdown thread
@@ -137,18 +156,8 @@ fn a_refused_shutdown_thread_abandons_the_engine_at_once() {
         "status",
     ];
     let run = dwcli(dir.path(), &args, fault, b"");
-    assert_abandoned(&run);
-    assert_eq!(
-        lines(&run),
-        [json!({
-            "ok": false,
-            "error": {
-                "code": "platform.not_implemented",
-                "message": "not implemented: DashPay.status",
-                "params": {"call": "DashPay.status"},
-            },
-        })]
-    );
+    assert_abandoned(&run, "the engine's shutdown");
+    assert_eq!(lines(&run), [stub_line()]);
 
     let args = [
         "--verbose-events",
@@ -158,9 +167,50 @@ fn a_refused_shutdown_thread_abandons_the_engine_at_once() {
         "session",
     ];
     let run = dwcli(dir.path(), &args, fault, b"");
-    assert_abandoned(&run);
+    assert_abandoned(&run, "the engine's shutdown");
     assert_eq!(
         lines(&run),
         [json!({"ok": true, "result": {"requests": 0}})]
+    );
+}
+
+/// Sol r7 R7-1: with `--spv` SPV's stop is refused its thread first; the
+/// stall then starts none, and the engine is abandoned with the command's
+/// line, or the session's request answer and its summary, intact.
+#[test]
+fn a_refused_spv_stop_thread_abandons_the_engine_at_once() {
+    let dir = dw_testutil::private_tempdir();
+    vault(dir.path());
+    let fault = Some("stall-spawn-fail");
+    let timeout = DEADLINE_SECS.to_string();
+
+    let args = [
+        "--verbose-events",
+        "--shutdown-timeout",
+        &timeout,
+        "dashpay",
+        "status",
+        "--spv",
+    ];
+    let run = dwcli(dir.path(), &args, fault, b"");
+    assert_abandoned(&run, "stopping SPV");
+    assert_eq!(lines(&run), [stub_line()]);
+
+    let args = [
+        "--verbose-events",
+        "--shutdown-timeout",
+        &timeout,
+        "dashpay",
+        "session",
+        "--spv",
+    ];
+    let request = concat!(r#"{"args":["dashpay","status"],"id":"r7-spv-stall"}"#, "\n");
+    let run = dwcli(dir.path(), &args, fault, request.as_bytes());
+    assert_abandoned(&run, "stopping SPV");
+    let mut answer = stub_line();
+    answer["id"] = json!("r7-spv-stall");
+    assert_eq!(
+        lines(&run),
+        [answer, json!({"ok": true, "result": {"requests": 1}})]
     );
 }
