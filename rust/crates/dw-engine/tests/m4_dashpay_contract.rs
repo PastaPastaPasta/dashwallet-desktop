@@ -66,8 +66,9 @@ const FACADE: &[&str] = &[
 
 /// Files of `src/platform/` that are not part of the facade: the module
 /// root, the vault signers (E0-03), `platform-status` (E0-02), the
-/// identity key policy (DP1-01), the bring-up runtime (E0-05) and the names
-/// network seam and session tests (DP1-03).
+/// identity key policy (DP1-01), the bring-up runtime (E0-05), the names
+/// network seam and session tests (DP1-03) and the changeset tap and trust
+/// records (E0-06).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "journal.rs",
