@@ -405,6 +405,15 @@ fn internal(e: impl std::fmt::Display) -> PlatformError {
     }
 }
 
+/// `mapped`, or `fallback` when it is only `Internal`: a wrapper's own
+/// meaning when what it wraps has no code.
+fn or_else(mapped: PlatformError, fallback: impl FnOnce() -> PlatformError) -> PlatformError {
+    match mapped {
+        PlatformError::Internal { .. } => fallback(),
+        known => known,
+    }
+}
+
 impl From<dash_sdk::Error> for PlatformError {
     fn from(e: dash_sdk::Error) -> Self {
         use dash_sdk::Error as Sdk;
@@ -416,10 +425,9 @@ impl From<dash_sdk::Error> for PlatformError {
             Sdk::TimeoutReached(..) => Self::Timeout,
             Sdk::DapiClientError(_) | Sdk::StaleNode(_) => Self::Unavailable,
             // The last attempt's error says why no node answered.
-            Sdk::NoAvailableAddressesToRetry(last) => match Self::from(*last) {
-                Self::Internal { .. } => Self::Unavailable,
-                known => known,
-            },
+            Sdk::NoAvailableAddressesToRetry(last) => {
+                or_else(Self::from(*last), || Self::Unavailable)
+            }
             Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
                 Self::ProofInvalid
             }
@@ -434,11 +442,16 @@ impl From<platform_wallet::PlatformWalletError> for PlatformError {
         use platform_wallet::PlatformWalletError as Pw;
         match e {
             Pw::Sdk(source) => source.into(),
-            Pw::TokenOperationFailed { source, .. } => {
-                match platform_wallet::error::promote_identity_insufficient_balance(&source) {
-                    Some(promoted) => promoted.into(),
-                    None => internal(source),
-                }
+            // Wrappers map as what they wrap (review r2 N1).
+            Pw::TokenOperationFailed { source, .. } => source.into(),
+            // The scan never reached Platform: `unavailable` unless the last
+            // probe's failure says more.
+            Pw::IdentityDiscoveryIncomplete { source, .. } => {
+                or_else(Self::from(*source), || Self::Unavailable)
+            }
+            Pw::PersisterRestore(inner) => {
+                let detail = inner.to_string();
+                or_else(Self::from(*inner), || Self::Storage { detail })
             }
             Pw::InsufficientIdentityCredits {
                 required,
@@ -453,16 +466,13 @@ impl From<platform_wallet::PlatformWalletError> for PlatformError {
             Pw::SeedMismatch { .. } => Self::SeedMismatch,
             Pw::SeedBindingUnanswered { .. } | Pw::FinalityTimeout(_) => Self::Timeout,
             Pw::IdentityNotFound(_) => Self::Identity(IdentityError::NotFound),
-            Pw::IdentityDiscoveryIncomplete { .. } | Pw::ContactSyncUnreachable { .. } => {
-                Self::Unavailable
-            }
+            Pw::ContactSyncUnreachable { .. } => Self::Unavailable,
             Pw::InvalidParameter(detail) => Self::InvalidArgument { detail },
-            e @ (Pw::PersisterLoad(_)
-            | Pw::PersisterStore(_)
-            | Pw::PersisterRestore(_)
-            | Pw::Persistence(_)) => Self::Storage {
-                detail: e.to_string(),
-            },
+            e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
+                Self::Storage {
+                    detail: e.to_string(),
+                }
+            }
             other => internal(other),
         }
     }
@@ -641,6 +651,109 @@ mod mapping_tests {
         for (library, code) in cases {
             assert_eq!(PlatformError::from(library).code(), code);
         }
+    }
+
+    fn timeout() -> dash_sdk::Error {
+        dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into())
+    }
+
+    fn context() -> dash_sdk::Error {
+        dash_sdk::Error::ContextProviderError(dash_context_provider::ContextProviderError::Generic(
+            "x".into(),
+        ))
+    }
+
+    /// Platform's balance refusal as a broadcast error, as `error.rs` builds
+    /// it: 25 018 360 000 credits required, 24 818 360 000 available.
+    fn balance_refusal() -> dash_sdk::Error {
+        use dpp::consensus::ConsensusError;
+        use dpp::consensus::codes::ErrorWithCode;
+        use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
+        let cause: ConsensusError = IdentityInsufficientBalanceError::new(
+            dpp::prelude::Identifier::from([9u8; 32]),
+            24_818_360_000,
+            25_018_360_000,
+        )
+        .into();
+        dash_sdk::Error::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: cause.code(),
+                message: cause.to_string(),
+                cause: Some(cause),
+            },
+        )
+    }
+
+    /// Review DW-E0-05-r2-gpt N1: an SDK error inside a library wrapper gets
+    /// the same code as on its own; `internal` only when nothing maps.
+    #[test]
+    fn wrapped_sdk_errors_keep_their_codes() {
+        let token = |source| PlatformWalletError::TokenOperationFailed {
+            operation: "claim",
+            source,
+        };
+        let discovery = |source| PlatformWalletError::IdentityDiscoveryIncomplete {
+            start_index: 0,
+            probed: 1,
+            failed_probes: 1,
+            source: Box::new(source),
+        };
+        let retried = |last| dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(last));
+        let cases = [
+            (token(timeout()), "platform.timeout"),
+            (token(context()), "platform.context_unavailable"),
+            (token(retried(timeout())), "platform.timeout"),
+            (token(dash_sdk::Error::Generic("x".into())), "internal"),
+            (discovery(timeout()), "platform.timeout"),
+            (discovery(context()), "platform.context_unavailable"),
+            // The scan never reached Platform, whatever the probe said.
+            (
+                discovery(dash_sdk::Error::Generic("x".into())),
+                "platform.unavailable",
+            ),
+            (
+                PlatformWalletError::Sdk(retried(context())),
+                "platform.context_unavailable",
+            ),
+            (
+                PlatformWalletError::PersisterRestore(Box::new(PlatformWalletError::WalletLocked)),
+                "platform.signer_unavailable",
+            ),
+            (
+                PlatformWalletError::PersisterRestore(Box::new(
+                    PlatformWalletError::NoPrimaryIdentity,
+                )),
+                "storage",
+            ),
+        ];
+        let mut wrong: Vec<String> = cases
+            .into_iter()
+            .filter_map(|(library, code)| {
+                let shown = format!("{library:?}");
+                let got = PlatformError::from(library).code();
+                (got != code).then(|| format!("{shown}: {got}, want {code}"))
+            })
+            .collect();
+        // The balance refusal keeps its figures through every wrapper.
+        let figures = PlatformError::InsufficientCredits {
+            needed: 25_018_360_000,
+            available: 24_818_360_000,
+        };
+        for (path, library) in [
+            ("token", token(balance_refusal())),
+            ("token, retried", token(retried(balance_refusal()))),
+            ("sdk", PlatformWalletError::Sdk(balance_refusal())),
+        ] {
+            let got = PlatformError::from(library);
+            if got != figures {
+                wrong.push(format!("balance refusal via {path}: {got:?}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "wrapped errors mapped wrong:\n{}",
+            wrong.join("\n")
+        );
     }
 
     #[test]
