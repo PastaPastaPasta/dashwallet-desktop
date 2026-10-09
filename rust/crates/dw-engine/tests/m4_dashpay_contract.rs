@@ -7,6 +7,9 @@
 //!   `Contract-Version` in the header, run with `DW_BLESS=1` (refused when
 //!   `CI` is set), review the diff, and run again without it: the bless run
 //!   itself always fails.
+//! - the facade is an explicit list of files in `src/platform/`; every file
+//!   there is either in it or in `NOT_FACADE`, and no `impl DashPay` lives
+//!   elsewhere in the crate;
 //! - every `pub` item of the facade files is re-exported from `platform`;
 //! - every call has a §2 row whose Kind and Errors cells match its
 //!   signature, and every §2 row names a call;
@@ -32,8 +35,28 @@ use sha2::{Digest, Sha256};
 /// Calls with real bodies.
 const IMPLEMENTED: &[&str] = &["NetworkSession.dashpay", "DashPay.wallet_id"];
 
-/// Files of `src/platform/` that are not part of the facade.
-const NOT_FACADE: &[&str] = &["mod.rs", "signers.rs", "status.rs"];
+/// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
+/// file there must join this list or `NOT_FACADE`.
+const FACADE: &[&str] = &[
+    "contacts.rs",
+    "credits.rs",
+    "dashpay.rs",
+    "errors.rs",
+    "flows.rs",
+    "identity.rs",
+    "invitations.rs",
+    "names.rs",
+    "notifications.rs",
+    "payments.rs",
+    "profile.rs",
+    "registration.rs",
+    "startup.rs",
+];
+
+/// Files of `src/platform/` that are not part of the facade: the module
+/// root, the vault signers (E0-03), `platform-status` (E0-02) and the
+/// identity key policy (DP1-01).
+const NOT_FACADE: &[&str] = &["keys_policy.rs", "mod.rs", "signers.rs", "status.rs"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
 const END: &str = "<!-- END GENERATED: dashpay-surface -->";
@@ -63,21 +86,56 @@ fn parse(path: &Path) -> syn::File {
     syn::parse_file(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The facade's source files, sorted, parsed.
+/// The facade's source files, in `FACADE` order, parsed.
 fn facade_sources() -> Vec<(String, syn::File)> {
-    let mut names: Vec<String> = std::fs::read_dir(platform_dir())
+    FACADE
+        .iter()
+        .map(|name| (name.to_string(), parse(&platform_dir().join(name))))
+        .collect()
+}
+
+/// Every Rust file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read dir") {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Every file of `src/platform/` is classified, and the facade's methods
+/// live only in facade files, so the listing cannot miss part of the
+/// surface.
+#[test]
+fn the_facade_file_list_is_complete() {
+    assert!(FACADE.windows(2).all(|w| w[0] < w[1]), "keep FACADE sorted");
+    let mut unclassified: Vec<String> = std::fs::read_dir(platform_dir())
         .expect("read src/platform")
         .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .filter(|n| n.ends_with(".rs") && !NOT_FACADE.contains(&n.as_str()))
+        .filter(|n| !FACADE.contains(&n.as_str()) && !NOT_FACADE.contains(&n.as_str()))
         .collect();
-    names.sort();
-    names
-        .into_iter()
-        .map(|name| {
-            let file = parse(&platform_dir().join(&name));
-            (name, file)
-        })
-        .collect()
+    unclassified.sort();
+    assert!(
+        unclassified.is_empty(),
+        "classify these src/platform entries as FACADE or NOT_FACADE: {unclassified:?}"
+    );
+
+    let mut files = Vec::new();
+    rust_files(&manifest_dir().join("src"), &mut files);
+    let facade: BTreeSet<PathBuf> = FACADE.iter().map(|n| platform_dir().join(n)).collect();
+    for path in files.iter().filter(|p| !facade.contains(*p)) {
+        let stray = parse(path).items.iter().any(|item| {
+            matches!(item, syn::Item::Impl(i) if i.trait_.is_none() && tidy(&i.self_ty) == "DashPay")
+        });
+        assert!(
+            !stray,
+            "{}: `impl DashPay` outside the facade files",
+            path.display()
+        );
+    }
 }
 
 fn errors_source() -> syn::File {

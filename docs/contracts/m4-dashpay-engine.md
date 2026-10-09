@@ -24,6 +24,8 @@ enforces that:
   `DW_BLESS=1 cargo test -p dw-engine --test m4_dashpay_contract`, review the diff, and run again without `DW_BLESS`.
   The bless run always fails ("re-run"), it refuses when `CI` is set, and it refuses a changed surface unless the
   version was raised.
+- the facade is an explicit list of files (§0): every file of `src/platform/` is classified as facade or not, and no
+  `impl DashPay` lives outside the facade files;
 - every `pub` item of the facade files is re-exported from `dw_engine::platform` by name (no glob);
 - every call has a §2 row whose Kind (`sync`, `async` or `free, pure`) and Errors (the first type named) match its
   signature, and every §2 row names a call. Rows are keyed by owner: `NetworkSession.x(…)` names its owner, a free
@@ -50,9 +52,12 @@ once implemented (`wallet_not_found`). A `DashPay` holds its session; once imple
 state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) lives in the session's Platform runtime
 (§3.1 `mod.rs`), never in the handle.
 
-The facade is every file of `src/platform/` except `mod.rs`, `signers.rs` and `status.rs`, one per domain (DASHPAY
-§3.1). Each domain file holds its records and its own `impl DashPay` block, so parallel DP tasks edit different
-files. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper type is `pub(crate)`.
+The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
+contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
+DP1-01's `keys_policy.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
+lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
+type is `pub(crate)`.
 
 | File | Owner (ROADMAP) | Calls |
 |---|---|---|
