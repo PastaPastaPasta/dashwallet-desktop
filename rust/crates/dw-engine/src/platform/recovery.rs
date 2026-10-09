@@ -47,7 +47,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -115,9 +116,11 @@ pub(crate) struct Recovery {
     choice_writer: tokio::sync::Mutex<()>,
     snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
-    /// Per wallet, the end of its explicit discoveries: set by its removal
-    /// or unload, which then waits until every one has ended (review r1 M3).
-    discoveries: Mutex<HashMap<WalletId, Arc<watch::Sender<bool>>>>,
+    /// Per wallet, the admission of its explicit discoveries (review r1 M3,
+    /// r2 M3-R2).
+    discoveries: Mutex<HashMap<WalletId, DiscoveryGate>>,
+    /// The last wallet generation a [`DiscoveryGate`] was opened for.
+    generations: AtomicU64,
     /// Names passes started this session.
     #[cfg(test)]
     pub(super) names_passes: AtomicU32,
@@ -127,6 +130,37 @@ pub(crate) struct Recovery {
     /// and its cache update.
     #[cfg(test)]
     pub(super) pause_after_choice: Mutex<Option<Arc<Pause>>>,
+}
+
+/// A wallet's explicit discoveries: the channel that ends them, the wallet
+/// generation they belong to, and how many teardowns (removal, unload, a
+/// restore's rollback) hold admission closed. The gate lives from the first
+/// discovery until the last teardown holding it is done; the next one opens
+/// a new generation, so nothing admitted before a teardown applies after it.
+struct DiscoveryGate {
+    ending: Arc<watch::Sender<bool>>,
+    generation: u64,
+    closers: usize,
+}
+
+/// Holds a wallet's discovery admission closed while its teardown runs;
+/// dropping it, on any path out of the teardown, reopens it for a new
+/// generation once no other teardown holds it.
+pub(crate) struct DiscoveriesClosed<'a> {
+    recovery: &'a Recovery,
+    id: WalletId,
+}
+
+impl Drop for DiscoveriesClosed<'_> {
+    fn drop(&mut self) {
+        let mut all = guard(&self.recovery.discoveries);
+        if let Some(gate) = all.get_mut(&self.id) {
+            gate.closers -= 1;
+            if gate.closers == 0 {
+                all.remove(&self.id);
+            }
+        }
+    }
 }
 
 /// A test's hold on one call at a known point.
@@ -148,34 +182,52 @@ impl Recovery {
         update(guard(&self.choices).entry(id).or_default());
     }
 
-    /// Admits an explicit discovery of `id`: the receiver turns `true` when
-    /// the wallet is being removed or unloaded. `None` once that has begun.
-    fn begin_discovery(&self, id: WalletId) -> Option<watch::Receiver<bool>> {
-        let mut all = guard(&self.discoveries);
-        let ending = all
-            .entry(id)
-            .or_insert_with(|| Arc::new(watch::channel(false).0));
-        (!*ending.borrow()).then(|| ending.subscribe())
+    fn gate<'a>(
+        &self,
+        all: &'a mut HashMap<WalletId, DiscoveryGate>,
+        id: WalletId,
+    ) -> &'a mut DiscoveryGate {
+        all.entry(id).or_insert_with(|| DiscoveryGate {
+            ending: Arc::new(watch::channel(false).0),
+            generation: self.generations.fetch_add(1, Ordering::SeqCst) + 1,
+            closers: 0,
+        })
     }
 
-    /// Ends the explicit discoveries of a wallet about to leave the manager
-    /// (removal, unload, a restore's rollback) and waits until every one has
-    /// returned, its keys dropped and nothing of it applied; a new one is
-    /// refused until [`Self::forget`] or [`Self::resume_discoveries`].
-    pub(crate) async fn end_discoveries(&self, id: WalletId) {
-        let ending = Arc::clone(
-            guard(&self.discoveries)
-                .entry(id)
-                .or_insert_with(|| Arc::new(watch::channel(false).0)),
-        );
+    /// Admits an explicit discovery of `id`: its wallet generation, and the
+    /// receiver that turns `true` when that generation is torn down. `None`
+    /// while a teardown holds admission closed.
+    fn begin_discovery(&self, id: WalletId) -> Option<(watch::Receiver<bool>, u64)> {
+        let mut all = guard(&self.discoveries);
+        let gate = self.gate(&mut all, id);
+        (gate.closers == 0).then(|| (gate.ending.subscribe(), gate.generation))
+    }
+
+    /// Whether a discovery of `generation` may still apply what it found:
+    /// no teardown of the wallet has begun since it was admitted.
+    fn admits(&self, id: WalletId, generation: u64) -> bool {
+        guard(&self.discoveries)
+            .get(&id)
+            .is_some_and(|gate| gate.generation == generation && gate.closers == 0)
+    }
+
+    /// Closes the discovery admission of a wallet about to be torn down,
+    /// ends its explicit discoveries and waits until every one has returned,
+    /// its keys dropped and nothing of it applied. Admission stays closed
+    /// until the returned guard drops: hold it until the teardown is done
+    /// (the wallet out of the manager, its records and secret gone).
+    pub(crate) async fn end_discoveries(&self, id: WalletId) -> DiscoveriesClosed<'_> {
+        let ending = {
+            let mut all = guard(&self.discoveries);
+            let gate = self.gate(&mut all, id);
+            gate.closers += 1;
+            Arc::clone(&gate.ending)
+        };
+        // Before the wait, so a cancelled teardown reopens admission too.
+        let closed = DiscoveriesClosed { recovery: self, id };
         ending.send_replace(true);
         ending.closed().await;
-    }
-
-    /// The removal or unload that ended the discoveries failed: they may
-    /// start again.
-    pub(crate) fn resume_discoveries(&self, id: WalletId) {
-        guard(&self.discoveries).remove(&id);
+        closed
     }
 
     /// Identities were discovered for `id`: a names pass follows (again, if
@@ -193,7 +245,6 @@ impl Recovery {
         guard(&self.choices).remove(id);
         guard(&self.snapshots).remove(id);
         guard(&self.names_due).remove(id);
-        guard(&self.discoveries).remove(id);
     }
 
     #[cfg(test)]
@@ -526,7 +577,7 @@ impl NetworkSession {
         let _op = self.enter().await?;
         // Admitted before the wallet is checked, so a removal from here on
         // waits for this call.
-        let mut ending = self
+        let (mut ending, generation) = self
             .platform
             .recovery
             .begin_discovery(id)
@@ -539,6 +590,10 @@ impl NetworkSession {
             // The wallet is leaving: nothing of this call applies.
             () = until(&mut ending, |ending| *ending) => Err(PlatformError::Cancelled),
             ended = self.discover(&manager, id, grant) => {
+                // Bound to the generation it was admitted for.
+                if !self.platform.recovery.admits(id, generation) {
+                    return Err(PlatformError::Cancelled);
+                }
                 let stored = self.queue_discovered(&manager, id, &before).await;
                 match ended {
                     // Over budget, perhaps in the names enrichment after it

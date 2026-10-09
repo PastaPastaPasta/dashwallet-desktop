@@ -220,13 +220,11 @@ impl NetworkSession {
             })
             .await??;
 
-            // Its discoveries end first: none may keep its master key, or
-            // apply what it finds, past the removal (review DP1-05 r1 M3).
-            this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = live.manager.remove_wallet(&id.0).await {
-                this.platform.recovery.resume_discoveries(id);
-                return Err(e.into());
-            }
+            // Its discoveries end first, and none starts until the removal
+            // is done: none may keep its master key, or apply what it finds,
+            // past the removal (review DP1-05 r1 M3).
+            let _discoveries = this.platform.recovery.end_discoveries(id).await;
+            live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));

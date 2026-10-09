@@ -217,6 +217,11 @@ struct Platform {
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
     hold_discovery: Option<Arc<Notify>>,
+    /// Holds the discovery before it stores anything (a network response
+    /// still awaited).
+    hold_before_fold: Option<Arc<Notify>>,
+    /// The discovery has started.
+    discovery_started: Arc<AtomicBool>,
     /// The discovery has stored its identities (and is held, if held).
     discovery_stored: Arc<AtomicBool>,
     /// The discovery's future has ended or been dropped.
@@ -327,13 +332,23 @@ impl MockPlatform for Platform {
         manager: Arc<Manager>,
         id: WalletId,
     ) -> BoxedFuture<Result<usize, PlatformError>> {
-        let (found, hold) = (self.discovered.clone(), self.hold_discovery.clone());
-        let (stored, ended) = (
+        let (found, hold, before_fold) = (
+            self.discovered.clone(),
+            self.hold_discovery.clone(),
+            self.hold_before_fold.clone(),
+        );
+        let (started, stored, ended) = (
+            Arc::clone(&self.discovery_started),
             Arc::clone(&self.discovery_stored),
             Flag(Arc::clone(&self.discovery_ended)),
         );
         Box::pin(async move {
             let _ended = ended;
+            started.store(true, Ordering::SeqCst);
+            if let Some(hold) = before_fold {
+                hold.notified().await;
+            }
+            // By wallet id, as the library folds what it found.
             add_identities(&manager, id, &found).await;
             stored.store(true, Ordering::SeqCst);
             if let Some(hold) = hold {
@@ -817,6 +832,57 @@ fn removing_or_unloading_a_wallet_ends_its_discovery_first() {
         assert!(s.platform.recovery.take_names_due().is_empty());
         engine.block_on(engine.shutdown()).unwrap();
     }
+}
+
+/// Review r2 M3-R2 (Sol's reproduction): a restore's rollback keeps
+/// discovery admission closed until the wallet is out of the manager and its
+/// secret gone. A discovery asked for while the rollback waits on the
+/// wallet's lifecycle gate (a payment holds it) is refused, and nothing of
+/// it reaches the wallet when the same phrase is imported again.
+#[test]
+fn a_restore_rollback_admits_no_discovery_until_it_is_done() {
+    let dir = dw_testutil::private_tempdir();
+    let response = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        hold_before_fold: Some(Arc::clone(&response)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let manager = s.manager().unwrap();
+    let wallet = engine.block_on(manager.get_wallet(&id.0)).unwrap();
+    let (late, outlived, replacement) = std::thread::scope(|scope| {
+        let restoring = s.platform.restoring(vec![id]);
+        let payment = engine.block_on(wallet.generation().payment_guard());
+        let rollback = scope.spawn(|| engine.block_on(s.roll_back_restore(&[(id, true)])));
+        wait_until("the rollback's forget", || {
+            s.platform.startup_of(&id).is_none()
+        });
+        let call = scope.spawn(|| engine.block_on(s.dashpay(id).discover_identities(scan)));
+        wait_until("the discovery's answer or its network wait", || {
+            call.is_finished() || platform.discovery_started.load(Ordering::SeqCst)
+        });
+        drop(payment);
+        rollback.join().unwrap();
+        drop(restoring);
+        assert!(!s.vault.has_wallet_secret(&id.0));
+        let outlived = !call.is_finished();
+        // The same phrase again; then the old call's response, if it lives.
+        assert_eq!(restore(&engine, &s), id);
+        response.notify_one();
+        let late = call.join().unwrap();
+        (late, outlived, shown(&s, id))
+    });
+    assert!(!outlived, "a discovery outlived the rollback: {late:?}");
+    assert_eq!(late.unwrap_err().code(), "wallet_not_found");
+    assert_eq!(replacement, vec![]);
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 /// Review r1 N2: two `set_main_identity` calls at once leave the cache as
