@@ -840,10 +840,6 @@ impl Ctx<'_> {
 /// failure before the command ran.
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Set when the unlock or a one-shot command panicked and the engine then
-/// failed its health probe.
-static ABANDONED: AtomicBool = AtomicBool::new(false);
-
 /// The answer a poisoned session still owes its last request (with the
 /// request's `id`). It is written after `main` wiped the passphrase, as
 /// the write may block.
@@ -861,7 +857,7 @@ fn print_line(line: &Value) {
 
 /// Unlocks the vault if a passphrase was given, then runs `cmd`. `main`
 /// prints the result with [`report`] after the engine shut down, or with
-/// [`report_abandoned`] if [`abandon_engine`] says it must not shut down.
+/// [`report_abandoned`] if it abandoned the engine ([`crate::teardown`]).
 pub fn run(
     engine: &Engine,
     session: &Arc<NetworkSession>,
@@ -877,27 +873,11 @@ pub fn run(
     let result = crate::unlock(engine, session, passphrase)
         .map_err(CliError::from)
         .and_then(|()| exec(&base, cmd, &mut ZeroStdin::new(), &mut std::io::stdout()));
-    if !ABANDONED.load(Ordering::SeqCst) {
-        abandon_if_unhealthy(&base, &result);
+    #[cfg(debug_assertions)]
+    if injected_fault("stall") {
+        wedge_engine(session);
     }
     result
-}
-
-/// After the unlock or a one-shot command: sets [`ABANDONED`] if it
-/// panicked and the engine then fails its health probe.
-fn abandon_if_unhealthy(ctx: &Ctx, result: &Result<Value, CliError>) -> bool {
-    let abandon = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
-    if abandon {
-        ABANDONED.store(true, Ordering::SeqCst);
-    }
-    abandon
-}
-
-/// Whether `main` must exit without the engine's shutdown, which may never
-/// finish: a session ended poisoned, or the unlock or a one-shot command
-/// panicked and the engine then failed its health probe.
-pub fn abandon_engine(result: &Result<Value, CliError>) -> bool {
-    poisoned(result) || ABANDONED.load(Ordering::SeqCst)
 }
 
 /// Prints the command's JSON line; the error is returned for the exit
@@ -1033,8 +1013,10 @@ thread_local! {
 /// panics (with a bearer-shaped payload the hooks must withhold); with
 /// `task-panic` an engine task it runs does, and with `spv-task-panic` one
 /// that `--spv`'s start runs first. A `-poison` suffix also makes the
-/// session's health probe panic, and `-wedge` (after a task panic) then
-/// blocks every engine worker, so the probe times out.
+/// health probe panic, and `-wedge` (after a task panic) then blocks every
+/// engine worker, so the probe times out. `stall` blocks every engine
+/// worker after any DashPay command, with no panic, so only the shutdown's
+/// deadline ends the process.
 #[cfg(debug_assertions)]
 fn injected_fault(point: &str) -> bool {
     #[cfg(test)]
@@ -1063,7 +1045,7 @@ fn wedge_engine(session: &Arc<NetworkSession>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let session = Arc::clone(session);
         std::thread::spawn(move || {
-            wait(session.run_on_engine(async move {
+            crate::teardown::wait(session.run_on_engine(async move {
                 let _ = tx.send(());
                 loop {
                     std::thread::park();
@@ -1119,10 +1101,17 @@ fn panic_engine_task(engine: &Engine, session: &Arc<NetworkSession>) -> Result<(
     panicked
 }
 
-/// Whether a command's result is a session that ended poisoned: the engine
-/// may never shut down, and [`report_abandoned`] writes its last lines.
-fn poisoned(result: &Result<Value, CliError>) -> bool {
-    result.as_ref().is_err_and(|e| e.code == "session_poisoned")
+/// Whether the health probe is to fail on purpose (debug builds' fault
+/// injection, `-poison`).
+pub(crate) fn probe_fault() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        injected_fault("poison")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 fn common(cmd: &mut DashPayCommand) -> &mut Common {
@@ -1166,11 +1155,10 @@ fn exec(
         cmd => dispatch(&ctx, cmd, stdin),
     };
     // Requests in a session take no `--spv`: this is a one-shot command or
-    // the session itself, and an engine that may be wedged is not stopped.
+    // the session itself. An abandoned engine is not stopped.
     if spv
-        && !poisoned(&result)
-        && !abandon_if_unhealthy(&ctx, &result)
-        && let Err(e) = engine.block_on(session.stop_spv())
+        && crate::teardown::abandoned().is_none()
+        && let Err(e) = crate::teardown::stop_spv(session, probe_fault())
     {
         // The result stands: a write that went through must not read as
         // failed (and be retried).
@@ -1227,12 +1215,14 @@ fn session_loop(
         }
         requests += 1;
         let (id, result) = session_line(ctx, content);
-        let poisoned = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
+        let poisoned = result.as_ref().is_err_and(CliError::is_panic)
+            && !crate::teardown::healthy(ctx.session, probe_fault());
         if poisoned {
             // `main` exits without the engine's shutdown, which may never
             // finish, and writes this answer once it wiped the passphrase
             // ([`report_abandoned`]).
             *OWED.lock().unwrap_or_else(|p| p.into_inner()) = Some((id, result));
+            crate::teardown::abandon("the engine failed its health probe after a panic");
             return Err(CliError::new(
                 "session_poisoned",
                 "the engine failed its health probe after a panic; the session ends",
@@ -1262,59 +1252,6 @@ fn answer(
         None => writeln!(stdout, "{answer}")?,
     }
     stdout.flush()
-}
-
-/// How long the health probe may take.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Whether the engine still works after a panic. It fails closed: the
-/// session must be open, the vault must answer without panicking (its
-/// status has no error), the wallet list without an error, and the engine
-/// runtime must run a task, all within [`PROBE_TIMEOUT`]. A panic, an error
-/// or the timeout fails it. The probe runs on its own thread, so a wedged
-/// engine cannot hang the session (that thread is then left behind).
-fn engine_healthy(ctx: &Ctx) -> bool {
-    let session = Arc::clone(ctx.session);
-    #[cfg(debug_assertions)]
-    let poison = injected_fault("poison");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let probe = std::thread::Builder::new()
-        .name("dwcli-health-probe".into())
-        .spawn(move || {
-            let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                #[cfg(debug_assertions)]
-                if poison {
-                    panic!("injected poison");
-                }
-                let _ = session.vault().status();
-                session.is_open()
-                    && session.wallet_infos().is_ok()
-                    && wait(session.run_on_engine(async {})).is_ok()
-            }));
-            let _ = tx.send(healthy.unwrap_or(false));
-        });
-    probe.is_ok() && rx.recv_timeout(PROBE_TIMEOUT).unwrap_or(false)
-}
-
-/// Polls `fut` to completion on this thread, which runs no runtime (the
-/// probe's: the engine's own `block_on` needs the engine, which stays with
-/// the session).
-fn wait<F: std::future::Future>(fut: F) -> F::Output {
-    struct Unpark(std::thread::Thread);
-    impl std::task::Wake for Unpark {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = Arc::new(Unpark(std::thread::current())).into();
-    let mut cx = std::task::Context::from_waker(&waker);
-    let mut fut = std::pin::pin!(fut);
-    loop {
-        if let std::task::Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
-            return out;
-        }
-        std::thread::park();
-    }
 }
 
 /// Runs one request line (without its line ending): its `id`, if it has
@@ -2175,6 +2112,7 @@ mod tests {
     /// and the result still tells `main` to skip the engine's shutdown.
     #[test]
     fn a_failed_probe_survives_output_errors() {
+        let _exclusive = crate::teardown::exclusive();
         let dir = dw_testutil::private_tempdir();
         let (engine, session) = session(dir.path());
         let ctx = Ctx {
@@ -2201,8 +2139,12 @@ mod tests {
                 let result = session_loop(&ctx, &mut requests.as_bytes(), &mut output);
                 write_abandoned(&mut output, &result);
                 let case = format!("fail_after {fail_after}, fail_flush {fail_flush}");
-                assert!(poisoned(&result), "{case}: {result:?}");
-                assert!(abandon_engine(&result), "{case}");
+                assert_eq!(
+                    result.as_ref().unwrap_err().code,
+                    "session_poisoned",
+                    "{case}"
+                );
+                assert!(crate::teardown::abandoned().is_some(), "{case}");
                 // Both envelopes were attempted, and request 2 never ran.
                 let written = String::from_utf8(output.written).unwrap();
                 let expected = match (fail_flush, fail_after) {
@@ -2221,67 +2163,63 @@ mod tests {
         TEST_FAULT.set(None);
     }
 
-    /// Serializes the tests that check [`ABANDONED`], which is the
-    /// process's.
-    static ABANDONING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Runs `line` with `passphrase` and checks that it panicked, the engine
-    /// failed its probe, and `main` is told to abandon it, all within a
-    /// bound. The engine is leaked: its shutdown would never finish.
+    /// Runs `line` with `passphrase`, then the teardown `main` runs after
+    /// it, and checks that the engine is abandoned after its health probe
+    /// failed, within `bound`. Returns the command's result.
     fn assert_abandoned(
         engine: Engine,
         session: Arc<NetworkSession>,
         passphrase: Option<&Zeroizing<Vec<u8>>>,
         line: &str,
-    ) {
-        let _serial = ABANDONING.lock().unwrap_or_else(|p| p.into_inner());
-        ABANDONED.store(false, Ordering::SeqCst);
+        bound: Duration,
+    ) -> Result<Value, CliError> {
+        let _exclusive = crate::teardown::exclusive();
         let start = std::time::Instant::now();
         let result = super::run(&engine, &session, passphrase, parse(line).unwrap());
+        let teardown = crate::teardown::shut_down(engine, &session, false);
         let elapsed = start.elapsed();
-        let abandoned = abandon_engine(&result);
-        ABANDONED.store(false, Ordering::SeqCst);
-        // Before any assertion: a failing test must not hang in the drop.
-        std::mem::forget((engine, session));
-        assert!(result.as_ref().is_err_and(CliError::is_panic), "{result:?}");
-        assert!(abandoned, "{result:?}");
-        assert!(elapsed < PROBE_TIMEOUT * 3, "{elapsed:?}");
+        let why = teardown.expect_err("the engine was shut down");
+        assert!(why.contains("health probe"), "{why}");
+        assert!(elapsed < bound, "{elapsed:?}");
+        result
     }
 
     /// A sink that, once armed, wedges the engine and panics on the next
-    /// `VaultLockState`: the unlock's engine task panics (Sol r4's sketch).
-    #[derive(Default)]
-    struct WedgeOnUnlock {
+    /// event `when` picks, in the engine task that emits it (Sol r4's and
+    /// r5's sketch).
+    struct WedgeOn {
+        when: fn(&EngineEvent) -> bool,
         armed: AtomicBool,
         session: std::sync::Mutex<Option<Arc<NetworkSession>>>,
     }
 
-    impl EventSink for WedgeOnUnlock {
+    impl EventSink for WedgeOn {
         fn emit(&self, event: EngineEvent) {
-            if matches!(event, EngineEvent::VaultLockState { .. })
-                && self.armed.swap(false, Ordering::SeqCst)
-            {
+            if (self.when)(&event) && self.armed.swap(false, Ordering::SeqCst) {
                 let session = self.session.lock().unwrap().clone().unwrap();
                 wedge_engine(&session);
-                panic!("injected unlock callback panic");
+                panic!("injected event callback panic");
             }
         }
     }
 
-    /// Sol r4 finding 1: a task panic in the unlock before the command is
-    /// probed like the command's own, and a failed probe abandons the
-    /// engine instead of shutting it down.
-    #[test]
-    fn an_unlock_task_panic_abandons_a_failed_engine() {
-        let dir = dw_testutil::private_tempdir();
-        let sink = Arc::new(WedgeOnUnlock::default());
+    /// An open regtest session whose sink is a [`WedgeOn`], not armed yet.
+    fn wedge_on(
+        root: &Path,
+        kdf: KdfParams,
+        when: fn(&EngineEvent) -> bool,
+    ) -> (Engine, Arc<NetworkSession>, Arc<WedgeOn>) {
+        let sink = Arc::new(WedgeOn {
+            when,
+            armed: AtomicBool::new(false),
+            session: std::sync::Mutex::new(None),
+        });
         let engine = Engine::new(
             EngineConfig {
-                data_root: dir.path().to_path_buf(),
+                data_root: root.to_path_buf(),
                 worker_threads: Some(2),
                 vault: VaultConfig {
-                    // An encrypted vault: dwcli builds no test KDF.
-                    kdf: KdfPolicy::Fixed(KdfParams::FLOOR),
+                    kdf: KdfPolicy::Fixed(kdf),
                     os_store: Arc::new(MemoryOsStore::new()),
                     ..VaultConfig::default()
                 },
@@ -2290,15 +2228,106 @@ mod tests {
         )
         .unwrap();
         let session = open(&engine);
+        *sink.session.lock().unwrap() = Some(Arc::clone(&session));
+        (engine, session, sink)
+    }
+
+    /// Sol r4 finding 1: a task panic in the unlock before the command is
+    /// probed like the command's own, and a failed probe abandons the
+    /// engine instead of shutting it down.
+    #[test]
+    fn an_unlock_task_panic_abandons_a_failed_engine() {
+        let dir = dw_testutil::private_tempdir();
+        // An encrypted vault: dwcli builds no test KDF.
+        let (engine, session, sink) = wedge_on(dir.path(), KdfParams::FLOOR, |e| {
+            matches!(e, EngineEvent::VaultLockState { .. })
+        });
         let passphrase = Zeroizing::new(b"r4 unlock passphrase".to_vec());
         let create = passphrase.clone();
         engine
             .block_on(session.vault_op(move |v| v.create(Some(&create[..]))))
             .unwrap();
         session.lock_vault().unwrap();
-        *sink.session.lock().unwrap() = Some(Arc::clone(&session));
         sink.armed.store(true, Ordering::SeqCst);
-        assert_abandoned(engine, session, Some(&passphrase), "dashpay status");
+        let result = assert_abandoned(
+            engine,
+            session,
+            Some(&passphrase),
+            "dashpay status",
+            crate::teardown::PROBE_TIMEOUT * 3,
+        );
+        assert!(result.is_err_and(|e| e.is_panic()));
+    }
+
+    /// Sol r5 finding 1: the task that actually starts SPV panics (its
+    /// `start_spv` call has returned), so `--spv` waits out its start
+    /// timeout for a state that never comes. The panic marked the engine
+    /// poisoned: it fails its probe before SPV is stopped or the engine is
+    /// shut down.
+    #[test]
+    fn a_panic_in_the_spv_start_task_abandons_a_failed_engine() {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, session, sink) = wedge_on(dir.path(), KdfParams::FLOOR, |e| {
+            matches!(e, EngineEvent::SpvStateChanged { running: true, .. })
+        });
+        sink.armed.store(true, Ordering::SeqCst);
+        let bound = SPV_START_TIMEOUT + crate::teardown::PROBE_TIMEOUT * 2;
+        let result = assert_abandoned(engine, session, None, "dashpay status --spv", bound);
+        assert!(
+            !sink.armed.load(Ordering::SeqCst),
+            "the start task never ran"
+        );
+        assert_eq!(result.unwrap_err().code, "spv");
+    }
+
+    /// Sol r5 finding 2: the SPV stop's task panics after an ordinary
+    /// command error. The command's result stands, and the engine fails its
+    /// probe before its shutdown.
+    #[test]
+    fn a_panic_in_the_spv_stop_task_abandons_a_failed_engine() {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, session, sink) = wedge_on(dir.path(), KdfParams::FLOOR, |e| {
+            matches!(e, EngineEvent::SpvStateChanged { running: false, .. })
+        });
+        crate::pay::ensure_spv_running(&engine, &session, Duration::from_secs(60)).unwrap();
+        sink.armed.store(true, Ordering::SeqCst);
+        let result = assert_abandoned(
+            engine,
+            session,
+            None,
+            "dashpay status --spv",
+            crate::teardown::PROBE_TIMEOUT * 3,
+        );
+        assert!(
+            !sink.armed.load(Ordering::SeqCst),
+            "the stop task never ran"
+        );
+        assert_eq!(result.unwrap_err().code, "wallet_not_found");
+    }
+
+    /// DEC-110's deadline: on an engine that stalls with no panic at all,
+    /// the SPV stop and the shutdown end within their bounds and the engine
+    /// is abandoned. In its own process (`dashpay_r5`) no panic marks the
+    /// engine poisoned and the deadline ends it; here another test's panic
+    /// may have, and the probe may end it first.
+    #[test]
+    fn a_stalled_engine_is_abandoned_within_the_deadline() {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, session) = session(dir.path());
+        let _exclusive = crate::teardown::exclusive();
+        wedge_engine(&session);
+        let start = std::time::Instant::now();
+        let stop = crate::teardown::stop_spv(&session, false);
+        let teardown = crate::teardown::shut_down(engine, &session, false);
+        let elapsed = start.elapsed();
+        assert!(stop.is_err(), "{stop:?}");
+        let why = teardown.expect_err("the engine was shut down");
+        assert!(
+            why.contains("deadline") || why.contains("health probe"),
+            "{why}"
+        );
+        let bound = crate::teardown::DEFAULT_DEADLINE + crate::teardown::PROBE_TIMEOUT;
+        assert!(elapsed < bound + Duration::from_secs(5), "{elapsed:?}");
     }
 
     /// Sol r4 finding 1, `--spv`: a task panic while SPV starts keeps its
@@ -2308,8 +2337,15 @@ mod tests {
         let dir = dw_testutil::private_tempdir();
         let (engine, session) = session(dir.path());
         TEST_FAULT.set(Some("spv-task-panic-wedge"));
-        assert_abandoned(engine, session, None, "dashpay status --spv");
+        let result = assert_abandoned(
+            engine,
+            session,
+            None,
+            "dashpay status --spv",
+            crate::teardown::PROBE_TIMEOUT * 3,
+        );
         TEST_FAULT.set(None);
+        assert!(result.is_err_and(|e| e.is_panic()));
     }
 
     #[test]
@@ -2558,14 +2594,14 @@ mod tests {
             passphrase: None,
             wallet: None,
         };
-        assert!(engine_healthy(&ctx));
+        assert!(crate::teardown::healthy(ctx.session, false));
         assert!(
             engine
                 .block_on(engine.close_network(DashNetwork::Regtest))
                 .unwrap()
         );
         assert!(session.wallet_infos().is_err());
-        assert!(!engine_healthy(&ctx));
+        assert!(!crate::teardown::healthy(ctx.session, false));
         engine.block_on(engine.shutdown()).unwrap();
     }
 

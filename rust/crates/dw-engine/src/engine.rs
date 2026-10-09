@@ -18,6 +18,25 @@ use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, Se
 /// (`on_runtime`).
 pub const ENGINE_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+/// The name of the engine runtime's threads.
+const ENGINE_THREAD_NAME: &str = "dw-engine";
+
+/// Chains a panic hook that marks the engine poisoned
+/// ([`crate::engine_poisoned`]) for a panic on its threads, whatever task it
+/// was, then calls the hook it replaced. Once per process.
+fn install_poison_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some(ENGINE_THREAD_NAME) {
+                crate::error::poison();
+            }
+            previous(info);
+        }));
+    });
+}
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Root data directory; each network lives in `<data_root>/<network>/`.
@@ -56,11 +75,12 @@ impl Engine {
             ));
         }
         create_private_dir(&config.data_root)?;
+        install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.
         builder
             .enable_all()
-            .thread_name("dw-engine")
+            .thread_name(ENGINE_THREAD_NAME)
             .thread_stack_size(ENGINE_THREAD_STACK_SIZE);
         if let Some(n) = config.worker_threads {
             builder.worker_threads(n);

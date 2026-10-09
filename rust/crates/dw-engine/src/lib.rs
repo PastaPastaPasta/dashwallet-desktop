@@ -54,7 +54,7 @@ pub use compat::{
 };
 pub use dw_appdb::BookPurpose;
 pub use engine::{Engine, EngineConfig};
-pub use error::{EngineError, TASK_PANICKED};
+pub use error::{EngineError, TASK_PANICKED, engine_poisoned};
 pub use events::{EngineEvent, EventSink, NoticeCode};
 pub use fees::{
     CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,

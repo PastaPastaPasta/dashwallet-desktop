@@ -146,17 +146,21 @@ status 1.
 - A panic answers with `internal` ("the outcome is unknown": a write may or may not have gone through; check before
   retrying), and the panic hook prints only its location. A panic in an engine task counts the same: the engine's
   error for it is `internal` with the detail `engine task panicked (message withheld)` (`dw_engine::TASK_PANICKED`),
-  never the panic's message. After a panic a health probe runs: the session must be open, the vault must answer
-  without panicking, the wallet list without an error, and the engine runtime must run a task, all within 10 s. A
-  panic in the unlock before the command, or while `--spv` starts SPV, is probed the same way. In one-shot mode the
-  panic is the command's one line, with exit status 1; if the probe fails, dwcli exits without stopping SPV or
-  shutting the engine down (either may never finish). In a session the panic answers the request, and the session
-  goes on if the probe passes. Otherwise it prints `session_poisoned` as its last line and exits with status 1 at
-  once, without stopping SPV or the engine's shutdown. Before such an exit dwcli wipes the passphrase it read, and
-  only then writes the last lines; key material the engine holds is left to the OS. The last lines are written best
-  effort: a failed write or flush (a closed pipe, a full disk) changes neither the exit status nor the skipped
-  shutdown. A facade error for a panicking engine task is `internal` with the detail `TASK_PANICKED`, and counts the
-  same.
+  never the panic's message. A facade error for a panicking engine task is `internal` with the detail
+  `TASK_PANICKED`, and counts the same. In one-shot mode the panic is the command's one line, with exit status 1. In
+  a session the panic answers the request, then a health probe runs: the session must be open, the vault must answer
+  without panicking, the wallet list without an error, and the engine runtime must run a task, all within 10 s. The
+  session goes on if the probe passes; otherwise it ends with `session_poisoned` as its last line.
+- **How dwcli ends the engine (DEC-110).** Any panic in any engine task marks the engine poisoned for the process
+  (`dw_engine::engine_poisoned`), whatever became of the task's result. Before stopping SPV (`--spv`) or shutting
+  the engine down, dwcli probes a poisoned engine as above. Every SPV stop and the engine's shutdown run under a
+  deadline: `--shutdown-timeout SECS` (or `DWCLI_SHUTDOWN_TIMEOUT`), 10 s by default. A failed probe, a missed
+  deadline or a poisoned session abandons the engine: dwcli neither stops SPV nor shuts the engine down (either may
+  never finish), wipes the passphrase it read, then writes the lines it owes and exits with status 1, whatever the
+  command's own result; stderr says why. The command's line is unchanged: a write that went through still reads
+  `ok: true`. Key material the engine holds is left to the OS. The last lines are written best effort: a failed
+  write or flush (a closed pipe, a full disk) changes neither the exit status nor the skipped shutdown. A healthy
+  shutdown takes well under the deadline, and its exit status is the command's.
 - **Callers must drain stdout.** As any CLI, dwcli blocks on a write to a stdout that is full and that nobody reads,
   its last lines included, and does not exit until the write goes through or fails (DEC-106).
 - `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with

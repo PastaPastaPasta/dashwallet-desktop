@@ -174,7 +174,9 @@ pub(crate) fn ensure_spv_running(
 
 /// [`ensure_spv_running`] with the engine's own error (outer), so a caller
 /// keeps its classification (an engine task's panic), apart from the start
-/// that failed or timed out (inner).
+/// that failed or timed out (inner). The task that starts SPV is not this
+/// call's: its panic is a timeout here, and the engine-wide mark
+/// ([`dw_engine::engine_poisoned`]) has the engine probed at teardown.
 pub(crate) fn spv_running_within(
     engine: &Engine,
     session: &Arc<NetworkSession>,

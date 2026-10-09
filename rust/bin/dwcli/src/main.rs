@@ -5,6 +5,7 @@ mod coinjoin;
 mod compat;
 mod dashpay;
 mod pay;
+mod teardown;
 mod tools;
 
 use std::io::Read;
@@ -60,6 +61,16 @@ struct Cli {
     /// the new vault with it; other commands unlock an encrypted vault with it.
     #[arg(long)]
     passphrase_file: Option<PathBuf>,
+    /// Seconds stopping SPV and shutting the engine down may each take;
+    /// past it dwcli exits with status 1 without them (DEC-110).
+    #[arg(
+        long,
+        env = "DWCLI_SHUTDOWN_TIMEOUT",
+        value_name = "SECS",
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    shutdown_timeout: u64,
     #[command(subcommand)]
     command: Command,
 }
@@ -330,12 +341,13 @@ fn sync(
         std::thread::sleep(Duration::from_millis(250));
     };
     let printed = outcome.and_then(|()| print_wallets(session));
-    engine.block_on(session.stop_spv())?;
+    teardown::stop_spv(session, false)?;
     printed
 }
 
 fn run(cli: Cli) -> Result<(), String> {
-    let passphrase = cli
+    teardown::set_deadline(Duration::from_secs(cli.shutdown_timeout));
+    let mut passphrase = cli
         .passphrase_file
         .as_deref()
         .map(read_passphrase)
@@ -369,7 +381,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
     let result = match cli.command {
         Command::InitVault { unencrypted } => {
-            let secret = match (unencrypted, passphrase) {
+            let secret = match (unencrypted, passphrase.take()) {
                 (true, None) => None,
                 (false, Some(p)) => Some(p),
                 (true, Some(_)) => {
@@ -483,26 +495,17 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Tools(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = tools::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::Pay(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = pay::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::Compat(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::CoinJoin(cmd) => {
             // `coinjoin-mix --mixing-only` unlocks for mixing only itself.
@@ -510,38 +513,59 @@ fn run(cli: Cli) -> Result<(), String> {
                 unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             }
             let result = coinjoin::run(&engine, &session, passphrase.as_ref(), cmd);
-            engine
-                .block_on(engine.shutdown())
-                .map_err(|e| e.to_string())?;
-            return result;
+            return finish(engine, &session, passphrase, result);
         }
         Command::DashPay(cmd) => {
             // Unlocks itself, so a failed unlock is a JSON error too, and
             // prints its JSON line once the engine is shut down.
             let result = dashpay::run(&engine, &session, passphrase.as_ref(), cmd);
-            if dashpay::abandon_engine(&result) {
-                // An engine that failed its health probe may never shut
-                // down: exit without it. `exit` runs no destructor, so the
-                // passphrase is wiped first, before the last lines, whose
-                // write may block.
-                let mut passphrase = passphrase;
-                if let Some(p) = passphrase.as_mut() {
-                    p.zeroize();
-                }
-                dashpay::report_wiped(passphrase.as_ref());
-                dashpay::report_abandoned(&result);
-                std::process::exit(1);
-            }
-            let teardown = engine
-                .block_on(engine.shutdown())
-                .map_err(|e| format!("shutdown: {e}"));
-            return dashpay::report(result, teardown);
+            return match teardown::shut_down(engine, &session, dashpay::probe_fault()) {
+                Ok(done) => dashpay::report(result, done.map_err(|e| format!("shutdown: {e}"))),
+                Err(why) => abandon(passphrase, &why, Some(&result)),
+            };
         }
     };
-    engine
-        .block_on(engine.shutdown())
-        .map_err(|e| e.to_string())?;
-    result.map_err(|e| e.to_string())
+    finish(
+        engine,
+        &session,
+        passphrase,
+        result.map_err(|e| e.to_string()),
+    )
+}
+
+/// Shuts the engine down after a command ([`teardown::shut_down`]): the
+/// shutdown's error, else the command's result. If the engine is abandoned
+/// instead, exits ([`abandon`]).
+fn finish(
+    engine: Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<Zeroizing<Vec<u8>>>,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match teardown::shut_down(engine, session, false) {
+        Ok(done) => done.map_err(|e| e.to_string()).and(result),
+        Err(why) => abandon(passphrase, &why, None),
+    }
+}
+
+/// Exits with status 1 without the rest of the engine's shutdown, which may
+/// never finish (DEC-110). `exit` runs no destructor, so the passphrase is
+/// wiped first, before the last lines (a DashPay command's), whose write may
+/// block.
+fn abandon(
+    mut passphrase: Option<Zeroizing<Vec<u8>>>,
+    why: &str,
+    dashpay: Option<&Result<serde_json::Value, dashpay::CliError>>,
+) -> ! {
+    if let Some(p) = passphrase.as_mut() {
+        p.zeroize();
+    }
+    dashpay::report_wiped(passphrase.as_ref());
+    eprintln!("error: {why}; exiting without the engine's shutdown");
+    if let Some(result) = dashpay {
+        dashpay::report_abandoned(result);
+    }
+    std::process::exit(1)
 }
 
 fn main() -> ExitCode {
@@ -627,6 +651,7 @@ mod tests {
 
     #[test]
     fn create_then_list_round_trips_through_cli_paths() {
+        let _exclusive = teardown::exclusive();
         let dir = dw_testutil::private_tempdir();
         let pass = dir.path().join("pass");
         std::fs::write(&pass, "dwcli test passphrase\n").unwrap();
@@ -641,6 +666,7 @@ mod tests {
             no_platform: false,
             verbose_events: false,
             passphrase_file: passphrase.then(|| pass.clone()),
+            shutdown_timeout: 10,
             command: cmd,
         };
         // Without a vault there is nowhere to keep the seed.

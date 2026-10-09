@@ -3,6 +3,7 @@ use dw_vault::{SignerError, VaultError};
 use platform_wallet::PlatformWalletError;
 use platform_wallet::error::promote_identity_insufficient_balance;
 use platform_wallet_storage::WalletStorageError;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Engine error. The `Display` text is diagnostic detail for logs; the UI maps
 /// the variant (and `code()`) to localized copy and never shows this text raw.
@@ -276,9 +277,31 @@ impl EngineError {
     }
 }
 
+/// Set once an engine task panicked (DEC-110). Never cleared.
+static POISONED: AtomicBool = AtomicBool::new(false);
+
+/// Whether an engine task has panicked in this process: the engine may be
+/// wedged, whatever became of the task's result (an error mapped to text,
+/// a timeout waiting for state the task never set, a logged warning, or a
+/// task nobody awaits). A host checks it before stopping SPV or shutting
+/// the engine down, and probes the engine if it is set.
+///
+/// The panic hook the first [`crate::Engine::new`] installs sets it for a
+/// panic on the engine's threads, and calls the hook it replaced; a host
+/// that sets its own hook later must call the one it replaces for this to
+/// hold. A task's panic that becomes [`TASK_PANICKED`] sets it too.
+pub fn engine_poisoned() -> bool {
+    POISONED.load(Ordering::SeqCst)
+}
+
+pub(crate) fn poison() {
+    POISONED.store(true, Ordering::SeqCst);
+}
+
 impl From<tokio::task::JoinError> for EngineError {
     fn from(e: tokio::task::JoinError) -> Self {
         if e.is_panic() {
+            poison();
             EngineError::Internal(TASK_PANICKED.into())
         } else {
             EngineError::Internal(format!("engine task cancelled: {e}"))
@@ -316,6 +339,8 @@ mod tests {
         assert_eq!(e.to_string(), format!("internal error: {TASK_PANICKED}"));
         assert!(!format!("{e:?}").contains("PANIC-SECRET"));
         assert!(!EngineError::Internal("other".into()).is_task_panic());
+        // The conversion marks the engine poisoned (DEC-110).
+        assert!(engine_poisoned());
     }
 
     const IDENTITY: [u8; 32] = [9u8; 32];
