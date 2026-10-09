@@ -21,6 +21,7 @@ use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use zeroize::Zeroizing;
 
+use crate::platform::runtime::PlatformSignal;
 use crate::wallets::validate_name;
 use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
 
@@ -41,6 +42,14 @@ pub(crate) enum AutoBackup {
     Schedule,
     /// The caller schedules it (or not) when its whole operation succeeded.
     Caller,
+}
+
+/// Where an imported seed comes from: a wallet created here gets the short
+/// DashPay bring-up budget (`platform::CREATED_HERE_BUDGET`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Origin {
+    CreatedHere,
+    Imported,
 }
 
 /// Options of [`NetworkSession::import_wallet`].
@@ -150,6 +159,7 @@ impl NetworkSession {
     fn lock_now(&self) -> VaultStatus {
         let before = self.vault.lock_state();
         let status = self.vault.lock();
+        self.platform.note_lock();
         self.emit_lock_state_change(before);
         status
     }
@@ -202,6 +212,7 @@ impl NetworkSession {
     fn emit_lock_state_change(&self, before: LockState) {
         let state = self.vault.lock_state();
         if state != before {
+            self.platform.note_lock_state(before, state);
             self.sink.emit(EngineEvent::VaultLockState {
                 network: self.network.clone(),
                 state,
@@ -219,14 +230,16 @@ impl NetworkSession {
     ) -> Result<CreatedWallet, EngineError> {
         let phrase =
             mnemonic::generate(word_count.into(), Language::English).map_err(mnemonic_error)?;
+        let secret = Zeroizing::new(phrase.to_vec());
         let wallet_id = self
-            .import_wallet(
-                Zeroizing::new(phrase.to_vec()),
-                Zeroizing::new(Vec::new()),
+            .import_secret_inner(
                 ImportOptions::default(),
+                move || mnemonic::derive_secret(&secret, b"", false).map_err(mnemonic_error),
+                AutoBackup::Schedule,
+                Origin::CreatedHere,
             )
             .await?;
-        // `import_wallet` took and released the operation guard.
+        // The import took and released the operation guard.
         let text = std::str::from_utf8(&phrase)
             .map_err(|_| EngineError::Internal("generated phrase is not UTF-8".into()))?;
         Ok(CreatedWallet {
@@ -276,18 +289,20 @@ impl NetworkSession {
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
     {
-        self.import_secret_inner(options, make_secret, AutoBackup::Schedule)
+        self.import_secret_inner(options, make_secret, AutoBackup::Schedule, Origin::Imported)
             .await
     }
 
     /// [`Self::import_secret_with`] with the automatic backup left to the
     /// caller when `auto_backup` is [`AutoBackup::Caller`] (a restore
-    /// schedules it only once every bundle has succeeded).
+    /// schedules it only once every bundle has succeeded), for a seed of
+    /// `origin`.
     pub(crate) async fn import_secret_inner<F>(
         self: &Arc<Self>,
         options: ImportOptions,
         make_secret: F,
         auto_backup: AutoBackup,
+        origin: Origin,
     ) -> Result<WalletId, EngineError>
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
@@ -355,6 +370,7 @@ impl NetworkSession {
                     network: this.network.clone(),
                     wallet_id,
                 });
+                this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
                 if auto_backup == AutoBackup::Schedule {
                     this.schedule_automatic_backup(wallet_id);
                 }
@@ -404,10 +420,15 @@ impl NetworkSession {
             {
                 tracing::warn!(%wallet_id, error = %e, "could not store the wallet name");
             }
+            // Before the bring-up hears of the wallet, which reads it.
+            if origin == Origin::CreatedHere {
+                this.mark_created_here(wallet_id).await;
+            }
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
                 wallet_id,
             });
+            this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
             if auto_backup == AutoBackup::Schedule {
                 this.schedule_automatic_backup(wallet_id);
             }

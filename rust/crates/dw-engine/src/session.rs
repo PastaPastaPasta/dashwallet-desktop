@@ -126,6 +126,10 @@ pub struct SessionOptions {
     /// network's floor is not clamped). Auto-detect stays on and ratchets it
     /// up from what the network reports. `None` = the per-network floor.
     pub initial_protocol_version: Option<u32>,
+    /// The chain has no Platform (a plain dashd regtest): `start_spv` runs
+    /// no DashPay bring-up and no Platform sync loops, and every wallet's
+    /// `dashpay_startup` stays `NotRun`.
+    pub no_platform: bool,
 }
 
 /// What a session holds while it is open. Taken out on close so the
@@ -181,6 +185,8 @@ pub struct NetworkSession {
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
+    /// The bring-up, the Platform sync loops and their status (E0-05).
+    pub(crate) platform: crate::platform::runtime::PlatformRuntime,
 }
 
 impl NetworkSession {
@@ -343,6 +349,7 @@ impl NetworkSession {
             return Err(e.into());
         }
 
+        let lock_state = vault.lock_state();
         let session = Arc::new(Self {
             network,
             data_dir,
@@ -367,6 +374,7 @@ impl NetworkSession {
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
+            platform: crate::platform::runtime::PlatformRuntime::new(lock_state, !opts.no_platform),
         });
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
@@ -525,7 +533,7 @@ impl NetworkSession {
     /// handling depends on it), restricted to the configured peers when any
     /// were given. Counterpart: `platform_wallet_manager_spv_start`
     /// (rs-platform-wallet-ffi/src/spv.rs:408, config built at :519-551).
-    fn spv_config(&self) -> Result<ClientConfig, EngineError> {
+    pub(crate) fn spv_config(&self) -> Result<ClientConfig, EngineError> {
         let mut config = ClientConfig::new(self.network.core_network())
             .with_storage_path(self.data_dir.join(SPV_DIR))
             .with_user_agent(crate::tools::USER_AGENT);
@@ -569,38 +577,18 @@ impl NetworkSession {
         Ok(stopped?)
     }
 
-    pub async fn start_spv(self: &Arc<Self>) -> Result<(), EngineError> {
-        let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            let manager = this.manager()?;
-            this.start_spv_inner(&manager).await
-        })
-        .await
-    }
-
-    /// Stops dash-spv. Idempotent.
-    pub async fn stop_spv(self: &Arc<Self>) -> Result<(), EngineError> {
-        let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            let manager = this.manager()?;
-            this.stop_spv_inner(&manager).await
-        })
-        .await
-    }
-
-    pub fn spv_running(&self) -> Result<bool, EngineError> {
-        let _op = self.try_enter()?;
-        Ok(self.manager()?.spv().is_started())
-    }
-
-    /// Closes the session: waits for admitted operations (review M1), stops
-    /// the event pump, shuts the manager down (SPV, coordinators,
-    /// persistence adapter drain) and releases the databases. Must run on
-    /// the engine runtime.
+    /// Closes the session: cancels a running bring-up, waits for admitted
+    /// operations (review M1), stops the event pump, shuts the manager down
+    /// (SPV, coordinators, persistence adapter drain) and releases the
+    /// databases. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        // A running bring-up ends first (DASHPAY §3.2). It holds no
+        // operation guard, so it is cancelled before waiting for the guards,
+        // and again after, for a start admitted meanwhile. The loops drain
+        // once, sealed, in the manager's shutdown below.
+        self.platform.deactivate().await;
         let _closing = self.gate.close().await;
+        self.platform.deactivate().await;
         self.cancel_relock();
         self.coinjoin.shutdown();
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();

@@ -75,6 +75,8 @@ class Dwcli:
             "--network", "regtest",
             "--dapi", "http://127.0.0.1:1",
             "--quorum-url", "http://127.0.0.1:1",
+            # No Platform here: no DashPay bring-up before SPV.
+            "--no-platform",
             "--peer", f"127.0.0.1:{self.peer_port}",
             "--passphrase-file", self.passfile,
         ]

@@ -129,6 +129,11 @@ pub enum NoticeCode {
     /// the vault (for example the vault was locked meanwhile). The detail
     /// names the wallet id; the seed stays in the vault, encrypted.
     WalletSecretNotDeleted,
+    /// A wallet's DashPay bring-up ended short of settled (DASHPAY §3.7):
+    /// SPV started anyway, and the DIP-15 rescan or a later start finishes
+    /// the work. The detail names the wallet and its `StartupStatus`; hosts
+    /// read `dashpay_startup`.
+    DashPayStartupIncomplete,
 }
 
 /// Receives engine events. Called from engine threads; must not block.

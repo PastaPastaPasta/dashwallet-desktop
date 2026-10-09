@@ -34,6 +34,14 @@ pub const APP_DB_FILE: &str = "app.sqlite";
 /// Settings scope for network-wide values (`settings_kv.scope`).
 pub const GLOBAL_SCOPE: &str = "";
 
+/// Settings scope for a wallet's values that describe this installation
+/// rather than the wallet (for example "created here"): deleted with the
+/// wallet, but not exported to a `.dwbackup`, which carries only the scope
+/// equal to the wallet id.
+pub fn local_scope(wallet_id: &str) -> String {
+    format!("local:{wallet_id}")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppDbError {
     #[error("sqlite: {0}")]
@@ -248,7 +256,10 @@ impl AppDb {
                 [wallet_id],
             )?;
         }
-        tx.execute("DELETE FROM settings_kv WHERE scope = ?1", [wallet_id])?;
+        tx.execute(
+            "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
+            params![wallet_id, local_scope(wallet_id)],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -889,8 +900,15 @@ mod tests {
             db.add_receive_request(w, 1, "a", None, None, None).unwrap();
             db.lock_manual(w, "t", 0, 1).unwrap();
             db.set_setting(w, "k", Some("v")).unwrap();
+            db.set_setting(&local_scope(w), "k", Some("v")).unwrap();
         }
+        // The local scope stays out of a backup.
+        let exported = db.export_wallet_rows(W).unwrap();
+        let settings = exported.iter().find(|t| t.table == "settings_kv").unwrap();
+        assert_eq!(settings.rows.len(), 1);
         db.delete_wallet(W).unwrap();
+        assert_eq!(db.setting(&local_scope(W), "k").unwrap(), None);
+        assert_eq!(db.setting(&local_scope(W2), "k").unwrap(), Some("v".into()));
         assert!(db.address_book(W, None).unwrap().is_empty());
         assert!(db.labels(W, LabelKind::Tx).unwrap().is_empty());
         assert_eq!(db.tx_message(W, "t").unwrap(), None);

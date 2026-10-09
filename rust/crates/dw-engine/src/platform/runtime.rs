@@ -1,0 +1,339 @@
+//! The session's Platform runtime (DASHPAY §3.1 `PlatformRuntime`; E0-05):
+//! the supervisor slot, each wallet's bring-up status, the vault's lock
+//! state as the bring-up sees it, and the Platform sync loops with their
+//! cadence. The bring-up itself is in `bringup.rs`.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::time::Duration;
+
+use dw_vault::LockState;
+use tokio::sync::{mpsc, watch};
+use tokio::task::{AbortHandle, JoinHandle};
+
+use super::startup::{StartupStatus, SyncLoop, SyncLoopStatus};
+use super::startup_status::{DashPayStartup, PlatformCadence, SpvState};
+use crate::session::Manager;
+use crate::{EngineError, NetworkSession, WalletId};
+
+/// `dashpay_sync` while a window is visible, and while hidden (§3.2).
+const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
+const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
+/// The contest watch (`dpns_sync`), and in a contest's last hour.
+const CONTEST_WATCH: Duration = Duration::from_secs(600);
+const CONTEST_WATCH_ENDING: Duration = Duration::from_secs(60);
+
+/// Work the supervisor takes after SPV has started.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PlatformSignal {
+    /// The vault became prompt-free (unlocked with scope Full, unencrypted).
+    Unlocked,
+    /// A wallet was registered, got keys or was opened.
+    WalletAdded(WalletId),
+}
+
+pub(super) struct Supervisor {
+    pub(super) cancel: watch::Sender<bool>,
+    pub(super) signals: mpsc::UnboundedSender<PlatformSignal>,
+    /// Set right after the slot is installed (`start_spv`).
+    pub(super) task: Option<JoinHandle<()>>,
+    /// SPV has started: the supervisor is past its step 2.
+    pub(super) running: bool,
+}
+
+/// The vault's lock state as the session last reported it, and how many
+/// times it stopped being prompt-free: a bring-up holding keys watches the
+/// count, which two reports racing each other cannot set back.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LockView {
+    pub(super) state: LockState,
+    pub(super) locks: u64,
+}
+
+/// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
+pub(crate) struct PlatformRuntime {
+    /// `false` for a chain without Platform (`SessionOptions::no_platform`):
+    /// SPV starts without a bring-up and no loop runs.
+    pub(super) enabled: bool,
+    pub(super) supervisor: Mutex<Option<Supervisor>>,
+    /// Orders `start_spv`, `stop_spv` and `reset_chain_data`.
+    pub(crate) lifecycle: tokio::sync::Mutex<()>,
+    startup: RwLock<HashMap<WalletId, DashPayStartup>>,
+    cadence: Mutex<PlatformCadence>,
+    pub(super) lock: watch::Sender<LockView>,
+    /// Each wallet's bring-up or unlock task in flight, ended when the
+    /// wallet is removed or closed.
+    pub(super) tasks: Mutex<HashMap<WalletId, AbortHandle>>,
+    /// The loops were started and not stopped since; read by passes that
+    /// were scheduled earlier.
+    pub(super) loops_on: Arc<AtomicBool>,
+}
+
+/// Whether the vault serves its full key without a prompt (dw-vault
+/// `prompt_free_signer`): the states that build the bring-up's providers.
+pub(crate) fn prompt_free(state: LockState) -> bool {
+    matches!(
+        state,
+        LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked
+    )
+}
+
+pub(super) fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl PlatformRuntime {
+    pub(crate) fn new(lock: LockState, enabled: bool) -> Self {
+        Self {
+            enabled,
+            supervisor: Mutex::new(None),
+            lifecycle: tokio::sync::Mutex::new(()),
+            startup: RwLock::new(HashMap::new()),
+            cadence: Mutex::new(PlatformCadence::default()),
+            lock: watch::Sender::new(LockView {
+                state: lock,
+                locks: 0,
+            }),
+            tasks: Mutex::new(HashMap::new()),
+            loops_on: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// `Starting` while a supervisor has not started SPV; a supervisor whose
+    /// SPV stopped underneath it (a failed `rotate_peers` restart) is
+    /// `Stopped`, and the next `start_spv` replaces it.
+    fn spv_state(&self, spv_started: bool) -> SpvState {
+        match &*guard(&self.supervisor) {
+            Some(s) if !s.running => SpvState::Starting,
+            _ if spv_started => SpvState::Running,
+            _ => SpvState::Stopped,
+        }
+    }
+
+    /// SPV runs under a supervisor, and with it the Platform loops.
+    pub(super) fn is_running(&self) -> bool {
+        self.enabled && guard(&self.supervisor).as_ref().is_some_and(|s| s.running)
+    }
+
+    /// Hands `signal` to the supervisor; dropped while SPV is stopped (the
+    /// next start brings every wallet up anyway).
+    pub(crate) fn signal(&self, signal: PlatformSignal) {
+        if !self.enabled {
+            return;
+        }
+        if let Some(s) = &*guard(&self.supervisor) {
+            let _ = s.signals.send(signal);
+        }
+    }
+
+    /// Called by the session whenever it reports a lock-state change.
+    pub(crate) fn note_lock_state(&self, before: LockState, after: LockState) {
+        self.lock.send_modify(|view| {
+            view.state = after;
+            if prompt_free(before) && !prompt_free(after) {
+                view.locks += 1;
+            }
+        });
+        if prompt_free(after) && !prompt_free(before) {
+            self.signal(PlatformSignal::Unlocked);
+        }
+    }
+
+    /// A lock the session made itself. Counted even when the state it read
+    /// before already said locked: an unlock reported in between would
+    /// otherwise hide this lock from a bring-up that holds keys.
+    pub(crate) fn note_lock(&self) {
+        self.lock.send_modify(|view| view.locks += 1);
+    }
+
+    /// Marks SPV started; `false` when a stop or close took the supervisor
+    /// meanwhile (it waits for the supervisor, then stops SPV).
+    pub(super) fn mark_running(&self) -> bool {
+        match &mut *guard(&self.supervisor) {
+            Some(s) => {
+                s.running = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Cancels the supervisor and waits for it. Statuses it left at
+    /// `Starting` become `NotRun`.
+    pub(crate) async fn deactivate(&self) {
+        let supervisor = guard(&self.supervisor).take();
+        if let Some(s) = supervisor {
+            let _ = s.cancel.send(true);
+            if let Some(task) = s.task
+                && let Err(e) = task.await
+            {
+                tracing::warn!(error = %e, "Platform supervisor ended abnormally");
+            }
+        }
+        self.loops_on.store(false, Ordering::Release);
+        for entry in self.write_startup().values_mut() {
+            if entry.startup == StartupStatus::Starting {
+                entry.startup = StartupStatus::NotRun;
+            }
+        }
+    }
+
+    pub(super) fn write_startup(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<WalletId, DashPayStartup>> {
+        self.startup.write().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(super) fn startup_of(&self, id: &WalletId) -> Option<DashPayStartup> {
+        self.startup
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    pub(super) fn record(&self, id: WalletId, startup: DashPayStartup) {
+        self.write_startup().insert(id, startup);
+    }
+
+    pub(super) fn set_status(&self, id: WalletId, status: StartupStatus) {
+        self.write_startup()
+            .entry(id)
+            .or_insert_with(|| DashPayStartup::new(status, false))
+            .startup = status;
+    }
+
+    /// Forgets a removed or closed wallet and ends its bring-up.
+    pub(crate) fn forget(&self, id: &WalletId) {
+        if let Some(task) = guard(&self.tasks).remove(id) {
+            task.abort();
+        }
+        self.write_startup().remove(id);
+    }
+
+    pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {
+        let mut tasks = guard(&self.tasks);
+        if tasks.get(&id).is_some_and(|t| t.id() == task) {
+            tasks.remove(&id);
+        }
+    }
+}
+
+impl NetworkSession {
+    /// Whether SPV is starting or running ([`Self::spv_state`] tells which).
+    /// While starting, calls that need a running SPV (`rescan`,
+    /// `rotate_peers`, a broadcast) still fail as when it is stopped.
+    pub fn spv_running(&self) -> Result<bool, EngineError> {
+        Ok(self.spv_state()? != SpvState::Stopped)
+    }
+
+    /// SPV's state, `Starting` included. In-memory read.
+    pub fn spv_state(&self) -> Result<SpvState, EngineError> {
+        let _op = self.try_enter()?;
+        let manager = self.manager()?;
+        Ok(self.platform_spv_state(&manager))
+    }
+
+    pub(crate) fn platform_spv_state(&self, manager: &Manager) -> SpvState {
+        self.platform.spv_state(manager.spv().is_started())
+    }
+
+    /// The wallet's last DashPay bring-up. `NotRun` before the first one.
+    /// In-memory read.
+    pub fn dashpay_startup(&self, wallet: &WalletId) -> Result<DashPayStartup, EngineError> {
+        let _op = self.try_enter()?;
+        self.require_wallet(wallet)?;
+        Ok(self.platform.startup_of(wallet).unwrap_or_else(|| {
+            DashPayStartup::new(
+                StartupStatus::NotRun,
+                !self.vault.has_wallet_secret(&wallet.0),
+            )
+        }))
+    }
+
+    /// The Platform sync loops this session runs. In-memory read.
+    pub fn platform_loops(&self) -> Result<Vec<SyncLoopStatus>, EngineError> {
+        let _op = self.try_enter()?;
+        let m = self.manager()?;
+        let status =
+            |sync_loop, running: bool, last: Option<u64>, every: Duration| SyncLoopStatus {
+                sync_loop,
+                running,
+                last_run_at: last,
+                next_run_at: last.filter(|_| running).map(|t| t + every.as_secs()),
+            };
+        let (identity, dashpay, dpns) = (m.identity_sync(), m.dashpay_sync(), m.dpns_sync());
+        Ok(vec![
+            status(
+                SyncLoop::IdentitySync,
+                identity.is_running(),
+                identity.last_sync_unix_seconds(),
+                identity.interval(),
+            ),
+            status(
+                SyncLoop::DashPaySync,
+                dashpay.is_running(),
+                dashpay.last_sync_unix_seconds(),
+                dashpay.interval(),
+            ),
+            status(
+                SyncLoop::DpnsSync,
+                dpns.is_running(),
+                dpns.last_sync_unix_seconds(),
+                dpns.interval(),
+            ),
+        ])
+    }
+
+    /// Paces the loops (§3.2 "Cadence"). A window becoming visible also runs
+    /// a DashPay pass at once.
+    pub fn set_platform_cadence(&self, cadence: PlatformCadence) -> Result<(), EngineError> {
+        let _op = self.try_enter()?;
+        let manager = self.manager()?;
+        let before = std::mem::replace(&mut *guard(&self.platform.cadence), cadence);
+        self.apply_cadence(&manager);
+        if cadence.window_visible && !before.window_visible {
+            self.kick_dashpay_sync(&manager);
+        }
+        Ok(())
+    }
+
+    /// Runs a DashPay pass now, in the background (§3.2: Contacts or the
+    /// bell opened, after an unlock, after a DashPay write). Nothing runs
+    /// while SPV is not running; a pass already in flight is not repeated.
+    pub fn dashpay_sync_soon(&self) -> Result<(), EngineError> {
+        let _op = self.try_enter()?;
+        let manager = self.manager()?;
+        self.kick_dashpay_sync(&manager);
+        Ok(())
+    }
+
+    pub(super) fn kick_dashpay_sync(&self, manager: &Manager) {
+        if !self.platform.is_running() {
+            return;
+        }
+        let dashpay = manager.dashpay_sync_arc();
+        let loops_on = Arc::clone(&self.platform.loops_on);
+        self.rt.spawn(async move {
+            // Not after a stop that came first.
+            if loops_on.load(Ordering::Acquire) {
+                dashpay.sync_now().await;
+            }
+        });
+    }
+
+    pub(super) fn apply_cadence(&self, manager: &Manager) {
+        let c = *guard(&self.platform.cadence);
+        manager.dashpay_sync().set_interval(if c.window_visible {
+            DASHPAY_VISIBLE
+        } else {
+            DASHPAY_HIDDEN
+        });
+        manager.dpns_sync().set_interval(if c.contest_ending_soon {
+            CONTEST_WATCH_ENDING
+        } else {
+            CONTEST_WATCH
+        });
+    }
+}

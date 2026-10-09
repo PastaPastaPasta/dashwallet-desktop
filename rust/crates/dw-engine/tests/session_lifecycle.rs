@@ -338,6 +338,13 @@ fn spv_starts_and_stops_without_reachable_peers() {
     assert!(!s.spv_running().unwrap());
     engine.block_on(s.start_spv()).unwrap();
     assert!(s.spv_running().unwrap());
+    // `start_spv` returns before SPV runs (E0-05); a stop before then would
+    // cancel the start.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while s.spv_state().unwrap() != dw_engine::SpvState::Running {
+        assert!(std::time::Instant::now() < deadline, "SPV did not start");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     engine.block_on(s.stop_spv()).unwrap();
     assert!(!s.spv_running().unwrap());
     let events = rec.events();

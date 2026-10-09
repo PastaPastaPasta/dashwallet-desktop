@@ -31,7 +31,7 @@ use zeroize::Zeroizing;
 
 use crate::compat::write_new_private;
 use crate::events::unix_now;
-use crate::keys::AutoBackup;
+use crate::keys::{AutoBackup, Origin};
 use crate::{
     DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
 };
@@ -629,7 +629,12 @@ impl NetworkSession {
             lookahead: None,
         };
         match self
-            .import_secret_inner(options, move || Ok(secret), AutoBackup::Caller)
+            .import_secret_inner(
+                options,
+                move || Ok(secret),
+                AutoBackup::Caller,
+                Origin::Imported,
+            )
             .await
         {
             Ok(_) => done.push((id, !existed)),

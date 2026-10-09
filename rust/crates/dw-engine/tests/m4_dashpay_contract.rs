@@ -54,9 +54,18 @@ const FACADE: &[&str] = &[
 ];
 
 /// Files of `src/platform/` that are not part of the facade: the module
-/// root, the vault signers (E0-03), `platform-status` (E0-02) and the
-/// identity key policy (DP1-01).
-const NOT_FACADE: &[&str] = &["keys_policy.rs", "mod.rs", "signers.rs", "status.rs"];
+/// root, the vault signers (E0-03), `platform-status` (E0-02), the
+/// identity key policy (DP1-01) and the bring-up runtime (E0-05).
+const NOT_FACADE: &[&str] = &[
+    "bringup.rs",
+    "keys_policy.rs",
+    "mod.rs",
+    "runtime.rs",
+    "runtime_tests.rs",
+    "signers.rs",
+    "startup_status.rs",
+    "status.rs",
+];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
 const END: &str = "<!-- END GENERATED: dashpay-surface -->";

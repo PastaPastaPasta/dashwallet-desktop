@@ -156,11 +156,7 @@ fn sync_all(
         .map(|w| w.wallet_id)
         .collect();
     if ids.is_empty() {
-        if !session.spv_running().map_err(|e| e.to_string())? {
-            engine
-                .block_on(session.start_spv())
-                .map_err(|e| e.to_string())?;
-        }
+        crate::pay::ensure_spv_running(engine, session, timeout)?;
         return wait_tip(session, height, timeout);
     }
     for id in ids {

@@ -54,7 +54,8 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
-DP1-01's `keys_policy.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
+run the bring-up and the loops that `startup.rs` reads) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.

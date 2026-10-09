@@ -90,6 +90,10 @@ class Dwcli:
             "--network", "regtest",
             "--dapi", "http://127.0.0.1:1",
             "--quorum-url", "http://127.0.0.1:1",
+            # No Platform on this chain: skip the DashPay bring-up, which
+            # would hold every command's SPV start for its 20 s budget.
+            # test_l1_sync.py keeps it on.
+            "--no-platform",
             "--peer", f"127.0.0.1:{peer_port}",
             "--passphrase-file", str(passfile),
         ]
