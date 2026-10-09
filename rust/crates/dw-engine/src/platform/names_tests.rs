@@ -19,6 +19,7 @@ use platform_wallet::DpnsFetch;
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 
 use super::*;
+use crate::platform::recovery_tests::live_identities;
 use crate::{Engine, EngineConfig, EventSink, SessionOptions};
 
 fn names(labels: &[&str]) -> Vec<DpnsNameInfo> {
@@ -850,9 +851,16 @@ impl Fixture {
         self.sync_names(&all, DpnsFetch::Partial);
     }
 
-    /// The identity's `(names, main_name, names_updating)` as `identities()`
-    /// shows them.
+    /// The identity's `(names, main_name, names_updating)` as the live
+    /// `identities()` shows them.
     fn summary(&self) -> (Vec<String>, Option<String>, bool) {
+        let s = live_identities(&self.dp()).remove(0);
+        (s.names, s.main_name, s.names_updating)
+    }
+
+    /// As `summary`, but one read, whichever path it takes: under
+    /// `with_manager_held` the older snapshot's.
+    fn summary_now(&self) -> (Vec<String>, Option<String>, bool) {
         let s = self.dp().identities().unwrap().remove(0);
         (s.names, s.main_name, s.names_updating)
     }
@@ -1444,7 +1452,7 @@ fn identities_show_the_main_name_main_name_does() {
     let f = Fixture::signing(dir.path(), &["carol", "bob"]);
     f.cut_short(&["alice"], &["alice"]);
     let shown = || {
-        let s = f.dp().identities().unwrap().remove(0);
+        let s = live_identities(&f.dp()).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(
@@ -1469,7 +1477,7 @@ fn a_missing_cache_shows_no_pending_name() {
     let f = Fixture::signing(dir.path(), &["carol"]);
     f.cut_short(&["alice"], &["alice"]);
     f.session.platform.recovery.forget(&f.wallet);
-    let shown = f.dp().identities().unwrap().remove(0);
+    let shown = live_identities(&f.dp()).remove(0);
     assert_eq!(shown.names, ["carol"]);
     assert_eq!(shown.main_name.as_deref(), Some("carol"));
     assert_eq!(f.main_name().as_deref(), Some("carol"));
@@ -1484,7 +1492,7 @@ fn an_older_snapshot_shows_no_refused_name() {
     let f = Fixture::signing(dir.path(), &["carol"]);
     f.cut_short(&["alice"], &["alice"]);
     let shown = || {
-        let s = f.dp().identities().unwrap().remove(0);
+        let s = live_identities(&f.dp()).remove(0);
         (s.names, s.main_name)
     };
     let carol = (vec!["carol".to_string()], Some("carol".to_string()));
@@ -1502,7 +1510,7 @@ fn an_older_snapshot_shows_no_refused_name() {
 
     // A writer holds the wallet manager: the older snapshot is read, and it
     // shows no names, `carol` included, until the lock is free (DEC-138).
-    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    f.with_manager_held(|| assert_eq!(f.summary_now(), UPDATING));
     assert_eq!(shown(), carol);
 }
 
@@ -1517,7 +1525,7 @@ fn review_r4_split_read_during_contention() {
     let f = Fixture::signing(dir.path(), &[]);
     f.cut_short(&["alice"], &["alice"]);
     let shown = || {
-        let s = f.dp().identities().unwrap().remove(0);
+        let s = live_identities(&f.dp()).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(shown(), (vec![], None));
@@ -1532,7 +1540,7 @@ fn review_r4_split_read_during_contention() {
     ));
     assert!(f.prefs().pending.is_empty());
     assert_eq!(f.prefs().contested.as_deref(), Some("alice"));
-    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    f.with_manager_held(|| assert_eq!(f.summary_now(), UPDATING));
     assert_eq!(f.main_name(), None);
 }
 
@@ -1546,7 +1554,7 @@ fn review_r4_two_contenders_in_older_snapshot() {
     let f = Fixture::signing(dir.path(), &[]);
     f.cut_short(&["alice", "bob"], &["alice", "bob"]);
     let shown = || {
-        let s = f.dp().identities().unwrap().remove(0);
+        let s = live_identities(&f.dp()).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(shown(), (vec![], None));
@@ -1561,7 +1569,7 @@ fn review_r4_two_contenders_in_older_snapshot() {
     ));
     assert!(f.prefs().pending.is_empty());
     assert_eq!(f.labels().1.len(), 2);
-    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    f.with_manager_held(|| assert_eq!(f.summary_now(), UPDATING));
     assert_eq!(shown(), (vec![], None));
     assert_eq!(f.main_name(), None);
 }
@@ -1593,7 +1601,7 @@ fn review_r5_transferred_name_in_older_snapshot() {
     assert_eq!(f.main_name(), None);
     assert_eq!(f.pick("alice").unwrap_err().code(), "invalid_argument");
 
-    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    f.with_manager_held(|| assert_eq!(f.summary_now(), UPDATING));
     assert_eq!(f.summary(), (vec![], None, false));
 }
 
@@ -1623,8 +1631,35 @@ fn review_r5_retained_pick_and_refused_retry_in_older_snapshot() {
     assert_eq!(f.labels().0, Vec::<String>::new());
     assert_eq!(f.prefs().refused, ["alice"]);
 
-    f.with_manager_held(|| assert_eq!(f.summary(), UPDATING));
+    f.with_manager_held(|| assert_eq!(f.summary_now(), UPDATING));
     assert_eq!(f.summary(), (vec![], None, false));
     assert_eq!(f.main_name(), None);
     assert_eq!(f.prefs().pick.as_deref(), Some("Al1ce"));
+}
+
+/// The race the desktop gate met after DP1-03: a read while a sync pass
+/// holds the wallet manager comes from the older snapshot and shows no
+/// names. The tests' live read (`live_identities`) waits that writer out
+/// rather than compare the snapshot's.
+#[test]
+fn the_live_read_waits_out_a_writer_holding_the_manager() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol"]);
+    let carol = (vec!["carol".to_string()], Some("carol".to_string()), false);
+    assert_eq!(f.summary(), carol);
+
+    let manager = f.session.manager().unwrap();
+    let held = f
+        .engine
+        .block_on(manager.wallet_manager_arc().write_owned());
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let writer = std::thread::spawn(move || {
+        released.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(held);
+    });
+    assert_eq!(f.summary_now(), UPDATING);
+    release.send(()).unwrap();
+    assert_eq!(f.summary(), carol);
+    writer.join().unwrap();
 }

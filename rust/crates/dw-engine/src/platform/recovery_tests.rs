@@ -29,7 +29,7 @@ use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
 use super::runtime::guard;
-use super::{SpvState, StartupStatus};
+use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
@@ -559,29 +559,49 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
     wait_until("SPV", || s.spv_state().unwrap() == SpvState::Running);
 }
 
-/// Waits until `identities()` shows `want`. A read while a sync pass holds
-/// the wallet manager comes from the older snapshot, which hides a name
-/// without ownership evidence (DEC-129), so one read may show less.
+/// `identities()` from the live read. A read while a sync pass holds the
+/// wallet manager comes from the older snapshot, which shows no names and
+/// says so with `names_updating` (DEC-138); this reads again until it is
+/// not, so a test comparing names never compares the snapshot's.
+pub(super) fn live_identities(dp: &DashPay) -> Vec<IdentitySummary> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let read = dp.identities().unwrap();
+        if !read.iter().any(|i| i.names_updating) {
+            return read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "identities() still read the older snapshot (names_updating) after \
+             30 s: something held the wallet manager throughout"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until the live `identities()` shows `want`, comparing the read it
+/// waited on.
 fn assert_shown(
     s: &Arc<NetworkSession>,
     id: WalletId,
     want: Vec<(String, Vec<String>, Option<String>, bool)>,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while shown(s, id) != want && Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut got = shown(s, id);
+    while got != want && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
+        got = shown(s, id);
     }
-    assert_eq!(shown(s, id), want);
+    assert_eq!(got, want);
 }
 
-/// (identity, names, main name, is main) as `identities()` shows them.
+/// (identity, names, main name, is main) as the live `identities()` shows
+/// them.
 fn shown(
     s: &Arc<NetworkSession>,
     id: WalletId,
 ) -> Vec<(String, Vec<String>, Option<String>, bool)> {
-    s.dashpay(id)
-        .identities()
-        .unwrap()
+    live_identities(&s.dashpay(id))
         .into_iter()
         .map(|i| (i.identity, i.names, i.main_name, i.is_main))
         .collect()
@@ -1106,7 +1126,7 @@ fn the_testnet_fixture_restores_identities_names_and_contact_payments() {
         // The bring-up's enrichment may show the names first; the main name
         // settles once the names pass has Platform's timestamps.
         wait_for(&format!("{w}'s names"), Duration::from_secs(90), || {
-            let shown = s.dashpay(id).identities().unwrap();
+            let shown = live_identities(&s.dashpay(id));
             let Some(first) = shown.first() else {
                 return false;
             };
@@ -1114,7 +1134,7 @@ fn the_testnet_fixture_restores_identities_names_and_contact_payments() {
             got.sort();
             got == sorted && first.main_name.as_deref() == Some(main.as_str())
         });
-        let shown = s.dashpay(id).identities().unwrap();
+        let shown = live_identities(&s.dashpay(id));
         eprintln!(
             "{w}: identity, names and main name after {:?}: {:?}",
             t0.elapsed(),
