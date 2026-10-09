@@ -33,7 +33,13 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 
 /// Calls with real bodies.
-const IMPLEMENTED: &[&str] = &["NetworkSession.dashpay", "DashPay.wallet_id"];
+const IMPLEMENTED: &[&str] = &[
+    "NetworkSession.dashpay",
+    "DashPay.wallet_id",
+    "DashPay.identities",
+    "DashPay.set_main_identity",
+    "DashPay.discover_identities",
+];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
 /// file there must join this list or `NOT_FACADE`.
@@ -60,6 +66,8 @@ const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "keys_policy.rs",
     "mod.rs",
+    "recovery.rs",
+    "recovery_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "signers.rs",
@@ -1056,14 +1064,22 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(dp.grant_request(s(), GrantAction::SendRequest).await);
         c.stub(dp.dispatch_status(s()).await);
 
+        // DP1-05's calls are implemented: an unknown wallet is refused.
+        assert_eq!(dp.identities().unwrap_err().code(), "wallet_not_found");
+        assert_eq!(
+            dp.set_main_identity(s()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
+            dp.discover_identities(s()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
+
         c.stub(dp.status());
         c.stub(dp.sync_status());
         c.stub(dp.sync_now().await);
-        c.stub(dp.identities());
-        c.stub(dp.set_main_identity(s()).await);
         c.stub(dp.identity_detail(s()).await);
         c.stub(dp.refresh_balance(s()).await);
-        c.stub(dp.discover_identities(s()).await);
 
         c.stub(dp.registration_quote(request()).await);
         c.stub(dp.start_registration(request(), s()).await);

@@ -668,6 +668,64 @@ impl AppDb {
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+
+    // ---- DashPay identity choices ----
+
+    /// The wallet's chosen main identity (DASHPAY §3.4 `dp_main_identity`).
+    pub fn main_identity(&self, wallet_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT identity FROM dp_main_identity WHERE wallet_id = ?1",
+                [wallet_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_main_identity(&self, wallet_id: &str, identity: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO dp_main_identity (wallet_id, identity) VALUES (?1, ?2)
+             ON CONFLICT (wallet_id) DO UPDATE SET identity = excluded.identity",
+            params![wallet_id, identity],
+        )?;
+        Ok(())
+    }
+
+    /// Every `(identity, value)` of the wallet's `dp_prefs` rows for `key`,
+    /// by identity.
+    pub fn dp_prefs(&self, wallet_id: &str, key: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, value FROM dp_prefs WHERE wallet_id = ?1 AND key = ?2
+             ORDER BY identity",
+        )?;
+        let rows = stmt.query_map(params![wallet_id, key], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Sets an identity's preference, or deletes it for `None`.
+    pub fn set_dp_pref(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn();
+        match value {
+            Some(v) => conn.execute(
+                "INSERT INTO dp_prefs (wallet_id, identity, key, value) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (wallet_id, identity, key) DO UPDATE SET value = excluded.value",
+                params![wallet_id, identity, key, v],
+            )?,
+            None => conn.execute(
+                "DELETE FROM dp_prefs WHERE wallet_id = ?1 AND identity = ?2 AND key = ?3",
+                params![wallet_id, identity, key],
+            )?,
+        };
+        Ok(())
+    }
 }
 
 fn write_label(
@@ -711,6 +769,40 @@ mod tests {
         drop(db);
         let db = AppDb::open(&path).unwrap();
         assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
+    }
+
+    #[test]
+    fn identity_choices_round_trip_per_wallet() {
+        let db = AppDb::open_in_memory().unwrap();
+        assert_eq!(db.main_identity(W).unwrap(), None);
+        db.set_main_identity(W, "id1").unwrap();
+        db.set_main_identity(W, "id2").unwrap();
+        db.set_main_identity(W2, "other").unwrap();
+        assert_eq!(db.main_identity(W).unwrap().as_deref(), Some("id2"));
+
+        db.set_dp_pref(W, "id2", "main_name", Some("alice"))
+            .unwrap();
+        db.set_dp_pref(W, "id1", "main_name", Some("bob")).unwrap();
+        db.set_dp_pref(W, "id1", "main_name", Some("bobby"))
+            .unwrap();
+        db.set_dp_pref(W, "id1", "other", Some("x")).unwrap();
+        db.set_dp_pref(W2, "id1", "main_name", Some("carol"))
+            .unwrap();
+        let prefs = |w| db.dp_prefs(w, "main_name").unwrap();
+        assert_eq!(
+            prefs(W),
+            vec![
+                ("id1".into(), "bobby".into()),
+                ("id2".into(), "alice".into())
+            ]
+        );
+        db.set_dp_pref(W, "id2", "main_name", None).unwrap();
+        assert_eq!(prefs(W), vec![("id1".into(), "bobby".into())]);
+
+        db.delete_wallet(W).unwrap();
+        assert_eq!(db.main_identity(W).unwrap(), None);
+        assert!(prefs(W).is_empty());
+        assert_eq!(prefs(W2), vec![("id1".into(), "carol".into())]);
     }
 
     #[test]

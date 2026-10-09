@@ -669,10 +669,13 @@ impl NetworkSession {
     /// is unloaded and its rows and vault records deleted; keys attached
     /// to a watch-only wallet are deleted again. Best effort: a failing
     /// step is logged and the rest still runs.
-    async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
+    pub(crate) async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
         for &(id, created) in done.iter().rev() {
             // Still marked as being restored, so no bring-up was admitted for
-            // it; a status read since is stale.
+            // it; a status read since is stale. Its discoveries end, and none
+            // starts until the rollback of it is done: the wallet out of the
+            // manager, its secret gone (review DP1-05 r2 M3-R2).
+            let _discoveries = self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
             if created {
                 let removed = async {

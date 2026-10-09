@@ -269,6 +269,9 @@ impl NetworkSession {
             this.require_wallet(&id)?;
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
+            // Its discoveries end first, as for a removal: none may apply
+            // what it finds to the wallet once it is loaded again.
+            let _discoveries = this.platform.recovery.end_discoveries(id).await;
             if let Err(e) = live.manager.remove_wallet(&id.0).await {
                 live.store.set_unloaded(id.0, false);
                 return Err(e.into());
@@ -306,6 +309,7 @@ impl NetworkSession {
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             this.refresh_wallet_state(&live.manager, id).await;
+            this.load_identity_choices(id).await;
             this.load_history_for(vec![id]).await?;
             this.hub.pump.mark_history(id, None);
             this.hub.pump.mark_balances(id);

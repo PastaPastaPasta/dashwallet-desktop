@@ -108,7 +108,8 @@ scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path car
 
 ## 2. Calls
 
-Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `free, pure` (§1).
+Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `set_main_identity` and
+`discover_identities` (§2.1). Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -117,11 +118,11 @@ Every call's status today: **stub**, except §2.10. Kind is `sync`, `async` or `
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
-| `identities()` | sync | The wallet's identities: index, names, main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. | `PlatformError` |
-| `set_main_identity(identity)` | async | Writes `dp_main_identity`. | `PlatformError` (`identity.not_found`) |
+| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `main_name` is the identity's `dp_prefs` `main_name` while it still owns that label, else the name acquired first; `None` while it owns none (a label in a contest is not a name yet). Read from the library's memory, or the last snapshot while a sync pass writes it. **Implemented (DP1-05).** | `PlatformError` |
+| `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance; `None` = not found on Platform yet. | `PlatformError` (`identity.not_found`) |
-| `discover_identities(grant)` | async | Same-seed discovery (DP1-05); returns the number of identities found. `grant` is an `IdentityScan` grant id only (E0-04 §3.2); a lease id there is `platform.grant_invalid`. | `PlatformError` |
+| `discover_identities(grant)` | async | Same-seed discovery (DP1-05) past the highest identity index on file; returns the number of identities it stored. What it finds then gets the rest of a recovery in the background: a bring-up of the wallet (DashPay pass, contact accounts) and a names pass, at once while SPV runs, otherwise at the next start. Also forgets Platform's earlier proof that the seed owns none, so the next start's bring-up looks again (DP6-01's "find"). `grant` is an `IdentityScan` grant id only (E0-04 §3.2); a lease id there is `platform.grant_invalid`. A grant confirmed with the passphrase on a locked or mixing-only vault scans through its key hold (E0-04 §3.5). A vault lock during the scan is `platform.cancelled`, as is the wallet's removal, unload or a failed restore's rollback, which waits for the call to end and admits no new one until it is done; identities the scan stored before a lock or an error still get their bring-up and names pass; running out of time with nothing stored is `platform.timeout`. **Implemented (DP1-05).** | `PlatformError` |
 
 ### 2.2 Registration (DASHPAY §3.4)
 
