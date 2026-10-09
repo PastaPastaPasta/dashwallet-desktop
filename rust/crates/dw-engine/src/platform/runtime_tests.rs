@@ -9,11 +9,11 @@ use platform_wallet::manager::startup::WalletStartupStatus;
 use zeroize::Zeroizing;
 
 use super::bringup::{CREATED_HERE_KEY, NO_IDENTITY_KEY};
-use super::runtime::prompt_free;
+use super::runtime::{TestPause, guard, prompt_free};
 use super::{PlatformCadence, SpvState, StartupStatus};
 use crate::{
-    DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
-    SessionOptions, WalletId,
+    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
+    NetworkSession, SessionOptions, WalletId,
 };
 
 struct NoEvents;
@@ -173,10 +173,7 @@ fn a_proven_absence_skips_the_bring_up() {
             ImportOptions::default(),
         ))
         .unwrap();
-    let scope = dw_appdb::local_scope(&id.to_string());
-    engine
-        .block_on(s.appdb_op(move |db| db.set_setting(&scope, NO_IDENTITY_KEY, Some("1"))))
-        .unwrap();
+    set_no_identity(&engine, &s, id, Duration::from_secs(24 * 3600));
     let called = Instant::now();
     engine.block_on(s.start_spv()).unwrap();
     while s.spv_state().unwrap() != SpvState::Running {
@@ -281,4 +278,310 @@ fn a_restored_testnet_wallet_with_an_identity_is_ready_before_spv() {
     assert!(receival > 0, "no contact accounts when SPV started");
     assert!(took < Duration::from_millis(100), "{took:?}");
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+const PASSPHRASE: &[u8] = b"runtime tests vault passphrase";
+
+/// Listeners that never accept: every DAPI request to them hangs. Several,
+/// so a request the DAPI client gives up on one address for (after about
+/// 10 s) moves on to the next instead of ending the pass.
+fn blackhole() -> Vec<std::net::TcpListener> {
+    (0..4)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect()
+}
+
+/// A regtest session with DAPI and the quorum service on `hole`, and a vault
+/// encrypted with [`PASSPHRASE`] (left unlocked) or unencrypted.
+fn session_on(
+    dir: &std::path::Path,
+    hole: &[std::net::TcpListener],
+    encrypted: bool,
+) -> (Engine, Arc<NetworkSession>) {
+    let urls = hole
+        .iter()
+        .map(|l| format!("http://{}", l.local_addr().unwrap()))
+        .collect();
+    session_at(dir, urls, encrypted)
+}
+
+/// As [`session_on`], with DAPI and the quorum service on `urls`.
+fn session_at(
+    dir: &std::path::Path,
+    urls: Vec<String>,
+    encrypted: bool,
+) -> (Engine, Arc<NetworkSession>) {
+    let engine = engine(dir, 4);
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                quorum_url: Some(urls[0].clone()),
+                dapi_addresses: urls,
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    engine
+        .block_on(s.vault_op(move |v| v.create(encrypted.then_some(PASSPHRASE))))
+        .unwrap();
+    (engine, s)
+}
+
+fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn startup(s: &NetworkSession, id: &WalletId) -> StartupStatus {
+    s.dashpay_startup(id).unwrap().startup
+}
+
+/// Puts an identity (no keys) on file for `id`: its DashPay pass then asks
+/// DAPI for the identity's contact requests.
+fn give_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
+    use dpp::identity::Identity;
+    use dpp::identity::v0::IdentityV0;
+    let manager = s.manager().unwrap();
+    engine.block_on(async move {
+        let wallet = manager.get_wallet(&id.0).await.unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        let identity = Identity::V0(IdentityV0 {
+            id: [7u8; 32].into(),
+            public_keys: Default::default(),
+            balance: 0,
+            revision: 0,
+        });
+        info.identity_manager
+            .add_identity(identity, 0, id.0, wallet.persister())
+            .unwrap();
+    });
+}
+
+/// Review DW-E0-05-r1-gpt M1: a loop pass that outlives the drain deadline
+/// makes `stop_spv` fail visibly (SPV is stopped anyway), and the next
+/// `start_spv` does not wait for that pass: the drain is retried inside the
+/// start task. Before the fix the stop returned `Ok`, and the start waited
+/// another full drain budget (10 s).
+#[test]
+fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
+    let dir = dw_testutil::private_tempdir();
+    let hole = blackhole();
+    let (engine, s) = session_on(dir.path(), &hole, false);
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    give_identity(&engine, &s, id);
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("SPV running", Duration::from_secs(10), || {
+        s.spv_state().unwrap() == SpvState::Running
+    });
+    let manager = s.manager().unwrap();
+    wait_until("a DashPay pass in flight", Duration::from_secs(10), || {
+        manager.dashpay_sync().is_syncing()
+    });
+
+    let stopping = Instant::now();
+    let stopped = engine.block_on(s.stop_spv());
+    eprintln!(
+        "stop with a stuck pass took {:?}: {stopped:?}",
+        stopping.elapsed()
+    );
+    assert!(
+        matches!(&stopped, Err(EngineError::Sdk(detail)) if detail.contains("dashpay_sync")),
+        "{stopped:?}"
+    );
+    assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
+
+    let starting = Instant::now();
+    engine.block_on(s.start_spv()).unwrap();
+    let took = starting.elapsed();
+    eprintln!("the next start_spv took {took:?}");
+    assert!(took < Duration::from_millis(100), "{took:?}");
+    assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Writes a `.dwbackup` of `wallets` sealed by `s`'s vault (backup
+/// passphrase `bk`), as `r2_compat_offline.rs` does.
+fn craft_backup(s: &Arc<NetworkSession>, path: &std::path::Path, wallets: &[WalletId]) {
+    let header = serde_json::json!({
+        "format": "dwbackup", "format_version": 1, "network": "regtest", "created_at": 1,
+        "wallet_ids": wallets.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+        "automatic": false, "app_version": "test",
+    });
+    let header_line = serde_json::to_vec(&header).unwrap();
+    let payload = serde_json::json!({
+        "name": "A", "birth_height": 0, "created_at": null, "app_rows": []
+    });
+    let bundles: Vec<_> = wallets
+        .iter()
+        .map(|id| {
+            s.vault()
+                .backup_bundle(
+                    &id.0,
+                    Some(b"bk"),
+                    &serde_json::to_vec(&payload).unwrap(),
+                    &header_line,
+                )
+                .unwrap()
+        })
+        .collect();
+    let mut out = b"DWBACKUP 1\n".to_vec();
+    out.extend_from_slice(&header_line);
+    out.push(b'\n');
+    out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": bundles })).unwrap());
+    out.push(b'\n');
+    std::fs::write(path, out).unwrap();
+}
+
+/// Review DW-E0-05-r1-gpt M4: while SPV runs, a restore that fails on a
+/// later bundle starts no bring-up for the wallet it rolls back (one would
+/// resolve that wallet's scan key and hold it until its budget ended); a
+/// restore that succeeds brings its wallets up once it has committed.
+/// Before the fix each bundle's import signalled the bring-up at once.
+#[test]
+fn a_failed_restore_starts_no_bring_up_for_what_it_rolls_back() {
+    let dir = dw_testutil::private_tempdir();
+    let (src_engine, src) = session(&dir.path().join("src"));
+    let a = src_engine
+        .block_on(src.import_wallet(
+            Zeroizing::new(ABANDON_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    let failing = dir.path().join("failing.dwbackup");
+    let good = dir.path().join("good.dwbackup");
+    // The second bundle is the same wallet again: `AlreadyExists`.
+    craft_backup(&src, &failing, &[a, a]);
+    craft_backup(&src, &good, &[a]);
+
+    let hole = blackhole();
+    let (engine, s) = session_on(&dir.path().join("dst"), &hole, false);
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("SPV running", Duration::from_secs(5), || {
+        s.spv_state().unwrap() == SpvState::Running
+    });
+    let bk = || Some(Zeroizing::new(b"bk".to_vec()));
+    let r = engine.block_on(s.restore_backup(failing, bk()));
+    assert!(r.is_err(), "{r:?}");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        s.platform.startup_of(&a).is_none(),
+        "a bring-up ran for a rolled-back wallet: {:?}",
+        s.platform.startup_of(&a)
+    );
+    assert!(!guard(&s.platform.tasks).contains_key(&a));
+
+    assert_eq!(
+        engine.block_on(s.restore_backup(good, bk())).unwrap(),
+        vec![a]
+    );
+    wait_until(
+        "the committed wallet's bring-up",
+        Duration::from_secs(5),
+        || {
+            s.platform
+                .startup_of(&a)
+                .is_some_and(|st| st.startup == StartupStatus::Starting)
+        },
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+    src_engine.block_on(src_engine.shutdown()).unwrap();
+}
+
+/// Review DW-E0-05-r1-gpt M5: the vault locks after the bring-up built its
+/// keys and before the library call is polled. The stale scan key then
+/// answers `Unavailable` at once, so the call and the lock are ready
+/// together; the outcome must still be `IdentityUnsettled`, so the next
+/// unlock runs discovery again. Before the fix the unbiased select took the
+/// call about half the time and recorded `PartialNoIdentity`, and the unlock
+/// only drained. Eight rounds make a lucky pass unlikely (1 in 256).
+#[test]
+fn a_lock_after_the_keys_were_built_leaves_the_identity_unsettled() {
+    for round in 0..8 {
+        let dir = dw_testutil::private_tempdir();
+        // DAPI refuses at once: the race needs no network wait (the stale
+        // scan key answers by itself), and the passes then end quickly.
+        let (engine, s) = session_at(dir.path(), vec!["http://127.0.0.1:1".into()], true);
+        let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+        let pause = Arc::new(TestPause::default());
+        *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+        engine.block_on(s.start_spv()).unwrap();
+        wait_until("the keys", Duration::from_secs(5), || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        s.lock_vault().unwrap();
+        pause.release.notify_one();
+        wait_until("the outcome", Duration::from_secs(5), || {
+            startup(&s, &id) != StartupStatus::Starting
+        });
+        assert_eq!(
+            startup(&s, &id),
+            StartupStatus::IdentityUnsettled,
+            "round {round}"
+        );
+
+        engine
+            .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, dw_vault::UnlockScope::Full)))
+            .unwrap();
+        wait_until(
+            "discovery again after the unlock",
+            Duration::from_secs(5),
+            || startup(&s, &id) == StartupStatus::Starting,
+        );
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+}
+
+fn set_no_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId, age: Duration) {
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let at = crate::events::unix_now() - age.as_secs();
+    engine
+        .block_on(
+            s.appdb_op(move |db| db.set_setting(&scope, NO_IDENTITY_KEY, Some(&at.to_string()))),
+        )
+        .unwrap();
+}
+
+/// pasta's ruling (E0-05 r1): a proven absence is trusted for 7 days, then
+/// discovery runs again.
+#[test]
+fn a_proven_absence_expires_after_seven_days() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path());
+    let id = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(ABANDON_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    set_no_identity(&engine, &s, id, Duration::from_secs(8 * 24 * 3600));
+    engine.block_on(s.start_spv()).unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        startup(&s, &id),
+        StartupStatus::Starting,
+        "an 8-day-old absence skipped discovery"
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP6-01's "find" forgets the proven absence, so the next start runs
+/// discovery.
+#[test]
+fn find_forgets_the_proven_absence() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path());
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    set_no_identity(&engine, &s, id, Duration::from_secs(60));
+    assert!(marker(&engine, &s, id, NO_IDENTITY_KEY));
+    engine.block_on(s.forget_proven_absence(id)).unwrap();
+    assert!(!marker(&engine, &s, id, NO_IDENTITY_KEY));
 }

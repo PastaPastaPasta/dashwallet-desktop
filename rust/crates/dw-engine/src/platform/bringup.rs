@@ -50,6 +50,13 @@ pub const CREATED_HERE_BUDGET: Duration = Duration::from_secs(3);
 /// vault's derivations, a few milliseconds each).
 const BUDGET_SLACK: Duration = Duration::from_millis(500);
 
+/// How often a start retries starting the loops while a pass of an earlier
+/// start is still in flight.
+const LOOP_RETRY: Duration = Duration::from_secs(30);
+/// How long Platform's proof that a seed owns no identity is trusted
+/// (E0-05 r1 ruling): after that, discovery runs again.
+const NO_IDENTITY_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// `settings_kv` keys in the wallet's local scope (`dw_appdb::local_scope`):
 /// they describe this installation, so a `.dwbackup` does not carry them.
 pub(crate) const CREATED_HERE_KEY: &str = "dashpay.created_here";
@@ -96,8 +103,10 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != SpvState::Stopped {
                 return Ok(());
             }
-            // A supervisor left behind by SPV stopping underneath it.
-            this.stop_platform(&manager).await;
+            // A supervisor left behind by SPV stopping underneath it. Its
+            // loops are drained by the new start task, not here: a pass
+            // still in flight would hold this call (review r1 M1).
+            this.platform.deactivate(false).await;
             let since = Instant::now();
             // The slot first, so a wallet registered from here on is
             // signalled; one registered before is in the list below, and the
@@ -142,27 +151,44 @@ impl NetworkSession {
         .await
     }
 
-    /// Stops SPV: cancels a bring-up still running, quiesces the Platform
-    /// loops, then stops dash-spv. Idempotent.
+    /// Stops SPV: cancels a bring-up still running and waits for its key
+    /// work, quiesces the Platform loops, then stops dash-spv. Idempotent.
+    /// SPV is stopped even when Platform work did not end in time; the error
+    /// then names that work (`sdk`). It ends on its own, and the next start
+    /// drains it again before its loops start.
     pub async fn stop_spv(self: &Arc<Self>) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let manager = this.manager()?;
             let _lifecycle = this.platform.lifecycle.lock().await;
-            this.stop_platform(&manager).await;
-            this.stop_spv_inner(&manager).await
+            let drained = this.stop_platform(&manager).await;
+            this.stop_spv_inner(&manager).await?;
+            drained
         })
         .await
     }
 
-    /// Cancels the supervisor (and with it a running bring-up) and quiesces
-    /// the loops, before SPV stops. Close cancels only and leaves the drain
-    /// to the manager's shutdown, which seals it: draining twice would wait
-    /// twice for a pass stuck on the network.
-    pub(crate) async fn stop_platform(&self, manager: &Manager) {
-        self.platform.deactivate().await;
-        quiesce_loops(manager).await;
+    /// Cancels the supervisor (and with it a running bring-up), waits for its
+    /// key work and quiesces the loops, before SPV stops (review r1 M1, M2).
+    /// Close cancels only and leaves the drain to the manager's shutdown,
+    /// which seals it: draining twice would wait twice for a pass stuck on
+    /// the network.
+    async fn stop_platform(&self, manager: &Manager) -> Result<(), EngineError> {
+        self.platform.deactivate(false).await;
+        let keys_idle = self.platform.key_work.wait_idle().await;
+        let mut stuck = undrained_loops(manager).await;
+        if !keys_idle {
+            stuck.push("a vault key read");
+        }
+        if stuck.is_empty() {
+            Ok(())
+        } else {
+            Err(EngineError::Sdk(format!(
+                "SPV stopped, but this Platform work did not end: {}",
+                stuck.join(", ")
+            )))
+        }
     }
 
     async fn supervise(
@@ -194,35 +220,27 @@ impl NetworkSession {
             return;
         }
         self.apply_cadence(&manager);
-        // A drain that timed out at the last stop left its loop's admission
-        // shut (the library keeps it shut until a quiesce succeeds); a
-        // quiesce of an idle loop reopens it.
-        quiesce_loops(&manager).await;
-        let loops = (
-            manager.identity_sync_arc(),
-            manager.dashpay_sync_arc(),
-            manager.dpns_sync_arc(),
-        );
-        // `start` reaps a previous loop thread for up to a second and needs
-        // the runtime's context; the blocking pool has both.
-        match tokio::task::spawn_blocking(move || {
-            loops.0.start();
-            loops.1.start();
-            loops.2.start();
-        })
-        .await
-        {
-            Ok(()) => self.platform.loops_on.store(true, Ordering::Release),
-            Err(e) => tracing::warn!(error = %e, "the Platform sync loops did not start"),
-        }
+        let mut loops_pending = !self.start_loops(&manager).await;
 
         // The session must not be kept open by a task only close ends.
         let session: Weak<Self> = Arc::downgrade(&self);
         drop(self);
         loop {
+            let retry = async {
+                if loops_pending {
+                    tokio::time::sleep(LOOP_RETRY).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
             let signal = tokio::select! {
                 biased;
                 () = until(&mut cancel, |c| *c) => return,
+                () = retry => {
+                    let Some(this) = session.upgrade() else { return };
+                    loops_pending = !this.start_loops(&manager).await;
+                    continue;
+                }
                 signal = signals.recv() => match signal {
                     Some(signal) => signal,
                     None => return,
@@ -256,6 +274,39 @@ impl NetworkSession {
                 return;
             }
         }
+    }
+
+    /// Starts the loops once no pass of an earlier start is in flight: a pass
+    /// that outlived the last stop keeps its loop's admission shut until a
+    /// quiesce succeeds (the library's rule). `false` while one still runs;
+    /// the supervisor tries again every [`LOOP_RETRY`].
+    async fn start_loops(&self, manager: &Manager) -> bool {
+        let stuck = undrained_loops(manager).await;
+        if !stuck.is_empty() {
+            tracing::warn!(
+                ?stuck,
+                "a Platform sync pass of an earlier start is still running; the loops start later"
+            );
+            return false;
+        }
+        let loops = (
+            manager.identity_sync_arc(),
+            manager.dashpay_sync_arc(),
+            manager.dpns_sync_arc(),
+        );
+        // `start` reaps a previous loop thread for up to a second and needs
+        // the runtime's context; the blocking pool has both.
+        match tokio::task::spawn_blocking(move || {
+            loops.0.start();
+            loops.1.start();
+            loops.2.start();
+        })
+        .await
+        {
+            Ok(()) => self.platform.loops_on.store(true, Ordering::Release),
+            Err(e) => tracing::warn!(error = %e, "the Platform sync loops did not start"),
+        }
+        true
     }
 
     /// Runs `job` for every wallet at once; `since` starts the bring-up
@@ -314,17 +365,32 @@ impl NetworkSession {
         done
     }
 
-    /// One wallet's bring-up (§3.2), within its budget counted from `since`:
-    /// skipped for a watch-only wallet and for one that Platform proved has
-    /// no identity and has none on file.
+    /// One wallet's bring-up (§3.2): skipped for a watch-only wallet and for
+    /// one that Platform proved recently has no identity and has none on
+    /// file. Its budget, counted from `since`, bounds all of it, the reads
+    /// and the key acquisition included (review r1 M3).
     async fn bring_up_wallet(&self, manager: &Manager, id: WalletId, since: Instant) {
         if !self.vault.has_wallet_secret(&id.0) {
             self.platform
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, true));
             return;
         }
-        let identity = local_identity(manager, id).await;
-        let (created_here, no_identity) = self.bring_up_markers(id).await;
+        // The budget is known once the markers are read; the shorter one
+        // bounds reading them.
+        let prelude = async {
+            (
+                local_identity(manager, id).await,
+                self.bring_up_markers(id).await,
+            )
+        };
+        let Ok((identity, (created_here, no_identity))) =
+            tokio::time::timeout_at((since + CREATED_HERE_BUDGET).into(), prelude).await
+        else {
+            let startup = DashPayStartup::new(StartupStatus::PartialNoIdentity, false);
+            self.finish_bring_up(id, startup, since, CREATED_HERE_BUDGET)
+                .await;
+            return;
+        };
         if identity.is_none() && no_identity {
             self.platform
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, false));
@@ -336,18 +402,29 @@ impl NetworkSession {
         } else {
             DEFAULT_STARTUP_BUDGET
         };
+        let deadline = since + budget;
         let lock = *self.platform.lock.borrow();
-        let keys = self.bring_up_keys(id).await;
-        let had_keys = keys.is_some();
-        let ended = self
-            .run_subsystems(
-                manager,
-                id,
-                budget.saturating_sub(since.elapsed()),
-                keys.as_ref(),
-                lock.locks,
-            )
-            .await;
+        // Past the deadline the key work keeps running on the blocking pool,
+        // counted, and what it builds is dropped there.
+        let keys = tokio::time::timeout_at(deadline.into(), self.bring_up_keys(id)).await;
+        #[cfg(test)]
+        {
+            let pause = guard(&self.platform.pause_after_keys).take();
+            if let Some(pause) = pause {
+                pause.reached.store(true, Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
+        let ended = match &keys {
+            Err(_) => Ended::OverBudget,
+            Ok(keys) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                self.run_subsystems(manager, id, left, keys.as_ref(), lock.locks)
+                    .await
+            }
+        };
+        // The vault refused the keys (as opposed to not answering in time).
+        let refused = matches!(keys, Ok(None));
         drop(keys);
         // Removed or closed meanwhile: nothing to record.
         if manager.get_wallet(&id.0).await.is_none() {
@@ -379,17 +456,36 @@ impl NetworkSession {
                 }
             }
         };
+        // A lock since the keys were sampled, or keys the vault refused,
+        // leaves anything short of a settled answer for the first unlock to
+        // run again: the library may have answered from a key the lock had
+        // already ended (review r1 M5).
         let locked_since = self.platform.lock.borrow().locks != lock.locks;
-        if !had_keys && startup.startup != StartupStatus::Ready {
-            startup.startup = if prompt_free(lock.state) && !locked_since {
+        let settled = matches!(
+            startup.startup,
+            StartupStatus::Ready | StartupStatus::NoIdentity
+        );
+        if !settled && (refused || locked_since) {
+            startup.startup = if refused && prompt_free(lock.state) && !locked_since {
                 // The vault served no key although it needs no prompt:
                 // nothing an unlock would change.
                 StartupStatus::DiscoveryFailed
             } else {
-                // Locked: the first unlock runs the bring-up again.
                 StartupStatus::IdentityUnsettled
             };
         }
+        self.finish_bring_up(id, startup, since, budget).await;
+    }
+
+    /// Records a bring-up's outcome: the proven-absence marker, the notice
+    /// and the status.
+    async fn finish_bring_up(
+        &self,
+        id: WalletId,
+        mut startup: DashPayStartup,
+        since: Instant,
+        budget: Duration,
+    ) {
         startup.finished_at = Some(unix_now());
         tracing::info!(
             wallet_id = %id,
@@ -451,36 +547,29 @@ impl NetworkSession {
                 None => std::future::pending().await,
             }
         };
+        // The lock first: a key the lock ended can make the call answer at
+        // once, and both are then ready (review r1 M5).
         tokio::select! {
+            biased;
+            () = locked => Ended::Locked,
             ended = tokio::time::timeout(budget + BUDGET_SLACK, call) => match ended {
                 Ok(result) => Ended::Done(result.map_err(EngineError::from)),
                 Err(_) => Ended::OverBudget,
             },
-            () = locked => Ended::Locked,
         }
     }
 
     /// The bring-up's providers, or `None` unless the vault is prompt-free.
     async fn bring_up_keys(&self, id: WalletId) -> Option<BringUpKeys> {
-        let vault = self.vault.clone();
-        let built = tokio::task::spawn_blocking(move || -> Result<_, EngineError> {
-            Ok(BringUpKeys {
-                crypto: background_contact_crypto(&vault, id)?,
-                scan: unattended_scan_key(&vault, id)?,
+        self.platform
+            .key_work
+            .run(self.vault.clone(), move |vault| {
+                Ok(BringUpKeys {
+                    crypto: background_contact_crypto(vault, id)?,
+                    scan: unattended_scan_key(vault, id)?,
+                })
             })
-        })
-        .await;
-        match built {
-            Ok(Ok(keys)) => Some(keys),
-            Ok(Err(e)) => {
-                tracing::debug!(wallet_id = %id, error = %e, "DashPay bring-up without keys");
-                None
-            }
-            Err(e) => {
-                tracing::warn!(wallet_id = %id, error = %e, "building the bring-up keys failed");
-                None
-            }
-        }
+            .await
     }
 
     /// The unlock drain for one wallet (§3.2): the bring-up again if it left
@@ -518,9 +607,13 @@ impl NetworkSession {
             return;
         };
         let locks = self.platform.lock.borrow().locks;
-        let vault = self.vault.clone();
-        let Ok(Ok(crypto)) =
-            tokio::task::spawn_blocking(move || background_contact_crypto(&vault, id)).await
+        let Some(crypto) = self
+            .platform
+            .key_work
+            .run(self.vault.clone(), move |vault| {
+                background_contact_crypto(vault, id)
+            })
+            .await
         else {
             return;
         };
@@ -554,16 +647,20 @@ impl NetworkSession {
         }
     }
 
-    /// (created here, Platform proved no identity) from the wallet's local
-    /// settings. A read error counts as neither: the longer budget, and a
-    /// bring-up that runs.
+    /// (created here, Platform proved no identity within
+    /// [`NO_IDENTITY_TTL`]) from the wallet's local settings. A read error
+    /// counts as neither: the longer budget, and a bring-up that runs.
     async fn bring_up_markers(&self, id: WalletId) -> (bool, bool) {
         let scope = dw_appdb::local_scope(&id.to_string());
+        let now = unix_now();
         let read = self
             .appdb_op(move |db| {
+                let proven_at = db.setting(&scope, NO_IDENTITY_KEY)?;
                 Ok((
                     db.setting(&scope, CREATED_HERE_KEY)?.is_some(),
-                    db.setting(&scope, NO_IDENTITY_KEY)?.is_some(),
+                    proven_at
+                        .and_then(|at| at.parse::<u64>().ok())
+                        .is_some_and(|at| now.saturating_sub(at) < NO_IDENTITY_TTL.as_secs()),
                 ))
             })
             .await;
@@ -590,24 +687,34 @@ impl NetworkSession {
     pub(crate) async fn mark_created_here(&self, id: WalletId) {
         self.set_bring_up_marker(id, CREATED_HERE_KEY).await;
     }
+
+    /// Forgets that Platform proved `id` owns no identity, so the next
+    /// bring-up runs discovery again: DP6-01's "find" (E0-05 r1 ruling).
+    #[cfg_attr(not(test), expect(dead_code, reason = "DP6-01's find calls it"))]
+    pub(crate) async fn forget_proven_absence(&self, id: WalletId) -> Result<(), EngineError> {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        self.appdb_op(move |db| db.set_setting(&scope, NO_IDENTITY_KEY, None))
+            .await
+    }
 }
 
-/// Quiesces the three loops; a drain that timed out is the shutdown report's
-/// to show.
-async fn quiesce_loops(manager: &Manager) {
+/// Quiesces the three loops; the names of those whose pass did not drain
+/// within the library's budget (review r1 M1: the library asks its caller to
+/// fail closed then).
+async fn undrained_loops(manager: &Manager) -> Vec<&'static str> {
     let (identity, dashpay, dpns) = tokio::join!(
         manager.identity_sync().quiesce(),
         manager.dashpay_sync().quiesce(),
         manager.dpns_sync().quiesce(),
     );
-    if !(identity && dashpay && dpns) {
-        tracing::warn!(
-            identity,
-            dashpay,
-            dpns,
-            "a Platform sync pass did not drain"
-        );
-    }
+    [
+        ("identity_sync", identity),
+        ("dashpay_sync", dashpay),
+        ("dpns_sync", dpns),
+    ]
+    .into_iter()
+    .filter_map(|(name, drained)| (!drained).then_some(name))
+    .collect()
 }
 
 /// The DashPay crypto provider of unattended work: the bring-up and the
@@ -634,7 +741,7 @@ fn unattended_scan_key(vault: &dw_vault::Vault, id: WalletId) -> Result<VaultSca
 
 /// Waits until `rx`'s value satisfies `f`, or its sender is gone. The guard
 /// `wait_for` returns stays in here: it must not live across an await.
-async fn until<T>(rx: &mut watch::Receiver<T>, f: impl FnMut(&T) -> bool) {
+pub(super) async fn until<T>(rx: &mut watch::Receiver<T>, f: impl FnMut(&T) -> bool) {
     let _ = rx.wait_for(f).await;
 }
 

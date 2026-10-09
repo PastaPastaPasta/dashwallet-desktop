@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 use crate::compat::write_new_private;
 use crate::events::unix_now;
 use crate::keys::{AutoBackup, Origin};
+use crate::platform::runtime::PlatformSignal;
 use crate::{
     DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
 };
@@ -583,8 +584,9 @@ impl NetworkSession {
         }
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
-        // rolled back.
+        // rolled back, and no bring-up holding its keys.
         for &(id, _) in &done {
+            self.platform.signal(PlatformSignal::WalletAdded(id));
             self.schedule_automatic_backup(id);
         }
         Ok(done.into_iter().map(|(id, _)| id).collect())
@@ -658,6 +660,8 @@ impl NetworkSession {
     /// step is logged and the rest still runs.
     async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
         for &(id, created) in done.iter().rev() {
+            // No bring-up was signalled for it; a status read since is stale.
+            self.platform.forget(&id);
             if created {
                 let removed = async {
                     let live = self.live()?;

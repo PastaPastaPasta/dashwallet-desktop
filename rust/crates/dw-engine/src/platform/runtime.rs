@@ -4,11 +4,11 @@
 //! cadence. The bring-up itself is in `bringup.rs`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
-use dw_vault::LockState;
+use dw_vault::{LockState, Vault};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
@@ -23,6 +23,12 @@ const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
 /// The contest watch (`dpns_sync`), and in a contest's last hour.
 const CONTEST_WATCH: Duration = Duration::from_secs(600);
 const CONTEST_WATCH_ENDING: Duration = Duration::from_secs(60);
+
+/// How long a stop or close waits for the bring-up's blocking vault work (a
+/// keyring read) after cancelling it. A read that takes longer is stuck, for
+/// example behind a keyring prompt nobody answers: the stop or close then
+/// reports it instead of hanging.
+pub(super) const KEY_WORK_JOIN: Duration = Duration::from_secs(5);
 
 /// Work the supervisor takes after SPV has started.
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +74,105 @@ pub(crate) struct PlatformRuntime {
     /// The loops were started and not stopped since; read by passes that
     /// were scheduled earlier.
     pub(super) loops_on: Arc<AtomicBool>,
+    pub(super) key_work: Arc<KeyWork>,
+    /// Tests: holds the next bring-up between building its keys and
+    /// starting the library call (`runtime_tests.rs`).
+    #[cfg(test)]
+    pub(super) pause_after_keys: Mutex<Option<Arc<TestPause>>>,
+}
+
+/// A one-shot pause point for tests.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct TestPause {
+    pub(super) reached: AtomicBool,
+    pub(super) release: tokio::sync::Notify,
+}
+
+/// The bring-up's blocking vault work: building its keys can read the OS
+/// keyring, on the blocking pool, where cancelling the task that waits for it
+/// does not stop it (review DW-E0-05-r1-gpt M2). The work is counted so a stop
+/// or close can wait for it; what it builds after a teardown is dropped where
+/// it was built, and after close it also locks the vault again, so a data key
+/// it loaded does not stay in memory.
+#[derive(Debug)]
+pub(super) struct KeyWork {
+    pending: watch::Sender<usize>,
+    /// Bumped by every teardown.
+    generation: AtomicU64,
+    closed: AtomicBool,
+}
+
+impl Default for KeyWork {
+    fn default() -> Self {
+        Self {
+            pending: watch::Sender::new(0),
+            generation: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Counts one piece of key work down when it ends, panics included.
+struct Counted(Arc<KeyWork>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.pending.send_modify(|n| *n -= 1);
+    }
+}
+
+impl KeyWork {
+    /// Runs `work` on the blocking pool, counted. `None` when it failed or
+    /// a teardown came while it ran.
+    pub(super) async fn run<T: Send + 'static>(
+        self: &Arc<Self>,
+        vault: Vault,
+        work: impl FnOnce(&Vault) -> Result<T, EngineError> + Send + 'static,
+    ) -> Option<T> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        self.pending.send_modify(|n| *n += 1);
+        let counted = Counted(Arc::clone(self));
+        let joined = tokio::task::spawn_blocking(move || {
+            let this = &counted.0;
+            let built = work(&vault);
+            if this.closed.load(Ordering::SeqCst) {
+                vault.lock();
+            }
+            if this.generation.load(Ordering::SeqCst) != generation {
+                return None;
+            }
+            built
+                .map_err(|e| tracing::debug!(error = %e, "Platform key work refused"))
+                .ok()
+        })
+        .await;
+        joined.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Platform key work failed");
+            None
+        })
+    }
+
+    /// Makes work in flight hand nothing back; `closing` also has it lock the
+    /// vault when it ends.
+    pub(super) fn teardown(&self, closing: bool) {
+        if closing {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Waits until no key work runs, at most [`KEY_WORK_JOIN`]. `false` when
+    /// some is still running.
+    pub(super) async fn wait_idle(&self) -> bool {
+        let mut pending = self.pending.subscribe();
+        tokio::time::timeout(
+            KEY_WORK_JOIN,
+            super::bringup::until(&mut pending, |n| *n == 0),
+        )
+        .await
+        .is_ok()
+    }
 }
 
 /// Whether the vault serves its full key without a prompt (dw-vault
@@ -97,6 +202,9 @@ impl PlatformRuntime {
             }),
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
+            key_work: Arc::default(),
+            #[cfg(test)]
+            pause_after_keys: Mutex::new(None),
         }
     }
 
@@ -159,9 +267,11 @@ impl PlatformRuntime {
         }
     }
 
-    /// Cancels the supervisor and waits for it. Statuses it left at
-    /// `Starting` become `NotRun`.
-    pub(crate) async fn deactivate(&self) {
+    /// Cancels the supervisor and waits for it (not for its key work: see
+    /// [`KeyWork::wait_idle`]). Statuses it left at `Starting` become
+    /// `NotRun`. `closing`: the session is closing.
+    pub(crate) async fn deactivate(&self, closing: bool) {
+        self.key_work.teardown(closing);
         let supervisor = guard(&self.supervisor).take();
         if let Some(s) = supervisor {
             let _ = s.cancel.send(true);
@@ -171,12 +281,20 @@ impl PlatformRuntime {
                 tracing::warn!(error = %e, "Platform supervisor ended abnormally");
             }
         }
+        // Work its tasks started before they saw the cancel.
+        self.key_work.teardown(closing);
         self.loops_on.store(false, Ordering::Release);
         for entry in self.write_startup().values_mut() {
             if entry.startup == StartupStatus::Starting {
                 entry.startup = StartupStatus::NotRun;
             }
         }
+    }
+
+    /// Waits for the bring-up's blocking key work, at most
+    /// [`KEY_WORK_JOIN`]; `false` when some still runs.
+    pub(crate) async fn key_work_idle(&self) -> bool {
+        self.key_work.wait_idle().await
     }
 
     pub(super) fn write_startup(
@@ -244,12 +362,15 @@ impl NetworkSession {
     pub fn dashpay_startup(&self, wallet: &WalletId) -> Result<DashPayStartup, EngineError> {
         let _op = self.try_enter()?;
         self.require_wallet(wallet)?;
-        Ok(self.platform.startup_of(wallet).unwrap_or_else(|| {
-            DashPayStartup::new(
-                StartupStatus::NotRun,
-                !self.vault.has_wallet_secret(&wallet.0),
-            )
-        }))
+        // Read-only is the vault's answer now: keys attached or rolled back
+        // since the last bring-up change it.
+        let read_only = !self.vault.has_wallet_secret(&wallet.0);
+        let mut startup = self
+            .platform
+            .startup_of(wallet)
+            .unwrap_or_else(|| DashPayStartup::new(StartupStatus::NotRun, read_only));
+        startup.read_only = read_only;
+        Ok(startup)
     }
 
     /// The Platform sync loops this session runs. In-memory read.

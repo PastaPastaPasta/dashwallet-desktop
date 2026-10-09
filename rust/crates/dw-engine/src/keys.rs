@@ -35,12 +35,15 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
-/// Who schedules the automatic backup of an imported wallet.
+/// Who schedules the automatic backup of an imported wallet and signals its
+/// DashPay bring-up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum AutoBackup {
-    /// The import schedules it once the wallet is registered.
+    /// The import does both once the wallet is registered.
     Schedule,
-    /// The caller schedules it (or not) when its whole operation succeeded.
+    /// The caller does both (or neither) when its whole operation
+    /// succeeded: a restore that rolls the wallet back must not have started
+    /// a bring-up for it (review DW-E0-05-r1 M4).
     Caller,
 }
 
@@ -370,8 +373,8 @@ impl NetworkSession {
                     network: this.network.clone(),
                     wallet_id,
                 });
-                this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
                 if auto_backup == AutoBackup::Schedule {
+                    this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
                     this.schedule_automatic_backup(wallet_id);
                 }
                 return Ok(wallet_id);
@@ -428,8 +431,8 @@ impl NetworkSession {
                 network: this.network.clone(),
                 wallet_id,
             });
-            this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
             if auto_backup == AutoBackup::Schedule {
+                this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
                 this.schedule_automatic_backup(wallet_id);
             }
             Ok(wallet_id)

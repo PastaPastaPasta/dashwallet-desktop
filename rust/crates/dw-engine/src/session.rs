@@ -584,11 +584,13 @@ impl NetworkSession {
     pub(crate) async fn close(&self) {
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
-        // and again after, for a start admitted meanwhile. The loops drain
-        // once, sealed, in the manager's shutdown below.
-        self.platform.deactivate().await;
+        // and again after, for a start admitted meanwhile; then its blocking
+        // key work is waited for (bounded). The loops drain once, sealed, in
+        // the manager's shutdown below (m1-engine §3.2 interpretations).
+        self.platform.deactivate(true).await;
         let _closing = self.gate.close().await;
-        self.platform.deactivate().await;
+        self.platform.deactivate(true).await;
+        let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
@@ -603,7 +605,7 @@ impl NetworkSession {
         let manager = live.manager;
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
-        if report.all_clean() {
+        if report.all_clean() && keys_idle {
             let marker = self.data_dir.join(crate::tools::SESSION_MARKER);
             if let Err(e) = std::fs::remove_file(&marker)
                 && e.kind() != std::io::ErrorKind::NotFound
@@ -614,7 +616,14 @@ impl NetworkSession {
             self.sink.emit(EngineEvent::Notice {
                 network: Some(self.network.clone()),
                 code: NoticeCode::UncleanShutdown,
-                detail: format!("{:?}", report.per_worker),
+                detail: if keys_idle {
+                    format!("{:?}", report.per_worker)
+                } else {
+                    format!(
+                        "{:?}; a DashPay bring-up key read did not end",
+                        report.per_worker
+                    )
+                },
             });
         }
         // Unload every wallet before dropping the manager. Upstream has a

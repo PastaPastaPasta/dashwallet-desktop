@@ -5,7 +5,8 @@
 
 use std::net::TcpListener;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use dashcore::secp256k1::Secp256k1;
@@ -14,7 +15,9 @@ use dw_engine::{
     ImportOptions, NetworkSession, NoticeCode, SessionOptions, SpvState, StartupStatus, SyncLoop,
     WalletId, WatchOnlyOptions,
 };
-use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
+use dw_vault::{
+    KdfParams, KdfPolicy, MemoryOsStore, OsSecretStore, UnlockScope, VaultConfig, VaultError,
+};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use zeroize::Zeroizing;
 
@@ -110,6 +113,11 @@ impl Fixture {
     /// A regtest session whose vault is unencrypted (prompt-free) or
     /// encrypted and unlocked.
     fn new(encrypted: bool) -> Self {
+        Self::with_store(encrypted, Arc::new(MemoryOsStore::new()))
+    }
+
+    /// As [`Self::new`], with `os_store` as the OS secret store.
+    fn with_store(encrypted: bool, os_store: Arc<dyn OsSecretStore>) -> Self {
         let dir = dw_testutil::private_tempdir();
         let dapi = Blackhole::new();
         let rec = Arc::new(Recorder::default());
@@ -119,7 +127,7 @@ impl Fixture {
                 worker_threads: Some(4),
                 vault: VaultConfig {
                     kdf: KdfPolicy::Fixed(KdfParams::TEST),
-                    os_store: Arc::new(MemoryOsStore::new()),
+                    os_store,
                     ..VaultConfig::default()
                 },
             },
@@ -249,7 +257,13 @@ fn start_spv_returns_at_once_and_spv_starts_after_the_bring_up() {
     );
     f.session.dashpay_sync_soon().unwrap();
 
-    f.engine.block_on(f.session.stop_spv()).unwrap();
+    // With DAPI blackholed a loop's first pass can still be waiting on it:
+    // stop then says so (review r1 M1) and stops SPV anyway.
+    let stopped = f.engine.block_on(f.session.stop_spv());
+    assert!(
+        matches!(&stopped, Ok(()) | Err(EngineError::Sdk(_))),
+        "{stopped:?}"
+    );
     assert_eq!(f.session.spv_state().unwrap(), SpvState::Stopped);
     assert!(
         f.session
@@ -530,4 +544,197 @@ fn removing_a_wallet_ends_its_bring_up() {
         Err(EngineError::WalletNotFound(_))
     ));
     f.engine.block_on(f.engine.shutdown()).unwrap();
+}
+
+/// An OS secret store whose reads wait at a barrier while `hold` is set
+/// (the technique of review DW-E0-05-r1-gpt's probe): a keyring read that
+/// is slow or waits for the user.
+#[derive(Default)]
+struct BarrierStore {
+    memory: MemoryOsStore,
+    hold: AtomicBool,
+    entered: AtomicBool,
+    completed: AtomicBool,
+    released: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl OsSecretStore for BarrierStore {
+    fn put(&self, service: &[u8; 32], label: &str, secret: &[u8]) -> Result<(), VaultError> {
+        self.memory.put(service, label, secret)
+    }
+
+    fn get(
+        &self,
+        service: &[u8; 32],
+        label: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, VaultError> {
+        if self.hold.load(Ordering::SeqCst) {
+            self.entered.store(true, Ordering::SeqCst);
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.wake.wait(released).unwrap();
+            }
+            self.completed.store(true, Ordering::SeqCst);
+        }
+        self.memory.get(service, label)
+    }
+
+    fn delete(&self, service: &[u8; 32], label: &str) -> Result<bool, VaultError> {
+        self.memory.delete(service, label)
+    }
+
+    fn name(&self) -> &'static str {
+        "test-barrier"
+    }
+}
+
+impl BarrierStore {
+    fn wait_entered(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.entered.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the bring-up never read the OS store"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+
+/// An unencrypted vault whose data key must be read from the OS store again
+/// (`lock_vault` dropped the cached one), with that read held: the bring-up
+/// of a wallet created here is waiting in its key acquisition once SPV is
+/// starting. No automatic backups, which read the store too.
+fn held_key_read() -> (Fixture, Arc<BarrierStore>, WalletId) {
+    let store = Arc::new(BarrierStore::default());
+    let f = Fixture::with_store(false, Arc::clone(&store) as Arc<dyn OsSecretStore>);
+    f.engine.block_on(f.session.set_backup_policy(0)).unwrap();
+    let id = f.create_wallet();
+    f.session.lock_vault().unwrap();
+    store.hold.store(true, Ordering::SeqCst);
+    (f, store, id)
+}
+
+/// Review DW-E0-05-r1-gpt M2: a task abort cannot stop a `spawn_blocking`
+/// key read, so close must wait for it; before the fix, close returned in
+/// about 4 ms and removed the open-session marker while the read was still
+/// paused.
+#[test]
+fn close_waits_for_a_bring_up_key_read() {
+    let (f, store, _) = held_key_read();
+    f.start_spv();
+    store.wait_entered();
+    let engine = Arc::new(f.engine);
+    let closing = {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap();
+        })
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !closing.is_finished(),
+        "close returned while the bring-up's key read was still running"
+    );
+    store.release();
+    closing.join().unwrap();
+    assert!(store.completed.load(Ordering::SeqCst));
+    assert!(f.rec.notices(NoticeCode::UncleanShutdown).is_empty());
+    let marker = engine
+        .network_dir(&DashNetwork::Regtest)
+        .join(".session-open");
+    assert!(!marker.exists(), "the close was not clean");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// M2 for `stop_spv`: it returns only once the key read has ended.
+#[test]
+fn stop_spv_waits_for_a_bring_up_key_read() {
+    let (f, store, _) = held_key_read();
+    f.start_spv();
+    store.wait_entered();
+    let session = Arc::clone(&f.session);
+    let engine = Arc::new(f.engine);
+    let stopping = {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || engine.block_on(session.stop_spv()))
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !stopping.is_finished(),
+        "stop_spv returned while the bring-up's key read was still running"
+    );
+    store.release();
+    stopping.join().unwrap().unwrap();
+    assert!(store.completed.load(Ordering::SeqCst));
+    assert_eq!(f.session.spv_state().unwrap(), SpvState::Stopped);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// M2, bounded: a key read that never ends cannot hold close forever.
+/// Close stops waiting after `KEY_WORK_JOIN` (5 s) and reports itself
+/// unclean, so the open-session marker stays.
+#[test]
+fn close_reports_a_key_read_it_could_not_wait_for() {
+    let (f, store, _) = held_key_read();
+    f.start_spv();
+    store.wait_entered();
+    let closing = Instant::now();
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    let took = closing.elapsed();
+    eprintln!("close with a stuck key read took {took:?}");
+    assert!(took >= Duration::from_secs(4), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert!(!store.completed.load(Ordering::SeqCst));
+    assert_eq!(f.rec.notices(NoticeCode::UncleanShutdown).len(), 1);
+    let marker = f
+        .engine
+        .network_dir(&DashNetwork::Regtest)
+        .join(".session-open");
+    assert!(marker.exists(), "an unclean close removed the marker");
+    store.release();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !store.completed.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    f.engine.block_on(f.engine.shutdown()).unwrap();
+}
+
+/// Review DW-E0-05-r1-gpt M3: the budget bounds the whole bring-up, key
+/// acquisition included. With the key read held, SPV still starts within the
+/// created-here budget + 1 s; before the fix it stayed `Starting` for as long
+/// as the read was held.
+#[test]
+fn a_held_key_read_does_not_hold_spv_past_the_budget() {
+    let (f, store, id) = held_key_read();
+    let (_, called) = f.start_spv();
+    store.wait_entered();
+    let started = f
+        .rec
+        .spv_started_at(CREATED_HERE_BUDGET + SPV_SLACK + Duration::from_secs(2));
+    assert!(
+        !store.completed.load(Ordering::SeqCst),
+        "the read was released early"
+    );
+    let started = started.expect("SPV did not start while the key read was held");
+    let after = started - called;
+    eprintln!("held key read: SPV started {after:?} after the call");
+    assert!(after <= CREATED_HERE_BUDGET + SPV_SLACK, "{after:?}");
+    assert_eq!(f.startup(&id), StartupStatus::PartialNoIdentity);
+    store.release();
+    f.engine.block_on(f.engine.shutdown()).unwrap();
+    assert!(f.rec.notices(NoticeCode::UncleanShutdown).is_empty());
 }
