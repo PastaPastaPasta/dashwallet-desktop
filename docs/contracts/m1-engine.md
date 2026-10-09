@@ -130,7 +130,8 @@ same seed).
 
 **Platform signer scopes** (roadmap E0-03, DASHPAY §3.3; engine-internal, not on the FFI). A redeemed
 `PlatformOp` grant no longer yields a full-scope signer. `dw_vault::Vault::platform_signer` issues scoped
-signers from it instead (one token may issue several), and each refuses every path and use outside its scope
+signers from it instead (one token may issue several; a token with its own key only through its hold,
+`platform_signer_held`, below), and each refuses every path and use outside its scope
 before reading the seed. The token's caps bound the scopes (E0-04 design §3.4; `vault.grant_purpose_mismatch`
 otherwise): `PlatformFunding{max_duffs}` needs a token `max_duffs` that is not 0 and at least the scope's (the
 engine asks for the funding budget left), `PlatformIdentity` a token `max_credits` that is not 0, and
@@ -149,8 +150,9 @@ key needs no prompt (`Unencrypted`, or `Unlocked` with scope Full), and refused 
 or `UnlockedMixingOnly` (`vault.mixing_only`). It signs nothing; the one key it exports is a DIP-15 auto-accept
 key. `Vault::scan_key` (the identity-scan master key) needs a redeemed `IdentityScan` grant for its wallet, which
 the unattended bring-up authorizes with `Credential::None`, so it too works without a prompt only in those two
-states. Both stop working when the vault locks, changes unlock scope or changes its passphrase. Both are engine-only:
-`crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `ScanKey::master_key`,
+states; a passphrase `IdentityScan` grant on a locked vault releases it only through its hold
+(`Vault::scan_key_held`). Both stop working when the vault locks, changes unlock scope or changes its passphrase. Both are engine-only:
+`crates/dw-ffi/clippy.toml` forbids `dashpay_crypto_signer`, `scan_key`, `scan_key_held`, `ScanKey::master_key`,
 `VaultScanKey::resolve`/`resolver` and `open_backup_bundle` (review DW-E0-03 r3) in dw-ffi
 (`clippy -D warnings` fails), and a dw-ffi test scans its sources for them. The engine adapters
 (`dw_engine::platform::signers`) implement dpp's `Signer<IdentityPublicKey>`, platform-wallet's
@@ -168,18 +170,22 @@ Derived scalars stay in dw-vault, with two exceptions:
   only when dropped. E0-05 must therefore cancel (drop) a running bring-up on lock, so the guard drops with it.
   Follow-up: ask upstream for a resolver that derives and returns the probed public keys instead.
 
-**Key holds and the epoch** (E0-04 design §3.5, P1; engine-internal). A grant authorized on a vault with no
-full-scope key (`Locked`, `UnlockedMixingOnly`) carries its own copy of the data key. `Vault::hold_key(tokens)`
-moves that copy out of every token of a grant set into one `KeyHold` (`None` when no token has its own key), and
-`Vault::platform_signer_held` / `signer_held` issue signers that reference the hold weakly. Dropping the hold
-erases the key whatever signer clones are still held: an operation under way finishes with the copy it took inside
-the vault gate, and every later call is `vault.locked` (a held token then issues no signer either). Only this
-vault's tokens of the current epoch that have issued no signer yet are held: a signer issued from a token directly
-(`signer`, `platform_signer`) keeps its own copy, as before, which no hold could erase, so a lease holds the key
-first and `*_held` refuses a token its hold does not hold (`invalid_argument`). `Vault::epoch()` (not secret)
-changes on every lock, every unlock that changes the lock state or scope, and every passphrase change, encrypt,
-recover and destroy, each of which ends every grant, token and signer of the old epoch, held ones included; the
-engine compares it around vault calls (E0-04 design §8.6).
+**Key holds and the epoch** (E0-04 design §3.5 and §15's P1 follow-ups; engine-internal). A grant authorized on a
+vault with no full-scope key (`Locked`, `UnlockedMixingOnly`) carries its own copy of the data key.
+`Vault::hold_key(tokens)` moves that copy out of every token of a grant set into one `KeyHold`, or fails changing
+none: every token must carry its own key, be this vault's of the current epoch (`vault.grant_invalid`,
+`vault.locked`), not be held already and have issued no signer (`invalid_argument`); `Ok(None)` for a set of
+vault-key tokens, and a mixed set is `invalid_argument`. A held token issues signers only through its hold
+(`Vault::platform_signer_held`, `signer_held`, `scan_key_held`; `invalid_argument` anywhere else). Dropping the hold
+erases the key in place: every use copies it under the hold's mutex inside the vault gate, so an operation under way
+finishes with its copy and every later call of a held signer is `vault.locked` (a held token issues nothing once
+its hold is gone: only that hold issues for it). **Which tokens may issue directly:** a
+vault-key token (an unlocked vault), and an own-key token only for `Spend` and `SignMessage`. That is the M1
+exception: send, PSBT, message and CoinJoin drop their token as soon as they hold the signer, which keeps its own
+copy, until E0-04 P5 moves them onto holds. An own-key `PlatformOp` or `IdentityScan` token issues nothing directly
+(`invalid_argument`). `Vault::epoch()` (not secret) changes on every lock, every unlock that changes the lock state
+or scope, and every passphrase change, encrypt, recover and destroy, each of which ends every grant, token and
+signer of the old epoch, held ones included; the engine compares it around vault calls (E0-04 design §8.6).
 
 **Concurrency** (review H1). All changes of the vault file (create, encrypt, change passphrase, record
 writes, throttle updates) and all passphrase checks are serialized by one vault-level writer lock. Each
