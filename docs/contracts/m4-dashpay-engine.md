@@ -120,12 +120,22 @@ status 1.
 - `pay-contact` reports `not_implemented{call: "Recipient::Contact"}` until DP3-01 adds that `TxDraft` recipient (§6).
 - State kept per session (scan ids, avatar candidates, leases, a running registration, dispatch tombstones) dies with
   a one-shot process. `dwcli dashpay session` keeps one engine and runs one request per stdin line,
-  `{"args":[…],"input":…,"id":…}`, where `input` is the bearer input. It answers each line in order with that command's
-  line plus `id` (none for a line that is not a JSON object), refuses nesting and a request's own `--spv`, and ends
-  with `{"ok":true,"result":{"requests":N}}`, exit status 0, whatever the requests returned. Its refusals never quote
-  the line or its `args`.
-- Arguments clap refuses in a one-shot command exit with status 2 and clap's usage text on stderr, with no JSON line.
-  `setup` replaces the code of what failed (a storage error opening the network, for example); `message` says which.
+  `{"args":[…],"input":…,"id":…}`, where `input` is the bearer input and `id` a string or an integer. It answers each
+  line in order with that command's line plus `id` (none for a line that is not a JSON object), refuses nesting and a
+  request's own `--spv`, and ends with `{"ok":true,"result":{"requests":N}}`, exit status 0, whatever the requests
+  returned. A line holds at most 64 KiB before its LF or CR LF.
+- Session lines are read and parsed into zeroizing buffers only. A bearer-shaped value in `args` (`dashpay://invite`,
+  `dapk=`, any `dash:` URI, an invitation link's `pk=` or `assetlocktx=`) is refused before it is parsed as an
+  argument. No refusal quotes the line or its `args`.
+- A panic answers with `internal` ("the outcome is unknown": a write may or may not have gone through; check before
+  retrying), and the panic hook prints only its location. In one-shot mode that is the command's one line, with exit
+  status 1. In a session it answers the request and the session goes on, unless the engine no longer answers, which
+  ends the session with `session_poisoned` and exit status 1.
+- `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with
+  `platform.feature_off{feature: "platform"}` before anything is opened.
+- Arguments clap refuses exit with status 2 and no JSON line. stderr names the error kind, the arguments involved where
+  clap names them, and the usage, never a refused value. `setup` replaces the code of what failed before the command
+  ran (a storage error opening the network, for example); `message` says which.
 
 ## 2. Calls
 

@@ -24,7 +24,11 @@
 //! a running registration, the dispatch tombstones `resolve-lock` reads)
 //! dies with a one-shot process. `dashpay session` keeps one engine open
 //! and runs one command per stdin line: `{"args":[…],"input":…,"id":…}`
-//! in, the command's JSON line (with `id`) out.
+//! in, the command's JSON line (with `id`) out. A request line is read and
+//! parsed into zeroizing buffers only (`request.rs`); a bearer-shaped value
+//! in `args` is refused before clap copies it. A panic answers its request
+//! with `internal` (outcome unknown) and the session goes on, unless the
+//! engine no longer answers, which ends it with `session_poisoned`.
 
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +50,10 @@ use serde_json::{Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::pay::{credential, wallet_id};
+
+mod request;
+
+pub(crate) use request::ZeroStdin;
 
 #[derive(Subcommand)]
 pub enum DashPayCommand {
@@ -559,6 +567,10 @@ impl CliError {
         Self::detail("invalid_argument", message.to_string())
     }
 
+    fn is_panic(&self) -> bool {
+        self.code == "internal" && self.message.starts_with("dwcli panicked")
+    }
+
     fn detail(code: &'static str, detail: String) -> Self {
         Self::new(code, &detail, json!({"detail": detail}))
     }
@@ -819,12 +831,8 @@ pub fn run(
         passphrase,
         wallet: None,
     };
-    exec(
-        &base,
-        cmd,
-        &mut std::io::stdin().lock(),
-        &mut std::io::stdout(),
-    )
+    let mut stdin = ZeroStdin::new();
+    exec(&base, cmd, &mut stdin, &mut std::io::stdout())
 }
 
 /// Prints the command's JSON line; the error is returned for the exit
@@ -848,6 +856,87 @@ pub fn report_setup_failure(message: &str) {
         let e = CliError::detail("setup", message.to_string());
         println!("{}", envelope(&Err(e)));
     }
+}
+
+/// The line for a DashPay command under `--no-platform`, printed before
+/// anything is opened.
+pub fn refuse_no_platform() -> Result<(), String> {
+    let off = PlatformError::FeatureOff {
+        feature: "platform".into(),
+    };
+    report(Err(off.into()), Ok(()))
+}
+
+/// The JSON line after a panic in a one-shot command, unless one was
+/// printed. The panic hook prints only where it happened.
+pub fn report_panic() {
+    if !REPORTED.load(Ordering::SeqCst) {
+        let e = panic_error("the command");
+        println!("{}", envelope(&Err(e)));
+    }
+}
+
+/// What a panic answers: `internal`, saying the outcome is unknown (a write
+/// may or may not have gone through) and never quoting the payload.
+fn panic_error(what: &str) -> CliError {
+    CliError::detail(
+        "internal",
+        format!("dwcli panicked; {what}'s outcome is unknown"),
+    )
+}
+
+/// The panic hook for DashPay commands: the payload may quote an input, so
+/// only the location is printed.
+pub fn quiet_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let at = info.location().map_or_else(
+            || "unknown".into(),
+            |l| format!("{}:{}", l.file(), l.line()),
+        );
+        eprintln!("dwcli: panic at {at} (message withheld)");
+    }));
+}
+
+/// clap's rendering quotes the arguments it refuses, which may be a bearer
+/// input: this names the error kind and, where clap gives them, the
+/// arguments involved, never a value.
+pub(crate) fn clap_error_text(e: &clap::Error) -> String {
+    use clap::error::{ContextKind, ContextValue, ErrorKind as K};
+    let mut text = e.kind().to_string();
+    let names_args = matches!(
+        e.kind(),
+        K::InvalidValue
+            | K::ValueValidation
+            | K::MissingRequiredArgument
+            | K::ArgumentConflict
+            | K::TooManyValues
+            | K::TooFewValues
+            | K::WrongNumberOfValues
+            | K::NoEquals
+    );
+    if names_args {
+        for (kind, value) in e.context() {
+            if matches!(kind, ContextKind::InvalidArg | ContextKind::PriorArg) {
+                match value {
+                    ContextValue::String(name) => text += &format!(": {name}"),
+                    ContextValue::Strings(names) => text += &format!(": {}", names.join(", ")),
+                    _ => {}
+                }
+            }
+        }
+    }
+    text
+}
+
+/// Debug builds only: `DWCLI_FAULT_INJECT=panic` makes `dashpay status`
+/// panic (with a bearer-shaped payload the hook must withhold), and
+/// `panic-poison` also makes the session's health probe panic.
+fn injected_fault(point: &str) -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("DWCLI_FAULT_INJECT").is_ok_and(|v| match point {
+            "panic" => v.starts_with("panic"),
+            _ => v == point,
+        })
 }
 
 fn common(cmd: &mut DashPayCommand) -> &mut Common {
@@ -898,15 +987,6 @@ fn exec(
     result
 }
 
-/// One `dashpay session` request line.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    args: Vec<String>,
-    #[serde(default)]
-    input: Option<BearerSecret>,
-}
-
 /// A request's argument list, parsed as a DashPay command.
 #[derive(Parser)]
 #[command(name = "dwcli", no_binary_name = true)]
@@ -915,7 +995,7 @@ struct RequestArgs {
     cmd: DashPayCommand,
 }
 
-/// The longest `dashpay session` request line.
+/// The longest `dashpay session` request line, without its line ending.
 const MAX_LINE: usize = 64 * 1024;
 
 fn session_loop(
@@ -923,69 +1003,88 @@ fn session_loop(
     stdin: &mut dyn BufRead,
     stdout: &mut dyn Write,
 ) -> Result<Value, CliError> {
-    // One buffer that never reallocates, zeroed between lines (it carries
-    // bearer inputs).
-    let mut line = Zeroizing::new(Vec::with_capacity(MAX_LINE + 1));
+    // One buffer that never reallocates (the limit, plus CR LF), zeroed
+    // between lines: it carries bearer inputs.
+    let mut line = Zeroizing::new(Vec::with_capacity(MAX_LINE + 2));
     let mut requests = 0u64;
     loop {
         line.zeroize();
-        if (&mut *stdin)
-            .take(MAX_LINE as u64 + 1)
-            .read_until(b'\n', &mut line)?
-            == 0
-        {
+        let read = (&mut *stdin)
+            .take(MAX_LINE as u64 + 2)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
             break;
         }
-        if line.len() > MAX_LINE {
+        let ended = line.last() == Some(&b'\n');
+        if !ended && line.len() == MAX_LINE + 2 {
+            // The rest of an over-long line. A chunk that already ends in
+            // LF has consumed its line: skipping would eat the next one.
             stdin.skip_until(b'\n')?;
-        } else if line.trim_ascii().is_empty() {
+        }
+        let mut content = &line[..];
+        if ended {
+            content = &content[..content.len() - 1];
+            content = content.strip_suffix(b"\r").unwrap_or(content);
+        }
+        if content.len() <= MAX_LINE && content.trim_ascii().is_empty() {
             continue;
         }
         requests += 1;
-        let (id, result) = session_line(ctx, &line);
+        let (id, result) = session_line(ctx, content);
+        let poisoned = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
         let mut answer = envelope(&result);
         if let (Value::Object(a), Some(id)) = (&mut answer, id) {
             a.insert("id".into(), id);
         }
         writeln!(stdout, "{answer}")?;
         stdout.flush()?;
+        if poisoned {
+            return Err(CliError::new(
+                "session_poisoned",
+                "the engine stopped answering after a panic; the session ends",
+                json!({}),
+            ));
+        }
     }
     Ok(json!({"requests": requests}))
 }
 
-/// Runs one request line: its `id`, if it has one, and its result.
-/// serde's and clap's messages may quote the input, so errors say only
-/// what is wrong and where.
+/// Whether the engine still answers after a panic: a poisoned lock panics
+/// on its next use.
+fn engine_healthy(ctx: &Ctx) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if injected_fault("panic-poison") {
+            panic!("injected poison");
+        }
+        let _ = ctx.session.vault().status();
+        let _ = ctx.session.wallet_infos();
+    }))
+    .is_ok()
+}
+
+/// Runs one request line (without its line ending): its `id`, if it has
+/// one, and its result. A panic in the request is caught and answered.
 fn session_line(ctx: &Ctx, line: &[u8]) -> (Option<Value>, Result<Value, CliError>) {
     if line.len() > MAX_LINE {
-        return (
-            None,
-            Err(CliError::invalid(format!(
-                "request line over {MAX_LINE} bytes"
-            ))),
-        );
+        let over = format!("request line over {MAX_LINE} bytes");
+        return (None, Err(CliError::invalid(over)));
     }
-    let mut value: Value = match serde_json::from_slice(line) {
-        Ok(v) => v,
-        Err(e) => {
-            let at = format!("malformed request at column {}", e.column());
-            return (None, Err(CliError::invalid(at)));
-        }
-    };
-    let id = value.as_object_mut().and_then(|o| o.remove("id"));
-    let result = match serde_json::from_value::<Request>(value) {
-        Ok(req) => session_request(ctx, req),
-        Err(_) => Err(CliError::invalid(
-            "a request is {\"args\": [strings], \"input\"?: string, \"id\"?: any}",
-        )),
-    };
+    let request::Parsed { id, request } = request::parse(line);
+    let result = request.map_err(CliError::invalid).and_then(|req| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session_request(ctx, req)))
+            .unwrap_or_else(|_| Err(panic_error("the request")))
+    });
     (id, result)
 }
 
-fn session_request(ctx: &Ctx, req: Request) -> Result<Value, CliError> {
-    let mut cmd = RequestArgs::try_parse_from(&req.args)
-        // Not `e.render()`: it quotes the arguments it refuses.
-        .map_err(|e| CliError::invalid(format!("bad arguments: {}", e.kind())))?
+fn session_request(ctx: &Ctx, req: request::Request) -> Result<Value, CliError> {
+    if req.args.iter().any(|a| request::bearer_shaped(a)) {
+        return Err(CliError::invalid(
+            "a bearer input goes in \"input\", never in \"args\"",
+        ));
+    }
+    let mut cmd = RequestArgs::try_parse_from(req.args.iter().map(|a| a.as_str()))
+        .map_err(|e| CliError::invalid(format!("bad arguments: {}", clap_error_text(&e))))?
         .cmd;
     if common(&mut cmd).spv {
         return Err(CliError::invalid(
@@ -1001,14 +1100,21 @@ fn session_request(ctx: &Ctx, req: Request) -> Result<Value, CliError> {
     ) {
         return Err(CliError::invalid("a session cannot nest"));
     }
-    let input = req
-        .input
-        .as_ref()
-        .map_or(&b""[..], |s| s.expose().as_bytes());
+    let input = req.input.as_ref().map_or(&b""[..], |s| s.as_bytes());
     exec(ctx, cmd, &mut &input[..], &mut std::io::sink())
 }
 
 fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Value, CliError> {
+    if matches!(
+        &cmd,
+        DashPayCommand::Dashpay {
+            cmd: StatusCmd::Status,
+            ..
+        }
+    ) && injected_fault("panic")
+    {
+        panic!("injected fault carrying dashpay://invite?pk=PANIC-SECRET");
+    }
     match cmd {
         DashPayCommand::Dashpay { cmd, .. } => status_cmd(ctx, cmd),
         DashPayCommand::Identity { cmd, .. } => identity_cmd(ctx, cmd),
@@ -1443,6 +1549,10 @@ fn invite_cmd(ctx: &Ctx, cmd: InviteCmd, stdin: &mut dyn Read) -> Result<Value, 
         InviteCmd::Forget { link_id } => out(ctx.block_on(session.forget_invitation(link_id))?),
     }
 }
+
+#[cfg(test)]
+#[path = "dashpay_heap_tests.rs"]
+mod heap_tests;
 
 #[cfg(test)]
 mod tests {

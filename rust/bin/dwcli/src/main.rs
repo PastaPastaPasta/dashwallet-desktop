@@ -49,7 +49,8 @@ struct Cli {
     #[arg(long)]
     initial_protocol_version: Option<u32>,
     /// The chain has no Platform (a plain dashd regtest): no DashPay
-    /// bring-up before SPV, no Platform sync loops.
+    /// bring-up before SPV, no Platform sync loops, and every DashPay
+    /// command refuses up front with `platform.feature_off`.
     #[arg(long)]
     no_platform: bool,
     /// Print engine events to stderr.
@@ -538,18 +539,62 @@ fn main() -> ExitCode {
             .with_writer(std::io::stderr)
             .init();
     }
-    let cli = Cli::parse();
-    let dashpay = matches!(cli.command, Command::DashPay(_));
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            if dashpay {
-                dashpay::report_setup_failure(&e);
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return parse_failure(&e),
+    };
+    if !matches!(cli.command, Command::DashPay(_)) {
+        return match run(cli) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
             }
+        };
+    }
+    // DashPay commands print one JSON line whatever happens, and a panic's
+    // payload never reaches stderr (it may quote an input).
+    if cli.no_platform {
+        return dashpay::refuse_no_platform().map_or(ExitCode::FAILURE, |()| ExitCode::SUCCESS);
+    }
+    dashpay::quiet_panics();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            dashpay::report_setup_failure(&e);
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+        Err(_) => {
+            dashpay::report_panic();
+            ExitCode::FAILURE
+        }
     }
+}
+
+/// A refused command line. clap's own text quotes the refused argument,
+/// which may be a bearer input (review DW-E0-09 r1), so only the error
+/// kind, the names of the arguments involved and the usage are printed.
+/// Help and version print as usual.
+fn parse_failure(e: &clap::Error) -> ExitCode {
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
+    let code = u8::try_from(e.exit_code()).unwrap_or(2);
+    if matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        let _ = e.print();
+        return ExitCode::from(code);
+    }
+    eprintln!(
+        "error: {}\n\n{}\n\nFor more information, try '--help'.",
+        dashpay::clap_error_text(e),
+        Cli::command().render_usage()
+    );
+    ExitCode::from(code)
 }
 
 #[cfg(test)]
