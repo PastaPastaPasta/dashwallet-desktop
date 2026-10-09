@@ -55,7 +55,10 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 | `Engine.open_network(network, options)` | async | Opens (or returns the open) session: data dir, SDK, `PlatformWalletManager<SqlitePersister>`, loads wallets. | `EngineError` | QT-002, IOS-106 | M0 |
 | `Engine.close_network(network)` / `shutdown()` | async | Stops SPV, drains persistence, releases the DB. | `EngineError` | QT-008 | M0 |
 | `Engine.network_dir(network)` | sync | Data directory ("Open data folder"). | — | QT-143 | M0 |
-| `NetworkSession.start_spv()` / `stop_spv()` / `spv_running()` | async/async/sync | dash-spv with masternode sync on. | `EngineError` | QT-024/025 | M0 |
+| `NetworkSession.start_spv()` / `stop_spv()` / `spv_running()` | async/async/sync | dash-spv with masternode sync on. **E0-05 (DASHPAY §2.5, §3.2):** `start_spv` returns once the start is scheduled (measured 0.5–4 ms); an engine task first runs each wallet's DashPay bring-up (`start_wallet_subsystems`, every wallet at once: 3 s for a wallet created here, 20 s otherwise, counted from the start and bounding all of it, key acquisition included; skipped for a watch-only wallet and for one Platform proved within the last 7 days has no identity), then starts SPV whatever the outcome, then the `identity_sync`, `dashpay_sync` and `dpns_sync` loops. `SpvStateChanged{running: true}` reports the actual start; a dash-spv failure at that point is `Notice{SpvError}`. Idempotent while starting or running; configuration errors are still returned by the call. `stop_spv` cancels a running bring-up, waits for its blocking key work (at most 5 s) and quiesces the loops first; SPV is stopped either way, and work that did not end is returned as `sdk` ("SPV stopped, but this Platform work did not end: dashpay_sync, …"); the next start drains it again inside its task before its loops start (retried every 30 s), so `start_spv` itself never waits for it. Close cancels the bring-up, waits for its key work (at most 5 s; longer is an unclean close: `Notice{UncleanShutdown}`, marker kept) and lets the manager's shutdown drain the loops once (§2.1a item 6). A restore signals its wallets' bring-up only once it has committed, and until then no entry point (a start already listing wallets, an unlock, a wallet-added signal) admits one for them; a wallet refused meanwhile is brought up once the last restore marking it ends, unless that restore rolled it back. Removing or closing a wallet ends its bring-up. `spv_running()` is true while starting; calls that need SPV running (`rescan`, `rotate_peers`, a broadcast) still fail with `sync.spv_not_running` / `send.no_peers` until `spv_state()` is `Running`. `SessionOptions.no_platform` (dwcli `--no-platform`; not in dw-ffi until E0-13) is for a chain without Platform such as a plain dashd regtest: no bring-up, no loops. | `EngineError` | QT-024/025 | M0, E0-05 |
+| `NetworkSession.spv_state()` | sync | `Stopped` \| `Starting` (bring-up or dash-spv start) \| `Running`. Not in dw-ffi until E0-13 (frozen Swift bindings). | — | DASHPAY §2.5 | E0-05 |
+| `NetworkSession.dashpay_startup(wallet_id)` | sync | The wallet's last bring-up: `DashPayStartup{startup: StartupStatus, read_only, identity, contact_accounts_pending, identity_scan_incomplete, finished_at}`. `StartupStatus` is the M4 facade's (`NotRun`, `Starting`, the library's seven, `IdentityUnsettled`). `read_only`: watch-only, DashPay is read-only. A bring-up with a locked vault has no keys and reports `IdentityUnsettled` (unless the library says `Ready`); the first unlock runs it again. A lock while a bring-up holds keys, or after it built them, makes anything short of `Ready` or `NoIdentity` `IdentityUnsettled`. `read_only` is read from the vault at each call. | `wallet_not_found` | DASHPAY §3.2 | E0-05 |
+| `NetworkSession.platform_loops()` / `set_platform_cadence(cadence)` / `dashpay_sync_soon()` | sync | Loop status (`SyncLoopStatus{sync_loop, running, last_run_at, next_run_at}`); the cadence `PlatformCadence{window_visible, contest_ending_soon}`: `dashpay_sync` 15 s visible, 60 s hidden (becoming visible also runs a pass), the contest watch 10 min, 1 min when a contest ends within the hour; `dashpay_sync_soon` runs a pass now in the background (Contacts or the bell opened, after a DashPay write; the engine does it after an unlock). Nothing runs while SPV is stopped. | — | DASHPAY §3.2 | E0-05 |
 | `NetworkSession.platform_context_ready()` / `is_open()` / `network()` | sync | State reads. | — | — | M0 |
 
 **E0-04** (design `docs/design/E0-04-grants-leases.md`, approved, DEC-73; lands in its phase P2a). The engine's
@@ -65,6 +68,40 @@ gate, drains the hand-offs already admitted (each to its deadline, H = 10 s) and
 synchronous `Vault.lock()` (§2.2). The new events `LockProgress{Draining | Done(LockReport)}`, `LeaseChanged` and
 `DispatchResolved`, and the notices `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable`,
 stay engine-side until E0-13, so §3 does not list them.
+
+### 2.1a DashPay bring-up: DASHPAY §3.2 interpretations (E0-05)
+
+DASHPAY §3.2 left these open; E0-05 implements them as below (rulings by pasta, 2026-10-09). `platform/bringup.rs` and
+`platform/runtime.rs` hold the code.
+
+1. **When the bring-up runs.** §3.2 says "if the wallet has identities, a restore is in progress, or discovery is
+   unsettled"; "restore in progress" is defined nowhere. It runs for every wallet with keys unless the wallet has no
+   identity on file and Platform proved, on this installation within the last 7 days, that its seed owns none (the
+   wallet-local marker `dashpay.no_identity`, which a `.dwbackup` does not carry). After 7 days, and after DP6-01's
+   "find" (`forget_proven_absence`), discovery runs again.
+2. **No identity signer.** §3.2 lists `identity_signer?`. The bring-up and the unlock drain pass none: the DIP-15
+   auto-accept pass submits state transitions, which unattended work never does (§2.6, E0-04).
+3. **`IdentityUnsettled`.** Any non-`Ready` outcome of a bring-up without keys (a locked vault), or one the vault locked
+   during. The first unlock runs it again. It sends no notice: the unlock settles it.
+4. **The `Platform{Startup}` signal.** `EngineEvent::Platform` is E0-06's. Until then the outcome is
+   `Notice{DashPayStartupIncomplete}` for the unsettled statuses plus `dashpay_startup`.
+5. **"`is_spv_running` reports Starting".** `spv_running()` stays `bool` (the Swift bindings are frozen) and is true
+   while starting; `spv_state()` carries `Starting`.
+6. **Close order (deviation).** §3.2 orders close as: cancel a running bring-up, quiesce the loops, stop SPV,
+   `manager.shutdown`. Close cancels the bring-up (and waits for its key work), then lets `manager.shutdown` drain the
+   loops once, sealed; the library's shutdown stops SPV *before* it drains the loops. Draining in close as well would
+   wait twice (10 s each) for a pass stuck on the network and make the close unclean. `stop_spv` keeps §3.2's order:
+   it quiesces the loops before stopping SPV.
+7. **Wallets added while SPV runs.** §3.2 does not cover them. A wallet registered, given keys or opened while SPV runs
+   gets its bring-up without holding SPV; the DIP-15 rescan reconcile heals contacts found late. A restore signals
+   only once it has committed; until then its wallets are marked, and every admission (the start's listing, each
+   bring-up, the unlock work) refuses a marked wallet under the same lock it reads the seed with. A refused wallet is
+   readmitted when the last restore marking it ends (overlapping restores), unless that restore's rollback removed it.
+   Signals are stamped with when their event happened; the supervisor skips a bring-up signal older than the wallet's
+   last admitted pass, so one event brings a wallet up once (a restore's commit and its readmission are one event),
+   and signals arriving while a pass runs make one follow-up pass.
+8. **Contest cadence.** The engine has no contest list yet; the host or DP1-04 sets `PlatformCadence.contest_ending_soon`.
+9. **Passphrase change.** A passphrase change is not treated as a lock by the bring-up; E0-04 §8.6 owns it.
 
 ### 2.2 Vault (`vault.rs`) — owner B
 
@@ -438,7 +475,7 @@ stay in dw-uri for M2 (IOS-048 OS registration).
 | `Balances {network, wallet_id, balances: Option}` | balance buckets changed, or became known (≤ 4 Hz per wallet set, trailing edge kept) | Home / status bar | E1 |
 | `HistoryChanged {network, wallet_id, txids}` | tx added or status changed, including confirmations of young transactions on a new block; `txids` empty = reload all (rescan) | re-query `history_page`, current receive address | E1 |
 | `LockState {network, state}` | vault lock state changed | lock screen, status bar | B (emitted) |
-| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall), `WalletSecretNotDeleted` (`remove_wallet` removed the wallet but its seed stayed in the vault; `detail` names the wallet id); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
+| `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall), `WalletSecretNotDeleted` (`remove_wallet` removed the wallet but its seed stayed in the vault; `detail` names the wallet id); `DashPayStartupIncomplete` (E0-05: a wallet's bring-up ended `PartialNoIdentity`, `DiscoveryFailed`, `PartialAccountsPending`, `SeedBindingUnverified` or `IdentityScanIncomplete`, or the unlock drain was refused for the seed binding; `detail` is `wallet <id>: <status>` with the snake_case status; withheld by dw-ffi until E0-13 binds it); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
 
 `WalletCreated` is also sent when keys are attached to a registered wallet. The M0 events
 `SyncProgress`, `PeersChanged` and `WalletChanged` are removed.

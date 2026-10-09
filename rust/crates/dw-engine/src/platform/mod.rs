@@ -5,6 +5,7 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+mod bringup;
 mod contacts;
 mod credits;
 mod dashpay;
@@ -18,10 +19,15 @@ mod notifications;
 mod payments;
 mod profile;
 mod registration;
+pub(crate) mod runtime;
+#[cfg(test)]
+mod runtime_tests;
 pub mod signers;
 mod startup;
+mod startup_status;
 mod status;
 
+pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
     ContactSummary, ContactsPage, Eligibility, PrivateDetails, PublishState, Relation,
@@ -66,4 +72,5 @@ pub use startup::{
     DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
     SyncLoopStatus, SyncPassReport,
 };
+pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;

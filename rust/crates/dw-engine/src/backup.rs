@@ -31,7 +31,8 @@ use zeroize::Zeroizing;
 
 use crate::compat::write_new_private;
 use crate::events::unix_now;
-use crate::keys::AutoBackup;
+use crate::keys::{AutoBackup, Origin};
+use crate::platform::runtime::PlatformSignal;
 use crate::{
     DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
 };
@@ -572,6 +573,12 @@ impl NetworkSession {
         // and whether the wallet was new (not keys attached to a watch-only
         // wallet that was there before).
         let mut done: Vec<(WalletId, bool)> = Vec::new();
+        // No bring-up is admitted for these wallets, from any entry point,
+        // until the restore has committed (review r2 M4). Marked before any
+        // seed is stored.
+        let restoring = self
+            .platform
+            .restoring(opened.iter().map(|(id, _, _)| *id).collect());
         for (id, secret, payload) in opened {
             if let Err(e) = self
                 .restore_one(network, id, secret, payload, &mut done)
@@ -581,10 +588,16 @@ impl NetworkSession {
                 return Err(e);
             }
         }
+        // The commit, stamped before the marks clear: a readmission their
+        // clearing sends covers it (review r4 M4-R4).
+        let committed = self.platform.stamp();
+        drop(restoring);
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
-        // rolled back.
+        // rolled back, and no bring-up holding its keys.
         for &(id, _) in &done {
+            self.platform
+                .signal_at(committed, PlatformSignal::WalletAdded(id));
             self.schedule_automatic_backup(id);
         }
         Ok(done.into_iter().map(|(id, _)| id).collect())
@@ -629,7 +642,12 @@ impl NetworkSession {
             lookahead: None,
         };
         match self
-            .import_secret_inner(options, move || Ok(secret), AutoBackup::Caller)
+            .import_secret_inner(
+                options,
+                move || Ok(secret),
+                AutoBackup::Caller,
+                Origin::Imported,
+            )
             .await
         {
             Ok(_) => done.push((id, !existed)),
@@ -653,6 +671,9 @@ impl NetworkSession {
     /// step is logged and the rest still runs.
     async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
         for &(id, created) in done.iter().rev() {
+            // Still marked as being restored, so no bring-up was admitted for
+            // it; a status read since is stale.
+            self.platform.forget(&id);
             if created {
                 let removed = async {
                     let live = self.live()?;

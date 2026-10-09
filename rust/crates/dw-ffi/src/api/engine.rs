@@ -76,6 +76,11 @@ impl From<dw_engine::NoticeCode> for NoticeCode {
             dw_engine::NoticeCode::SyncStalled => Self::SyncStalled,
             dw_engine::NoticeCode::BackupFailed => Self::BackupFailed,
             dw_engine::NoticeCode::WalletSecretNotDeleted => Self::WalletSecretNotDeleted,
+            // Withheld by `ObserverSink` until E0-13 binds it.
+            dw_engine::NoticeCode::DashPayStartupIncomplete => {
+                debug_assert!(false, "DashPayStartupIncomplete reached the bindings");
+                Self::PlatformContextUnavailable
+            }
         }
     }
 }
@@ -260,6 +265,15 @@ pub(crate) struct ObserverSink(pub(crate) Arc<dyn EngineObserver>);
 
 impl dw_engine::EventSink for ObserverSink {
     fn emit(&self, event: dw_engine::EngineEvent) {
+        // The DashPay notices reach Swift with the facade bindings (E0-13);
+        // the generated Swift is frozen until then.
+        if let dw_engine::EngineEvent::Notice {
+            code: dw_engine::NoticeCode::DashPayStartupIncomplete,
+            ..
+        } = event
+        {
+            return;
+        }
         self.0.on_event(event.into());
     }
 }

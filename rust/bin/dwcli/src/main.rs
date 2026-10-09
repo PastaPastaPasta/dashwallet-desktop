@@ -47,6 +47,10 @@ struct Cli {
     /// reports.
     #[arg(long)]
     initial_protocol_version: Option<u32>,
+    /// The chain has no Platform (a plain dashd regtest): no DashPay
+    /// bring-up before SPV, no Platform sync loops.
+    #[arg(long)]
+    no_platform: bool,
     /// Print engine events to stderr.
     #[arg(long)]
     verbose_events: bool,
@@ -263,8 +267,8 @@ fn sync(
     txids: &[String],
     confirmations: u32,
 ) -> Result<(), EngineError> {
-    engine.block_on(session.start_spv())?;
     let deadline = Instant::now() + timeout;
+    pay::ensure_spv_running(engine, session, timeout).map_err(EngineError::Spv)?;
     let mut last_line = String::new();
     let outcome = loop {
         let snap = session.sync_snapshot()?;
@@ -344,6 +348,7 @@ fn run(cli: Cli) -> Result<(), String> {
         spv_peers: cli.peers,
         ca_cert_path: cli.ca_cert,
         initial_protocol_version: cli.initial_protocol_version,
+        no_platform: cli.no_platform,
     };
     let session = engine
         .block_on(engine.open_network(cli.network, opts))
@@ -549,6 +554,7 @@ mod tests {
             peers: vec![],
             ca_cert: None,
             initial_protocol_version: None,
+            no_platform: false,
             verbose_events: false,
             passphrase_file: passphrase.then(|| pass.clone()),
             command: cmd,

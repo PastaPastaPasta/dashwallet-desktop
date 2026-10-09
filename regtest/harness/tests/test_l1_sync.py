@@ -41,7 +41,9 @@ class Dwcli:
             DWCLI,
             "--datadir", str(datadir),
             "--network", "regtest",
-            # Nothing listens on these: L1 sync needs no Platform.
+            # Nothing listens on these: L1 sync needs no Platform. The
+            # DashPay bring-up still runs (and gives up within its budget)
+            # before SPV starts, as in the app.
             "--dapi", "http://127.0.0.1:1",
             "--quorum-url", "http://127.0.0.1:1",
             "--peer", f"127.0.0.1:{p2p_port}",

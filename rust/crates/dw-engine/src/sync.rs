@@ -474,6 +474,9 @@ impl crate::NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let manager = this.manager()?;
+            // Not beside a start or stop, which would read SPV stopped while
+            // it restarts.
+            let _lifecycle = this.platform.lifecycle.lock().await;
             if !manager.spv().is_started() {
                 return Err(crate::EngineError::SpvNotRunning);
             }

@@ -10,7 +10,7 @@ use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     AddressChain, AddressFilter, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent,
     EventSink, HistoryFilter, HistoryQuery, HistorySort, ImportOptions, NetworkSession, NoticeCode,
-    RescanFrom, SessionOptions, WalletId,
+    RescanFrom, SessionOptions, SpvState, WalletId,
 };
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -509,7 +509,14 @@ fn sync_state_events_and_spv_requirements() {
         Err(EngineError::SpvNotRunning)
     ));
 
+    // `start_spv` returns before SPV runs (E0-05); with no wallet the
+    // bring-up has nothing to do and SPV starts at once.
     engine.block_on(s.start_spv()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.spv_state().unwrap() != SpvState::Running {
+        assert!(Instant::now() < deadline, "SPV did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(s.sync_snapshot().unwrap().running);
     // The pump delivers a Sync event for the start within its interval.
     let deadline = Instant::now() + Duration::from_secs(5);

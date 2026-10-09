@@ -394,7 +394,8 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let manager = this.manager()?;
-            if manager.spv().is_started() {
+            let _lifecycle = this.platform.lifecycle.lock().await;
+            if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
             let dir = this.data_dir().join(SPV_DIR);

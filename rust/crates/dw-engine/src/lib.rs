@@ -71,7 +71,10 @@ pub use masternode_keys::{
 };
 pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
-pub use platform::PlatformStatus;
+pub use platform::{
+    CREATED_HERE_BUDGET, DashPayStartup, PlatformCadence, PlatformStatus, SpvState, StartupStatus,
+    SyncLoop, SyncLoopStatus,
+};
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{

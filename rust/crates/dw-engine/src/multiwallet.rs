@@ -32,6 +32,7 @@ use platform_wallet::changeset::{
 };
 
 use crate::keys::MAX_LOOKAHEAD;
+use crate::platform::runtime::PlatformSignal;
 use crate::session::WALLET_DB_FILE;
 use crate::wallets::validate_name;
 use crate::{DashNetwork, EngineError, EngineEvent, NetworkSession, WalletId};
@@ -274,6 +275,7 @@ impl NetworkSession {
             }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
+            this.platform.forget(&id);
             this.sink.emit(EngineEvent::WalletLoadChanged {
                 network: this.network.clone(),
                 wallet_id: id,
@@ -312,6 +314,7 @@ impl NetworkSession {
                 wallet_id: id,
                 loaded: true,
             });
+            this.platform.signal(PlatformSignal::WalletAdded(id));
             Ok(())
         })
         .await

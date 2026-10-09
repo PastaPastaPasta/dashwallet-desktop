@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use clap::Subcommand;
 use dw_engine::{
     BookPurpose, ChangePolicy, CoinFilter, CoinSource, Engine, EngineError, FeeMode,
-    NetworkSession, Recipient, SendFailure, WalletId,
+    NetworkSession, Recipient, SendFailure, SpvState, WalletId,
 };
 use dw_vault::{Credential, GrantPurpose, LockState};
 use zeroize::Zeroizing;
@@ -160,11 +160,13 @@ pub(crate) fn credential<'a>(
     }
 }
 
-pub(crate) fn wait_for_height(
+/// Starts SPV if it is stopped and waits until it runs. `start_spv` returns
+/// while the DashPay bring-up still runs (up to 20 s), and a wallet's stored
+/// scan height is known before SPV has started, so a height check alone
+/// would let a command broadcast with no peer.
+pub(crate) fn ensure_spv_running(
     engine: &Engine,
     session: &Arc<NetworkSession>,
-    id: WalletId,
-    height: u32,
     timeout: Duration,
 ) -> Result<(), String> {
     if !session.spv_running().map_err(|e| e.to_string())? {
@@ -172,6 +174,28 @@ pub(crate) fn wait_for_height(
             .block_on(session.start_spv())
             .map_err(|e| e.to_string())?;
     }
+    let start = Instant::now();
+    loop {
+        match session.spv_state().map_err(|e| e.to_string())? {
+            SpvState::Running => return Ok(()),
+            // The start failed (the engine sent `Notice{SpvError}`).
+            SpvState::Stopped => return Err("SPV did not start".into()),
+            SpvState::Starting if start.elapsed() > timeout => {
+                return Err(format!("SPV did not start in {timeout:?}"));
+            }
+            SpvState::Starting => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+pub(crate) fn wait_for_height(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    height: u32,
+    timeout: Duration,
+) -> Result<(), String> {
+    ensure_spv_running(engine, session, timeout)?;
     let start = Instant::now();
     loop {
         let h = session.wallet_scan_height(&id).unwrap_or(0);
