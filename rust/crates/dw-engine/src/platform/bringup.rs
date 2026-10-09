@@ -282,15 +282,8 @@ impl NetworkSession {
                 PlatformSignal::Readmit(id) if manager.get_wallet(&id.0).await.is_none() => {
                     continue;
                 }
-                PlatformSignal::WalletAdded(id) => {
+                PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
                     admitted.insert(id, this.platform.stamp());
-                    (vec![id], Job::BringUp)
-                }
-                // A restore's readmission, or the bring-up a discovery
-                // queued: a recovery phase starts (DEC-125).
-                PlatformSignal::Readmit(id) => {
-                    admitted.insert(id, this.platform.stamp());
-                    this.advance_catch_up(id).await;
                     (vec![id], Job::BringUp)
                 }
             };
@@ -464,10 +457,13 @@ impl NetworkSession {
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, false));
             return;
         }
-        // No identity on file for a seed not created here: a restore (or a
-        // seed used elsewhere), whose first pass finds what happened before.
-        // A recovery phase starts (catch-up silence, DASHPAY §2.7, DEC-125).
-        if identity.is_none() && !created_here {
+        // A recovery phase starts (catch-up silence, DASHPAY §2.7; DEC-125,
+        // DEC-135): a seed not created here with no identity on file is a
+        // restore, whose first pass finds what happened before; a wallet
+        // with an identity on file replays recovered state, whichever path
+        // brought it up (the bring-up a discovery queued, or the one that
+        // replaces it after an SPV restart dropped the queued signal).
+        if identity.is_some() || !created_here {
             self.advance_catch_up(id).await;
         }
         self.platform.set_status(id, StartupStatus::Starting);

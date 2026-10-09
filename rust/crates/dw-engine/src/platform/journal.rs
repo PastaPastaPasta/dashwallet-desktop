@@ -9,11 +9,12 @@
 //!   so the library's whole-snapshot changesets, seen again and again, add
 //!   each event once. Contact events are once per relationship: a rotated
 //!   request (new `$createdAt`) is not news.
-//! - Catch-up silence (DEC-114, DEC-125). Each wallet has one boundary
-//!   ([`CATCH_UP_BEFORE_KEY`], persisted), which every recovery phase start
-//!   advances to `max(boundary, now)` ([`ChangesetTap::advance_catch_up`]):
-//!   a restore's bring-up, a discovery, the bring-up a discovery or a
-//!   restore readmits, a names pass. An event whose authoritative time
+//! - Catch-up silence (DEC-114, DEC-125, DEC-135). Each wallet has one
+//!   boundary ([`CATCH_UP_BEFORE_KEY`], persisted), which every recovery
+//!   phase start raises to `max(boundary, now)` in one atomic upsert
+//!   ([`ChangesetTap::advance_catch_up`]): a discovery, a names pass, and a
+//!   bring-up that runs for a wallet with an identity on file or one not
+//!   created here (a restore). An event whose authoritative time
 //!   predates the boundary is stored read: a request's `$createdAt`, a
 //!   payment's confirmed block time, a name's marketplace row time, the last
 //!   two read from the persister ([`Times`]). Local fetch or observation
@@ -308,7 +309,7 @@ impl ChangesetTap {
 
     /// The wallet's [`CATCH_UP_BEFORE_KEY`], from the cache or the database;
     /// `None` when unknown (logged when it could not be read).
-    fn catch_up_before(&self, id: WalletId) -> Option<u64> {
+    pub(super) fn catch_up_before(&self, id: WalletId) -> Option<u64> {
         self.load_catch_up_before(id).unwrap_or_else(|e| {
             tracing::warn!(wallet_id = %id, error = %e, "could not read the catch-up time");
             None
@@ -328,8 +329,16 @@ impl ChangesetTap {
             return Ok(None);
         };
         let at: u64 = text.parse().map_err(|_| format!("not a time: {text:?}"))?;
-        guard(&self.catch_up_before).insert(id, at);
-        Ok(Some(at))
+        Ok(Some(self.remember(id, at)))
+    }
+
+    /// Caches `at` as `id`'s boundary unless a later one is cached (a read
+    /// or a write that finishes after a newer one); the cached value.
+    pub(super) fn remember(&self, id: WalletId, at: u64) -> u64 {
+        let mut cache = guard(&self.catch_up_before);
+        let cached = cache.entry(id).or_insert(at);
+        *cached = (*cached).max(at);
+        *cached
     }
 
     /// A recovery phase of `id` starts: its catch-up boundary becomes
@@ -345,27 +354,29 @@ impl ChangesetTap {
         self.move_boundary(id, true);
     }
 
-    /// Sets the boundary to now: when nothing is on file, or with
-    /// `!first_only` when it is earlier. A value on file that cannot be read
-    /// is left alone (more news, never less).
     fn move_boundary(&self, id: WalletId, first_only: bool) {
-        let now = unix_now();
-        match self.load_catch_up_before(id) {
-            Ok(Some(at)) if first_only || at >= now => return,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(wallet_id = %id, error = %e, "could not read the catch-up time");
-                return;
-            }
-        }
+        self.move_boundary_to(id, unix_now(), first_only);
+    }
+
+    /// Raises the boundary to `at` (DEC-135): one upsert computes
+    /// `max(stored, at)` (with `first_only`, keeps any stored value) and the
+    /// cache takes what it returns, so overlapping phase starts cannot lower
+    /// it. A stored value that is not a time is left alone (more news, never
+    /// less).
+    pub(super) fn move_boundary_to(&self, id: WalletId, at: u64, first_only: bool) {
         let scope = dw_appdb::local_scope(&id.to_string());
         match self
             .appdb
-            .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some(&now.to_string()))
+            .raise_setting(&scope, CATCH_UP_BEFORE_KEY, at, first_only)
         {
-            Ok(()) => {
-                guard(&self.catch_up_before).insert(id, now);
-            }
+            Ok(stored) => match stored.parse() {
+                Ok(stored) => {
+                    self.remember(id, stored);
+                }
+                Err(_) => {
+                    tracing::warn!(wallet_id = %id, value = %stored, "the catch-up time on file is not a time");
+                }
+            },
             Err(e) => {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the catch-up time");
             }

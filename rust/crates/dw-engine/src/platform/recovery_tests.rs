@@ -559,6 +559,25 @@ fn session_with(
     (engine, s)
 }
 
+/// The network of an engine opened again on `dir` (after a shutdown), its
+/// vault as left, its Platform `platform`.
+fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
+    let engine = engine(dir);
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    *guard(&s.platform.recovery.mock) = Some(platform);
+    (engine, s)
+}
+
 fn restore(engine: &Engine, s: &Arc<NetworkSession>) -> WalletId {
     engine
         .block_on(s.import_wallet(
@@ -865,7 +884,7 @@ fn a_refused_store_leaves_a_discovered_identity_unverified() {
     let (engine, s) = session(dir.path(), Arc::clone(&platform));
     let id = restore(&engine, &s);
     let provenance = s.live().unwrap().provenance;
-    provenance.fallback_in_use();
+    provenance.fallback_in_use().unwrap();
     let wallet_db = s.data_dir().join(crate::session::WALLET_DB_FILE);
     let stored_identities = || -> i64 {
         rusqlite::Connection::open(&wallet_db)
@@ -902,6 +921,105 @@ fn a_refused_store_leaves_a_discovered_identity_unverified() {
         .record_verified(super::provenance::kind::IDENTITY, &base58(ALICE))
         .unwrap();
     assert_eq!(unverified(), vec![(base58(ALICE), false)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r3 R3-3's order (DEC-135): with SPV stopped, a discovery's queued
+/// bring-up signal has no receiver; the bring-up of the next start replaces
+/// it, and as a bring-up of a wallet with an identity on file it advances
+/// the boundary when it starts. A name Platform dates after the discovery
+/// but before that start is stored read.
+#[test]
+fn a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        replayed_names: vec![(ALICE, "between")],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    engine.block_on(s.stop_spv()).unwrap();
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    let discovered_at = boundary(&engine, &s, id).unwrap();
+    // After the discovery's boundary, a second before the next start's.
+    let between_ms = (discovered_at + 1) * 1_000 + 1;
+    while crate::events::unix_now() < discovered_at + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    persist_name_row(&s, id, ALICE, "between", between_ms);
+
+    start(&engine, &s);
+    wait_until("the replacement bring-up", || {
+        !journal(&engine, &s, id).is_empty()
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("between@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r3 R3-1's session probe (DEC-135): the latch is on file before the
+/// fallback serves anything, so an identity it fetched stays unverified
+/// after the session closes and the network is opened again, with no
+/// verification record. While app.sqlite is held the latch cannot be
+/// written and the fallback is refused (nothing is fetched through it).
+#[test]
+fn a_fallback_identity_stays_unverified_after_a_reopen() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let provenance = s.live().unwrap().provenance;
+    let holder = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(
+        provenance.fallback_in_use().is_err(),
+        "the fallback is refused"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
+    provenance.fallback_in_use().unwrap();
+    drop(provenance);
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    let unverified = |s: &Arc<NetworkSession>| {
+        s.dashpay(id)
+            .identities()
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.identity, i.unverified))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unverified(&s), vec![(base58(ALICE), true)]);
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let (engine, s) = reopen(dir.path(), platform);
+    wait_until("the wallet's identity", || !unverified(&s).is_empty());
+    assert_eq!(unverified(&s), vec![(base58(ALICE), true)]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

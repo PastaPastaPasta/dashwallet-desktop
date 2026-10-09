@@ -658,6 +658,38 @@ impl AppDb {
         Ok(())
     }
 
+    /// Raises a numeric setting to `value` in one statement and returns what
+    /// is stored afterwards: the stored value when it is a number at least
+    /// `value`, or when it is not a number at all (left for the caller to
+    /// report), else `value`. With `keep_existing`, any stored value stays
+    /// (the first write wins). Concurrent callers cannot lower it. `Ok` only
+    /// once the write has committed: the upsert runs in an explicit
+    /// transaction, because a lone `RETURNING` statement commits when it is
+    /// reset, where `query_row` would drop a commit failure.
+    pub fn raise_setting(
+        &self,
+        scope: &str,
+        key: &str,
+        value: u64,
+        keep_existing: bool,
+    ) -> Result<String> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let stored = tx.query_row(
+            "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)
+             ON CONFLICT (scope, key) DO UPDATE SET value = CASE
+                 WHEN ?4 OR value = '' OR value GLOB '*[^0-9]*'
+                     OR CAST(value AS INTEGER) >= ?5 THEN value
+                 ELSE excluded.value
+             END
+             RETURNING value",
+            params![scope, key, value.to_string(), keep_existing, value as i64],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(stored)
+    }
+
     /// Every `(key, value)` of `scope` whose key starts with `prefix`, by
     /// key.
     pub fn settings_with_prefix(&self, scope: &str, prefix: &str) -> Result<Vec<(String, String)>> {
@@ -985,6 +1017,23 @@ mod tests {
         assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("w"));
         db.set_setting(GLOBAL_SCOPE, "k", None).unwrap();
         assert_eq!(db.setting(GLOBAL_SCOPE, "k").unwrap(), None);
+    }
+
+    #[test]
+    fn a_raised_setting_never_goes_down() {
+        let db = AppDb::open_in_memory().unwrap();
+        let raise = |v, keep| db.raise_setting(GLOBAL_SCOPE, "b", v, keep).unwrap();
+        assert_eq!(raise(900, true), "900");
+        assert_eq!(raise(2000, true), "900", "kept");
+        assert_eq!(raise(2000, false), "2000");
+        assert_eq!(raise(1000, false), "2000", "a stale caller");
+        assert_eq!(raise(10_000, false), "10000", "numeric, not text, order");
+        db.set_setting(GLOBAL_SCOPE, "b", Some("garbled")).unwrap();
+        assert_eq!(raise(20_000, false), "garbled");
+        assert_eq!(
+            db.setting(GLOBAL_SCOPE, "b").unwrap().as_deref(),
+            Some("garbled")
+        );
     }
 
     #[test]

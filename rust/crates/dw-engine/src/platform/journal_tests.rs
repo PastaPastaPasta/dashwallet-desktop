@@ -817,6 +817,34 @@ fn a_recovery_phase_moves_the_boundary_forward_only() {
     assert!(h.journal().last().unwrap().read_at.is_some());
 }
 
+/// Sol r3 R3-2's interleaving (DEC-135): the boundary is at 900; a phase
+/// start that captured 1000 is overtaken by one at 2000 and lands after it.
+/// The upsert keeps 2000 on disk and the cache takes what it returns; a
+/// read of 900 that fills the cache late cannot lower it either. A request
+/// Platform dates at 1500 s stays history.
+#[test]
+fn a_stale_phase_start_never_lowers_the_boundary() {
+    let h = Harness::new();
+    let scope = dw_appdb::local_scope(&W.to_string());
+    let stored = || h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap();
+    h.tap.move_boundary_to(W, 900, false);
+    h.tap.move_boundary_to(W, 2_000, false);
+    h.tap.move_boundary_to(W, 1_000, false);
+    assert_eq!(stored().as_deref(), Some("2000"));
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    assert_eq!(h.tap.remember(W, 900), 2_000);
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    // A cache that missed the later write learns it from the next upsert.
+    h.tap.forget(&W);
+    h.tap.remember(W, 900);
+    h.tap.move_boundary_to(W, 1_000, false);
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    assert_eq!(stored().as_deref(), Some("2000"));
+
+    h.feed(contacts(incoming(ME, BOB, 1_500_000)));
+    assert!(h.journal()[0].read_at.is_some());
+}
+
 /// What happened before the wallet's first bring-up here stays history
 /// when it arrives after the recovery phases (a pass cut off by its
 /// budget, a lock or a kill; review C1), by authoritative time only
