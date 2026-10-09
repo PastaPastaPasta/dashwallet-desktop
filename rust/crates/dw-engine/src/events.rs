@@ -183,9 +183,9 @@ pub enum NoticeCode {
     /// wallet and the cause. A backup skipped because the data key is not
     /// available is not a failure.
     BackupFailed,
-    /// `remove_wallet` removed the wallet but could not delete its seed from
-    /// the vault (for example the vault was locked meanwhile). The detail
-    /// names the wallet id; the seed stays in the vault, encrypted.
+    /// No longer sent: since E0-04 DEC-134 `remove_wallet` fails closed
+    /// when it cannot delete the seed, and returns that error instead. Kept
+    /// because the frozen bindings carry it.
     WalletSecretNotDeleted,
     /// A wallet's DashPay bring-up ended short of settled (DASHPAY §3.7):
     /// SPV started anyway, and the DIP-15 rescan or a later start finishes

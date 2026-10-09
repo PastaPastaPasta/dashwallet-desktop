@@ -11,7 +11,7 @@ use dw_vault::GrantKind;
 
 use crate::events::{WalletName, unix_now};
 use crate::platform::RevokeCause;
-use crate::{EngineError, EngineEvent, NetworkSession, NoticeCode, WalletBalances, WalletId};
+use crate::{EngineError, EngineEvent, NetworkSession, WalletBalances, WalletId};
 
 /// Longest wallet name, in characters, after trimming.
 pub const MAX_WALLET_NAME: usize = 64;
@@ -194,11 +194,19 @@ impl NetworkSession {
     /// locked or mixing-only vault. For a wallet with a seed the grant is
     /// checked up front without consuming it, so a locked vault with a grant
     /// that carries no key is refused (`Vault(Locked)`) before anything is
-    /// consumed or deleted. `WalletRemoved` is sent as soon as the wallet's
-    /// rows are gone. If the vault records then cannot be deleted (the vault
-    /// was locked in the meantime, a write failed), the wallet stays removed,
-    /// the call still succeeds and `Notice{WalletSecretNotDeleted}` reports
-    /// the leftover seed (review M8).
+    /// consumed or deleted.
+    ///
+    /// The vault records go first and fail the removal closed (E0-04
+    /// DEC-134): if they cannot be deleted (the vault was locked in the
+    /// meantime, a write failed), the call returns that error, the wallet
+    /// stays listed and usable, and nothing else of it is removed. The
+    /// wallet's leases are revoked and the grant is consumed either way.
+    /// Once the seed is gone the removal is committed: a later step's
+    /// failure is returned and leaves the wallet without a seed. Removing it
+    /// again finishes the removal, after a reopen of the session when the
+    /// failure came after the wallet manager let it go. `WalletRemoved` is
+    /// sent once the wallet's rows are gone. The removal holds the wallet's
+    /// barrier throughout, so a lease begun meanwhile finds no wallet.
     pub async fn remove_wallet(
         self: &Arc<Self>,
         id: WalletId,
@@ -228,12 +236,14 @@ impl NetworkSession {
             // is done: none may keep its master key, or apply what it finds,
             // past the removal (review DP1-05 r1 M3).
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
+            // DEC-134: the vault records first; their failure fails the
+            // removal closed, before anything else of the wallet goes.
+            let vault = this.vault.clone();
+            tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await??;
             live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
-            // Wallet rows first: until the vault records go, the seed can
-            // still restore the wallet if a later step fails.
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 persister.delete_wallet(id.0)?;
                 appdb
@@ -246,24 +256,7 @@ impl NetworkSession {
                 network: this.network.clone(),
                 wallet_id: id,
             });
-
-            let vault = this.vault.clone();
-            let deleted =
-                tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await;
-            let failure = match deleted {
-                Ok(Ok(_)) => None,
-                Ok(Err(e)) => Some(e.to_string()),
-                Err(e) => Some(e.to_string()),
-            };
             this.erase_dispatch_rows(id).await;
-            if let Some(detail) = failure {
-                tracing::warn!(wallet_id = %id, error = %detail, "removed wallet's vault records were not deleted");
-                this.sink.emit(EngineEvent::Notice {
-                    network: Some(this.network.clone()),
-                    code: NoticeCode::WalletSecretNotDeleted,
-                    detail: format!("wallet {id}: {detail}"),
-                });
-            }
             Ok(())
         })
         .await

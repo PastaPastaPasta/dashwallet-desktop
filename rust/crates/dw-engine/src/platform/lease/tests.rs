@@ -1522,3 +1522,49 @@ async fn an_abandon_during_the_register_write_lands_revoked_and_refunded() {
         }
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_removal_erase_waits_for_an_in_flight_register() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 1_000, 0, 0).await.unwrap();
+    let other = begin(&t, W2, 1_000, 0, 0).await.unwrap();
+    register(&other, art(9), 1).await.unwrap();
+    // A register whose row write is still running when the removal starts.
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let registering = tokio::spawn({
+        let l = l.clone();
+        async move { register(&l, art(1), 100).await }
+    });
+    // Its marker stays for the stalled write; inserting it notifies no one.
+    while !t.with_j(|i, _| i.fence.registering.contains_key(&(W, art(1)))) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    // DEC-134: the removal holds its barrier until it is done, so a lease
+    // begun meanwhile waits it out and registers nothing; its erase waits
+    // for the running write to land.
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    let fresh = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { begin(&t, W, 1_000, 0, 0).await }
+    });
+    t.erase_wallet_rows(W).await;
+    assert!(
+        t.with_j(|i, _| i.fence.registering.is_empty()),
+        "the erase ran after the write"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!fresh.is_finished(), "the barrier is still held");
+    drop(removal);
+    fresh.await.unwrap().unwrap();
+    registering.await.unwrap().unwrap();
+    let (rows, steps) = j.load();
+    assert!(
+        rows.iter().all(|r| r.wallet != W.0),
+        "no row of the removed wallet: {rows:?}"
+    );
+    assert!(steps.is_empty());
+    assert!(rows.iter().any(|r| r.wallet == W2.0), "W2 keeps its row");
+}

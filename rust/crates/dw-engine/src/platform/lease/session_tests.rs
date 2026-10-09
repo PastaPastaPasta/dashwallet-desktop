@@ -9,7 +9,7 @@ use dashcore::hashes::Hash;
 use dashcore::{OutPoint, TxOut, Txid};
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, UnlockScope,
-    VaultConfig,
+    VaultConfig, VaultError,
 };
 use key_wallet::Utxo;
 use zeroize::Zeroizing;
@@ -440,17 +440,54 @@ fn an_epoch_change_through_vault_op_needs_a_grant_and_rebind_restores() {
     assert_eq!(l.state(), Some(LeaseState::Active));
     assert!(!l.view().unwrap().own_key);
     l.identity_signer(&[0]).unwrap();
-    // A wrong old passphrase still revokes (recorded as an open question).
-    let r = f
-        .engine
-        .block_on(s.revoking_vault_op(RevokeCause::PassphraseChange, |v| {
-            v.change_passphrase(b"wrong", b"other")
-        }));
-    assert!(r.is_err());
-    assert_eq!(
-        l.state(),
-        Some(LeaseState::Revoked(RevokeCause::PassphraseChange))
+}
+
+#[test]
+fn a_wrong_old_passphrase_revokes_no_lease_and_a_correct_one_revokes_every_lease() {
+    let f = fixture(true);
+    let s = &f.session;
+    let l = f
+        .lease(FlowKind::ProfileEdit, &[f.platform_op(0, 5_000)])
+        .unwrap();
+    let pending = f.platform_op(0, 1_000);
+    let change = |old: &[u8], new: &[u8]| {
+        f.engine.block_on(
+            s.change_passphrase(Zeroizing::new(old.to_vec()), Zeroizing::new(new.to_vec())),
+        )
+    };
+    // DEC-134: a wrong old passphrase, or a rejected new one, is refused
+    // before the freeze: every lease and grant stays usable.
+    assert!(
+        matches!(
+            change(b"wrong", b"other"),
+            Err(EngineError::Vault(VaultError::WrongPassphrase { .. }))
+        ),
+        "wrong old passphrase"
     );
+    assert!(matches!(
+        change(PASS, b""),
+        Err(EngineError::Vault(VaultError::PassphraseRejected(_)))
+    ));
+    assert_eq!(l.state(), Some(LeaseState::Active));
+    l.identity_signer(&[0]).unwrap();
+    let second = f.lease(FlowKind::ProfileEdit, &[pending]).unwrap();
+    assert_eq!(second.state(), Some(LeaseState::Active));
+
+    // A correct one revokes every lease, as before.
+    change(PASS, b"new pass phrase").unwrap();
+    for lease in [&l, &second] {
+        assert_eq!(
+            lease.state(),
+            Some(LeaseState::Revoked(RevokeCause::PassphraseChange))
+        );
+    }
+    assert_eq!(
+        l.identity_signer(&[0]).unwrap_err(),
+        LeaseError::Revoked(RevokeCause::PassphraseChange)
+    );
+    s.vault()
+        .unlock(b"new pass phrase", UnlockScope::Full)
+        .unwrap();
 }
 
 #[test]

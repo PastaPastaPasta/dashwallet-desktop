@@ -544,13 +544,15 @@ impl Vault {
         old_passphrase: Vec<u8>,
         new_passphrase: Vec<u8>,
     ) -> Result<VaultStatus, VaultError> {
-        let old_passphrase = Zeroizing::new(old_passphrase);
-        let new_passphrase = Zeroizing::new(new_passphrase);
-        self.revoking_op(RevokeCause::PassphraseChange, move |v| {
-            v.change_passphrase(&old_passphrase, &new_passphrase)
-        })
-        .await
-        .map(Into::into)
+        // DEC-134: a wrong old passphrase revokes nothing.
+        Ok(self
+            .session
+            .change_passphrase(
+                Zeroizing::new(old_passphrase),
+                Zeroizing::new(new_passphrase),
+            )
+            .await?
+            .into())
     }
 
     /// Checks `credential` and issues a single-use grant for `purpose`.

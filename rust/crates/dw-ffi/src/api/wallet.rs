@@ -402,9 +402,11 @@ impl NetworkSession {
         Ok(self.inner.balances(&id)?.map(Into::into))
     }
 
-    /// Unloads the wallet, deletes its wallet-state rows, its app metadata
-    /// and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
-    /// grant. Emits `WalletRemoved`.
+    /// Deletes the wallet's vault records, then unloads it and deletes its
+    /// wallet-state rows and app metadata (IOS-109, QT-101 close+delete).
+    /// Needs a `Wipe` grant. Fails closed (E0-04 DEC-134): when the vault
+    /// records cannot be deleted the error is returned and the wallet stays
+    /// listed and usable. Emits `WalletRemoved`.
     pub async fn remove_wallet(
         &self,
         wallet_id: String,

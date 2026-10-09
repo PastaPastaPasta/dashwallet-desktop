@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow};
 use dw_vault::{GrantKind, GrantPurpose, SignerScope, Vault, VaultError, VaultStatus};
+use zeroize::Zeroizing;
 
 use super::fence::JournalBackend;
 use super::lock::{Freeze, Scope};
@@ -222,11 +223,11 @@ impl NetworkSession {
         status
     }
 
-    /// A vault call that ends the epoch on purpose (§8.6): encrypt, change
-    /// the passphrase, recover, destroy. Freezes with `cause` before the
-    /// call (so a wrong old passphrase still revokes), runs the call as its
-    /// gate and returns after the drain. A passphrase change re-creates the
-    /// background leases.
+    /// A vault call that ends the epoch on purpose (§8.6): encrypt,
+    /// recover, destroy (the passphrase change is
+    /// [`Self::change_passphrase`]). Freezes with `cause` before the call,
+    /// runs the call as its gate and returns after the drain, then
+    /// re-creates the background leases where the vault stays prompt-free.
     pub async fn revoking_vault_op<T, F>(
         self: &Arc<Self>,
         cause: RevokeCause,
@@ -236,8 +237,45 @@ impl NetworkSession {
         F: FnOnce(&Vault) -> Result<T, VaultError> + Send + 'static,
         T: Send + 'static,
     {
+        self.checked_revoking_vault_op(cause, |_| Ok(()), move |v, ()| f(v))
+            .await
+    }
+
+    /// Changes the vault passphrase (QT-111). The old passphrase is
+    /// verified, and the new one validated, before anything is revoked
+    /// (DEC-134): a refusal returns its error and every lease stays as it
+    /// was. A correct one revokes every lease like any revoking call.
+    pub async fn change_passphrase(
+        self: &Arc<Self>,
+        old: Zeroizing<Vec<u8>>,
+        new: Zeroizing<Vec<u8>>,
+    ) -> Result<VaultStatus, EngineError> {
+        self.checked_revoking_vault_op(
+            RevokeCause::PassphraseChange,
+            move |v| v.check_passphrase_change(&old, &new),
+            |v, change| v.apply_passphrase_change(change),
+        )
+        .await
+    }
+
+    /// [`Self::revoking_vault_op`] after `check`, which runs on the blocking
+    /// pool before the freeze: its refusal revokes nothing.
+    async fn checked_revoking_vault_op<P, T, C, F>(
+        self: &Arc<Self>,
+        cause: RevokeCause,
+        check: C,
+        f: F,
+    ) -> Result<T, EngineError>
+    where
+        C: FnOnce(&Vault) -> Result<P, VaultError> + Send + 'static,
+        P: Send + 'static,
+        F: FnOnce(&Vault, P) -> Result<T, VaultError> + Send + 'static,
+        T: Send + 'static,
+    {
         let _op = self.enter().await?;
         self.manager()?;
+        let vault = self.vault.clone();
+        let checked = self.rt.spawn_blocking(move || check(&vault)).await??;
         let mut freeze = self.leases.freeze(cause, Scope::All, true);
         let this = Arc::clone(self);
         let task = self.rt.spawn(async move {
@@ -246,7 +284,7 @@ impl NetworkSession {
                 .rt
                 .spawn_blocking(move || {
                     let before = gate.vault.lock_state();
-                    let out = f(&gate.vault);
+                    let out = f(&gate.vault, checked);
                     gate.emit_lock_state_change(before);
                     gate.leases.observe_epoch(gate.vault.epoch());
                     out
@@ -268,30 +306,14 @@ impl NetworkSession {
     #[must_use = "the barrier is released when this is dropped"]
     pub(crate) async fn revoke_wallet(&self, wallet: WalletId, cause: RevokeCause) -> Freeze {
         let mut freeze = self.leases.freeze(cause, Scope::Wallet(wallet), false);
-        freeze.drain().await;
+        freeze.drained().await;
         freeze
     }
 
-    /// Erases a removed wallet's journal rows (§6.5) unless one of them
-    /// may be on the wire.
+    /// Erases a removed wallet's journal rows (§6.5, DEC-134), under the
+    /// removal's barrier.
     pub(crate) async fn erase_dispatch_rows(&self, wallet: WalletId) {
-        if self.leases.wallet_possibly_sent(&wallet) {
-            tracing::warn!(wallet_id = %wallet, "keeping the dispatch records of a possibly sent asset lock");
-            return;
-        }
-        let Some(backend) = self.leases.journal.get() else {
-            return;
-        };
-        let erased = tokio::task::spawn_blocking(move || backend.erase_wallet(&wallet.0))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r);
-        match erased {
-            Ok(()) => self.leases.forget_wallet_entries(&wallet),
-            Err(e) => {
-                tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed")
-            }
-        }
+        self.leases.erase_wallet_rows(wallet).await;
     }
 
     /// Close's lease steps (§8.5), before the session's gate closes: the

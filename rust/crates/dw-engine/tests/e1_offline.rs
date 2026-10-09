@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dashcore::secp256k1::Secp256k1;
+use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen};
 use dw_engine::{
     AddressChain, AddressFilter, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent,
     EventSink, HistoryFilter, HistoryQuery, HistorySort, ImportOptions, NetworkSession, NoticeCode,
@@ -228,7 +229,7 @@ fn names_rename_and_remove() {
 }
 
 #[test]
-fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
+fn remove_wallet_refuses_a_locked_vault_without_a_key_carrying_grant() {
     // Encrypted and locked, with a grant that carries no key: refused before
     // anything is consumed, nothing removed.
     let dir = dw_testutil::private_tempdir();
@@ -263,46 +264,80 @@ fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
     assert!(!s.vault().has_wallet_secret(&a.0));
     assert_eq!(s.vault().lock_state(), dw_vault::LockState::Locked);
     engine.block_on(engine.shutdown()).unwrap();
+}
 
-    // The vault file cannot be rewritten when the records are deleted: the
-    // wallet is removed and announced, the leftover seed is a notice.
+/// DEC-134: when the seed cannot be deleted, the removal fails closed.
+#[test]
+fn remove_wallet_fails_closed_when_the_seed_cannot_be_deleted() {
     let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = new_engine(&dir.path().join("data"), Arc::clone(&rec));
     let s = open(&engine);
     unencrypted_vault(&engine, &s);
     let a = import(&engine, &s, ABANDON_12, genesis()).unwrap();
-    let wipe = engine
-        .block_on(
-            s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&a.0), Credential::None)),
-        )
+    // A dispatch record of the wallet, written through a second connection.
+    let journal_path = s.data_dir().join(DISPATCH_DB_FILE);
+    let journal = match DispatchJournal::open(&journal_path, 0).unwrap() {
+        JournalOpen::Ready(j) => j,
+        JournalOpen::NewerSchema(_) => unreachable!(),
+    };
+    journal
+        .register(&a.0, &[7; 32], &[1; 16], &[2; 16], b"", 0)
         .unwrap();
+    let rows_of = |w: &WalletId| {
+        journal
+            .load()
+            .unwrap()
+            .0
+            .iter()
+            .filter(|r| r.wallet == w.0)
+            .count()
+    };
+    let wipe = |s: &Arc<NetworkSession>| {
+        engine
+            .block_on(
+                s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&a.0), Credential::None)),
+            )
+            .unwrap()
+            .id
+    };
     // A directory where the vault writes its temporary file before the
-    // atomic rename (dw-vault `file::write`) makes that write fail.
+    // atomic rename (dw-vault `file::write`) makes the deletion fail.
     let obstruction = s.vault().dir().join("vault.dwv.tmp");
     std::fs::create_dir(&obstruction).unwrap();
-    engine.block_on(s.remove_wallet(a, wipe.id)).unwrap();
-    assert!(s.wallet_infos().unwrap().is_empty());
-    assert!(
-        s.vault().has_wallet_secret(&a.0),
-        "the seed was left behind"
+    let r = engine.block_on(s.remove_wallet(a, wipe(&s)));
+    assert!(matches!(r, Err(EngineError::Vault(_))), "{r:?}");
+    // Nothing of the wallet is removed, and it stays usable.
+    assert_eq!(
+        s.wallet_infos()
+            .unwrap()
+            .into_iter()
+            .map(|i| i.wallet_id)
+            .collect::<Vec<_>>(),
+        vec![a]
     );
-    let events = rec.events();
-    let removed = events.iter().position(|e| {
-        *e == EngineEvent::WalletRemoved {
-            network: DashNetwork::Regtest,
-            wallet_id: a,
-        }
-    });
-    let notice = events.iter().position(|e| {
-        matches!(e, EngineEvent::Notice { code: NoticeCode::WalletSecretNotDeleted, detail, .. }
-            if detail.contains(&a.to_string()))
-    });
-    assert!(
-        matches!((removed, notice), (Some(r), Some(n)) if r < n),
-        "{events:?}"
-    );
+    assert!(s.vault().has_wallet_secret(&a.0));
+    engine.block_on(s.next_receive_address(a, None)).unwrap();
+    assert_eq!(rows_of(&a), 1, "no journal erase");
+    assert!(!rec.events().iter().any(|e| matches!(
+        e,
+        EngineEvent::WalletRemoved { .. }
+            | EngineEvent::Notice {
+                code: NoticeCode::WalletSecretNotDeleted,
+                ..
+            }
+    )));
+
+    // Once the vault can be written, a fresh grant removes it all.
     std::fs::remove_dir(&obstruction).unwrap();
+    engine.block_on(s.remove_wallet(a, wipe(&s))).unwrap();
+    assert!(s.wallet_infos().unwrap().is_empty());
+    assert!(!s.vault().has_wallet_secret(&a.0));
+    assert_eq!(rows_of(&a), 0, "the journal rows are erased");
+    assert!(rec.events().contains(&EngineEvent::WalletRemoved {
+        network: DashNetwork::Regtest,
+        wallet_id: a,
+    }));
     engine.block_on(engine.shutdown()).unwrap();
 }
 

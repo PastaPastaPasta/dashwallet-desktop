@@ -137,7 +137,8 @@ impl NetworkSession {
     /// ended the epoch moves every lease to `NeedsGrant` and re-creates
     /// the background leases where the vault stays prompt-free. Calls that
     /// end the epoch on purpose (encrypt, passphrase change, recover,
-    /// destroy) go through [`Self::revoking_vault_op`] instead.
+    /// destroy) go through [`Self::revoking_vault_op`], or for a passphrase
+    /// change [`Self::change_passphrase`], instead.
     pub async fn vault_op<T, F>(self: &Arc<Self>, f: F) -> Result<T, EngineError>
     where
         F: FnOnce(&Vault) -> Result<T, VaultError> + Send + 'static,

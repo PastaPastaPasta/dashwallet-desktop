@@ -202,8 +202,15 @@ impl Freeze {
     /// The drain (§8.1 step 3): waits until every permit of the snapshot
     /// has ended or passed its deadline (H3), without polling; emits
     /// `LockProgress::Draining` when the count changes. Ends at the latest
-    /// deadline, at most H after the freeze.
+    /// deadline, at most H after the freeze, and releases the barrier.
     pub(crate) async fn drain(&mut self) {
+        self.drained().await;
+        self.release_drain();
+    }
+
+    /// [`Self::drain`] keeping the barrier set until this is dropped: a
+    /// wallet's removal holds it through the whole removal (DEC-134).
+    pub(crate) async fn drained(&mut self) {
         let table = Arc::clone(&self.table);
         let mut shown = None;
         loop {
@@ -238,7 +245,6 @@ impl Freeze {
                 _ = tokio::time::sleep_until(next) => {}
             }
         }
-        self.release_drain();
     }
 
     fn release_drain(&mut self) {

@@ -446,6 +446,23 @@ pub(crate) struct Shared {
     inner: Mutex<Inner>,
 }
 
+/// A passphrase change whose old passphrase was verified
+/// ([`Vault::check_passphrase_change`]); [`Vault::apply_passphrase_change`]
+/// applies it. Holds the unwrapped data key and the new passphrase, both
+/// zeroized on drop.
+pub struct CheckedPassphraseChange {
+    dek: Key32,
+    new: Zeroizing<Vec<u8>>,
+    /// Slot P as checked: the vault id and its wrapped data key.
+    slot: (Vec<u8>, crypto::Sealed),
+}
+
+impl std::fmt::Debug for CheckedPassphraseChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CheckedPassphraseChange(..)")
+    }
+}
+
 /// The vault of one network. Cheap to clone (shared state).
 #[derive(Clone)]
 pub struct Vault {
@@ -880,9 +897,45 @@ impl Vault {
     /// inherent to any copy: an old copy of `vault.dwv` still opens with
     /// the old passphrase.
     pub fn change_passphrase(&self, old: &[u8], new: &[u8]) -> Result<VaultStatus, VaultError> {
+        self.apply_passphrase_change(self.check_passphrase_change(old, new)?)
+    }
+
+    /// The first half of [`Self::change_passphrase`]: validates `new` and
+    /// verifies `old` (one KDF run; a wrong one counts as a failed attempt),
+    /// changing nothing else. The engine runs it before it revokes anything
+    /// (E0-04 DEC-134), so a wrong old passphrase leaves every lease alone.
+    pub fn check_passphrase_change(
+        &self,
+        old: &[u8],
+        new: &[u8],
+    ) -> Result<CheckedPassphraseChange, VaultError> {
         let new = new_passphrase(new)?;
         let writer = self.writer();
         let (dek, _) = self.check_passphrase(&writer, old)?;
+        let slot = self.slot_identity(&self.inner())?;
+        Ok(CheckedPassphraseChange { dek, new, slot })
+    }
+
+    /// The second half of [`Self::change_passphrase`]: re-wraps the data key
+    /// under the checked new passphrase. Refused with `WrongPassphrase` (not
+    /// counted as an attempt) when slot P changed since the check: the old
+    /// passphrase was checked against a slot that is gone.
+    pub fn apply_passphrase_change(
+        &self,
+        change: CheckedPassphraseChange,
+    ) -> Result<VaultStatus, VaultError> {
+        let CheckedPassphraseChange { dek, new, slot } = change;
+        let writer = self.writer();
+        {
+            let inner = self.inner();
+            if self.slot_identity(&inner)? != slot {
+                let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+                return Err(VaultError::WrongPassphrase {
+                    failed_attempts: f.throttle.failed_attempts,
+                    retry_after_secs: None,
+                });
+            }
+        }
         let salt: [u8; SALT_LEN] = crypto::random_array()?;
         let (kdf, kek) = crypto::derive_new_kek(
             &new,
@@ -907,6 +960,14 @@ impl Vault {
         }
         drop(writer);
         Ok(self.status_of(&inner))
+    }
+
+    /// What identifies slot P: the vault and its wrapped data key, which
+    /// every passphrase change replaces.
+    fn slot_identity(&self, inner: &Inner) -> Result<(Vec<u8>, crypto::Sealed), VaultError> {
+        let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
+        let slot = f.slot_p.as_ref().ok_or(VaultError::NotEncrypted)?;
+        Ok((f.vault_id.to_vec(), slot.wrapped_dek.clone()))
     }
 
     /// Verifies `passphrase` against slot P of the in-memory file and checks

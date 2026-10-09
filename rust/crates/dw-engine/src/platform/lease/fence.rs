@@ -200,7 +200,7 @@ pub(crate) struct FenceState {
     /// The lease that registered each entry of this process.
     origins: HashMap<(WalletId, ArtifactId), LeaseId>,
     /// Registrations whose write runs; `true` once abandoned meanwhile.
-    registering: HashMap<(WalletId, ArtifactId), bool>,
+    pub(super) registering: HashMap<(WalletId, ArtifactId), bool>,
     rowless: HashMap<ArtifactId, Rowless>,
     steps: HashMap<(WalletId, String), HashMap<ArtifactId, Mark>>,
     spend: HashMap<ArtifactId, SpendCharge>,
@@ -806,10 +806,16 @@ impl LeaseTable {
         // the write neither loses the entry nor leaks the charge.
         self.rt
             .spawn_blocking(move || {
-                let written = backend.register(&wallet.0, &txid.0, &lease, &process, &payload);
+                // Its J step below always runs, even after a panicking
+                // write: a removal's erase waits for it (`erase_wallet_rows`).
+                let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    backend.register(&wallet.0, &txid.0, &lease, &process, &payload)
+                }))
+                .unwrap_or_else(|_| Err("the journal write panicked".into()));
                 table.with_j(|i, fx| {
                     let key = (wallet, txid);
                     let abandoned = i.fence.registering.remove(&key).unwrap_or(false);
+                    fx.notify();
                     let kept = matches!(written, Ok(dw_appdb::dispatch::Registered::Ok))
                         && !i.fence.entries.contains_key(&key);
                     if kept {
@@ -1510,9 +1516,37 @@ impl LeaseTable {
         })
     }
 
+    /// Erases a removed wallet's journal rows (§6.5) unless one of them may
+    /// be on the wire. Runs under the removal's barrier, which refuses new
+    /// registrations, and first waits for the running ones to land
+    /// (DEC-134): no `Unsent` row of the wallet is written after the erase.
+    pub(crate) async fn erase_wallet_rows(&self, wallet: WalletId) {
+        self.wait_until(|i| (!i.fence.registering.keys().any(|(w, _)| *w == wallet)).then_some(()))
+            .await;
+        if self.wallet_possibly_sent(&wallet) {
+            tracing::warn!(wallet_id = %wallet, "keeping the dispatch records of a possibly sent asset lock");
+            return;
+        }
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        let erased = self
+            .rt
+            .spawn_blocking(move || backend.erase_wallet(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        match erased {
+            Ok(()) => self.forget_wallet_entries(&wallet),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed")
+            }
+        }
+    }
+
     /// Whether `wallet` has an entry that may be on the wire; a wiping
     /// removal keeps the journal's rows then (§6.5).
-    pub(crate) fn wallet_possibly_sent(&self, wallet: &WalletId) -> bool {
+    fn wallet_possibly_sent(&self, wallet: &WalletId) -> bool {
         self.with_j(|i, _| {
             i.fence.entries.iter().any(|((w, _), r)| {
                 w == wallet
@@ -1525,14 +1559,11 @@ impl LeaseTable {
     }
 
     /// Forgets a wiped wallet's entries after its rows were erased.
-    pub(crate) fn forget_wallet_entries(&self, wallet: &WalletId) {
+    fn forget_wallet_entries(&self, wallet: &WalletId) {
         self.with_j(|i, _| {
             i.fence.entries.retain(|(w, _), _| w != wallet);
             i.fence.origins.retain(|(w, _), _| w != wallet);
             i.fence.steps.retain(|(w, _), _| w != wallet);
-            for ((w, _), abandoned) in &mut i.fence.registering {
-                *abandoned |= w == wallet;
-            }
             i.fence.rowless.retain(|_, r| r.wallet != *wallet);
             i.fence.spend.retain(|_, s| s.wallet != *wallet);
         });
