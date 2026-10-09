@@ -1,8 +1,10 @@
-//! The persister platform-wallet is given: `SqlitePersister` with one
-//! change. Its `load` leaves out wallets the user closed (dash-qt "Close
+//! The persister platform-wallet is given: `SqlitePersister` with two
+//! changes. Its `load` leaves out wallets the user closed (dash-qt "Close
 //! Wallet", QT-101), so `load_from_persistor` at open, and again when a
 //! wallet is opened, registers only the wallets that should be in memory.
-//! Every other call goes straight to the SQLite persister.
+//! Its `store` is the changeset tap (DASHPAY §3.5): what the SQLite
+//! persister accepted goes on to `platform::journal`. Every other call goes
+//! straight to the SQLite persister.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -17,19 +19,28 @@ use platform_wallet::changeset::{
 };
 use platform_wallet_storage::SqlitePersister;
 
+use crate::WalletId;
+use crate::platform::journal::{ChangesetTap, classify};
+
 type RawWalletId = [u8; 32];
 
 pub(crate) struct WalletStore {
     inner: Arc<SqlitePersister>,
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
+    tap: Arc<ChangesetTap>,
 }
 
 impl WalletStore {
-    pub(crate) fn new(inner: Arc<SqlitePersister>, unloaded: HashSet<RawWalletId>) -> Self {
+    pub(crate) fn new(
+        inner: Arc<SqlitePersister>,
+        unloaded: HashSet<RawWalletId>,
+        tap: Arc<ChangesetTap>,
+    ) -> Self {
         Self {
             inner,
             unloaded: RwLock::new(unloaded),
+            tap,
         }
     }
 
@@ -86,7 +97,13 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
-        self.inner.store(wallet_id, changeset)
+        // Classified before the persister takes it, recorded once it has.
+        let classified = classify(&changeset);
+        self.inner.store(wallet_id, changeset)?;
+        if let Some(classified) = classified {
+            self.tap.record(WalletId(wallet_id), classified);
+        }
+        Ok(())
     }
 
     fn flush(&self, wallet_id: RawWalletId) -> Result<(), PersistenceError> {

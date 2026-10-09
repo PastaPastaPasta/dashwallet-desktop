@@ -435,6 +435,7 @@ impl NetworkSession {
             }
             Some(true) => {}
         }
+        self.note_first_bring_up(id).await;
         // The budget is known once the markers are read; the shorter one
         // bounds reading them.
         let prelude = async {
@@ -456,6 +457,12 @@ impl NetworkSession {
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, false));
             return;
         }
+        // No identity on file for a seed not created here: a restore (or a
+        // seed used elsewhere), whose first pass finds what happened before.
+        // Its events are stored read (catch-up silence, DASHPAY §2.7).
+        let _catch_up = (identity.is_none() && !created_here)
+            .then(|| self.catch_up(id))
+            .flatten();
         self.platform.set_status(id, StartupStatus::Starting);
         let budget = if created_here {
             CREATED_HERE_BUDGET

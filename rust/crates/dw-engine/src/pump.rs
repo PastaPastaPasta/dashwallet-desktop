@@ -9,8 +9,9 @@
 //!   when the interval ends (trailing edge), so the last change of a burst is
 //!   never dropped.
 //!
-//! Domains are `Sync`, `Balances` (dirty wallet set) and `History` (dirty
-//! txids per wallet). Each has its own interval clock.
+//! Domains are `Sync`, `Balances` (dirty wallet set), `History` (dirty
+//! txids per wallet) and `Platform` (DashPay changes per wallet, DASHPAY
+//! §3.5). Each has its own interval clock.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -21,7 +22,7 @@ use dashcore::Txid;
 use tokio::sync::{Notify, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
-use crate::WalletId;
+use crate::{PlatformChange, WalletId};
 
 /// Minimum spacing between two events of one domain.
 pub const MIN_INTERVAL: Duration = Duration::from_millis(250);
@@ -58,6 +59,7 @@ struct Pending {
     new_txs: BTreeMap<WalletId, Vec<Txid>>,
     /// When the current new-transaction batch is delivered.
     new_txs_due: Option<Instant>,
+    platform: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
 }
 
 /// Receives the merged changes of one flush. Implemented by the session.
@@ -68,6 +70,7 @@ pub(crate) trait PumpTarget: Send + Sync {
     /// One batch of first-seen transactions, [`NEW_TX_BATCH`] after the
     /// first of them.
     fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>);
+    fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>);
     /// Called every [`TICK_INTERVAL`].
     fn tick(&self);
 }
@@ -110,6 +113,21 @@ impl EventPump {
         });
     }
 
+    /// DashPay changes of the wallet (the changeset tap).
+    pub(crate) fn mark_platform(
+        &self,
+        wallet: WalletId,
+        changes: impl IntoIterator<Item = PlatformChange>,
+    ) {
+        self.with_pending(|p| p.platform.entry(wallet).or_default().extend(changes));
+    }
+
+    /// Takes the pending Platform changes without delivering them.
+    #[cfg(test)]
+    pub(crate) fn take_platform(&self) -> BTreeMap<WalletId, BTreeSet<PlatformChange>> {
+        self.take(|p| std::mem::take(&mut p.platform))
+    }
+
     /// `txids = None` asks hosts to reload the whole history.
     pub(crate) fn mark_history(&self, wallet: WalletId, txids: Option<&[Txid]>) {
         self.with_pending(|p| {
@@ -126,6 +144,7 @@ impl EventPump {
         let mut last_sync: Option<Instant> = None;
         let mut last_balances: Option<Instant> = None;
         let mut last_history: Option<Instant> = None;
+        let mut last_platform: Option<Instant> = None;
         let mut deadline: Option<Instant> = None;
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -158,12 +177,13 @@ impl EventPump {
                 deadline = Some(deadline.map_or(at, |d: Instant| d.min(at)));
             };
 
-            let (sync, balances, history, new_txs_due) = {
+            let (sync, balances, history, platform, new_txs_due) = {
                 let p = self.pending.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     p.sync,
                     !p.balances.is_empty(),
                     !p.history.is_empty(),
+                    !p.platform.is_empty(),
                     p.new_txs_due,
                 )
             };
@@ -204,6 +224,16 @@ impl EventPump {
                         let changes = self.take(|p| std::mem::take(&mut p.history));
                         target.flush_history(changes);
                         last_history = Some(now);
+                    }
+                    Err(at) => push_deadline(at),
+                }
+            }
+            if platform {
+                match due(last_platform) {
+                    Ok(()) => {
+                        let changes = self.take(|p| std::mem::take(&mut p.platform));
+                        target.flush_platform(changes);
+                        last_platform = Some(now);
                     }
                     Err(at) => push_deadline(at),
                 }
@@ -267,6 +297,17 @@ mod tests {
         fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
             let n: usize = batches.values().map(Vec::len).sum();
             self.push(format!("new={n}/{}", batches.len()));
+        }
+        fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>) {
+            let all: Vec<String> = changes
+                .values()
+                .flatten()
+                .map(|c| match c {
+                    PlatformChange::Payments { identity } => format!("payments:{identity}"),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            self.push(format!("platform={}", all.join(",")));
         }
         fn tick(&self) {}
     }
@@ -413,6 +454,64 @@ mod tests {
             rec.log().last().unwrap().1,
             format!("history={}", usize::MAX)
         );
+
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    /// DASHPAY §3.5: Platform signals are delivered at most 4 times a second,
+    /// each change once per flush, and the last change of a burst arrives
+    /// after the burst (trailing edge).
+    #[tokio::test(start_paused = true)]
+    async fn platform_signals_are_throttled_and_keep_the_trailing_edge() {
+        let pump = Arc::new(EventPump::default());
+        let rec = Arc::new(Recorder::default());
+        *rec.start.lock().unwrap() = Some(Instant::now());
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = {
+            let (pump, rec) = (Arc::clone(&pump), Arc::clone(&rec));
+            tokio::spawn(async move { pump.run(&*rec, stop_rx).await })
+        };
+        let wallet = WalletId([9; 32]);
+        let payments = |n: u32| PlatformChange::Payments {
+            identity: format!("i{n}"),
+        };
+
+        // 100 changes over ~990 ms; the last one is i99.
+        for n in 0..100u32 {
+            pump.mark_platform(wallet, [payments(n), PlatformChange::Identities]);
+            settle().await;
+            tokio::time::advance(Duration::from_millis(10)).await;
+        }
+        tokio::time::advance(Duration::from_millis(600)).await;
+        settle().await;
+
+        let log = rec.log();
+        let flushes: Vec<_> = log
+            .iter()
+            .filter(|(_, w)| w.starts_with("platform="))
+            .collect();
+        assert!(flushes.len() >= 4 && flushes.len() <= 6, "{flushes:?}");
+        for pair in flushes.windows(2) {
+            assert!(pair[1].0 - pair[0].0 >= 250, "flushes too close: {pair:?}");
+        }
+        assert_eq!(
+            flushes[0].1, "platform=Identities,payments:i0",
+            "leading edge"
+        );
+        let last = &flushes.last().unwrap().1;
+        assert!(last.ends_with("payments:i99"), "trailing edge kept: {last}");
+        // Every change was delivered, none twice in a flush.
+        let delivered: Vec<&str> = flushes
+            .iter()
+            .flat_map(|(_, w)| w["platform=".len()..].split(','))
+            .filter(|c| c.starts_with("payments:"))
+            .collect();
+        assert_eq!(delivered.len(), 100, "{delivered:?}");
+        // Another domain keeps its own clock.
+        pump.mark_balances(wallet);
+        settle().await;
+        assert_eq!(rec.log().last().unwrap().1, "balances=1");
 
         stop_tx.send(true).unwrap();
         task.await.unwrap();

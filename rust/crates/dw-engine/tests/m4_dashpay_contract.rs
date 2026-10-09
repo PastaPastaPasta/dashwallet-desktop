@@ -70,6 +70,8 @@ const FACADE: &[&str] = &[
 /// network seam and session tests (DP1-03).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
+    "journal.rs",
+    "journal_tests.rs",
     "keys_policy.rs",
     "mod.rs",
     "names_net.rs",

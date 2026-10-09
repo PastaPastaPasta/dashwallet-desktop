@@ -13,6 +13,9 @@ mod errors;
 mod flows;
 mod identity;
 mod invitations;
+pub(crate) mod journal;
+#[cfg(test)]
+mod journal_tests;
 pub mod keys_policy;
 mod names;
 mod notifications;

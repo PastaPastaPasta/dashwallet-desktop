@@ -54,8 +54,8 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
-DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_net.rs` and `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, and E0-06's changeset tap `journal.rs` with `journal_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -1497,7 +1497,25 @@ The shapes are in §3. What they mean, where the name does not say:
   `RequestReceived`, `RequestAccepted`, `ContactEstablished`, `PaymentReceived`. **`DashPayEvent.reference` per kind:**
   the label for the name kinds (`UsernameRegistered`, `Contest*`: "You won @alice"), the contact-request id for the
   request kinds, the txid for `PaymentReceived`. `contact` is empty for the name kinds. The journal's `ref` column holds
-  the same value.
+  the same value, with two refinements the changeset tap (E0-06) writes and the reader (DP2-05) follows:
+  - **name kinds** store `<label>@<stamp>`, so a name that leaves and comes back is a new event (dw-appdb's `dp_events`
+    rule; DPNS labels have no `@`, and the reader drops `@…` for `reference`). The stamp is the name's `acquired_at`
+    (ms) for `UsernameRegistered`, omitted with the `@` when the library has none, and the contest's `ends_at` for the
+    `Contest*` kinds (DP1-04 writes `ContestLost` and `ContestLocked` the same way);
+  - **request kinds** use the request's `$createdAt` in ms as its id: the library's `ContactRequest` carries no
+    document id, and with `contact` it names the request. `RequestReceived` cites the incoming request;
+    `RequestAccepted` (ours came first) and `ContactEstablished` (we accepted theirs) cite the contact's request.
+  - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
+    `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
+    and `ContactEstablished` once it has either of them.
+  - **catch-up:** an event is stored read (no OS notification, DASHPAY §2.7) while a restore pass holds the wallet,
+    and whenever what it reports predates the wallet's first bring-up in this installation (the local, unexported
+    setting `dashpay.catch_up_before`, UNIX seconds): a request by its `$createdAt`, a relationship by its later
+    request, a payment by its transaction's time, a name by its `acquired_at` (a name with none is discovery's:
+    history). DP1-05's restore passes (pass 2, `discover_identities`) hold `catch_up(wallet)` for their duration.
+  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
+    `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
+    call a later purchase of the label a win.
 - **`ProfileEdit`** is the whole new profile. `AvatarChange`: `Keep`, `Remove`, or `Set{candidate}` with a
   `prepare_avatar` candidate (after `upload_avatar` when `needs_upload`).
 - **`AvatarSize`.** `Small` is 128 px, `Large` 256 px. `AvatarImage.png` is the engine-re-encoded thumbnail, never
@@ -1518,7 +1536,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | `TxDraft` gains `Recipient::Contact{identity, contact, amount, subtract_fee, note}` | DP3-01 |
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13 | E0-05, E0-10b, E0-13 |
-| `EngineEvent::Platform{network, wallet_id, change}` (§3.5) | E0-06 |
+| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}` and `Names`. The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
 | `EngineEvent::LeaseChanged{network, lease: LeaseView}` and `LockProgress{network, phase}`, engine-side until E0-13 | E0-04 (P2a), E0-13 |

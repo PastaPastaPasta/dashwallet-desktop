@@ -105,6 +105,33 @@ pub enum EngineEvent {
         network: DashNetwork,
         wallet_id: WalletId,
     },
+    /// DashPay data of the wallet changed (DASHPAY §3.5): the changeset tap
+    /// saw the library store it. At most 4 times a second, trailing edge
+    /// kept; hosts re-query the domain `change` names.
+    Platform {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        change: PlatformChange,
+    },
+}
+
+/// The domain of an [`EngineEvent::Platform`] signal (DASHPAY §3.5).
+/// Identities are Base58; `draft` is the registration's id, `None` for an
+/// asset lock no registration row names (a top-up).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlatformChange {
+    /// Identities, their keys, profiles or names. Contact views re-query
+    /// on it too: contact profiles ride the identity snapshots.
+    Identities,
+    /// The identity's contacts, requests, contact accounts or ignored
+    /// senders.
+    Contacts { identity: String },
+    /// A tracked asset lock.
+    Registration { draft: Option<String> },
+    /// The identity's DashPay payments.
+    Payments { identity: String },
+    /// The DPNS name states (the username marketplace).
+    Names,
 }
 
 /// Non-fatal conditions the UI may surface.
@@ -642,6 +669,18 @@ impl PumpTarget for SessionPump {
                 txids,
                 catch_up,
             });
+        }
+    }
+
+    fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>) {
+        for (wallet_id, set) in changes {
+            for change in set {
+                self.hub.emit(EngineEvent::Platform {
+                    network: self.hub.network.clone(),
+                    wallet_id,
+                    change,
+                });
+            }
         }
     }
 
