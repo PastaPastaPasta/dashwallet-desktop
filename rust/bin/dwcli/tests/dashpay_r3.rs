@@ -1,7 +1,7 @@
 //! Regressions from review DW-E0-09 r3 (Sol), through the `dwcli` binary:
 //! an engine whose runtime is stalled after a panic is abandoned within a
 //! bound, whatever stdout does, and the passphrase `main` holds is wiped
-//! before the forced exit.
+//! before the forced exit, and before its last lines, whose write may block.
 //!
 //! The stall uses the debug-build fault hook `DWCLI_FAULT_INJECT`
 //! (`task-panic-wedge`: `dashpay status` runs an engine task that panics,
@@ -168,4 +168,69 @@ fn a_one_shot_command_abandons_a_stalled_engine() {
     assert_eq!(run.code, Some(1), "{}", run.stderr);
     assert!(run.stderr.contains(WIPED), "{}", run.stderr);
     assert!(!run.stderr.contains("SessionClosed"), "{}", run.stderr);
+}
+
+/// Runs `dwcli` with stdout on a full pipe nobody reads, and returns its
+/// stderr once the wipe marker shows, with the process still blocked on its
+/// last lines. Panics if the marker does not show within [`DEADLINE`].
+fn wiped_while_blocked(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
+    let (reader, mut filler) = std::io::pipe().unwrap();
+    let stdout = filler.try_clone().unwrap();
+    // Blocks once the pipe is full; ends when the reader closes.
+    let fill = std::thread::spawn(move || while filler.write_all(&[b'x'; 4096]).is_ok() {});
+    std::thread::sleep(Duration::from_millis(500));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
+        .arg("--datadir")
+        .arg(dir.join("data"))
+        .args(["--dapi", "http://127.0.0.1:1", "--passphrase-file"])
+        .arg(dir.join("pass"))
+        .args(args)
+        .env("TOKIO_WORKER_THREADS", "2")
+        .env("DWCLI_FAULT_INJECT", "task-panic-wedge")
+        .stdin(Stdio::piped())
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut stderr = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = stderr.read(&mut buf) {
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+        }
+    });
+    let start = Instant::now();
+    let mut text = String::new();
+    while !text.contains(WIPED) && start.elapsed() < DEADLINE {
+        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
+            text.push_str(&chunk);
+        }
+    }
+    let running = child.try_wait().unwrap().is_none();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    drop(reader);
+    fill.join().unwrap();
+    assert!(text.contains(WIPED), "no wipe within {DEADLINE:?}: {text}");
+    assert!(running, "{text}");
+    text
+}
+
+/// Sol r4 finding 2 (DEC-106): a caller that stops reading stdout blocks
+/// dwcli's last lines, as any CLI, but the passphrase is wiped before them,
+/// in a poisoned session and in a one-shot command.
+#[test]
+fn the_passphrase_is_wiped_before_a_blocked_write() {
+    let dir = dw_testutil::private_tempdir();
+    vault(dir.path());
+    let requests = concat!(
+        r#"{"args":["dashpay","status"],"id":1}"#,
+        "\n",
+        r#"{"args":["name","check","alice"],"id":2}"#,
+        "\n",
+    );
+    wiped_while_blocked(dir.path(), &["dashpay", "session"], requests.as_bytes());
+    wiped_while_blocked(dir.path(), &["dashpay", "status"], b"");
 }

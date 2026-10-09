@@ -522,13 +522,14 @@ fn run(cli: Cli) -> Result<(), String> {
             if dashpay::abandon_engine(&result) {
                 // An engine that failed its health probe may never shut
                 // down: exit without it. `exit` runs no destructor, so the
-                // passphrase is wiped first.
-                let _ = dashpay::report(result, Ok(()));
+                // passphrase is wiped first, before the last lines, whose
+                // write may block.
                 let mut passphrase = passphrase;
                 if let Some(p) = passphrase.as_mut() {
                     p.zeroize();
                 }
                 dashpay::report_wiped(passphrase.as_ref());
+                dashpay::report_abandoned(&result);
                 std::process::exit(1);
             }
             let teardown = engine
