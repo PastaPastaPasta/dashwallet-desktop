@@ -12,6 +12,10 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../src/test_stub.rs"]
+mod test_stub;
+use test_stub::{STUB_ARGS, STUB_CALL, stub_request};
+
 fn dwcli(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
         .arg("--datadir")
@@ -55,7 +59,7 @@ fn secrets_in_args_are_refused_by_the_grammar() {
         json!({"args": ["invite", "stash", "dashpay%3A%2F%2Finvite%3Fpk%3DARGS-SECRET"], "id": 1}),
         json!({"args": ["invite", "stash", "dashpay", "://", "invite?pk", "=ARGS-SECRET"], "id": 2}),
         json!({"args": ["invite", "stash", "ARGS-SECRET"], "id": 3}),
-        json!({"args": ["name", "check", "alice"], "id": 4}),
+        json!({"args": STUB_ARGS, "id": 4}),
     ];
     let stdin: String = requests.iter().map(|r| format!("{r}\n")).collect();
     let out = dwcli(dir.path(), &["dashpay", "session"], &[], stdin.as_bytes());
@@ -70,7 +74,7 @@ fn secrets_in_args_are_refused_by_the_grammar() {
             "bad arguments: argument 3 is surplus: `invite stash` takes no more"
         );
     }
-    assert_eq!(got[3]["error"]["params"]["call"], "check_username");
+    assert_eq!(got[3]["error"]["params"]["call"], STUB_CALL);
     assert_eq!(got[4], json!({"ok": true, "result": {"requests": 4}}));
     assert!(!text(&out).contains(SECRET), "{}", text(&out));
 }
@@ -101,11 +105,10 @@ fn a_one_shot_task_panic_is_one_sanitized_line() {
 #[test]
 fn a_session_probes_after_a_task_panic() {
     let dir = dw_testutil::private_tempdir();
-    let requests = concat!(
+    let requests = format!(
+        "{}\n{}\n",
         r#"{"args":["dashpay","status"],"id":1}"#,
-        "\n",
-        r#"{"args":["name","check","alice"],"id":2}"#,
-        "\n",
+        stub_request("2")
     );
     let fault = [("DWCLI_FAULT_INJECT", "task-panic")];
     let out = dwcli(
@@ -121,7 +124,7 @@ fn a_session_probes_after_a_task_panic() {
         (got[0]["id"].clone(), got[0]["error"]["code"].clone()),
         (json!(1), json!("internal"))
     );
-    assert_eq!(got[1]["error"]["params"]["call"], "check_username");
+    assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL);
     assert_eq!(got[2], json!({"ok": true, "result": {"requests": 2}}));
     assert!(!text(&out).contains("PANIC-SECRET"), "{}", text(&out));
 

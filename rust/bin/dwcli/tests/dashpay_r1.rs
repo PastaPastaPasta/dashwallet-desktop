@@ -12,6 +12,10 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../src/test_stub.rs"]
+mod test_stub;
+use test_stub::{STUB_CALL, stub_request};
+
 /// The session's line limit (content bytes, without the line ending).
 const MAX_LINE: usize = 64 * 1024;
 
@@ -48,8 +52,6 @@ fn text(out: &Output) -> String {
     )
 }
 
-const NEXT: &[u8] = br#"{"args":["name","check","alice"],"id":2}"#;
-
 /// GPT finding 2: a line exactly at the read boundary swallowed the next
 /// request. Content lengths around the limit, each ending in LF, CRLF or
 /// EOF; with a line ending, the next request must still be answered.
@@ -61,7 +63,7 @@ fn session_framing_at_the_line_limit() {
             let mut stdin = vec![b'x'; len];
             stdin.extend_from_slice(end);
             if !end.is_empty() {
-                stdin.extend_from_slice(NEXT);
+                stdin.extend_from_slice(stub_request("2").as_bytes());
                 stdin.push(b'\n');
             }
             let out = dwcli(dir.path(), &["dashpay", "session"], &[], &stdin);
@@ -82,10 +84,7 @@ fn session_framing_at_the_line_limit() {
             }
             if n == 2 {
                 assert_eq!(got[1]["id"], 2, "{case}");
-                assert_eq!(
-                    got[1]["error"]["params"]["call"], "check_username",
-                    "{case}"
-                );
+                assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL, "{case}");
             }
             assert_eq!(
                 got[n],
@@ -160,11 +159,10 @@ fn a_one_shot_panic_is_one_json_line() {
 #[test]
 fn a_session_survives_a_panic_unless_poisoned() {
     let dir = dw_testutil::private_tempdir();
-    let requests = concat!(
+    let requests = format!(
+        "{}\n{}\n",
         r#"{"args":["dashpay","status"],"id":1}"#,
-        "\n",
-        r#"{"args":["name","check","alice"],"id":2}"#,
-        "\n",
+        stub_request("2")
     );
     let fault = [("DWCLI_FAULT_INJECT", "panic")];
     let out = dwcli(
@@ -181,7 +179,7 @@ fn a_session_survives_a_panic_unless_poisoned() {
         (json!(1), json!("internal"))
     );
     assert_eq!(got[1]["id"], 2);
-    assert_eq!(got[1]["error"]["params"]["call"], "check_username");
+    assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL);
     assert_eq!(got[2], json!({"ok": true, "result": {"requests": 2}}));
     assert!(!text(&out).contains(PANIC_SECRET), "{}", text(&out));
 

@@ -1764,21 +1764,27 @@ mod tests {
         "invite",
     ];
 
-    /// The rows whose calls have real bodies (DP1-05), with the line each
-    /// prints on the tests' wallet, which has no identity and no Platform.
+    /// The rows whose calls have real bodies (DP1-05, DP1-03), with the
+    /// line each prints on the tests' wallet, which has no identity and no
+    /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
         ("dashpay events", NO_IDENTITY),
         ("identity list", r#"{"ok":true,"result":[]}"#),
         ("identity show", NO_IDENTITY),
         ("identity set-main I", NO_IDENTITY),
-        (
-            "identity discover",
-            r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#,
-        ),
+        ("identity discover", NO_PLATFORM),
         ("pay-contact C --amount 1", NO_IDENTITY),
+        ("name check alice", ALICE),
+        ("name availability alice", NO_PLATFORM),
+        ("name register --identity I bob", NO_PLATFORM),
     ];
 
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
+
+    const NO_PLATFORM: &str = r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#;
+
+    /// `name check alice`: valid, normalized and contested (DPNS rules).
+    const ALICE: &str = r#"{"ok":true,"result":{"valid":true,"normalized":"a11ce","contested":true,"rules":[{"rule":"min_length","passed":true},{"rule":"max_length","passed":true},{"rule":"allowed_characters","passed":true},{"rule":"no_edge_hyphen","passed":true},{"rule":"no_double_hyphen","passed":true}]}}"#;
 
     /// What tests feed a command that reads a bearer input.
     const SECRET: &[u8] = b"  dash:?du=alice&dapk=SECRET-MATERIAL\n";
@@ -2425,13 +2431,13 @@ mod tests {
         let err = run(&engine, &session, "identity list").unwrap_err();
         assert_eq!(err.code, "wallet_not_found");
         // `name check` and the invitation calls need no wallet.
-        let err = run(&engine, &session, "name check alice").unwrap_err();
-        assert_eq!(err.params, json!({"call": "check_username"}));
-        let err = run(&engine, &session, "invite pending").unwrap_err();
+        let alice: Value = serde_json::from_str(ALICE).unwrap();
         assert_eq!(
-            err.params,
-            json!({"call": "NetworkSession.pending_invitations"})
+            run(&engine, &session, "name check alice").unwrap(),
+            alice["result"]
         );
+        let err = run(&engine, &session, &crate::test_stub::STUB_ARGS.join(" ")).unwrap_err();
+        assert_eq!(err.params, json!({"call": crate::test_stub::STUB_CALL}));
         engine.block_on(engine.shutdown()).unwrap();
     }
 

@@ -8,6 +8,10 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../src/test_stub.rs"]
+mod test_stub;
+use test_stub::{STUB_CALL, stub_request};
+
 fn dwcli(dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
         .arg("--datadir")
@@ -83,11 +87,10 @@ fn dashpay_commands_print_one_json_line() {
     }
 
     // A session keeps one engine for many commands.
-    let requests = concat!(
-        r#"{"args":["name","check","alice"],"id":1}"#,
-        "\n",
+    let requests = format!(
+        "{}\n{}\n",
+        stub_request("1"),
         r#"{"args":["invite","stash"],"input":"dash:?invitation=E2E-BEARER-SECRET","id":2}"#,
-        "\n",
     );
     let out = dwcli(dir.path(), &["dashpay", "session"], requests.as_bytes());
     assert!(out.status.success(), "{out:?}");
@@ -99,7 +102,7 @@ fn dashpay_commands_print_one_json_line() {
         .collect();
     assert_eq!(lines.len(), 3, "{stdout}");
     assert_eq!(lines[0]["id"], 1);
-    assert_eq!(lines[0]["error"]["params"]["call"], "check_username");
+    assert_eq!(lines[0]["error"]["params"]["call"], STUB_CALL);
     assert_eq!(lines[1]["id"], 2);
     assert_eq!(lines[2], json!({"ok": true, "result": {"requests": 2}}));
 

@@ -6,6 +6,8 @@ mod compat;
 mod dashpay;
 mod pay;
 mod teardown;
+#[cfg(test)]
+mod test_stub;
 mod tools;
 
 use std::io::Read;
