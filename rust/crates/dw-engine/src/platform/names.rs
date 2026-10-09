@@ -73,6 +73,12 @@ const PREF_CONTESTED_NAME: &str = "contested_name";
 /// label is never an owned name ([`own_names`]); Platform alone says what
 /// became of it.
 const PREF_PENDING_NAME: &str = "pending_name";
+/// Labels Platform refused for good after the engine had written them, one
+/// per line: the library listed each after its write, so an older snapshot
+/// of its list may still hold it (DEC-124). A label moves here from the
+/// pending labels (this row written first) and leaves only when Platform
+/// shows the identity owns or contends for it ([`DashPay::settle`]).
+const PREF_REFUSED_NAME: &str = "refused_name";
 /// DPNS's contested document type.
 const DPNS_DOMAIN: &str = "domain";
 
@@ -249,7 +255,7 @@ fn valid_label(label: &str) -> Result<UsernameCheck, NameError> {
 }
 
 /// Whether two labels are one DPNS name (homograph folding).
-fn same_name(a: &str, b: &str) -> bool {
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
     convert_to_homograph_safe_chars(a) == convert_to_homograph_safe_chars(b)
 }
 
@@ -345,16 +351,18 @@ fn owned_labels<'a>(
 }
 
 /// The names of `owned` ([`owned_names`]) that Platform evidence shows the
-/// identity owns: a `pending` label (its write may be in flight) only if a
-/// marketplace row says so (`row_owned`). The library lists a label once
-/// its write returns, a contested one too, so a pending label there may be
-/// a running contest or a write cut short.
+/// identity owns: a pending or refused label ([`MainNamePrefs::hides`])
+/// only if a marketplace row says so (`row_owned`). The library lists a
+/// label once its write returns, a contested one too, so a pending label
+/// there may be a running contest or a write cut short, and a refused one
+/// is a copy an older list kept. `prefs` comes from the database, read for
+/// the call (DEC-124).
 pub(crate) fn evident_names(
     mut owned: Vec<(String, Option<u64>)>,
-    pending: &[String],
+    prefs: &MainNamePrefs,
     row_owned: impl Fn(&str) -> bool,
 ) -> Vec<(String, Option<u64>)> {
-    owned.retain(|(label, _)| !pending.iter().any(|p| same_name(p, label)) || row_owned(label));
+    owned.retain(|(label, _)| !prefs.hides(label) || row_owned(label));
     owned
 }
 
@@ -381,14 +389,19 @@ pub(crate) struct MainNamePrefs {
     pub(crate) contested: Option<String>,
     /// Labels whose write may be in flight ([`PREF_PENDING_NAME`]).
     pub(crate) pending: Vec<String>,
+    /// Labels refused for good after a write ([`PREF_REFUSED_NAME`]).
+    pub(crate) refused: Vec<String>,
 }
 
 impl MainNamePrefs {
-    pub(crate) const KEYS: [&str; 4] = [
+    /// In the order a read takes them: pending before refused
+    /// ([`PREF_REFUSED_NAME`]).
+    pub(crate) const KEYS: [&str; 5] = [
         MAIN_NAME_PREF,
         PREF_TEMPORARY_NAME,
         PREF_CONTESTED_NAME,
         PREF_PENDING_NAME,
+        PREF_REFUSED_NAME,
     ];
 
     /// Applies one row of [`Self::KEYS`] as stored (`None`: unset).
@@ -397,28 +410,37 @@ impl MainNamePrefs {
             MAIN_NAME_PREF => self.pick = value,
             PREF_TEMPORARY_NAME => self.temporary = value,
             PREF_CONTESTED_NAME => self.contested = value,
-            PREF_PENDING_NAME => {
-                self.pending = value
-                    .map(|v| {
-                        v.lines()
-                            .filter(|l| username_check(l).valid)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
+            PREF_PENDING_NAME => self.pending = labels(value),
+            PREF_REFUSED_NAME => self.refused = labels(value),
             _ => {}
         }
+    }
+
+    /// `label` is no name without a marketplace row: pending or refused.
+    pub(crate) fn hides(&self, label: &str) -> bool {
+        self.is_pending(label) || self.refused.iter().any(|l| same_name(l, label))
     }
 
     fn is_pending(&self, label: &str) -> bool {
         self.pending.iter().any(|l| same_name(l, label))
     }
+}
 
-    /// The [`PREF_PENDING_NAME`] value; `None` when nothing is pending.
-    fn pending_value(&self) -> Option<String> {
-        (!self.pending.is_empty()).then(|| self.pending.join("\n"))
-    }
+/// A label-list row's labels (a valid label has no line break).
+fn labels(value: Option<String>) -> Vec<String> {
+    value
+        .map(|v| {
+            v.lines()
+                .filter(|l| username_check(l).valid)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A label-list row's value; `None` when empty.
+fn labels_value(labels: &[String]) -> Option<String> {
+    (!labels.is_empty()).then(|| labels.join("\n"))
 }
 
 /// What a registration is for the identity, derived on each call from the
@@ -709,7 +731,7 @@ struct OwnNames {
 async fn own_names(
     wallet: &PlatformWallet,
     identity: &Identifier,
-    pending: &[String],
+    prefs: &MainNamePrefs,
 ) -> Result<OwnNames, NameError> {
     let state = wallet.state().await;
     let managed = state
@@ -729,7 +751,7 @@ async fn own_names(
     let rows = row_owned(*identity, &state.dpns_name_states);
     let owned = evident_names(
         owned_names(*identity, &managed.dpns_names, &state.dpns_name_states),
-        pending,
+        prefs,
         |label| rows.contains(&convert_to_homograph_safe_chars(label)),
     );
     Ok(OwnNames {
@@ -1226,13 +1248,15 @@ impl DashPay {
             Self::set_name_pref(session, ask, key, Some(label.to_string())).await?;
         }
         Self::update_pending(session, ask, false).await?;
+        Self::update_refused(session, ask, false).await?;
         Ok(outcome)
     }
 
     /// Records a refusal for good of `ask`'s label: the identity neither
     /// owns it nor contends for it, so it leaves the open contests and, if
-    /// it was pending, the pending labels and the copy the library listed
-    /// after its write.
+    /// it was pending, the copy the library listed after its write and the
+    /// pending labels, for the refused ones (written first, DEC-124), all
+    /// before the refusal returns.
     async fn forget(
         session: &NetworkSession,
         wallet: &PlatformWallet,
@@ -1244,6 +1268,9 @@ impl DashPay {
         let pending = Self::main_name_prefs(session, ask.wallet_id, &ask.identity)
             .await?
             .is_pending(label);
+        if pending {
+            Self::update_refused(session, ask, true).await?;
+        }
         Self::edit_names(wallet, ask, |managed, persister| {
             if pending
                 && managed
@@ -1318,7 +1345,7 @@ impl DashPay {
         identity: Identifier,
     ) -> Result<(OwnNames, MainNamePrefs), NameError> {
         let prefs = Self::main_name_prefs(session, wallet_id, &identity).await?;
-        let names = own_names(wallet, &identity, &prefs.pending).await?;
+        let names = own_names(wallet, &identity, &prefs).await?;
         Ok((names, prefs))
     }
 
@@ -1334,7 +1361,38 @@ impl DashPay {
         if pending {
             prefs.pending.push(ask.label.clone());
         }
-        Self::set_name_pref(session, ask, PREF_PENDING_NAME, prefs.pending_value()).await
+        Self::set_name_pref(
+            session,
+            ask,
+            PREF_PENDING_NAME,
+            labels_value(&prefs.pending),
+        )
+        .await
+    }
+
+    /// Adds `ask`'s label to the refused labels, or removes it; the caller
+    /// holds the state lock.
+    async fn update_refused(
+        session: &NetworkSession,
+        ask: &Registration,
+        refused: bool,
+    ) -> Result<(), NameError> {
+        let mut prefs = Self::main_name_prefs(session, ask.wallet_id, &ask.identity).await?;
+        let had = prefs.refused.iter().any(|l| same_name(l, &ask.label));
+        if had == refused {
+            return Ok(());
+        }
+        prefs.refused.retain(|l| !same_name(l, &ask.label));
+        if refused {
+            prefs.refused.push(ask.label.clone());
+        }
+        Self::set_name_pref(
+            session,
+            ask,
+            PREF_REFUSED_NAME,
+            labels_value(&prefs.refused),
+        )
+        .await
     }
 
     async fn set_name_pref(

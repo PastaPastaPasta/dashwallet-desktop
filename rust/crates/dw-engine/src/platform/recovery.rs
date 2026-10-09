@@ -35,20 +35,24 @@
 //!
 //! - `NetworkSession::set_main_name(wallet, identity, Some(label) | None)`
 //!   stores (or clears, back to the default) an identity's main name in
-//!   `dp_prefs` under [`MAIN_NAME_PREF`] and updates the cache;
-//!   `set_name_pref` does the same for DP1-03's other main-name rows
-//!   ([`MainNamePrefs`]), and `name_prefs` reads them;
-//!   `set_main_identity_of` is `DashPay::set_main_identity`'s body. All
-//!   serialize with each other and with loads, so the cache ends as the
-//!   database does. Write the rows only through them, never directly.
+//!   `dp_prefs` under [`MAIN_NAME_PREF`]; `set_name_pref` does the same for
+//!   DP1-03's other main-name rows ([`MainNamePrefs`]), and `name_prefs`
+//!   reads them; `set_main_identity_of` is `DashPay::set_main_identity`'s
+//!   body and updates the cache. All serialize with each other and with
+//!   loads, so the cache ends as the database does. Write the rows only
+//!   through them, never directly.
+//! - Which names show is never the cache's to say (DEC-124): `identities()`
+//!   reads the main-name rows from the database on every call, in one read,
+//!   and filters the library's list, or the last snapshot of it, with them.
 //! - [`resolve_main_name`] is the selection rule; `identities()` and
 //!   `DashPay::main_name` apply it.
 //! - dw-appdb's `main_identity`/`set_main_identity` and
 //!   `dp_prefs`/`set_dp_pref` are the storage underneath.
 //!
-//! `identities()` is a sync read (m4 §1): it reads the library's in-memory
-//! identity state when its lock is free and the last snapshot otherwise, and
-//! the choices from a cache loaded at open, at each bring-up and on writes.
+//! `identities()` is a sync call (m4 §1): it reads the library's in-memory
+//! identity state when its lock is free and the last snapshot otherwise, the
+//! main identity from a cache loaded at open, at each bring-up and on writes,
+//! and the main-name rows from the database.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
@@ -73,7 +77,7 @@ use super::bringup::until;
 use super::errors::{IdentityError, PlatformError};
 use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
-use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
+use super::names::{MainNamePrefs, evident_names, resolve_main_name, same_name, shown_names};
 use super::profile::Profile;
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
@@ -107,11 +111,11 @@ pub(super) struct OwnedIdentity {
     pub(super) profile: Option<Profile>,
 }
 
-/// The wallet's identity choices, as stored.
+/// The wallet's identity choices, as stored: the main identity (cached) and
+/// identity → its main-name rows (read from the database for each call).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct IdentityChoices {
     pub(super) main_identity: Option<String>,
-    /// identity → its main-name rows.
     pub(super) names: HashMap<String, MainNamePrefs>,
 }
 
@@ -287,10 +291,14 @@ pub(super) trait MockPlatform: Send + Sync {
 pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 /// The read model: identities by index, the main identity marked, each with
-/// its main name.
+/// the names Platform evidence shows it owns ([`evident_names`]) and its main
+/// name. `current`: `owned` was read from the library now, not an older
+/// snapshot, whose open contests may predate a contest the identity joined
+/// since (so the label it contends for shows only with a marketplace row).
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
+    current: bool,
 ) -> Vec<IdentitySummary> {
     owned.sort_by(|a, b| (a.index, &a.identity).cmp(&(b.index, &b.identity)));
     let main = choices
@@ -303,10 +311,14 @@ pub(super) fn summaries(
         .enumerate()
         .map(|(i, o)| {
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
-            let names = evident_names(o.names, &prefs.pending, |label| {
+            let row_owned = |label: &str| {
                 o.row_owned
                     .contains(&convert_to_homograph_safe_chars(label))
-            });
+            };
+            let mut names = evident_names(o.names, &prefs, row_owned);
+            if !current && let Some(contested) = &prefs.contested {
+                names.retain(|(label, _)| !same_name(label, contested) || row_owned(label));
+            }
             IdentitySummary {
                 main_name: resolve_main_name(&names, &o.open_contests, &prefs),
                 is_main: i == main,
@@ -395,7 +407,9 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
 }
 
 impl NetworkSession {
-    /// `DashPay::identities`: in-memory only (m4 §1).
+    /// `DashPay::identities`: in memory, but for one database read of the
+    /// main-name rows, which decide the names shown (DEC-124); without that
+    /// read the call fails rather than show a name it cannot vouch for.
     pub(super) fn identity_summaries(
         &self,
         id: WalletId,
@@ -405,7 +419,10 @@ impl NetworkSession {
         let manager = self.manager()?;
         let wm = manager.wallet_manager_arc();
         let recovery = &self.platform.recovery;
-        let owned = match wm.try_read() {
+        // Before the identity state: a name settled or refused after this
+        // read is at worst hidden by it, never shown.
+        let names = wallet_name_prefs(&self.live()?.appdb, id)?;
+        let (owned, current) = match wm.try_read() {
             Ok(wm) => {
                 let owned = wm
                     .get_wallet_info(&id.0)
@@ -413,16 +430,20 @@ impl NetworkSession {
                     .unwrap_or_default();
                 drop(wm);
                 guard(&recovery.snapshots).insert(id, owned.clone());
-                owned
+                (owned, true)
             }
             // A writer holds the lock (a sync pass applying its results):
             // the last snapshot, which that write is about to replace.
-            Err(_) => guard(&recovery.snapshots)
-                .get(&id)
-                .cloned()
-                .unwrap_or_default(),
+            Err(_) => {
+                let snapshot = guard(&recovery.snapshots).get(&id).cloned();
+                (snapshot.unwrap_or_default(), false)
+            }
         };
-        Ok(summaries(owned, &recovery.choices_of(&id)))
+        let choices = IdentityChoices {
+            names,
+            ..recovery.choices_of(&id)
+        };
+        Ok(summaries(owned, &choices, current))
     }
 
     /// Takes the identity snapshot after a pass of ours changed the
@@ -448,15 +469,9 @@ impl NetworkSession {
         let wallet = id.to_string();
         let read = self
             .appdb_op(move |db| {
-                let mut names = HashMap::<String, MainNamePrefs>::new();
-                for key in MainNamePrefs::KEYS {
-                    for (identity, value) in db.dp_prefs(&wallet, key)? {
-                        names.entry(identity).or_default().set(key, Some(value));
-                    }
-                }
                 Ok(IdentityChoices {
                     main_identity: db.main_identity(&wallet)?,
-                    names,
+                    names: HashMap::new(),
                 })
             })
             .await;
@@ -512,7 +527,7 @@ impl NetworkSession {
     }
 
     /// Stores one of `identity`'s main-name rows ([`MainNamePrefs::KEYS`]),
-    /// or deletes it for `None`, and updates the cache.
+    /// or deletes it for `None`. No cache holds them (DEC-124).
     pub(crate) async fn set_name_pref(
         &self,
         id: WalletId,
@@ -520,14 +535,10 @@ impl NetworkSession {
         key: &'static str,
         value: Option<String>,
     ) -> Result<(), EngineError> {
-        let (wallet, who, stored) = (id.to_string(), identity.clone(), value.clone());
+        let wallet = id.to_string();
         let _writer = self.platform.recovery.choice_writer.lock().await;
-        self.appdb_op(move |db| db.set_dp_pref(&wallet, &who, key, stored.as_deref()))
-            .await?;
-        self.platform.recovery.update_choices(id, |c| {
-            c.names.entry(identity).or_default().set(key, value);
-        });
-        Ok(())
+        self.appdb_op(move |db| db.set_dp_pref(&wallet, &identity, key, value.as_deref()))
+            .await
     }
 
     /// `identity`'s main-name rows as stored.
@@ -536,19 +547,10 @@ impl NetworkSession {
         id: WalletId,
         identity: String,
     ) -> Result<MainNamePrefs, EngineError> {
-        let wallet = id.to_string();
         let _writer = self.platform.recovery.choice_writer.lock().await;
         self.appdb_op(move |db| {
-            let mut prefs = MainNamePrefs::default();
-            for key in MainNamePrefs::KEYS {
-                let value = db
-                    .dp_prefs(&wallet, key)?
-                    .into_iter()
-                    .find(|(who, _)| *who == identity)
-                    .map(|(_, value)| value);
-                prefs.set(key, value);
-            }
-            Ok(prefs)
+            let mut all = read_name_prefs(db, id)?;
+            Ok(all.remove(&identity).unwrap_or_default())
         })
         .await
     }
@@ -735,6 +737,35 @@ fn scan_key_for(
         None => vault.scan_key(&id.0, token)?,
     };
     Ok((scan, hold))
+}
+
+/// The wallet's main-name rows, identity → rows, in one read. The rows are
+/// read in [`MainNamePrefs::KEYS`] order, the pending labels before the
+/// refused ones: a label moves only from pending to refused, the refused row
+/// written first, so a read across that move still sees it in one of them.
+fn read_name_prefs(
+    db: &dw_appdb::AppDb,
+    id: WalletId,
+) -> Result<HashMap<String, MainNamePrefs>, dw_appdb::AppDbError> {
+    let wallet = id.to_string();
+    let mut all = HashMap::<String, MainNamePrefs>::new();
+    for key in MainNamePrefs::KEYS {
+        for (identity, value) in db.dp_prefs(&wallet, key)? {
+            all.entry(identity).or_default().set(key, Some(value));
+        }
+    }
+    Ok(all)
+}
+
+/// [`read_name_prefs`] for the sync `identities()`.
+fn wallet_name_prefs(
+    db: &dw_appdb::AppDb,
+    id: WalletId,
+) -> Result<HashMap<String, MainNamePrefs>, EngineError> {
+    read_name_prefs(db, id).map_err(|e| {
+        tracing::warn!(wallet_id = %id, error = %e, "could not read the main-name rows");
+        EngineError::from(e)
+    })
 }
 
 /// The ids of the wallet's identities.

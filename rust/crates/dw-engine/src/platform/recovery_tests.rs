@@ -156,7 +156,7 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         ]
     };
     let shown = |choices: &IdentityChoices| {
-        summaries(list(), choices)
+        summaries(list(), choices, true)
             .into_iter()
             .map(|s| (s.identity, s.index, s.is_main, s.main_name))
             .collect::<Vec<_>>()
@@ -190,8 +190,8 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         main_identity: Some("elsewhere".into()),
         ..IdentityChoices::default()
     };
-    assert!(summaries(list(), &stale)[0].is_main);
-    assert!(summaries(Vec::new(), &chosen).is_empty());
+    assert!(summaries(list(), &stale, true)[0].is_main);
+    assert!(summaries(Vec::new(), &chosen, true).is_empty());
 }
 
 /// Review DP1-03 R5: `identities()` shows what `DashPay::main_name` does. A
@@ -215,7 +215,7 @@ fn identities_show_only_names_platform_shows_owned() {
         ..MainNamePrefs::default()
     };
     let shown = |o: &OwnedIdentity, c: &IdentityChoices| {
-        let s = summaries(vec![o.clone()], c).remove(0);
+        let s = summaries(vec![o.clone()], c, true).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(
@@ -240,6 +240,33 @@ fn identities_show_only_names_platform_shows_owned() {
         shown(&alice, &choices(temporary)),
         (vec!["pend".into(), "bob".into()], Some("bob".into()))
     );
+}
+
+/// Review DP1-03 r3 (DEC-124): an older snapshot may predate the contest
+/// the identity joined since, so there the label it contends for is a name
+/// only with a marketplace row; a current read's open contests decide.
+#[test]
+fn an_older_snapshot_shows_no_contended_label() {
+    let mut alice = owned("alice", 0, &[("carol", Some(100)), ("dash", None)]);
+    let choices = IdentityChoices {
+        names: HashMap::from([(
+            "alice".into(),
+            MainNamePrefs {
+                contested: Some("dash".into()),
+                ..MainNamePrefs::default()
+            },
+        )]),
+        ..IdentityChoices::default()
+    };
+    let names = |o: &OwnedIdentity, current| {
+        summaries(vec![o.clone()], &choices, current)[0]
+            .names
+            .clone()
+    };
+    assert_eq!(names(&alice, false), ["carol"]);
+    assert_eq!(names(&alice, true), ["carol", "dash"]);
+    alice.row_owned = vec!["dash".into()];
+    assert_eq!(names(&alice, false), ["carol", "dash"]);
 }
 
 // ---- recovery against a mocked Platform ----

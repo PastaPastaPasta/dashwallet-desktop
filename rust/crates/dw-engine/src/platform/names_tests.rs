@@ -40,7 +40,7 @@ fn prefs(pick: Option<&str>, temporary: Option<&str>, contested: Option<&str>) -
         pick: pick.map(str::to_string),
         temporary: temporary.map(str::to_string),
         contested: contested.map(str::to_string),
-        pending: Vec::new(),
+        ..MainNamePrefs::default()
     }
 }
 
@@ -1438,4 +1438,53 @@ fn identities_show_the_main_name_main_name_does() {
     assert_eq!(shown().1.as_deref(), Some("bob"));
     assert_eq!(f.main_name().as_deref(), Some("bob"));
     assert_eq!(f.prefs().pick.as_deref(), Some("bob"));
+}
+
+/// Review DP1-03 r3 R3-1 (DEC-124): with no choices cache (a failed load, a
+/// wallet forgotten and not yet reloaded) `identities()` still hides a label
+/// whose write may be in flight: the database says so on every call.
+#[test]
+fn a_missing_cache_shows_no_pending_name() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol"]);
+    f.cut_short(&["alice"], &["alice"]);
+    f.session.platform.recovery.forget(&f.wallet);
+    let shown = f.dp().identities().unwrap().remove(0);
+    assert_eq!(shown.names, ["carol"]);
+    assert_eq!(shown.main_name.as_deref(), Some("carol"));
+    assert_eq!(f.main_name().as_deref(), Some("carol"));
+    assert_eq!(f.pick("alice").unwrap_err().code(), "invalid_argument");
+}
+
+/// Review DP1-03 r3 R3-2 (DEC-124): a snapshot taken while a label was
+/// pending, read after Platform refused it, does not bring it back.
+#[test]
+fn an_older_snapshot_shows_no_refused_name() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol"]);
+    f.cut_short(&["alice"], &["alice"]);
+    let shown = || {
+        let s = f.dp().identities().unwrap().remove(0);
+        (s.names, s.main_name)
+    };
+    let carol = (vec!["carol".to_string()], Some("carol".to_string()));
+    // The snapshot this takes holds the library's provisional `alice`.
+    assert_eq!(shown(), carol);
+    let net = Arc::new(FakeNet::new(vec![Lookup::verdict(
+        NameAvailability::Locked,
+    )]));
+    assert_eq!(
+        f.register(&net, "alice", "no grant").unwrap_err().code(),
+        "name.locked"
+    );
+    assert_eq!(f.labels().0, ["carol"]);
+    assert!(f.prefs().pending.is_empty());
+
+    // A writer holds the wallet manager: the older snapshot is read.
+    let manager = f.session.manager().unwrap();
+    let wm = manager.wallet_manager_arc();
+    let held = f.engine.block_on(wm.write());
+    assert_eq!(shown(), carol);
+    drop(held);
+    assert_eq!(shown(), carol);
 }
