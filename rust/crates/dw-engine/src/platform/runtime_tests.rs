@@ -723,3 +723,108 @@ fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
     engine.block_on(engine.shutdown()).unwrap();
     src_engine.block_on(src_engine.shutdown()).unwrap();
 }
+
+/// Routes `WalletCreated` of `a` and `b` to their own holds (review r3).
+struct HoldTwo {
+    a: WalletId,
+    b: WalletId,
+    a_hold: HoldWalletCreated,
+    b_hold: HoldWalletCreated,
+}
+
+impl EventSink for HoldTwo {
+    fn emit(&self, event: EngineEvent) {
+        if let EngineEvent::WalletCreated { wallet_id, .. } = &event {
+            if *wallet_id == self.a {
+                self.a_hold.emit(event);
+            } else if *wallet_id == self.b {
+                self.b_hold.emit(event);
+            }
+        }
+    }
+}
+
+/// Review DW-E0-05-r3-gpt M4-R3 (its probe
+/// `r3_overlapping_restore_loses_committed_wallet_bringup`, with the
+/// assertions turned to the fixed behaviour): R1 = [a] commits while R2 =
+/// [b, a] still marks `a`, so R1's bring-up signal is refused; when R2 fails
+/// and its last mark clears, `a` (committed, surviving) must be brought up,
+/// and `b` (rolled back) must not. Before the fix `a` stayed without a
+/// bring-up until the next start.
+#[test]
+fn overlapping_restores_keep_a_committed_wallets_bring_up() {
+    let dir = dw_testutil::private_tempdir();
+    let (src_engine, src) = session(&dir.path().join("src"));
+    let a = src_engine
+        .block_on(src.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let b = src_engine
+        .block_on(src.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let first = dir.path().join("a.dwbackup");
+    let second = dir.path().join("b-a.dwbackup");
+    craft_backup(&src, &first, &[a]);
+    craft_backup(&src, &second, &[b, a]);
+    let hold = Arc::new(HoldTwo {
+        a,
+        b,
+        a_hold: HoldWalletCreated::default(),
+        b_hold: HoldWalletCreated::default(),
+    });
+    hold.a_hold.arm();
+    hold.b_hold.arm();
+    let (engine, s) = session_with(
+        engine_with(
+            &dir.path().join("dst"),
+            4,
+            Arc::clone(&hold) as Arc<dyn EventSink>,
+        ),
+        vec!["http://127.0.0.1:1".into()],
+        false,
+    );
+    let engine = Arc::new(engine);
+    let restore = |path: std::path::PathBuf| {
+        let (engine, s) = (Arc::clone(&engine), Arc::clone(&s));
+        std::thread::spawn(move || {
+            engine.block_on(s.restore_backup(path, Some(Zeroizing::new(b"bk".to_vec()))))
+        })
+    };
+    let r1 = restore(first);
+    hold.a_hold.wait_held();
+    let r2 = restore(second);
+    hold.b_hold.wait_held();
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("SPV running", Duration::from_secs(5), || {
+        s.spv_state().unwrap() == SpvState::Running
+    });
+    assert!(s.platform.startup_of(&a).is_none());
+
+    hold.a_hold.let_go();
+    assert_eq!(r1.join().unwrap().unwrap(), vec![a]);
+    // A sentinel queued after R1's signal: once it is recorded, R1's signal
+    // was handled, and refused, since R2 still marks `a`.
+    let sentinel = WalletId([93; 32]);
+    s.platform
+        .signal(super::runtime::PlatformSignal::WalletAdded(sentinel));
+    wait_until("R1's signal handled", Duration::from_secs(5), || {
+        s.platform.startup_of(&sentinel).is_some()
+    });
+    assert!(s.platform.startup_of(&a).is_none());
+
+    hold.b_hold.let_go();
+    assert!(r2.join().unwrap().is_err());
+    wait_until(
+        "the committed wallet's bring-up",
+        Duration::from_secs(5),
+        || s.platform.startup_of(&a).is_some(),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        s.platform.startup_of(&b).is_none() && !guard(&s.platform.tasks).contains_key(&b),
+        "the rolled-back wallet was brought up"
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+    src_engine.block_on(src_engine.shutdown()).unwrap();
+}

@@ -267,6 +267,11 @@ impl NetworkSession {
                     continue;
                 }
                 PlatformSignal::WalletAdded(id) => (vec![id], Job::BringUp),
+                // Not after a rollback removed it.
+                PlatformSignal::Readmit(id) if manager.get_wallet(&id.0).await.is_none() => {
+                    continue;
+                }
+                PlatformSignal::Readmit(id) => (vec![id], Job::BringUp),
             };
             let done = this
                 .for_wallets(&manager, wallets, job, Instant::now(), &mut cancel)
@@ -378,7 +383,8 @@ impl NetworkSession {
             .platform
             .admit(&id, || self.vault.has_wallet_secret(&id.0))
         {
-            // A restore of it has not committed; it signals once it has.
+            // A restore of it has not committed; it is readmitted when the
+            // last one ends.
             None => return,
             Some(false) => {
                 self.platform
