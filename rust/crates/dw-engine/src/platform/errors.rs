@@ -416,65 +416,96 @@ fn or_else(mapped: PlatformError, fallback: impl FnOnce() -> PlatformError) -> P
 
 impl From<dash_sdk::Error> for PlatformError {
     fn from(e: dash_sdk::Error) -> Self {
-        use dash_sdk::Error as Sdk;
-        // Platform's balance refusal keeps its figures.
-        if let Some(promoted) = platform_wallet::error::promote_identity_insufficient_balance(&e) {
-            return promoted.into();
+        // Retry envelopes are peeled in a loop, not by recursion: nothing
+        // bounds their depth (review r3 N2). The last attempt's error says
+        // why no node answered; if it says nothing, the envelope's own
+        // `unavailable`.
+        let mut leaf = e;
+        let mut retried = false;
+        while let dash_sdk::Error::NoAvailableAddressesToRetry(last) = leaf {
+            leaf = *last;
+            retried = true;
         }
-        match e {
-            Sdk::TimeoutReached(..) => Self::Timeout,
-            Sdk::DapiClientError(_) | Sdk::StaleNode(_) => Self::Unavailable,
-            // The last attempt's error says why no node answered.
-            Sdk::NoAvailableAddressesToRetry(last) => {
-                or_else(Self::from(*last), || Self::Unavailable)
-            }
-            Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
-                Self::ProofInvalid
-            }
-            Sdk::ContextProviderError(_) => Self::ContextUnavailable,
-            other => internal(other),
+        let mapped = sdk_leaf(leaf);
+        if retried {
+            or_else(mapped, || Self::Unavailable)
+        } else {
+            mapped
         }
+    }
+}
+
+/// One SDK error that is not a retry envelope.
+fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
+    use dash_sdk::Error as Sdk;
+    // Platform's balance refusal keeps its figures. `e` is no retry
+    // envelope, so the library's helper does not descend.
+    if let Some(promoted) = platform_wallet::error::promote_identity_insufficient_balance(&e) {
+        return wallet_leaf(promoted);
+    }
+    match e {
+        Sdk::TimeoutReached(..) => PlatformError::Timeout,
+        Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
+        Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
+            PlatformError::ProofInvalid
+        }
+        Sdk::ContextProviderError(_) => PlatformError::ContextUnavailable,
+        other => internal(other),
     }
 }
 
 impl From<platform_wallet::PlatformWalletError> for PlatformError {
     fn from(e: platform_wallet::PlatformWalletError) -> Self {
         use platform_wallet::PlatformWalletError as Pw;
-        match e {
-            Pw::Sdk(source) => source.into(),
-            // Wrappers map as what they wrap (review r2 N1).
-            Pw::TokenOperationFailed { source, .. } => source.into(),
-            // The scan never reached Platform: `unavailable` unless the last
-            // probe's failure says more.
-            Pw::IdentityDiscoveryIncomplete { source, .. } => {
-                or_else(Self::from(*source), || Self::Unavailable)
-            }
-            Pw::PersisterRestore(inner) => {
-                let detail = inner.to_string();
-                or_else(Self::from(*inner), || Self::Storage { detail })
-            }
-            Pw::InsufficientIdentityCredits {
-                required,
-                available,
-                ..
-            } => Self::InsufficientCredits {
-                needed: required,
-                available,
-            },
-            Pw::WalletNotFound(_) => Self::WalletNotFound,
-            Pw::WalletLocked => Self::SignerUnavailable,
-            Pw::SeedMismatch { .. } => Self::SeedMismatch,
-            Pw::SeedBindingUnanswered { .. } | Pw::FinalityTimeout(_) => Self::Timeout,
-            Pw::IdentityNotFound(_) => Self::Identity(IdentityError::NotFound),
-            Pw::ContactSyncUnreachable { .. } => Self::Unavailable,
-            Pw::InvalidParameter(detail) => Self::InvalidArgument { detail },
-            e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
-                Self::Storage {
-                    detail: e.to_string(),
-                }
-            }
-            other => internal(other),
+        // Restore envelopes are peeled in a loop (review r3 N2); they map as
+        // what they wrap, or `storage` when that has no code.
+        let mut leaf = e;
+        let mut restoring = false;
+        while let Pw::PersisterRestore(inner) = leaf {
+            leaf = *inner;
+            restoring = true;
         }
+        match (wallet_leaf(leaf), restoring) {
+            (Self::Internal { detail }, true) => Self::Storage {
+                detail: format!("failed to restore persisted platform-address state: {detail}"),
+            },
+            (mapped, _) => mapped,
+        }
+    }
+}
+
+/// One library error that is not a restore envelope. Its SDK sources map
+/// through the shared conversion (review r2 N1), which does not recurse.
+fn wallet_leaf(e: platform_wallet::PlatformWalletError) -> PlatformError {
+    use platform_wallet::PlatformWalletError as Pw;
+    match e {
+        Pw::Sdk(source) | Pw::TokenOperationFailed { source, .. } => source.into(),
+        // The scan never reached Platform: `unavailable` unless the last
+        // probe's failure says more.
+        Pw::IdentityDiscoveryIncomplete { source, .. } => {
+            or_else(PlatformError::from(*source), || PlatformError::Unavailable)
+        }
+        Pw::InsufficientIdentityCredits {
+            required,
+            available,
+            ..
+        } => PlatformError::InsufficientCredits {
+            needed: required,
+            available,
+        },
+        Pw::WalletNotFound(_) => PlatformError::WalletNotFound,
+        Pw::WalletLocked => PlatformError::SignerUnavailable,
+        Pw::SeedMismatch { .. } => PlatformError::SeedMismatch,
+        Pw::SeedBindingUnanswered { .. } | Pw::FinalityTimeout(_) => PlatformError::Timeout,
+        Pw::IdentityNotFound(_) => PlatformError::Identity(IdentityError::NotFound),
+        Pw::ContactSyncUnreachable { .. } => PlatformError::Unavailable,
+        Pw::InvalidParameter(detail) => PlatformError::InvalidArgument { detail },
+        e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
+            PlatformError::Storage {
+                detail: e.to_string(),
+            }
+        }
+        other => internal(other),
     }
 }
 
@@ -665,7 +696,7 @@ mod mapping_tests {
 
     /// Platform's balance refusal as a broadcast error, as `error.rs` builds
     /// it: 25 018 360 000 credits required, 24 818 360 000 available.
-    fn balance_refusal() -> dash_sdk::Error {
+    pub(super) fn balance_refusal() -> dash_sdk::Error {
         use dpp::consensus::ConsensusError;
         use dpp::consensus::codes::ErrorWithCode;
         use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
@@ -765,5 +796,69 @@ mod mapping_tests {
         assert_eq!(PlatformError::from(wrapped).code(), "internal");
         let retry = Sdk::NoAvailableAddressesToRetry(Box::new(Sdk::Generic("x".into())));
         assert_eq!(PlatformError::from(retry).code(), "platform.unavailable");
+    }
+}
+
+#[cfg(test)]
+mod deep_envelope_tests {
+    use super::*;
+    use platform_wallet::PlatformWalletError;
+
+    const DEPTH: usize = 1_000;
+
+    /// Review DW-E0-05-r3-gpt N2: envelopes map without recursing, on a
+    /// test thread's default stack; before the fix 128 overflowed it. The
+    /// promotion of Platform's balance refusal sees only the leaf.
+    #[test]
+    fn a_thousand_sdk_retry_envelopes_map_by_their_leaf() {
+        let deep = |leaf| {
+            (0..DEPTH).fold(leaf, |e, _| {
+                dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e))
+            })
+        };
+        let timeout =
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into());
+        assert_eq!(
+            PlatformError::from(deep(timeout)).code(),
+            "platform.timeout"
+        );
+        assert_eq!(
+            PlatformError::from(deep(super::mapping_tests::balance_refusal())),
+            PlatformError::InsufficientCredits {
+                needed: 25_018_360_000,
+                available: 24_818_360_000,
+            }
+        );
+        let unknown = PlatformError::from(deep(dash_sdk::Error::Generic("leaf".into())));
+        assert_eq!(unknown.code(), "platform.unavailable");
+    }
+
+    #[test]
+    fn a_thousand_persister_restore_envelopes_map_by_their_leaf() {
+        let deep = |leaf| {
+            (0..DEPTH).fold(leaf, |e, _| {
+                PlatformWalletError::PersisterRestore(Box::new(e))
+            })
+        };
+        assert_eq!(
+            PlatformError::from(deep(PlatformWalletError::WalletLocked)).code(),
+            "platform.signer_unavailable"
+        );
+        match PlatformError::from(deep(PlatformWalletError::NoPrimaryIdentity)) {
+            PlatformError::Storage { detail } => {
+                assert!(detail.contains("No primary identity"), "{detail}");
+                assert!(detail.len() < 200, "the whole chain was formatted");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Both shapes at once: a deep SDK chain inside a deep restore chain.
+        let sdk = (0..DEPTH).fold(
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into()),
+            |e, _| dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e)),
+        );
+        assert_eq!(
+            PlatformError::from(deep(PlatformWalletError::Sdk(sdk))).code(),
+            "platform.timeout"
+        );
     }
 }
