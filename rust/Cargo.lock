@@ -1873,6 +1873,8 @@ dependencies = [
  "dw-units",
  "dw-vault",
  "hex",
+ "serde",
+ "serde_json",
  "tracing-subscriber",
  "zeroize",
 ]

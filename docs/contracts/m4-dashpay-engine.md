@@ -106,6 +106,26 @@ scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path car
   shell history). E0-09 follows this for `invite claim` and for scans.
 - `AvatarSource`'s `Debug` hides the Gravatar e-mail and prints only the byte count of a file.
 
+**`dwcli` output (E0-09).** The DashPay commands (`dashpay`, `identity`, `name`, `contact`, `pay-contact`, `profile`,
+`invite`; `rust/bin/dwcli/src/dashpay.rs`) call this facade only and print one JSON line: `{"ok":true,"result":…}`
+with the record in its serde form (§1 "Records"), or `{"ok":false,"error":{"code","message","params"}}` with exit
+status 1.
+
+- `code` is the §4 code, or m1's for dwcli's own vault unlock, grants and wallet lookup. `message` is its `Display`
+  text, and `params` holds the code's parameters by name, such as `call` for `platform.not_implemented`. A failure
+  before the command runs (the passphrase file, the data root, opening the network) is code `setup`.
+- A write asks for its grant as a host does, from its quote or `grant_request` and then `Vault.authorize`, and prints
+  it with the outcome: `{"quote"|"grant", "outcome"}`. Registration prints `draft` instead of `outcome`.
+- `pay-contact` reports `not_implemented{call: "Recipient::Contact"}` until DP3-01 adds that `TxDraft` recipient (§6).
+- State kept per session (scan ids, avatar candidates, leases, a running registration, dispatch tombstones) dies with
+  a one-shot process. `dwcli dashpay session` keeps one engine and runs one request per stdin line,
+  `{"args":[…],"input":…,"id":…}`, where `input` is the bearer input. It answers each line in order with that command's
+  line plus `id` (none for a line that is not a JSON object), refuses nesting and a request's own `--spv`, and ends
+  with `{"ok":true,"result":{"requests":N}}`, exit status 0, whatever the requests returned. Its refusals never quote
+  the line or its `args`.
+- Arguments clap refuses in a one-shot command exit with status 2 and clap's usage text on stderr, with no JSON line.
+  `setup` replaces the code of what failed (a storage error opening the network, for example); `message` says which.
+
 ## 2. Calls
 
 Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and

@@ -3,6 +3,7 @@
 
 mod coinjoin;
 mod compat;
+mod dashpay;
 mod pay;
 mod tools;
 
@@ -141,6 +142,8 @@ enum Command {
     Compat(compat::CompatCommand),
     #[command(flatten)]
     CoinJoin(coinjoin::CoinJoinCommand),
+    #[command(flatten)]
+    DashPay(dashpay::DashPayCommand),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -204,6 +207,16 @@ fn unlock_if_needed(
     session: &Arc<NetworkSession>,
     passphrase: Option<&Zeroizing<Vec<u8>>>,
 ) -> Result<(), String> {
+    unlock(engine, session, passphrase).map_err(|e| e.to_string())
+}
+
+/// [`unlock_if_needed`] with the engine's error, for callers that report
+/// its code.
+fn unlock(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+) -> Result<(), EngineError> {
     let Some(passphrase) = passphrase else {
         return Ok(());
     };
@@ -214,7 +227,6 @@ fn unlock_if_needed(
     engine
         .block_on(session.vault_op(move |v| v.unlock(&passphrase, UnlockScope::Full)))
         .map(drop)
-        .map_err(|e| e.to_string())
 }
 
 fn print_wallets(session: &Arc<NetworkSession>) -> Result<(), EngineError> {
@@ -502,6 +514,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             return result;
         }
+        Command::DashPay(cmd) => {
+            // Unlocks itself, so a failed unlock is a JSON error too, and
+            // prints its JSON line once the engine is shut down.
+            let result = dashpay::run(&engine, &session, passphrase.as_ref(), cmd);
+            let teardown = engine
+                .block_on(engine.shutdown())
+                .map_err(|e| format!("shutdown: {e}"));
+            return dashpay::report(result, teardown);
+        }
     };
     engine
         .block_on(engine.shutdown())
@@ -517,9 +538,14 @@ fn main() -> ExitCode {
             .with_writer(std::io::stderr)
             .init();
     }
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    let dashpay = matches!(cli.command, Command::DashPay(_));
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            if dashpay {
+                dashpay::report_setup_failure(&e);
+            }
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }

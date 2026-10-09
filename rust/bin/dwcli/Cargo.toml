@@ -15,6 +15,9 @@ dw-units = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
 hex = { workspace = true }
+# The DashPay commands print the facade's records as JSON (E0-09).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 dw-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 # Engine and dash-spv logs on stderr when DWCLI_LOG is set (regtest debugging).
