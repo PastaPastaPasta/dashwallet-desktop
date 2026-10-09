@@ -17,14 +17,17 @@
 //!   name registered next to a contested request, used as the main name until
 //!   the contest resolves (F5);
 //! - the main name: the user's pick in `dp_prefs`, which no sync rewrites
-//!   (platform #4978's rule), resolved against the names the identity owns.
+//!   (platform #4978's rule), resolved against the names the identity owns
+//!   ([`resolve_main_name`], the one rule: DP1-05's `identities()` applies
+//!   it too). The rows are written and read only through DP1-05's
+//!   `NetworkSession::set_main_name`, `set_name_pref` and `name_prefs`.
 //!
 //! Counterparts: `rs-platform-wallet-ffi` registers names through
 //! `IdentityWallet::register_name_with_external_signer`, as here; the rules
 //! are `rs-sdk-ffi/src/dpns/helpers.rs` (`dash_sdk_dpns_is_valid_username`,
 //! `dash_sdk_dpns_get_validation_message`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
@@ -41,7 +44,6 @@ use dpp::version::PlatformVersion;
 use dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dpp::voting::vote_polls::contested_document_resource_vote_poll::required_vote_resolution_fund_to_join;
 use dw_vault::{GrantKind, GrantPurpose, SignerScope};
-use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::{DpnsNameInfo, ManagedIdentity, PlatformWallet, WalletPersister};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +52,7 @@ use super::dashpay::{DashPay, stub};
 use super::errors::{IdentityError, NameError, PlatformError};
 use super::flows::{BudgetPurpose, GrantRequest};
 use super::identity::KeyPurpose;
+use super::recovery::{MAIN_NAME_PREF, owned_names, row_owned};
 use super::signers::VaultIdentitySigner;
 use crate::session::Manager;
 use crate::{DashNetwork, EngineError, NetworkSession, WalletId};
@@ -58,8 +61,8 @@ const MIN_LENGTH: usize = 3;
 /// The desktop's cap; DPNS allows 63 (DASHPAY §2.9).
 const MAX_LENGTH: usize = 23;
 
-/// `dp_prefs` keys. The pick is the label as the identity owns it.
-const PREF_MAIN_NAME: &str = "main_name";
+// `dp_prefs` keys besides the pick ([`MAIN_NAME_PREF`], the label as the
+// identity owns it).
 /// The temporary name registered while the identity's contest was open.
 const PREF_TEMPORARY_NAME: &str = "temporary_name";
 /// The label the identity last contended for.
@@ -282,7 +285,10 @@ pub(crate) fn check_temporary_name(requested: &str, temporary: &str) -> Result<(
 /// 3. the label the identity contended for, once it owns it (a won contest);
 /// 4. the name the identity got first, by Platform's acquisition time
 ///    ([`owned_names`]); names with no time come last, ties in list order
-///    (DP1-05's `recovery::main_name` rule).
+///    (DP1-05's default).
+///
+/// The one rule: `DashPay::main_name` and DP1-05's `identities()` both
+/// apply it, over [`evident_names`].
 ///
 /// `owned` is the identity's names with their acquisition times; a label it
 /// is still contending for (`open_contests`) is not owned yet.
@@ -338,42 +344,34 @@ fn owned_labels<'a>(
         .collect()
 }
 
-// DP1-05's `recovery::owned_names`, copied while the branches are apart:
-// DP1-03 rebases onto DP1-05 and then calls that one (review DP1-03 R5).
-/// An identity's names from the library's list and the marketplace sweep's
-/// rows (`rows`). A name whose row says it was sold or transferred is gone,
-/// though the list keeps it until the library has settled the departure.
-/// Each is stamped with when Platform says the identity got it (the domain
-/// document's `$transferredAt`, else `$createdAt`), and with the library's
-/// stamp only without a row: that is the fetch time, the same for every
-/// name a restore finds, which would leave the default main name to DPNS
-/// query order.
-pub(crate) fn owned_names(
-    identity: Identifier,
-    names: &[DpnsNameInfo],
-    rows: &BTreeMap<Identifier, DpnsNameStateEntry>,
+/// The names of `owned` ([`owned_names`]) that Platform evidence shows the
+/// identity owns: a `pending` label (its write may be in flight) only if a
+/// marketplace row says so (`row_owned`). The library lists a label once
+/// its write returns, a contested one too, so a pending label there may be
+/// a running contest or a write cut short.
+pub(crate) fn evident_names(
+    mut owned: Vec<(String, Option<u64>)>,
+    pending: &[String],
+    row_owned: impl Fn(&str) -> bool,
 ) -> Vec<(String, Option<u64>)> {
-    names
-        .iter()
-        .filter_map(|n| {
-            let normalized = convert_to_homograph_safe_chars(&n.label);
-            // Unique per label: DPNS keys a name's document by it, and keeps
-            // that document across transfers.
-            let row = rows.values().find(|row| {
-                row.wallet_identity_id == identity && row.normalized_label == normalized
-            });
-            let acquired = match row {
-                Some(row) if row.status != DpnsNameSaleStatus::Owned => return None,
-                Some(row) => row.transferred_at_ms.or(row.created_at_ms),
-                None => None,
-            };
-            Some((n.label.clone(), acquired.or(n.acquired_at)))
-        })
+    owned.retain(|(label, _)| !pending.iter().any(|p| same_name(p, label)) || row_owned(label));
+    owned
+}
+
+/// The labels an identity shows as its names: the evident ones it is not
+/// still contending for.
+pub(crate) fn shown_names(
+    owned: &[(String, Option<u64>)],
+    open_contests: &[String],
+) -> Vec<String> {
+    owned_labels(owned, open_contests)
+        .into_iter()
+        .map(|(label, _)| label.clone())
         .collect()
 }
 
 /// An identity's `dp_prefs` for its main name.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MainNamePrefs {
     /// The user's pick, as the identity spells it.
     pub(crate) pick: Option<String>,
@@ -386,29 +384,30 @@ pub(crate) struct MainNamePrefs {
 }
 
 impl MainNamePrefs {
-    const KEYS: [&str; 4] = [
-        PREF_MAIN_NAME,
+    pub(crate) const KEYS: [&str; 4] = [
+        MAIN_NAME_PREF,
         PREF_TEMPORARY_NAME,
         PREF_CONTESTED_NAME,
         PREF_PENDING_NAME,
     ];
 
-    fn from_values(values: Vec<Option<String>>) -> Self {
-        let mut values = values.into_iter();
-        Self {
-            pick: values.next().flatten(),
-            temporary: values.next().flatten(),
-            contested: values.next().flatten(),
-            pending: values
-                .next()
-                .flatten()
-                .map(|v| {
-                    v.lines()
-                        .filter(|l| username_check(l).valid)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
+    /// Applies one row of [`Self::KEYS`] as stored (`None`: unset).
+    pub(crate) fn set(&mut self, key: &str, value: Option<String>) {
+        match key {
+            MAIN_NAME_PREF => self.pick = value,
+            PREF_TEMPORARY_NAME => self.temporary = value,
+            PREF_CONTESTED_NAME => self.contested = value,
+            PREF_PENDING_NAME => {
+                self.pending = value
+                    .map(|v| {
+                        v.lines()
+                            .filter(|l| username_check(l).valid)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            _ => {}
         }
     }
 
@@ -703,11 +702,10 @@ struct OwnNames {
     can_sign_documents: bool,
 }
 
-/// The identity's names as Platform evidence shows them: the library's list
-/// (DPNS documents, and a write the library saw confirmed), without a
-/// `pending` label unless a marketplace row says the identity owns it. The
-/// library lists a label once its write returns, a contested one too, so a
-/// pending label there may be a running contest or a write cut short.
+/// The identity's names as Platform evidence shows them ([`evident_names`]):
+/// the library's list (DPNS documents, and a write the library saw
+/// confirmed), without a `pending` label unless a marketplace row says the
+/// identity owns it.
 async fn own_names(
     wallet: &PlatformWallet,
     identity: &Identifier,
@@ -728,16 +726,12 @@ async fn own_names(
             false,
         )
         .is_some();
-    let row_owned = |label: &str| {
-        let normalized = convert_to_homograph_safe_chars(label);
-        state.dpns_name_states.values().any(|row| {
-            row.wallet_identity_id == *identity
-                && row.normalized_label == normalized
-                && row.status == DpnsNameSaleStatus::Owned
-        })
-    };
-    let mut owned = owned_names(*identity, &managed.dpns_names, &state.dpns_name_states);
-    owned.retain(|(label, _)| !pending.iter().any(|p| same_name(p, label)) || row_owned(label));
+    let rows = row_owned(*identity, &state.dpns_name_states);
+    let owned = evident_names(
+        owned_names(*identity, &managed.dpns_names, &state.dpns_name_states),
+        pending,
+        |label| rows.contains(&convert_to_homograph_safe_chars(label)),
+    );
     Ok(OwnNames {
         index: managed.identity_index,
         owned,
@@ -883,15 +877,14 @@ impl DashPay {
         wallet_id: WalletId,
         identity: &Identifier,
     ) -> Result<MainNamePrefs, NameError> {
-        let (wallet_hex, identity) = (wallet_id.to_string(), identity.to_string(Encoding::Base58));
-        let values = session
-            .appdb_op(move |db| db.identity_dp_prefs(&wallet_hex, &identity, &MainNamePrefs::KEYS))
+        session
+            .name_prefs(wallet_id, identity.to_string(Encoding::Base58))
             .await
-            .map_err(engine)?;
-        Ok(MainNamePrefs::from_values(values))
+            .map_err(engine)
     }
 
-    /// Stores (or with `None` deletes) one main-name pref of the identity.
+    /// Stores (or with `None` deletes) one main-name pref of the identity,
+    /// through DP1-05's writer, which keeps `identities()` in step.
     async fn set_main_name_pref(
         session: &NetworkSession,
         wallet_id: WalletId,
@@ -899,11 +892,12 @@ impl DashPay {
         key: &'static str,
         value: Option<String>,
     ) -> Result<(), NameError> {
-        let (wallet_hex, identity) = (wallet_id.to_string(), identity.to_string(Encoding::Base58));
-        session
-            .appdb_op(move |db| db.set_dp_pref(&wallet_hex, &identity, key, value.as_deref()))
-            .await
-            .map_err(engine)
+        let identity = identity.to_string(Encoding::Base58);
+        let stored = match key {
+            MAIN_NAME_PREF => session.set_main_name(wallet_id, identity, value).await,
+            _ => session.set_name_pref(wallet_id, identity, key, value).await,
+        };
+        stored.map_err(engine)
     }
 
     /// The label's checklist verdict, then the network's (F4): see
@@ -1407,10 +1401,9 @@ impl DashPay {
                     })
                 })
                 .transpose()?;
-            // The only write of the pick. On the rebase onto DP1-05 this
-            // becomes `NetworkSession::set_main_name`, which also updates
-            // its choice cache (review DP1-03 R5).
-            Self::set_main_name_pref(&session, wallet_id, &identity_id, PREF_MAIN_NAME, pick).await
+            // The only write of the pick: DP1-05's, which also updates the
+            // cache `identities()` reads (review DP1-03 R5).
+            Self::set_main_name_pref(&session, wallet_id, &identity_id, MAIN_NAME_PREF, pick).await
         })
         .await
     }

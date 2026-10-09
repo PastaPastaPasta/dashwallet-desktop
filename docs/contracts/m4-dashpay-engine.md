@@ -119,7 +119,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
-| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `main_name` is the identity's `dp_prefs` `main_name` while it still owns that label, else the name acquired first; `None` while it owns none (a label in a contest is not a name yet). Read from the library's memory, or the last snapshot while a sync pass writes it. **Implemented (DP1-05).** | `PlatformError` |
+| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance; `None` = not found on Platform yet. | `PlatformError` (`identity.not_found`) |
@@ -1566,4 +1566,5 @@ renames or reshapes them takes the next version bump:
     label is stored before its write only as a record that the write may be in flight; it is never owned, shown or
     pickable. Retries derive their kind from Platform's state at the time; any definitive answer (owned,
     contending, taken, locked, a closed contest) clears it, and a refusal also drops the library's provisional
-    copy. Never the pick.
+    copy. Never the pick. On DP1-05 (R5): one main-name rule and one evidence filter, applied by `main_name` and
+    `identities()` alike; every main-name row goes through DP1-05's cached writer.

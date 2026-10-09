@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -16,6 +16,7 @@ use dpp::identity::{Identity, IdentityPublicKey};
 use dw_vault::Credential;
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use platform_wallet::DpnsFetch;
+use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 
 use super::*;
 use crate::{Engine, EngineConfig, EventSink, SessionOptions};
@@ -1413,4 +1414,28 @@ fn settling_keeps_the_pick() {
     assert_eq!(prefs.pick.as_deref(), Some("carol2"));
     assert_eq!(prefs.temporary.as_deref(), Some("alice2"));
     assert_eq!(f.main_name().as_deref(), Some("carol2"));
+}
+
+/// Review DP1-03 R5: the rows reach DP1-05's `identities()` through its
+/// cache, which applies the same rule and filter as `main_name`.
+#[test]
+fn identities_show_the_main_name_main_name_does() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol", "bob"]);
+    f.cut_short(&["alice"], &["alice"]);
+    let shown = || {
+        let s = f.dp().identities().unwrap().remove(0);
+        (s.names, s.main_name)
+    };
+    assert_eq!(
+        shown(),
+        (vec!["carol".into(), "bob".into()], Some("carol".into()))
+    );
+    assert_eq!(f.main_name().as_deref(), Some("carol"));
+    assert_eq!(f.pick("alice").unwrap_err().code(), "invalid_argument");
+
+    f.pick("bob").unwrap();
+    assert_eq!(shown().1.as_deref(), Some("bob"));
+    assert_eq!(f.main_name().as_deref(), Some("bob"));
+    assert_eq!(f.prefs().pick.as_deref(), Some("bob"));
 }

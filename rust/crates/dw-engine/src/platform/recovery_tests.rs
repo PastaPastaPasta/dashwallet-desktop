@@ -24,9 +24,9 @@ use zeroize::Zeroizing;
 
 use super::bringup::NO_IDENTITY_KEY;
 use super::errors::PlatformError;
+use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
-    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, main_name, owned_names,
-    summaries,
+    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
 use super::runtime::guard;
 use super::{SpvState, StartupStatus};
@@ -38,6 +38,15 @@ use crate::{
 
 fn names(list: &[(&str, Option<u64>)]) -> Vec<(String, Option<u64>)> {
     list.iter().map(|(l, at)| ((*l).to_owned(), *at)).collect()
+}
+
+/// DP1-03's rule with only a pick: DP1-05's cases.
+fn main_name(names: &[(String, Option<u64>)], preferred: Option<&str>) -> Option<String> {
+    let prefs = MainNamePrefs {
+        pick: preferred.map(str::to_owned),
+        ..MainNamePrefs::default()
+    };
+    resolve_main_name(names, &[], &prefs)
 }
 
 #[test]
@@ -130,6 +139,8 @@ fn owned(identity: &str, index: u32, list: &[(&str, Option<u64>)]) -> OwnedIdent
         identity: identity.into(),
         index,
         names: names(list),
+        open_contests: Vec::new(),
+        row_owned: Vec::new(),
         balance: Some(1),
         has_dashpay_keys: true,
         profile: None,
@@ -159,7 +170,13 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
     );
     let chosen = IdentityChoices {
         main_identity: Some("second".into()),
-        main_names: HashMap::from([("second".into(), "gone".into())]),
+        names: HashMap::from([(
+            "second".into(),
+            MainNamePrefs {
+                pick: Some("gone".into()),
+                ..MainNamePrefs::default()
+            },
+        )]),
     };
     assert_eq!(
         shown(&chosen),
@@ -175,6 +192,54 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
     };
     assert!(summaries(list(), &stale)[0].is_main);
     assert!(summaries(Vec::new(), &chosen).is_empty());
+}
+
+/// Review DP1-03 R5: `identities()` shows what `DashPay::main_name` does. A
+/// label whose write may be in flight is no name unless a marketplace row
+/// says so, a label in a contest is none yet, and while that contest is
+/// open the temporary name is the main name.
+#[test]
+fn identities_show_only_names_platform_shows_owned() {
+    let mut alice = owned(
+        "alice",
+        0,
+        &[("carol", Some(100)), ("pend", None), ("bob", Some(200))],
+    );
+    let choices = |prefs: MainNamePrefs| IdentityChoices {
+        names: HashMap::from([("alice".into(), prefs)]),
+        ..IdentityChoices::default()
+    };
+    let pending = MainNamePrefs {
+        pick: Some("pend".into()),
+        pending: vec!["pend".into()],
+        ..MainNamePrefs::default()
+    };
+    let shown = |o: &OwnedIdentity, c: &IdentityChoices| {
+        let s = summaries(vec![o.clone()], c).remove(0);
+        (s.names, s.main_name)
+    };
+    assert_eq!(
+        shown(&alice, &choices(pending.clone())),
+        (vec!["carol".into(), "bob".into()], Some("carol".into()))
+    );
+    alice.row_owned = vec!["pend".into()];
+    assert_eq!(
+        shown(&alice, &choices(pending)),
+        (
+            vec!["carol".into(), "pend".into(), "bob".into()],
+            Some("pend".into())
+        )
+    );
+
+    alice.open_contests = vec!["carol".into()];
+    let temporary = MainNamePrefs {
+        temporary: Some("bob".into()),
+        ..MainNamePrefs::default()
+    };
+    assert_eq!(
+        shown(&alice, &choices(temporary)),
+        (vec!["pend".into(), "bob".into()], Some("bob".into()))
+    );
 }
 
 // ---- recovery against a mocked Platform ----
