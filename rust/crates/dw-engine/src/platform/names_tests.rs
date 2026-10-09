@@ -847,6 +847,16 @@ impl Fixture {
         self.sync_names(&all, DpnsFetch::Partial);
     }
 
+    /// Runs `body` while a writer holds the wallet manager, so
+    /// `identities()` reads the older snapshot.
+    fn with_manager_held(&self, body: impl FnOnce()) {
+        let manager = self.session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let held = self.engine.block_on(wm.write());
+        body();
+        drop(held);
+    }
+
     fn pick(&self, label: &str) -> Result<(), NameError> {
         self.engine
             .block_on(self.dp().set_main_name(identity_id(), Some(label.into())))
@@ -1480,11 +1490,69 @@ fn an_older_snapshot_shows_no_refused_name() {
     assert_eq!(f.labels().0, ["carol"]);
     assert!(f.prefs().pending.is_empty());
 
-    // A writer holds the wallet manager: the older snapshot is read.
-    let manager = f.session.manager().unwrap();
-    let wm = manager.wallet_manager_arc();
-    let held = f.engine.block_on(wm.write());
+    // A writer holds the wallet manager: the older snapshot is read, and
+    // it shows only names with evidence (DEC-129), so not `alice`, and
+    // `carol`, with no marketplace row, hides until the lock is free.
+    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
     assert_eq!(shown(), carol);
-    drop(held);
-    assert_eq!(shown(), carol);
+}
+
+/// Review DP1-03 r4 R4-1 (Sol's `review_r4_split_read_during_contention`):
+/// the main-name rows are one SELECT, so no write lands between their
+/// reads; and the end state the split read met (a provisional label
+/// settled as a contest the identity joined, the older snapshot still
+/// holding it) shows no name.
+#[test]
+fn review_r4_split_read_during_contention() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &[]);
+    f.cut_short(&["alice"], &["alice"]);
+    let shown = || {
+        let s = f.dp().identities().unwrap().remove(0);
+        (s.names, s.main_name)
+    };
+    assert_eq!(shown(), (vec![], None));
+    let end = crate::events::unix_now() + 24 * 3600;
+    let net = Arc::new(FakeNet::new(vec![contest_with(
+        vec![IDENTITY.into()],
+        Some(end),
+    )]));
+    assert!(matches!(
+        f.register(&net, "alice", "no grant"),
+        Ok(NameOutcome::ContestStarted { .. })
+    ));
+    assert!(f.prefs().pending.is_empty());
+    assert_eq!(f.prefs().contested.as_deref(), Some("alice"));
+    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
+    assert_eq!(f.main_name(), None);
+}
+
+/// Review DP1-03 r4 R4-2 (Sol's `review_r4_two_contenders_in_older_snapshot`):
+/// two cut-short contested writes, both settled as contests the identity
+/// joined (`bob` by `conclude_others`, then `alice`); the contested-name
+/// pref keeps only `alice`, and the older snapshot still shows neither.
+#[test]
+fn review_r4_two_contenders_in_older_snapshot() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &[]);
+    f.cut_short(&["alice", "bob"], &["alice", "bob"]);
+    let shown = || {
+        let s = f.dp().identities().unwrap().remove(0);
+        (s.names, s.main_name)
+    };
+    assert_eq!(shown(), (vec![], None));
+    let end = crate::events::unix_now() + 24 * 3600;
+    let net = Arc::new(FakeNet::new(vec![contest_with(
+        vec![IDENTITY.into()],
+        Some(end),
+    )]));
+    assert!(matches!(
+        f.register(&net, "alice", "no grant"),
+        Ok(NameOutcome::ContestStarted { .. })
+    ));
+    assert!(f.prefs().pending.is_empty());
+    assert_eq!(f.labels().1.len(), 2);
+    f.with_manager_held(|| assert_eq!(shown(), (vec![], None)));
+    assert_eq!(shown(), (vec![], None));
+    assert_eq!(f.main_name(), None);
 }

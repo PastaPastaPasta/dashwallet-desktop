@@ -291,10 +291,16 @@ pub(super) trait MockPlatform: Send + Sync {
 pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 /// The read model: identities by index, the main identity marked, each with
-/// the names Platform evidence shows it owns ([`evident_names`]) and its main
-/// name. `current`: `owned` was read from the library now, not an older
-/// snapshot, whose open contests may predate a contest the identity joined
-/// since (so the label it contends for shows only with a marketplace row).
+/// the names Platform evidence shows it owns and its main name.
+///
+/// `current`: `owned` was read from the library now, and the pending and
+/// refused labels decide ([`evident_names`]). Otherwise it is an older
+/// snapshot, which may predate any settlement or refusal since, so it is
+/// default-deny (DEC-129): a label shows, and may be the main name, only
+/// with positive ownership evidence, a marketplace row saying the identity
+/// owns it or the stored pick (made only of an owned name), whatever the
+/// markers say. A real name may hide while the lock is held; none shows
+/// that the identity may not own.
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
@@ -315,10 +321,15 @@ pub(super) fn summaries(
                 o.row_owned
                     .contains(&convert_to_homograph_safe_chars(label))
             };
-            let mut names = evident_names(o.names, &prefs, row_owned);
-            if !current && let Some(contested) = &prefs.contested {
-                names.retain(|(label, _)| !same_name(label, contested) || row_owned(label));
-            }
+            let names = if current {
+                evident_names(o.names, &prefs, row_owned)
+            } else {
+                let picked =
+                    |label: &str| prefs.pick.as_deref().is_some_and(|p| same_name(p, label));
+                let mut names = o.names;
+                names.retain(|(label, _)| row_owned(label) || picked(label));
+                names
+            };
             IdentitySummary {
                 main_name: resolve_main_name(&names, &o.open_contests, &prefs),
                 is_main: i == main,
@@ -526,7 +537,7 @@ impl NetworkSession {
             .await
     }
 
-    /// Stores one of `identity`'s main-name rows ([`MainNamePrefs::KEYS`]),
+    /// Stores one of `identity`'s main-name rows ([`MainNamePrefs::set`]),
     /// or deletes it for `None`. No cache holds them (DEC-124).
     pub(crate) async fn set_name_pref(
         &self,
@@ -739,20 +750,16 @@ fn scan_key_for(
     Ok((scan, hold))
 }
 
-/// The wallet's main-name rows, identity → rows, in one read. The rows are
-/// read in [`MainNamePrefs::KEYS`] order, the pending labels before the
-/// refused ones: a label moves only from pending to refused, the refused row
-/// written first, so a read across that move still sees it in one of them.
+/// The wallet's main-name rows, identity → rows, from one SELECT (DEC-129):
+/// one snapshot of every row, never assembled from several reads.
 fn read_name_prefs(
     db: &dw_appdb::AppDb,
     id: WalletId,
 ) -> Result<HashMap<String, MainNamePrefs>, dw_appdb::AppDbError> {
-    let wallet = id.to_string();
     let mut all = HashMap::<String, MainNamePrefs>::new();
-    for key in MainNamePrefs::KEYS {
-        for (identity, value) in db.dp_prefs(&wallet, key)? {
-            all.entry(identity).or_default().set(key, Some(value));
-        }
+    for (identity, key, value) in db.wallet_dp_prefs(&id.to_string())? {
+        // Another task's row is no main-name row (`set` ignores it).
+        all.entry(identity).or_default().set(&key, Some(value));
     }
     Ok(all)
 }

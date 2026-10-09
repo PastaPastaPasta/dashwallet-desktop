@@ -242,31 +242,48 @@ fn identities_show_only_names_platform_shows_owned() {
     );
 }
 
-/// Review DP1-03 r3 (DEC-124): an older snapshot may predate the contest
-/// the identity joined since, so there the label it contends for is a name
-/// only with a marketplace row; a current read's open contests decide.
+/// Review DP1-03 r4 (DEC-129): the older snapshot is default-deny. With no
+/// marker at all, a label there shows, and is the main name, only with a
+/// marketplace row or as the stored pick; the current list shows it.
 #[test]
-fn an_older_snapshot_shows_no_contended_label() {
-    let mut alice = owned("alice", 0, &[("carol", Some(100)), ("dash", None)]);
-    let choices = IdentityChoices {
+fn an_older_snapshot_shows_only_evidenced_names() {
+    let mut alice = owned(
+        "alice",
+        0,
+        &[("carol", Some(100)), ("dash", Some(50)), ("eve", None)],
+    );
+    let choices = |pick: Option<&str>| IdentityChoices {
         names: HashMap::from([(
             "alice".into(),
             MainNamePrefs {
-                contested: Some("dash".into()),
+                pick: pick.map(str::to_owned),
                 ..MainNamePrefs::default()
             },
         )]),
         ..IdentityChoices::default()
     };
-    let names = |o: &OwnedIdentity, current| {
-        summaries(vec![o.clone()], &choices, current)[0]
-            .names
-            .clone()
+    let shown = |o: &OwnedIdentity, pick, current| {
+        let s = summaries(vec![o.clone()], &choices(pick), current).remove(0);
+        (s.names, s.main_name)
     };
-    assert_eq!(names(&alice, false), ["carol"]);
-    assert_eq!(names(&alice, true), ["carol", "dash"]);
-    alice.row_owned = vec!["dash".into()];
-    assert_eq!(names(&alice, false), ["carol", "dash"]);
+    assert_eq!(
+        shown(&alice, None, true),
+        (
+            vec!["carol".into(), "dash".into(), "eve".into()],
+            Some("dash".into())
+        )
+    );
+    assert_eq!(shown(&alice, None, false), (vec![], None));
+    alice.row_owned = vec![convert_to_homograph_safe_chars("carol")];
+    assert_eq!(
+        shown(&alice, None, false),
+        (vec!["carol".into()], Some("carol".into()))
+    );
+    // The stored pick, as DPNS compares labels.
+    assert_eq!(
+        shown(&alice, Some("EVE"), false),
+        (vec!["carol".into(), "eve".into()], Some("eve".into()))
+    );
 }
 
 // ---- recovery against a mocked Platform ----
@@ -553,6 +570,21 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
     wait_until("SPV", || s.spv_state().unwrap() == SpvState::Running);
 }
 
+/// Waits until `identities()` shows `want`. A read while a sync pass holds
+/// the wallet manager comes from the older snapshot, which hides a name
+/// without ownership evidence (DEC-129), so one read may show less.
+fn assert_shown(
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+    want: Vec<(String, Vec<String>, Option<String>, bool)>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shown(s, id) != want && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(shown(s, id), want);
+}
+
 /// (identity, names, main name, is main) as `identities()` shows them.
 fn shown(
     s: &Arc<NetworkSession>,
@@ -609,7 +641,7 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
             true,
         )]
     };
-    assert_eq!(shown(&s, id), alice("alice"));
+    assert_shown(&s, id, alice("alice"));
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
 
@@ -617,11 +649,11 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     engine
         .block_on(s.set_main_name(id, base58(ALICE), Some("tmp-alice-1".into())))
         .unwrap();
-    assert_eq!(shown(&s, id), alice("tmp-alice-1"));
+    assert_shown(&s, id, alice("tmp-alice-1"));
     engine
         .block_on(s.set_main_name(id, base58(ALICE), None))
         .unwrap();
-    assert_eq!(shown(&s, id), alice("alice"));
+    assert_shown(&s, id, alice("alice"));
 
     // No third pass of ours.
     std::thread::sleep(Duration::from_millis(300));

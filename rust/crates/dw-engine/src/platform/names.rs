@@ -394,17 +394,9 @@ pub(crate) struct MainNamePrefs {
 }
 
 impl MainNamePrefs {
-    /// In the order a read takes them: pending before refused
-    /// ([`PREF_REFUSED_NAME`]).
-    pub(crate) const KEYS: [&str; 5] = [
-        MAIN_NAME_PREF,
-        PREF_TEMPORARY_NAME,
-        PREF_CONTESTED_NAME,
-        PREF_PENDING_NAME,
-        PREF_REFUSED_NAME,
-    ];
-
-    /// Applies one row of [`Self::KEYS`] as stored (`None`: unset).
+    /// Applies one `dp_prefs` row as stored (`None`: unset): the pick
+    /// ([`MAIN_NAME_PREF`]), the temporary, contested, pending or refused
+    /// labels; any other key is not a main-name row and is ignored.
     pub(crate) fn set(&mut self, key: &str, value: Option<String>) {
         match key {
             MAIN_NAME_PREF => self.pick = value,
