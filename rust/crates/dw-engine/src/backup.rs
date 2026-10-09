@@ -573,6 +573,12 @@ impl NetworkSession {
         // and whether the wallet was new (not keys attached to a watch-only
         // wallet that was there before).
         let mut done: Vec<(WalletId, bool)> = Vec::new();
+        // No bring-up is admitted for these wallets, from any entry point,
+        // until the restore has committed (review r2 M4). Marked before any
+        // seed is stored.
+        let restoring = self
+            .platform
+            .restoring(opened.iter().map(|(id, _, _)| *id).collect());
         for (id, secret, payload) in opened {
             if let Err(e) = self
                 .restore_one(network, id, secret, payload, &mut done)
@@ -582,6 +588,7 @@ impl NetworkSession {
                 return Err(e);
             }
         }
+        drop(restoring);
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
         // rolled back, and no bring-up holding its keys.
@@ -660,7 +667,8 @@ impl NetworkSession {
     /// step is logged and the rest still runs.
     async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
         for &(id, created) in done.iter().rev() {
-            // No bring-up was signalled for it; a status read since is stale.
+            // Still marked as being restored, so no bring-up was admitted for
+            // it; a status read since is stale.
             self.platform.forget(&id);
             if created {
                 let removed = async {

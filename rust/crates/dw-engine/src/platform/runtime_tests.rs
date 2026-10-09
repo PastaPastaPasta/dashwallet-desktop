@@ -26,6 +26,10 @@ const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 fn engine(dir: &std::path::Path, worker_threads: usize) -> Engine {
+    engine_with(dir, worker_threads, Arc::new(NoEvents))
+}
+
+fn engine_with(dir: &std::path::Path, worker_threads: usize, sink: Arc<dyn EventSink>) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: dir.join("data"),
@@ -36,7 +40,7 @@ fn engine(dir: &std::path::Path, worker_threads: usize) -> Engine {
                 ..VaultConfig::default()
             },
         },
-        Arc::new(NoEvents),
+        sink,
     )
     .unwrap()
 }
@@ -311,7 +315,14 @@ fn session_at(
     urls: Vec<String>,
     encrypted: bool,
 ) -> (Engine, Arc<NetworkSession>) {
-    let engine = engine(dir, 4);
+    session_with(engine(dir, 4), urls, encrypted)
+}
+
+fn session_with(
+    engine: Engine,
+    urls: Vec<String>,
+    encrypted: bool,
+) -> (Engine, Arc<NetworkSession>) {
     let s = engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
@@ -584,4 +595,131 @@ fn find_forgets_the_proven_absence() {
     assert!(marker(&engine, &s, id, NO_IDENTITY_KEY));
     engine.block_on(s.forget_proven_absence(id)).unwrap();
     assert!(!marker(&engine, &s, id, NO_IDENTITY_KEY));
+}
+
+/// Holds the thread that emits `WalletCreated` while `armed`: a restore
+/// stopped right after it registered a wallet, before it committed.
+#[derive(Default)]
+struct HoldWalletCreated {
+    armed: std::sync::atomic::AtomicBool,
+    held: std::sync::atomic::AtomicBool,
+    release: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl EventSink for HoldWalletCreated {
+    fn emit(&self, event: EngineEvent) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if matches!(event, EngineEvent::WalletCreated { .. }) && self.armed.swap(false, SeqCst) {
+            self.held.store(true, SeqCst);
+            let mut release = self.release.lock().unwrap();
+            while !*release {
+                release = self.wake.wait(release).unwrap();
+            }
+            *release = false;
+            self.held.store(false, SeqCst);
+        }
+    }
+}
+
+impl HoldWalletCreated {
+    fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn wait_held(&self) {
+        wait_until(
+            "the restore to register its wallet",
+            Duration::from_secs(10),
+            || self.held.load(std::sync::atomic::Ordering::SeqCst),
+        );
+    }
+
+    fn let_go(&self) {
+        *self.release.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+
+/// Review DW-E0-05-r2-gpt M4: a start that lists the wallets while a
+/// restore has registered one but not committed must not admit it; neither
+/// may anything else until the restore commits. Deterministic: the restore is
+/// held at its first `WalletCreated`, after registration, and SPV is started
+/// then. Before the fix that start admitted the wallet (`Starting`), and the
+/// restore then failed on its second bundle and rolled the wallet back.
+#[test]
+fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let (src_engine, src) = session(&dir.path().join("src"));
+    let a = src_engine
+        .block_on(src.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let failing = dir.path().join("failing.dwbackup");
+    let good = dir.path().join("good.dwbackup");
+    craft_backup(&src, &failing, &[a, a]);
+    craft_backup(&src, &good, &[a]);
+
+    let hold = Arc::new(HoldWalletCreated::default());
+    // DAPI refuses: a restored wallet's discovery keeps retrying through
+    // its 20 s budget, and close does not wait on stuck passes.
+    let (engine, s) = session_with(
+        engine_with(
+            &dir.path().join("dst"),
+            4,
+            Arc::clone(&hold) as Arc<dyn EventSink>,
+        ),
+        vec!["http://127.0.0.1:1".into()],
+        false,
+    );
+    let engine = Arc::new(engine);
+    let restore = |path: std::path::PathBuf| {
+        let (engine, s) = (Arc::clone(&engine), Arc::clone(&s));
+        std::thread::spawn(move || {
+            engine.block_on(s.restore_backup(path, Some(Zeroizing::new(b"bk".to_vec()))))
+        })
+    };
+    let admitted = |s: &NetworkSession| {
+        s.platform.startup_of(&a).is_some() || guard(&s.platform.tasks).contains_key(&a)
+    };
+
+    // A failing restore, held after registering `a`; SPV starts meanwhile.
+    hold.arm();
+    let restoring = restore(failing);
+    hold.wait_held();
+    engine.block_on(s.start_spv()).unwrap();
+    assert!(
+        !admitted(&s),
+        "a start admitted an uncommitted restore's wallet: {:?}",
+        s.platform.startup_of(&a)
+    );
+    // Nothing held SPV for it.
+    wait_until("SPV running", Duration::from_secs(5), || {
+        s.spv_state().unwrap() == SpvState::Running
+    });
+    assert!(!admitted(&s));
+    hold.let_go();
+    assert!(restoring.join().unwrap().is_err());
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(!admitted(&s), "a rolled-back wallet was brought up");
+
+    // The same wallet restored for good: not before the commit, then once.
+    hold.arm();
+    let restoring = restore(good);
+    hold.wait_held();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!admitted(&s), "brought up before the restore committed");
+    hold.let_go();
+    assert_eq!(restoring.join().unwrap().unwrap(), vec![a]);
+    wait_until(
+        "the committed wallet's bring-up",
+        Duration::from_secs(5),
+        || {
+            s.platform
+                .startup_of(&a)
+                .is_some_and(|st| st.startup == StartupStatus::Starting)
+        },
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+    src_engine.block_on(src_engine.shutdown()).unwrap();
 }

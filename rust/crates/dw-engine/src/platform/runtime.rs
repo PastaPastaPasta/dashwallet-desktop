@@ -75,6 +75,9 @@ pub(crate) struct PlatformRuntime {
     /// were scheduled earlier.
     pub(super) loops_on: Arc<AtomicBool>,
     pub(super) key_work: Arc<KeyWork>,
+    /// Wallets a restore has begun storing and has not committed or rolled
+    /// back, with how many restores hold each (review r2 M4).
+    restoring: Mutex<HashMap<WalletId, usize>>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -175,6 +178,26 @@ impl KeyWork {
     }
 }
 
+/// Wallets of a restore in progress ([`PlatformRuntime::restoring`]).
+pub(crate) struct Restoring<'a> {
+    runtime: &'a PlatformRuntime,
+    ids: Vec<WalletId>,
+}
+
+impl Drop for Restoring<'_> {
+    fn drop(&mut self) {
+        let mut restoring = guard(&self.runtime.restoring);
+        for id in &self.ids {
+            if let Some(n) = restoring.get_mut(id) {
+                *n -= 1;
+                if *n == 0 {
+                    restoring.remove(id);
+                }
+            }
+        }
+    }
+}
+
 /// Whether the vault serves its full key without a prompt (dw-vault
 /// `prompt_free_signer`): the states that build the bring-up's providers.
 pub(crate) fn prompt_free(state: LockState) -> bool {
@@ -203,6 +226,7 @@ impl PlatformRuntime {
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
             key_work: Arc::default(),
+            restoring: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -320,6 +344,27 @@ impl PlatformRuntime {
             .entry(id)
             .or_insert_with(|| DashPayStartup::new(status, false))
             .startup = status;
+    }
+
+    /// Whether bring-up or unlock work may start for `id` now: `None` while a
+    /// restore of it has not committed, else `Some(has_seed())`. One lock
+    /// covers both reads, and a restore marks its wallets under it before it
+    /// stores a seed, so no entry point sees a restored seed before the
+    /// commit (review r2 M4).
+    pub(super) fn admit(&self, id: &WalletId, has_seed: impl FnOnce() -> bool) -> Option<bool> {
+        let restoring = guard(&self.restoring);
+        (!restoring.contains_key(id)).then(has_seed)
+    }
+
+    /// Marks `ids` as being restored until the returned guard drops: drop it
+    /// once the restore has committed, before signalling the bring-up, or
+    /// after its rollback.
+    pub(crate) fn restoring(&self, ids: Vec<WalletId>) -> Restoring<'_> {
+        let mut restoring = guard(&self.restoring);
+        for id in &ids {
+            *restoring.entry(*id).or_default() += 1;
+        }
+        Restoring { runtime: self, ids }
     }
 
     /// Forgets a removed or closed wallet and ends its bring-up.

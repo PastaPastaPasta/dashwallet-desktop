@@ -121,8 +121,12 @@ impl NetworkSession {
             });
             let wallets: Vec<WalletId> = if this.platform.enabled {
                 let ids = manager.wallet_ids().await.into_iter().map(WalletId);
-                ids.filter(|id| this.vault.has_wallet_secret(&id.0))
-                    .collect()
+                ids.filter(|id| {
+                    this.platform
+                        .admit(id, || this.vault.has_wallet_secret(&id.0))
+                        == Some(true)
+                })
+                .collect()
             } else {
                 Vec::new()
             };
@@ -370,10 +374,18 @@ impl NetworkSession {
     /// file. Its budget, counted from `since`, bounds all of it, the reads
     /// and the key acquisition included (review r1 M3).
     async fn bring_up_wallet(&self, manager: &Manager, id: WalletId, since: Instant) {
-        if !self.vault.has_wallet_secret(&id.0) {
-            self.platform
-                .record(id, DashPayStartup::new(StartupStatus::NotRun, true));
-            return;
+        match self
+            .platform
+            .admit(&id, || self.vault.has_wallet_secret(&id.0))
+        {
+            // A restore of it has not committed; it signals once it has.
+            None => return,
+            Some(false) => {
+                self.platform
+                    .record(id, DashPayStartup::new(StartupStatus::NotRun, true));
+                return;
+            }
+            Some(true) => {}
         }
         // The budget is known once the markers are read; the shorter one
         // bounds reading them.
@@ -577,8 +589,12 @@ impl NetworkSession {
     /// then `reconcile_dashpay_rescan`, so payments to contacts whose
     /// accounts appear only now are found by a rescan.
     async fn after_unlock(&self, manager: &Manager, id: WalletId) {
-        // A signal from an unlock the vault has since locked again.
-        if !self.vault.has_wallet_secret(&id.0) || !prompt_free(self.platform.lock.borrow().state) {
+        // No seed, a restore not committed yet, or a signal from an unlock
+        // the vault has since locked again.
+        let admitted = self
+            .platform
+            .admit(&id, || self.vault.has_wallet_secret(&id.0));
+        if admitted != Some(true) || !prompt_free(self.platform.lock.borrow().state) {
             return;
         }
         let unsettled = self
