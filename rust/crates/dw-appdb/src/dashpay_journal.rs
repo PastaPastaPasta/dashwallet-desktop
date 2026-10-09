@@ -17,6 +17,9 @@ pub struct JournalEntry {
     pub reference: String,
     /// `Some` stores the event as read (catch-up silence, §2.7).
     pub read_at: Option<u64>,
+    /// Skip the event when the identity already has a row of one of these
+    /// kinds for the same contact (once-per-relationship events).
+    pub unless_any: &'static [&'static str],
 }
 
 /// One `dp_events` row as stored.
@@ -60,7 +63,21 @@ impl AppDb {
                      (wallet_id, identity, kind, contact, ref, at, read_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
+            let mut exists = tx.prepare_cached(
+                "SELECT 1 FROM dp_events
+                 WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND kind = ?4",
+            )?;
             for e in events {
+                let mut seen = false;
+                for kind in e.unless_any {
+                    if exists.exists(params![wallet_id, e.identity, e.contact, kind])? {
+                        seen = true;
+                        break;
+                    }
+                }
+                if seen {
+                    continue;
+                }
                 added += insert.execute(params![
                     wallet_id,
                     e.identity,
@@ -175,6 +192,7 @@ mod tests {
             contact: contact.into(),
             reference: reference.into(),
             read_at: None,
+            unless_any: &[],
         }
     }
 
@@ -197,6 +215,42 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.at == 10 && r.read_at.is_none()));
         assert_eq!(rows[0].reference, "t1");
+    }
+
+    #[test]
+    fn an_exclusive_event_is_skipped_once_a_listed_kind_exists_for_the_contact() {
+        let db = AppDb::open_in_memory().unwrap();
+        const EXCLUSIVE: &[&str] = &["request_accepted", "contact_established"];
+        let established = |kind, contact: &str, reference: &str| JournalEntry {
+            unless_any: EXCLUSIVE,
+            ..entry(kind, contact, reference)
+        };
+        db.record_changeset(W, &[established("request_accepted", "bob", "1")], &[], 1)
+            .unwrap();
+        // A rotated request: another ref, or the other kind, is no news.
+        let rotated = [
+            established("request_accepted", "bob", "2"),
+            established("contact_established", "bob", "3"),
+            // Another contact, or an event without the rule, still lands.
+            established("contact_established", "carol", "3"),
+            entry("payment_received", "bob", "t1"),
+        ];
+        assert_eq!(db.record_changeset(W, &rotated, &[], 2).unwrap(), 2);
+        let kinds: Vec<(String, String)> = db
+            .journal(W)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.kind, r.contact))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("request_accepted", "bob"),
+                ("contact_established", "carol"),
+                ("payment_received", "bob"),
+            ]
+            .map(|(k, c)| (k.to_string(), c.to_string()))
+        );
     }
 
     #[test]
