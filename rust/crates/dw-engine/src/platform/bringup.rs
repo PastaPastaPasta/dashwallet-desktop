@@ -435,6 +435,7 @@ impl NetworkSession {
             }
             Some(true) => {}
         }
+        self.note_first_bring_up(id).await;
         // The budget is known once the markers are read; the shorter one
         // bounds reading them.
         let prelude = async {
@@ -456,6 +457,9 @@ impl NetworkSession {
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, false));
             return;
         }
+        // A seed not created here with no identity on file: a restore,
+        // whose first pass finds what happened before.
+        let restore = identity.is_none() && !created_here;
         self.platform.set_status(id, StartupStatus::Starting);
         let budget = if created_here {
             CREATED_HERE_BUDGET
@@ -478,6 +482,7 @@ impl NetworkSession {
         let ended = match &keys {
             Err(_) => Ended::OverBudget,
             Ok(keys) => {
+                self.start_recovery_phase(id, restore).await;
                 let left = deadline.saturating_duration_since(Instant::now());
                 self.run_subsystems(manager, id, left, keys.as_ref(), lock.locks)
                     .await
@@ -542,6 +547,24 @@ impl NetworkSession {
         self.finish_bring_up(id, startup, since, budget).await;
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
+    }
+
+    /// At the Platform pass's admission: a recovery phase starts (catch-up
+    /// silence, DASHPAY §2.7; DEC-125, DEC-139, DEC-143) for a restore's
+    /// bring-up, and for one of a wallet with identities a discovery stored
+    /// that no bring-up has replayed yet, whichever path brought it up (the
+    /// bring-up the discovery queued, or the one replacing it after an SPV
+    /// restart dropped the queued signal). The discovery marker is consumed
+    /// only once the advance has completed: an attempt cancelled before it
+    /// (by `stop_spv` during key acquisition, say) leaves the marker for the
+    /// next. A plain warm start is no recovery: what arrived while the app
+    /// was closed is news.
+    async fn start_recovery_phase(&self, id: WalletId, restore: bool) {
+        // A failed advance keeps the marker: the next bring-up tries again.
+        if (restore || self.platform.recovery.is_discovered(&id)) && self.advance_catch_up(id).await
+        {
+            self.platform.recovery.consume_discovered(&id);
+        }
     }
 
     /// Records a bring-up's outcome: the proven-absence marker, the notice

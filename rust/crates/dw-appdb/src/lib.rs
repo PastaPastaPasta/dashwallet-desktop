@@ -18,7 +18,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod dashpay_journal;
+mod provenance;
 mod rows;
+pub use dashpay_journal::{JournalEntry, JournalRow};
 pub use rows::{SqlValue, TableRows};
 
 mod embedded {
@@ -655,6 +658,57 @@ impl AppDb {
         Ok(())
     }
 
+    /// Raises a numeric setting to `value` in one statement and returns what
+    /// is stored afterwards: the stored value when it is a number at least
+    /// `value`, or when it is not a number at all (left for the caller to
+    /// report), else `value`. With `keep_existing`, any stored value stays
+    /// (the first write wins). Concurrent callers cannot lower it. `Ok` only
+    /// once the write has committed: the upsert runs in an explicit
+    /// transaction, because a lone `RETURNING` statement commits when it is
+    /// reset, where `query_row` would drop a commit failure.
+    pub fn raise_setting(
+        &self,
+        scope: &str,
+        key: &str,
+        value: u64,
+        keep_existing: bool,
+    ) -> Result<String> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let stored = tx.query_row(
+            "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)
+             ON CONFLICT (scope, key) DO UPDATE SET value = CASE
+                 WHEN ?4 OR value = '' OR value GLOB '*[^0-9]*'
+                     OR CAST(value AS INTEGER) >= ?5 THEN value
+                 ELSE excluded.value
+             END
+             RETURNING value",
+            params![scope, key, value.to_string(), keep_existing, value as i64],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(stored)
+    }
+
+    /// Makes every committed write durable against power loss: a full WAL
+    /// checkpoint, which syncs the WAL, copies it into the database file and
+    /// syncs that (the connection runs `synchronous=NORMAL`, under which a
+    /// commit alone is not synced). `Err` (`SQLITE_BUSY`) when another
+    /// connection kept the checkpoint from completing.
+    pub fn checkpoint_full(&self) -> Result<()> {
+        let busy: i64 = self
+            .conn()
+            .query_row("PRAGMA wal_checkpoint(FULL)", [], |r| r.get(0))?;
+        if busy != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("the WAL checkpoint did not complete".into()),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Every `(key, value)` of `scope` whose key starts with `prefix`, by
     /// key.
     pub fn settings_with_prefix(&self, scope: &str, prefix: &str) -> Result<Vec<(String, String)>> {
@@ -776,7 +830,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026100801);
+        assert_eq!(db.schema_version().unwrap(), 2026100901);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -982,6 +1036,60 @@ mod tests {
         assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("w"));
         db.set_setting(GLOBAL_SCOPE, "k", None).unwrap();
         assert_eq!(db.setting(GLOBAL_SCOPE, "k").unwrap(), None);
+    }
+
+    /// After a full checkpoint the write is in the database file itself:
+    /// a copy of that file alone (no `-wal`) has it; an ordinary commit is
+    /// only in the WAL.
+    #[test]
+    fn a_full_checkpoint_puts_committed_writes_in_the_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        let db = AppDb::open(&path).unwrap();
+        // Migrations leave a WAL; start from a checkpointed file.
+        db.checkpoint_full().unwrap();
+        let in_file_alone = |key: &str| {
+            let copy = dir.path().join("copy.sqlite");
+            std::fs::copy(&path, &copy).unwrap();
+            let conn = Connection::open(&copy).unwrap();
+            let found: Option<String> = conn
+                .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .unwrap();
+            drop(conn);
+            std::fs::remove_file(&copy).unwrap();
+            found.is_some()
+        };
+        db.set_setting(GLOBAL_SCOPE, "wal_only", Some("1")).unwrap();
+        assert!(!in_file_alone("wal_only"));
+        db.checkpoint_full().unwrap();
+        assert!(in_file_alone("wal_only"));
+
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT * FROM settings_kv;")
+            .unwrap();
+        db.set_setting(GLOBAL_SCOPE, "later", Some("1")).unwrap();
+        assert!(db.checkpoint_full().is_err(), "a reader pins the WAL");
+    }
+
+    #[test]
+    fn a_raised_setting_never_goes_down() {
+        let db = AppDb::open_in_memory().unwrap();
+        let raise = |v, keep| db.raise_setting(GLOBAL_SCOPE, "b", v, keep).unwrap();
+        assert_eq!(raise(900, true), "900");
+        assert_eq!(raise(2000, true), "900", "kept");
+        assert_eq!(raise(2000, false), "2000");
+        assert_eq!(raise(1000, false), "2000", "a stale caller");
+        assert_eq!(raise(10_000, false), "10000", "numeric, not text, order");
+        db.set_setting(GLOBAL_SCOPE, "b", Some("garbled")).unwrap();
+        assert_eq!(raise(20_000, false), "garbled");
+        assert_eq!(
+            db.setting(GLOBAL_SCOPE, "b").unwrap().as_deref(),
+            Some("garbled")
+        );
     }
 
     #[test]

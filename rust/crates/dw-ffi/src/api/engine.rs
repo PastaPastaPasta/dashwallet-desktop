@@ -246,6 +246,18 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 wallet_id: wallet_id.to_string(),
                 loaded,
             },
+            // Withheld by `ObserverSink` until E0-13 binds it; a stray one
+            // reloads the history, which is harmless.
+            E::Platform {
+                network, wallet_id, ..
+            } => {
+                debug_assert!(false, "a Platform signal reached the bindings");
+                Self::HistoryChanged {
+                    network: network.into(),
+                    wallet_id: wallet_id.to_string(),
+                    txids: Vec::new(),
+                }
+            }
             E::CoinJoin { network, wallet_id } => Self::CoinJoin {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
@@ -267,11 +279,13 @@ impl dw_engine::EventSink for ObserverSink {
     fn emit(&self, event: dw_engine::EngineEvent) {
         // The DashPay notices reach Swift with the facade bindings (E0-13);
         // the generated Swift is frozen until then.
-        if let dw_engine::EngineEvent::Notice {
-            code: dw_engine::NoticeCode::DashPayStartupIncomplete,
-            ..
-        } = event
-        {
+        if matches!(
+            event,
+            dw_engine::EngineEvent::Notice {
+                code: dw_engine::NoticeCode::DashPayStartupIncomplete,
+                ..
+            } | dw_engine::EngineEvent::Platform { .. }
+        ) {
             return;
         }
         self.0.on_event(event.into());

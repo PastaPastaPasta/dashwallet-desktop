@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 7
+Contract-Version: 8
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -54,8 +54,8 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
-DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_net.rs` and `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, and E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -317,7 +317,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 7 -->
+<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 8 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1417,11 +1417,23 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`StartupStatus`.** The library's seven `WalletStartupStatus` values plus our own `NotRun`, `Starting` and
   `IdentityUnsettled`: the bring-up ran with a locked vault and no signers ("identity unsettled", §3.2) and runs again
   at the first unlock.
-- **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact`: the data was verified only
-  through the trusted fallback (§2.2 rule 2) and still has a `dp_trust_unverified` row. "As of" times for offline
-  data come from `sync_status().last_pass`. `Counterparty` and the inviter in `InvitationStatus::Valid` carry no flag:
-  they are display data, and DP3-04's money-move gate checks `dp_trust_unverified` itself before any payment, whatever
-  the record says.
+- **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact` (DEC-125, positive
+  provenance): once the trusted-quorum fallback has served a read in this installation (a persisted latch, the
+  global setting `trust.fallback_used_at`), Platform data counts as unverified unless dw-appdb's `dp_trust_verified`
+  has a record for it. The latch is durable before use (DEC-135, DEC-139, DEC-143): the fallback serves a fetch only
+  after the latch is committed and a full WAL checkpoint has made it power-loss durable (app.sqlite runs
+  `synchronous=NORMAL`, under which a commit alone is not synced); if either fails, that fetch fails or degrades as
+  if there were no fallback. Durability is established, never inferred: each process checkpoints before its first
+  fallback use, even when the latch is already on file, since a row left by a refused checkpoint is readable but
+  unsynced. A latch read back at open, or one that cannot be read, still counts as set for classification. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
+  `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
+  `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
+  exported, so a restored wallet's data verifies again. Absence fails closed: data the library keeps in memory after
+  a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
+  is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
+  unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
+  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
+  `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2 if E0-10a fails).
 - **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
@@ -1497,7 +1509,45 @@ The shapes are in §3. What they mean, where the name does not say:
   `RequestReceived`, `RequestAccepted`, `ContactEstablished`, `PaymentReceived`. **`DashPayEvent.reference` per kind:**
   the label for the name kinds (`UsernameRegistered`, `Contest*`: "You won @alice"), the contact-request id for the
   request kinds, the txid for `PaymentReceived`. `contact` is empty for the name kinds. The journal's `ref` column holds
-  the same value.
+  the same value, with two refinements the changeset tap (E0-06) writes and the reader (DP2-05) follows:
+  - **name kinds** store `<label>@<stamp>`, so a name that leaves and comes back is a new event (dw-appdb's `dp_events`
+    rule; DPNS labels have no `@`, and the reader drops `@…` for `reference`). The stamp is the name's `acquired_at`
+    (ms) for `UsernameRegistered`, omitted with the `@` when the library has none, and the contest's `ends_at` for the
+    `Contest*` kinds (DP1-04 writes `ContestLost` and `ContestLocked` the same way);
+  - **request kinds** use the request's `$createdAt` in ms as its id: the library's `ContactRequest` carries no
+    document id, and with `contact` it names the request. `RequestReceived` cites the incoming request;
+    `RequestAccepted` (ours came first) and `ContactEstablished` (we accepted theirs) cite the contact's request.
+  - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
+    `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
+    and `ContactEstablished` once it has either of them.
+  - **catch-up (DEC-114, DEC-125 monotone boundary, DEC-135, DEC-139, DEC-143):** each wallet has a catch-up
+    boundary, the local, unexported setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start
+    moves it to `max(boundary, now)` in one atomic upsert whose returned value the cache takes (also only ever
+    raised), so overlapping starts cannot lower it. The phase starts are `discover_identities`, a names pass, and a
+    bring-up that starts a recovery, at its Platform pass's admission (after key acquisition): a restore's (no
+    identity on file, not created here), or that of a wallet with identities a discovery stored that no bring-up has
+    replayed yet, whichever path admitted it (the bring-up the discovery queues, or the one that replaces it when SPV
+    was stopped). That discovery marker is consumed only after the advance it guards has completed, so an attempt
+    stopped before its pass (or during the advance), or an advance that could not be stored, leaves it for the next. The marker is in memory: a session
+    closed, or the wallet unloaded, before that bring-up drops it, like the names pass it owes. A plain warm start is no recovery
+    and never moves the boundary, so what arrived while the app was closed is news and notifies. The first
+    bring-up in this installation sets the boundary if absent. Apart from the discovery marker, nothing is carried
+    between phases, and nothing moves the boundary back. An event is stored read (no OS notification, DASHPAY §2.7) when its **authoritative** time predates the
+    boundary: a request's `$createdAt`, a relationship's later request, a payment's confirmed block time and a name's
+    marketplace row time (transfer, else creation), the last two read from the persister. Local fetch or
+    observation time (a name's `acquired_at`, the history's first-seen) is never an age. Everything else, an
+    unconfirmed payment or an event with no authoritative time, is news, inside a phase or not.
+  - **declared residual (DEC-114, unchanged by DEC-125):** an old event with no authoritative time may show as
+    unread once. It is cosmetic: no trust decision or money movement depends on read state, and no reconciliation
+    is built for it.
+  - **trust is not the tap's (DEC-125):** provenance is positive (see `unverified` above), so nothing the tap writes
+    or fails to write can make data count as verified, and `store` is never refused for trust. Journal rows and
+    signals follow the persister's acceptance and stay best-effort display data. The `dp_trust_unverified` table
+    of the `dashpay` migration is dormant: nothing writes it, and it stays only because the schema is append-only
+    and the `.dwbackup` wallet rows (E0-07) list it.
+  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
+    `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
+    call a later purchase of the label a win.
 - **`ProfileEdit`** is the whole new profile. `AvatarChange`: `Keep`, `Remove`, or `Set{candidate}` with a
   `prepare_avatar` candidate (after `upload_avatar` when `needs_upload`).
 - **`AvatarSize`.** `Small` is 128 px, `Large` 256 px. `AvatarImage.png` is the engine-re-encoded thumbnail, never
@@ -1518,7 +1568,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | `TxDraft` gains `Recipient::Contact{identity, contact, amount, subtract_fee, note}` | DP3-01 |
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13 | E0-05, E0-10b, E0-13 |
-| `EngineEvent::Platform{network, wallet_id, change}` (§3.5) | E0-06 |
+| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}` and `Names`. The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
 | `EngineEvent::LeaseChanged{network, lease: LeaseView}` and `LockProgress{network, phase}`, engine-side until E0-13 | E0-04 (P2a), E0-13 |

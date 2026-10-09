@@ -142,6 +142,12 @@ pub(crate) struct Live {
     /// The persister platform-wallet uses; knows which wallets are closed.
     pub store: Arc<crate::store::WalletStore>,
     pub appdb: Arc<AppDb>,
+    /// The changeset tap the store feeds: DashPay signals and the journal
+    /// (DASHPAY §3.5). Here, not on the session, so close releases its
+    /// `app.sqlite` handle.
+    pub tap: Arc<crate::platform::journal::ChangesetTap>,
+    /// Positive provenance (DEC-125): which Platform data counts as verified.
+    pub provenance: Arc<crate::platform::provenance::Provenance>,
 }
 
 /// The running event pump: its stop signal and task.
@@ -317,12 +323,25 @@ impl NetworkSession {
             }
             None => Default::default(),
         };
+        let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
+        let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
+            Arc::clone(&hub),
+            Arc::clone(&appdb),
+        ));
+        let provenance = {
+            let appdb = Arc::clone(&appdb);
+            Arc::new(
+                tokio::task::spawn_blocking(move || {
+                    crate::platform::provenance::Provenance::open(appdb)
+                })
+                .await?,
+            )
+        };
         let store = Arc::new(crate::store::WalletStore::new(
             Arc::clone(&persister),
             unloaded,
+            Arc::clone(&tap),
         ));
-
-        let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
         for (order, (id, name, created_at)) in (0u64..).zip(names) {
             match id.parse::<WalletId>() {
                 Ok(id) => hub.set_name(
@@ -366,6 +385,8 @@ impl NetworkSession {
                 persister,
                 store,
                 appdb: Arc::clone(&appdb),
+                tap,
+                provenance,
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
@@ -647,6 +668,8 @@ impl NetworkSession {
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
+        drop(live.tap);
+        drop(live.provenance);
         self.sink.emit(EngineEvent::SessionClosed {
             network: self.network.clone(),
         });

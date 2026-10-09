@@ -28,7 +28,7 @@ use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
-use super::runtime::guard;
+use super::runtime::{TestPause, guard};
 use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
@@ -156,7 +156,7 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         ]
     };
     let shown = |choices: &IdentityChoices| {
-        summaries(list(), choices, true)
+        summaries(list(), choices, true, |_, _| false)
             .into_iter()
             .map(|s| (s.identity, s.index, s.is_main, s.main_name))
             .collect::<Vec<_>>()
@@ -190,8 +190,8 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         main_identity: Some("elsewhere".into()),
         ..IdentityChoices::default()
     };
-    assert!(summaries(list(), &stale, true)[0].is_main);
-    assert!(summaries(Vec::new(), &chosen, true).is_empty());
+    assert!(summaries(list(), &stale, true, |_, _| false)[0].is_main);
+    assert!(summaries(Vec::new(), &chosen, true, |_, _| true).is_empty());
 }
 
 /// Review DP1-03 R5: `identities()` shows what `DashPay::main_name` does. A
@@ -215,7 +215,7 @@ fn identities_show_only_names_platform_shows_owned() {
         ..MainNamePrefs::default()
     };
     let shown = |o: &OwnedIdentity, c: &IdentityChoices| {
-        let s = summaries(vec![o.clone()], c, true).remove(0);
+        let s = summaries(vec![o.clone()], c, true, |_, _| false).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(
@@ -260,7 +260,7 @@ fn an_older_snapshot_shows_no_names() {
         )]),
         ..IdentityChoices::default()
     };
-    let shown = |current| summaries(vec![alice.clone()], &choices, current).remove(0);
+    let shown = |current| summaries(vec![alice.clone()], &choices, current, |_, _| false).remove(0);
     let live = shown(true);
     assert_eq!(live.names, ["carol", "dash"]);
     assert_eq!(live.main_name.as_deref(), Some("carol"));
@@ -311,6 +311,8 @@ struct Platform {
     names: Vec<([u8; 32], Vec<Name>)>,
     /// Identities only `discover_identities` finds.
     discovered: Vec<([u8; 32], u32)>,
+    /// Labels a later bring-up (not the first) finds for an identity.
+    replayed_names: Vec<([u8; 32], &'static str)>,
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
@@ -341,16 +343,19 @@ impl MockPlatform for Platform {
         manager: Arc<Manager>,
         id: WalletId,
     ) -> BoxedFuture<Result<WalletStartupOutcome, EngineError>> {
-        let (identities, calls, hold) = (
+        let (identities, calls, hold, replayed) = (
             self.identities.clone(),
             Arc::clone(&self.bring_ups),
             self.hold_bring_up.clone(),
+            self.replayed_names.clone(),
         );
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
             }
-            calls.fetch_add(1, Ordering::SeqCst);
+            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                set_names(&manager, id, &replayed).await;
+            }
             // As the library: the identities on file, an earlier explicit
             // discovery's included, and those its discovery finds (review r1
             // N1: not a fabricated absence).
@@ -457,6 +462,24 @@ impl MockPlatform for Platform {
     }
 }
 
+/// Gives each identity of `names` its label, stamped with the fetch time.
+async fn set_names(manager: &Manager, id: WalletId, names: &[([u8; 32], &'static str)]) {
+    let wallet = manager.get_wallet(&id.0).await.expect("wallet");
+    let wm = manager.wallet_manager_arc();
+    let mut wm = wm.write().await;
+    let info = wm.get_wallet_info_mut(&id.0).expect("wallet info");
+    for (raw, label) in names {
+        let names = vec![DpnsNameInfo {
+            label: (*label).into(),
+            acquired_at: Some(FETCHED_AT),
+        }];
+        info.identity_manager
+            .managed_identity_mut(&Identifier::from(*raw))
+            .expect("on file")
+            .set_dpns_names(names, wallet.persister());
+    }
+}
+
 /// Adds `identities` the wallet lacks; the identities it then has.
 async fn add_identities(
     manager: &Manager,
@@ -531,6 +554,25 @@ fn session_with(
         .unwrap();
     engine
         .block_on(s.vault_op(move |v| v.create(passphrase)))
+        .unwrap();
+    *guard(&s.platform.recovery.mock) = Some(platform);
+    (engine, s)
+}
+
+/// The network of an engine opened again on `dir` (after a shutdown), its
+/// vault as left, its Platform `platform`.
+fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
+    let engine = engine(dir);
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
         .unwrap();
     *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
@@ -667,6 +709,493 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     // No third pass of ours.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The journal of `id` as (kind, ref, read).
+fn journal(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> Vec<(String, String, bool)> {
+    engine
+        .block_on(s.appdb_op(move |db| db.journal(&id.to_string())))
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.kind, r.reference, r.read_at.is_some()))
+        .collect()
+}
+
+/// Persists the marketplace row of `identity`'s `label`, created on
+/// Platform at `created_at_ms`, as the library's sweep does.
+fn persist_name_row(
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+    identity: [u8; 32],
+    label: &str,
+    created_at_ms: u64,
+) {
+    use platform_wallet::changeset::{
+        DpnsNameStateChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    let document_id = Identifier::from([0xD0; 32]);
+    let mut states = DpnsNameStateChangeSet::default();
+    states.names.insert(
+        document_id,
+        DpnsNameStateEntry {
+            document_id,
+            wallet_identity_id: identity.into(),
+            label: label.into(),
+            normalized_label: convert_to_homograph_safe_chars(label),
+            normalized_parent_domain_name: "dash".into(),
+            price: None,
+            status: DpnsNameSaleStatus::Owned,
+            created_at_ms: Some(created_at_ms),
+            updated_at_ms: None,
+            transferred_at_ms: None,
+            last_synced_at_ms: FETCHED_AT,
+        },
+    );
+    let changeset = PlatformWalletChangeSet {
+        dpns_name_states: Some(states),
+        ..Default::default()
+    };
+    s.live().unwrap().store.store(id.0, changeset).unwrap();
+}
+
+/// The wallet's catch-up boundary on file (UNIX seconds).
+fn boundary(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> Option<u64> {
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(s.appdb_op(move |db| db.setting(&scope, super::journal::CATCH_UP_BEFORE_KEY)))
+        .unwrap()
+        .map(|at| at.parse().unwrap())
+}
+
+/// E0-06 / DEC-125: a restore's bring-up sets the boundary when it starts,
+/// and its names pass moves it to its own start. A name Platform dates
+/// before that is stored read; one with no marketplace row has no
+/// authoritative time and is news (the declared residual).
+#[test]
+fn a_restores_names_pass_stores_platform_dated_names_read() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_names = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("alice", Some(100)), ("zed", None)])],
+        hold_names: Some(Arc::clone(&hold_names)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("pass 1", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    assert!(boundary(&engine, &s, id).is_some(), "set by the restore");
+    persist_name_row(&s, id, ALICE, "alice", 100);
+
+    hold_names.notify_one();
+    wait_until("pass 2", || journal(&engine, &s, id).len() == 2);
+    let at = |label: &str| format!("{label}@{FETCHED_AT}");
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![
+            ("username_registered".into(), at("alice"), true),
+            ("username_registered".into(), at("zed"), false),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r2 R2-2's scheduler order (DEC-125): the restore's bring-up is held
+/// at Platform while an explicit discovery stores an identity and queues
+/// its names pass and bring-up; the held bring-up completes, the names pass
+/// runs, and only then the queued bring-up, which stores a name Platform
+/// dates after the restore but before the discovery. The discovery moved
+/// the boundary forward, so the name is stored read whatever ran in
+/// between.
+#[test]
+fn a_bring_up_a_discovery_queued_behind_a_running_one_stores_history_read() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_bring_up = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        replayed_names: vec![(ALICE, "between")],
+        hold_bring_up: Some(Arc::clone(&hold_bring_up)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the restore's bring-up", || {
+        boundary(&engine, &s, id).is_some()
+    });
+    let restored_at = boundary(&engine, &s, id).unwrap();
+    // Dated after the restore's boundary, and a second before the
+    // discovery's.
+    let between_ms = (restored_at + 1) * 1_000 + 1;
+    while crate::events::unix_now() < restored_at + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    assert!(boundary(&engine, &s, id).unwrap() * 1_000 > between_ms);
+    persist_name_row(&s, id, ALICE, "between", between_ms);
+
+    hold_bring_up.notify_one();
+    wait_until("the names pass", || {
+        s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+    });
+    assert_eq!(
+        platform.bring_ups.load(Ordering::SeqCst),
+        1,
+        "not yet queued"
+    );
+    hold_bring_up.notify_one();
+    wait_until("the queued bring-up", || {
+        !journal(&engine, &s, id).is_empty()
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("between@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r2 R2-1's probe (DEC-125): once the trusted fallback has been used,
+/// an identity a discovery finds is unverified although its store was
+/// refused (wallet.sqlite held by another writer) and nothing of it is on
+/// file; it is verified only once a verified fetch records it.
+#[test]
+fn a_refused_store_leaves_a_discovered_identity_unverified() {
+    let dir = dw_testutil::private_tempdir();
+    let response = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        hold_before_fold: Some(Arc::clone(&response)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let provenance = s.live().unwrap().provenance;
+    provenance.fallback_in_use().unwrap();
+    let wallet_db = s.data_dir().join(crate::session::WALLET_DB_FILE);
+    let stored_identities = || -> i64 {
+        rusqlite::Connection::open(&wallet_db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM identities", [], |r| r.get(0))
+            .unwrap()
+    };
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let holder = rusqlite::Connection::open(&wallet_db).unwrap();
+    let found = std::thread::scope(|scope| {
+        let call = scope.spawn(|| engine.block_on(s.dashpay(id).discover_identities(scan)));
+        wait_until("the discovery's network wait", || {
+            platform.discovery_started.load(Ordering::SeqCst)
+        });
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        response.notify_one();
+        call.join().unwrap()
+    });
+    assert_eq!(found.unwrap(), 1);
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(stored_identities(), 0, "the store was refused");
+    let unverified = || {
+        s.dashpay(id)
+            .identities()
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.identity, i.unverified))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unverified(), vec![(base58(ALICE), true)]);
+
+    provenance
+        .record_verified(super::provenance::kind::IDENTITY, &base58(ALICE))
+        .unwrap();
+    assert_eq!(unverified(), vec![(base58(ALICE), false)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r3 R3-3's order (DEC-135): with SPV stopped, a discovery's queued
+/// bring-up signal has no receiver; the bring-up of the next start replaces
+/// it, and as a bring-up of a wallet with an identity on file it advances
+/// the boundary when it starts. A name Platform dates after the discovery
+/// but before that start is stored read.
+#[test]
+fn a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        replayed_names: vec![(ALICE, "between")],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    engine.block_on(s.stop_spv()).unwrap();
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    let discovered_at = boundary(&engine, &s, id).unwrap();
+    // After the discovery's boundary, a second before the next start's.
+    let between_ms = (discovered_at + 1) * 1_000 + 1;
+    while crate::events::unix_now() < discovered_at + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    persist_name_row(&s, id, ALICE, "between", between_ms);
+
+    start(&engine, &s);
+    wait_until("the replacement bring-up", || {
+        !journal(&engine, &s, id).is_empty()
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("between@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r4 R4-2's order (DEC-143): with SPV stopped, a discovery stores an
+/// identity; the next start's bring-up is stopped after its keys, before its
+/// Platform pass. The discovery marker is consumed only once a bring-up has
+/// advanced the boundary at its pass, so it survives, and the start after
+/// that advances before replaying: a name Platform dates after the stopped
+/// attempt is stored read.
+#[test]
+fn a_recovery_stopped_before_its_platform_pass_advances_at_the_next_start() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        replayed_names: vec![(ALICE, "between")],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    engine.block_on(s.stop_spv()).unwrap();
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+
+    let pause = Arc::new(TestPause {
+        reached: AtomicBool::new(false),
+        release: Notify::new(),
+    });
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the keys", || pause.reached.load(Ordering::SeqCst));
+    engine.block_on(s.stop_spv()).unwrap();
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1, "no pass ran");
+    // The boundary as the stopped attempt left it (the discovery's: the
+    // attempt stopped before its advance). The name is dated after it and a
+    // second before the next start.
+    let attempted = boundary(&engine, &s, id).unwrap();
+    let between_ms = (attempted + 1) * 1_000 + 1;
+    while crate::events::unix_now() < attempted + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    persist_name_row(&s, id, ALICE, "between", between_ms);
+
+    start(&engine, &s);
+    wait_until("the replacement bring-up", || {
+        !journal(&engine, &s, id).is_empty()
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("between@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r4 R4-1's probe (DEC-143): a reader pins app.sqlite's WAL, so the
+/// latch commits but its checkpoint is refused. Reopened with the reader
+/// still there, the session reads the latch back (its data counts as
+/// unverified) but does not take it for durable: the fallback is refused
+/// again until a checkpoint succeeds, and then the latch is in the database
+/// file itself.
+#[test]
+fn a_reopen_after_a_refused_checkpoint_checkpoints_before_the_fallback() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform::default());
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    restore(&engine, &s);
+    let app_db = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    let latch_in_file_alone = || {
+        let copy = dir.path().join("file-alone.sqlite");
+        std::fs::copy(&app_db, &copy).unwrap();
+        let found = rusqlite::Connection::open(&copy)
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [
+                    dw_appdb::GLOBAL_SCOPE,
+                    super::provenance::TRUST_FALLBACK_USED_KEY,
+                ],
+                |_| Ok(()),
+            )
+            .is_ok();
+        std::fs::remove_file(&copy).unwrap();
+        found
+    };
+    engine
+        .block_on(s.appdb_op(|db| db.checkpoint_full()))
+        .unwrap();
+    let reader = rusqlite::Connection::open(&app_db).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT * FROM settings_kv;")
+        .unwrap();
+    let provenance = s.live().unwrap().provenance;
+    assert!(provenance.fallback_in_use().is_err(), "checkpoint refused");
+    assert!(!latch_in_file_alone());
+    drop(provenance);
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let (engine, s) = reopen(dir.path(), platform);
+    let provenance = s.live().unwrap().provenance;
+    assert!(provenance.is_unverified(super::provenance::kind::IDENTITY, "x"));
+    assert!(
+        provenance.fallback_in_use().is_err(),
+        "a committed row is not a durable one"
+    );
+    assert!(!latch_in_file_alone());
+    reader.execute_batch("ROLLBACK").unwrap();
+    provenance.fallback_in_use().unwrap();
+    assert!(latch_in_file_alone());
+    drop(provenance);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DEC-139: a plain warm start is no recovery phase. A contact request
+/// Platform dates after the last session's boundary, while the app was
+/// closed, arrives after the next start's bring-up and stays news (it
+/// notifies); the start did not move the boundary.
+#[test]
+fn a_warm_start_keeps_events_from_while_closed_as_news() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the restore's recovery", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+            && s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+    });
+    let closed_at = boundary(&engine, &s, id).unwrap();
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    // Received while the app was closed, a second after the boundary.
+    let while_closed_ms = (closed_at + 1) * 1_000 + 1;
+    while crate::events::unix_now() < closed_at + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let (engine, s) = reopen(dir.path(), Arc::clone(&platform));
+    start(&engine, &s);
+    wait_until("the warm start's bring-up", || {
+        platform.bring_ups.load(Ordering::SeqCst) == 2
+            && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    assert_eq!(boundary(&engine, &s, id), Some(closed_at), "not moved");
+    let request = super::journal_tests::contacts(super::journal_tests::incoming(
+        ALICE[0],
+        9,
+        while_closed_ms,
+    ));
+    s.live().unwrap().store.store(id.0, request).unwrap();
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "request_received".into(),
+            while_closed_ms.to_string(),
+            false
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Sol r3 R3-1's session probe (DEC-135): the latch is on file before the
+/// fallback serves anything, so an identity it fetched stays unverified
+/// after the session closes and the network is opened again, with no
+/// verification record. While app.sqlite is held the latch cannot be
+/// written and the fallback is refused (nothing is fetched through it).
+#[test]
+fn a_fallback_identity_stays_unverified_after_a_reopen() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let provenance = s.live().unwrap().provenance;
+    let holder = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(
+        provenance.fallback_in_use().is_err(),
+        "the fallback is refused"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
+    provenance.fallback_in_use().unwrap();
+    drop(provenance);
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    let unverified = |s: &Arc<NetworkSession>| {
+        s.dashpay(id)
+            .identities()
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.identity, i.unverified))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unverified(&s), vec![(base58(ALICE), true)]);
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let (engine, s) = reopen(dir.path(), platform);
+    wait_until("the wallet's identity", || !unverified(&s).is_empty());
+    assert_eq!(unverified(&s), vec![(base58(ALICE), true)]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

@@ -80,6 +80,7 @@ use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
 use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
 use super::profile::Profile;
+use super::provenance::kind;
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
 use crate::session::Manager;
@@ -131,6 +132,11 @@ pub(crate) struct Recovery {
     choice_writer: tokio::sync::Mutex<()>,
     snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
+    /// Wallets with identities a discovery stored that no bring-up has
+    /// replayed yet: the next bring-up to reach its Platform pass starts a
+    /// recovery phase and then consumes it (DEC-139, DEC-143). Dropped with
+    /// the wallet's other state on unload or close.
+    discovered: Mutex<HashSet<WalletId>>,
     /// Per wallet, the admission of its explicit discoveries (review r1 M3,
     /// r2 M3-R2).
     discoveries: Mutex<HashMap<WalletId, DiscoveryGate>>,
@@ -255,11 +261,23 @@ impl Recovery {
         guard(&self.names_due).drain().collect()
     }
 
+    /// Whether a discovery stored identities for `id` that no bring-up has
+    /// replayed yet.
+    pub(super) fn is_discovered(&self, id: &WalletId) -> bool {
+        guard(&self.discovered).contains(id)
+    }
+
+    /// A bring-up's recovery advance for `id` has completed (DEC-143).
+    pub(super) fn consume_discovered(&self, id: &WalletId) {
+        guard(&self.discovered).remove(id);
+    }
+
     /// Forgets a removed or closed wallet.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.choices).remove(id);
         guard(&self.snapshots).remove(id);
         guard(&self.names_due).remove(id);
+        guard(&self.discovered).remove(id);
     }
 
     #[cfg(test)]
@@ -300,10 +318,15 @@ pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Outpu
 /// and whatever it holds that looks like evidence is as old (DEC-138): it
 /// shows no names and no main name, and says so with `names_updating`.
 /// Identity, profile and balance still come from it.
+///
+/// `is_unverified(kind, key)` is the provenance check (DEC-125): a row is
+/// unverified if the identity, its shown profile or any of the names the
+/// library holds for it is.
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
     current: bool,
+    is_unverified: impl Fn(&str, &str) -> bool,
 ) -> Vec<IdentitySummary> {
     owned.sort_by(|a, b| (a.index, &a.identity).cmp(&(b.index, &b.identity)));
     let main = choices
@@ -315,6 +338,11 @@ pub(super) fn summaries(
         .into_iter()
         .enumerate()
         .map(|(i, o)| {
+            let unverified = is_unverified(kind::IDENTITY, &o.identity)
+                || (o.profile.is_some() && is_unverified(kind::PROFILE, &o.identity))
+                || o.names.iter().any(|(label, _)| {
+                    is_unverified(kind::DPNS_LABEL, &convert_to_homograph_safe_chars(label))
+                });
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
             let names = if current {
                 evident_names(o.names, &prefs, |label| {
@@ -334,7 +362,7 @@ pub(super) fn summaries(
                 balance: o.balance,
                 has_dashpay_keys: o.has_dashpay_keys,
                 profile: o.profile,
-                unverified: false,
+                unverified,
             }
         })
         .collect()
@@ -449,7 +477,10 @@ impl NetworkSession {
             names,
             ..recovery.choices_of(&id)
         };
-        Ok(summaries(owned, &choices, current))
+        let provenance = self.live()?.provenance;
+        Ok(summaries(owned, &choices, current, |kind, key| {
+            provenance.is_unverified(kind, key)
+        }))
     }
 
     /// Takes the identity snapshot after a pass of ours changed the
@@ -572,7 +603,9 @@ impl NetworkSession {
     /// The names pass of a recovery (pass 2): a full DPNS refresh of the
     /// wallet's identities, within [`NAMES_PASS_BUDGET`]. Failures are
     /// logged; `dpns_sync` repairs them on its next pass.
+    /// A recovery phase: it advances the catch-up boundary (DEC-125).
     pub(super) async fn names_pass(&self, manager: &Arc<Manager>, id: WalletId) {
+        self.advance_catch_up(id).await;
         self.run_names_pass(manager, id).await;
         self.refresh_identities(manager, id).await;
     }
@@ -631,6 +664,8 @@ impl NetworkSession {
             .begin_discovery(id)
             .ok_or(PlatformError::WalletNotFound)?;
         self.require_wallet(&id)?;
+        // A recovery phase: it advances the catch-up boundary (DEC-125).
+        self.advance_catch_up(id).await;
         let manager = self.manager()?;
         let before = wallet_identities(&manager, id).await;
         tokio::select! {
@@ -720,6 +755,7 @@ impl NetworkSession {
         if stored > 0 {
             self.refresh_identities(manager, id).await;
             self.platform.recovery.names_due(id);
+            guard(&self.platform.recovery.discovered).insert(id);
             self.platform.signal(PlatformSignal::Readmit(id));
         }
         u32::try_from(stored).unwrap_or(u32::MAX)
