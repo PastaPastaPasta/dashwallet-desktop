@@ -114,8 +114,9 @@ status 1.
 - `code` is the §4 code, or m1's for dwcli's own vault unlock, grants and wallet lookup. `message` is its `Display`
   text, and `params` holds the code's parameters by name, such as `call` for `platform.not_implemented`. A failure
   before the command runs (the passphrase file, the data root, opening the network) is code `setup`.
-- A write asks for its grant as a host does, from its quote or `grant_request` and then `Vault.authorize`, and prints
-  it with the outcome: `{"quote"|"grant", "outcome"}`. Registration prints `draft` instead of `outcome`.
+- A write asks for its grant as a host does: a `PlatformOp` capped by its quote's or `grant_request`'s `GrantRequest`,
+  from `Vault.authorize` (`--max-duffs`/`--max-credits` for `identity resume`, `finish-asset-locks` and `faucet-key`,
+  which have no quote). It prints the request with the outcome: `{"quote"|"grant", "outcome"}`. Registration prints `draft` instead of `outcome`.
 - `pay-contact` reports `not_implemented{call: "Recipient::Contact"}` until DP3-01 adds that `TxDraft` recipient (§6).
 - State kept per session (scan ids, avatar candidates, leases, a running registration, dispatch tombstones) dies with
   a one-shot process. `dwcli dashpay session` keeps one engine and runs one request per stdin line,

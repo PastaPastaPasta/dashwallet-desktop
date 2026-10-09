@@ -11,10 +11,11 @@
 //! `platform.not_implemented`. Calls still stubbed report that code and fill
 //! in as the DP tasks land.
 //!
-//! Writes ask for their grant the way a host does: from the quote, or from
-//! `grant_request`, then `Vault.authorize`. Until E0-04.P1 gives
-//! `PlatformOp` its caps (and adds `IdentityScan`) the grant is the uncapped
-//! `PlatformOp`; the quote is printed with the result.
+//! Writes ask for their grant the way a host does: a `PlatformOp` capped by
+//! the quote's or `grant_request`'s `GrantRequest`, from `Vault.authorize`;
+//! the request is printed with the result. The calls the contract gives no
+//! quote (`identity resume`, `finish-asset-locks`, `faucet-key`) take their
+//! caps as `--max-duffs` and `--max-credits`.
 //!
 //! Bearer inputs (invitation links, scanned payloads that may carry a
 //! `dapk`) are read from stdin or `--input-file`, never from argv (m4 §1).
@@ -34,9 +35,9 @@ use clap::{Args, Parser, Subcommand};
 use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, GrantAction,
-    IdentityError, InitialProfile, InvitationError, NameError, PlatformError, PrivateDetails,
-    ProfileEdit, RegistrationError, RegistrationFunding, RegistrationRequest, RegistrationWait,
-    WithdrawAmount, check_username,
+    GrantRequest, IdentityError, InitialProfile, InvitationError, NameError, PlatformError,
+    PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding, RegistrationRequest,
+    RegistrationWait, WithdrawAmount, check_username,
 };
 use dw_engine::{Engine, EngineError, NetworkSession};
 use dw_vault::{GrantPurpose, VaultError};
@@ -140,6 +141,25 @@ impl Who {
     }
 }
 
+/// The caps of a `PlatformOp` grant for a call with no quote (0: that part
+/// is not granted).
+#[derive(Args)]
+pub struct Caps {
+    #[arg(long, default_value_t = 0)]
+    max_duffs: u64,
+    #[arg(long, default_value_t = 0)]
+    max_credits: u64,
+}
+
+impl From<Caps> for GrantRequest {
+    fn from(c: Caps) -> Self {
+        GrantRequest {
+            max_duffs: c.max_duffs,
+            max_credits: c.max_credits,
+        }
+    }
+}
+
 /// Where a bearer input comes from: stdin, or this file.
 #[derive(Args)]
 pub struct SecretInput {
@@ -229,15 +249,25 @@ pub enum IdentityCmd {
     },
     /// The registration rows and what each waits for.
     Registrations,
-    /// Advance a parked registration (authorizes when it waits for an
-    /// unlock or a confirmation).
-    Resume { draft: String },
+    /// Advance a parked registration (authorizes with the caps when it
+    /// waits for an unlock or a confirmation).
+    Resume {
+        draft: String,
+        #[command(flatten)]
+        caps: Caps,
+    },
     /// Discard a registration whose funds were never committed.
     Discard { draft: String },
     /// Tools ▸ Repair "Finish transfers": resume stranded asset locks.
-    FinishAssetLocks,
+    FinishAssetLocks {
+        #[command(flatten)]
+        caps: Caps,
+    },
     /// Derive an asset-lock key for the faucet (developer builds).
-    FaucetKey,
+    FaucetKey {
+        #[command(flatten)]
+        caps: Caps,
+    },
     /// Top up an identity's credits from the Core balance.
     TopUp {
         #[command(flatten)]
@@ -746,16 +776,18 @@ impl Ctx<'_> {
         Ok(self.session.dashpay(id))
     }
 
-    /// A `PlatformOp` grant for the wallet. E0-04.P1 caps it with the
-    /// quote's or `grant_request`'s `GrantRequest`.
-    fn platform_op(&self, dp: &DashPay) -> Result<String, CliError> {
-        self.grant(dp, GrantPurpose::PlatformOp)
+    /// A `PlatformOp` grant for the wallet with `caps`.
+    fn platform_op(&self, dp: &DashPay, caps: GrantRequest) -> Result<String, CliError> {
+        let purpose = GrantPurpose::PlatformOp {
+            max_duffs: caps.max_duffs,
+            max_credits: caps.max_credits,
+        };
+        self.grant(dp, purpose)
     }
 
-    /// The grant `discover_identities` takes: E0-04.P1's `IdentityScan`,
-    /// `PlatformOp` until then.
+    /// The grant `discover_identities` takes.
     fn identity_scan(&self, dp: &DashPay) -> Result<String, CliError> {
-        self.grant(dp, GrantPurpose::PlatformOp)
+        self.grant(dp, GrantPurpose::IdentityScan)
     }
 
     fn grant(&self, dp: &DashPay, purpose: GrantPurpose) -> Result<String, CliError> {
@@ -1065,9 +1097,10 @@ fn register(
         funding,
     };
     let quote = ctx.block_on(dp.registration_quote(req.clone()))?;
+    let caps = quote.grant;
     let mut result = json!({"quote": quote});
     if !reg.quote_only {
-        let grant = ctx.platform_op(dp)?;
+        let grant = ctx.platform_op(dp, caps)?;
         result["draft"] = ctx.block_on(dp.start_registration(req, grant))?.into();
     }
     Ok(result)
@@ -1106,7 +1139,7 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             register(ctx, &dp, reg, funding)
         }
         IdentityCmd::Registrations => out(ctx.block_on(dp.registrations())?),
-        IdentityCmd::Resume { draft } => {
+        IdentityCmd::Resume { draft, caps } => {
             let rows = ctx.block_on(dp.registrations())?;
             let row = rows
                 .iter()
@@ -1114,19 +1147,19 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
                 .ok_or_else(|| CliError::invalid(format!("no registration {draft:?}")))?;
             let grant = match row.waiting {
                 Some(RegistrationWait::Unlock | RegistrationWait::Authorize) => {
-                    Some(ctx.platform_op(&dp)?)
+                    Some(ctx.platform_op(&dp, caps.into())?)
                 }
                 _ => None,
             };
             out(ctx.block_on(dp.resume_registration(draft, grant))?)
         }
         IdentityCmd::Discard { draft } => out(ctx.block_on(dp.discard_registration(draft))?),
-        IdentityCmd::FinishAssetLocks => {
-            let grant = ctx.platform_op(&dp)?;
+        IdentityCmd::FinishAssetLocks { caps } => {
+            let grant = ctx.platform_op(&dp, caps.into())?;
             out(ctx.block_on(dp.finish_asset_locks(grant))?)
         }
-        IdentityCmd::FaucetKey => {
-            let grant = ctx.platform_op(&dp)?;
+        IdentityCmd::FaucetKey { caps } => {
+            let grant = ctx.platform_op(&dp, caps.into())?;
             out(ctx.block_on(dp.prepare_faucet_lock(grant))?)
         }
         IdentityCmd::TopUp {
@@ -1139,7 +1172,7 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
-            let grant = ctx.platform_op(&dp)?;
+            let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome = ctx.block_on(dp.top_up(identity, duffs, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
@@ -1159,7 +1192,7 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let to = to.expect("clap requires --to without --quote-only");
-            let grant = ctx.platform_op(&dp)?;
+            let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome = ctx.block_on(dp.withdraw(identity, to, amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
@@ -1211,7 +1244,7 @@ fn action_grant(
     action: GrantAction,
 ) -> Result<(Value, String), CliError> {
     let request = ctx.block_on(dp.grant_request(identity.to_string(), action))?;
-    Ok((json!(request), ctx.platform_op(dp)?))
+    Ok((json!(request), ctx.platform_op(dp, request)?))
 }
 
 /// A write's result: the grant it asked for and the call's outcome.
@@ -1473,9 +1506,15 @@ mod tests {
             "DashPay.registration_quote",
         ),
         ("identity registrations", "DashPay.registrations"),
-        ("identity resume D", "DashPay.registrations"),
+        (
+            "identity resume D --max-duffs 1 --max-credits 2",
+            "DashPay.registrations",
+        ),
         ("identity discard D", "DashPay.discard_registration"),
-        ("identity finish-asset-locks", "DashPay.finish_asset_locks"),
+        (
+            "identity finish-asset-locks --max-credits 50000",
+            "DashPay.finish_asset_locks",
+        ),
         ("identity faucet-key", "DashPay.prepare_faucet_lock"),
         (
             "identity top-up --identity I --duffs 100000",
@@ -1967,7 +2006,11 @@ mod tests {
             wallet: None,
         };
         let dp = ctx.dashpay().unwrap();
-        assert!(!ctx.platform_op(&dp).unwrap().is_empty());
+        let caps = GrantRequest {
+            max_duffs: 100_000,
+            max_credits: 1_000_000,
+        };
+        assert!(!ctx.platform_op(&dp, caps).unwrap().is_empty());
         assert!(!ctx.identity_scan(&dp).unwrap().is_empty());
         engine.block_on(engine.shutdown()).unwrap();
 
