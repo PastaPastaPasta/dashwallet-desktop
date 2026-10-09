@@ -1,7 +1,9 @@
 # Nightly (roadmap T-03; DASHPAY §6 tiers T1 and GUI):
 # - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli;
 # - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
-#   Xvfb in Docker, M1 and M2 flows).
+#   Xvfb in Docker, M1 and M2 flows);
+# - shielded: the engine with its non-default `shielded` feature (E0-12), built, linted and its
+#   prover warm-up run, so the halo2 build cost stays out of PR CI but the feature does not rot.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -123,6 +125,43 @@ jobs:
           name: regtest-logs
           path: regtest-logs/
           if-no-files-found: warn
+
+  # Blocking, unlike the demo below: the feature has no tests of its own yet, so a red build, lint
+  # or warm-up here means the pinned platform revision or our feature wiring broke. PR CI never
+  # builds the feature (docs/research/shielded-cost.md has the cost).
+  shielded:
+    name: Engine with shielded feature (E0-12)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - name: Build (dw-engine, its examples and dwcli with the feature)
+        working-directory: rust
+        run: |
+          cargo build -p dwcli --features dw-engine/shielded --locked
+          cargo build -p dw-engine --features shielded --example shielded_warmup --locked
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        working-directory: rust
+        run: cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings
+      # Builds the Halo 2 proving key in a cold process (about 30 s upstream); no network.
+      - name: Prover warm-up
+        if: ${{ !cancelled() }}
+        working-directory: rust
+        timeout-minutes: 15
+        run: target/debug/examples/shielded_warmup
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
