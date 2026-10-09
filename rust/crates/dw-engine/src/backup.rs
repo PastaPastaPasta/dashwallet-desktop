@@ -677,7 +677,6 @@ impl NetworkSession {
             // manager, its secret gone (review DP1-05 r2 M3-R2).
             let _discoveries = self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
-            self.end_recovery(&id);
             if created {
                 let removed = async {
                     let live = self.live()?;

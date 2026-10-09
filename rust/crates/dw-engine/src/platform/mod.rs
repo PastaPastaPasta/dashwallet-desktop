@@ -21,6 +21,7 @@ mod names;
 mod notifications;
 mod payments;
 mod profile;
+pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;

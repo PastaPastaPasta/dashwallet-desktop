@@ -1,8 +1,7 @@
 //! The changeset tap (DASHPAY §2.7, §3.5; ROADMAP E0-06). Every changeset
 //! the library stores goes through [`crate::store::WalletStore`], which hands
-//! it here: it becomes debounced `EngineEvent::Platform` signals, `dp_events`
-//! journal rows and, while the trusted-quorum fallback is in use (§2.2),
-//! `dp_trust_unverified` rows.
+//! it here once the SQLite persister has accepted it: it becomes debounced
+//! `EngineEvent::Platform` signals and `dp_events` journal rows.
 //!
 //! - Signals go through the event pump's `Platform` domain (≤ 4 Hz per
 //!   domain, trailing edge kept). Hosts re-query; rows are never pushed.
@@ -10,38 +9,31 @@
 //!   so the library's whole-snapshot changesets, seen again and again, add
 //!   each event once. Contact events are once per relationship: a rotated
 //!   request (new `$createdAt`) is not news.
-//! - Catch-up silence (DEC-114). While a recovery phase runs, every event
-//!   of the wallet is stored read: a restore's bring-up, the discovery of
-//!   identities, the bring-up queued after it and the names pass
-//!   ([`ChangesetTap::catch_up`], and the recovery mark that carries a
-//!   recovery from one phase to the next). Outside them, an event is stored
-//!   read when its authoritative time predates this installation's first
-//!   bring-up of the wallet ([`CATCH_UP_BEFORE_KEY`]): a request's
-//!   `$createdAt`, a payment's confirmed block time, a name's marketplace
-//!   row time, all read from the persister ([`Times`]). Local fetch or
-//!   observation times are never ages. An event with no authoritative time
-//!   (an unconfirmed payment, a name with no row) is news; an old one that
-//!   first surfaces outside every recovery phase may show unread once
-//!   (declared residual, cosmetic).
-//! - Trust flags fail closed: while the fallback is in use they are written
-//!   before the SQLite persister sees the changeset, and a failure refuses
-//!   the store (`Transient` when the database is busy, nothing applied), so
-//!   no entity is ever stored unflagged. A store the persister then refuses
-//!   leaves a flag behind: over-flagging only costs a re-verification.
-//! - The journal and the signals follow the persister's acceptance, so a
-//!   refused changeset leaves no event. The journal is display data: a
+//! - Catch-up silence (DEC-114, DEC-125). Each wallet has one boundary
+//!   ([`CATCH_UP_BEFORE_KEY`], persisted), which every recovery phase start
+//!   advances to `max(boundary, now)` ([`ChangesetTap::advance_catch_up`]):
+//!   a restore's bring-up, a discovery, the bring-up a discovery or a
+//!   restore readmits, a names pass. An event whose authoritative time
+//!   predates the boundary is stored read: a request's `$createdAt`, a
+//!   payment's confirmed block time, a name's marketplace row time, the last
+//!   two read from the persister ([`Times`]). Local fetch or observation
+//!   times are never ages. Everything else is news; an old event with no
+//!   authoritative time may show unread once (declared residual, cosmetic).
+//! - Trust is not the tap's: provenance is positive (DEC-125,
+//!   `super::provenance`), so nothing here has to be written for a fetched
+//!   entity to count as unverified.
+//! - A refused changeset leaves no event. The journal is display data: a
 //!   failure to write it is logged, never returned to the library.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use dw_appdb::{AppDb, AppDbError, JournalEntry, UnverifiedEntity};
+use dw_appdb::{AppDb, JournalEntry};
 use key_wallet::account::AccountType;
 use platform_wallet::changeset::{Merge, PlatformWalletChangeSet, PlatformWalletPersistence};
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
@@ -56,11 +48,6 @@ use crate::{NetworkSession, PlatformChange, WalletId};
 /// installation first brought the wallet up, UNIX seconds. What happened
 /// before is catch-up.
 pub(crate) const CATCH_UP_BEFORE_KEY: &str = "dashpay.catch_up_before";
-
-/// `dp_trust_unverified.kind` values (dw-appdb migration `dashpay`).
-const UNVERIFIED_IDENTITY: &str = "identity";
-const UNVERIFIED_REQUEST: &str = "contact_request";
-const UNVERIFIED_LABEL: &str = "dpns_label";
 
 /// The `dp_events.kind` text: `EventKind`'s serde name.
 pub(crate) fn kind_name(kind: EventKind) -> &'static str {
@@ -121,7 +108,7 @@ fn b58(id: &Identifier) -> String {
 enum Age {
     /// The source's authoritative time, UNIX ms.
     At(u64),
-    /// No authoritative time: news outside a recovery phase.
+    /// No authoritative time: news.
     Unknown,
     /// The companion of an event that notifies (a won contest's username):
     /// stored read whatever its time.
@@ -182,51 +169,17 @@ pub(crate) struct Classified {
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
     names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
-    unverified: BTreeSet<UnverifiedEntity>,
-}
-
-fn identity_entity(id: &Identifier) -> UnverifiedEntity {
-    UnverifiedEntity {
-        kind: UNVERIFIED_IDENTITY,
-        key: b58(id),
-    }
-}
-
-fn label_entity(label: &str) -> UnverifiedEntity {
-    UnverifiedEntity {
-        kind: UNVERIFIED_LABEL,
-        key: convert_to_homograph_safe_chars(label),
-    }
-}
-
-fn request_entity(request: &ContactRequest) -> UnverifiedEntity {
-    UnverifiedEntity {
-        kind: UNVERIFIED_REQUEST,
-        key: format!(
-            "{}:{}:{}",
-            b58(&request.sender_id),
-            b58(&request.recipient_id),
-            request.created_at
-        ),
-    }
 }
 
 /// Classifies a changeset by the §3.5 table. `None` when it touches nothing
-/// DashPay (Core-only changesets, the common case). `unverified` lists every
-/// Platform entity it carries, used only while the fallback is in use.
+/// DashPay (Core-only changesets, the common case).
 pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     let mut c = Classified::default();
 
     // `identities`: Identities; username registered, contest outcome.
     if let Some(ids) = cs.identities.as_ref().filter(|i| !i.is_empty()) {
         c.changes.insert(PlatformChange::Identities);
-        // A tombstone touches its identity too.
-        c.unverified.extend(ids.removed.iter().map(identity_entity));
         for (id, entry) in &ids.identities {
-            c.unverified.insert(identity_entity(id));
-            let labels = (entry.dpns_names.iter().map(|n| n.label.as_str()))
-                .chain(entry.contested_dpns_names.iter().map(String::as_str));
-            c.unverified.extend(labels.map(label_entity));
             // Names of identities the wallet only watches are not news.
             if entry.identity_index.is_some() && !entry.dpns_names.is_empty() {
                 c.names.insert(*id, entry.dpns_names.clone());
@@ -234,15 +187,10 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
         }
     }
     // Keys and profiles are identity data too.
-    if let Some(keys) = cs.identity_keys.as_ref().filter(|k| !k.is_empty()) {
+    if cs.identity_keys.as_ref().is_some_and(|k| !k.is_empty())
+        || cs.dashpay_profiles.as_ref().is_some_and(|p| !p.is_empty())
+    {
         c.changes.insert(PlatformChange::Identities);
-        let touched = keys.upserts.keys().chain(&keys.removed);
-        c.unverified
-            .extend(touched.map(|(id, _)| identity_entity(id)));
-    }
-    if let Some(profiles) = cs.dashpay_profiles.as_ref().filter(|p| !p.is_empty()) {
-        c.changes.insert(PlatformChange::Identities);
-        c.unverified.extend(profiles.keys().map(identity_entity));
     }
 
     // `contacts`: received, established, and the local edits (alias, note,
@@ -260,14 +208,7 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                 .iter()
                 .map(|o| PlatformChange::Contacts { identity: b58(o) }),
         );
-        c.unverified.extend(
-            contacts
-                .sent_requests
-                .values()
-                .map(|e| request_entity(&e.request)),
-        );
         for (key, entry) in &contacts.incoming_requests {
-            c.unverified.insert(request_entity(&entry.request));
             c.events.push(Event {
                 identity: b58(&key.owner_id),
                 kind: EventKind::RequestReceived,
@@ -278,8 +219,6 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
         }
         for (key, contact) in &contacts.established {
             let (outgoing, incoming) = (&contact.outgoing_request, &contact.incoming_request);
-            c.unverified.insert(request_entity(outgoing));
-            c.unverified.insert(request_entity(incoming));
             // Ours came first: they accepted it. Theirs came first: we did.
             let kind = if outgoing.created_at < incoming.created_at {
                 EventKind::RequestAccepted
@@ -342,14 +281,9 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
         }
     }
 
-    // `dpns_name_states`: Names. The rows carry their normalized label.
-    if let Some(states) = cs.dpns_name_states.as_ref().filter(|s| !s.is_empty()) {
+    // `dpns_name_states`: Names.
+    if cs.dpns_name_states.as_ref().is_some_and(|s| !s.is_empty()) {
         c.changes.insert(PlatformChange::Names);
-        c.unverified
-            .extend(states.names.values().map(|e| UnverifiedEntity {
-                kind: UNVERIFIED_LABEL,
-                key: e.normalized_label.clone(),
-            }));
     }
 
     (!c.changes.is_empty() || !c.locks.is_empty()).then_some(c)
@@ -359,62 +293,8 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
 pub(crate) struct ChangesetTap {
     hub: Arc<SessionHub>,
     appdb: Arc<AppDb>,
-    /// Wallets whose restore passes are running, with how many hold them.
-    catch_up: Mutex<HashMap<WalletId, usize>>,
-    /// Wallets in a recovery that spans tasks, with the phases it still owes:
-    /// from a restore's bring-up or a discovery that found identities until
-    /// the bring-up queued after a discovery and the names pass are done.
-    recovering: Mutex<HashMap<WalletId, Owed>>,
     /// [`CATCH_UP_BEFORE_KEY`] per wallet, UNIX seconds, once known.
     catch_up_before: Mutex<HashMap<WalletId, u64>>,
-    /// The trusted-quorum fallback is in use (E0-10b sets it).
-    trust_fallback: AtomicBool,
-}
-
-/// A phase a recovery hands on to (DEC-114).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Phase {
-    /// The bring-up queued after a discovery.
-    BringUp,
-    /// The names pass (DP1-05 pass 2).
-    Names,
-}
-
-/// The phases a wallet's recovery still owes.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct Owed {
-    bring_up: bool,
-    names: bool,
-}
-
-/// Ends a [`Phase::BringUp`] when dropped, on any path out of a bring-up.
-pub(crate) struct BringUpPhase {
-    tap: Arc<ChangesetTap>,
-    id: WalletId,
-}
-
-impl Drop for BringUpPhase {
-    fn drop(&mut self) {
-        self.tap.end_phase(&self.id, Phase::BringUp);
-    }
-}
-
-/// Holds a wallet in catch-up until dropped ([`ChangesetTap::catch_up`]).
-pub(crate) struct CatchUp {
-    tap: Arc<ChangesetTap>,
-    id: WalletId,
-}
-
-impl Drop for CatchUp {
-    fn drop(&mut self) {
-        let mut catch_up = guard(&self.tap.catch_up);
-        if let Some(n) = catch_up.get_mut(&self.id) {
-            *n -= 1;
-            if *n == 0 {
-                catch_up.remove(&self.id);
-            }
-        }
-    }
 }
 
 impl ChangesetTap {
@@ -422,70 +302,8 @@ impl ChangesetTap {
         Self {
             hub,
             appdb,
-            catch_up: Mutex::new(HashMap::new()),
-            recovering: Mutex::new(HashMap::new()),
             catch_up_before: Mutex::new(HashMap::new()),
-            trust_fallback: AtomicBool::new(false),
         }
-    }
-
-    /// Stores the wallet's events read, with no OS notification, until the
-    /// guard drops (catch-up silence, DASHPAY §2.7). Held across a restore's
-    /// passes (`bringup.rs`).
-    pub(crate) fn catch_up(self: &Arc<Self>, id: WalletId) -> CatchUp {
-        *guard(&self.catch_up).entry(id).or_default() += 1;
-        CatchUp {
-            tap: Arc::clone(self),
-            id,
-        }
-    }
-
-    fn in_catch_up(&self, id: &WalletId) -> bool {
-        guard(&self.catch_up).contains_key(id) || guard(&self.recovering).contains_key(id)
-    }
-
-    /// Marks `id` recovering until the phases it hands on are done: its
-    /// names pass, and with `bring_up` the bring-up queued after a
-    /// discovery. Its events are stored read meanwhile.
-    pub(crate) fn begin_recovery(&self, id: WalletId, bring_up: bool) {
-        let mut all = guard(&self.recovering);
-        let owed = all.entry(id).or_default();
-        owed.names = true;
-        owed.bring_up |= bring_up;
-    }
-
-    /// One owed phase is done; the recovery ends with the last.
-    pub(crate) fn end_phase(&self, id: &WalletId, phase: Phase) {
-        let mut all = guard(&self.recovering);
-        if let Some(owed) = all.get_mut(id) {
-            match phase {
-                Phase::BringUp => owed.bring_up = false,
-                Phase::Names => owed.names = false,
-            }
-            if !owed.bring_up && !owed.names {
-                all.remove(id);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_recovering(&self, id: &WalletId) -> bool {
-        guard(&self.recovering).contains_key(id)
-    }
-
-    /// Ends `id`'s recovery whatever it owes (removal, unload, rollback).
-    pub(crate) fn end_recovery(&self, id: &WalletId) {
-        guard(&self.recovering).remove(id);
-    }
-
-    /// While on, every entity a changeset touches gets a
-    /// `dp_trust_unverified` row (§2.2 rule 2).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "E0-10b's quorum provider sets it")
-    )]
-    pub(crate) fn set_trust_fallback(&self, on: bool) {
-        self.trust_fallback.store(on, Ordering::SeqCst);
     }
 
     /// The wallet's [`CATCH_UP_BEFORE_KEY`], from the cache or the database;
@@ -514,21 +332,33 @@ impl ChangesetTap {
         Ok(Some(at))
     }
 
-    /// Records when this installation first brought `id` up, unless it is
-    /// on file: what happened before is catch-up. A value that cannot be
-    /// read is left alone (moving the boundary later would silence real
-    /// events). Blocking (app.sqlite).
+    /// A recovery phase of `id` starts: its catch-up boundary becomes
+    /// `max(boundary, now)`, so it never moves back. Blocking (app.sqlite).
+    pub(crate) fn advance_catch_up(&self, id: WalletId) {
+        self.move_boundary(id, false);
+    }
+
+    /// The first bring-up of `id` in this installation: the boundary starts
+    /// there, so what happened before is catch-up (an upgrade's first pass
+    /// replays old contacts). Kept when on file. Blocking (app.sqlite).
     pub(crate) fn note_first_bring_up(&self, id: WalletId) {
+        self.move_boundary(id, true);
+    }
+
+    /// Sets the boundary to now: when nothing is on file, or with
+    /// `!first_only` when it is earlier. A value on file that cannot be read
+    /// is left alone (more news, never less).
+    fn move_boundary(&self, id: WalletId, first_only: bool) {
+        let now = unix_now();
         match self.load_catch_up_before(id) {
-            Ok(None) => {}
-            Ok(Some(_)) => return,
+            Ok(Some(at)) if first_only || at >= now => return,
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(wallet_id = %id, error = %e, "could not read the catch-up time");
                 return;
             }
         }
         let scope = dw_appdb::local_scope(&id.to_string());
-        let now = unix_now();
         match self
             .appdb
             .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some(&now.to_string()))
@@ -542,22 +372,10 @@ impl ChangesetTap {
         }
     }
 
-    /// Forgets a removed wallet's cached catch-up time: the same seed
-    /// imported again is a new first bring-up.
+    /// Forgets a removed wallet's cached boundary: the same seed imported
+    /// again starts from what is on file (nothing, after removal).
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.catch_up_before).remove(id);
-        self.end_recovery(id);
-    }
-
-    /// Flags what `c` touches while the fallback is in use. Runs before the
-    /// persister takes the changeset: an error refuses the store.
-    pub(crate) fn flag(&self, id: WalletId, c: &Classified) -> Result<(), AppDbError> {
-        if c.unverified.is_empty() || !self.trust_fallback.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        let unverified: Vec<UnverifiedEntity> = c.unverified.iter().cloned().collect();
-        self.appdb
-            .flag_unverified(&id.to_string(), &unverified, unix_now())
     }
 
     /// Finishes and records a changeset the persister accepted, reading
@@ -592,8 +410,7 @@ impl ChangesetTap {
         }
         events.extend(self.name_events(id, std::mem::take(&mut c.names), times));
 
-        let silent = self.in_catch_up(&id);
-        let before_ms = (!silent && !events.is_empty())
+        let before_ms = (!events.is_empty())
             .then(|| self.catch_up_before(id))
             .flatten()
             .map(|s| s.saturating_mul(1000));
@@ -605,7 +422,7 @@ impl ChangesetTap {
         let entries: Vec<JournalEntry> = events
             .into_iter()
             .map(|e| JournalEntry {
-                read_at: (silent || history(e.age)).then_some(now),
+                read_at: history(e.age).then_some(now),
                 identity: e.identity,
                 kind: kind_name(e.kind),
                 contact: e.contact,
@@ -686,47 +503,24 @@ impl ChangesetTap {
 }
 
 impl NetworkSession {
-    /// Holds `id` in catch-up while a recovery phase runs: `None` after
-    /// close.
-    pub(super) fn catch_up(&self, id: WalletId) -> Option<CatchUp> {
-        Some(self.live().ok()?.tap.catch_up(id))
-    }
-
-    /// [`ChangesetTap::begin_recovery`]: a recovery goes on in later phases.
-    pub(super) fn begin_recovery(&self, id: WalletId, bring_up: bool) {
-        if let Ok(live) = self.live() {
-            live.tap.begin_recovery(id, bring_up);
-        }
-    }
-
-    /// [`ChangesetTap::end_phase`].
-    pub(super) fn end_phase(&self, id: &WalletId, phase: Phase) {
-        if let Ok(live) = self.live() {
-            live.tap.end_phase(id, phase);
-        }
-    }
-
-    /// Ends the owed bring-up phase of `id` when the guard drops.
-    pub(super) fn bring_up_phase(&self, id: WalletId) -> Option<BringUpPhase> {
-        let tap = self.live().ok()?.tap;
-        Some(BringUpPhase { tap, id })
-    }
-
-    /// [`ChangesetTap::end_recovery`].
-    pub(crate) fn end_recovery(&self, id: &WalletId) {
-        if let Ok(live) = self.live() {
-            live.tap.end_recovery(id);
-        }
+    /// [`ChangesetTap::advance_catch_up`] off the caller's thread: a
+    /// recovery phase of `id` starts.
+    pub(super) async fn advance_catch_up(&self, id: WalletId) {
+        self.with_tap(move |tap| tap.advance_catch_up(id)).await;
     }
 
     /// [`ChangesetTap::note_first_bring_up`] off the caller's thread.
     pub(super) async fn note_first_bring_up(&self, id: WalletId) {
+        self.with_tap(move |tap| tap.note_first_bring_up(id)).await;
+    }
+
+    async fn with_tap(&self, f: impl FnOnce(&ChangesetTap) + Send + 'static) {
         let Ok(live) = self.live() else {
             return;
         };
         let tap = live.tap;
-        if let Err(e) = tokio::task::spawn_blocking(move || tap.note_first_bring_up(id)).await {
-            tracing::warn!(wallet_id = %id, error = %e, "could not store the catch-up time");
+        if let Err(e) = tokio::task::spawn_blocking(move || f(&tap)).await {
+            tracing::warn!(error = %e, "could not store the catch-up time");
         }
     }
 }

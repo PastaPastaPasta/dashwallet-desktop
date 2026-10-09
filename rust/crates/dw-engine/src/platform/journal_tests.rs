@@ -19,14 +19,14 @@ use key_wallet::transaction_checking::{BlockInfo, TransactionContext, Transactio
 use platform_wallet::changeset::{
     AccountRegistrationEntry, AssetLockChangeSet, ContactChangeSet, ContactRequestEntry,
     DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry, IdentityChangeSet,
-    IdentityEntry, IdentityKeysChangeSet, Merge, PlatformWalletChangeSet,
-    PlatformWalletPersistence, ReceivedContactRequestKey, SentContactRequestKey,
+    IdentityEntry, Merge, PlatformWalletChangeSet, PlatformWalletPersistence,
+    ReceivedContactRequestKey, SentContactRequestKey,
 };
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact, IdentityStatus};
 use zeroize::Zeroizing;
 
-use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, Phase, Times, classify, kind_name};
+use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, Times, classify, kind_name};
 use super::notifications::EventKind;
 use crate::events::SessionHub;
 use crate::{
@@ -287,7 +287,6 @@ impl Harness {
     /// What `WalletStore::store` does around an accepting persister.
     fn feed_to(&self, wallet: WalletId, cs: PlatformWalletChangeSet) {
         if let Some(c) = classify(&cs) {
-            self.tap.flag(wallet, &c).unwrap();
             self.tap.record(wallet, c, &self.times);
         }
     }
@@ -309,15 +308,6 @@ impl Harness {
         self.journal()
             .into_iter()
             .map(|r| (r.kind, r.contact, r.reference, r.read_at.is_some()))
-            .collect()
-    }
-
-    fn unverified(&self) -> Vec<(String, String)> {
-        self.appdb
-            .unverified(&W.to_string())
-            .unwrap()
-            .into_iter()
-            .map(|(kind, key, _)| (kind, key))
             .collect()
     }
 }
@@ -754,63 +744,77 @@ fn replayed_changesets_journal_each_event_once() {
     assert_eq!(h.journal(), first);
 }
 
-/// Catch-up silence (§2.7): events from a restore pass are stored read; a
-/// pass held twice ends with its last holder; after it, events are new.
+/// Catch-up (DEC-125): a recovery phase moves the wallet's boundary to now,
+/// never back. Events Platform dates before it are stored read, later ones
+/// and undated ones are news; another wallet is not affected, and signals
+/// are never silenced.
 #[test]
-fn events_of_a_restore_pass_are_stored_read() {
+fn a_recovery_phase_moves_the_boundary_forward_only() {
     let h = Harness::new();
     let other = WalletId([0xBB; 32]);
-    {
-        let _outer = h.tap.catch_up(W);
-        {
-            let _inner = h.tap.catch_up(W);
-            h.feed(contacts(incoming(ME, BOB, NEW_MS)));
-        }
-        h.feed(identities(vec![identity(
-            ME,
-            Some(0),
-            &[("alice", Some(NEW_MS))],
-        )]));
-        h.feed(payment(ME, "aa11", BOB, PaymentDirection::Received));
-        // Another wallet is not silenced.
-        h.feed_to(other, contacts(incoming(ME, CAROL, NEW_MS)));
-    }
+    let later_ms = (crate::events::unix_now() + 3_600) * 1_000;
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert!(h.journal()[0].read_at.is_none(), "no boundary yet");
+
+    h.tap.advance_catch_up(W);
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[("alice", Some(NEW_MS))],
+    )]));
+    h.times.name(ME, "dated", NEW_MS);
+    h.feed(identities(vec![identity(ME, Some(0), &[("dated", None)])]));
+    h.feed(payment(ME, "aa11", BOB, PaymentDirection::Received));
+    h.feed(contacts(incoming(ME, 7, later_ms)));
+    h.feed_to(other, contacts(incoming(ME, CAROL, NEW_MS)));
     assert_eq!(
-        h.rows(),
-        vec![
+        h.rows()[1..],
+        [
             row(
                 EventKind::RequestReceived,
-                &b58(BOB),
+                &b58(CAROL),
                 &NEW_MS.to_string(),
                 true
             ),
+            // Undated: news (the declared residual).
             row(
                 EventKind::UsernameRegistered,
                 "",
                 &format!("alice@{NEW_MS}"),
-                true
+                false
             ),
-            row(EventKind::PaymentReceived, &b58(BOB), "aa11", true),
+            row(EventKind::UsernameRegistered, "", "dated", true),
+            row(EventKind::PaymentReceived, &b58(BOB), "aa11", false),
+            row(
+                EventKind::RequestReceived,
+                &b58(7),
+                &later_ms.to_string(),
+                false
+            ),
         ]
     );
     let other_rows = h.appdb.journal(&other.to_string()).unwrap();
-    assert_eq!(other_rows.len(), 1);
     assert!(other_rows[0].read_at.is_none());
-    // Signals are not silenced: hosts still re-query.
     let pending = h.hub.pump.take_platform();
     assert!(pending.contains_key(&W) && pending.contains_key(&other));
 
-    // The pass is over.
-    h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+    // A boundary ahead of now (a clock stepped back) stays; so does any
+    // boundary under a first bring-up.
+    let scope = dw_appdb::local_scope(&W.to_string());
+    let ahead = (later_ms / 1_000 + 3_600).to_string();
+    h.appdb
+        .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some(&ahead))
+        .unwrap();
+    h.tap.forget(&W);
+    h.tap.advance_catch_up(W);
+    h.tap.note_first_bring_up(W);
     assert_eq!(
-        h.rows().last().unwrap(),
-        &row(
-            EventKind::RequestReceived,
-            &b58(CAROL),
-            &NEW_MS.to_string(),
-            false
-        )
+        h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap(),
+        Some(ahead)
     );
+    h.feed(contacts(incoming(ME, 8, later_ms)));
+    assert!(h.journal().last().unwrap().read_at.is_some());
 }
 
 /// What happened before the wallet's first bring-up here stays history
@@ -857,36 +861,6 @@ fn history_arriving_after_the_restore_passes_is_stored_read() {
         ]
         .map(|(k, r)| (k.to_string(), r))
     );
-}
-
-/// A recovery handed on to later phases (DEC-114) keeps the wallet's events
-/// read until every phase it owes is done, in either order: the names pass
-/// may run before the bring-up a discovery queued, or after it.
-#[test]
-fn a_recovery_stays_catch_up_until_its_last_phase() {
-    let h = Harness::new();
-    let mut created = NEW_MS;
-    let mut feed = |h: &Harness| {
-        created += 1;
-        h.feed(contacts(incoming(ME, created as u8, created)));
-        h.journal().last().unwrap().read_at.is_some()
-    };
-    for (first, second) in [
-        (Phase::Names, Phase::BringUp),
-        (Phase::BringUp, Phase::Names),
-    ] {
-        h.tap.begin_recovery(W, true);
-        assert!(feed(&h));
-        h.tap.end_phase(&W, first);
-        assert!(feed(&h), "{first:?} done, {second:?} owed");
-        h.tap.end_phase(&W, second);
-        assert!(!feed(&h), "over");
-    }
-    // A restore's own bring-up owes the names pass only; removal ends it.
-    h.tap.begin_recovery(W, false);
-    assert!(feed(&h));
-    h.tap.forget(&W);
-    assert!(!feed(&h));
 }
 
 /// The first bring-up's time is kept, persisted, and read back by a later
@@ -941,149 +915,6 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
             .as_deref(),
         Some("garbled")
     );
-}
-
-/// With the trusted fallback in use (§2.2), every entity a changeset touches
-/// gets a `dp_trust_unverified` row; without it, none.
-#[test]
-fn the_trust_fallback_flags_every_touched_entity() {
-    let h = Harness::new();
-    let mut entry = identity(ME, Some(0), &[("Alice", Some(5))]);
-    entry.contested_dpns_names = vec!["bob".into()];
-    let touch_all = || {
-        let mut cs = identities(vec![entry.clone()]);
-        let mut cc = incoming(ME, BOB, 1_000);
-        Merge::merge(&mut cc, established(ME, CAROL, 10, 20));
-        cc.sent_requests.insert(
-            SentContactRequestKey {
-                owner_id: id(ME),
-                recipient_id: id(9),
-            },
-            ContactRequestEntry {
-                request: request(ME, 9, 30),
-            },
-        );
-        cs.contacts = Some(cc);
-        let mut states = DpnsNameStateChangeSet::default();
-        states.names.insert(id(9), name_state(9, "Carol"));
-        cs.dpns_name_states = Some(states);
-        cs.dashpay_profiles = Some(BTreeMap::from([(id(4), None)]));
-        cs
-    };
-
-    h.feed(touch_all());
-    assert!(h.unverified().is_empty(), "the fallback is off");
-
-    h.tap.set_trust_fallback(true);
-    h.feed(touch_all());
-    let req = |s: u8, r: u8, at: u64| {
-        (
-            "contact_request".to_string(),
-            format!("{}:{}:{at}", b58(s), b58(r)),
-        )
-    };
-    let mut expected = vec![
-        ("dpns_label".to_string(), "a11ce".to_string()),
-        ("dpns_label".to_string(), "b0b".to_string()),
-        ("dpns_label".to_string(), "car01".to_string()),
-        ("identity".to_string(), b58(ME)),
-        ("identity".to_string(), b58(4)),
-        req(BOB, ME, 1_000),
-        req(ME, CAROL, 10),
-        req(CAROL, ME, 20),
-        req(ME, 9, 30),
-    ];
-    expected.sort();
-    assert_eq!(h.unverified(), expected);
-
-    // Payments and local edits are not Platform data.
-    let mut ignore = ContactChangeSet::default();
-    ignore.ignored.insert((id(ME), id(7)));
-    h.feed(contacts(ignore));
-    h.feed(payment(ME, "aa11", 7, PaymentDirection::Received));
-    assert_eq!(h.unverified(), expected);
-
-    // Tombstones touch their identity: an identity or one of its keys
-    // removed. Request and name-state removals carry nothing to flag (no
-    // `$createdAt`, no label): the entity is gone with its data.
-    let mut gone = IdentityChangeSet::default();
-    gone.removed.insert(id(6));
-    let mut keys = IdentityKeysChangeSet::default();
-    keys.removed.insert((id(8), 1));
-    h.feed(PlatformWalletChangeSet {
-        identities: Some(gone),
-        identity_keys: Some(keys),
-        ..Default::default()
-    });
-    expected.extend([
-        ("identity".to_string(), b58(6)),
-        ("identity".to_string(), b58(8)),
-    ]);
-    expected.sort();
-    assert_eq!(h.unverified(), expected);
-
-    h.tap.set_trust_fallback(false);
-    h.feed(identities(vec![identity(5, Some(1), &[])]));
-    assert_eq!(h.unverified(), expected);
-}
-
-/// The trust flags fail closed (§2.2): with the fallback in use, a store
-/// whose flags cannot be written (app.sqlite held by another writer) is
-/// refused as `Transient` with nothing applied, and succeeds, flagged, once
-/// the database is free.
-#[test]
-fn a_busy_app_database_refuses_the_store_instead_of_dropping_flags() {
-    use platform_wallet::changeset::{PersistenceError, PersistenceErrorKind};
-
-    let dir = dw_testutil::private_tempdir();
-    let engine = engine(dir.path(), Arc::new(Recorder::default()));
-    let (s, wallet) = session(&engine, true);
-    let live = s.live().unwrap();
-    live.tap.set_trust_fallback(true);
-    let snapshot = || identities(vec![identity(ME, Some(0), &[("alice", Some(NEW_MS))])]);
-    let stored_identities = || -> i64 {
-        let db =
-            rusqlite::Connection::open(s.data_dir().join(crate::session::WALLET_DB_FILE)).unwrap();
-        db.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get(0))
-            .unwrap()
-    };
-    let unverified = || {
-        engine
-            .block_on(s.appdb_op(move |db| db.unverified(&wallet.to_string())))
-            .unwrap()
-    };
-
-    let holder = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let refused = live.store.store(wallet.0, snapshot());
-    assert!(
-        matches!(
-            refused,
-            Err(PersistenceError::Backend {
-                kind: PersistenceErrorKind::Transient,
-                ..
-            })
-        ),
-        "{refused:?}"
-    );
-    holder.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(stored_identities(), 0, "the persister saw nothing");
-    assert!(unverified().is_empty());
-
-    live.store.store(wallet.0, snapshot()).unwrap();
-    assert_eq!(stored_identities(), 1);
-    let kinds: Vec<(String, String)> = unverified()
-        .into_iter()
-        .map(|(k, key, _)| (k, key))
-        .collect();
-    assert_eq!(
-        kinds,
-        vec![
-            ("dpns_label".to_string(), "a11ce".to_string()),
-            ("identity".to_string(), b58(ME)),
-        ]
-    );
-    engine.block_on(engine.shutdown()).unwrap();
 }
 
 const ABANDON_12: &[u8] =

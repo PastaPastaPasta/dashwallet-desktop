@@ -80,6 +80,7 @@ use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
 use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
 use super::profile::Profile;
+use super::provenance::kind;
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
 use crate::session::Manager;
@@ -255,11 +256,6 @@ impl Recovery {
         guard(&self.names_due).drain().collect()
     }
 
-    /// The wallets that owe a names pass now.
-    pub(super) fn names_due_of(&self) -> HashSet<WalletId> {
-        guard(&self.names_due).clone()
-    }
-
     /// Forgets a removed or closed wallet.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.choices).remove(id);
@@ -305,10 +301,15 @@ pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Outpu
 /// and whatever it holds that looks like evidence is as old (DEC-138): it
 /// shows no names and no main name, and says so with `names_updating`.
 /// Identity, profile and balance still come from it.
+///
+/// `is_unverified(kind, key)` is the provenance check (DEC-125): a row is
+/// unverified if the identity, its shown profile or any of the names the
+/// library holds for it is.
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
     current: bool,
+    is_unverified: impl Fn(&str, &str) -> bool,
 ) -> Vec<IdentitySummary> {
     owned.sort_by(|a, b| (a.index, &a.identity).cmp(&(b.index, &b.identity)));
     let main = choices
@@ -320,6 +321,11 @@ pub(super) fn summaries(
         .into_iter()
         .enumerate()
         .map(|(i, o)| {
+            let unverified = is_unverified(kind::IDENTITY, &o.identity)
+                || (o.profile.is_some() && is_unverified(kind::PROFILE, &o.identity))
+                || o.names.iter().any(|(label, _)| {
+                    is_unverified(kind::DPNS_LABEL, &convert_to_homograph_safe_chars(label))
+                });
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
             let names = if current {
                 evident_names(o.names, &prefs, |label| {
@@ -339,7 +345,7 @@ pub(super) fn summaries(
                 balance: o.balance,
                 has_dashpay_keys: o.has_dashpay_keys,
                 profile: o.profile,
-                unverified: false,
+                unverified,
             }
         })
         .collect()
@@ -454,7 +460,10 @@ impl NetworkSession {
             names,
             ..recovery.choices_of(&id)
         };
-        Ok(summaries(owned, &choices, current))
+        let provenance = self.live()?.provenance;
+        Ok(summaries(owned, &choices, current, |kind, key| {
+            provenance.is_unverified(kind, key)
+        }))
     }
 
     /// Takes the identity snapshot after a pass of ours changed the
@@ -577,9 +586,9 @@ impl NetworkSession {
     /// The names pass of a recovery (pass 2): a full DPNS refresh of the
     /// wallet's identities, within [`NAMES_PASS_BUDGET`]. Failures are
     /// logged; `dpns_sync` repairs them on its next pass.
-    /// A recovery phase: what it stores is catch-up (DEC-114).
+    /// A recovery phase: it advances the catch-up boundary (DEC-125).
     pub(super) async fn names_pass(&self, manager: &Arc<Manager>, id: WalletId) {
-        let _catch_up = self.catch_up(id);
+        self.advance_catch_up(id).await;
         self.run_names_pass(manager, id).await;
         self.refresh_identities(manager, id).await;
     }
@@ -638,8 +647,8 @@ impl NetworkSession {
             .begin_discovery(id)
             .ok_or(PlatformError::WalletNotFound)?;
         self.require_wallet(&id)?;
-        // A recovery phase: what it stores is catch-up (DEC-114).
-        let _catch_up = self.catch_up(id);
+        // A recovery phase: it advances the catch-up boundary (DEC-125).
+        self.advance_catch_up(id).await;
         let manager = self.manager()?;
         let before = wallet_identities(&manager, id).await;
         tokio::select! {
@@ -727,9 +736,6 @@ impl NetworkSession {
             .filter(|identity| !before.contains(identity))
             .count();
         if stored > 0 {
-            // The bring-up and names pass that follow are still the
-            // recovery: catch-up until both are done, in either order.
-            self.begin_recovery(id, true);
             self.refresh_identities(manager, id).await;
             self.platform.recovery.names_due(id);
             self.platform.signal(PlatformSignal::Readmit(id));

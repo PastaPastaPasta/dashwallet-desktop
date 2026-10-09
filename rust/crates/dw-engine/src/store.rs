@@ -2,8 +2,8 @@
 //! changes. Its `load` leaves out wallets the user closed (dash-qt "Close
 //! Wallet", QT-101), so `load_from_persistor` at open, and again when a
 //! wallet is opened, registers only the wallets that should be in memory.
-//! Its `store` is the changeset tap (DASHPAY §3.5): trust flags before the
-//! SQLite persister, what it accepted on to `platform::journal`. Every other call goes
+//! Its `store` is the changeset tap (DASHPAY §3.5): what the SQLite
+//! persister accepted goes on to `platform::journal`. Every other call goes
 //! straight to the SQLite persister.
 
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ use key_wallet::managed_account::transaction_record::TransactionRecord;
 use platform_wallet::changeset::changeset::DpnsNameStateEntry;
 use platform_wallet::changeset::{
     ClientStartState, ListedCoreTxid, PersistenceCapabilities, PersistenceError,
-    PersistenceErrorKind, PlatformWalletChangeSet, PlatformWalletPersistence,
+    PlatformWalletChangeSet, PlatformWalletPersistence,
 };
 use platform_wallet_storage::SqlitePersister;
 
@@ -97,22 +97,8 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
-        // Classified before the persister takes it: trust flags are written
-        // first (a failure refuses the store with nothing applied), the
-        // journal and signals once the persister accepted it.
+        // Classified before the persister takes it, recorded once it has.
         let classified = classify(&changeset);
-        if let Some(classified) = &classified {
-            self.tap
-                .flag(WalletId(wallet_id), classified)
-                .map_err(|e| {
-                    let kind = if e.is_transient() {
-                        PersistenceErrorKind::Transient
-                    } else {
-                        PersistenceErrorKind::Fatal
-                    };
-                    PersistenceError::backend_with_kind(kind, e)
-                })?;
-        }
         self.inner.store(wallet_id, changeset)?;
         if let Some(classified) = classified {
             self.tap

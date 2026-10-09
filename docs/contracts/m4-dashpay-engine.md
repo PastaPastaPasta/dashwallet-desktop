@@ -1417,11 +1417,18 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`StartupStatus`.** The library's seven `WalletStartupStatus` values plus our own `NotRun`, `Starting` and
   `IdentityUnsettled`: the bring-up ran with a locked vault and no signers ("identity unsettled", §3.2) and runs again
   at the first unlock.
-- **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact`: the data was verified only
-  through the trusted fallback (§2.2 rule 2) and still has a `dp_trust_unverified` row. "As of" times for offline
-  data come from `sync_status().last_pass`. `Counterparty` and the inviter in `InvitationStatus::Valid` carry no flag:
-  they are display data, and DP3-04's money-move gate checks `dp_trust_unverified` itself before any payment, whatever
-  the record says.
+- **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact` (DEC-125, positive
+  provenance): once the trusted-quorum fallback has served a read in this installation (a persisted latch, the
+  global setting `trust.fallback_used_at`), Platform data counts as unverified unless dw-appdb's `dp_trust_verified`
+  has a record for it. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
+  `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
+  `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
+  exported, so a restored wallet's data verifies again. Absence fails closed: data the library keeps in memory after
+  a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
+  is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
+  unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
+  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
+  `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2 if E0-10a fails).
 - **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
@@ -1508,25 +1515,25 @@ The shapes are in §3. What they mean, where the name does not say:
   - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
     `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
     and `ContactEstablished` once it has either of them.
-  - **catch-up (DEC-114):** while a recovery phase runs, every event of the wallet is stored read (no OS
-    notification, DASHPAY §2.7). The phases are a restore's bring-up (no identity on file, not created here),
-    `discover_identities`, the bring-up it queues and the names pass; the tap carries a recovery from one phase to
-    the next until both owed later phases are done, in either order, and drops it on removal, unload or a restore's
-    rollback. Outside them, an event is stored read when its **authoritative** time predates the wallet's first
-    bring-up in this installation (the local, unexported setting `dashpay.catch_up_before`, UNIX seconds): a
+  - **catch-up (DEC-114, DEC-125 monotone boundary):** each wallet has a catch-up boundary, the local, unexported
+    setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start moves it to `max(boundary, now)`:
+    a restore's bring-up (no identity on file, not created here), `discover_identities`, a names pass, and a queued
+    bring-up (the supervisor's readmission, which only a discovery or a restore's readmission sends). The first
+    bring-up in this installation sets it if absent. Nothing is carried between phases and nothing moves it back,
+    so any order of the phases, or a phase that ends early, leaves it at least where the latest start put it. An
+    event is stored read (no OS notification, DASHPAY §2.7) when its **authoritative** time predates the boundary: a
     request's `$createdAt`, a relationship's later request, a payment's confirmed block time and a name's
     marketplace row time (transfer, else creation), the last two read from the persister. Local fetch or
-    observation time (a name's `acquired_at`, the history's first-seen) is never an age. An unconfirmed payment, or
-    an event with no authoritative time, is news.
-  - **declared residual (DEC-114):** an old event that first surfaces outside every recovery phase and has no
-    authoritative time may show as unread once. It is cosmetic: no trust flag or money movement depends on read
-    state, and no reconciliation is built for it.
-  - **trust flags fail closed:** while the trusted-quorum fallback is in use, the tap writes the `dp_trust_unverified`
-    rows of everything a changeset touches (identities, including identity and key tombstones; contact requests;
-    DPNS labels) *before* the SQLite persister sees it. If that write fails, `store` is refused with nothing applied
-    (`PersistenceErrorKind::Transient` when app.sqlite is busy, full or failing I/O, else `Fatal`), so no entity is
-    stored unflagged. Request and name-state removals carry nothing to flag. Journal rows and signals follow the
-    persister's acceptance and stay best-effort display data.
+    observation time (a name's `acquired_at`, the history's first-seen) is never an age. Everything else, an
+    unconfirmed payment or an event with no authoritative time, is news, inside a phase or not.
+  - **declared residual (DEC-114, unchanged by DEC-125):** an old event with no authoritative time may show as
+    unread once. It is cosmetic: no trust decision or money movement depends on read state, and no reconciliation
+    is built for it.
+  - **trust is not the tap's (DEC-125):** provenance is positive (see `unverified` above), so nothing the tap writes
+    or fails to write can make data count as verified, and `store` is never refused for trust. Journal rows and
+    signals follow the persister's acceptance and stay best-effort display data. The `dp_trust_unverified` table
+    of the `dashpay` migration is dormant: nothing writes it, and it stays only because the schema is append-only
+    and the `.dwbackup` wallet rows (E0-07) list it.
   - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
     `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
     call a later purchase of the label a win.

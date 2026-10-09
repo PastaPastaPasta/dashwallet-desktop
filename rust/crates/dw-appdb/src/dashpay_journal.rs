@@ -1,6 +1,5 @@
 //! What the changeset tap (DASHPAY §3.5, ROADMAP E0-06) writes to the
-//! `dp_events` journal and `dp_trust_unverified`, and the rows it reads to
-//! classify a changeset.
+//! `dp_events` journal, and the rows it reads to classify a changeset.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -32,14 +31,6 @@ pub struct JournalRow {
     pub reference: String,
     pub at: u64,
     pub read_at: Option<u64>,
-}
-
-/// An entity seen through the trusted-quorum fallback (§2.2):
-/// `kind` is `identity`, `contact_request` or `dpns_label`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UnverifiedEntity {
-    pub kind: &'static str,
-    pub key: String,
 }
 
 impl AppDb {
@@ -91,31 +82,6 @@ impl AppDb {
         Ok(added)
     }
 
-    /// Flags entities seen through the trusted-quorum fallback, in one
-    /// transaction, `INSERT OR IGNORE`: an entity already flagged keeps its
-    /// first `since`. All or none: the tap refuses the wallet write when
-    /// this fails.
-    pub fn flag_unverified(
-        &self,
-        wallet_id: &str,
-        unverified: &[UnverifiedEntity],
-        now: u64,
-    ) -> Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        {
-            let mut flag = tx.prepare_cached(
-                "INSERT OR IGNORE INTO dp_trust_unverified (wallet_id, kind, key, since)
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for u in unverified {
-                flag.execute(params![wallet_id, u.kind, u.key, now as i64])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Every journal row of a wallet, oldest first.
     pub fn journal(&self, wallet_id: &str) -> Result<Vec<JournalRow>> {
         let conn = self.conn();
@@ -133,19 +99,6 @@ impl AppDb {
                 at: r.get::<_, i64>(5)? as u64,
                 read_at: r.get::<_, Option<i64>>(6)?.map(|t| t as u64),
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// The wallet's `dp_trust_unverified` rows: `(kind, key, since)`, sorted.
-    pub fn unverified(&self, wallet_id: &str) -> Result<Vec<(String, String, u64)>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT kind, key, since FROM dp_trust_unverified WHERE wallet_id = ?1
-             ORDER BY kind, key",
-        )?;
-        let rows = stmt.query_map([wallet_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -267,33 +220,6 @@ mod tests {
             ]
             .map(|(k, c)| (k.to_string(), c.to_string()))
         );
-    }
-
-    #[test]
-    fn unverified_rows_keep_their_first_since() {
-        let db = AppDb::open_in_memory().unwrap();
-        let flags = [UnverifiedEntity {
-            kind: "identity",
-            key: "x".into(),
-        }];
-        db.flag_unverified(W, &flags, 5).unwrap();
-        db.flag_unverified(W, &flags, 9).unwrap();
-        assert_eq!(
-            db.unverified(W).unwrap(),
-            vec![("identity".to_string(), "x".to_string(), 5)]
-        );
-    }
-
-    #[test]
-    fn busy_and_full_databases_are_transient() {
-        use rusqlite::ffi::{self, Error as FfiError};
-        let failure = |code| {
-            crate::AppDbError::Sqlite(rusqlite::Error::SqliteFailure(FfiError::new(code), None))
-        };
-        assert!(failure(ffi::SQLITE_BUSY).is_transient());
-        assert!(failure(ffi::SQLITE_FULL).is_transient());
-        assert!(!failure(ffi::SQLITE_CONSTRAINT).is_transient());
-        assert!(!crate::AppDbError::Corrupt("x".into()).is_transient());
     }
 
     #[test]
