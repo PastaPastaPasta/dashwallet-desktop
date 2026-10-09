@@ -7,6 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Off by default: the Orchard shielded pool pulls in halo2 (build time, binary
+# size, prover warm-up; E0-12, docs/research/shielded-cost.md). Enables the
+# platform-wallet shielded wallet and its SqlitePersister tables.
+shielded = ["platform-wallet/shielded", "platform-wallet-storage/shielded"]
+
+[[example]]
+name = "shielded_warmup"
+required-features = ["shielded"]
+
 [dependencies]
 platform-wallet = { workspace = true }
 platform-wallet-storage = { workspace = true }
