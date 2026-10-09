@@ -27,14 +27,27 @@
 //! `.dwbackup` brings them back; a restore from the phrase alone gets the
 //! defaults, which are what a fresh choice would show on every machine.
 //!
+//! The choice API other tasks build on (DP1-03's main-name choice and
+//! contest outcomes; stable from DP1-05):
+//!
+//! - `NetworkSession::set_main_name(wallet, identity, Some(label) | None)`
+//!   stores (or clears, back to the default) an identity's main name in
+//!   `dp_prefs` under [`MAIN_NAME_PREF`] and updates the cache;
+//!   `set_main_identity_of` is `DashPay::set_main_identity`'s body. Both
+//!   serialize with each other and with loads, so the cache ends as the
+//!   database does. Write the rows only through them, never directly.
+//! - [`main_name`] is the selection rule; `identities()` applies it, so a
+//!   caller that needs an identity's main name reads `identities()`.
+//! - dw-appdb's `main_identity`/`set_main_identity` and
+//!   `dp_prefs`/`set_dp_pref` are the storage underneath.
+//!
 //! `identities()` is a sync read (m4 §1): it reads the library's in-memory
 //! identity state when its lock is free and the last snapshot otherwise, and
 //! the choices from a cache loaded at open, at each bring-up and on writes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,11 +55,12 @@ use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use dw_vault::GrantKind;
+use dw_vault::{GrantKind, KeyHold, ScanKey, Vault, VaultError};
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::manager::startup::DEFAULT_STARTUP_BUDGET;
 use platform_wallet::wallet::identity::network::IdentityDiscoveryOptions;
 use platform_wallet::{DpnsNameInfo, PlatformWalletInfo};
+use tokio::sync::watch;
 
 use super::VaultScanKey;
 use super::bringup::until;
@@ -91,20 +105,36 @@ pub(super) struct IdentityChoices {
 }
 
 /// The session's recovery state: the choices cache, the last identity
-/// snapshot per wallet, and the wallets that owe a names pass.
+/// snapshot per wallet, the wallets that owe a names pass, and the
+/// explicit discoveries under way.
 #[derive(Default)]
 pub(crate) struct Recovery {
     choices: Mutex<HashMap<WalletId, IdentityChoices>>,
-    /// Bumped by every choice written, so a load that read the database
-    /// before the write does not put the older rows back over it.
-    choice_writes: AtomicU64,
+    /// Held across each choice's database write or read and its cache
+    /// update, so the cache ends as the database does (review r1 N2).
+    choice_writer: tokio::sync::Mutex<()>,
     snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
+    /// Per wallet, the end of its explicit discoveries: set by its removal
+    /// or unload, which then waits until every one has ended (review r1 M3).
+    discoveries: Mutex<HashMap<WalletId, Arc<watch::Sender<bool>>>>,
     /// Names passes started this session.
     #[cfg(test)]
     pub(super) names_passes: AtomicU32,
     #[cfg(test)]
     pub(super) mock: Mutex<Option<Arc<dyn MockPlatform>>>,
+    /// Tests: holds the next `set_main_identity` between its database write
+    /// and its cache update.
+    #[cfg(test)]
+    pub(super) pause_after_choice: Mutex<Option<Arc<Pause>>>,
+}
+
+/// A test's hold on one call at a known point.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct Pause {
+    pub(super) reached: AtomicBool,
+    pub(super) release: tokio::sync::Notify,
 }
 
 impl Recovery {
@@ -112,11 +142,40 @@ impl Recovery {
         guard(&self.choices).get(id).cloned().unwrap_or_default()
     }
 
-    /// Applies a choice just written to the database.
+    /// Applies a choice just written to the database, under the writer
+    /// lock that write took.
     fn update_choices(&self, id: WalletId, update: impl FnOnce(&mut IdentityChoices)) {
-        let mut choices = guard(&self.choices);
-        self.choice_writes.fetch_add(1, Ordering::SeqCst);
-        update(choices.entry(id).or_default());
+        update(guard(&self.choices).entry(id).or_default());
+    }
+
+    /// Admits an explicit discovery of `id`: the receiver turns `true` when
+    /// the wallet is being removed or unloaded. `None` once that has begun.
+    fn begin_discovery(&self, id: WalletId) -> Option<watch::Receiver<bool>> {
+        let mut all = guard(&self.discoveries);
+        let ending = all
+            .entry(id)
+            .or_insert_with(|| Arc::new(watch::channel(false).0));
+        (!*ending.borrow()).then(|| ending.subscribe())
+    }
+
+    /// Ends the explicit discoveries of a wallet about to leave the manager
+    /// (removal, unload, a restore's rollback) and waits until every one has
+    /// returned, its keys dropped and nothing of it applied; a new one is
+    /// refused until [`Self::forget`] or [`Self::resume_discoveries`].
+    pub(crate) async fn end_discoveries(&self, id: WalletId) {
+        let ending = Arc::clone(
+            guard(&self.discoveries)
+                .entry(id)
+                .or_insert_with(|| Arc::new(watch::channel(false).0)),
+        );
+        ending.send_replace(true);
+        ending.closed().await;
+    }
+
+    /// The removal or unload that ended the discoveries failed: they may
+    /// start again.
+    pub(crate) fn resume_discoveries(&self, id: WalletId) {
+        guard(&self.discoveries).remove(&id);
     }
 
     /// Identities were discovered for `id`: a names pass follows (again, if
@@ -134,6 +193,7 @@ impl Recovery {
         guard(&self.choices).remove(id);
         guard(&self.snapshots).remove(id);
         guard(&self.names_due).remove(id);
+        guard(&self.discoveries).remove(id);
     }
 
     #[cfg(test)]
@@ -328,7 +388,7 @@ impl NetworkSession {
     /// leaves the cache as it was: the defaults show until the next load.
     pub(crate) async fn load_identity_choices(&self, id: WalletId) {
         let recovery = &self.platform.recovery;
-        let writes = recovery.choice_writes.load(Ordering::SeqCst);
+        let _writer = recovery.choice_writer.lock().await;
         let wallet = id.to_string();
         let read = self
             .appdb_op(move |db| {
@@ -340,11 +400,7 @@ impl NetworkSession {
             .await;
         match read {
             Ok(read) => {
-                let mut choices = guard(&recovery.choices);
-                // A write since the read is newer, and already applied.
-                if recovery.choice_writes.load(Ordering::SeqCst) == writes {
-                    choices.insert(id, read);
-                }
+                guard(&recovery.choices).insert(id, read);
             }
             Err(e) => {
                 tracing::warn!(wallet_id = %id, error = %e, "could not read the identity choices");
@@ -364,8 +420,17 @@ impl NetworkSession {
             return Err(IdentityError::NotFound.into());
         }
         let (wallet, chosen) = (id.to_string(), identity.clone());
+        let _writer = self.platform.recovery.choice_writer.lock().await;
         self.appdb_op(move |db| db.set_main_identity(&wallet, &chosen))
             .await?;
+        #[cfg(test)]
+        {
+            let pause = guard(&self.platform.recovery.pause_after_choice).take();
+            if let Some(pause) = pause {
+                pause.reached.store(true, Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
         self.platform
             .recovery
             .update_choices(id, |c| c.main_identity = Some(identity));
@@ -385,6 +450,7 @@ impl NetworkSession {
         label: Option<String>,
     ) -> Result<(), EngineError> {
         let (wallet, who, value) = (id.to_string(), identity.clone(), label.clone());
+        let _writer = self.platform.recovery.choice_writer.lock().await;
         self.appdb_op(move |db| db.set_dp_pref(&wallet, &who, MAIN_NAME_PREF, value.as_deref()))
             .await?;
         self.platform.recovery.update_choices(id, |c| {
@@ -444,28 +510,60 @@ impl NetworkSession {
     /// one finds nothing (E0-05 r1 ruling: DP6-01's "find").
     ///
     /// The key work follows the bring-up's rules: counted by `key_work`, and
-    /// dropped (`Cancelled`) if the vault locks meanwhile. What it finds gets
-    /// the rest of a recovery from the supervisor rather than under this
-    /// call's gate: a bring-up of the wallet (its DashPay pass and contact
-    /// accounts, now with an identity on file) and the names pass after it;
-    /// while SPV is stopped, both come with the next start.
+    /// dropped (`Cancelled`) if the vault locks meanwhile. The wallet's
+    /// removal or unload ends the call too, and waits for it
+    /// ([`Recovery::end_discoveries`]). Identities the scan stored get the
+    /// rest of a recovery from the supervisor, whatever the call returns: a
+    /// bring-up of the wallet (its DashPay pass and contact accounts, now
+    /// with an identity on file) and the names pass after it; while SPV is
+    /// stopped, both come with the next start, and what a locked vault keeps
+    /// the bring-up from doing, with the unlock.
     pub(super) async fn discover_identities_of(
         self: &Arc<Self>,
         id: WalletId,
         grant: String,
     ) -> Result<u32, PlatformError> {
         let _op = self.enter().await?;
+        // Admitted before the wallet is checked, so a removal from here on
+        // waits for this call.
+        let mut ending = self
+            .platform
+            .recovery
+            .begin_discovery(id)
+            .ok_or(PlatformError::WalletNotFound)?;
         self.require_wallet(&id)?;
         let manager = self.manager()?;
+        let before = wallet_identities(&manager, id).await;
+        tokio::select! {
+            biased;
+            // The wallet is leaving: nothing of this call applies.
+            () = until(&mut ending, |ending| *ending) => Err(PlatformError::Cancelled),
+            ended = self.discover(&manager, id, grant) => {
+                let stored = self.queue_discovered(&manager, id, &before).await;
+                match ended {
+                    // Over budget, perhaps in the names enrichment after it
+                    // stored what it found: that counts.
+                    Err(PlatformError::Timeout) if stored > 0 => Ok(stored),
+                    ended => ended,
+                }
+            }
+        }
+    }
+
+    /// The scan of `discover_identities_of`: the number of identities found.
+    async fn discover(
+        self: &Arc<Self>,
+        manager: &Arc<Manager>,
+        id: WalletId,
+        grant: String,
+    ) -> Result<u32, PlatformError> {
         let locks = self.platform.lock.borrow().locks;
-        let scan = self
+        // A refused grant is the caller's answer, not failed key work.
+        let (scan, _hold) = self
             .platform
             .key_work
             .run(self.vault.clone(), move |vault| {
-                // A refused grant is the caller's answer, not failed key work.
-                Ok(vault
-                    .redeem_grant(&grant, GrantKind::IdentityScan, Some(&id.0))
-                    .and_then(|token| vault.scan_key(&id.0, &token)))
+                Ok(scan_key_for(vault, id, &grant))
             })
             .await
             .ok_or(PlatformError::Cancelled)??;
@@ -475,7 +573,6 @@ impl NetworkSession {
             .get_wallet(&id.0)
             .await
             .ok_or(PlatformError::WalletNotFound)?;
-        let before = wallet_identities(&manager, id).await.len();
         let master = scan.resolve().map_err(|e| {
             tracing::warn!(wallet_id = %id, error = %e, "no scan key for discovery");
             PlatformError::SignerUnavailable
@@ -483,7 +580,7 @@ impl NetworkSession {
         let discovery = async {
             #[cfg(test)]
             if let Some(mock) = self.platform.recovery.mock() {
-                return Ok(mock.discover(Arc::clone(&manager), id).await);
+                return Ok(mock.discover(Arc::clone(manager), id).await);
             }
             let found = wallet
                 .identity()
@@ -493,33 +590,56 @@ impl NetworkSession {
                 .map(|found| found.map(|f| f.len()).map_err(PlatformError::from))
         };
         let mut lock = self.platform.lock.subscribe();
-        let ended = tokio::select! {
+        // The master key, the scan key and the hold drop on every return,
+        // in that order.
+        let found = tokio::select! {
             biased;
-            () = until(&mut lock, |v| v.locks != locks) => Err(PlatformError::Cancelled),
-            ended = discovery => Ok(ended),
+            () = until(&mut lock, |v| v.locks != locks) => return Err(PlatformError::Cancelled),
+            ended = discovery => ended.map_err(|_| PlatformError::Timeout)??,
         };
-        drop(master);
-        drop(scan);
-        let found = match ended? {
-            Ok(found) => found?,
-            // Over budget, perhaps in the names enrichment after it stored
-            // what it found: that counts.
-            Err(_) => match wallet_identities(&manager, id)
-                .await
-                .len()
-                .saturating_sub(before)
-            {
-                0 => return Err(PlatformError::Timeout),
-                stored => stored,
-            },
-        };
-        if found > 0 {
-            self.refresh_identities(&manager, id).await;
+        Ok(u32::try_from(found).unwrap_or(u32::MAX))
+    }
+
+    /// Gives the identities stored since `before` the rest of a recovery
+    /// (review r1 M2: a lock or an error after the library stored them must
+    /// not lose it); how many there are.
+    async fn queue_discovered(
+        &self,
+        manager: &Manager,
+        id: WalletId,
+        before: &[Identifier],
+    ) -> u32 {
+        let stored = wallet_identities(manager, id)
+            .await
+            .into_iter()
+            .filter(|identity| !before.contains(identity))
+            .count();
+        if stored > 0 {
+            self.refresh_identities(manager, id).await;
             self.platform.recovery.names_due(id);
             self.platform.signal(PlatformSignal::Readmit(id));
         }
-        Ok(u32::try_from(found).unwrap_or(u32::MAX))
+        u32::try_from(stored).unwrap_or(u32::MAX)
     }
+}
+
+/// The scan key an `IdentityScan` grant releases, with the hold it needs
+/// (E0-04 §3.5): a grant authorized with the vault's key issues it directly,
+/// one that carries its own key (a passphrase on a locked or mixing-only
+/// vault) only through a hold, which must outlive every use of the key.
+fn scan_key_for(
+    vault: &Vault,
+    id: WalletId,
+    grant: &str,
+) -> Result<(ScanKey, Option<KeyHold>), VaultError> {
+    let mut tokens = [vault.redeem_grant(grant, GrantKind::IdentityScan, Some(&id.0))?];
+    let hold = vault.hold_key(&mut tokens)?;
+    let [token] = &tokens;
+    let scan = match &hold {
+        Some(hold) => vault.scan_key_held(&id.0, hold, token)?,
+        None => vault.scan_key(&id.0, token)?,
+    };
+    Ok((scan, hold))
 }
 
 /// The ids of the wallet's identities.

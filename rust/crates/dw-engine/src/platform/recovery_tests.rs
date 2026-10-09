@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use dpp::identity::Identity;
@@ -13,7 +13,9 @@ use dpp::identity::v0::IdentityV0;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use dw_vault::{
+    Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig,
+};
 use platform_wallet::DpnsNameInfo;
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::manager::startup::{WalletStartupOutcome, WalletStartupStatus};
@@ -23,8 +25,10 @@ use zeroize::Zeroizing;
 use super::bringup::NO_IDENTITY_KEY;
 use super::errors::PlatformError;
 use super::recovery::{
-    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, main_name, owned_names, summaries,
+    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, main_name, owned_names,
+    summaries,
 };
+use super::runtime::guard;
 use super::{SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
@@ -200,7 +204,8 @@ type Name = (&'static str, Option<u64>);
 /// (with no names: its enrichment ran out of budget), the names a later
 /// DPNS pass returns, and identities past the bring-up's gap that only an
 /// explicit discovery finds. The bring-up and the names pass can be held
-/// until the test releases them.
+/// until the test releases them, and the discovery once it has stored what
+/// it found (the library's DPNS enrichment comes after that).
 #[derive(Default)]
 struct Platform {
     identities: Vec<([u8; 32], u32)>,
@@ -211,6 +216,20 @@ struct Platform {
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
+    hold_discovery: Option<Arc<Notify>>,
+    /// The discovery has stored its identities (and is held, if held).
+    discovery_stored: Arc<AtomicBool>,
+    /// The discovery's future has ended or been dropped.
+    discovery_ended: Arc<AtomicBool>,
+}
+
+/// Sets its flag when dropped.
+struct Flag(Arc<AtomicBool>);
+
+impl Drop for Flag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 impl MockPlatform for Platform {
@@ -229,15 +248,18 @@ impl MockPlatform for Platform {
                 hold.notified().await;
             }
             calls.fetch_add(1, Ordering::SeqCst);
-            add_identities(&manager, id, &identities).await;
-            let status = if identities.is_empty() {
+            // As the library: the identities on file, an earlier explicit
+            // discovery's included, and those its discovery finds (review r1
+            // N1: not a fabricated absence).
+            let on_file = add_identities(&manager, id, &identities).await;
+            let status = if on_file.is_empty() {
                 WalletStartupStatus::NoIdentity
             } else {
                 WalletStartupStatus::Ready
             };
             Ok(WalletStartupOutcome {
                 status,
-                identity_id: identities.first().map(|(raw, _)| (*raw).into()),
+                identity_id: on_file.first().copied(),
                 discovery_attempts: 1,
                 dashpay_sync_ran: true,
                 seed_binding_unverified: false,
@@ -305,15 +327,29 @@ impl MockPlatform for Platform {
         manager: Arc<Manager>,
         id: WalletId,
     ) -> BoxedFuture<Result<usize, PlatformError>> {
-        let found = self.discovered.clone();
+        let (found, hold) = (self.discovered.clone(), self.hold_discovery.clone());
+        let (stored, ended) = (
+            Arc::clone(&self.discovery_stored),
+            Flag(Arc::clone(&self.discovery_ended)),
+        );
         Box::pin(async move {
+            let _ended = ended;
             add_identities(&manager, id, &found).await;
+            stored.store(true, Ordering::SeqCst);
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
             Ok(found.len())
         })
     }
 }
 
-async fn add_identities(manager: &Manager, id: WalletId, identities: &[([u8; 32], u32)]) {
+/// Adds `identities` the wallet lacks; the identities it then has.
+async fn add_identities(
+    manager: &Manager,
+    id: WalletId,
+    identities: &[([u8; 32], u32)],
+) -> Vec<Identifier> {
     let wallet = manager.get_wallet(&id.0).await.expect("wallet");
     let wm = manager.wallet_manager_arc();
     let mut wm = wm.write().await;
@@ -335,6 +371,7 @@ async fn add_identities(manager: &Manager, id: WalletId, identities: &[([u8; 32]
                 .unwrap();
         }
     }
+    info.identity_manager.wallet_identity_ids(&id.0)
 }
 
 fn engine(dir: &std::path::Path) -> Engine {
@@ -356,6 +393,17 @@ fn engine(dir: &std::path::Path) -> Engine {
 /// A regtest session whose Platform is `platform` (DAPI refuses, so the
 /// real loops' passes fail and change nothing), with an unencrypted vault.
 fn session(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
+    session_with(dir, platform, None)
+}
+
+const PASSPHRASE: &[u8] = b"recovery tests vault passphrase";
+
+/// [`session`] with a vault encrypted with `passphrase` (left unlocked).
+fn session_with(
+    dir: &std::path::Path,
+    platform: Arc<Platform>,
+    passphrase: Option<&'static [u8]>,
+) -> (Engine, Arc<NetworkSession>) {
     let engine = engine(dir);
     let s = engine
         .block_on(engine.open_network(
@@ -368,8 +416,10 @@ fn session(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<Netwo
             },
         ))
         .unwrap();
-    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
-    *super::runtime::guard(&s.platform.recovery.mock) = Some(platform);
+    engine
+        .block_on(s.vault_op(move |v| v.create(passphrase)))
+        .unwrap();
+    *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
 }
 
@@ -638,6 +688,174 @@ fn discovery_forgets_the_proven_absence_and_recovers_what_it_finds() {
     });
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
+    // Review r1 N1: the bring-up after it sees the identity on file and
+    // does not prove the absence again.
+    assert_eq!(
+        s.dashpay_startup(&id).unwrap().startup,
+        StartupStatus::Ready
+    );
+    assert!(marker().is_none());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Review r1 M1: a grant the user confirmed with the passphrase on a locked
+/// or mixing-only vault carries its own key, and scans through its hold.
+#[test]
+fn a_passphrase_grant_discovers_on_a_locked_or_mixing_only_vault() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        ..Platform::default()
+    });
+    let (engine, s) = session_with(dir.path(), Arc::clone(&platform), Some(PASSPHRASE));
+    let id = restore(&engine, &s);
+    s.lock_vault().unwrap();
+    for scope in [None, Some(UnlockScope::MixingOnly)] {
+        if let Some(scope) = scope {
+            engine
+                .block_on(s.vault_op(move |v| v.unlock(PASSPHRASE, scope)))
+                .unwrap();
+        }
+        let scan = engine
+            .block_on(s.vault_op(move |v| {
+                v.authorize(
+                    GrantPurpose::IdentityScan,
+                    Some(&id.0),
+                    Credential::Passphrase(PASSPHRASE),
+                )
+            }))
+            .unwrap()
+            .id;
+        let found = engine.block_on(s.dashpay(id).discover_identities(scan));
+        assert_eq!(found.unwrap(), 1, "{scope:?}");
+    }
+    assert_eq!(shown(&s, id)[0].0, base58(ALICE));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Review r1 M2: the vault locks after the scan stored an identity, during
+/// the enrichment that follows. The call is cancelled, but the identity
+/// still gets its bring-up and names pass.
+#[test]
+fn a_lock_after_discovery_stored_an_identity_keeps_its_recovery() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        names: vec![(ALICE, vec![("alice", Some(1))])],
+        hold_discovery: Some(Arc::new(Notify::new())),
+        ..Platform::default()
+    });
+    let (engine, s) = session_with(dir.path(), Arc::clone(&platform), Some(PASSPHRASE));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let ended = std::thread::scope(|scope| {
+        let call = scope.spawn(|| engine.block_on(s.dashpay(id).discover_identities(scan)));
+        wait_until("the identity stored", || {
+            platform.discovery_stored.load(Ordering::SeqCst)
+        });
+        s.lock_vault().unwrap();
+        call.join().unwrap()
+    });
+    assert_eq!(ended.unwrap_err().code(), "platform.cancelled");
+    wait_until("the rest of the recovery", || {
+        shown(&s, id)
+            == vec![(
+                base58(ALICE),
+                vec!["alice".into()],
+                Some("alice".into()),
+                true,
+            )]
+            && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Review r1 M3: removing or unloading a wallet ends its discovery, whose
+/// keys are then gone, before the call returns, and nothing of it applies
+/// to the wallet afterwards (loaded again, here).
+#[test]
+fn removing_or_unloading_a_wallet_ends_its_discovery_first() {
+    for remove in [true, false] {
+        let dir = dw_testutil::private_tempdir();
+        let hold = Arc::new(Notify::new());
+        let platform = Arc::new(Platform {
+            discovered: vec![(ALICE, 3)],
+            hold_discovery: Some(Arc::clone(&hold)),
+            ..Platform::default()
+        });
+        let (engine, s) = session(dir.path(), Arc::clone(&platform));
+        let id = restore(&engine, &s);
+        let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+        let wipe = grant(&engine, &s, id, GrantPurpose::Wipe);
+        let (outlived, ended) = std::thread::scope(|scope| {
+            let call = scope.spawn(|| engine.block_on(s.dashpay(id).discover_identities(scan)));
+            wait_until("the discovery", || {
+                platform.discovery_stored.load(Ordering::SeqCst)
+            });
+            if remove {
+                engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+            } else {
+                engine.block_on(s.unload_wallet(id)).unwrap();
+            }
+            let outlived = !platform.discovery_ended.load(Ordering::SeqCst);
+            // A discovery still held would keep the scope open.
+            hold.notify_one();
+            (outlived, call.join().unwrap())
+        });
+        let what = if remove { "removal" } else { "unload" };
+        assert!(!outlived, "the discovery outlived the {what}");
+        assert_eq!(ended.unwrap_err().code(), "platform.cancelled", "{what}");
+        if !remove {
+            engine.block_on(s.load_wallet(id)).unwrap();
+        }
+        assert!(s.platform.recovery.take_names_due().is_empty());
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+}
+
+/// Review r1 N2: two `set_main_identity` calls at once leave the cache as
+/// the database: the first is held between its write and its cache update
+/// while the second runs.
+#[test]
+fn concurrent_main_identity_writes_leave_the_cache_as_the_database() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0), (SECOND, 1)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &platform.identities));
+    let pause = Arc::new(Pause::default());
+    *guard(&s.platform.recovery.pause_after_choice) = Some(Arc::clone(&pause));
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| engine.block_on(s.dashpay(id).set_main_identity(base58(ALICE))));
+        wait_until("the first write", || pause.reached.load(Ordering::SeqCst));
+        let second =
+            scope.spawn(|| engine.block_on(s.dashpay(id).set_main_identity(base58(SECOND))));
+        // Time for the second to finish, were it not serialized.
+        std::thread::sleep(Duration::from_millis(300));
+        pause.release.notify_one();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+    });
+    let stored = engine
+        .block_on(s.appdb_op(move |db| db.main_identity(&id.to_string())))
+        .unwrap();
+    let main: Vec<String> = shown(&s, id)
+        .into_iter()
+        .filter(|(_, _, _, main)| *main)
+        .map(|(identity, ..)| identity)
+        .collect();
+    assert_eq!(stored, Some(base58(SECOND)));
+    assert_eq!(main, vec![base58(SECOND)]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

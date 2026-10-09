@@ -673,6 +673,7 @@ impl NetworkSession {
         for &(id, created) in done.iter().rev() {
             // Still marked as being restored, so no bring-up was admitted for
             // it; a status read since is stale.
+            self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
             if created {
                 let removed = async {

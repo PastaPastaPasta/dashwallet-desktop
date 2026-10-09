@@ -269,8 +269,12 @@ impl NetworkSession {
             this.require_wallet(&id)?;
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
+            // Its discoveries end first, as for a removal: none may apply
+            // what it finds to the wallet once it is loaded again.
+            this.platform.recovery.end_discoveries(id).await;
             if let Err(e) = live.manager.remove_wallet(&id.0).await {
                 live.store.set_unloaded(id.0, false);
+                this.platform.recovery.resume_discoveries(id);
                 return Err(e.into());
             }
             this.hub.unload_wallet(&id);
