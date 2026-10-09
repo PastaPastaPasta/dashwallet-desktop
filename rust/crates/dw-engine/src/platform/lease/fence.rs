@@ -18,6 +18,8 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::budget::Charge;
+#[cfg(test)]
+use super::stress_tests::{GrantKind, LogEvent, Mutation};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin};
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
@@ -38,6 +40,8 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     fn mark_dispatching(&self, wallet: &[u8; 32], txid: &[u8; 32]) -> Result<bool, String>;
     fn insert_step(&self, wallet: &[u8; 32], step: &str, artifact: &[u8; 32])
     -> Result<(), String>;
+    /// The artifact settled definitely unsent: its step markers go.
+    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String>;
     fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String>;
 }
 
@@ -73,6 +77,11 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         artifact: &[u8; 32],
     ) -> Result<(), String> {
         self.insert_step(wallet, step, artifact, crate::events::unix_now())
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String> {
+        dw_appdb::dispatch::DispatchJournal::resolve_unsent(self, wallet, artifact)
             .map_err(|e| e.to_string())
     }
 
@@ -144,6 +153,11 @@ pub(crate) enum RowlessState {
     Revoked,
     /// A state transition settled definitely unsent.
     NotSent,
+    /// Settled definitely unsent; the journal write superseding its step
+    /// markers runs (review P2a r1 F2), or `failed` and waits for the next
+    /// `admit` of it to retry. Every copy defers meanwhile: the bytes are
+    /// known unsent, so nothing may resend them on their old evidence.
+    Resolving { slot_taken: bool, failed: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +356,10 @@ impl DispatchPermit {
         self.id
     }
 
+    /// Ends this attempt. A definite `NotSent` that settles a marked
+    /// artifact deletes its markers in the journal before it returns
+    /// (`block_in_place` on a multi-thread worker, inline elsewhere), so a
+    /// current-thread runtime blocks for that short write.
     pub fn finish(mut self, outcome: Outcome) -> Settlement {
         self.done = true;
         self.table.finish(self.id, outcome)
@@ -384,6 +402,10 @@ impl AttemptGuard {
         self.id
     }
 
+    /// Ends this attempt. A definite `NotSent` that settles a marked
+    /// artifact deletes its markers in the journal before it returns
+    /// (`block_in_place` on a multi-thread worker, inline elsewhere), so a
+    /// current-thread runtime blocks for that short write.
     pub fn finish(mut self, outcome: Outcome) -> Settlement {
         self.done = true;
         self.table.finish(self.id, outcome)
@@ -463,6 +485,55 @@ impl FenceState {
         self.attempts.contains_key(&id)
     }
 
+    /// Whether `id` has a step marker of `wallet`, in any step.
+    #[cfg(test)]
+    pub(crate) fn resolving(&self, id: &ArtifactId) -> bool {
+        self.rowless
+            .get(id)
+            .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }))
+    }
+
+    fn marked(&self, wallet: &WalletId, id: &ArtifactId) -> bool {
+        self.steps
+            .iter()
+            .any(|((w, _), m)| w == wallet && m.contains_key(id))
+    }
+
+    /// H10 for one copy of `id` (review P2a r1 F1): every marker of the
+    /// artifact, and the marker of the copy's own `step`, must be durable.
+    fn obligation(&self, wallet: &WalletId, id: &ArtifactId, step: Option<&str>) -> Obligation {
+        let mut write = Vec::new();
+        for ((w, s), m) in &self.steps {
+            match m.get(id) {
+                _ if w != wallet => {}
+                Some(Mark::Committing { .. }) => return Obligation::Pending,
+                Some(Mark::Ambiguous) => write.push(s.clone()),
+                Some(Mark::Durable) | None => {}
+            }
+        }
+        if let Some(s) = step
+            && !self
+                .steps
+                .get(&(*wallet, s.to_owned()))
+                .is_some_and(|m| m.contains_key(id))
+        {
+            write.push(s.to_owned());
+        }
+        if write.is_empty() {
+            Obligation::Met
+        } else {
+            Obligation::Write(write)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark(&self, wallet: &WalletId, step: &str, id: &ArtifactId) -> Option<Mark> {
+        self.steps
+            .get(&(*wallet, step.to_owned()))
+            .and_then(|m| m.get(id))
+            .copied()
+    }
+
     fn step_marked(&self, wallet: &WalletId, step: &str) -> bool {
         self.steps
             .get(&(*wallet, step.to_owned()))
@@ -502,7 +573,13 @@ fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactI
     };
     r.state = r.kind.tombstone();
     let wallet = r.wallet;
-    if let Some((lease, purpose, charge)) = r.charge.take()
+    let charge = r.charge.take();
+    #[cfg(test)]
+    i.note(LogEvent::Resolved {
+        artifact: *id,
+        refund: charge.map_or(0, |(_, _, c)| c.amount),
+    });
+    if let Some((lease, purpose, charge)) = charge
         && let Some(e) = i.leases.get_mut(&lease)
     {
         e.refund(purpose, charge);
@@ -510,6 +587,102 @@ fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactI
     }
     i.fence.spend.remove(id);
     resolved(t, fx, &wallet, id, DispatchResolution::NotSent);
+}
+
+/// How a deadline-bound hand-off ended ([`LeaseTable::hand_off`]).
+#[derive(Debug)]
+pub(crate) enum HandOff<T> {
+    /// The library returned in time.
+    Done(T),
+    /// The deadline came before the library was entered: never sent.
+    NotEntered,
+    /// The deadline came during the library call: possibly sent.
+    Cut,
+}
+
+/// How a row-less settlement proceeds.
+enum Settling {
+    /// Settled in this J step: the artifact has no step marker.
+    Now,
+    /// `Resolving`: `LeaseTable::resolve_unsent` settles it once the
+    /// journal dropped its markers.
+    Durably(WalletId),
+    /// A marker write of it runs: the write's own J step settles it
+    /// (`spawn_write`) unless a copy joined meanwhile.
+    Blocked,
+}
+
+/// Starts settling the row-less `id` definitely unsent (§5.5). A marked
+/// artifact's resolution must be durable before it is seen (review P2a r1
+/// F2).
+fn start_settle(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactId) -> Settling {
+    let Some(wallet) = i.fence.rowless.get(id).map(|r| r.wallet) else {
+        return Settling::Now;
+    };
+    #[cfg(test)]
+    let in_memory = i.mutation == Some(Mutation::MarkerOutlives);
+    #[cfg(not(test))]
+    let in_memory = false;
+    // The mutation settles in memory, its markers kept in the journal.
+    if in_memory || !i.fence.marked(&wallet, id) {
+        settle_unsent(t, i, fx, id);
+        return Settling::Now;
+    }
+    if matches!(i.fence.obligation(&wallet, id, None), Obligation::Pending) {
+        return Settling::Blocked;
+    }
+    let Some(r) = i.fence.rowless.get_mut(id) else {
+        return Settling::Now;
+    };
+    let slot_taken = matches!(
+        r.state,
+        RowlessState::Admitted {
+            slot_taken: true,
+            ..
+        }
+    );
+    r.state = RowlessState::Resolving {
+        slot_taken,
+        failed: false,
+    };
+    Settling::Durably(wallet)
+}
+
+/// Whether an `Admitted` row-less entry with no attempt running settles:
+/// every attempt ended definitely unsent, or another transition took its
+/// nonce slot (H16). The caller has checked it was never seen sent.
+fn settles_idle(possibly_out: bool, slot_taken: bool) -> bool {
+    !possibly_out || slot_taken
+}
+
+/// A `Resolving` entry seen sent meanwhile is possibly out again, its
+/// charge and markers kept: a sent artifact is never refunded.
+fn keep_sent(i: &mut Inner, id: &ArtifactId) -> bool {
+    if !i.fence.sent.contains(id) {
+        return false;
+    }
+    if let Some(r) = i.fence.rowless.get_mut(id)
+        && let RowlessState::Resolving { slot_taken, .. } = r.state
+    {
+        r.state = RowlessState::Admitted {
+            running: 0,
+            possibly_out: true,
+            slot_taken,
+        };
+    }
+    true
+}
+
+/// Runs a short journal call from synchronous code on an async thread:
+/// `block_in_place` on a multi-thread worker, inline otherwise (a
+/// `spawn_blocking` thread, or a current-thread runtime, which it blocks).
+fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }
 
 /// A registered `Unsent` artifact that will never be sent: `Revoked`, its
@@ -535,11 +708,20 @@ fn revoke_unsent(
 /// A decision `admit` reached in its J step.
 enum Step {
     Done(Verdict),
-    /// A durable write was spawned; `then` decides once it returns.
+    /// Durable writes were spawned; `then` decides once all returned.
     Write {
-        write: tokio::task::JoinHandle<bool>,
+        writes: Vec<tokio::task::JoinHandle<bool>>,
         then: After,
     },
+}
+
+/// What an artifact's step markers still need before a copy transports.
+enum Obligation {
+    Met,
+    /// A marker write runs.
+    Pending,
+    /// These steps' markers are missing or ambiguous: write them first.
+    Write(Vec<String>),
 }
 
 enum After {
@@ -556,16 +738,22 @@ enum After {
     },
 }
 
-/// Inserts `r` for `id`, or joins an entry already admitted.
+/// Whether every write succeeded.
+async fn all_written(writes: Vec<tokio::task::JoinHandle<bool>>) -> bool {
+    let mut ok = true;
+    for w in writes {
+        ok &= w.await.unwrap_or(false);
+    }
+    ok
+}
+
+/// Inserts `r` for `id`, or joins an entry already admitted. A join adds
+/// an attempt and nothing else: the entry's attempts say whether it may be
+/// out, and an entry made from a marker starts possibly out.
 fn admit_rowless(i: &mut Inner, id: ArtifactId, r: Rowless) {
     match i.fence.rowless.get_mut(&id).map(|e| &mut e.state) {
-        Some(RowlessState::Admitted {
-            running,
-            possibly_out,
-            ..
-        }) => {
+        Some(RowlessState::Admitted { running, .. }) => {
             *running += 1;
-            *possibly_out = true;
         }
         _ => {
             i.fence.rowless.insert(id, r);
@@ -653,12 +841,23 @@ impl LeaseTable {
             fx.changed(lease);
         }
         #[cfg(test)]
-        i.note(super::stress_tests::LogEvent::Grant {
-            attempt: id,
-            lease: Some(lease),
-            artifact,
-            deadline: Some(deadline),
-        });
+        {
+            let charge = i
+                .fence
+                .rowless
+                .get(&artifact)
+                .filter(|_| !registered)
+                .and_then(|r| r.charge)
+                .map_or(0, |(_, _, c)| c.amount);
+            i.note(LogEvent::Grant {
+                attempt: id,
+                lease: Some(lease),
+                artifact,
+                deadline: Some(deadline),
+                kind: GrantKind::First,
+                charge,
+            });
+        }
         DispatchPermit {
             table: Arc::clone(self),
             id,
@@ -675,11 +874,13 @@ impl LeaseTable {
     ) -> AttemptGuard {
         let id = i.fence.attempt((wallet, artifact), None, None, registered);
         #[cfg(test)]
-        i.note(super::stress_tests::LogEvent::Grant {
+        i.note(LogEvent::Grant {
             attempt: id,
             lease: None,
             artifact,
             deadline: None,
+            kind: GrantKind::Resend,
+            charge: 0,
         });
         AttemptGuard {
             table: Arc::clone(self),
@@ -750,6 +951,10 @@ impl LeaseTable {
 
     /// `register` (§5.5): charges `debit` to the scope's lease's Funding
     /// budget and writes `Unsent{origin}` durably before it is in memory.
+    /// Single-flight per artifact: a call that finds the artifact's write
+    /// running waits for it and decides again, under the barrier, so one
+    /// writer at most runs and a removal's erase waits for every write
+    /// (DEC-134).
     pub async fn register(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -764,38 +969,18 @@ impl LeaseTable {
             return Err(LeaseError::Invalid.into());
         };
         let backend = self.journal.get();
-        let charge = self.with_j(|i, fx| {
-            if i.fence.journal != JournalState::Ready || backend.is_none() {
-                return Err(RegisterError::Journal("unavailable".into()));
-            }
-            match i.fence.entries.get(&(wallet, txid)) {
-                Some(_) if i.fence.origins.get(&(wallet, txid)) == Some(&lease) => {
-                    return Ok(None);
+        let key = (wallet, txid);
+        let charge = loop {
+            let decided = self.register_step(&backend, key, lease, debit)?;
+            match decided {
+                Some(charge) => break charge,
+                // Another call's write runs: wait for it to resolve.
+                None => {
+                    self.wait_until(|i| (!i.fence.registering.contains_key(&key)).then_some(()))
+                        .await;
                 }
-                Some(_) => return Err(RegisterError::OtherOrigin),
-                None => {}
             }
-            if i.barrier.set_for(&wallet) {
-                return Err(LeaseError::Locked.into());
-            }
-            let e = i.leases.get_mut(&lease).ok_or(LeaseError::Invalid)?;
-            if e.wallet != wallet || !e.state.live() {
-                return Err(match e.state {
-                    super::table::LeaseState::Revoked(c) => LeaseError::Revoked(c),
-                    super::table::LeaseState::Ended => LeaseError::Ended,
-                    _ => LeaseError::Invalid,
-                }
-                .into());
-            }
-            let charge = e.funding.charge(debit).map_err(|x| LeaseError::Exceeded {
-                purpose: BudgetPurpose::Funding,
-                needed: x.needed,
-                remaining: x.remaining,
-            })?;
-            fx.changed(lease);
-            i.fence.registering.entry((wallet, txid)).or_insert(false);
-            Ok(Some(charge))
-        })?;
+        };
         let Some(charge) = charge else {
             return Ok(());
         };
@@ -815,6 +1000,11 @@ impl LeaseTable {
                 table.with_j(|i, fx| {
                     let key = (wallet, txid);
                     let abandoned = i.fence.registering.remove(&key).unwrap_or(false);
+                    #[cfg(test)]
+                    i.note(LogEvent::Registered {
+                        wallet,
+                        artifact: txid,
+                    });
                     fx.notify();
                     let kept = matches!(written, Ok(dw_appdb::dispatch::Registered::Ok))
                         && !i.fence.entries.contains_key(&key);
@@ -851,6 +1041,67 @@ impl LeaseTable {
             })
             .await
             .map_err(|e| RegisterError::Journal(e.to_string()))?
+    }
+
+    /// `register`'s J step: `None` while another call's write for the
+    /// artifact runs; `Some(None)` when it is registered already under this
+    /// lease; `Some(Some(charge))` when this call charged and must write.
+    fn register_step(
+        &self,
+        backend: &Option<Arc<dyn JournalBackend>>,
+        key: (WalletId, ArtifactId),
+        lease: LeaseId,
+        debit: u64,
+    ) -> Result<Option<Option<Charge>>, RegisterError> {
+        let wallet = key.0;
+        self.with_j(|i, fx| {
+            if i.fence.journal != JournalState::Ready || backend.is_none() {
+                return Err(RegisterError::Journal("unavailable".into()));
+            }
+            match i.fence.entries.get(&key) {
+                Some(_) if i.fence.origins.get(&key) == Some(&lease) => {
+                    return Ok(Some(None));
+                }
+                Some(_) => return Err(RegisterError::OtherOrigin),
+                None => {}
+            }
+            #[cfg(test)]
+            let single_flight = i.mutation != Some(Mutation::DuplicateRegister);
+            #[cfg(not(test))]
+            let single_flight = true;
+            if single_flight && i.fence.registering.contains_key(&key) {
+                return Ok(None);
+            }
+            if i.barrier.set_for(&wallet) {
+                return Err(LeaseError::Locked.into());
+            }
+            let e = i.leases.get_mut(&lease).ok_or(LeaseError::Invalid)?;
+            if e.wallet == wallet && e.state.live() && !e.funding.granted() {
+                // A zero debit is no authority: Funding must be granted.
+                return Err(LeaseError::NeedsGrant(BudgetPurpose::Funding).into());
+            }
+            if e.wallet != wallet || !e.state.live() {
+                return Err(match e.state {
+                    super::table::LeaseState::Revoked(c) => LeaseError::Revoked(c),
+                    super::table::LeaseState::Ended => LeaseError::Ended,
+                    _ => LeaseError::Invalid,
+                }
+                .into());
+            }
+            let charge = e.funding.charge(debit).map_err(|x| LeaseError::Exceeded {
+                purpose: BudgetPurpose::Funding,
+                needed: x.needed,
+                remaining: x.remaining,
+            })?;
+            fx.changed(lease);
+            i.fence.registering.insert(key, false);
+            #[cfg(test)]
+            i.note(LogEvent::Registering {
+                wallet,
+                artifact: key.1,
+            });
+            Ok(Some(Some(charge)))
+        })
     }
 
     /// `abandon` (§5.5): one J step, no I/O; callable from `Drop`.
@@ -908,7 +1159,9 @@ impl LeaseTable {
     /// Binds a `TxDraft`'s Spend charge to its txid (§4.2). A prepare that
     /// signs the same bytes as a draft that settled definitely unsent is a
     /// new draft: its inputs are reserved again and the earlier holder was
-    /// released, so the tombstone gives way to it.
+    /// released, so the tombstone gives way to it. A `Resolving` entry
+    /// (only step-scoped Core transactions, none in P2a) does not: the
+    /// draft's admit retries the resolution and is refused.
     pub(crate) fn bind_spend(
         &self,
         lease: LeaseId,
@@ -954,7 +1207,7 @@ impl LeaseTable {
     pub async fn admit(self: &Arc<Self>, req: AdmitRequest) -> Verdict {
         let backend = self.journal.get();
         #[cfg(test)]
-        if self.with_j(|i, _| i.mutation) == Some(super::stress_tests::Mutation::CheckThenAct)
+        if self.with_j(|i, _| i.mutation) == Some(Mutation::CheckThenAct)
             && let Some(v) = self.admit_check_then_act(&req).await
         {
             return v;
@@ -963,17 +1216,43 @@ impl LeaseTable {
             // Outside J: a subscriber may do I/O (H1).
             tracing::error!(artifact = %req.artifact, "a hand-off without a dispatch scope");
         }
+        // A definite resolution the journal refused is retried before any
+        // decision about the artifact (review P2a r1 F2).
+        let retry = self.with_j(|i, _| match i.fence.rowless.get_mut(&req.artifact) {
+            Some(r) if r.wallet == req.wallet => match r.state {
+                RowlessState::Resolving {
+                    slot_taken,
+                    failed: true,
+                } => {
+                    r.state = RowlessState::Resolving {
+                        slot_taken,
+                        failed: false,
+                    };
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        });
+        if retry {
+            let table = Arc::clone(self);
+            let (wallet, id) = (req.wallet, req.artifact);
+            let _ = self
+                .rt
+                .spawn_blocking(move || table.resolve_unsent(wallet, id))
+                .await;
+        }
         let step = self.with_j(|i, fx| self.decide(i, fx, &req, backend));
-        let (write, then) = match step {
+        let (writes, then) = match step {
             Step::Done(v) => return v,
-            Step::Write { write, then } => (write, then),
+            Step::Write { writes, then } => (writes, then),
         };
         #[cfg(test)]
-        if self.with_j(|i, _| i.mutation) == Some(super::stress_tests::Mutation::TransportFirst)
+        if self.with_j(|i, _| i.mutation) == Some(Mutation::TransportFirst)
             && let After::First { permit, .. } = then
         {
             // The mutation: hand off before the record is durable.
-            drop(write);
+            drop(writes);
             return Verdict::First(permit);
         }
         match then {
@@ -987,7 +1266,7 @@ impl LeaseTable {
                     permit: Some(permit),
                     placeholder,
                 };
-                let ok = write.await.unwrap_or(false);
+                let ok = all_written(writes).await;
                 if ok && Instant::now() < pending.deadline() {
                     Verdict::First(pending.hand_out())
                 } else {
@@ -998,11 +1277,35 @@ impl LeaseTable {
                 registered,
                 rowless,
             } => {
-                if !write.await.unwrap_or(false) {
+                if !all_written(writes).await {
                     return Verdict::Deferred;
                 }
                 self.with_j(|i, _| {
                     if let Some(r) = rowless {
+                        // Settled meanwhile: the definite answer wins; the
+                        // caller's next admit reads it.
+                        if i.fence
+                            .rowless
+                            .get(&req.artifact)
+                            .is_some_and(|e| !matches!(e.state, RowlessState::Admitted { .. }))
+                        {
+                            return Verdict::Deferred;
+                        }
+                        // Another copy may have begun a marker meanwhile:
+                        // this one owes it too (F1).
+                        let step = req.scope.as_ref().and_then(|s| s.step.as_deref());
+                        #[cfg(test)]
+                        let recheck = i.mutation != Some(Mutation::CopyBeforeMarker);
+                        #[cfg(not(test))]
+                        let recheck = true;
+                        if recheck
+                            && !matches!(
+                                i.fence.obligation(&req.wallet, &req.artifact, step),
+                                Obligation::Met
+                            )
+                        {
+                            return Verdict::Deferred;
+                        }
                         admit_rowless(i, req.artifact, r);
                     }
                     Verdict::Resend(self.guard(i, (req.wallet, req.artifact), registered))
@@ -1027,7 +1330,7 @@ impl LeaseTable {
                 None => matches!(backend.mark_dispatching(&wallet.0, &artifact.0), Ok(true)),
                 Some(s) => backend.insert_step(&wallet.0, s, &artifact.0).is_ok(),
             };
-            table.with_j(|i, fx| {
+            let settling = table.with_j(|i, fx| {
                 match &step {
                     None => {
                         if let Some(e) = i.fence.entries.get_mut(&(wallet, artifact))
@@ -1050,12 +1353,41 @@ impl LeaseTable {
                 }
                 #[cfg(test)]
                 if ok {
-                    i.note(super::stress_tests::LogEvent::Durable { artifact });
+                    i.note(LogEvent::Durable {
+                        artifact,
+                        step: step.clone(),
+                    });
                 }
                 if let Some(lease) = i.fence.origins.get(&(wallet, artifact)) {
                     fx.changed(*lease);
                 }
+                // A settlement this write blocked (`Settling::Blocked`, by
+                // `finish` or `note_executed`) proceeds now, whether the
+                // write landed or not: a copy that has not joined yet
+                // defers to it (review P2a r1 F2).
+                let idle = step.is_some()
+                    && !i.fence.sent.contains(&artifact)
+                    && i.fence.rowless.get(&artifact).is_some_and(|r| {
+                        r.wallet == wallet
+                            && matches!(
+                                r.state,
+                                RowlessState::Admitted {
+                                    running: 0,
+                                    possibly_out,
+                                    slot_taken,
+                                } if settles_idle(possibly_out, slot_taken)
+                            )
+                    });
+                if idle {
+                    fx.notify();
+                    start_settle(&table, i, fx, &artifact)
+                } else {
+                    Settling::Now
+                }
             });
+            if let Settling::Durably(wallet) = settling {
+                table.resolve_unsent(wallet, artifact);
+            }
             ok
         })
     }
@@ -1101,7 +1433,7 @@ impl LeaseTable {
                     let owner = i.fence.next;
                     i.fence.entries.insert(key, Reg::Committing { owner });
                     Step::Write {
-                        write: self.spawn_write(backend, wallet, id, None, owner),
+                        writes: vec![self.spawn_write(backend, wallet, id, None, owner)],
                         then: After::Resend {
                             registered: true,
                             rowless: None,
@@ -1117,7 +1449,7 @@ impl LeaseTable {
                             i.fence.entries.insert(key, Reg::Committing { owner });
                             let permit = self.permit(i, fx, key, lease, true);
                             Step::Write {
-                                write: self.spawn_write(backend, wallet, id, None, owner),
+                                writes: vec![self.spawn_write(backend, wallet, id, None, owner)],
                                 then: After::First {
                                     permit,
                                     placeholder: false,
@@ -1127,7 +1459,7 @@ impl LeaseTable {
                         None => {
                             revoke_unsent(self, i, fx, key, charge);
                             #[cfg(test)]
-                            i.note(super::stress_tests::LogEvent::Refused {
+                            i.note(LogEvent::Refused {
                                 artifact: id,
                                 cleanup: true,
                             });
@@ -1153,77 +1485,89 @@ impl LeaseTable {
         }
 
         // Row-less artifacts.
-        if let Some(r) = i.fence.rowless.get_mut(&id).filter(|r| r.wallet == wallet) {
-            match &mut r.state {
-                RowlessState::Revoked => {
-                    return Step::Done(Verdict::Refused {
-                        cleanup: false,
-                        step_possibly_dispatched: false,
-                    });
-                }
-                RowlessState::Admitted { .. }
-                    if step.as_ref().is_some_and(|s| {
-                        matches!(
-                            i.fence
-                                .steps
-                                .get(&(wallet, s.clone()))
-                                .and_then(|m| m.get(&id)),
-                            Some(Mark::Committing { .. })
-                        )
-                    }) =>
-                {
-                    // This step's marker write is still running.
-                    return Step::Done(Verdict::Deferred);
-                }
-                RowlessState::Admitted { running, .. } => {
-                    *running += 1;
-                    return Step::Done(Verdict::Resend(self.guard(i, key, false)));
-                }
-                RowlessState::NotSent => {}
+        let entry = i
+            .fence
+            .rowless
+            .get(&id)
+            .filter(|r| r.wallet == wallet)
+            .map(|r| r.state);
+        let joins = match entry {
+            Some(RowlessState::Revoked) => {
+                return Step::Done(Verdict::Refused {
+                    cleanup: false,
+                    step_possibly_dispatched: false,
+                });
             }
-        }
-        if req.kind == (ArtifactKind::CoreTx { asset_lock: true }) {
+            // Its definite resolution is being made durable.
+            Some(RowlessState::Resolving { .. }) => return Step::Done(Verdict::Deferred),
+            Some(RowlessState::Admitted { .. }) => true,
+            // A definite resolution supersedes every marker: an identical
+            // signature is a fresh First under a live lease (§5.5).
+            Some(RowlessState::NotSent) => false,
+            None => false,
+        };
+        if !joins && req.kind == (ArtifactKind::CoreTx { asset_lock: true }) {
             return Step::Done(Verdict::Refused {
                 cleanup: false,
                 step_possibly_dispatched: false,
             });
         }
-        // A resumable step's marker from this or an earlier process.
-        if let Some(s) = &step {
-            let mark = i
-                .fence
-                .steps
-                .get(&(wallet, s.clone()))
-                .and_then(|m| m.get(&id))
-                .copied();
-            match mark {
-                Some(Mark::Durable) => {
-                    i.fence
-                        .rowless
-                        .insert(id, Rowless::admitted(wallet, req.kind, None, true));
+        // H10 (review P2a r1 F1): every copy of an artifact, whatever its
+        // scope, transports only once each step marker of the artifact,
+        // and its own step's, is durable. A copy of an admitted artifact
+        // joins it; a marked one from this or an earlier process resends.
+        #[cfg(test)]
+        let superseded =
+            entry == Some(RowlessState::NotSent) && i.mutation != Some(Mutation::MarkerOutlives);
+        #[cfg(not(test))]
+        let superseded = entry == Some(RowlessState::NotSent);
+        let marked = !superseded && i.fence.marked(&wallet, &id);
+        if joins || marked {
+            #[cfg(test)]
+            let obligation = if i.mutation == Some(Mutation::CopyBeforeMarker) {
+                // The mutation: a copy goes out whatever its markers' state.
+                Obligation::Met
+            } else {
+                i.fence.obligation(&wallet, &id, step.as_deref())
+            };
+            #[cfg(not(test))]
+            let obligation = i.fence.obligation(&wallet, &id, step.as_deref());
+            match obligation {
+                Obligation::Pending => return Step::Done(Verdict::Deferred),
+                Obligation::Met => {
+                    admit_rowless(i, id, Rowless::admitted(wallet, req.kind, None, true));
                     return Step::Done(Verdict::Resend(self.guard(i, key, false)));
                 }
-                Some(Mark::Committing { .. }) => return Step::Done(Verdict::Deferred),
-                Some(Mark::Ambiguous) => {
+                Obligation::Write(steps) => {
                     let Some(backend) = backend else {
                         return Step::Done(Verdict::Deferred);
                     };
-                    i.fence.next += 1;
-                    let owner = i.fence.next;
-                    i.fence
-                        .steps
-                        .entry((wallet, s.clone()))
-                        .or_default()
-                        .insert(id, Mark::Committing { owner });
+                    let writes = steps
+                        .into_iter()
+                        .map(|s| {
+                            i.fence.next += 1;
+                            let owner = i.fence.next;
+                            i.fence
+                                .steps
+                                .entry((wallet, s.clone()))
+                                .or_default()
+                                .insert(id, Mark::Committing { owner });
+                            #[cfg(test)]
+                            i.note(LogEvent::Marking {
+                                artifact: id,
+                                step: s.clone(),
+                            });
+                            self.spawn_write(Arc::clone(&backend), wallet, id, Some(s), owner)
+                        })
+                        .collect();
                     return Step::Write {
-                        write: self.spawn_write(backend, wallet, id, Some(s.clone()), owner),
+                        writes,
                         then: After::Resend {
                             registered: false,
                             rowless: Some(Rowless::admitted(wallet, req.kind, None, true)),
                         },
                     };
                 }
-                None => {}
             }
         }
         match origin {
@@ -1238,7 +1582,12 @@ impl LeaseTable {
                 i.fence
                     .rowless
                     .insert(id, Rowless::admitted(wallet, req.kind, None, false));
-                Step::Done(Verdict::FirstUnleased(self.guard(i, key, false)))
+                let guard = self.guard(i, key, false);
+                #[cfg(test)]
+                if let Some(LogEvent::Grant { kind, .. }) = i.log.last_mut() {
+                    *kind = GrantKind::Unleased;
+                }
+                Step::Done(Verdict::FirstUnleased(guard))
             }
             Some(Origin::Lease(lease)) => {
                 let authority = backend.is_some()
@@ -1249,7 +1598,11 @@ impl LeaseTable {
                             .spend
                             .get(&id)
                             .is_some_and(|s| s.lease == lease && s.wallet == wallet),
-                        ArtifactKind::Transition { .. } => true,
+                        // A zero cost is no authority: Credits must be
+                        // granted (§3.1).
+                        ArtifactKind::Transition { .. } => {
+                            i.leases.get(&lease).is_some_and(|e| e.credits.granted())
+                        }
                     };
                 // Credits are charged with the permit, in the same step.
                 let charge = match (authority, req.kind) {
@@ -1280,6 +1633,11 @@ impl LeaseTable {
                             .entry((wallet, s.clone()))
                             .or_default()
                             .insert(id, Mark::Committing { owner });
+                        #[cfg(test)]
+                        i.note(LogEvent::Marking {
+                            artifact: id,
+                            step: s.clone(),
+                        });
                         // The entry exists from here on, so a copy scoped
                         // another way joins it instead of charging again.
                         i.fence
@@ -1287,7 +1645,13 @@ impl LeaseTable {
                             .insert(id, Rowless::admitted(wallet, req.kind, charge, false));
                         let permit = self.permit(i, fx, key, lease, false);
                         Step::Write {
-                            write: self.spawn_write(backend, wallet, id, Some(s.clone()), owner),
+                            writes: vec![self.spawn_write(
+                                backend,
+                                wallet,
+                                id,
+                                Some(s.clone()),
+                                owner,
+                            )],
                             then: After::First {
                                 permit,
                                 placeholder: true,
@@ -1333,7 +1697,7 @@ impl LeaseTable {
         }
         let cleanup = first && matches!(req.kind, ArtifactKind::CoreTx { .. });
         #[cfg(test)]
-        i.note(super::stress_tests::LogEvent::Refused {
+        i.note(LogEvent::Refused {
             artifact: id,
             cleanup,
         });
@@ -1345,13 +1709,13 @@ impl LeaseTable {
 
     /// `finish` of an attempt (§5.5): the artifact's settlement.
     pub(crate) fn finish(&self, attempt: u64, outcome: Outcome) -> Settlement {
-        self.with_j(|i, fx| {
+        let (settlement, durably) = self.with_j(|i, fx| {
             fx.notify();
             let Some(a) = i.fence.attempts.remove(&attempt) else {
-                return Settlement::MaybeOut;
+                return (Settlement::MaybeOut, None);
             };
             #[cfg(test)]
-            i.note(super::stress_tests::LogEvent::Finish { attempt });
+            i.note(LogEvent::Finish { attempt, outcome });
             if let Some(lease) = a.lease
                 && let Some(e) = i.leases.get_mut(&lease)
             {
@@ -1364,14 +1728,15 @@ impl LeaseTable {
             }
             if a.registered {
                 // L13: after `Dispatching` a rejection keeps the row.
-                return if i.fence.sent.contains(&id) {
+                let s = if i.fence.sent.contains(&id) {
                     Settlement::Sent
                 } else {
                     Settlement::MaybeOut
                 };
+                return (s, None);
             }
             let Some(r) = i.fence.rowless.get_mut(&id) else {
-                return Settlement::MaybeOut;
+                return (Settlement::MaybeOut, None);
             };
             let RowlessState::Admitted {
                 running,
@@ -1379,35 +1744,128 @@ impl LeaseTable {
                 slot_taken,
             } = &mut r.state
             else {
-                return Settlement::MaybeOut;
+                return (Settlement::MaybeOut, None);
             };
             *running = running.saturating_sub(1);
             if outcome != Outcome::NotSent {
                 *possibly_out = true;
             }
             if i.fence.sent.contains(&id) {
-                return Settlement::Sent;
+                return (Settlement::Sent, None);
             }
-            if *running > 0 {
-                return Settlement::MaybeOut;
+            let definite = !*possibly_out && outcome == Outcome::NotSent;
+            // H16: another transition used the slot; this one cannot
+            // execute. Tombstoned, but the bytes may be out.
+            if *running > 0 || !settles_idle(*possibly_out, *slot_taken) {
+                return (Settlement::MaybeOut, None);
             }
-            if !*possibly_out && outcome == Outcome::NotSent {
-                settle_unsent(self, i, fx, &id);
-                return Settlement::DefinitelyUnsent;
+            match start_settle(self, i, fx, &id) {
+                Settling::Now if definite => (Settlement::DefinitelyUnsent, None),
+                Settling::Now | Settling::Blocked => (Settlement::MaybeOut, None),
+                Settling::Durably(wallet) => (Settlement::MaybeOut, Some((wallet, id, definite))),
             }
-            if *slot_taken {
-                // H16: another transition used the slot; this one cannot
-                // execute. Tombstoned, but the bytes may be out.
-                settle_unsent(self, i, fx, &id);
+        });
+        match durably {
+            Some((wallet, id, definite)) => {
+                if self.resolve_unsent(wallet, id) && definite {
+                    Settlement::DefinitelyUnsent
+                } else {
+                    Settlement::MaybeOut
+                }
             }
-            Settlement::MaybeOut
-        })
+            None => settlement,
+        }
+    }
+
+    /// Makes the definite resolution of a `Resolving` `id` durable, then
+    /// settles it (review P2a r1 F2): the journal loses its step markers
+    /// before the refund and `NotSent` are seen, so no reload or resume
+    /// can take it for possibly dispatched. When the write fails it stays
+    /// `Resolving{failed}`, its charge spent, until the next `admit` of it
+    /// retries; a panicking write counts as failed. An artifact seen sent
+    /// before the delete keeps its markers; one seen sent during it gets
+    /// them written again. Outside J; blocks on the journal (inline on a
+    /// blocking thread).
+    fn resolve_unsent(&self, wallet: WalletId, id: ArtifactId) -> bool {
+        let backend = self.journal.get();
+        let resolving = self.with_j(|i, fx| {
+            fx.notify();
+            !keep_sent(i, &id)
+                && i.fence
+                    .rowless
+                    .get(&id)
+                    .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }))
+        });
+        if !resolving {
+            return false;
+        }
+        let written = backend.as_ref().is_some_and(|backend| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                blocking(|| backend.resolve_unsent(&wallet.0, &id.0))
+            }))
+            .unwrap_or_else(|_| Err("the journal delete panicked".into()))
+            .inspect_err(
+                |e| tracing::warn!(artifact = %id, error = %e, "resolving a step marker failed"),
+            )
+            .is_ok()
+        });
+        let (settled, rewrite) = self.with_j(|i, fx| {
+            fx.notify();
+            if keep_sent(i, &id) {
+                let steps: Vec<String> = i
+                    .fence
+                    .steps
+                    .iter()
+                    .filter(|((w, _), m)| *w == wallet && m.contains_key(&id))
+                    .map(|((_, s), _)| s.clone())
+                    .collect();
+                return (false, if written { steps } else { Vec::new() });
+            }
+            let Some(r) = i.fence.rowless.get_mut(&id) else {
+                return (false, Vec::new());
+            };
+            let RowlessState::Resolving { slot_taken, .. } = r.state else {
+                return (false, Vec::new());
+            };
+            if !written {
+                r.state = RowlessState::Resolving {
+                    slot_taken,
+                    failed: true,
+                };
+                return (false, Vec::new());
+            }
+            for ((w, _), m) in i.fence.steps.iter_mut() {
+                if *w == wallet {
+                    m.remove(&id);
+                }
+            }
+            i.fence.steps.retain(|_, m| !m.is_empty());
+            settle_unsent(self, i, fx, &id);
+            (true, Vec::new())
+        });
+        if let Some(backend) = backend {
+            for step in rewrite {
+                if let Err(e) = blocking(|| backend.insert_step(&wallet.0, &step, &id.0)) {
+                    tracing::warn!(artifact = %id, error = %e, "restoring a sent artifact's marker failed");
+                }
+            }
+        }
+        settled
     }
 
     fn discard(&self, attempt: u64) {
         self.with_j(|i, fx| {
             fx.notify();
-            if let Some(a) = i.fence.attempts.remove(&attempt)
+            let a = i.fence.attempts.remove(&attempt);
+            // Ended without its transport ever being called.
+            #[cfg(test)]
+            if a.is_some() {
+                i.note(LogEvent::Finish {
+                    attempt,
+                    outcome: Outcome::NotSent,
+                });
+            }
+            if let Some(a) = a
                 && let Some(lease) = a.lease
                 && let Some(e) = i.leases.get_mut(&lease)
             {
@@ -1422,13 +1880,13 @@ impl LeaseTable {
     /// this engine signed for the same slot can no longer execute and
     /// settles `NotSent` once none of its attempts runs.
     pub fn note_executed(&self, wallet: WalletId, executed: ArtifactId, slot: NonceSlot) {
-        self.with_j(|i, fx| {
+        let durably = self.with_j(|i, fx| {
             let signed_here = i.fence.rowless.get(&executed).is_some_and(|r| {
                 r.wallet == wallet
                     && matches!(r.kind, ArtifactKind::Transition { slot: Some(s), .. } if s == slot)
             });
             if !signed_here {
-                return;
+                return Vec::new();
             }
             if i.fence.sent.insert(executed) {
                 resolved(self, fx, &wallet, &executed, DispatchResolution::Sent);
@@ -1444,6 +1902,7 @@ impl LeaseTable {
                 })
                 .map(|(id, _)| *id)
                 .collect();
+            let mut durably = Vec::new();
             for id in others {
                 if i.fence.sent.contains(&id) {
                     continue;
@@ -1458,12 +1917,18 @@ impl LeaseTable {
                 } = &mut r.state
                 {
                     *slot_taken = true;
-                    if *running == 0 {
-                        settle_unsent(self, i, fx, &id);
+                    if *running == 0
+                        && let Settling::Durably(w) = start_settle(self, i, fx, &id)
+                    {
+                        durably.push((w, id));
                     }
                 }
             }
+            durably
         });
+        for (w, id) in durably {
+            self.resolve_unsent(w, id);
+        }
     }
 
     /// The wallet saw the transaction (a Resend accepted, or it confirmed):
@@ -1504,7 +1969,9 @@ impl LeaseTable {
             }
             if let Some(r) = f.rowless.get(&artifact).filter(|r| r.wallet == wallet) {
                 return Some(match r.state {
-                    RowlessState::Admitted { .. } => DispatchState::MaybeSent,
+                    RowlessState::Admitted { .. } | RowlessState::Resolving { .. } => {
+                        DispatchState::MaybeSent
+                    }
                     RowlessState::Revoked | RowlessState::NotSent => DispatchState::NotSent,
                 });
             }
@@ -1523,6 +1990,13 @@ impl LeaseTable {
     pub(crate) async fn erase_wallet_rows(&self, wallet: WalletId) {
         self.wait_until(|i| (!i.fence.registering.keys().any(|(w, _)| *w == wallet)).then_some(()))
             .await;
+        #[cfg(test)]
+        self.with_j(|i, _| {
+            i.note(LogEvent::Erase {
+                wallet,
+                done: false,
+            })
+        });
         if self.wallet_possibly_sent(&wallet) {
             tracing::warn!(wallet_id = %wallet, "keeping the dispatch records of a possibly sent asset lock");
             return;
@@ -1536,6 +2010,8 @@ impl LeaseTable {
             .await
             .map_err(|e| e.to_string())
             .and_then(|r| r);
+        #[cfg(test)]
+        self.with_j(|i, _| i.note(LogEvent::Erase { wallet, done: true }));
         match erased {
             Ok(()) => self.forget_wallet_entries(&wallet),
             Err(e) => {
@@ -1569,14 +2045,56 @@ impl LeaseTable {
         });
     }
 
-    /// Logs a transport call in J order (the stress checker's record).
+    /// L5 (review P2a r1 F3): a hand-off bounded by a First's permit
+    /// `deadline`. Every wait before the library (`ready`) runs under it,
+    /// the deadline is checked last, right before `send` enters the
+    /// library, and before each later poll of `send`. `None` (a Resend, an
+    /// unleased First): unbounded.
+    pub(crate) async fn hand_off<R, E, T, Fs>(
+        &self,
+        deadline: Option<Instant>,
+        ready: impl Future<Output = Result<R, E>>,
+        send: impl FnOnce(R) -> Fs,
+    ) -> Result<HandOff<T>, E>
+    where
+        Fs: Future<Output = T>,
+    {
+        #[cfg(test)]
+        let deadline =
+            deadline.filter(|_| self.with_j(|i, _| i.mutation) != Some(Mutation::LateEntry));
+        let Some(d) = deadline else {
+            return Ok(HandOff::Done(send(ready.await?).await));
+        };
+        let Ok(ready) = tokio::time::timeout_at(d, ready).await else {
+            return Ok(HandOff::NotEntered);
+        };
+        let ready = ready?;
+        if Instant::now() >= d {
+            return Ok(HandOff::NotEntered);
+        }
+        // The deadline is checked before every poll of the library, not
+        // after it as `timeout_at` does: nothing of it runs at or past `d`.
+        let mut send = std::pin::pin!(send(ready));
+        let mut expiry = std::pin::pin!(tokio::time::sleep_until(d));
+        Ok(std::future::poll_fn(|cx| {
+            if Instant::now() >= d || expiry.as_mut().poll(cx).is_ready() {
+                return std::task::Poll::Ready(HandOff::Cut);
+            }
+            send.as_mut().poll(cx).map(HandOff::Done)
+        })
+        .await)
+    }
+
+    /// Logs a transport call in J order (the stress checker's record):
+    /// `step` is the scope's step of the copy that made it.
     #[cfg(test)]
-    pub(crate) fn log_transport(&self, artifact: ArtifactId, attempt: u64) {
+    pub(crate) fn log_transport(&self, artifact: ArtifactId, attempt: u64, step: Option<String>) {
         self.with_j(|i, _| {
-            i.note(super::stress_tests::LogEvent::Transport {
+            i.note(LogEvent::Transport {
                 artifact,
                 attempt,
                 at: Instant::now(),
+                step,
             });
         });
     }

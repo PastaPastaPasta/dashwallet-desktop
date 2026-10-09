@@ -6,7 +6,9 @@
 //!   only; 2 (`PreFence`) is written only by the seeding. No statement sets
 //!   `state` to 0, and the only delete is [`DispatchJournal::erase_wallet`].
 //! - `step` holds the write-ahead markers of resumable row-less steps (§7.6),
-//!   written once as "possibly dispatched" and never changed.
+//!   written once as "possibly dispatched" and never changed. An artifact's
+//!   markers are deleted only by [`DispatchJournal::resolve_unsent`], once it
+//!   settled definitely unsent (review P2a r1 F2), and by `erase_wallet`.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -277,6 +279,18 @@ impl DispatchJournal {
         Ok(())
     }
 
+    /// `artifact` settled definitely unsent (§5.5): every step marker of it
+    /// goes, so no reload or resume takes it for possibly dispatched. The
+    /// engine refunds and reports `NotSent` only after this returned
+    /// (review P2a r1 F2). Idempotent.
+    pub fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM step WHERE wallet = ?1 AND artifact = ?2",
+            params![&wallet[..], &artifact[..]],
+        )?;
+        Ok(())
+    }
+
     /// The seeding (§6.5, Mode A): a `PreFence` row per pre-fence asset lock
     /// of `wallet`, and its `seeded:` mark, in one transaction. Existing rows
     /// are kept as they are.
@@ -481,6 +495,24 @@ mod tests {
         let (_, steps) = j.load().unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].at, 1);
+    }
+
+    #[test]
+    fn a_definite_resolution_deletes_only_that_artifacts_markers() {
+        let j = journal();
+        let other = [9; 32];
+        j.insert_step(&W, "registration/d/identity", &T, 1).unwrap();
+        j.insert_step(&W, "withdrawal/d/submit", &T, 1).unwrap();
+        j.insert_step(&W, "registration/d/identity", &other, 1)
+            .unwrap();
+        j.resolve_unsent(&W, &T).unwrap();
+        j.resolve_unsent(&W, &T).unwrap();
+        let (_, steps) = j.load().unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].artifact, other);
+        // A later First of the same bytes writes its marker again.
+        j.insert_step(&W, "registration/d/identity", &T, 2).unwrap();
+        assert_eq!(j.load().unwrap().1.len(), 2);
     }
 
     #[test]

@@ -106,10 +106,19 @@ impl LeaseTable {
                 i.barrier.gates += 1;
             }
             fx.notify();
+            // The log names each freeze by its position: a wallet's does
+            // not move `lock_gen`.
+            #[cfg(test)]
+            let lock = i.log.len() as u64;
+            #[cfg(not(test))]
             let lock = i.lock_gen;
             #[cfg(test)]
             i.note(super::stress_tests::LogEvent::Freeze {
                 lock,
+                wallet: match scope {
+                    Scope::All => None,
+                    Scope::Wallet(w) => Some(w),
+                },
                 at: Instant::now(),
                 revoked: leases.clone(),
                 in_flight: snapshot.iter().map(|(id, d, _)| (*id, *d)).collect(),
@@ -228,6 +237,11 @@ impl Freeze {
             let Some(last) = open.iter().max().copied() else {
                 break;
             };
+            #[cfg(test)]
+            if table.with_j(|i, _| i.mutation) == Some(super::stress_tests::Mutation::EarlyReturn) {
+                // The mutation: the drain returns with permits running.
+                break;
+            }
             let in_flight = open.len() as u32;
             if shown != Some(in_flight) && self.scope == Scope::All {
                 shown = Some(in_flight);

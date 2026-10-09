@@ -222,6 +222,8 @@ pub(super) struct FakeJournal {
     /// 0: ok; 1: lost (nothing written, error); 2: durable, then an error.
     pub(super) dispatch_fault: AtomicU64,
     pub(super) fail_step: AtomicBool,
+    pub(super) fail_resolve: AtomicBool,
+    pub(super) panic_resolve: AtomicBool,
     /// Real-time stall of every write (row, `Dispatching`, step), in ms.
     pub(super) stall_ms: AtomicU64,
     rows: Mutex<Rows>,
@@ -283,6 +285,22 @@ impl JournalBackend for FakeJournal {
             .lock()
             .unwrap()
             .push((*wallet, step.to_owned(), *artifact));
+        Ok(())
+    }
+
+    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String> {
+        self.stall();
+        if self.fail_resolve.load(Ordering::SeqCst) {
+            return Err("injected resolve failure".into());
+        }
+        assert!(
+            !self.panic_resolve.load(Ordering::SeqCst),
+            "injected resolve panic"
+        );
+        self.steps
+            .lock()
+            .unwrap()
+            .retain(|(w, _, a)| w != wallet || a != artifact);
         Ok(())
     }
 
@@ -1389,8 +1407,28 @@ async fn a_parked_lease_rebinds_under_a_fresh_grant() {
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((400, 0)));
 }
 
+/// Waits (real time, at most 5 s) until `f` holds.
+async fn until(mut f: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !f() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the condition never held");
+}
+
+/// Whether `a`'s marker in `step` is being written.
+fn committing(t: &LeaseTable, step: &str, a: ArtifactId) -> bool {
+    t.with_j(|i, _| {
+        i.fence
+            .mark(&W, step, &a)
+            .is_some_and(|m| matches!(m, fence::Mark::Committing { .. }))
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_copy_admitted_during_a_step_write_joins_the_first() {
+async fn a_copy_of_a_step_artifact_waits_for_every_marker() {
     let (t, _) = table();
     let j = with_journal(&t);
     let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
@@ -1403,18 +1441,34 @@ async fn a_copy_admitted_during_a_step_write_joins_the_first() {
         let (t, req) = (Arc::clone(&t), step("registration/d/identity"));
         async move { t.admit(req).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    // The same step waits for its marker; a copy scoped another way joins
-    // the entry instead of charging again.
-    assert_eq!(
-        t.admit(step("registration/d/identity")).await,
-        Verdict::Deferred
-    );
-    let joined = resend(t.admit(transition(&l, art(1), 10)).await);
+    until(|| committing(&t, "registration/d/identity", art(1))).await;
+    // H10 (review P2a r1 F1): while the marker is written, no copy goes,
+    // whatever its scope.
+    for copy in [
+        step("registration/d/identity"),
+        step("withdrawal/d/submit"),
+        transition(&l, art(1), 10),
+    ] {
+        assert_eq!(t.admit(copy).await, Verdict::Deferred);
+    }
     let permit = first(pending.await.unwrap());
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
-    // One attempt's definite rejection settles nothing while the other runs.
+    // Durable: an unscoped copy joins without charging.
+    let joined = resend(t.admit(transition(&l, art(1), 10)).await);
+    // A copy of another step writes its own marker first; meanwhile every
+    // copy waits again.
+    let other = tokio::spawn({
+        let (t, req) = (Arc::clone(&t), step("withdrawal/d/submit"));
+        async move { t.admit(req).await }
+    });
+    until(|| committing(&t, "withdrawal/d/submit", art(1))).await;
+    assert_eq!(t.admit(transition(&l, art(1), 10)).await, Verdict::Deferred);
+    let other = resend(other.await.unwrap());
+    assert_eq!(j.load().1.len(), 2, "both markers are durable");
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
+    // One attempt's definite rejection settles nothing while others run.
     assert_eq!(joined.finish(Outcome::NotSent), Settlement::MaybeOut);
+    assert_eq!(other.finish(Outcome::NotSent), Settlement::MaybeOut);
     assert_eq!(permit.finish(Outcome::Sent), Settlement::Sent);
 }
 
@@ -1466,7 +1520,7 @@ async fn a_dropped_admit_or_register_keeps_the_fence_consistent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_joined_copy_never_settles_unsent_after_its_first_was_deferred() {
+async fn a_failed_step_write_hands_off_no_copy_until_it_is_repaired() {
     let (t, rec) = table();
     let j = with_journal(&t);
     let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
@@ -1484,9 +1538,18 @@ async fn a_joined_copy_never_settles_unsent_after_its_first_was_deferred() {
         );
         async move { t.admit(req).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let joined = resend(t.admit(transition(&l, art(1), 10)).await);
+    until(|| committing(&t, "topup/x/st", art(1))).await;
+    assert_eq!(t.admit(transition(&l, art(1), 10)).await, Verdict::Deferred);
     assert_eq!(pending.await.unwrap(), Verdict::Deferred);
+    // Still no marker: an unscoped copy is not handed off.
+    assert_eq!(t.admit(transition(&l, art(1), 10)).await, Verdict::Deferred);
+    assert!(j.load().1.is_empty());
+    // The journal works again: the copy first repairs the marker, then
+    // resends uncharged (the First's charge stays spent).
+    j.fail_step.store(false, Ordering::SeqCst);
+    j.stall_ms.store(0, Ordering::SeqCst);
+    let joined = resend(t.admit(transition(&l, art(1), 10)).await);
+    assert_eq!(j.load().1.len(), 1);
     assert_eq!(joined.finish(Outcome::NotSent), Settlement::MaybeOut);
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
     assert!(rec.resolved().is_empty(), "never reported NotSent");
@@ -1567,4 +1630,571 @@ async fn the_removal_erase_waits_for_an_in_flight_register() {
     );
     assert!(steps.is_empty());
     assert!(rows.iter().any(|r| r.wallet == W2.0), "W2 keeps its row");
+}
+
+// Review P2a r1 regressions: Sol's interleavings, each failing on 270665a.
+
+/// A real journal whose `register` and step writes wait at gates.
+struct GatedJournal {
+    db: dw_appdb::dispatch::DispatchJournal,
+    /// Open gates; a closed one holds its writes.
+    open: Mutex<(bool, bool)>,
+    opened: std::sync::Condvar,
+    registers: AtomicU64,
+    steps: AtomicU64,
+    fail_step: AtomicBool,
+}
+
+impl GatedJournal {
+    fn new() -> Arc<Self> {
+        let dw_appdb::dispatch::JournalOpen::Ready(db) =
+            dw_appdb::dispatch::DispatchJournal::open_in_memory(0).unwrap()
+        else {
+            panic!("a fresh journal");
+        };
+        Arc::new(Self {
+            db,
+            open: Mutex::new((false, false)),
+            opened: std::sync::Condvar::new(),
+            registers: AtomicU64::new(0),
+            steps: AtomicU64::new(0),
+            fail_step: AtomicBool::new(false),
+        })
+    }
+
+    fn wait(&self, gate: fn(&(bool, bool)) -> bool) {
+        let mut open = self.open.lock().unwrap();
+        while !gate(&open) {
+            open = self.opened.wait(open).unwrap();
+        }
+    }
+
+    fn open_registers(&self) {
+        self.open.lock().unwrap().0 = true;
+        self.opened.notify_all();
+    }
+
+    fn open_steps(&self) {
+        self.open.lock().unwrap().1 = true;
+        self.opened.notify_all();
+    }
+}
+
+/// Opens every gate when dropped: a failing test must not leave a write
+/// parked on a blocking thread, which would hang the runtime's shutdown.
+struct OpenOnDrop(Arc<GatedJournal>);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open_registers();
+        self.0.open_steps();
+    }
+}
+
+impl JournalBackend for GatedJournal {
+    fn register(
+        &self,
+        wallet: &[u8; 32],
+        txid: &[u8; 32],
+        origin: &LeaseId,
+        process: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<Registered, String> {
+        self.registers.fetch_add(1, Ordering::SeqCst);
+        self.wait(|o| o.0);
+        self.db
+            .register(wallet, txid, origin, process, payload, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn mark_dispatching(&self, wallet: &[u8; 32], txid: &[u8; 32]) -> Result<bool, String> {
+        self.db
+            .mark_dispatching(wallet, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<(), String> {
+        self.steps.fetch_add(1, Ordering::SeqCst);
+        self.wait(|o| o.1);
+        if self.fail_step.load(Ordering::SeqCst) {
+            return Err("injected pre-write failure".into());
+        }
+        self.db
+            .insert_step(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String> {
+        self.db
+            .resolve_unsent(wallet, artifact)
+            .map_err(|e| e.to_string())
+    }
+
+    fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
+        self.db.erase_wallet(wallet).map_err(|e| e.to_string())
+    }
+}
+
+/// F1: a copy scoped another way never transports before the step marker
+/// is durable; after the marker write fails, nothing was handed off and
+/// no marker exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f1_no_copy_transports_before_its_step_marker_is_durable() {
+    let (t, _) = table();
+    let j = GatedJournal::new();
+    let _open = OpenOnDrop(Arc::clone(&j));
+    j.fail_step.store(true, Ordering::SeqCst);
+    t.load_journal(Some(j.clone()), vec![], vec![]);
+    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    let req = AdmitRequest {
+        scope: scope_of(&l, Some("registration/d/identity")),
+        ..transition(&l, art(78), 10)
+    };
+    let pending = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.admit(req).await }
+    });
+    until(|| j.steps.load(Ordering::SeqCst) == 1).await;
+    let copy = t.admit(transition(&l, art(78), 10)).await;
+    assert_eq!(copy, Verdict::Deferred, "H10: a copy before the marker");
+    j.open_steps();
+    assert_eq!(pending.await.unwrap(), Verdict::Deferred);
+    assert!(j.db.load().unwrap().1.is_empty());
+    // A later copy repairs the marker before it goes.
+    j.fail_step.store(false, Ordering::SeqCst);
+    resend(t.admit(transition(&l, art(78), 10)).await).finish(Outcome::MaybeSent);
+    assert_eq!(j.db.load().unwrap().1.len(), 1);
+}
+
+/// F2: a refunded, definitely unsent step-scoped transition is never
+/// revived by its marker: not after a Lock, not after a reload.
+#[tokio::test(start_paused = true)]
+async fn r1_f2_a_definite_not_sent_supersedes_its_step_marker() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let req = AdmitRequest {
+        scope: scope_of(&l, Some("withdrawal/d/submit")),
+        ..transition(&l, art(80), 10)
+    };
+    let permit = first(t.admit(req.clone()).await);
+    assert_eq!(
+        j.load().1.len(),
+        1,
+        "the marker is durable before transport"
+    );
+    assert_eq!(
+        permit.finish(Outcome::NotSent),
+        Settlement::DefinitelyUnsent
+    );
+    assert!(
+        j.load().1.is_empty(),
+        "the resolution reached the journal first"
+    );
+    assert_eq!(t.dispatch_status(W, art(80)), Some(DispatchState::NotSent));
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((100, 0)));
+    assert_eq!(
+        rec.resolved(),
+        vec![(art(80).to_string(), DispatchResolution::NotSent)]
+    );
+    t.lock(RevokeCause::Lock, status).await;
+    let refused = Verdict::Refused {
+        cleanup: false,
+        step_possibly_dispatched: false,
+    };
+    assert_eq!(t.admit(req.clone()).await, refused);
+    assert_eq!(t.dispatch_status(W, art(80)), Some(DispatchState::NotSent));
+
+    // A reload: no marker revives it either.
+    let (rows, steps) = j.load();
+    let (t2, _) = table();
+    t2.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), rows, steps);
+    let dead = begin(&t2, W, 0, 100, 0).await.unwrap();
+    t2.lock(RevokeCause::Lock, status).await;
+    let resume = |l: &Lease| AdmitRequest {
+        scope: scope_of(l, Some("withdrawal/d/submit")),
+        ..transition(l, art(80), 10)
+    };
+    assert_eq!(t2.admit(resume(&dead)).await, refused);
+    // Under a live lease it is a fresh First, charged again.
+    let live = begin(&t2, W, 0, 100, 0).await.unwrap();
+    first(t2.admit(resume(&live)).await).finish(Outcome::Sent);
+    assert_eq!(budget(&live, BudgetPurpose::Credits), Some((100, 10)));
+}
+
+/// F2: the definite resolution is seen only once it is durable; when the
+/// journal cannot record it, it stays possibly out, charged.
+#[tokio::test(start_paused = true)]
+async fn r1_f2_a_resolution_the_journal_refuses_stays_possibly_out() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let req = AdmitRequest {
+        scope: scope_of(&l, Some("withdrawal/d/submit")),
+        ..transition(&l, art(81), 10)
+    };
+    let permit = first(t.admit(req.clone()).await);
+    j.fail_resolve.store(true, Ordering::SeqCst);
+    assert_eq!(permit.finish(Outcome::NotSent), Settlement::MaybeOut);
+    assert_eq!(j.load().1.len(), 1, "the marker stays");
+    assert_eq!(
+        t.dispatch_status(W, art(81)),
+        Some(DispatchState::MaybeSent)
+    );
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((100, 10)));
+    assert!(rec.resolved().is_empty());
+    // Known unsent, it is never resent on its old marker: a copy retries
+    // the resolution first, and defers while the journal refuses it.
+    assert_eq!(t.admit(req.clone()).await, Verdict::Deferred);
+    assert_eq!(j.load().1.len(), 1);
+    j.fail_resolve.store(false, Ordering::SeqCst);
+    // The retry lands: refunded, NotSent, and the copy is a fresh First.
+    let again = first(t.admit(req).await);
+    assert!(j.load().1.len() == 1, "the new First's own marker");
+    assert_eq!(rec.resolved().len(), 1);
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((100, 10)));
+    again.finish(Outcome::Sent);
+}
+
+/// F2: a nonce-slot resolution (H16) supersedes the loser's marker, not
+/// the winner's.
+#[tokio::test(start_paused = true)]
+async fn r1_f2_a_slot_resolution_supersedes_the_losers_marker() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let slot = NonceSlot {
+        identity: [3; 32],
+        space: NonceSpace::Identity,
+        nonce: 7,
+    };
+    let signed = |a| AdmitRequest {
+        kind: ArtifactKind::Transition {
+            credits: 10,
+            slot: Some(slot),
+        },
+        scope: scope_of(&l, Some("topup/x/st")),
+        ..transition(&l, a, 10)
+    };
+    first(t.admit(signed(art(82))).await).finish(Outcome::MaybeSent);
+    first(t.admit(signed(art(83))).await).finish(Outcome::MaybeSent);
+    t.note_executed(W, art(83), slot);
+    assert_eq!(t.dispatch_status(W, art(82)), Some(DispatchState::NotSent));
+    let steps = j.load().1;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].artifact, art(83).0);
+    t.lock(RevokeCause::Lock, status).await;
+    assert!(matches!(
+        t.admit(signed(art(82))).await,
+        Verdict::Refused { .. }
+    ));
+}
+
+/// F4: duplicate registrations are single-flight, so a removal's erase
+/// waits for every write and no row of the wallet lands after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f4_duplicate_registers_cannot_outlive_a_removal() {
+    let (t, _) = table();
+    let j = GatedJournal::new();
+    let _open = OpenOnDrop(Arc::clone(&j));
+    t.load_journal(Some(j.clone()), vec![], vec![]);
+    let l = begin(&t, W, 1000, 0, 0).await.unwrap();
+    let other = begin(&t, W, 1000, 0, 0).await.unwrap();
+    let a = tokio::spawn({
+        let l = l.clone();
+        async move { register(&l, art(77), 10).await }
+    });
+    until(|| j.registers.load(Ordering::SeqCst) == 1).await;
+    let b = tokio::spawn({
+        let l = l.clone();
+        async move { register(&l, art(77), 10).await }
+    });
+    let c = tokio::spawn({
+        let other = other.clone();
+        async move { register(&other, art(77), 10).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !b.is_finished() && !c.is_finished(),
+        "both wait for the write"
+    );
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    let erase = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.erase_wallet_rows(W).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !erase.is_finished(),
+        "the erase waits for the running write"
+    );
+    j.open_registers();
+    a.await.unwrap().unwrap();
+    erase.await.unwrap();
+    // The duplicates never wrote: one writer ran. The same-origin one may
+    // still have read the entry before the erase forgot it.
+    let _ = b.await.unwrap();
+    assert!(c.await.unwrap().is_err());
+    assert_eq!(j.registers.load(Ordering::SeqCst), 1);
+    drop(removal);
+    assert!(j.db.load().unwrap().0.is_empty(), "no row after the erase");
+    assert_eq!(budget(&l, BudgetPurpose::Funding), Some((1000, 10)));
+    assert_eq!(budget(&other, BudgetPurpose::Funding), Some((1000, 0)));
+}
+
+/// F6: dropping the last owning handle ends the lease; a lookup handle
+/// never does.
+#[tokio::test(start_paused = true)]
+async fn r1_f6_the_last_owning_handle_ends_the_lease() {
+    let (t, _) = table();
+    with_journal(&t);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let id = l.id();
+    // Lookups and their drops leave it active, and so does a dropped
+    // owning clone while another owner lives.
+    drop(t.lease(&id, &W).unwrap());
+    let clone = l.clone();
+    drop(clone);
+    assert!(!t.lease(&id, &W).unwrap().is_owner());
+    assert_eq!(t.lease(&id, &W).unwrap().state(), Some(LeaseState::Active));
+    let req = transition(&l, art(84), 10);
+    drop(l);
+    assert_eq!(t.lease(&id, &W).unwrap().state(), Some(LeaseState::Ended));
+    assert!(!matches!(t.admit(req).await, Verdict::First(_)));
+}
+
+/// F8: no purpose, no hand-off: a zero cost does not stand in for a
+/// Credits or Funding grant.
+#[tokio::test(start_paused = true)]
+async fn r1_f8_a_zero_cost_needs_the_purpose() {
+    let (t, _) = table();
+    with_journal(&t);
+    let l = begin(&t, W, 0, 0, 0).await.unwrap();
+    assert!(matches!(
+        t.admit(transition(&l, art(85), 0)).await,
+        Verdict::Refused { .. }
+    ));
+    assert_eq!(
+        register(&l, art(86), 0).await,
+        Err(LeaseError::NeedsGrant(BudgetPurpose::Funding).into())
+    );
+    // With the purpose, zero is a valid charge.
+    let credits = begin(&t, W, 0, 1, 0).await.unwrap();
+    first(t.admit(transition(&credits, art(87), 0)).await).finish(Outcome::Sent);
+}
+
+/// Polls `f` once.
+fn poll_once<F: Future + Unpin>(f: &mut F) -> std::task::Poll<F::Output> {
+    let waker = std::task::Waker::noop();
+    std::pin::Pin::new(f).poll(&mut std::task::Context::from_waker(waker))
+}
+
+fn step_copy(l: &Lease, a: ArtifactId, step: &str) -> AdmitRequest {
+    AdmitRequest {
+        scope: scope_of(l, Some(step)),
+        ..transition(l, a, 10)
+    }
+}
+
+/// Review of r1 (finding 2): a copy whose own marker landed still owes a
+/// marker another copy began before it joined.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f1_a_copy_owes_a_marker_begun_before_it_joined() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(90);
+    let running = first(t.admit(step_copy(&l, a, "s")).await);
+    // C1 (step t) writes its marker; its continuation has not run.
+    j.stall_ms.store(100, Ordering::SeqCst);
+    let mut c1 = Box::pin(t.admit(step_copy(&l, a, "t")));
+    assert!(poll_once(&mut c1).is_pending());
+    until(|| t.with_j(|i, _| i.fence.mark(&W, "t", &a)) == Some(fence::Mark::Durable)).await;
+    // C2 (step u) begins its marker, slowly.
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let mut c2 = Box::pin(t.admit(step_copy(&l, a, "u")));
+    assert!(poll_once(&mut c2).is_pending());
+    assert!(committing(&t, "u", a));
+    assert_eq!(c1.await, Verdict::Deferred, "u is not durable yet");
+    resend(c2.await).finish(Outcome::Sent);
+    running.finish(Outcome::Sent);
+}
+
+/// Review of r1 (finding 3): a settlement a marker write blocked still
+/// happens when that write fails, so the known-unsent bytes are never
+/// resent after a Lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_a_blocked_settlement_lands_when_the_write_fails() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(91);
+    let req = step_copy(&l, a, "s");
+    let running = first(t.admit(req.clone()).await);
+    j.stall_ms.store(300, Ordering::SeqCst);
+    j.fail_step.store(true, Ordering::SeqCst);
+    let mut copy = Box::pin(t.admit(step_copy(&l, a, "t")));
+    assert!(poll_once(&mut copy).is_pending());
+    assert!(committing(&t, "t", a));
+    // Blocked by the copy's write: not settled yet.
+    assert_eq!(running.finish(Outcome::NotSent), Settlement::MaybeOut);
+    assert_eq!(copy.await, Verdict::Deferred);
+    until(|| t.dispatch_status(W, a) == Some(DispatchState::NotSent)).await;
+    assert!(j.load().1.is_empty(), "the resolution reached the journal");
+    assert_eq!(rec.resolved().len(), 1);
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 0)));
+    j.stall_ms.store(0, Ordering::SeqCst);
+    j.fail_step.store(false, Ordering::SeqCst);
+    t.lock(RevokeCause::Lock, status).await;
+    assert!(matches!(t.admit(req).await, Verdict::Refused { .. }));
+}
+
+/// Review of r1 (finding 1): the library is never polled at or past the
+/// deadline, even when it would finish in that very poll.
+#[tokio::test(start_paused = true)]
+async fn r1_f3_the_library_is_not_polled_at_the_deadline() {
+    let (t, _) = table();
+    let d = Instant::now() + H;
+    let polled_late = Arc::new(AtomicBool::new(false));
+    let late = Arc::clone(&polled_late);
+    let ended = t
+        .hand_off(Some(d), async { Ok::<_, ()>(()) }, |()| async move {
+            tokio::time::sleep_until(d).await;
+            late.store(true, Ordering::SeqCst);
+        })
+        .await
+        .unwrap();
+    assert!(matches!(ended, fence::HandOff::Cut));
+    assert!(!polled_late.load(Ordering::SeqCst));
+    // Before the deadline it runs as usual; past it, it is never entered.
+    let ok = t.hand_off(Some(d + H), async { Ok::<_, ()>(()) }, |()| async { 7 });
+    assert!(matches!(ok.await.unwrap(), fence::HandOff::Done(7)));
+    let entered = Arc::new(AtomicBool::new(false));
+    let e = Arc::clone(&entered);
+    let none = t.hand_off(
+        Some(Instant::now()),
+        async { Ok::<_, ()>(()) },
+        |()| async move { e.store(true, Ordering::SeqCst) },
+    );
+    assert!(matches!(none.await.unwrap(), fence::HandOff::NotEntered));
+    assert!(!entered.load(Ordering::SeqCst));
+}
+
+fn resolving(t: &LeaseTable, a: ArtifactId) -> bool {
+    t.with_j(|i, _| i.fence.resolving(&a))
+}
+
+/// Review of r1 (fix round): a marker write that returns never settles
+/// an artifact already seen sent, so its charge is never refunded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_a_marker_write_never_settles_a_sent_artifact() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(92);
+    let running = first(t.admit(step_copy(&l, a, "s")).await);
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let copy = tokio::spawn({
+        let (t, req) = (Arc::clone(&t), step_copy(&l, a, "t"));
+        async move { t.admit(req).await }
+    });
+    until(|| committing(&t, "t", a)).await;
+    t.note_seen(W, a);
+    assert_eq!(running.finish(Outcome::NotSent), Settlement::Sent);
+    resend(copy.await.unwrap()).finish(Outcome::Sent);
+    assert_eq!(j.load().1.len(), 2, "both markers are kept");
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
+    assert_eq!(
+        rec.resolved(),
+        vec![(a.to_string(), DispatchResolution::Sent)]
+    );
+}
+
+/// Review of r1 (fix round): seen sent while its resolution is being
+/// written, an artifact keeps its charge and gets its marker back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_an_artifact_seen_sent_during_its_resolution_keeps_its_marker() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(95);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let finish = tokio::task::spawn_blocking(move || permit.finish(Outcome::NotSent));
+    until(|| resolving(&t, a)).await;
+    t.note_seen(W, a);
+    assert_eq!(finish.await.unwrap(), Settlement::MaybeOut);
+    assert_eq!(j.load().1.len(), 1, "the marker is written again");
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
+    assert_eq!(
+        rec.resolved(),
+        vec![(a.to_string(), DispatchResolution::Sent)]
+    );
+    j.stall_ms.store(0, Ordering::SeqCst);
+    resend(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+}
+
+/// Review of r1 (fix round): an H16 settlement a marker write blocked
+/// proceeds when that write fails, although the bytes may be out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_a_blocked_slot_settlement_lands_when_the_write_fails() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let slot = NonceSlot {
+        identity: [4; 32],
+        space: NonceSpace::Identity,
+        nonce: 9,
+    };
+    let signed = |a, step: &str| AdmitRequest {
+        kind: ArtifactKind::Transition {
+            credits: 10,
+            slot: Some(slot),
+        },
+        scope: scope_of(&l, Some(step)),
+        ..transition(&l, a, 10)
+    };
+    first(t.admit(signed(art(93), "s")).await).finish(Outcome::MaybeSent);
+    first(t.admit(signed(art(94), "s")).await).finish(Outcome::MaybeSent);
+    j.stall_ms.store(300, Ordering::SeqCst);
+    j.fail_step.store(true, Ordering::SeqCst);
+    let copy = tokio::spawn({
+        let (t, req) = (Arc::clone(&t), signed(art(93), "t"));
+        async move { t.admit(req).await }
+    });
+    until(|| committing(&t, "t", art(93))).await;
+    // Blocked by the copy's write.
+    t.note_executed(W, art(94), slot);
+    assert_eq!(copy.await.unwrap(), Verdict::Deferred);
+    until(|| t.dispatch_status(W, art(93)) == Some(DispatchState::NotSent)).await;
+    let steps = j.load().1;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].artifact, art(94).0);
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((100, 10)));
+}
+
+/// Review of r1 (fix round): a panicking resolution counts as failed, so
+/// the next admit retries it instead of deferring forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_a_panicking_resolution_is_retried() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(96);
+    j.panic_resolve.store(true, Ordering::SeqCst);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    assert_eq!(permit.finish(Outcome::NotSent), Settlement::MaybeOut);
+    assert_eq!(t.admit(step_copy(&l, a, "s")).await, Verdict::Deferred);
+    j.panic_resolve.store(false, Ordering::SeqCst);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+    assert_eq!(
+        rec.resolved()[0],
+        (a.to_string(), DispatchResolution::NotSent)
+    );
 }

@@ -184,16 +184,37 @@ impl NetworkSession {
         let lease = self.begin_lease(wallet_id, flow, &grants).await?;
         // A removal or Close Wallet holds its barrier until the wallet is
         // gone (§8.6), so a lease that waited it out finds no wallet here.
-        if let Err(e) = self.require_wallet(&wallet_id) {
-            lease.end();
-            return Err(engine(e));
-        }
-        Ok(lease.id_string())
+        // Dropping the owning handle ends it.
+        self.require_wallet(&wallet_id).map_err(engine)?;
+        let id = lease.id_string();
+        // The session owns it until `end_flow`; owners of leases that ended
+        // otherwise (reaper, lock) go now.
+        let ended: Vec<super::lease::Lease> = {
+            let mut owners = self.flow_leases.lock().unwrap_or_else(|e| e.into_inner());
+            let ended = owners
+                .extract_if(|_, l| {
+                    l.view()
+                        .is_none_or(|v| matches!(v.state, LeaseStateView::Ended))
+                })
+                .map(|(_, l)| l)
+                .collect();
+            owners.insert(lease.id(), lease);
+            ended
+        };
+        drop(ended);
+        Ok(id)
     }
 
-    /// Releases a lease. Idempotent.
+    /// Releases a lease: drops the session's owning handle, which ends it.
+    /// Idempotent.
     pub fn end_flow(&self, lease: String) -> Result<(), PlatformError> {
         let id = parse_lease(&lease).ok_or(PlatformError::GrantInvalid)?;
+        let owner = self
+            .flow_leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        drop(owner);
         self.leases.end(&id);
         Ok(())
     }

@@ -43,6 +43,7 @@ use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use self::plan::{InputChoice, MAX_MONEY, Plan, PlanError, PlanOutput, dust_threshold};
 use crate::coins::{CoinSnapshot, now_secs};
+use crate::platform::lease::fence::HandOff;
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, LeaseError, Outcome, Settlement,
     Verdict,
@@ -485,6 +486,24 @@ pub struct TxDraft {
     /// Binds the drafts's `PreparedTx`s to it.
     id: u64,
     state: Mutex<DraftState>,
+    /// Stands in for the library's broadcast, so the leased hand-off runs
+    /// end to end without SPV (E0-04 L5, review P2a r1 F3).
+    #[cfg(test)]
+    pub(crate) broadcaster: Mutex<Option<Arc<dyn TestBroadcaster>>>,
+}
+
+/// The library's broadcast, faked (tests).
+#[cfg(test)]
+pub(crate) trait TestBroadcaster: Send + Sync {
+    /// A wait before the library is entered (the manager guard, the SPV
+    /// configuration); the permit's deadline bounds it.
+    fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// The library's hand-off of `tx`, entered: its result.
+    fn broadcast(
+        &self,
+        tx: &Transaction,
+        first: bool,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<dashcore::Txid, PlatformWalletError>> + Send>>;
 }
 
 impl std::fmt::Debug for TxDraft {
@@ -577,6 +596,8 @@ impl NetworkSession {
                 fee: FeeRate::new(MIN_FEE_PER_KB),
                 change: ChangeTarget::Auto,
             }),
+            #[cfg(test)]
+            broadcaster: Mutex::new(None),
         }))
     }
 
@@ -895,16 +916,14 @@ impl TxDraft {
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
         let outflow = external_sent.saturating_add(r.plan.fee);
-        let charge = lease
-            .charge_spend(outflow)
+        // One J step: a payment exactly at the cap is charged and signs.
+        let (charge, signer) = lease
+            .charge_spend_signer(outflow)
             .map_err(|e| lease_failure(e, outflow))?;
         let charge = SpendCharge {
             lease: lease.clone(),
             charge: Some(charge),
         };
-        let signer = lease
-            .spend_signer()
-            .map_err(|e| lease_failure(e, outflow))?;
         self.sign_and_reserve(
             r,
             wallet,
@@ -1145,7 +1164,7 @@ impl TxDraft {
         let (outcome, next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
             None => {
-                let outcome = self.dispatch(&prepared, first).await;
+                let outcome = self.dispatch(&prepared, first, None).await;
                 let next = settle(first, &outcome);
                 (outcome, next)
             }
@@ -1226,15 +1245,16 @@ impl TxDraft {
         };
         let (result, settlement) = match verdict {
             Verdict::First(permit) => {
-                // The hand-off starts at once; a lock's drain stops waiting
-                // for it at the permit's deadline, while the network's
-                // verdict may come later (L5/L10 clamp the drain, not this).
-                let result = self.dispatch(prepared, first).await;
+                // L5: the transport only before the permit's deadline, and
+                // under it (`dispatch`).
+                let result = self
+                    .dispatch(prepared, first, Some(permit.deadline()))
+                    .await;
                 let s = permit.finish(attempt_outcome(&result));
                 (result, s)
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let result = self.dispatch(prepared, false).await;
+                let result = self.dispatch(prepared, false, None).await;
                 let s = guard.finish(attempt_outcome(&result));
                 (result, s)
             }
@@ -1269,40 +1289,85 @@ impl TxDraft {
     /// pending-spend fence, and re-sending the same transaction cannot spend
     /// them twice, so the finalized handle's reservation-age guard (which
     /// would refuse a repeat hours later) does not apply.
+    ///
+    /// `deadline`: a leased First's permit deadline (E0-04 L5). Every wait
+    /// before the library is entered is bounded by it, and the library is
+    /// entered only before it: a First past its deadline never dispatches
+    /// (`Cancelled`, definitely unsent). The library call itself is
+    /// bounded by it, checked before each poll (`LeaseTable::hand_off`);
+    /// a cut is MaybeSent, and the
+    /// library keeps the inputs fenced on that cancellation
+    /// (`dispatch_unexpired`'s in-broadcast pin). The pinned library has
+    /// no enqueue/acceptance split (L10), so a verdict later than the
+    /// deadline arrives as `note_seen` instead.
     async fn dispatch(
         &self,
         prepared: &PreparedTx,
         first: bool,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<BroadcastOutcome, EngineError> {
-        let wallet = self.session.wallet(&self.wallet_id).await?;
-        let manager = self.session.manager()?;
-        if !manager.spv().is_started() {
-            // Nothing to send to; handled like dash-spv's never-sent
-            // rejection.
-            return Err(if first {
-                SendFailure::NoPeers
-            } else {
-                SendFailure::BroadcastUnknown {
-                    reason: "SPV is not running".into(),
-                }
+        let ready = async {
+            let wallet = self.session.wallet(&self.wallet_id).await?;
+            #[cfg(test)]
+            let seam = self.broadcaster.lock().unwrap().clone();
+            #[cfg(test)]
+            if let Some(seam) = seam {
+                seam.before_entry().await;
+                return Ok((wallet, Some(seam)));
             }
-            .into());
-        }
+            let manager = self.session.manager()?;
+            if !manager.spv().is_started() {
+                // Nothing to send to; handled like dash-spv's never-sent
+                // rejection.
+                return Err(if first {
+                    SendFailure::NoPeers
+                } else {
+                    SendFailure::BroadcastUnknown {
+                        reason: "SPV is not running".into(),
+                    }
+                }
+                .into());
+            }
+            Ok::<_, EngineError>((wallet, None))
+        };
         // `Phase::Broadcasting` keeps abandon and drop away while the
         // broadcast awaits the network (up to about a minute).
         let signed = prepared.signed().clone();
-        let sent = if let Some(tx) = &prepared.mixed {
-            wallet.core().broadcast_transaction(tx).await
-        } else if let Some(signed) = signed {
-            if first {
-                wallet.core().broadcast_finalized_transaction(&signed).await
-            } else {
-                wallet
-                    .core()
-                    .broadcast_transaction(signed.transaction())
-                    .await
+        let handed = self
+            .session
+            .leases
+            .hand_off(deadline, ready, |(wallet, seam)| async move {
+                let tx = match (&prepared.mixed, &signed) {
+                    (Some(tx), _) => tx,
+                    (None, Some(signed)) => signed.transaction(),
+                    (None, None) => return None,
+                };
+                #[cfg(test)]
+                if let Some(seam) = seam {
+                    return Some(seam.broadcast(tx, first).await);
+                }
+                #[cfg(not(test))]
+                let _: Option<()> = seam;
+                Some(match (&prepared.mixed, &signed) {
+                    (None, Some(signed)) if first => {
+                        wallet.core().broadcast_finalized_transaction(signed).await
+                    }
+                    _ => wallet.core().broadcast_transaction(tx).await,
+                })
+            })
+            .await?;
+        let sent = match handed {
+            HandOff::Done(sent) => sent,
+            // Never entered at or past the deadline.
+            HandOff::NotEntered => return Err(SendFailure::Cancelled.into()),
+            HandOff::Cut => {
+                return Err(SendFailure::BroadcastUnknown {
+                    reason: "the lease's deadline passed during the hand-off".into(),
+                }
+                .into());
             }
-        } else {
+        };
+        let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
         match sent {
@@ -1380,10 +1445,12 @@ fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase
 fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) -> Outcome {
     match result {
         Ok(_) => Outcome::Sent,
+        // `Cancelled`: a First past its deadline, never dispatched (L5).
         Err(EngineError::Send(
             SendFailure::NoPeers
             | SendFailure::BroadcastRejected { .. }
-            | SendFailure::PreparedTxSpent,
+            | SendFailure::PreparedTxSpent
+            | SendFailure::Cancelled,
         ))
         | Err(EngineError::NetworkNotOpen(_) | EngineError::WalletNotFound(_)) => Outcome::NotSent,
         Err(_) => Outcome::MaybeSent,

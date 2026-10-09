@@ -684,8 +684,11 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   If step 3 refuses, the hold and the signers are dropped and the call fails `lease.locked`
   (`platform.cancelled`, §16); the flow asks again.
 - Every token must be for the lease's wallet.
-- A lease is ended by `Lease::end()` (or by dropping the last `Arc`). The table keeps its entry until its last permit
-  has dropped.
+- A lease is ended by `Lease::end()`, or by dropping its last owning handle (review P2a r1 F6). There are two
+  handle kinds. `begin_lease` returns the owning RAII handle; its clones share one owner, and dropping the last of
+  them ends authority exactly as `end()` does. A handle looked up by id (`lease`, `lease_for`) borrows: dropping it
+  never ends the lease. The facade keeps an owner per `begin_flow` lease in the session (§4.7). The idle reaper
+  stays as a backstop. The table keeps its entry until its last permit has dropped.
 - `LeaseId` values are random, so an origin recorded by an earlier process never matches a lease of this one. The
   fence also compares the wallet.
 
@@ -715,7 +718,9 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   - Spend: at `TxDraft::prepare`;
   - Credits: at First admit, under J, together with the permit.
 
-  If a charge does not fit, the operation is refused before anything is committed.
+  If a charge does not fit, the operation is refused before anything is committed. A charge equal to the remaining
+  cap fits. A zero charge still needs its purpose (review P2a r1 F8): a transition with zero credit cost needs a
+  lease carrying `Credits`, and `register` with zero debit one carrying `Funding`, otherwise `needs_grant`.
 - **Refunds:**
   - a `register` whose artifact ends `Revoked` (refused or abandoned) refunds its Funding charge, because it was
     never sent;
@@ -989,7 +994,8 @@ impl Lease {
 
 The facade carries one lease across several calls (review Opus 4). `NetworkSession::begin_flow(wallet, flow,
 grants) -> String` returns a lease id, which every facade call accepts wherever it takes a `grant: String`, and
-`end_flow(id)` ends it. "Accept and pay" takes one prompt (`authorize_set`), opens one flow, and passes its id to
+`end_flow(id)` ends it. The session holds the lease's owning handle from `begin_flow` until `end_flow` or the
+reaper ends it, so looking a lease up by id and dropping that handle never ends it (§4.1). "Accept and pay" takes one prompt (`authorize_set`), opens one flow, and passes its id to
 `accept_request` and then to the payment's `TxDraft.prepare`.
 
 An idle reaper ends a vault-key lease after 10 minutes with no call, no permit and **no running flow task**. A
@@ -1024,7 +1030,7 @@ the PR makes `SpvBroadcaster` itself fence-aware (review Opus 6). Its `broadcast
 1. check the transport is ready (client started, peers > 0); if not, `Rejected` before any `admit` (L8);
 2. subscribe to dash-spv's events (no permit);
 3. `fence.admit(…)`, then, for `First`, `DashSpvClient::broadcast_transaction`, the local enqueue of F3, under the
-   permit and `timeout_at(permit.deadline())`;
+   permit and bounded by `permit.deadline()`, checked before each poll of the library;
 4. wait for the acceptance event (no permit).
 
 `client.read()` is held only for step 3, which also stops a pending wait from blocking `stop()` (an E0-05 concern).
@@ -1282,7 +1288,7 @@ admit(req):
 | L2 | Hold no wallet-manager guard and no `build_persist_serial` while it awaits `register` or a registered artifact's `admit`, the calls that do journal I/O. The fence takes neither, so this is not needed to keep the drain deadlock-free. It is needed so that an fsync never stalls every wallet reader. `payment_guard` is explicitly allowed across an `admit`: those sites are row-less, and a non-resumable row-less `admit` does no I/O and takes only J, a leaf. The pin holds it on purpose, to linearize wallet teardown against a payment (review Opus 12). |
 | L3 | Make the row durable before `admit` for a tracked row: propagate the `store` result (no log-and-continue as in `queue_asset_lock_changeset`) and `flush` when `!store_commits_inline()`. |
 | L4 | Call `register` with the recovery payload, including the debit of the inputs it selected, before tracking an asset lock, and abort if it fails. |
-| L5 | `First(p)`: call the transport only if `now < p.deadline()`, under `timeout_at(p.deadline())`; then `finish`. A timeout is MaybeSent. |
+| L5 | `First(p)`: call the transport only if `now < p.deadline()`, bounded by `p.deadline()`; then `finish`. A timeout is MaybeSent. Every wait before the transport (the wallet, the SPV client) is bounded by the deadline too, and the deadline is checked last, immediately before the library is entered: a First past it never dispatches and is definitely unsent (review P2a r1 F3). The bound is checked before each poll of the library, so nothing of it runs at or past the deadline. |
 | L6 | `Refused{cleanup: true}` and `Abandon::Revoked{cleanup: true}`: spawn the cleanup of §5.5 as a library task, overriding resume claims, releasing the reservation owner-guarded and settling the in-broadcast pin released. Then report the definite not-sent error (`DispatchRefused`). `cleanup: false`: drop the claim and report the same error. Derive every release from the `Settlement`, never from the attempt, and never map `Refused` onto a release path without a token (F7). |
 | L7 | `Deferred` and `Abandon::Committed`: keep the row, the reservation and the in-broadcast fence; report the unknown outcome (`TransactionBroadcastUnconfirmed`). |
 | L8 | Run the transport readiness check before `admit`; if it fails, `abandon` (for a tracked row) and report the definite rejection. |
@@ -1523,7 +1529,7 @@ CREATE TABLE step (                                          -- resumable steps'
 | 5. `admit`: `Committing`, permit, charge (under J) | as 3 | as 3 |
 | 6. `Dispatching` write in progress | entry 0 or 1 | 0 → refused (transport never called, I1); 1 → Resend |
 | 7. write done | entry 1, row | inputs reserved again (L12), then Resend (MaybeSent) |
-| 8. transport call (enqueue) under `timeout_at(deadline)` | as 7 | as 7; the bytes may already be out |
+| 8. transport call (enqueue), bounded by the deadline | as 7 | as 7; the bytes may already be out |
 | 9. transport returns or times out; `finish` | as 7 | as 7 |
 | 10. status `Built → Broadcast` (`store`) | entry 1, row `Broadcast` | as 7, through the Broadcast arm (a Resend) |
 | 11. proof wait (no permit), IS window (§4.4) | — | platform-wallet's tracking; DP1-02 resumes its flow |
@@ -1574,6 +1580,20 @@ returns, too late to record a hand-off. So:
 - **Writing.** In Mode A, the step's First takes `Committing` for `(step, artifact hash)` in its J step, and spawns
   the marker's durable write (`FULL`). Its transport starts only after the write returned. In Mode B the engine
   writes the marker under the call permit, before it calls the library.
+- **Every copy** (review P2a r1 F1). The durable marker is the precondition of transport for every copy of the
+  transition, joined or not, whatever its scope. A copy waits (`Deferred`) while any marker of the artifact is
+  `Committing`; a missing marker of its own step, or an `Ambiguous` one, is written first, and the copy is handed
+  off only after every marker of the artifact is durable. The check is repeated after the copy's own write
+  returns: a marker another copy began meanwhile is owed too.
+- **Definite resolution** (review P2a r1 F2). A definite not-sent outcome (refunded, or definitely unsent) is
+  made durable by deleting the artifact's markers in the journal, before the refund and the `NotSent` tombstone.
+  It supersedes every step marker: a later Lock, reload or resume finds no marker, so the step needs a fresh,
+  charged First. While the delete runs, and after the journal refuses it, the artifact is `Resolving`: it stays
+  charged and possibly out (`MaybeOut`), and no copy resends on its old marker. Each later admit retries the
+  delete first and defers while it fails; once it lands, the artifact is refunded and `NotSent`, and a fresh First
+  may follow. A settlement that waits on another copy's marker write (every attempt ended definitely unsent, but a
+  write is `Committing`) proceeds when that write returns, whether it landed or not. An artifact seen sent is
+  never settled or refunded: seen before the delete, it keeps its markers; seen during it, they are written again.
 - **Reading, in a later process:**
   - identical bytes find their marker: a Resend;
   - different bytes for the same step, under a revoked lease, get `Refused{step_possibly_dispatched: true}`, which
@@ -1587,6 +1607,7 @@ returns, too late to record a hand-off. So:
 | marker write in progress | marker or nothing | as the row above, or as the row below |
 | after the marker, before or after the broadcast | marker | identical bytes: Resend; otherwise MaybeSent |
 | after the response, before the phase write | marker | as above; the flow's re-query then finds the identity |
+| after a definite not-sent resolution | no marker | a fresh First, charged again |
 
 ## 8. Lock, close and other revocations
 
@@ -2091,6 +2112,9 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
 - **The synchronous FFI lock:** it returns after the gate; `LockProgress::Done` carries the report.
 - **The facade lease handle** (Opus 4): "Accept and pay" through `begin_flow` across `accept_request` and `prepare`,
   with the Spend part used after a 90 s accept; the idle reaper ends an abandoned vault-key lease.
+- **Lease ownership** (review P2a r1 F6): dropping the sole owning handle ends the lease, and a new First under it
+  is refused; a handle looked up by id and dropped leaves the lease `Active` while its owner lives; a `begin_flow`
+  lease stays `Active` with no host handle until `end_flow`.
 - **QuickUnlock for `PlatformOp`:** within and just above the limits, and with a stale passphrase.
 
 **[A+B] Row-less attempts and step markers (rev1)**
@@ -2368,7 +2392,7 @@ the contract's prose differs, E0-08 matches this section; §15 lists the lines.
 
 - `NetworkSession.begin_flow(wallet_id, flow: FlowKind, grants: Vec<String>) -> Result<String, PlatformError>`
   returns a lease id. `NetworkSession.end_flow(lease: String) -> Result<(), PlatformError>` is synchronous and
-  idempotent.
+  idempotent. The session owns the lease from `begin_flow` until `end_flow` or the reaper (§4.1, §4.7).
 - A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A call
   that needs a purpose the lease lacks gets `platform.needs_grant{purpose}`. Another wallet's lease, or an unknown
   id, is `platform.grant_invalid` (N-6).

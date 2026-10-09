@@ -229,6 +229,9 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
             .block_on(s.begin_flow(f.wallet, FlowKind::ContactRequest, vec![g])),
         Err(PlatformError::GrantInvalid)
     );
+    // The session owns it (§4.1): a facade lookup, dropped, ends nothing.
+    drop(s.lease_for(&f.wallet, &id).unwrap().unwrap());
+    assert_eq!(s.leases().unwrap()[0].state, LeaseStateView::Active);
     s.end_flow(id.clone()).unwrap();
     s.end_flow(id).unwrap();
     assert_eq!(s.leases().unwrap()[0].state, LeaseStateView::Ended);
@@ -565,4 +568,335 @@ fn close_revokes_every_lease_and_closes_the_journal() {
         .unwrap();
     assert_eq!(l.state(), Some(LeaseState::Revoked(RevokeCause::Close)));
     assert!(l.table.journal.get().is_none());
+}
+
+// Review P2a r1 regressions (F3, F5).
+
+/// What the fake library does once entered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Library {
+    Accept,
+    Unconfirmed,
+    Hang,
+}
+
+/// The library's broadcast behind `TxDraft`'s test seam.
+struct FakeLibrary {
+    before: Duration,
+    mode: Library,
+    entered: std::sync::atomic::AtomicU32,
+}
+
+impl FakeLibrary {
+    fn install(d: &crate::send::TxDraft, before: Duration, mode: Library) -> Arc<Self> {
+        let lib = Arc::new(Self {
+            before,
+            mode,
+            entered: Default::default(),
+        });
+        *d.broadcaster.lock().unwrap() = Some(lib.clone());
+        lib
+    }
+
+    fn entered(&self) -> u32 {
+        self.entered.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::send::TestBroadcaster for FakeLibrary {
+    fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep(self.before))
+    }
+
+    fn broadcast(
+        &self,
+        tx: &dashcore::Transaction,
+        first: bool,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Txid, platform_wallet::PlatformWalletError>> + Send>,
+    > {
+        assert!(first, "a leased First enters the library as first");
+        self.entered
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let txid = tx.txid();
+        let mode = self.mode;
+        Box::pin(async move {
+            match mode {
+                Library::Accept => Ok(txid),
+                Library::Unconfirmed => Err(
+                    platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                        "no verdict yet".into(),
+                    ),
+                ),
+                Library::Hang => std::future::pending().await,
+            }
+        })
+    }
+}
+
+fn accept_and_pay(f: &Fixture, cap: u64) -> Lease {
+    let grants = [
+        f.platform_op(0, 1_000),
+        f.grant(GrantPurpose::Spend { max_duffs: cap }, Credential::None),
+    ];
+    f.lease(FlowKind::AcceptAndPay, &grants).unwrap()
+}
+
+/// F3: a leased First is handed off end to end and accepted: Sent.
+#[test]
+fn r1_f3_a_leased_first_hands_off_end_to_end() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let l = accept_and_pay(&f, 5_000_000);
+
+    let d = f.draft(1_000_000);
+    let lib = FakeLibrary::install(&d, Duration::ZERO, Library::Accept);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let txid = ArtifactId::parse(&p.summary().txid).unwrap();
+    f.engine.block_on(d.broadcast(p)).unwrap();
+    assert_eq!(lib.entered(), 1);
+    assert_eq!(
+        f.session.leases.dispatch_status(f.wallet, txid),
+        Some(DispatchState::Sent)
+    );
+    assert!(
+        spend_of(&l).unwrap() > 1_000_000,
+        "a sent payment stays charged"
+    );
+}
+
+/// F3: an unconfirmed hand-off of a leased First is MaybeSent, charged,
+/// its inputs held.
+#[test]
+fn r1_f3_an_unconfirmed_leased_first_is_maybe_sent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let l = accept_and_pay(&f, 5_000_000);
+    let d = f.draft(1_000_000);
+    let lib = FakeLibrary::install(&d, Duration::ZERO, Library::Unconfirmed);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let txid = ArtifactId::parse(&p.summary().txid).unwrap();
+    assert!(matches!(
+        send_failure(f.engine.block_on(d.broadcast(Arc::clone(&p)))),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    assert_eq!(lib.entered(), 1);
+    assert_eq!(
+        f.session.leases.dispatch_status(f.wallet, txid),
+        Some(DispatchState::MaybeSent)
+    );
+    assert!(
+        spend_of(&l).unwrap() > 1_000_000,
+        "MaybeSent keeps its charge"
+    );
+    assert!(f.reserved() > 0, "its inputs stay held");
+    assert_eq!(
+        send_failure(f.engine.block_on(d.abandon(p))),
+        SendFailure::PreparedTxSpent
+    );
+}
+
+/// F3: a First whose wait before the library outlives the permit never
+/// enters it: definitely unsent, released and refunded.
+#[test]
+fn r1_f3_a_first_past_its_deadline_never_enters_the_library() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let l = accept_and_pay(&f, 5_000_000);
+    let d = f.draft(1_000_000);
+    let ttl = super::LeaseConfig::default().permit_ttl;
+    let lib = FakeLibrary::install(&d, ttl + Duration::from_secs(1), Library::Accept);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let txid = ArtifactId::parse(&p.summary().txid).unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(d.broadcast(p))),
+        SendFailure::Cancelled
+    );
+    assert_eq!(lib.entered(), 0, "never entered past the deadline");
+    assert_eq!(
+        f.session.leases.dispatch_status(f.wallet, txid),
+        Some(DispatchState::NotSent)
+    );
+    assert_eq!(spend_of(&l), Some(0));
+    assert_eq!(f.reserved(), 0);
+}
+
+/// F3: a library call still running at the deadline ends there as
+/// MaybeSent, its inputs held; a lock returns by then.
+#[test]
+fn r1_f3_a_hanging_hand_off_ends_at_the_deadline_as_maybe_sent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let l = accept_and_pay(&f, 5_000_000);
+    let d = f.draft(1_000_000);
+    let lib = FakeLibrary::install(&d, Duration::ZERO, Library::Hang);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let txid = ArtifactId::parse(&p.summary().txid).unwrap();
+    let ttl = super::LeaseConfig::default().permit_ttl;
+    f.engine.block_on(async {
+        let started = tokio::time::Instant::now();
+        let send = tokio::spawn({
+            let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+            async move { d.broadcast(p).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lib.entered() == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        f.session.lock_vault().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), send)
+            .await
+            .expect("the hand-off ends at the deadline")
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+        ));
+        assert!(started.elapsed() < ttl + Duration::from_secs(1));
+    });
+    assert_eq!(
+        f.session.leases.dispatch_status(f.wallet, txid),
+        Some(DispatchState::MaybeSent)
+    );
+    assert!(f.reserved() > 0, "its inputs stay held");
+}
+
+/// F3 (Sol's witness): with the real SPV client, a First whose library
+/// call waits on the wallet manager past the deadline is cut there.
+#[test]
+fn r1_f3_the_real_spv_dispatch_stops_at_the_permit_deadline() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let l = accept_and_pay(&f, 5_000_000);
+    let d = f.draft(1_000_000);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let txid = ArtifactId::parse(&p.summary().txid).unwrap();
+    f.engine.block_on(async {
+        let manager = f.session.manager().unwrap();
+        // The actual SPV client, without its network run loop.
+        crate::fsutil::create_owned_dir(f.session.data_dir(), std::path::Path::new("spv")).unwrap();
+        manager
+            .spv()
+            .start(f.session.spv_config().unwrap())
+            .await
+            .unwrap();
+        let wallet = f.session.wallet(&f.wallet).await.unwrap();
+        let held = wallet.state_mut().await;
+        let task = tokio::spawn({
+            let d = Arc::clone(&d);
+            async move { d.broadcast(p).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while l.view().unwrap().in_flight == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        f.session.lock_vault().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The library call is dropped at the deadline and the attempt
+        // finished; what still waits on the held guard is the engine's
+        // send-metadata bookkeeping, which never reaches the transport.
+        let attempt_live = l.view().unwrap().in_flight > 0;
+        drop(held);
+        let result = task.await.unwrap();
+        manager.spv().stop().await.unwrap();
+        assert!(!attempt_live, "the dispatch outlived its permit");
+        assert_eq!(
+            f.session.leases.dispatch_status(f.wallet, txid),
+            Some(DispatchState::MaybeSent)
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+        ));
+    });
+}
+
+/// F5: a payment exactly at its Spend cap prepares; one duff over does
+/// not.
+#[test]
+fn r1_f5_a_payment_exactly_at_the_cap_prepares() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let d = f.draft(1_000_000);
+    let reference = f.grant(
+        GrantPurpose::Spend {
+            max_duffs: 5_000_000,
+        },
+        Credential::None,
+    );
+    let p = f.engine.block_on(d.prepare(reference)).unwrap();
+    let debit = p.summary().total_debit;
+    f.engine.block_on(d.abandon(p)).unwrap();
+
+    let under = accept_and_pay(&f, debit - 1);
+    assert!(matches!(
+        send_failure(f.engine.block_on(d.prepare(under.id_string()))),
+        SendFailure::GrantExceeded { .. }
+    ));
+    assert_eq!(spend_of(&under), Some(0));
+    let exact = accept_and_pay(&f, debit);
+    let p = f.engine.block_on(d.prepare(exact.id_string())).unwrap();
+    assert_eq!(spend_of(&exact), Some(debit));
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(spend_of(&exact), Some(0));
+}
+
+/// F7 (Sol's real-vault interleaving): a lock whose caller is dropped
+/// still gates and drains; an unlock and a grant meanwhile, then a
+/// synchronous lock during the drain locks again and kills that grant.
+#[test]
+fn r1_f7_a_real_lock_dropped_unlocked_and_locked_again_during_its_drain() {
+    let f = fixture(true);
+    let l = f
+        .lease(FlowKind::Withdraw, &[f.platform_op(0, 1000)])
+        .unwrap();
+    f.engine.block_on(async {
+        let t = Arc::clone(&f.session.leases);
+        let permit = super::tests::first(t.admit(super::tests::transition(&l, art(82), 10)).await);
+        let k1 = tokio::spawn({
+            let s = Arc::clone(&f.session);
+            async move { s.lock_vault().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while f.session.vault().lock_state() != LockState::Locked
+                || t.with_j(|i, _| i.barrier.gates) != 0
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // The gate and drain outlive their caller.
+        k1.abort();
+        let unlock = tokio::spawn({
+            let s = Arc::clone(&f.session);
+            async move { s.vault_op(|v| v.unlock(PASS, UnlockScope::Full)).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while f.session.vault().lock_state() != LockState::Unlocked {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let g = f.platform_op(0, 10);
+        assert!(t.with_j(|i, _| i.barrier.drains) > 0, "K1 still drains");
+        f.session.lock_vault_sync().unwrap();
+        assert_eq!(f.session.vault().lock_state(), LockState::Locked);
+        assert!(
+            f.session
+                .vault()
+                .check_grant(&g, dw_vault::GrantKind::PlatformOp, Some(&f.wallet.0))
+                .is_err(),
+            "a grant issued before K2 dies with it"
+        );
+        permit.finish(Outcome::NotSent);
+        unlock.await.unwrap().unwrap();
+    });
 }

@@ -300,7 +300,7 @@ impl LeaseTable {
                 #[cfg(test)]
                 log: Vec::new(),
                 #[cfg(test)]
-                mutation: None,
+                mutation: super::stress_tests::Mutation::from_env(),
             }),
             changed: Notify::new(),
             config,
@@ -390,6 +390,8 @@ impl LeaseTable {
                 return;
             }
             i.observed_epoch = epoch;
+            #[cfg(test)]
+            i.note(super::stress_tests::LogEvent::EpochChanged);
             for (id, e) in i.leases.iter_mut() {
                 if e.needs_grant(fx) {
                     fx.changed(*id);
@@ -406,8 +408,8 @@ impl LeaseTable {
         self.with_j(|i, _| i.observed_epoch = i.observed_epoch.max(epoch));
     }
 
-    /// The table's lease `id` for `wallet`: `Invalid` when unknown or of
-    /// another wallet (N-6).
+    /// A lookup handle on the table's lease `id` for `wallet`, which never
+    /// ends it: `Invalid` when unknown or of another wallet (N-6).
     pub(crate) fn lease(
         self: &Arc<Self>,
         id: &LeaseId,
@@ -419,6 +421,7 @@ impl LeaseTable {
                 wallet: e.wallet,
                 flow: e.flow,
                 table: Arc::clone(self),
+                owner: None,
             }),
             _ => Err(LeaseError::Invalid),
         })
@@ -476,9 +479,9 @@ impl LeaseTable {
                 // Its tokens died with the epoch (an unlock, a scope change).
                 entry.needs_grant(fx);
             }
-            i.leases.insert(id, entry);
             #[cfg(test)]
-            i.note(super::stress_tests::LogEvent::Begin { lease: id });
+            i.note(super::stress_tests::LogEvent::Begin { lease: id, wallet });
+            i.leases.insert(id, entry);
             fx.changed(id);
             Ok(own_key)
         })?;
@@ -490,6 +493,10 @@ impl LeaseTable {
             wallet,
             flow,
             table: Arc::clone(self),
+            owner: Some(Arc::new(LeaseOwner {
+                id,
+                table: Arc::clone(self),
+            })),
         })
     }
 
@@ -539,11 +546,19 @@ impl LeaseTable {
         let idle = self.config.idle;
         self.with_j(|i, fx| {
             let now = Instant::now();
+            #[cfg(test)]
+            let mut reaped = Vec::new();
             for (id, e) in i.leases.iter_mut() {
                 if e.idle(now, idle) {
                     end_entry(e, now, fx);
                     fx.changed(*id);
+                    #[cfg(test)]
+                    reaped.push(*id);
                 }
+            }
+            #[cfg(test)]
+            for lease in reaped {
+                i.note(super::stress_tests::LogEvent::End { lease });
             }
             i.leases.retain(|_, e| {
                 e.permits > 0
@@ -576,6 +591,8 @@ impl LeaseTable {
             if let Some(e) = i.leases.get_mut(id) {
                 end_entry(e, Instant::now(), fx);
                 fx.changed(*id);
+                #[cfg(test)]
+                i.note(super::stress_tests::LogEvent::End { lease: *id });
             }
         });
     }
@@ -684,16 +701,33 @@ fn view_of(inner: &Inner, id: &LeaseId, now: Instant) -> Option<LeaseView> {
     })
 }
 
-/// A flow's handle on its lease (§4.7). Cheap to clone: the table owns the
-/// entry. The handle does not end the lease when dropped; the flow calls
-/// [`Lease::end`] (the facade's `end_flow`), and the idle reaper ends an
-/// abandoned vault-key lease.
+/// A handle on a flow's lease (§4.1, §4.7), of one of two kinds:
+/// - the **owning** handle `begin` returns, and its clones: the lease ends
+///   when the last of them drops, exactly as [`Lease::end`] ends it;
+/// - a **lookup** handle (`LeaseTable::lease`, the facade's `lease_for`),
+///   which never ends it.
+///
+/// The idle reaper still ends an abandoned vault-key lease (a backstop).
 #[derive(Clone)]
 pub struct Lease {
     pub(crate) id: LeaseId,
     pub(crate) wallet: WalletId,
     pub(crate) flow: FlowKind,
     pub(crate) table: Arc<LeaseTable>,
+    owner: Option<Arc<LeaseOwner>>,
+}
+
+/// The ownership of a lease, shared by its owning handles: dropping the
+/// last one ends the lease.
+struct LeaseOwner {
+    id: LeaseId,
+    table: Arc<LeaseTable>,
+}
+
+impl Drop for LeaseOwner {
+    fn drop(&mut self) {
+        self.table.end(&self.id);
+    }
 }
 
 impl std::fmt::Debug for Lease {
@@ -717,6 +751,11 @@ impl Lease {
 
     pub fn wallet(&self) -> WalletId {
         self.wallet
+    }
+
+    /// Whether this handle owns the lease (see [`Lease`]).
+    pub fn is_owner(&self) -> bool {
+        self.owner.is_some()
     }
 
     pub fn flow(&self) -> FlowKind {
@@ -801,8 +840,33 @@ impl Lease {
             .with_j(|i, _| i.leases.get(&self.id).is_some_and(|e| e.spend.granted()))
     }
 
-    /// Charges `amount` to the Spend budget before signing (§4.2); the
-    /// charge is bound to the txid with `fence::bind_spend` once signed.
+    /// Charges `amount` to the Spend budget and hands out the Spend signer
+    /// in one J step (§4.2): a charge up to the cap, inclusive, signs, and
+    /// a lease without the signer is charged nothing. The charge is bound
+    /// to the txid with `fence::bind_spend` once signed.
+    pub(crate) fn charge_spend_signer(
+        &self,
+        amount: u64,
+    ) -> Result<(Charge, VaultSigner), LeaseError> {
+        let charged = self.with_entry(BudgetPurpose::Spend, |e| {
+            let signer = e
+                .signers
+                .spend
+                .clone()
+                .ok_or(LeaseError::NeedsGrant(BudgetPurpose::Spend))?;
+            let charge = e.spend.charge(amount).map_err(|x| LeaseError::Exceeded {
+                purpose: BudgetPurpose::Spend,
+                needed: x.needed,
+                remaining: x.remaining,
+            })?;
+            Ok((charge, signer))
+        })?;
+        self.table.with_j(|_, fx| fx.changed(self.id));
+        Ok(charged)
+    }
+
+    /// Charges `amount` to the Spend budget alone (tests).
+    #[cfg(test)]
     pub(crate) fn charge_spend(&self, amount: u64) -> Result<Charge, LeaseError> {
         let charge = self.with_entry(BudgetPurpose::Spend, |e| {
             e.spend.charge(amount).map_err(|x| LeaseError::Exceeded {

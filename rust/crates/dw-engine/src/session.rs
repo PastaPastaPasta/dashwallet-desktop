@@ -195,6 +195,11 @@ pub struct NetworkSession {
     pub(crate) platform: crate::platform::runtime::PlatformRuntime,
     /// Leases, the lock coordinator and the dispatch fence (E0-04).
     pub(crate) leases: Arc<crate::platform::lease::LeaseTable>,
+    /// The owning handles of the facade's leases, from `begin_flow` until
+    /// `end_flow` (E0-04 §4.1): the string id the host holds owns nothing.
+    pub(crate) flow_leases: Mutex<
+        std::collections::HashMap<crate::platform::lease::LeaseId, crate::platform::lease::Lease>,
+    >,
 }
 
 impl NetworkSession {
@@ -407,6 +412,7 @@ impl NetworkSession {
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             platform: crate::platform::runtime::PlatformRuntime::new(lock_state, !opts.no_platform),
             leases,
+            flow_leases: Mutex::default(),
         });
         match journal {
             Some((backend, rows, steps)) => session.leases.load_journal(Some(backend), rows, steps),
