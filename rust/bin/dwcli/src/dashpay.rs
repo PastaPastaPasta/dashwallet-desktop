@@ -954,7 +954,7 @@ pub fn report_panic() {
 
 /// What a panic answers: `internal`, saying the outcome is unknown (a write
 /// may or may not have gone through) and never quoting the payload.
-fn panic_error(who: &str, what: &str) -> CliError {
+pub(crate) fn panic_error(who: &str, what: &str) -> CliError {
     let mut e = CliError::detail(
         "internal",
         format!("{who} panicked; {what}'s outcome is unknown"),

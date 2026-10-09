@@ -517,10 +517,20 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::DashPay(cmd) => {
             // Unlocks itself, so a failed unlock is a JSON error too, and
-            // prints its JSON line once the engine is shut down.
-            let result = dashpay::run(&engine, &session, passphrase.as_ref(), cmd);
+            // prints its JSON line once the engine is shut down. A panic on
+            // this thread is answered too, and the engine still ends through
+            // `teardown`, never by unwinding on this thread.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dashpay::run(&engine, &session, passphrase.as_ref(), cmd)
+            }))
+            .unwrap_or_else(|_| Err(dashpay::panic_error("dwcli", "the command")));
             return match teardown::shut_down(engine, &session, dashpay::probe_fault()) {
-                Ok(done) => dashpay::report(result, done.map_err(|e| format!("shutdown: {e}"))),
+                Ok(done) => {
+                    // DEC-106: wiped before the last line, whose write may
+                    // block.
+                    drop(passphrase);
+                    dashpay::report(result, done.map_err(|e| format!("shutdown: {e}")))
+                }
                 Err(why) => abandon(passphrase, &why, Some(&result)),
             };
         }

@@ -164,7 +164,15 @@ status 1.
   the exit status nor the skipped shutdown. A healthy shutdown takes well under the deadline, and its exit status is
   the command's.
 - **Callers must drain stdout.** As any CLI, dwcli blocks on a write to a stdout that is full and that nobody reads,
-  its last lines included, and does not exit until the write goes through or fails (DEC-106).
+  its last lines included, and does not exit until the write goes through or fails (DEC-106). A DashPay command wipes
+  the passphrase dwcli read before its last line, healthy or abandoned, so a blocked write holds no copy of it. A
+  panic on dwcli's own thread is answered (`internal`) and the engine still ends through the shutdown and its deadline
+  above.
+- **Follow-ups (Opus-high review of E0-09).** (F3) A session probes the engine only after a request whose error is a
+  panic (`TASK_PANICKED`); an engine-task panic that surfaces as another error, or in a task nobody awaits, sets the
+  poison flag but is probed only at the session's end. A later round may snapshot the flag around each request and
+  probe when it flips. (F4) `--passphrase-file` naming a pipe (`/dev/stdin`, `<(…)`) is read through `std::fs::read`,
+  whose probe and growth leave unwiped copies; read it into a capped zeroizing buffer as bearer inputs are.
 - `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with
   `platform.feature_off{feature: "platform"}` before anything is opened.
 - Arguments clap refuses exit with status 2 and no JSON line. stderr names the error kind, the arguments involved where
