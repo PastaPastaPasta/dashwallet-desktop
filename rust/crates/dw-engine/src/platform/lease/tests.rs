@@ -871,6 +871,11 @@ async fn journal_faults_give_ambiguous_then_resend() {
     resend(t2.admit(asset_lock(&l2, art(2))).await);
     resend(t2.admit(asset_lock(&l2, art(3))).await);
     assert!(rec2.notices().is_empty());
+    assert_eq!(
+        rec2.resolved(),
+        vec![(art(5).to_string(), DispatchResolution::NotSent)],
+        "the reload's refusal resolves the row once"
+    );
 }
 
 #[tokio::test(start_paused = true)]

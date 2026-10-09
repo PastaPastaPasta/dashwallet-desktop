@@ -512,15 +512,18 @@ fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactI
     resolved(t, fx, &wallet, id, DispatchResolution::NotSent);
 }
 
-/// A registered `Unsent` artifact that will never be sent: `Revoked`, and
-/// its Funding charge refunded to the origin lease.
+/// A registered `Unsent` artifact that will never be sent: `Revoked`, its
+/// Funding charge refunded to the origin lease, and its provisional outcome
+/// resolved `NotSent` (§4.6, also for a reload's refusal).
 fn revoke_unsent(
+    t: &LeaseTable,
     i: &mut Inner,
     fx: &mut Effects,
     key: (WalletId, ArtifactId),
     charge: Option<Charge>,
 ) {
     i.fence.entries.insert(key, Reg::Revoked);
+    resolved(t, fx, &key.0, &key.1, DispatchResolution::NotSent);
     if let (Some(charge), Some(lease)) = (charge, i.fence.origins.get(&key))
         && let Some(e) = i.leases.get_mut(lease)
     {
@@ -850,7 +853,7 @@ impl LeaseTable {
             let key = (wallet, txid);
             match i.fence.entries.get(&key).copied() {
                 Some(Reg::Unsent { charge, .. }) => {
-                    revoke_unsent(i, fx, key, charge);
+                    revoke_unsent(self, i, fx, key, charge);
                     Abandon::Revoked { cleanup: true }
                 }
                 None => match i.fence.registering.get_mut(&key) {
@@ -1116,7 +1119,7 @@ impl LeaseTable {
                             }
                         }
                         None => {
-                            revoke_unsent(i, fx, key, charge);
+                            revoke_unsent(self, i, fx, key, charge);
                             #[cfg(test)]
                             i.note(super::stress_tests::LogEvent::Refused {
                                 artifact: id,
