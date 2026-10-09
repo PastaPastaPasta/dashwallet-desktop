@@ -1513,6 +1513,12 @@ The shapes are in §3. What they mean, where the name does not say:
     setting `dashpay.catch_up_before`, UNIX seconds): a request by its `$createdAt`, a relationship by its later
     request, a payment by its transaction's time, a name by its `acquired_at` (a name with none is discovery's:
     history). DP1-05's restore passes (pass 2, `discover_identities`) hold `catch_up(wallet)` for their duration.
+  - **trust flags fail closed:** while the trusted-quorum fallback is in use, the tap writes the `dp_trust_unverified`
+    rows of everything a changeset touches (identities, including identity and key tombstones; contact requests;
+    DPNS labels) *before* the SQLite persister sees it. If that write fails, `store` is refused with nothing applied
+    (`PersistenceErrorKind::Transient` when app.sqlite is busy, full or failing I/O, else `Fatal`), so no entity is
+    stored unflagged. Request and name-state removals carry nothing to flag. Journal rows and signals follow the
+    persister's acceptance and stay best-effort display data.
   - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
     `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
     call a later purchase of the label a win.

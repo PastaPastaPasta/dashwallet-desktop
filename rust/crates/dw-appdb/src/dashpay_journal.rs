@@ -43,15 +43,13 @@ pub struct UnverifiedEntity {
 }
 
 impl AppDb {
-    /// Writes one changeset's journal events and unverified entities in one
-    /// transaction. Both are `INSERT OR IGNORE`: an event already journaled
-    /// keeps its row (and its read state), and an entity already flagged
-    /// keeps its first `since`. Returns how many events were new.
-    pub fn record_changeset(
+    /// Writes one changeset's journal events in one transaction, `INSERT OR
+    /// IGNORE`: an event already journaled keeps its row (and its read
+    /// state). Returns how many events were new.
+    pub fn record_events(
         &self,
         wallet_id: &str,
         events: &[JournalEntry],
-        unverified: &[UnverifiedEntity],
         now: u64,
     ) -> Result<usize> {
         let mut conn = self.conn();
@@ -88,6 +86,24 @@ impl AppDb {
                     e.read_at.map(|t| t as i64),
                 ])?;
             }
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// Flags entities seen through the trusted-quorum fallback, in one
+    /// transaction, `INSERT OR IGNORE`: an entity already flagged keeps its
+    /// first `since`. All or none: the tap refuses the wallet write when
+    /// this fails.
+    pub fn flag_unverified(
+        &self,
+        wallet_id: &str,
+        unverified: &[UnverifiedEntity],
+        now: u64,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
             let mut flag = tx.prepare_cached(
                 "INSERT OR IGNORE INTO dp_trust_unverified (wallet_id, kind, key, since)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -97,7 +113,7 @@ impl AppDb {
             }
         }
         tx.commit()?;
-        Ok(added)
+        Ok(())
     }
 
     /// Every journal row of a wallet, oldest first.
@@ -203,14 +219,14 @@ mod tests {
             entry("payment_received", "bob", "t1"),
             entry("request_received", "bob", "5"),
         ];
-        assert_eq!(db.record_changeset(W, &events, &[], 10).unwrap(), 2);
-        assert_eq!(db.record_changeset(W, &events, &[], 20).unwrap(), 0);
+        assert_eq!(db.record_events(W, &events, 10).unwrap(), 2);
+        assert_eq!(db.record_events(W, &events, 20).unwrap(), 0);
         // A replay as catch-up does not mark an unread row read.
         let read = [JournalEntry {
             read_at: Some(30),
             ..entry("payment_received", "bob", "t1")
         }];
-        assert_eq!(db.record_changeset(W, &read, &[], 30).unwrap(), 0);
+        assert_eq!(db.record_events(W, &read, 30).unwrap(), 0);
         let rows = db.journal(W).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.at == 10 && r.read_at.is_none()));
@@ -225,7 +241,7 @@ mod tests {
             unless_any: EXCLUSIVE,
             ..entry(kind, contact, reference)
         };
-        db.record_changeset(W, &[established("request_accepted", "bob", "1")], &[], 1)
+        db.record_events(W, &[established("request_accepted", "bob", "1")], 1)
             .unwrap();
         // A rotated request: another ref, or the other kind, is no news.
         let rotated = [
@@ -235,7 +251,7 @@ mod tests {
             established("contact_established", "carol", "3"),
             entry("payment_received", "bob", "t1"),
         ];
-        assert_eq!(db.record_changeset(W, &rotated, &[], 2).unwrap(), 2);
+        assert_eq!(db.record_events(W, &rotated, 2).unwrap(), 2);
         let kinds: Vec<(String, String)> = db
             .journal(W)
             .unwrap()
@@ -260,12 +276,24 @@ mod tests {
             kind: "identity",
             key: "x".into(),
         }];
-        db.record_changeset(W, &[], &flags, 5).unwrap();
-        db.record_changeset(W, &[], &flags, 9).unwrap();
+        db.flag_unverified(W, &flags, 5).unwrap();
+        db.flag_unverified(W, &flags, 9).unwrap();
         assert_eq!(
             db.unverified(W).unwrap(),
             vec![("identity".to_string(), "x".to_string(), 5)]
         );
+    }
+
+    #[test]
+    fn busy_and_full_databases_are_transient() {
+        use rusqlite::ffi::{self, Error as FfiError};
+        let failure = |code| {
+            crate::AppDbError::Sqlite(rusqlite::Error::SqliteFailure(FfiError::new(code), None))
+        };
+        assert!(failure(ffi::SQLITE_BUSY).is_transient());
+        assert!(failure(ffi::SQLITE_FULL).is_transient());
+        assert!(!failure(ffi::SQLITE_CONSTRAINT).is_transient());
+        assert!(!crate::AppDbError::Corrupt("x".into()).is_transient());
     }
 
     #[test]

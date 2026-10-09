@@ -55,6 +55,22 @@ pub enum AppDbError {
     Corrupt(String),
 }
 
+impl AppDbError {
+    /// The database is busy, locked, full, short of memory or failed an
+    /// I/O call: the same write may succeed later.
+    pub fn is_transient(&self) -> bool {
+        use rusqlite::ErrorCode::*;
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    DatabaseBusy | DatabaseLocked | DiskFull | SystemIoFailure | OutOfMemory
+                )
+        )
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AppDbError>;
 
 /// Address-book page an entry belongs to (dash-qt `AddressTableModel` purpose).

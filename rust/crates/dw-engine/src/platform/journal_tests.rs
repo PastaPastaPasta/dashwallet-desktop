@@ -19,8 +19,8 @@ use key_wallet::transaction_checking::{BlockInfo, TransactionContext, Transactio
 use platform_wallet::changeset::{
     AccountRegistrationEntry, AssetLockChangeSet, ContactChangeSet, ContactRequestEntry,
     CoreChangeSet, DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry,
-    IdentityChangeSet, IdentityEntry, Merge, PlatformWalletChangeSet, PlatformWalletPersistence,
-    ReceivedContactRequestKey, SentContactRequestKey,
+    IdentityChangeSet, IdentityEntry, IdentityKeysChangeSet, Merge, PlatformWalletChangeSet,
+    PlatformWalletPersistence, ReceivedContactRequestKey, SentContactRequestKey,
 };
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact, IdentityStatus};
@@ -242,8 +242,10 @@ impl Harness {
         self.feed_to(W, cs);
     }
 
+    /// What `WalletStore::store` does around an accepting persister.
     fn feed_to(&self, wallet: WalletId, cs: PlatformWalletChangeSet) {
         if let Some(c) = classify(&cs) {
+            self.tap.flag(wallet, &c).unwrap();
             self.tap.record(wallet, c);
         }
     }
@@ -948,9 +950,87 @@ fn the_trust_fallback_flags_every_touched_entity() {
     h.feed(payment(ME, "aa11", 7, PaymentDirection::Received));
     assert_eq!(h.unverified(), expected);
 
+    // Tombstones touch their identity: an identity or one of its keys
+    // removed. Request and name-state removals carry nothing to flag (no
+    // `$createdAt`, no label): the entity is gone with its data.
+    let mut gone = IdentityChangeSet::default();
+    gone.removed.insert(id(6));
+    let mut keys = IdentityKeysChangeSet::default();
+    keys.removed.insert((id(8), 1));
+    h.feed(PlatformWalletChangeSet {
+        identities: Some(gone),
+        identity_keys: Some(keys),
+        ..Default::default()
+    });
+    expected.extend([
+        ("identity".to_string(), b58(6)),
+        ("identity".to_string(), b58(8)),
+    ]);
+    expected.sort();
+    assert_eq!(h.unverified(), expected);
+
     h.tap.set_trust_fallback(false);
     h.feed(identities(vec![identity(5, Some(1), &[])]));
     assert_eq!(h.unverified(), expected);
+}
+
+/// The trust flags fail closed (§2.2): with the fallback in use, a store
+/// whose flags cannot be written (app.sqlite held by another writer) is
+/// refused as `Transient` with nothing applied, and succeeds, flagged, once
+/// the database is free.
+#[test]
+fn a_busy_app_database_refuses_the_store_instead_of_dropping_flags() {
+    use platform_wallet::changeset::{PersistenceError, PersistenceErrorKind};
+
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(dir.path(), Arc::new(Recorder::default()));
+    let (s, wallet) = session(&engine, true);
+    let live = s.live().unwrap();
+    live.tap.set_trust_fallback(true);
+    let snapshot = || identities(vec![identity(ME, Some(0), &[("alice", Some(NEW_MS))])]);
+    let stored_identities = || -> i64 {
+        let db =
+            rusqlite::Connection::open(s.data_dir().join(crate::session::WALLET_DB_FILE)).unwrap();
+        db.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get(0))
+            .unwrap()
+    };
+    let unverified = || {
+        engine
+            .block_on(s.appdb_op(move |db| db.unverified(&wallet.to_string())))
+            .unwrap()
+    };
+
+    let holder = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let refused = live.store.store(wallet.0, snapshot());
+    assert!(
+        matches!(
+            refused,
+            Err(PersistenceError::Backend {
+                kind: PersistenceErrorKind::Transient,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(stored_identities(), 0, "the persister saw nothing");
+    assert!(unverified().is_empty());
+
+    live.store.store(wallet.0, snapshot()).unwrap();
+    assert_eq!(stored_identities(), 1);
+    let kinds: Vec<(String, String)> = unverified()
+        .into_iter()
+        .map(|(k, key, _)| (k, key))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("dpns_label".to_string(), "a11ce".to_string()),
+            ("identity".to_string(), b58(ME)),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 const ABANDON_12: &[u8] =

@@ -18,10 +18,14 @@
 //!   whenever it arrives: a request by its `$createdAt`, a payment by its
 //!   transaction's time, a name the library found with no acquisition time
 //!   (discovery's) or one acquired before then.
-//! - The tap runs on the library's store call, after the SQLite persister
-//!   accepted the changeset, so a refused changeset leaves no trace. The
-//!   journal is display data: a failure to write it is logged, never
-//!   returned to the library.
+//! - Trust flags fail closed: while the fallback is in use they are written
+//!   before the SQLite persister sees the changeset, and a failure refuses
+//!   the store (`Transient` when the database is busy, nothing applied), so
+//!   no entity is ever stored unflagged. A store the persister then refuses
+//!   leaves a flag behind: over-flagging only costs a re-verification.
+//! - The journal and the signals follow the persister's acceptance, so a
+//!   refused changeset leaves no event. The journal is display data: a
+//!   failure to write it is logged, never returned to the library.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
@@ -32,7 +36,7 @@ use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use dw_appdb::{AppDb, JournalEntry, UnverifiedEntity};
+use dw_appdb::{AppDb, AppDbError, JournalEntry, UnverifiedEntity};
 use key_wallet::account::AccountType;
 use platform_wallet::changeset::{Merge, PlatformWalletChangeSet};
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
@@ -180,6 +184,8 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     // `identities`: Identities; username registered, contest outcome.
     if let Some(ids) = cs.identities.as_ref().filter(|i| !i.is_empty()) {
         c.changes.insert(PlatformChange::Identities);
+        // A tombstone touches its identity too.
+        c.unverified.extend(ids.removed.iter().map(identity_entity));
         for (id, entry) in &ids.identities {
             c.unverified.insert(identity_entity(id));
             let labels = (entry.dpns_names.iter().map(|n| n.label.as_str()))
@@ -194,8 +200,9 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     // Keys and profiles are identity data too.
     if let Some(keys) = cs.identity_keys.as_ref().filter(|k| !k.is_empty()) {
         c.changes.insert(PlatformChange::Identities);
+        let touched = keys.upserts.keys().chain(&keys.removed);
         c.unverified
-            .extend(keys.upserts.keys().map(|(id, _)| identity_entity(id)));
+            .extend(touched.map(|(id, _)| identity_entity(id)));
     }
     if let Some(profiles) = cs.dashpay_profiles.as_ref().filter(|p| !p.is_empty()) {
         c.changes.insert(PlatformChange::Identities);
@@ -446,6 +453,17 @@ impl ChangesetTap {
         guard(&self.catch_up_before).remove(id);
     }
 
+    /// Flags what `c` touches while the fallback is in use. Runs before the
+    /// persister takes the changeset: an error refuses the store.
+    pub(crate) fn flag(&self, id: WalletId, c: &Classified) -> Result<(), AppDbError> {
+        if c.unverified.is_empty() || !self.trust_fallback.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let unverified: Vec<UnverifiedEntity> = c.unverified.iter().cloned().collect();
+        self.appdb
+            .flag_unverified(&id.to_string(), &unverified, unix_now())
+    }
+
     /// The age of a payment: its transaction's block time, else its time in
     /// the history (`None` while unconfirmed and unseen: news).
     fn payment_age(&self, id: &WalletId, c: &Classified, txid: &str) -> Age {
@@ -512,15 +530,8 @@ impl ChangesetTap {
             })
             .collect();
 
-        let unverified: Vec<UnverifiedEntity> = if self.trust_fallback.load(Ordering::SeqCst) {
-            c.unverified.into_iter().collect()
-        } else {
-            Vec::new()
-        };
-        if (!entries.is_empty() || !unverified.is_empty())
-            && let Err(e) = self
-                .appdb
-                .record_changeset(&wallet, &entries, &unverified, now)
+        if !entries.is_empty()
+            && let Err(e) = self.appdb.record_events(&wallet, &entries, now)
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
         }
