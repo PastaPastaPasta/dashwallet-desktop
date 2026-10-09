@@ -146,12 +146,15 @@ status 1.
 - A panic answers with `internal` ("the outcome is unknown": a write may or may not have gone through; check before
   retrying), and the panic hook prints only its location. A panic in an engine task counts the same: the engine's
   error for it is `internal` with the detail `engine task panicked (message withheld)` (`dw_engine::TASK_PANICKED`),
-  never the panic's message. In one-shot mode that is the command's one line, with exit status 1. In a session it
-  answers the request, then a health probe runs: the session must be open, the vault must answer without panicking,
-  the wallet list without an error, and the engine runtime must run a task, all within 10 s. The session goes on if
-  the probe passes. Otherwise it prints `session_poisoned` as its last line and exits with status 1 at once, without
-  the engine's shutdown (which may never finish). A facade error for a panicking engine task is `internal` with the
-  detail `TASK_PANICKED`, and counts the same.
+  never the panic's message. After a panic a health probe runs: the session must be open, the vault must answer
+  without panicking, the wallet list without an error, and the engine runtime must run a task, all within 10 s. In
+  one-shot mode the panic is the command's one line, with exit status 1; if the probe fails, dwcli exits without
+  stopping SPV or shutting the engine down (either may never finish). In a session the panic answers the request,
+  and the session goes on if the probe passes. Otherwise it prints `session_poisoned` as its last line and exits with
+  status 1 at once, without stopping SPV or the engine's shutdown. Both lines are written best effort: a failed write
+  or flush (a closed pipe, a full disk) changes neither the exit status nor the skipped shutdown. Before such an exit
+  dwcli wipes the passphrase it read; key material the engine holds is left to the OS. A facade error for a
+  panicking engine task is `internal` with the detail `TASK_PANICKED`, and counts the same.
 - `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with
   `platform.feature_off{feature: "platform"}` before anything is opened.
 - Arguments clap refuses exit with status 2 and no JSON line. stderr names the error kind, the arguments involved where

@@ -840,6 +840,19 @@ impl Ctx<'_> {
 /// failure before the command ran.
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
+/// Set when a one-shot command panicked and the engine then failed its
+/// health probe.
+static ABANDONED: AtomicBool = AtomicBool::new(false);
+
+/// Prints one line, best effort: a broken stdout must not turn the exit
+/// into a panic. Only the first line counts ([`REPORTED`]).
+fn print_line(line: &Value) {
+    if !REPORTED.swap(true, Ordering::SeqCst) {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+    }
+}
+
 /// Unlocks the vault if a passphrase was given, then runs `cmd`. `main`
 /// prints the result with [`report`] after the engine shut down.
 pub fn run(
@@ -856,7 +869,28 @@ pub fn run(
         wallet: None,
     };
     let mut stdin = ZeroStdin::new();
-    exec(&base, cmd, &mut stdin, &mut std::io::stdout())
+    let result = exec(&base, cmd, &mut stdin, &mut std::io::stdout());
+    if !ABANDONED.load(Ordering::SeqCst) {
+        abandon_if_unhealthy(&base, &result);
+    }
+    result
+}
+
+/// After a one-shot command: sets [`ABANDONED`] if it panicked and the
+/// engine then fails its health probe.
+fn abandon_if_unhealthy(ctx: &Ctx, result: &Result<Value, CliError>) -> bool {
+    let abandon = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
+    if abandon {
+        ABANDONED.store(true, Ordering::SeqCst);
+    }
+    abandon
+}
+
+/// Whether `main` must exit without the engine's shutdown, which may never
+/// finish: a session ended poisoned, or a one-shot command panicked and
+/// the engine then failed its health probe.
+pub fn abandon_engine(result: &Result<Value, CliError>) -> bool {
+    poisoned(result) || ABANDONED.load(Ordering::SeqCst)
 }
 
 /// Prints the command's JSON line; the error is returned for the exit
@@ -867,19 +901,33 @@ pub fn report(result: Result<Value, CliError>, teardown: Result<(), String>) -> 
     if let Err(e) = teardown {
         eprintln!("warning: {e}");
     }
-    println!("{}", envelope(&result));
-    REPORTED.store(true, Ordering::SeqCst);
+    print_line(&envelope(&result));
     result.map(drop).map_err(|e| e.message)
+}
+
+/// Debug builds under fault injection: says on stderr whether `main` wiped
+/// the passphrase it held before its forced exit (which runs no
+/// destructor).
+pub fn report_wiped(passphrase: Option<&Zeroizing<Vec<u8>>>) {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("DWCLI_FAULT_INJECT").is_some() {
+        let state = match passphrase {
+            None => "absent",
+            Some(p) if p.is_empty() => "wiped",
+            Some(_) => "held",
+        };
+        eprintln!("dwcli: forced exit, passphrase {state}");
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = passphrase;
 }
 
 /// The JSON line for a DashPay command that failed before it ran (the
 /// passphrase file, the data root, opening the network), unless one was
 /// printed.
 pub fn report_setup_failure(message: &str) {
-    if !REPORTED.load(Ordering::SeqCst) {
-        let e = CliError::detail("setup", message.to_string());
-        println!("{}", envelope(&Err(e)));
-    }
+    let e = CliError::detail("setup", message.to_string());
+    print_line(&envelope(&Err(e)));
 }
 
 /// The line for a DashPay command under `--no-platform`, printed before
@@ -894,10 +942,7 @@ pub fn refuse_no_platform() -> Result<(), String> {
 /// The JSON line after a panic in a one-shot command, unless one was
 /// printed. The panic hook prints only where it happened.
 pub fn report_panic() {
-    if !REPORTED.load(Ordering::SeqCst) {
-        let e = panic_error("dwcli", "the command");
-        println!("{}", envelope(&Err(e)));
-    }
+    print_line(&envelope(&Err(panic_error("dwcli", "the command"))));
 }
 
 /// What a panic answers: `internal`, saying the outcome is unknown (a write
@@ -954,20 +999,56 @@ pub(crate) fn clap_error_text(e: &clap::Error) -> String {
     text
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's `DWCLI_FAULT_INJECT`, for this thread only.
+    static TEST_FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
 /// Debug builds only, `DWCLI_FAULT_INJECT`: with `panic`, `dashpay status`
 /// panics (with a bearer-shaped payload the hooks must withhold); with
 /// `task-panic` an engine task it runs does. A `-poison` suffix also makes
-/// the session's health probe panic.
+/// the session's health probe panic, and `-wedge` (after `task-panic`)
+/// then blocks every engine worker, so the probe times out.
 #[cfg(debug_assertions)]
 fn injected_fault(point: &str) -> bool {
-    std::env::var("DWCLI_FAULT_INJECT").is_ok_and(|v| {
-        let fault = v.strip_suffix("-poison").unwrap_or(&v);
-        if point == "poison" {
-            v.ends_with("-poison")
-        } else {
-            fault == point
+    #[cfg(test)]
+    let fault = TEST_FAULT.get().map(String::from);
+    #[cfg(not(test))]
+    let fault = None;
+    let Some(v) = fault.or_else(|| std::env::var("DWCLI_FAULT_INJECT").ok()) else {
+        return false;
+    };
+    match point {
+        "poison" | "wedge" => v.ends_with(&format!("-{point}")),
+        _ => {
+            v.split_once("-poison")
+                .or(v.split_once("-wedge"))
+                .map_or(&*v, |(f, _)| f)
+                == point
         }
-    })
+    }
+}
+
+/// Blocks every worker of the engine runtime: parks tasks until one no
+/// longer starts. The threads that spawned them are left behind.
+#[cfg(debug_assertions)]
+fn wedge_engine(session: &Arc<NetworkSession>) {
+    loop {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let session = Arc::clone(session);
+        std::thread::spawn(move || {
+            wait(session.run_on_engine(async move {
+                let _ = tx.send(());
+                loop {
+                    std::thread::park();
+                }
+            }))
+        });
+        if rx.recv_timeout(Duration::from_secs(1)).is_err() {
+            return;
+        }
+    }
 }
 
 /// The injected `dashpay status` faults (see [`injected_fault`]).
@@ -984,16 +1065,20 @@ fn inject_status_faults(ctx: &Ctx, cmd: &DashPayCommand) -> Result<(), CliError>
         panic!("injected fault carrying dashpay://invite?pk=PANIC-SECRET");
     }
     if status && injected_fault("task-panic") {
-        ctx.block_on(ctx.session.run_on_engine::<(), _>(async {
+        let panicked = ctx.block_on(ctx.session.run_on_engine::<(), _>(async {
             panic!("injected task fault carrying dashpay://invite?pk=PANIC-SECRET")
-        }))?;
+        }));
+        if injected_fault("wedge") {
+            wedge_engine(ctx.session);
+        }
+        panicked?;
     }
     Ok(())
 }
 
 /// Whether a command's result is a session that ended poisoned: it printed
 /// its last line, and the engine may never shut down.
-pub fn poisoned(result: &Result<Value, CliError>) -> bool {
+fn poisoned(result: &Result<Value, CliError>) -> bool {
     result.as_ref().is_err_and(|e| e.code == "session_poisoned")
 }
 
@@ -1026,9 +1111,9 @@ fn exec(
     };
     let spv = common.spv;
     if spv {
-        // E0-05 makes `start_spv` return before SPV runs: wait with
-        // `pay::ensure_spv_running` then.
-        engine.block_on(session.start_spv())?;
+        // `start_spv` returns while the DashPay bring-up runs.
+        crate::pay::ensure_spv_running(engine, session, SPV_START_TIMEOUT)
+            .map_err(EngineError::Spv)?;
     }
     let result = match cmd {
         DashPayCommand::Dashpay {
@@ -1037,8 +1122,11 @@ fn exec(
         } => session_loop(&ctx, stdin, stdout),
         cmd => dispatch(&ctx, cmd, stdin),
     };
+    // Requests in a session take no `--spv`: this is a one-shot command or
+    // the session itself, and an engine that may be wedged is not stopped.
     if spv
         && !poisoned(&result)
+        && !abandon_if_unhealthy(&ctx, &result)
         && let Err(e) = engine.block_on(session.stop_spv())
     {
         // The result stands: a write that went through must not read as
@@ -1047,6 +1135,10 @@ fn exec(
     }
     result
 }
+
+/// How long `--spv` waits for SPV to run (the DashPay bring-up before it
+/// takes up to 20 s).
+const SPV_START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A request's argument list, parsed as a DashPay command.
 #[derive(Parser)]
@@ -1093,33 +1185,42 @@ fn session_loop(
         requests += 1;
         let (id, result) = session_line(ctx, content);
         let poisoned = result.as_ref().is_err_and(CliError::is_panic) && !engine_healthy(ctx);
-        // The id goes from its zeroizing buffer straight into the line.
-        let answer = envelope(&result).to_string();
-        match &id {
-            Some(id) => {
-                let open = answer.strip_suffix('}').expect("an answer is an object");
-                write!(stdout, r#"{open},"id":"#)?;
-                id.write_json(stdout)?;
-                writeln!(stdout, "}}")?;
-            }
-            None => writeln!(stdout, "{answer}")?,
-        }
-        stdout.flush()?;
+        let answered = answer(stdout, id.as_ref(), &result);
         if poisoned {
-            // Printed here: `main` exits without the engine's shutdown,
-            // which may never finish.
+            // Whatever the output does: `main` must exit without the
+            // engine's shutdown, which may never finish.
             let end = Err(CliError::new(
                 "session_poisoned",
                 "the engine failed its health probe after a panic; the session ends",
                 json!({}),
             ));
-            writeln!(stdout, "{}", envelope(&end))?;
-            stdout.flush()?;
+            let _ = (answered, answer(stdout, None, &end));
             REPORTED.store(true, Ordering::SeqCst);
             return end;
         }
+        answered?;
     }
     Ok(json!({"requests": requests}))
+}
+
+/// Writes and flushes one answer line, with the request's `id` written
+/// from its zeroizing buffer.
+fn answer(
+    stdout: &mut dyn Write,
+    id: Option<&request::Id>,
+    result: &Result<Value, CliError>,
+) -> std::io::Result<()> {
+    let answer = envelope(result).to_string();
+    match id {
+        Some(id) => {
+            let open = answer.strip_suffix('}').expect("an answer is an object");
+            write!(stdout, r#"{open},"id":"#)?;
+            id.write_json(stdout)?;
+            writeln!(stdout, "}}")?;
+        }
+        None => writeln!(stdout, "{answer}")?,
+    }
+    stdout.flush()
 }
 
 /// How long the health probe may take.
@@ -1133,13 +1234,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// engine cannot hang the session (that thread is then left behind).
 fn engine_healthy(ctx: &Ctx) -> bool {
     let session = Arc::clone(ctx.session);
+    #[cfg(debug_assertions)]
+    let poison = injected_fault("poison");
     let (tx, rx) = std::sync::mpsc::channel();
     let probe = std::thread::Builder::new()
         .name("dwcli-health-probe".into())
         .spawn(move || {
             let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(debug_assertions)]
-                if injected_fault("poison") {
+                if poison {
                     panic!("injected poison");
                 }
                 let _ = session.vault().status();
@@ -1997,6 +2100,83 @@ mod tests {
             .unwrap();
         engine.block_on(session.create_wallet(12)).unwrap();
         (engine, session)
+    }
+
+    /// Output that fails: every write once `fail_after` lines are written,
+    /// or (with `fail_flush`) the flush after that many lines.
+    struct FailWriter {
+        lines: usize,
+        fail_after: usize,
+        fail_flush: bool,
+        written: Vec<u8>,
+    }
+
+    impl Write for FailWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if !self.fail_flush && self.lines >= self.fail_after {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.lines += b.iter().filter(|c| **c == b'\n').count();
+            self.written.extend_from_slice(b);
+            Ok(b.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_flush && self.lines > self.fail_after {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            Ok(())
+        }
+    }
+
+    /// Sol r3 finding 1: a failed probe ends the session poisoned whatever
+    /// its output does. Each envelope's write and each flush fails in turn,
+    /// and the result still tells `main` to skip the engine's shutdown.
+    #[test]
+    fn a_failed_probe_survives_output_errors() {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, session) = session(dir.path());
+        let ctx = Ctx {
+            engine: &engine,
+            session: &session,
+            passphrase: None,
+            wallet: None,
+        };
+        let requests = concat!(
+            r#"{"args":["dashpay","status"],"id":1}"#,
+            "\n",
+            r#"{"args":["name","check","alice"],"id":2}"#,
+            "\n"
+        );
+        TEST_FAULT.set(Some("task-panic-poison"));
+        for fail_flush in [false, true] {
+            for fail_after in [0, 1] {
+                let mut output = FailWriter {
+                    lines: 0,
+                    fail_after,
+                    fail_flush,
+                    written: Vec::new(),
+                };
+                let result = session_loop(&ctx, &mut requests.as_bytes(), &mut output);
+                let case = format!("fail_after {fail_after}, fail_flush {fail_flush}");
+                assert!(poisoned(&result), "{case}: {result:?}");
+                assert!(abandon_engine(&result), "{case}");
+                // Both envelopes were attempted, and request 2 never ran.
+                let written = String::from_utf8(output.written).unwrap();
+                let expected = match (fail_flush, fail_after) {
+                    (false, 0) => 0,
+                    (false, _) => 1,
+                    (true, _) => 2,
+                };
+                assert_eq!(written.lines().count(), expected, "{case}: {written}");
+                if expected == 2 {
+                    assert!(written.contains(r#""id":1}"#), "{case}: {written}");
+                    assert!(written.contains("session_poisoned"), "{case}: {written}");
+                }
+                assert!(!written.contains(r#""id":2"#), "{case}: {written}");
+            }
+        }
+        TEST_FAULT.set(None);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use dw_engine::{
     HistoryQuery, HistorySort, ImportOptions, NetworkSession, SessionOptions, WalletId,
 };
 use dw_vault::{LockState, UnlockScope, VaultConfig};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
 #[command(name = "dwcli", about = "dashwallet-desktop engine CLI")]
@@ -519,9 +519,16 @@ fn run(cli: Cli) -> Result<(), String> {
             // Unlocks itself, so a failed unlock is a JSON error too, and
             // prints its JSON line once the engine is shut down.
             let result = dashpay::run(&engine, &session, passphrase.as_ref(), cmd);
-            if dashpay::poisoned(&result) {
-                // The session printed its last line. An engine that failed
-                // its health probe may never shut down: exit without it.
+            if dashpay::abandon_engine(&result) {
+                // An engine that failed its health probe may never shut
+                // down: exit without it. `exit` runs no destructor, so the
+                // passphrase is wiped first.
+                let _ = dashpay::report(result, Ok(()));
+                let mut passphrase = passphrase;
+                if let Some(p) = passphrase.as_mut() {
+                    p.zeroize();
+                }
+                dashpay::report_wiped(passphrase.as_ref());
                 std::process::exit(1);
             }
             let teardown = engine
