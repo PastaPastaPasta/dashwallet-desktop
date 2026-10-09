@@ -2,6 +2,7 @@
 //! cadence. The end-to-end behaviour is in `tests/e0_05_bringup.rs`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use dw_vault::{KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig};
@@ -722,6 +723,160 @@ fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
     );
     engine.block_on(engine.shutdown()).unwrap();
     src_engine.block_on(src_engine.shutdown()).unwrap();
+}
+
+/// One successful restore of a wallet a start refused brings it up once: the
+/// readmission when its mark clears and its commit's signal report the same
+/// event (review r4 M4-R4).
+#[test]
+fn a_successful_restore_is_brought_up_once() {
+    let dir = dw_testutil::private_tempdir();
+    let (src_engine, src) = session(&dir.path().join("src"));
+    let a = src_engine
+        .block_on(src.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let backup = dir.path().join("a.dwbackup");
+    craft_backup(&src, &backup, &[a]);
+    let hold = Arc::new(HoldWalletCreated::default());
+    hold.arm();
+    let (engine, s) = session_with(
+        engine_with(
+            &dir.path().join("dst"),
+            4,
+            Arc::clone(&hold) as Arc<dyn EventSink>,
+        ),
+        vec!["http://127.0.0.1:1".into()],
+        true,
+    );
+    let engine = Arc::new(engine);
+    let (e, cloned) = (Arc::clone(&engine), Arc::clone(&s));
+    let restoring = std::thread::spawn(move || {
+        e.block_on(cloned.restore_backup(backup, Some(Zeroizing::new(b"bk".to_vec()))))
+    });
+    // The start is refused `a` while the restore marks it.
+    hold.wait_held();
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("SPV running", Duration::from_secs(5), || {
+        s.spv_state().unwrap() == SpvState::Running
+    });
+    let first = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&first));
+    hold.let_go();
+    assert_eq!(restoring.join().unwrap().unwrap(), vec![a]);
+    wait_until("the bring-up", Duration::from_secs(5), || {
+        first.reached.load(Ordering::SeqCst)
+    });
+
+    let second = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&second));
+    // Locking ends the pass early, and signals nothing.
+    s.lock_vault().unwrap();
+    first.release.notify_one();
+    // Queued after every signal of the restore: once it is recorded, they
+    // were all handled.
+    let sentinel = WalletId([95; 32]);
+    s.platform
+        .signal(super::runtime::PlatformSignal::WalletAdded(sentinel));
+    wait_until(
+        "the restore's signals handled",
+        Duration::from_secs(10),
+        || second.reached.load(Ordering::SeqCst) || s.platform.startup_of(&sentinel).is_some(),
+    );
+    let twice = second.reached.load(Ordering::SeqCst);
+    second.release.notify_one();
+    assert!(!twice, "one restore brought its wallet up twice");
+    engine.block_on(engine.shutdown()).unwrap();
+    src_engine.block_on(src_engine.shutdown()).unwrap();
+}
+
+/// Signals for a wallet whose bring-up is running make one follow-up pass,
+/// however many arrive (review r4 M4-R4).
+#[test]
+fn signals_during_a_bring_up_make_one_follow_up() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session_with(
+        engine(dir.path(), 4),
+        vec!["http://127.0.0.1:1".into()],
+        true,
+    );
+    let a = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    let pause = |s: &NetworkSession| {
+        let pause = Arc::new(TestPause::default());
+        *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+        pause
+    };
+    let first = pause(&s);
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the start's bring-up", Duration::from_secs(5), || {
+        first.reached.load(Ordering::SeqCst)
+    });
+    for _ in 0..2 {
+        s.platform
+            .signal(super::runtime::PlatformSignal::WalletAdded(a));
+    }
+    // Locking ends each pass early, and signals nothing.
+    s.lock_vault().unwrap();
+    let second = pause(&s);
+    first.release.notify_one();
+    wait_until("the follow-up", Duration::from_secs(10), || {
+        second.reached.load(Ordering::SeqCst)
+    });
+    let third = pause(&s);
+    second.release.notify_one();
+    let sentinel = WalletId([96; 32]);
+    s.platform
+        .signal(super::runtime::PlatformSignal::WalletAdded(sentinel));
+    wait_until("the signals handled", Duration::from_secs(10), || {
+        third.reached.load(Ordering::SeqCst) || s.platform.startup_of(&sentinel).is_some()
+    });
+    let again = third.reached.load(Ordering::SeqCst);
+    third.release.notify_one();
+    assert!(!again, "two signals made two follow-up passes");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A refusal racing the last mark's release is never lost, and readmits
+/// once (review r4 probe).
+#[test]
+fn a_refusal_racing_the_last_release_readmits_once() {
+    use super::runtime::{PlatformSignal, Supervisor};
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path());
+    let (cancel, _) = tokio::sync::watch::channel(false);
+    let (signals, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    *guard(&s.platform.supervisor) = Some(Supervisor {
+        cancel,
+        signals,
+        task: None,
+        running: false,
+    });
+    for n in 0..1000u32 {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&n.to_le_bytes());
+        let id = WalletId(bytes);
+        let mark = s.platform.restoring(vec![id]);
+        let barrier = std::sync::Barrier::new(2);
+        let answer = std::thread::scope(|scope| {
+            let t = scope.spawn(|| {
+                barrier.wait();
+                s.platform.admit(&id, || true)
+            });
+            barrier.wait();
+            drop(mark);
+            t.join().unwrap()
+        });
+        match answer {
+            None => assert!(
+                matches!(rx.try_recv(), Ok((_, PlatformSignal::Readmit(found))) if found == id)
+            ),
+            Some(true) => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "a readmission too many");
+    }
+    guard(&s.platform.supervisor).take();
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 /// Routes `WalletCreated` of `a` and `b` to their own holds (review r3).

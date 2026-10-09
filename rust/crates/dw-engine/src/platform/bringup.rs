@@ -18,7 +18,7 @@
 //! running bring-up: the scan key it may have resolved is beyond the vault's
 //! lock (`signers.rs`). Removing or closing a wallet ends its bring-up.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -32,7 +32,7 @@ use platform_wallet::manager::startup::{
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
-use super::runtime::{PlatformSignal, Supervisor, guard, prompt_free};
+use super::runtime::{PlatformSignal, Stamped, Supervisor, guard, prompt_free};
 use super::startup::StartupStatus;
 use super::startup_status::{DashPayStartup, SpvState};
 use super::{VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
@@ -109,8 +109,8 @@ impl NetworkSession {
             this.platform.deactivate(false).await;
             let since = Instant::now();
             // The slot first, so a wallet registered from here on is
-            // signalled; one registered before is in the list below, and the
-            // supervisor skips its duplicate signal.
+            // signalled; one registered before is in the list below, admitted
+            // after its signal's stamp, and the supervisor skips the signal.
             let (cancel, cancel_rx) = watch::channel(false);
             let (signals, signals_rx) = mpsc::unbounded_channel();
             *guard(&this.platform.supervisor) = Some(Supervisor {
@@ -119,6 +119,7 @@ impl NetworkSession {
                 task: None,
                 running: false,
             });
+            let listed = this.platform.stamp();
             let wallets: Vec<WalletId> = if this.platform.enabled {
                 let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                 ids.filter(|id| {
@@ -133,9 +134,13 @@ impl NetworkSession {
             for id in &wallets {
                 this.platform.set_status(*id, StartupStatus::Starting);
             }
-            let task = tokio::spawn(
-                Arc::clone(&this).supervise(manager, wallets, since, cancel_rx, signals_rx),
-            );
+            let task = tokio::spawn(Arc::clone(&this).supervise(
+                manager,
+                wallets,
+                (since, listed),
+                cancel_rx,
+                signals_rx,
+            ));
             let orphan = match guard(&this.platform.supervisor).as_mut() {
                 Some(s) => {
                     s.task = Some(task);
@@ -199,11 +204,14 @@ impl NetworkSession {
         self: Arc<Self>,
         manager: Arc<Manager>,
         wallets: Vec<WalletId>,
-        since: Instant,
+        (since, listed): (Instant, u64),
         mut cancel: watch::Receiver<bool>,
-        mut signals: mpsc::UnboundedReceiver<PlatformSignal>,
+        mut signals: mpsc::UnboundedReceiver<Stamped>,
     ) {
-        let mut initial: HashSet<WalletId> = wallets.iter().copied().collect();
+        // When each wallet's latest bring-up was admitted. A signal of an
+        // event before that is skipped: the pass saw it. Signals arriving
+        // while a pass runs make one follow-up pass (review r4 M4-R4).
+        let mut admitted: HashMap<WalletId, u64> = wallets.iter().map(|id| (*id, listed)).collect();
         if !self
             .for_wallets(&manager, wallets, Job::BringUp, since, &mut cancel)
             .await
@@ -250,6 +258,7 @@ impl NetworkSession {
                     None => return,
                 },
             };
+            let (at, signal) = signal;
             let Some(this) = session.upgrade() else {
                 return;
             };
@@ -258,20 +267,19 @@ impl NetworkSession {
                     let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                     (ids.collect(), Job::Unlock)
                 }
-                // Registered before the start listed the wallets, signalled
-                // after: its bring-up already ran.
-                PlatformSignal::WalletAdded(id)
-                    if initial.remove(&id)
-                        && this.platform.startup_of(&id).is_some_and(|s| !s.read_only) =>
+                PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id)
+                    if admitted.get(&id).is_some_and(|&pass| at < pass) =>
                 {
                     continue;
                 }
-                PlatformSignal::WalletAdded(id) => (vec![id], Job::BringUp),
                 // Not after a rollback removed it.
                 PlatformSignal::Readmit(id) if manager.get_wallet(&id.0).await.is_none() => {
                     continue;
                 }
-                PlatformSignal::Readmit(id) => (vec![id], Job::BringUp),
+                PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
+                    admitted.insert(id, this.platform.stamp());
+                    (vec![id], Job::BringUp)
+                }
             };
             let done = this
                 .for_wallets(&manager, wallets, job, Instant::now(), &mut cancel)

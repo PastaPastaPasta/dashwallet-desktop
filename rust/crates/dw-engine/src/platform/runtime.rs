@@ -42,9 +42,13 @@ pub(crate) enum PlatformSignal {
     Readmit(WalletId),
 }
 
+/// A signal and when its event happened, on [`PlatformRuntime::stamp`]'s
+/// clock.
+pub(super) type Stamped = (u64, PlatformSignal);
+
 pub(super) struct Supervisor {
     pub(super) cancel: watch::Sender<bool>,
-    pub(super) signals: mpsc::UnboundedSender<PlatformSignal>,
+    pub(super) signals: mpsc::UnboundedSender<Stamped>,
     /// Set right after the slot is installed (`start_spv`).
     pub(super) task: Option<JoinHandle<()>>,
     /// SPV has started: the supervisor is past its step 2.
@@ -81,6 +85,9 @@ pub(crate) struct PlatformRuntime {
     /// Wallets a restore has begun storing and has not committed or rolled
     /// back (review r2 M4).
     restoring: Mutex<HashMap<WalletId, RestoreMark>>,
+    /// The clock that orders signals' events against bring-up admissions
+    /// (review r4 M4-R4).
+    events: AtomicU64,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -247,6 +254,7 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
+            events: AtomicU64::new(0),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -268,15 +276,27 @@ impl PlatformRuntime {
         self.enabled && guard(&self.supervisor).as_ref().is_some_and(|s| s.running)
     }
 
-    /// Hands `signal` to the supervisor; dropped while SPV is stopped (the
-    /// next start brings every wallet up anyway).
+    /// Hands `signal` to the supervisor, its event stamped now; dropped
+    /// while SPV is stopped (the next start brings every wallet up anyway).
     pub(crate) fn signal(&self, signal: PlatformSignal) {
+        self.signal_at(self.stamp(), signal);
+    }
+
+    /// [`Self::signal`] for an event stamped earlier.
+    pub(crate) fn signal_at(&self, at: u64, signal: PlatformSignal) {
         if !self.enabled {
             return;
         }
         if let Some(s) = &*guard(&self.supervisor) {
-            let _ = s.signals.send(signal);
+            let _ = s.signals.send((at, signal));
         }
+    }
+
+    /// The time on the clock that orders events against admissions. Stamp
+    /// an event after its change is made, and an admission before its pass
+    /// reads anything: a pass admitted after an event's stamp sees it.
+    pub(crate) fn stamp(&self) -> u64 {
+        self.events.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Called by the session whenever it reports a lock-state change.

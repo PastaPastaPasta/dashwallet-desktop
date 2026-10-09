@@ -97,6 +97,9 @@ DASHPAY §3.2 left these open; E0-05 implements them as below (rulings by pasta,
    only once it has committed; until then its wallets are marked, and every admission (the start's listing, each
    bring-up, the unlock work) refuses a marked wallet under the same lock it reads the seed with. A refused wallet is
    readmitted when the last restore marking it ends (overlapping restores), unless that restore's rollback removed it.
+   Signals are stamped with when their event happened; the supervisor skips a bring-up signal older than the wallet's
+   last admitted pass, so one event brings a wallet up once (a restore's commit and its readmission are one event),
+   and signals arriving while a pass runs make one follow-up pass.
 8. **Contest cadence.** The engine has no contest list yet; the host or DP1-04 sets `PlatformCadence.contest_ending_soon`.
 9. **Passphrase change.** A passphrase change is not treated as a lock by the bring-up; E0-04 §8.6 owns it.
 

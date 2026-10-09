@@ -588,12 +588,16 @@ impl NetworkSession {
                 return Err(e);
             }
         }
+        // The commit, stamped before the marks clear: a readmission their
+        // clearing sends covers it (review r4 M4-R4).
+        let committed = self.platform.stamp();
         drop(restoring);
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
         // rolled back, and no bring-up holding its keys.
         for &(id, _) in &done {
-            self.platform.signal(PlatformSignal::WalletAdded(id));
+            self.platform
+                .signal_at(committed, PlatformSignal::WalletAdded(id));
             self.schedule_automatic_backup(id);
         }
         Ok(done.into_iter().map(|(id, _)| id).collect())
