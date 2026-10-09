@@ -575,7 +575,15 @@ fn reveal_wipe_and_credential_change_need_the_passphrase_when_encrypted() {
         v.authorize(purpose, wallet, Credential::Passphrase(PASS))
             .unwrap();
     }
-    for purpose in [spend(), GrantPurpose::SignMessage, GrantPurpose::PlatformOp] {
+    for purpose in [
+        spend(),
+        GrantPurpose::SignMessage,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 1,
+        },
+        GrantPurpose::IdentityScan,
+    ] {
         v.authorize(purpose, w, Credential::None).unwrap();
     }
 

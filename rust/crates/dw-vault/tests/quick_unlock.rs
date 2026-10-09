@@ -131,7 +131,9 @@ fn test_IOS_011_quick_unlock_never_reveals_wipes_or_changes_credentials() {
         (GrantPurpose::RevealSecret, Some(wallet(1))),
         (GrantPurpose::Wipe, Some(wallet(1))),
         (GrantPurpose::ChangeCredential, None),
-        (GrantPurpose::PlatformOp, Some(wallet(1))),
+        // The identity scan releases the master key: never by quick unlock
+        // (E0-04 design §3.7).
+        (GrantPurpose::IdentityScan, Some(wallet(1))),
     ] {
         assert_eq!(
             v.authorize(purpose, w.as_ref(), Credential::QuickUnlock(&key)),

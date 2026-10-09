@@ -330,7 +330,13 @@ impl From<GrantPurpose> for dw_vault::GrantPurpose {
             GrantPurpose::SignMessage => Self::SignMessage,
             GrantPurpose::ChangeCredential => Self::ChangeCredential,
             GrantPurpose::Wipe => Self::Wipe,
-            GrantPurpose::PlatformOp => Self::PlatformOp,
+            // The frozen bindings have no caps yet (E0-04 design §3.1; E0-13
+            // binds `PlatformOp{max_duffs, max_credits}` and `IdentityScan`):
+            // a grant from here authorizes no funding and no credits.
+            GrantPurpose::PlatformOp => Self::PlatformOp {
+                max_duffs: 0,
+                max_credits: 0,
+            },
         }
     }
 }
@@ -344,7 +350,11 @@ impl From<dw_vault::GrantPurpose> for GrantPurpose {
             P::SignMessage => Self::SignMessage,
             P::ChangeCredential => Self::ChangeCredential,
             P::Wipe => Self::Wipe,
-            P::PlatformOp => Self::PlatformOp,
+            // Until E0-13 binds the caps and the scan grant, both show as
+            // the frozen enum's Platform authorization. A host can request
+            // only `PlatformOp{0, 0}` (above) and never the engine-only scan
+            // grant, so every purpose it requests round-trips exactly.
+            P::PlatformOp { .. } | P::IdentityScan => Self::PlatformOp,
         }
     }
 }

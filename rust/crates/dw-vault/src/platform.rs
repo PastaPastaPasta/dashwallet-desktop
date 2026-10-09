@@ -265,8 +265,8 @@ impl VaultSigner {
 /// stops working once the vault locks, changes unlock scope or changes its
 /// passphrase. A key already
 /// returned is the caller's: the vault cannot revoke it, and it erases itself
-/// only when dropped. Issued by [`Vault::scan_key`] under a `PlatformOp`
-/// grant.
+/// only when dropped. Issued by [`Vault::scan_key`] under an
+/// `IdentityScan` grant.
 #[derive(Clone)]
 pub struct ScanKey {
     signer: VaultSigner,
@@ -299,20 +299,22 @@ impl ScanKey {
 }
 
 impl Vault {
-    /// The [`ScanKey`] of `wallet`, authorized by a redeemed `PlatformOp`
+    /// The [`ScanKey`] of `wallet`, authorized by a redeemed `IdentityScan`
     /// grant for that wallet (review DW-E0-03 M1: the master key never
-    /// leaves without one). The unattended bring-up (DASHPAY §3.2)
-    /// authorizes that grant itself with `Credential::None`, which works
-    /// only while the full key needs no prompt (`Unencrypted`, or `Unlocked`
-    /// with scope Full); a locked vault needs the passphrase. Lifetime and
-    /// own-key rules are those of [`Vault::platform_signer`]. Engine-only:
-    /// dw-ffi's clippy configuration forbids calling it.
+    /// leaves without one). Any other grant, a capped `PlatformOp` flow
+    /// grant included, is `GrantPurposeMismatch` (E0-04 design §3.2). The
+    /// unattended bring-up (DASHPAY §3.2) authorizes that grant itself with
+    /// `Credential::None`, which works only while the full key needs no
+    /// prompt (`Unencrypted`, or `Unlocked` with scope Full); a locked vault
+    /// needs the passphrase. Lifetime and own-key rules are those of
+    /// [`Vault::platform_signer`]. Engine-only: dw-ffi's clippy
+    /// configuration forbids calling it.
     pub fn scan_key(
         &self,
         wallet: &WalletId,
         token: &GrantToken,
     ) -> Result<ScanKey, crate::VaultError> {
-        if token.purpose().kind() != GrantKind::PlatformOp {
+        if token.purpose().kind() != GrantKind::IdentityScan {
             return Err(crate::VaultError::GrantPurposeMismatch);
         }
         self.token_signer(wallet, token, SignerScope::Full)

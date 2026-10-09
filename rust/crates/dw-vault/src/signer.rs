@@ -19,8 +19,6 @@
 //! change holds, so none is released once `lock()` has returned (vault
 //! module doc, "Release").
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use dashcore::secp256k1::{All, Message, PublicKey, Secp256k1, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
@@ -28,9 +26,8 @@ use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
 
 use crate::SignerError;
-use crate::crypto::Key32;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
-use crate::types::WalletId;
+use crate::types::{KeySource, WalletId};
 use crate::vault::Vault;
 
 /// Which derivations a signer may use, and for what.
@@ -65,10 +62,10 @@ pub enum SignerScope {
     /// of the credit keys `m/9'/coin'/5'/{1',2',3'}/…`, plus the extended
     /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
     /// (platform-wallet adds that account through the signer). The cap is
-    /// advisory: the vault signs sighashes and cannot check it, so the
-    /// engine must refuse a transaction whose wallet debit exceeds
-    /// `max_duffs` before it asks this signer, as for a `Spend` grant. No
-    /// engine flow does so yet; roadmap E0-04 binds the cap to the grant.
+    /// bounded by the token ([`crate::Vault::platform_signer`] refuses a
+    /// `max_duffs` above the grant's), but the vault signs sighashes and
+    /// cannot see the debit, so the engine checks it before the transaction
+    /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
 }
 
@@ -170,10 +167,8 @@ pub struct VaultSigner {
     wallet_id: WalletId,
     scope: SignerScope,
     epoch: u64,
-    /// The data key of the grant that issued this signer, when a passphrase
-    /// authorized it on a locked or mixing-only vault; otherwise the vault's
-    /// key is used. Zeroized when the last clone drops.
-    own_key: Option<Arc<Key32>>,
+    /// The data key it signs with ([`KeySource`]).
+    key: KeySource,
 }
 
 impl std::fmt::Debug for VaultSigner {
@@ -191,14 +186,14 @@ impl VaultSigner {
         wallet_id: WalletId,
         scope: SignerScope,
         epoch: u64,
-        own_key: Option<Arc<Key32>>,
+        key: KeySource,
     ) -> Self {
         Self {
             vault,
             wallet_id,
             scope,
             epoch,
-            own_key,
+            key,
         }
     }
 
@@ -236,12 +231,9 @@ impl VaultSigner {
             self.check(*key_use, path)?;
         }
         self.vault.gated(SignerError::Locked, |gate| {
-            let seed = self.vault.signing_seed(
-                gate,
-                &self.wallet_id,
-                self.epoch,
-                self.own_key.as_deref(),
-            )?;
+            let seed = self
+                .vault
+                .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
             let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
                 .map_err(|e| SignerError::Derivation(e.to_string()))?;
             #[cfg(test)]

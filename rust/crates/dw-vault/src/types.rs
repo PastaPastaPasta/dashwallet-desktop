@@ -1,11 +1,12 @@
 //! Public value types of the vault.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
 
-use crate::crypto::KdfPolicy;
+use crate::VaultError;
+use crate::crypto::{KdfPolicy, Key32};
 use crate::os_store::{KeyringOsStore, OsSecretStore};
 
 /// 32-byte network-scoped wallet id (key-wallet's `compute_wallet_id`).
@@ -60,8 +61,9 @@ pub enum Credential<'a> {
     /// mixing-only vault the unwrapped key serves the issued grant only.
     Passphrase(&'a [u8]),
     /// The 32-byte wrap key the OS biometric store released (slot B). Issues
-    /// `Spend` grants up to the quick-unlock spending limit and `SignMessage`
-    /// grants, only while the passphrase was entered within
+    /// `Spend`, `PlatformOp` and `SignMessage` grants whose combined value
+    /// ([`GrantPurpose::quick_unlock_value`]) is within the quick-unlock
+    /// spending limit, only while the passphrase was entered within
     /// [`PASSPHRASE_MAX_AGE_SECS`]. Like `Passphrase`, it does not change the
     /// lock state.
     QuickUnlock(&'a [u8]),
@@ -94,7 +96,17 @@ pub enum GrantPurpose {
     SignMessage,
     ChangeCredential,
     Wipe,
-    PlatformOp,
+    /// Platform writes (E0-04 design §3.1): `max_duffs` caps the Core
+    /// funding (asset locks for registration and top-up), `max_credits` the
+    /// credits state transitions spend. A cap of 0 means that part is not
+    /// granted. Yields scoped signers ([`crate::Vault::platform_signer`]).
+    PlatformOp {
+        max_duffs: u64,
+        max_credits: u64,
+    },
+    /// The identity scan (E0-04 design §3.2): the only grant that releases
+    /// the wallet's master key ([`crate::Vault::scan_key`]). Uncapped.
+    IdentityScan,
 }
 
 /// [`GrantPurpose`] without its payload; what a call expects.
@@ -106,7 +118,11 @@ pub enum GrantKind {
     ChangeCredential,
     Wipe,
     PlatformOp,
+    IdentityScan,
 }
+
+/// Platform's fixed rate: credits per duff.
+pub const CREDITS_PER_DUFF: u64 = 1000;
 
 impl GrantPurpose {
     pub fn kind(&self) -> GrantKind {
@@ -116,7 +132,8 @@ impl GrantPurpose {
             GrantPurpose::SignMessage => GrantKind::SignMessage,
             GrantPurpose::ChangeCredential => GrantKind::ChangeCredential,
             GrantPurpose::Wipe => GrantKind::Wipe,
-            GrantPurpose::PlatformOp => GrantKind::PlatformOp,
+            GrantPurpose::PlatformOp { .. } => GrantKind::PlatformOp,
+            GrantPurpose::IdentityScan => GrantKind::IdentityScan,
         }
     }
 
@@ -137,10 +154,27 @@ impl GrantPurpose {
     }
 
     /// Whether a redeemed grant of this purpose may obtain a full signer.
-    /// `PlatformOp` gets scoped signers (`Vault::platform_signer`) and the
-    /// identity-scan key (`Vault::scan_key`) instead.
+    /// `PlatformOp` gets scoped signers (`Vault::platform_signer`) and
+    /// `IdentityScan` the identity-scan key (`Vault::scan_key`) instead.
     pub(crate) fn signs(&self) -> bool {
         matches!(self, GrantPurpose::Spend { .. } | GrantPurpose::SignMessage)
+    }
+
+    /// What this grant counts against the quick-unlock spending limit, in
+    /// duffs (E0-04 design §3.7): `max_duffs` for `Spend`;
+    /// `max_duffs + ceil(max_credits / CREDITS_PER_DUFF)` for `PlatformOp`;
+    /// 0 for `SignMessage`; `None` for a purpose quick unlock never issues.
+    /// Saturates at `u64::MAX`, which is above every spending limit.
+    pub fn quick_unlock_value(&self) -> Option<u64> {
+        match *self {
+            GrantPurpose::Spend { max_duffs } => Some(max_duffs),
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits,
+            } => Some(max_duffs.saturating_add(max_credits.div_ceil(CREDITS_PER_DUFF))),
+            GrantPurpose::SignMessage => Some(0),
+            _ => None,
+        }
     }
 }
 
@@ -170,9 +204,66 @@ pub struct GrantToken {
     pub(crate) vault_instance: [u8; 32],
     /// That vault's epoch at redemption.
     pub(crate) epoch: u64,
-    /// The grant's own data key (passphrase grant on a locked or mixing-only
-    /// vault); zeroized on drop.
-    pub(crate) key: Option<crate::crypto::Key32>,
+    /// Which data key the token acts with.
+    pub(crate) key: KeySource,
+}
+
+/// The data key a grant token or a signer acts with.
+#[derive(Clone)]
+pub(crate) enum KeySource {
+    /// The vault's own key, while it is in memory with full scope.
+    Vault,
+    /// The grant's own copy (a passphrase or quick-unlock grant on a locked
+    /// or mixing-only vault); zeroized when the last holder drops.
+    Own(Arc<Key32>),
+    /// A grant's own key moved into a [`KeyHold`]; usable only while the
+    /// hold lives (E0-04 design §3.5).
+    Held(Weak<Key32>),
+}
+
+impl KeySource {
+    /// The own key for one use: `Ok(None)` for the vault's key, `Locked`
+    /// once a held key's [`KeyHold`] has dropped. Callers upgrade inside the
+    /// vault's gate and drop the result when the operation ends, so a hold
+    /// dropped meanwhile erases the key as soon as that operation is done.
+    pub(crate) fn own(&self) -> Result<Option<Arc<Key32>>, VaultError> {
+        match self {
+            KeySource::Vault => Ok(None),
+            KeySource::Own(key) => Ok(Some(key.clone())),
+            KeySource::Held(key) => key.upgrade().map(Some).ok_or(VaultError::Locked),
+        }
+    }
+
+    fn describe(&self) -> &'static str {
+        match self {
+            KeySource::Vault => "vault",
+            KeySource::Own(_) => "own",
+            KeySource::Held(_) => "held",
+        }
+    }
+}
+
+/// The one strong reference to a grant set's own data key (E0-04 design
+/// §3.5), made by [`crate::Vault::hold_key`]. Signers issued from the held
+/// tokens ([`crate::Vault::platform_signer_held`],
+/// [`crate::Vault::signer_held`]) reference it weakly: when the hold drops,
+/// the key is erased, an operation already under way finishes with the
+/// copy it took, and every later call fails `Locked`. Not cloneable.
+pub struct KeyHold {
+    pub(crate) key: Arc<Key32>,
+}
+
+impl std::fmt::Debug for KeyHold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeyHold(<redacted>)")
+    }
+}
+
+impl KeyHold {
+    /// Whether `token`'s own key was moved into this hold.
+    pub fn holds(&self, token: &GrantToken) -> bool {
+        matches!(&token.key, KeySource::Held(k) if std::ptr::eq(k.as_ptr(), Arc::as_ptr(&self.key)))
+    }
 }
 
 impl std::fmt::Debug for GrantToken {
@@ -180,7 +271,7 @@ impl std::fmt::Debug for GrantToken {
         f.debug_struct("GrantToken")
             .field("purpose", &self.purpose)
             .field("wallet", &self.wallet.map(hex::encode))
-            .field("own_key", &self.key.is_some())
+            .field("key", &self.key.describe())
             .finish_non_exhaustive()
     }
 }
@@ -195,12 +286,29 @@ impl GrantToken {
         self.wallet
     }
 
-    /// The spend cap of a `Spend` grant.
+    /// The duff cap of a `Spend` or `PlatformOp` grant.
     pub fn max_duffs(&self) -> Option<u64> {
         match self.purpose {
-            GrantPurpose::Spend { max_duffs } => Some(max_duffs),
+            GrantPurpose::Spend { max_duffs } | GrantPurpose::PlatformOp { max_duffs, .. } => {
+                Some(max_duffs)
+            }
             _ => None,
         }
+    }
+
+    /// The credit cap of a `PlatformOp` grant.
+    pub fn max_credits(&self) -> Option<u64> {
+        match self.purpose {
+            GrantPurpose::PlatformOp { max_credits, .. } => Some(max_credits),
+            _ => None,
+        }
+    }
+
+    /// Whether the token carries a grant's own data key, directly or in a
+    /// [`KeyHold`]: it was authorized on a vault that held no full-scope
+    /// key.
+    pub fn has_own_key(&self) -> bool {
+        !matches!(self.key, KeySource::Vault)
     }
 }
 
@@ -321,7 +429,8 @@ pub const PASSPHRASE_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 pub struct QuickUnlockPolicy {
     /// Slot B exists.
     pub enrolled: bool,
-    /// Largest `Spend` grant quick unlock may issue.
+    /// Largest combined value of a quick-unlock grant set
+    /// ([`GrantPurpose::quick_unlock_value`]).
     pub spend_limit_duffs: u64,
     pub passphrase_max_age_secs: u64,
     /// Last successful passphrase check (UNIX seconds), if known.

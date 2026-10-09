@@ -46,6 +46,10 @@ use crate::{
 const W: [u8; 32] = [1; 32];
 const PASS: &[u8] = b"pw";
 const IDENTITY_KEY: &str = "m/9'/1'/5'/0'/0'/0'/0'";
+const PLATFORM_OP: GrantPurpose = GrantPurpose::PlatformOp {
+    max_duffs: 1,
+    max_credits: 1,
+};
 
 fn path(s: &str) -> DerivationPath {
     DerivationPath::from_str(s).unwrap()
@@ -91,7 +95,7 @@ fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantT
 }
 
 fn platform_signer(v: &Vault, scope: SignerScope, credential: Credential<'_>) -> VaultSigner {
-    let token = token(v, GrantPurpose::PlatformOp, credential);
+    let token = token(v, PLATFORM_OP, credential);
     v.platform_signer(&W, &token, scope).unwrap()
 }
 
@@ -297,7 +301,7 @@ impl Mode {
             spend,
             mixing,
             scan: v
-                .scan_key(&W, &token(v, GrantPurpose::PlatformOp, credential))
+                .scan_key(&W, &token(v, GrantPurpose::IdentityScan, credential))
                 .unwrap(),
         }
     }
@@ -1095,4 +1099,163 @@ fn a_lock_between_the_key_load_and_the_gate_reloads_the_key() {
         go_tx.send(()).unwrap();
         assert_eq!(worker.join().unwrap(), Ok(()), "{name}");
     }
+}
+
+/// A redeemed `PlatformOp` token of a passphrase grant on the locked vault
+/// `v`, its key moved into a hold, and an identity signer on that hold
+/// (E0-04 design §3.5).
+fn held_identity(v: &Vault) -> (crate::KeyHold, VaultSigner) {
+    let mut tokens = vec![token(v, PLATFORM_OP, Credential::Passphrase(PASS))];
+    let hold = v.hold_key(&mut tokens).unwrap();
+    let signer = v
+        .platform_signer_held(&W, &hold, &tokens[0], SignerScope::PlatformIdentity)
+        .unwrap();
+    (hold, signer)
+}
+
+/// Dropping a `KeyHold` erases the key while signer clones are still held
+/// (no strong reference is left), and an operation already under way
+/// finishes with the copy it took inside the gate.
+#[test]
+fn dropping_a_key_hold_erases_the_key_and_lets_a_running_operation_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    v.lock();
+    let (hold, identity) = held_identity(&v);
+    let key_data = identity_public_key(&identity);
+    let weak = Arc::downgrade(&hold.key);
+    let clones: Vec<_> = (0..4).map(|_| identity.clone()).collect();
+
+    // Pause a signature inside the gate, drop the hold, then let it finish.
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let running = clones[0].clone();
+    let worker = thread::spawn(move || {
+        test_hook::set(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        running
+            .sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
+            .map(drop)
+    });
+    entered_rx.recv().unwrap();
+    drop(hold);
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "the key outlived its hold: a signer kept a strong reference"
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        worker.join().unwrap(),
+        Ok(()),
+        "the running operation finishes"
+    );
+
+    for s in clones.iter().chain([&identity]) {
+        assert_eq!(
+            s.sign_identity(&path(IDENTITY_KEY), &key_data, b"transition")
+                .map(drop),
+            Err(SignerError::Locked)
+        );
+    }
+}
+
+/// 16 threads sign with clones of one held signer while the coordinator
+/// drops the hold, round after round (300 drops). No call that began after
+/// the drop returned succeeds, and every worker ends its round `Locked`.
+#[test]
+fn no_signature_begins_after_its_key_hold_dropped() {
+    const ROUNDS: usize = 300;
+    const WORKERS: usize = 16;
+
+    struct HeldRound {
+        hold: Mutex<Option<crate::KeyHold>>,
+        identity: VaultSigner,
+        key_data: [u8; 33],
+        dropped: AtomicBool,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    v.lock();
+    let current: Arc<Mutex<Option<Arc<HeldRound>>>> = Arc::default();
+    let results = Arc::new(AtomicUsize::new(0));
+    let across_drop = Arc::new(AtomicUsize::new(0));
+    let refused = Arc::new(AtomicUsize::new(0));
+
+    stress_rounds(
+        JOIN_GRACE,
+        WORKERS,
+        ROUNDS,
+        |_| {
+            let (current, results, across_drop, refused) = (
+                current.clone(),
+                results.clone(),
+                across_drop.clone(),
+                refused.clone(),
+            );
+            move || {
+                let round = current.lock().unwrap().clone().unwrap();
+                // Each worker signs with its own clone of the held signer.
+                let signer = round.identity.clone();
+                loop {
+                    let dropped_before = round.dropped.load(SeqCst);
+                    match signer.sign_identity(&path(IDENTITY_KEY), &round.key_data, b"transition")
+                    {
+                        Ok(_) => {
+                            assert!(
+                                !dropped_before,
+                                "a signature began after its hold had dropped"
+                            );
+                            results.fetch_add(1, SeqCst);
+                            if round.dropped.load(SeqCst) {
+                                across_drop.fetch_add(1, SeqCst);
+                            }
+                        }
+                        Err(SignerError::Locked) => {
+                            refused.fetch_add(1, SeqCst);
+                            break;
+                        }
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+            }
+        },
+        |_| {
+            let (hold, identity) = held_identity(&v);
+            *current.lock().unwrap() = Some(Arc::new(HeldRound {
+                hold: Mutex::new(Some(hold)),
+                key_data: identity_public_key(&identity),
+                identity,
+                dropped: AtomicBool::new(false),
+            }));
+        },
+        |index| {
+            thread::sleep(Duration::from_micros(50 + (index as u64 * 37) % 400));
+            let round = current.lock().unwrap().clone().unwrap();
+            drop(round.hold.lock().unwrap().take());
+            round.dropped.store(true, SeqCst);
+        },
+    );
+
+    let (results, across_drop, refused) = (
+        results.load(SeqCst),
+        across_drop.load(SeqCst),
+        refused.load(SeqCst),
+    );
+    eprintln!(
+        "{WORKERS} workers, {ROUNDS} hold drops: {results} signatures \
+         ({across_drop} finished after their hold dropped), {refused} refused Locked"
+    );
+    assert_eq!(
+        refused,
+        ROUNDS * WORKERS,
+        "every worker ends its round Locked"
+    );
+    assert!(
+        results > 0,
+        "no signature was made: the race was not exercised"
+    );
 }

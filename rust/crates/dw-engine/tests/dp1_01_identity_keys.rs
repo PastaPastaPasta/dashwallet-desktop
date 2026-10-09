@@ -77,7 +77,14 @@ fn signer(
     assert_eq!(hex::encode(*secret.seed), seed, "BIP39 seed");
     v.store_wallet_secret(&WALLET, &secret).unwrap();
     let grant = v
-        .authorize(GrantPurpose::PlatformOp, Some(&WALLET), Credential::None)
+        .authorize(
+            GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: 1,
+            },
+            Some(&WALLET),
+            Credential::None,
+        )
         .unwrap();
     let token = v
         .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&WALLET))
