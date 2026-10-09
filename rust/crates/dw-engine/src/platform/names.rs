@@ -10,7 +10,9 @@
 //! - availability and the contest precheck: iOS `checkIfBlocked` and
 //!   `contestPrecheck`. A free domain is not enough for a contested label: a
 //!   past vote may have locked it, or a running vote holds it.
-//! - extra names, paid from the identity's credits ([`DashPay::register_name`]);
+//! - extra names, paid from the identity's credits ([`DashPay::register_name`]),
+//!   with the fees and any contest fund budgeted against the grant and the
+//!   balance before anything is spent ([`name_cost`]);
 //! - the temporary-name policy ([`check_temporary_name`]): a non-contested
 //!   name registered next to a contested request, used as the main name until
 //!   the contest resolves (F5);
@@ -22,15 +24,14 @@
 //! are `rs-sdk-ffi/src/dpns/helpers.rs` (`dash_sdk_dpns_is_valid_username`,
 //! `dash_sdk_dpns_get_validation_message`).
 
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
-use dash_sdk::platform::Fetch;
 use dash_sdk::platform::dpns_usernames::{
     convert_to_homograph_safe_chars, is_contested_username, is_valid_username,
 };
-use dash_sdk::query_types::IdentityBalance;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::string_encoding::Encoding;
@@ -39,14 +40,15 @@ use dpp::system_data_contracts::SystemDataContract;
 use dpp::version::PlatformVersion;
 use dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dpp::voting::vote_polls::contested_document_resource_vote_poll::required_vote_resolution_fund_to_join;
-use dw_vault::{GrantKind, SignerScope};
+use dw_vault::{GrantKind, GrantPurpose, SignerScope};
+use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::{DpnsNameInfo, ManagedIdentity, PlatformWallet, WalletPersister};
 use serde::{Deserialize, Serialize};
 
 use super::contacts::Relation;
 use super::dashpay::{DashPay, stub};
 use super::errors::{IdentityError, NameError, PlatformError};
-use super::flows::BudgetPurpose;
+use super::flows::{BudgetPurpose, GrantRequest};
 use super::identity::KeyPurpose;
 use super::signers::VaultIdentitySigner;
 use crate::session::Manager;
@@ -62,8 +64,26 @@ const PREF_MAIN_NAME: &str = "main_name";
 const PREF_TEMPORARY_NAME: &str = "temporary_name";
 /// The label the identity last contended for.
 const PREF_CONTESTED_NAME: &str = "contested_name";
+/// The registrations that may have reached Platform but are not settled
+/// here yet, one `<kind>:<label>` per line ([`NameKind`]; a valid label has
+/// neither `:` nor a line break). One is added just before its write and
+/// removed once [`DashPay::settle`] has recorded its outcome.
+const PREF_PENDING_NAME: &str = "pending_name";
 /// DPNS's contested document type.
 const DPNS_DOMAIN: &str = "domain";
+
+/// Bounds on the fees of a name's two document transitions, in credits: a
+/// conservative constant per transition type until DP1-06's cost table
+/// lands (E0-04 design §4.2, Q7). Platform states only a minimum per
+/// transition (`document_batch_sub_transition`, 100,000); the real fee
+/// follows the storage written. On testnet (2026-10-09, `gasUsed` of the
+/// explorer's `/identity/<id>/transactions`) preorders cost 23.6M–32.3M and
+/// plain 11-character domains 34.0M–41.3M; the largest contested-domain
+/// batches 79.7M–107.4M. Each bound is about three times the largest.
+const PREORDER_FEE_BOUND: u64 = 100_000_000;
+const DOMAIN_FEE_BOUND: u64 = 300_000_000;
+/// What a name's preorder and domain may cost in fees, together.
+pub(crate) const NAME_FEE_BOUND: u64 = PREORDER_FEE_BOUND + DOMAIN_FEE_BOUND;
 
 /// `check_username`'s verdict: the inline rule checklist (F4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,21 +276,24 @@ pub(crate) fn check_temporary_name(requested: &str, temporary: &str) -> Result<(
 ///    sync rewrites it (platform #4978, `PersistentIdentity.ownedMainDpnsName`);
 /// 2. the temporary name, while a contest of the identity is open (F5);
 /// 3. the label the identity contended for, once it owns it (a won contest);
-/// 4. the oldest owned name.
+/// 4. the name the identity got first, by Platform's acquisition time
+///    ([`owned_names`]); names with no time come last, ties in list order
+///    (DP1-05's `recovery::main_name` rule).
 ///
-/// `owned` is the identity's DPNS list in acquisition order; a label it is
-/// still contending for (`open_contests`) is not owned yet.
+/// `owned` is the identity's names with their acquisition times; a label it
+/// is still contending for (`open_contests`) is not owned yet.
 pub(crate) fn resolve_main_name(
-    owned: &[DpnsNameInfo],
+    owned: &[(String, Option<u64>)],
     open_contests: &[String],
     prefs: &MainNamePrefs,
 ) -> Option<String> {
-    let owned = owned_labels(owned, open_contests);
-    let owned_as = |label: &String| {
-        owned
-            .iter()
-            .find(|n| same_name(n, label))
-            .map(|n| n.to_string())
+    let owned_as = |label: &String| owned_spelling(owned, open_contests, label);
+    let first = || {
+        owned_labels(owned, open_contests)
+            .into_iter()
+            .enumerate()
+            .min_by_key(|(i, (_, at))| (at.is_none(), *at, *i))
+            .map(|(_, (n, _))| n.to_string())
     };
     let temporary = || {
         prefs
@@ -285,15 +308,63 @@ pub(crate) fn resolve_main_name(
         .and_then(owned_as)
         .or_else(temporary)
         .or_else(|| prefs.contested.as_ref().and_then(owned_as))
-        .or_else(|| owned.first().map(|n| n.to_string()))
+        .or_else(first)
 }
 
-/// The labels of `owned` that are not in `open_contests`.
-fn owned_labels<'a>(owned: &'a [DpnsNameInfo], open_contests: &[String]) -> Vec<&'a str> {
+/// `label` as the identity spells it, if it owns it (not in `open_contests`).
+fn owned_spelling(
+    owned: &[(String, Option<u64>)],
+    open_contests: &[String],
+    label: &str,
+) -> Option<String> {
+    owned_labels(owned, open_contests)
+        .iter()
+        .find(|(n, _)| same_name(n, label))
+        .map(|(n, _)| n.to_string())
+}
+
+/// The names of `owned` that are not in `open_contests`.
+fn owned_labels<'a>(
+    owned: &'a [(String, Option<u64>)],
+    open_contests: &[String],
+) -> Vec<&'a (String, Option<u64>)> {
     owned
         .iter()
-        .map(|n| n.label.as_str())
-        .filter(|label| !open_contests.iter().any(|c| same_name(c, label)))
+        .filter(|(label, _)| !open_contests.iter().any(|c| same_name(c, label)))
+        .collect()
+}
+
+// DP1-05's `recovery::owned_names`, copied while the branches are apart:
+// DP1-03 rebases onto DP1-05 and then calls that one (review DP1-03 R5).
+/// An identity's names from the library's list and the marketplace sweep's
+/// rows (`rows`). A name whose row says it was sold or transferred is gone,
+/// though the list keeps it until the library has settled the departure.
+/// Each is stamped with when Platform says the identity got it (the domain
+/// document's `$transferredAt`, else `$createdAt`), and with the library's
+/// stamp only without a row: that is the fetch time, the same for every
+/// name a restore finds, which would leave the default main name to DPNS
+/// query order.
+pub(crate) fn owned_names(
+    identity: Identifier,
+    names: &[DpnsNameInfo],
+    rows: &BTreeMap<Identifier, DpnsNameStateEntry>,
+) -> Vec<(String, Option<u64>)> {
+    names
+        .iter()
+        .filter_map(|n| {
+            let normalized = convert_to_homograph_safe_chars(&n.label);
+            // Unique per label: DPNS keys a name's document by it, and keeps
+            // that document across transfers.
+            let row = rows.values().find(|row| {
+                row.wallet_identity_id == identity && row.normalized_label == normalized
+            });
+            let acquired = match row {
+                Some(row) if row.status != DpnsNameSaleStatus::Owned => return None,
+                Some(row) => row.transferred_at_ms.or(row.created_at_ms),
+                None => None,
+            };
+            Some((n.label.clone(), acquired.or(n.acquired_at)))
+        })
         .collect()
 }
 
@@ -306,10 +377,17 @@ pub(crate) struct MainNamePrefs {
     pub(crate) temporary: Option<String>,
     /// The label the identity last contended for.
     pub(crate) contested: Option<String>,
+    /// The registrations not settled here yet ([`PREF_PENDING_NAME`]).
+    pub(crate) pending: Vec<(NameKind, String)>,
 }
 
 impl MainNamePrefs {
-    const KEYS: [&str; 3] = [PREF_MAIN_NAME, PREF_TEMPORARY_NAME, PREF_CONTESTED_NAME];
+    const KEYS: [&str; 4] = [
+        PREF_MAIN_NAME,
+        PREF_TEMPORARY_NAME,
+        PREF_CONTESTED_NAME,
+        PREF_PENDING_NAME,
+    ];
 
     fn from_values(values: Vec<Option<String>>) -> Self {
         let mut values = values.into_iter();
@@ -317,12 +395,77 @@ impl MainNamePrefs {
             pick: values.next().flatten(),
             temporary: values.next().flatten(),
             contested: values.next().flatten(),
+            pending: values
+                .next()
+                .flatten()
+                .map(|v| v.lines().filter_map(NameKind::parse).collect())
+                .unwrap_or_default(),
         }
+    }
+
+    /// Whether `label` has a pending registration, of `kind` if given.
+    fn is_pending(&self, label: &str, kind: Option<NameKind>) -> bool {
+        self.pending
+            .iter()
+            .any(|(k, l)| same_name(l, label) && kind.is_none_or(|kind| kind == *k))
+    }
+
+    /// The [`PREF_PENDING_NAME`] value; `None` when nothing is pending.
+    fn pending_value(&self) -> Option<String> {
+        let lines: Vec<String> = self
+            .pending
+            .iter()
+            .map(|(kind, label)| format!("{}:{label}", kind.as_str()))
+            .collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+}
+
+/// What a registration is for the identity, fixed by the label and the
+/// identity's open contests when it is asked for, so every path that
+/// observes its outcome records the same thing ([`DashPay::settle`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameKind {
+    /// A contested label: the identity contends, then owns it once won.
+    Contested,
+    /// A non-contested label while the identity contends for another: its
+    /// temporary name (F5).
+    Temporary,
+    /// Any other non-contested label.
+    Extra,
+}
+
+impl NameKind {
+    fn of(check: &UsernameCheck, open_contests: &[String]) -> Self {
+        let other_contests = open_contests
+            .iter()
+            .any(|c| !same_name(c, &check.normalized));
+        match (check.contested, other_contests) {
+            (true, _) => Self::Contested,
+            (false, true) => Self::Temporary,
+            (false, false) => Self::Extra,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Contested => "contested",
+            Self::Temporary => "temporary",
+            Self::Extra => "extra",
+        }
+    }
+
+    fn parse(value: &str) -> Option<(Self, String)> {
+        let (kind, label) = value.split_once(':')?;
+        let kind = [Self::Contested, Self::Temporary, Self::Extra]
+            .into_iter()
+            .find(|k| k.as_str() == kind)?;
+        Some((kind, label.to_string()))
     }
 }
 
 /// What the network says about a valid label.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Lookup {
     pub(crate) availability: NameAvailability,
     /// A running contest's contenders, as far as one page of the vote state
@@ -450,9 +593,11 @@ fn join_deadline(ends_at: u64, network: &DashNetwork, version: &PlatformVersion)
 /// What `register_name` makes of a [`lookup`] for `identity`: an answer
 /// without a write (`Ok(Some)`), a refusal, or `Ok(None)` to register.
 /// `join_until` is the running contest's join deadline, when its end is
-/// known; with no known end the join is attempted. A contest whose
-/// contenders fill a vote-state page cannot be priced or searched for the
-/// identity, so it is refused like a closed one.
+/// known. A new contender needs it: with no known end the join may be past
+/// its window, and the preorder's fee would be spent on a domain Platform
+/// refuses, so it is `platform.unavailable` (review DP1-03 R2). A contest
+/// whose contenders fill a vote-state page cannot be priced or searched for
+/// the identity, so it is refused like a closed one.
 pub(crate) fn registration_step(
     found: &Lookup,
     identity: &Identifier,
@@ -471,11 +616,15 @@ pub(crate) fn registration_step(
         NameAvailability::Locked => Err(NameError::Locked),
         NameAvailability::ContestOpen { ends_at, .. } => {
             if found.contenders.contains(identity) {
-                Ok(Some(NameOutcome::ContestStarted { ends_at: *ends_at }))
-            } else if found.contenders_truncated() || join_until.is_some_and(|until| until <= now) {
-                Err(NameError::ContestOpen)
-            } else {
-                Ok(None)
+                return Ok(Some(NameOutcome::ContestStarted { ends_at: *ends_at }));
+            }
+            if found.contenders_truncated() {
+                return Err(NameError::ContestOpen);
+            }
+            match join_until {
+                None => Err(PlatformError::Unavailable.into()),
+                Some(until) if until <= now => Err(NameError::ContestOpen),
+                Some(_) => Ok(None),
             }
         }
         NameAvailability::Unknown => Err(PlatformError::Unavailable.into()),
@@ -485,32 +634,35 @@ pub(crate) fn registration_step(
     }
 }
 
-/// The fund a contested request pays to join a contest of `contenders`
-/// (rs-dpp `required_vote_resolution_fund_to_join`: the contest fund,
-/// doubled from 250 contenders on), checked against the identity's credits.
-async fn contest_fund(
-    sdk: &dash_sdk::Sdk,
-    identity: Identifier,
+/// What registering a label costs in credits, at most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NameCost {
+    /// A contested label's fund to join a contest of `contenders` (rs-dpp
+    /// `required_vote_resolution_fund_to_join`: the contest fund, doubled
+    /// from 250 contenders on); `None` for a plain label.
+    pub(crate) fund: Option<u64>,
+    /// The fund and [`NAME_FEE_BOUND`]: what the grant must cover and the
+    /// identity's balance hold before the preorder goes out.
+    pub(crate) total: u64,
+}
+
+pub(crate) fn name_cost(
+    check: &UsernameCheck,
     contenders: usize,
-) -> Result<u64, NameError> {
-    let fund = required_vote_resolution_fund_to_join(
-        &SystemDataContract::DPNS.id(),
-        DPNS_DOMAIN,
-        u16::try_from(contenders).unwrap_or(u16::MAX),
-        sdk.version(),
-    );
-    let available = IdentityBalance::fetch(sdk, identity)
-        .await
-        .map_err(PlatformError::from)?
-        .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
-    if available < fund {
-        return Err(PlatformError::InsufficientCredits {
-            needed: fund,
-            available,
-        }
-        .into());
+    version: &PlatformVersion,
+) -> NameCost {
+    let fund = check.contested.then(|| {
+        required_vote_resolution_fund_to_join(
+            &SystemDataContract::DPNS.id(),
+            DPNS_DOMAIN,
+            u16::try_from(contenders).unwrap_or(u16::MAX),
+            version,
+        )
+    });
+    NameCost {
+        fund,
+        total: NAME_FEE_BOUND.saturating_add(fund.unwrap_or(0)),
     }
-    Ok(fund)
 }
 
 /// Records a contested registration: platform-wallet appends the label to
@@ -558,8 +710,12 @@ async fn platform_wallet(
 /// One identity of the wallet as platform-wallet holds it in memory.
 struct OwnNames {
     index: Option<u32>,
-    owned: Vec<DpnsNameInfo>,
+    /// With their acquisition times ([`owned_names`]).
+    owned: Vec<(String, Option<u64>)>,
     open_contests: Vec<String>,
+    /// The normalized labels a marketplace row says it owns: a domain
+    /// exists for each, so a contested one among them was won.
+    rows_owned: Vec<String>,
     /// It has a key that may sign a DPNS document: a HIGH or CRITICAL
     /// ECDSA authentication key (platform-wallet `register_name_with_*`).
     can_sign_documents: bool,
@@ -583,45 +739,110 @@ async fn own_names(wallet: &PlatformWallet, identity: &Identifier) -> Result<Own
         .is_some();
     Ok(OwnNames {
         index: managed.identity_index,
-        owned: managed.dpns_names.clone(),
+        owned: owned_names(*identity, &managed.dpns_names, &state.dpns_name_states),
         open_contests: managed.contested_dpns_names.clone(),
+        rows_owned: state
+            .dpns_name_states
+            .values()
+            .filter(|row| row.wallet_identity_id == *identity)
+            .filter(|row| row.status == DpnsNameSaleStatus::Owned)
+            .map(|row| row.normalized_label.clone())
+            .collect(),
         can_sign_documents,
     })
 }
 
+impl OwnNames {
+    fn owns(&self, label: &str) -> bool {
+        owned_spelling(&self.owned, &self.open_contests, label).is_some()
+    }
+}
+
+/// Refuses a grant that is not this wallet's `PlatformOp` or whose credit
+/// cap is below `needed` (`platform.grant_exceeded`; a zero-credit grant
+/// too), without consuming it: a refused registration leaves the grant for
+/// the next try.
+async fn check_credit_cap(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    grant: &str,
+    needed: u64,
+) -> Result<(), NameError> {
+    let vault = session.vault.clone();
+    let grant = grant.to_string();
+    let purpose = tokio::task::spawn_blocking(move || {
+        vault.grant_purpose(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))
+    })
+    .await
+    .map_err(|e| engine(e.into()))?
+    .map_err(PlatformError::from)?;
+    let GrantPurpose::PlatformOp {
+        max_credits: remaining,
+        ..
+    } = purpose
+    else {
+        return Err(PlatformError::GrantInvalid.into());
+    };
+    if needed > remaining {
+        return Err(PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Credits,
+            needed,
+            remaining,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// A `PlatformIdentity` signer for the identity at `index`, from a
-/// `PlatformOp` grant whose credit cap covers `needed`. The hold, if any,
+/// `PlatformOp` grant [`check_credit_cap`] has passed. The hold, if any,
 /// must outlive the signer's use (dw-vault `platform_signer_held`).
 async fn identity_signer(
     session: &NetworkSession,
     wallet_id: WalletId,
     grant: String,
     index: u32,
-    needed: u64,
 ) -> Result<(VaultIdentitySigner, Option<dw_vault::KeyHold>), NameError> {
     let vault = session.vault.clone();
     let (signer, hold) = tokio::task::spawn_blocking(move || {
         let mut token = vault.redeem_grant(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))?;
-        let remaining = token.max_credits().unwrap_or(0);
-        if needed > remaining {
-            return Err(PlatformError::GrantExceeded {
-                purpose: BudgetPurpose::Credits,
-                needed,
-                remaining,
-            });
-        }
         let hold = vault.hold_key(std::slice::from_mut(&mut token))?;
         let scope = SignerScope::PlatformIdentity;
         let signer = match &hold {
             Some(hold) => vault.platform_signer_held(&wallet_id.0, hold, &token, scope)?,
             None => vault.platform_signer(&wallet_id.0, &token, scope)?,
         };
-        Ok((signer, hold))
+        Ok::<_, PlatformError>((signer, hold))
     })
     .await
     .map_err(|e| engine(e.into()))??;
     let signer = VaultIdentitySigner::new(signer, [index]).map_err(engine)?;
     Ok((signer, hold))
+}
+
+/// Serializes one identity's registrations and their settling: two calls
+/// for one label would each pay a preorder, and a call's [`NameKind`] reads
+/// the open contests another call is changing.
+fn identity_lock(wallet: WalletId, identity: Identifier) -> Arc<tokio::sync::Mutex<()>> {
+    type Locks = HashMap<(WalletId, Identifier), Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: LazyLock<Mutex<Locks>> = LazyLock::new(Mutex::default);
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = (wallet, identity);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+/// One `register_name` call.
+struct Registration {
+    wallet_id: WalletId,
+    identity: Identifier,
+    label: String,
+    check: UsernameCheck,
 }
 
 impl DashPay {
@@ -699,25 +920,35 @@ impl DashPay {
     /// identity already owns is `Registered`, and a contest it already
     /// contends in is `ContestStarted`; neither redeems the grant.
     ///
-    /// Refused before the grant is redeemed: a bad label (`name.invalid`),
-    /// an identity with no key that may sign a DPNS document
-    /// (`identity.keys_missing`), another owner (`name.taken`), a locked
-    /// label (`name.locked`), a contest past its join deadline or too large
-    /// to price (`name.contest_open`), an unknown contest state
-    /// (`platform.unavailable`), and for a contested label a credit balance
-    /// below the fund to join (`platform.insufficient_credits`). The grant
-    /// is a `PlatformOp` whose `max_credits` covers that fund
-    /// (`platform.grant_exceeded`); the registration fee is not budgeted.
+    /// Refused before the grant is redeemed or anything is sent: a bad label
+    /// (`name.invalid`), an identity with no key that may sign a DPNS
+    /// document (`identity.keys_missing`), another owner (`name.taken`), a
+    /// locked label (`name.locked`), a contest past its join deadline or too
+    /// large to price (`name.contest_open`), an unknown contest state or,
+    /// for a new contender, an unknown join deadline (`platform.unavailable`),
+    /// a credit balance below [`name_cost`] (`platform.insufficient_credits`),
+    /// and a grant that is not this wallet's `PlatformOp` or whose
+    /// `max_credits` is below that cost (`platform.grant_exceeded`). These
+    /// refusals leave the grant usable. The cost is budgeted, not enforced:
+    /// the fees' bound ([`NAME_FEE_BOUND`]) is an estimate until DP1-06's
+    /// cost table and E0-04's budgets, plus for a contested label the fund
+    /// to join, which does cap what the contest takes.
+    /// `grant_request(RegisterName)` quotes it. Calls for one identity run
+    /// one at a time.
     ///
-    /// A registered contested label moves from the identity's names to its
-    /// open contests ([`record_contest`]). A non-contested name registered
-    /// while a contest is open is the identity's temporary name.
+    /// Every outcome observed, here or on a retry, is recorded the same way
+    /// ([`DashPay::settle`]): a contested label moves from the identity's
+    /// names to its open contests, a non-contested one registered while
+    /// another contest is open is the temporary name. The intent is stored
+    /// just before the write, so a registration cut short after it is
+    /// settled by a retry of the same label, or by `main_name` once the
+    /// wallet shows the outcome ([`DashPay::settle_pending`]).
     ///
-    /// When the write fails, the domain is looked up once more: a name that
-    /// landed for the identity is `Registered`, one another identity took
-    /// is `name.taken`. Until E0-04's dispatch fence lands (P2a), any other
-    /// failure after the hand-off is the library's error, not
-    /// `platform.broadcast_unknown`.
+    /// When the write fails, the label is looked up once more: a name that
+    /// landed for the identity is `Registered`, a contest it joined
+    /// `ContestStarted`, one another identity took `name.taken`. Until
+    /// E0-04's dispatch fence lands (P2a), any other failure after the
+    /// hand-off is the library's error, not `platform.broadcast_unknown`.
     pub async fn register_name(
         &self,
         identity: String,
@@ -728,92 +959,282 @@ impl DashPay {
         let identity_id = parse_identity(&identity)?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
-            let names = own_names(&wallet, &identity_id).await?;
-            let owned = owned_labels(&names.owned, &names.open_contests);
-            if owned.iter().any(|n| same_name(n, &label)) {
-                return Ok(NameOutcome::Registered);
-            }
-            let index = names.index.ok_or(PlatformError::SignerUnavailable)?;
-            if !names.can_sign_documents {
-                return Err(PlatformError::Identity(IdentityError::KeysMissing {
-                    purpose: KeyPurpose::Authentication,
-                })
-                .into());
-            }
-            let sdk = manager.sdk_arc();
-            let found = lookup(&sdk, &check).await?;
-            let join_until = match &found.availability {
-                NameAvailability::ContestOpen { ends_at, .. } => {
-                    ends_at.map(|end| join_deadline(end, &session.network, sdk.version()))
-                }
-                _ => None,
+            let net = SdkNet(manager.sdk_arc());
+            let ask = Registration {
+                wallet_id,
+                identity: identity_id,
+                label,
+                check,
             };
-            if let Some(outcome) =
-                registration_step(&found, &identity_id, join_until, crate::events::unix_now())?
-            {
-                return Ok(outcome);
-            }
-            let fund = match check.contested {
-                true => Some(contest_fund(&sdk, identity_id, found.contenders.len()).await?),
-                false => None,
-            };
-            let (signer, hold) =
-                identity_signer(&session, wallet_id, grant, index, fund.unwrap_or(0)).await?;
-            // The fund priced above caps what the contest may take.
-            let registered = wallet
-                .identity()
-                .register_name_with_external_signer(&identity_id, &label, fund, &signer)
-                .await;
-            drop((signer, hold));
-            if let Err(e) = registered {
-                tracing::info!(label = %check.normalized, "name registration failed: {e}");
-                // platform-wallet flattens the SDK's errors into text; the
-                // domain says whether the write landed or lost a race.
-                let owner = sdk
-                    .resolve_dpns_name(&check.normalized)
-                    .await
-                    .ok()
-                    .flatten();
-                return match owner {
-                    Some(owner) if owner == identity_id => Ok(NameOutcome::Registered),
-                    Some(_) => Err(NameError::Taken),
-                    None => Err(PlatformError::from(e).into()),
-                };
-            }
-
-            if check.contested {
-                {
-                    let mut state = wallet.state_mut().await;
-                    if let Some(managed) = state.identity_manager.managed_identity_mut(&identity_id)
-                    {
-                        record_contest(managed, &label, wallet.persister());
-                    }
-                }
-                Self::set_main_name_pref(
-                    &session,
-                    wallet_id,
-                    &identity_id,
-                    PREF_CONTESTED_NAME,
-                    Some(label),
-                )
-                .await?;
-                return Ok(NameOutcome::ContestStarted {
-                    ends_at: contest_end(&sdk, &check.normalized).await,
-                });
-            }
-            if !names.open_contests.is_empty() {
-                Self::set_main_name_pref(
-                    &session,
-                    wallet_id,
-                    &identity_id,
-                    PREF_TEMPORARY_NAME,
-                    Some(label),
-                )
-                .await?;
-            }
-            Ok(NameOutcome::Registered)
+            Self::register(&net, &session, &wallet, ask, grant).await
         })
         .await
+    }
+
+    async fn register(
+        net: &impl NameNet,
+        session: &NetworkSession,
+        wallet: &PlatformWallet,
+        ask: Registration,
+        grant: String,
+    ) -> Result<NameOutcome, NameError> {
+        let lock = identity_lock(ask.wallet_id, ask.identity);
+        let _serial = lock.lock().await;
+        let names = own_names(wallet, &ask.identity).await?;
+        let prefs = Self::main_name_prefs(session, ask.wallet_id, &ask.identity).await?;
+        let kind = NameKind::of(&ask.check, &names.open_contests);
+        // A contested label the library listed after its write may be a
+        // contest still running: only Platform can say.
+        let unsure = prefs.is_pending(&ask.label, Some(NameKind::Contested));
+        if names.owns(&ask.label) && !unsure {
+            return Self::settle(session, wallet, &ask, kind, NameOutcome::Registered).await;
+        }
+        let index = names.index.ok_or(PlatformError::SignerUnavailable)?;
+        if !names.can_sign_documents {
+            return Err(PlatformError::Identity(IdentityError::KeysMissing {
+                purpose: KeyPurpose::Authentication,
+            })
+            .into());
+        }
+        let found = net.lookup(&ask.check).await?;
+        let join_until = match &found.availability {
+            NameAvailability::ContestOpen { ends_at, .. } => {
+                ends_at.map(|end| join_deadline(end, &session.network, net.version()))
+            }
+            _ => None,
+        };
+        let now = crate::events::unix_now();
+        let step = registration_step(&found, &ask.identity, join_until, now);
+        // Refused for good: a pending intent of this label cannot land.
+        if matches!(
+            step,
+            Err(NameError::Taken | NameError::Locked | NameError::ContestOpen)
+        ) && prefs.is_pending(&ask.label, None)
+        {
+            Self::update_pending(session, &ask, None).await?;
+        }
+        if let Some(outcome) = step? {
+            return Self::settle(session, wallet, &ask, kind, outcome).await;
+        }
+        let cost = name_cost(&ask.check, found.contenders.len(), net.version());
+        let available = net
+            .balance(ask.identity)
+            .await?
+            .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
+        if available < cost.total {
+            return Err(PlatformError::InsufficientCredits {
+                needed: cost.total,
+                available,
+            }
+            .into());
+        }
+        check_credit_cap(session, ask.wallet_id, &grant, cost.total).await?;
+
+        let (signer, hold) = identity_signer(session, ask.wallet_id, grant, index).await?;
+        Self::update_pending(session, &ask, Some(kind)).await?;
+        // The fund priced above caps what the contest may take.
+        let written = net
+            .submit(wallet, ask.identity, &ask.label, cost.fund, &signer)
+            .await;
+        drop((signer, hold));
+        let outcome = match written {
+            Ok(()) if ask.check.contested => NameOutcome::ContestStarted {
+                ends_at: net.contest_end(&ask.check.normalized).await,
+            },
+            Ok(()) => NameOutcome::Registered,
+            Err(e) => {
+                tracing::info!(label = %ask.check.normalized, "name registration failed: {e}");
+                // platform-wallet flattens the SDK's errors into text; the
+                // label's state says whether the write landed or lost a race.
+                // Without either, the intent stays pending: the write may
+                // still land.
+                let again = net.lookup(&ask.check).await.ok();
+                match again.map(|found| registration_step(&found, &ask.identity, None, now)) {
+                    Some(Ok(Some(outcome))) => outcome,
+                    Some(Err(NameError::Taken)) => {
+                        Self::update_pending(session, &ask, None).await?;
+                        return Err(NameError::Taken);
+                    }
+                    _ => return Err(e.into()),
+                }
+            }
+        };
+        Self::settle(session, wallet, &ask, kind, outcome).await
+    }
+
+    /// Records `outcome` of a registration (`kind`) and removes its pending
+    /// intent. Every path that observes an outcome comes here (review
+    /// DP1-03 R3); a retry repeats it harmlessly. The user's pick is never
+    /// written.
+    ///
+    /// `Registered`: the identity owns the label, so it is in its names (a
+    /// confirmation that failed after the domain landed leaves it out of the
+    /// library's list) and out of its open contests. It is the temporary
+    /// name, or the won contest, only if a registration of it was pending
+    /// here (or, for a contest, the identity was contending): a name the
+    /// identity got some other way is neither. `ContestStarted`: it
+    /// contends ([`record_contest`]).
+    async fn settle(
+        session: &NetworkSession,
+        wallet: &PlatformWallet,
+        ask: &Registration,
+        kind: NameKind,
+        outcome: NameOutcome,
+    ) -> Result<NameOutcome, NameError> {
+        let label = ask.label.as_str();
+        let intended = Self::main_name_prefs(session, ask.wallet_id, &ask.identity)
+            .await?
+            .is_pending(label, None);
+        let was_contending = {
+            let mut state = wallet.state_mut().await;
+            let managed = state
+                .identity_manager
+                .managed_identity_mut(&ask.identity)
+                .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
+            let persister = wallet.persister();
+            let was_contending = managed
+                .contested_dpns_names
+                .iter()
+                .any(|c| same_name(c, label));
+            match outcome {
+                NameOutcome::Registered => {
+                    if !managed
+                        .dpns_names
+                        .iter()
+                        .any(|n| same_name(&n.label, label))
+                    {
+                        let mut names = managed.dpns_names.clone();
+                        // No time: a later fetch or marketplace row gives
+                        // it one; until then it sorts after timed names.
+                        names.push(DpnsNameInfo {
+                            label: label.to_string(),
+                            acquired_at: None,
+                        });
+                        managed.set_dpns_names(names, persister);
+                    }
+                    if was_contending {
+                        let open = managed
+                            .contested_dpns_names
+                            .iter()
+                            .filter(|c| !same_name(c, label))
+                            .cloned()
+                            .collect();
+                        managed.set_contested_dpns_names(open, persister);
+                    }
+                }
+                NameOutcome::ContestStarted { .. } => record_contest(managed, label, persister),
+            }
+            was_contending
+        };
+        let key = match (kind, &outcome) {
+            (NameKind::Contested, NameOutcome::ContestStarted { .. }) => Some(PREF_CONTESTED_NAME),
+            (NameKind::Contested, NameOutcome::Registered) if intended || was_contending => {
+                Some(PREF_CONTESTED_NAME)
+            }
+            (NameKind::Temporary, NameOutcome::Registered) if intended => Some(PREF_TEMPORARY_NAME),
+            _ => None,
+        };
+        if let Some(key) = key {
+            Self::set_name_pref(session, ask, key, Some(label.to_string())).await?;
+        }
+        if intended {
+            Self::update_pending(session, ask, None).await?;
+        }
+        Ok(outcome)
+    }
+
+    /// Settles each pending registration the wallet now shows the outcome
+    /// of; the others stay pending. A contest the identity contends in
+    /// shows in its open contests. A plain name shows in its names: the
+    /// library lists a name once its write returned. A contested label in
+    /// its names is ambiguous, listed after the write or after the contest
+    /// was won, so it is taken as won only with a marketplace row (a domain
+    /// exists) and is otherwise left for a retry of `register_name`, which
+    /// asks Platform.
+    async fn settle_pending(
+        session: &NetworkSession,
+        wallet: &PlatformWallet,
+        wallet_id: WalletId,
+        identity: Identifier,
+        names: &OwnNames,
+        pending: Vec<(NameKind, String)>,
+    ) -> Result<bool, NameError> {
+        let mut settled = false;
+        for (kind, label) in pending {
+            let normalized = convert_to_homograph_safe_chars(&label);
+            let outcome = if names.open_contests.iter().any(|c| same_name(c, &label)) {
+                NameOutcome::ContestStarted { ends_at: None }
+            } else if !names.owns(&label) {
+                continue;
+            } else if kind != NameKind::Contested || names.rows_owned.contains(&normalized) {
+                NameOutcome::Registered
+            } else {
+                continue;
+            };
+            let ask = Registration {
+                wallet_id,
+                identity,
+                check: username_check(&label),
+                label,
+            };
+            Self::settle(session, wallet, &ask, kind, outcome).await?;
+            settled = true;
+        }
+        Ok(settled)
+    }
+
+    /// Adds `ask`'s label to the pending registrations as `kind`, or with
+    /// `None` removes it.
+    async fn update_pending(
+        session: &NetworkSession,
+        ask: &Registration,
+        kind: Option<NameKind>,
+    ) -> Result<(), NameError> {
+        let mut prefs = Self::main_name_prefs(session, ask.wallet_id, &ask.identity).await?;
+        prefs.pending.retain(|(_, l)| !same_name(l, &ask.label));
+        prefs
+            .pending
+            .extend(kind.map(|kind| (kind, ask.label.clone())));
+        Self::set_name_pref(session, ask, PREF_PENDING_NAME, prefs.pending_value()).await
+    }
+
+    async fn set_name_pref(
+        session: &NetworkSession,
+        ask: &Registration,
+        key: &'static str,
+        value: Option<String>,
+    ) -> Result<(), NameError> {
+        Self::set_main_name_pref(session, ask.wallet_id, &ask.identity, key, value).await
+    }
+
+    /// The grant a registration of `label` needs (`GrantAction::RegisterName`):
+    /// no duffs, and credits for [`name_cost`] at the contest's size now. A
+    /// contest that grows before the write costs more; `register_name` then
+    /// refuses with `platform.grant_exceeded` and the grant survives.
+    pub(crate) async fn register_name_grant(
+        &self,
+        label: String,
+    ) -> Result<GrantRequest, NameError> {
+        let check = valid_label(&label)?;
+        self.on_wallet(move |_, manager, _| async move {
+            Self::name_grant(&SdkNet(manager.sdk_arc()), &check).await
+        })
+        .await
+    }
+
+    async fn name_grant(
+        net: &impl NameNet,
+        check: &UsernameCheck,
+    ) -> Result<GrantRequest, NameError> {
+        let contenders = if check.contested {
+            net.lookup(check).await?.contenders.len()
+        } else {
+            0
+        };
+        Ok(GrantRequest {
+            max_duffs: 0,
+            max_credits: name_cost(check, contenders, net.version()).total,
+        })
     }
 
     /// Picks `label` as the identity's main name, or clears the pick with
@@ -829,31 +1250,58 @@ impl DashPay {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, _, wallet| async move {
             let names = own_names(&wallet, &identity_id).await?;
-            let owned = owned_labels(&names.owned, &names.open_contests);
             let pick = label
                 .map(|label| {
-                    owned
-                        .iter()
-                        .find(|n| same_name(n, &label))
-                        .map(|n| n.to_string())
-                        .ok_or_else(|| PlatformError::InvalidArgument {
+                    owned_spelling(&names.owned, &names.open_contests, &label).ok_or_else(|| {
+                        PlatformError::InvalidArgument {
                             detail: "not a name this identity owns".into(),
-                        })
+                        }
+                    })
                 })
                 .transpose()?;
+            // The only write of the pick. On the rebase onto DP1-05 this
+            // becomes `NetworkSession::set_main_name`, which also updates
+            // its choice cache (review DP1-03 R5).
             Self::set_main_name_pref(&session, wallet_id, &identity_id, PREF_MAIN_NAME, pick).await
         })
         .await
     }
 
     /// The identity's main name ([`resolve_main_name`]); `None` while it owns
-    /// no name.
+    /// no name. Registrations cut short after their write are settled
+    /// first, as far as the wallet shows their outcome
+    /// ([`DashPay::settle_pending`]).
     pub async fn main_name(&self, identity: String) -> Result<Option<String>, NameError> {
         let identity_id = parse_identity(&identity)?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, _, wallet| async move {
-            let names = own_names(&wallet, &identity_id).await?;
-            let prefs = Self::main_name_prefs(&session, wallet_id, &identity_id).await?;
+            // A registration under way settles its own outcome; the reads
+            // below are taken under the lock so they cannot predate one.
+            let lock = identity_lock(wallet_id, identity_id);
+            let serial = lock.try_lock();
+            let mut names = own_names(&wallet, &identity_id).await?;
+            let mut prefs = Self::main_name_prefs(&session, wallet_id, &identity_id).await?;
+            if serial.is_ok() && !prefs.pending.is_empty() {
+                let pending = prefs.pending.clone();
+                let settled = Self::settle_pending(
+                    &session,
+                    &wallet,
+                    wallet_id,
+                    identity_id,
+                    &names,
+                    pending,
+                )
+                .await;
+                match settled {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        names = own_names(&wallet, &identity_id).await?;
+                        prefs = Self::main_name_prefs(&session, wallet_id, &identity_id).await?;
+                    }
+                    // A read answers with what it has; the next one retries.
+                    Err(e) => tracing::warn!("settling pending names failed: {e}"),
+                }
+            }
             Ok(resolve_main_name(
                 &names.owned,
                 &names.open_contests,
@@ -886,6 +1334,10 @@ impl DashPay {
         stub("DashPay.resolve_user")
     }
 }
+
+#[path = "names_net.rs"]
+mod net;
+use net::{NameNet, SdkNet};
 
 #[cfg(test)]
 #[path = "names_tests.rs"]

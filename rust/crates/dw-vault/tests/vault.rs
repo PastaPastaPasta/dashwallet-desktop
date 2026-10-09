@@ -467,6 +467,50 @@ fn grants_expire_are_single_use_and_keep_their_purpose() {
     );
 }
 
+/// `grant_purpose` reads a grant's caps without consuming it (DP1-03: a
+/// registration refused for its cost keeps its grant).
+#[test]
+fn grant_purpose_reads_the_caps_and_leaves_the_grant() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    let w = wallet(1);
+    let op = GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: 7,
+    };
+    let g = v.authorize(op, Some(&w), Credential::None).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            v.grant_purpose(&g.id, GrantKind::PlatformOp, Some(&w)),
+            Ok(op)
+        );
+    }
+    assert_eq!(
+        v.grant_purpose(&g.id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantPurposeMismatch)
+    );
+    assert_eq!(
+        v.grant_purpose(&g.id, GrantKind::PlatformOp, Some(&wallet(2))),
+        Err(VaultError::GrantPurposeMismatch)
+    );
+    let token = v
+        .redeem_grant(&g.id, GrantKind::PlatformOp, Some(&w))
+        .unwrap();
+    assert_eq!(token.max_credits(), Some(7));
+    assert_eq!(
+        v.grant_purpose(&g.id, GrantKind::PlatformOp, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    );
+    // A grant revoked by the lock reports the lock.
+    let g = v.authorize(op, Some(&w), Credential::None).unwrap();
+    v.lock();
+    assert_eq!(
+        v.grant_purpose(&g.id, GrantKind::PlatformOp, Some(&w)),
+        Err(VaultError::Locked)
+    );
+}
+
 /// Review M-6: wallet-scoped grants name their wallet and work only on it.
 #[test]
 fn grants_are_bound_to_their_wallet() {

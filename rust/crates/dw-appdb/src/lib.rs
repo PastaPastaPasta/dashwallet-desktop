@@ -1000,13 +1000,19 @@ mod tests {
             vec![Some("bob".into()), None]
         );
         db.set_dp_pref(W, "id1", "main_name", None).unwrap();
-        assert_eq!(db.identity_dp_prefs(W, "id1", &["main_name"]).unwrap(), vec![None]);
+        assert_eq!(
+            db.identity_dp_prefs(W, "id1", &["main_name"]).unwrap(),
+            vec![None]
+        );
         assert_eq!(
             db.identity_dp_prefs(W, "id2", &["main_name"]).unwrap(),
             vec![Some("carol".into())]
         );
         db.delete_wallet(W).unwrap();
-        assert_eq!(db.identity_dp_prefs(W, "id2", &["main_name"]).unwrap(), vec![None]);
+        assert_eq!(
+            db.identity_dp_prefs(W, "id2", &["main_name"]).unwrap(),
+            vec![None]
+        );
         assert_eq!(
             db.identity_dp_prefs(W2, "id1", &["main_name"]).unwrap(),
             vec![Some("dave".into())]

@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_net.rs` and `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -143,9 +143,9 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 |---|---|---|---|
 | `check_username(label)` | free, pure | The rule checklist (F4: 3–23 characters, `[A-Za-z0-9-]`, no edge hyphen, no `--`), the normalized label and whether it is contested. A bad label is `valid: false`, not an error. | `NameError` |
 | `name_availability(label)` | async | `Invalid{rules}`, `Available{contested}`, `Taken{owner}`, `ContestOpen{ends_at, contenders}`, `Locked` or `Unknown`. | `NameError` |
-| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. A contested label needs the contest fund in credits and returns `ContestStarted{ends_at}`; a plain name registered while the identity's own contest is open becomes its temporary name. | `NameError` |
+| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. Costs at most the fees' bound plus, for a contested label, the contest fund to join; the grant's `max_credits` and the identity's balance must cover that before the grant is redeemed or anything is sent (`platform.grant_exceeded`, `platform.insufficient_credits`; a refused grant stays usable). A contested label returns `ContestStarted{ends_at}`; joining another identity's contest whose join deadline is unknown is `platform.unavailable`, with nothing spent. A plain name registered while the identity's own contest is open becomes its temporary name. Every observed outcome (a retry, a confirmation that failed after the write landed, a registration cut short, settled by the next `main_name`) is recorded the same way. | `NameError` |
 | `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). | `NameError` |
-| `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the oldest owned name. `None` if it owns none. | `NameError` |
+| `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the name it got first by Platform's acquisition time (the marketplace row's `$transferredAt`, else `$createdAt`, else the library's stamp; untimed names last). `None` if it owns none. | `NameError` |
 | `contest_status(identity, label)` | async | The own contest: state, deadline, contenders and votes, the temporary name. | `NameError` |
 | `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI. `relation` is relative to the main identity. | `NameError` |
 | `resolve_user(username)` | async | Exact lookup; `None` if no such name. `relation` as in `search_users`. | `NameError` |
@@ -234,7 +234,7 @@ screen), and the vault is per network. Before a vault exists (the session's vaul
 | `NetworkSession.begin_flow(wallet_id, flow, grants)` | async | Redeems every grant id into one lease for `flow` (E0-04 `begin_lease`) and returns the lease id, which the calls of that wallet accept as their `grant` for the purposes the lease carries (§1). Waits while a lock drain runs. A lock that lands meanwhile is `platform.cancelled` (`lease.locked`); ask again. | `PlatformError` |
 | `NetworkSession.end_flow(lease)` | sync | Releases the lease; idempotent. In-flight hand-offs finish first (E0-04 §4.1). | `PlatformError` |
 | `NetworkSession.leases()` | sync | The live leases as `LeaseView`s (E0-04 §4.6): flow, state, own key and its seconds left, `funds_committed`, budgets, permits in flight, and whether a library call of the flow runs (which picks the copy, E0-04 §16.10). Re-queried on E0-04's `LeaseChanged` (§6). | `PlatformError` |
-| `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action; the engine never charges more. | `PlatformError` |
+| `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action; the engine never charges more. `RegisterName` is implemented (DP1-03): no duffs, credits for the fees' bound plus the label's fund to join at the contest's current size. | `PlatformError` |
 | `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
 
 ## 3. Surface (generated)
@@ -1559,4 +1559,8 @@ renames or reshapes them takes the next version bump:
 35. **Names (DP1-03, version 6).** `UsernameRule::NoDoubleHyphen`: dash-platform-queries' `is_valid_username` and
     the iOS register path refuse `--`, so the checklist does too. `set_main_name` and `main_name` are new: the main
     name is a per-identity pick in `dp_prefs` that sync never rewrites (#4978); a pick the identity no longer owns is
-    skipped, not deleted.
+    skipped, not deleted. Review r1 (no surface change): `register_name` budgets a conservative fee bound per
+    document transition (E0-04 §4.2 Q7, until DP1-06's cost table) plus the contest fund against the grant and the
+    balance, and refuses before consuming the grant; a new contender needs a known join deadline; a registration
+    intent is stored before the write so every path settles the contest and temporary-name prefs, never the pick;
+    the oldest-name fallback uses DP1-05's acquisition times.

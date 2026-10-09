@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
-use super::errors::PlatformError;
+use super::errors::{NameError, PlatformError};
 use crate::{NetworkSession, WalletId};
 
 /// What a lease is for. It fixes which budgets its grants may fund.
@@ -194,12 +194,24 @@ impl NetworkSession {
 
 #[expect(unused_variables, reason = "stubs until E0-04")]
 impl DashPay {
+    /// `RegisterName` is quoted (DP1-03, `register_name_grant`); the other
+    /// actions are E0-04's.
     pub async fn grant_request(
         &self,
         identity: String,
         action: GrantAction,
     ) -> Result<GrantRequest, PlatformError> {
-        stub("DashPay.grant_request")
+        match action {
+            GrantAction::RegisterName { label } => {
+                self.register_name_grant(label).await.map_err(|e| match e {
+                    NameError::Platform(e) => e,
+                    e => PlatformError::InvalidArgument {
+                        detail: e.to_string(),
+                    },
+                })
+            }
+            _ => stub("DashPay.grant_request"),
+        }
     }
 
     /// `None`: the engine has no entry. The host reads it as unknown, never
