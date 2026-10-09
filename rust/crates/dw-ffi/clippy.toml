@@ -8,6 +8,7 @@
 disallowed-methods = [
     { path = "dw_vault::Vault::dashpay_crypto_signer", reason = "engine-only: the grant-less background DashPay crypto signer (dw-vault vault.rs)" },
     { path = "dw_vault::Vault::scan_key", reason = "engine-only: releases the wallet's master key for platform-wallet's identity scan" },
+    { path = "dw_vault::Vault::scan_key_held", reason = "engine-only: releases the wallet's master key for platform-wallet's identity scan" },
     { path = "dw_vault::ScanKey::master_key", reason = "engine-only: the wallet's master private key" },
     { path = "dw_vault::Vault::open_backup_bundle", reason = "engine-only: decrypts a backup's recovery phrase and seed; views restore through NetworkSession::restore_backup" },
     { path = "dw_engine::platform::VaultScanKey::resolve", reason = "engine-only: the wallet's master private key" },

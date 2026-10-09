@@ -19,6 +19,11 @@ use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer};
 
 const FUNDING: SignerScope = SignerScope::PlatformFunding { max_duffs: 100_000 };
+/// A `PlatformOp` grant that covers [`FUNDING`] and identity signatures.
+const PLATFORM_OP: GrantPurpose = GrantPurpose::PlatformOp {
+    max_duffs: 100_000,
+    max_credits: 1_000_000,
+};
 
 fn path(s: &str) -> DerivationPath {
     DerivationPath::from_str(s).unwrap()
@@ -66,9 +71,22 @@ fn mainnet_vault(fx: &Fixture) -> Vault {
 /// A redeemed `PlatformOp` grant for wallet 1.
 fn platform_token(v: &Vault) -> GrantToken {
     let grant = v
-        .authorize(GrantPurpose::PlatformOp, Some(&wallet(1)), Credential::None)
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
         .unwrap();
     v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap()
+}
+
+/// A redeemed `IdentityScan` grant for wallet 1.
+fn scan_token(v: &Vault) -> GrantToken {
+    let grant = v
+        .authorize(
+            GrantPurpose::IdentityScan,
+            Some(&wallet(1)),
+            Credential::None,
+        )
+        .unwrap();
+    v.redeem_grant(&grant.id, GrantKind::IdentityScan, Some(&wallet(1)))
         .unwrap()
 }
 
@@ -515,9 +533,10 @@ async fn background_crypto_needs_a_prompt_free_full_key() {
 }
 
 /// Review DW-E0-03 M1: the master key leaves only under a redeemed
-/// `PlatformOp` grant for its wallet; a grant-less caller has no way to it.
+/// `IdentityScan` grant for its wallet (E0-04 design §3.2); a grant-less
+/// caller, or one with a capped `PlatformOp` flow grant, has no way to it.
 #[tokio::test]
-async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
+async fn the_scan_key_needs_an_identity_scan_grant_for_its_wallet() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
@@ -525,7 +544,7 @@ async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
     v.store_wallet_secret(&wallet(2), &secret(2)).unwrap();
 
     // Unlocked: the bring-up authorizes the grant itself, without a prompt.
-    let scan = v.scan_key(&wallet(1), &platform_token(&v)).unwrap();
+    let scan = v.scan_key(&wallet(1), &scan_token(&v)).unwrap();
     assert_eq!(scan.wallet_id(), wallet(1));
     let master = scan.master_key().unwrap();
     assert_eq!(master.depth, 0);
@@ -543,12 +562,13 @@ async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
 
     // Another wallet's grant, or another purpose, releases nothing.
     assert_eq!(
-        v.scan_key(&wallet(2), &platform_token(&v)).unwrap_err(),
+        v.scan_key(&wallet(2), &scan_token(&v)).unwrap_err(),
         VaultError::GrantPurposeMismatch
     );
     for purpose in [
         GrantPurpose::Spend { max_duffs: 1 },
         GrantPurpose::SignMessage,
+        PLATFORM_OP,
     ] {
         let grant = v
             .authorize(purpose, Some(&wallet(1)), Credential::None)
@@ -564,7 +584,7 @@ async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
 
     // Lock: the scan key stops, a token redeemed before the lock releases
     // nothing, and no grant comes without the passphrase.
-    let token = platform_token(&v);
+    let token = scan_token(&v);
     v.lock();
     assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
     assert_eq!(
@@ -572,23 +592,28 @@ async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
         VaultError::Locked
     );
     assert_eq!(
-        v.authorize(GrantPurpose::PlatformOp, Some(&wallet(1)), Credential::None)
-            .unwrap_err(),
+        v.authorize(
+            GrantPurpose::IdentityScan,
+            Some(&wallet(1)),
+            Credential::None
+        )
+        .unwrap_err(),
         VaultError::Locked
     );
-    // With the passphrase, the grant's own key serves the scan until the
-    // next lock.
+    // With the passphrase, the grant's own key, held, serves the scan
+    // until the next lock.
     let grant = v
         .authorize(
-            GrantPurpose::PlatformOp,
+            GrantPurpose::IdentityScan,
             Some(&wallet(1)),
             Credential::Passphrase(PASS),
         )
         .unwrap();
-    let token = v
-        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
-        .unwrap();
-    let scan = v.scan_key(&wallet(1), &token).unwrap();
+    let mut tokens = [v
+        .redeem_grant(&grant.id, GrantKind::IdentityScan, Some(&wallet(1)))
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
+    let scan = v.scan_key_held(&wallet(1), &hold, &tokens[0]).unwrap();
     assert_eq!(scan.master_key().unwrap().depth, 0);
     v.lock();
     assert_eq!(scan.master_key().unwrap_err(), SignerError::Locked);
@@ -596,15 +621,19 @@ async fn the_scan_key_needs_a_platform_grant_for_its_wallet() {
     // Mixing-only unlock: no grant without the passphrase.
     v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
     assert_eq!(
-        v.authorize(GrantPurpose::PlatformOp, Some(&wallet(1)), Credential::None)
-            .unwrap_err(),
+        v.authorize(
+            GrantPurpose::IdentityScan,
+            Some(&wallet(1)),
+            Credential::None
+        )
+        .unwrap_err(),
         VaultError::MixingOnly
     );
 
     // Unencrypted: the grant needs no prompt.
     let fx = Fixture::new();
     let v = unencrypted_vault(&fx);
-    let scan = v.scan_key(&wallet(1), &platform_token(&v)).unwrap();
+    let scan = v.scan_key(&wallet(1), &scan_token(&v)).unwrap();
     assert_eq!(scan.master_key().unwrap().depth, 0);
 }
 
@@ -616,17 +645,14 @@ async fn a_passphrase_platform_grant_on_a_locked_vault_lives_until_the_next_lock
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v.lock();
     let grant = v
-        .authorize(
-            GrantPurpose::PlatformOp,
-            Some(&wallet(1)),
-            Credential::Passphrase(PASS),
-        )
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::Passphrase(PASS))
         .unwrap();
-    let token = v
+    let mut tokens = [v
         .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
-        .unwrap();
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
     let identity = v
-        .platform_signer(&wallet(1), &token, SignerScope::PlatformIdentity)
+        .platform_signer_held(&wallet(1), &hold, &tokens[0], SignerScope::PlatformIdentity)
         .unwrap();
     let key = path("m/9'/1'/5'/0'/0'/0'/0'");
     identity.public_key(&key).await.unwrap();

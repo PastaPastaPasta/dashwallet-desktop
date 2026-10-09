@@ -19,7 +19,7 @@
 //! (signature, ECDH, mask, ciphertext) and returns only that; two keys reach
 //! this module: the auto-accept key DIP-15 hands out on purpose, and the
 //! master key [`VaultScanKey`] resolves for the identity scan, released only
-//! under a `PlatformOp` grant.
+//! under an `IdentityScan` grant.
 //!
 //! Lock: every product these adapters return was released by the vault
 //! under the epoch its operation started in, and none is released once
@@ -300,8 +300,8 @@ impl ContactCryptoProvider for VaultContactCrypto {
 
 /// The identity-scan key (platform-wallet `ScanKeyResolver`,
 /// `manager/startup.rs:104`): resolved only when the bring-up takes the
-/// branch that scans, from a [`ScanKey`] the vault issues under a
-/// `PlatformOp` grant (`Vault::scan_key`). The resolved master key erases
+/// branch that scans, from a [`ScanKey`] the vault issues under an
+/// `IdentityScan` grant (`Vault::scan_key`). The resolved master key erases
 /// itself on drop (key-wallet `ExtendedPrivKey: Drop`), and the library also
 /// holds it in its `ScanKeyGuard` (`startup.rs:130-150`). A resolved key is
 /// beyond the vault's lock: the bring-up must be dropped on lock (E0-05).

@@ -20,8 +20,11 @@
 //!   funding, each refusing every path outside its own ([`paths`]); the
 //!   identity signatures and DIP-15 crypto run here so derived scalars stay
 //!   in this crate. Two keys leave it: the DIP-15 auto-accept key, and the
-//!   master key of an identity scan ([`ScanKey`], under a `PlatformOp`
-//!   grant), which platform-wallet's `ScanKeyResolver` requires.
+//!   master key of an identity scan ([`ScanKey`], under an `IdentityScan`
+//!   grant), which platform-wallet's `ScanKeyResolver` requires;
+//! - a lease's own key is held by one [`KeyHold`], through which alone its
+//!   tokens issue signers; dropping the hold erases the key and no use
+//!   begins after it (E0-04 design §3.5).
 //!
 //! dash-qt parity: "Encrypt wallet" adds slot P and removes slot O, "Change
 //! passphrase" re-wraps the DEK (the seed is unchanged), and there is no
@@ -62,10 +65,10 @@ pub use paths::{is_bip44_path, is_coinjoin_path};
 pub use platform::{ContactInfoOpened, ContactInfoSealed, ScanKey};
 pub use signer::{SignerScope, VaultSigner, WalletSigner};
 pub use types::{
-    AuthGrant, Clock, Credential, DEFAULT_GRANT_TTL_SECS, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
-    GrantKind, GrantPurpose, GrantToken, LockState, PASSPHRASE_MAX_AGE_SECS,
-    QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, SystemClock,
-    UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
+    AuthGrant, CREDITS_PER_DUFF, Clock, Credential, DEFAULT_GRANT_TTL_SECS,
+    DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken, KeyHold, LockState,
+    PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic,
+    SeedDerivation, SystemClock, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 pub use vault::{
     CoreMnemonicCheck, MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle, reads_bundle_version,

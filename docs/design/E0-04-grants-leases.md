@@ -2340,6 +2340,24 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
   - a lease id's reach and the reaper's 10 minutes, as §16.1 (N-6).
 - **DECISIONS-PENDING B5:** name §11's PR content and say that Mode B is the "no" branch.
 
+**Follow-ups from P1** (review DW-E0-04-P1 r1, GPT; the manager's narrowed ruling on interpretation 1):
+- **The M1 exception to §3.5.** A direct own-key signer, which keeps its key alive, is allowed only for the M1
+  purposes `Spend` and `SignMessage` (send, PSBT, message, CoinJoin), because those flows drop their token as soon as
+  they hold the signer. **P5 removes it** when it moves those flows onto `TxDraft` leases and their holds; from then on
+  every own-key signer is a held one.
+- **`PlatformOp` and `IdentityScan` own-key tokens issue signers only through a hold** (`hold_key`, then
+  `platform_signer_held`, and `scan_key_held`, which joins §3.5's list). Directly they are refused
+  (`invalid_argument`); so is a held token of any purpose outside its own hold. Vault-key tokens (an unlocked vault)
+  need no hold and issue directly.
+- **No partial holds.** `hold_key` returns `Result<Option<KeyHold>, VaultError>`: it covers every token it is given
+  or fails, changing none. It refuses any token of another vault or of an ended epoch (vault-key tokens included), a
+  set mixing vault-key and own-key tokens, a token already held, and a token that has ever issued a signer (a mark
+  set at its first issue and never cleared, review r2). `Ok(None)` means a valid set of vault-key tokens.
+- **Liveness is the hold's state, not a reference count.** The hold keeps its key in a mutex-guarded slot that its
+  `Drop` empties, erasing the key in place. Every use copies the key under that mutex, inside the vault gate, so no use, and
+  no signer issue, begins after the drop, while an operation already past its copy finishes. A transient strong
+  reference (an upgraded `Weak`) would have let a new use begin after the drop (GPT r1, high).
+
 ## 16. The contract surface (single source for E0-08)
 
 Names and shapes are E0-08's implemented contract (369f8f0, Contract-Version 3, which becomes 4 when E0-08 adopts

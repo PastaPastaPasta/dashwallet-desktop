@@ -22,8 +22,8 @@ use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dw_engine::platform::{VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
 use dw_vault::{
-    Credential, GrantKind, GrantPurpose, GrantToken, KdfPolicy, MemoryOsStore, SeedDerivation,
-    SignerScope, SystemClock, Vault, VaultConfig, WalletSecret,
+    Credential, GrantPurpose, GrantToken, KdfPolicy, MemoryOsStore, SeedDerivation, SignerScope,
+    SystemClock, Vault, VaultConfig, WalletSecret,
 };
 use key_wallet::Network;
 use key_wallet::account::{AccountType, StandardAccountType};
@@ -84,14 +84,25 @@ fn vault(case: &Value, dir: &tempfile::TempDir) -> Vault {
     v
 }
 
-/// A redeemed `PlatformOp` grant, authorized without a prompt (the vault
+/// A redeemed grant of `purpose`, authorized without a prompt (the vault
 /// is unencrypted).
-fn platform_token(v: &Vault) -> GrantToken {
+fn redeemed(v: &Vault, purpose: GrantPurpose) -> GrantToken {
     let grant = v
-        .authorize(GrantPurpose::PlatformOp, Some(&WALLET), Credential::None)
+        .authorize(purpose, Some(&WALLET), Credential::None)
         .unwrap();
-    v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&WALLET))
+    v.redeem_grant(&grant.id, purpose.kind(), Some(&WALLET))
         .unwrap()
+}
+
+/// A redeemed `PlatformOp` grant that covers identity signatures.
+fn platform_token(v: &Vault) -> GrantToken {
+    redeemed(
+        v,
+        GrantPurpose::PlatformOp {
+            max_duffs: 0,
+            max_credits: 1,
+        },
+    )
 }
 
 /// An identity signer for the DIP-13 identities `identities`, under a
@@ -332,7 +343,10 @@ async fn scan_key_resolves_the_master_the_identity_keys_derive_from() {
     for case in doc["cases"].as_array().unwrap() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(case, &dir);
-        let scan = VaultScanKey::new(v.scan_key(&WALLET, &platform_token(&v)).unwrap());
+        let scan = VaultScanKey::new(
+            v.scan_key(&WALLET, &redeemed(&v, GrantPurpose::IdentityScan))
+                .unwrap(),
+        );
         let resolve = scan.resolver();
         let master = resolve().unwrap();
         let secp = Secp256k1::new();
