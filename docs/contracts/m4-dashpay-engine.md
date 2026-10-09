@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 4
+Contract-Version: 5
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -240,7 +240,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8fbdb6b2614681234c2d4a1158aebd136b820396ebc98fe4549efb4ca885dfda version: 4 -->
+<!-- surface-sha256: b5596978c2bea9d9d266e7303ed483da73a5c308da9da978858e9ea5b3fb5eda version: 5 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -558,6 +558,10 @@ impl CreditsError {
     pub fn code(&self) -> &'static str;
     pub fn platform(&self) -> Option<&PlatformError>;
 }
+impl From<dash_sdk::Error> for PlatformError;
+impl From<platform_wallet::PlatformWalletError> for PlatformError;
+impl From<dw_vault::VaultError> for PlatformError;
+impl From<crate::EngineError> for PlatformError;
 // src/platform/flows.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1439,7 +1443,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | `EngineEvent::LeaseChanged{network, lease: LeaseView}` and `LockProgress{network, phase}`, engine-side until E0-13 | E0-04 (P2a), E0-13 |
 | m1's `SendError` gains `send.cancelled` for a contact payment that Lock refused (E0-04 §16.11) | DP3-01 (P5 reuses it for M1 sends) |
 | Tools ▸ Repair "Unrecorded asset locks" (E0-04 §6.5, §16.10 C9) gets a facade call; engine-internal until then | DP1-02 |
-| **The error mapping**: one shared `From` impl per source into `PlatformError`, in `errors.rs`, for `PlatformWalletError`, `dash_sdk::Error`, `EngineError` and `VaultError` (§3.1), with `Internal{detail}` as the fallback. `EngineError::InsufficientCredits` (code `insufficient_credits`, from E0-01) maps to `platform.insufficient_credits`, the code hosts see from this facade. Every later task maps through these impls and extends them in place. | **E0-05** (W3): its `sync_now` is the first facade body that returns real library errors, and it lands before every DP task that does (ROADMAP E0-05 row) |
+| **The error mapping**: one shared `From` impl per source into `PlatformError`, in `errors.rs`, for `PlatformWalletError`, `dash_sdk::Error`, `EngineError` and `VaultError` (§3.1), with `Internal{detail}` as the fallback. `EngineError::InsufficientCredits` (code `insufficient_credits`, from E0-01) maps to `platform.insufficient_credits`, the code hosts see from this facade. Every later task maps through these impls and extends them in place. **Done (E0-05, Contract-Version 5):** a locked or mixing-only vault, a missing credential and a watch-only wallet (`NoSecret`) are `platform.signer_unavailable`; DAPI that does not answer is `platform.unavailable`, `TimeoutReached` and the seed-binding deadline `platform.timeout`, a proof error `platform.proof_invalid`, a context-provider error `platform.context_unavailable`; persister and vault-store errors `storage`. | **E0-05** (W3): its `sync_now` is the first facade body that returns real library errors, and it lands before every DP task that does (ROADMAP E0-05 row) |
 
 ## 7. Decisions on DASHPAY §3.6
 

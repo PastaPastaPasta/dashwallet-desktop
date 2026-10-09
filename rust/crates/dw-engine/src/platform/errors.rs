@@ -392,3 +392,265 @@ impl CreditsError {
         }
     }
 }
+
+// ---- The error mapping (m4-dashpay-engine.md §6; E0-05) -------------------
+//
+// One `From` per source into `PlatformError`. Each maps what has a facade
+// code and falls back to `Internal{detail}`; later tasks extend these in
+// place rather than mapping on their own.
+
+fn internal(e: impl std::fmt::Display) -> PlatformError {
+    PlatformError::Internal {
+        detail: e.to_string(),
+    }
+}
+
+impl From<dash_sdk::Error> for PlatformError {
+    fn from(e: dash_sdk::Error) -> Self {
+        use dash_sdk::Error as Sdk;
+        // Platform's balance refusal keeps its figures.
+        if let Some(promoted) = platform_wallet::error::promote_identity_insufficient_balance(&e) {
+            return promoted.into();
+        }
+        match e {
+            Sdk::TimeoutReached(..) => Self::Timeout,
+            Sdk::DapiClientError(_) | Sdk::StaleNode(_) => Self::Unavailable,
+            // The last attempt's error says why no node answered.
+            Sdk::NoAvailableAddressesToRetry(last) => match Self::from(*last) {
+                Self::Internal { .. } => Self::Unavailable,
+                known => known,
+            },
+            Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
+                Self::ProofInvalid
+            }
+            Sdk::ContextProviderError(_) => Self::ContextUnavailable,
+            other => internal(other),
+        }
+    }
+}
+
+impl From<platform_wallet::PlatformWalletError> for PlatformError {
+    fn from(e: platform_wallet::PlatformWalletError) -> Self {
+        use platform_wallet::PlatformWalletError as Pw;
+        match e {
+            Pw::Sdk(source) => source.into(),
+            Pw::TokenOperationFailed { source, .. } => {
+                match platform_wallet::error::promote_identity_insufficient_balance(&source) {
+                    Some(promoted) => promoted.into(),
+                    None => internal(source),
+                }
+            }
+            Pw::InsufficientIdentityCredits {
+                required,
+                available,
+                ..
+            } => Self::InsufficientCredits {
+                needed: required,
+                available,
+            },
+            Pw::WalletNotFound(_) => Self::WalletNotFound,
+            Pw::WalletLocked => Self::SignerUnavailable,
+            Pw::SeedMismatch { .. } => Self::SeedMismatch,
+            Pw::SeedBindingUnanswered { .. } | Pw::FinalityTimeout(_) => Self::Timeout,
+            Pw::IdentityNotFound(_) => Self::Identity(IdentityError::NotFound),
+            Pw::IdentityDiscoveryIncomplete { .. } | Pw::ContactSyncUnreachable { .. } => {
+                Self::Unavailable
+            }
+            Pw::InvalidParameter(detail) => Self::InvalidArgument { detail },
+            e @ (Pw::PersisterLoad(_)
+            | Pw::PersisterStore(_)
+            | Pw::PersisterRestore(_)
+            | Pw::Persistence(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
+            other => internal(other),
+        }
+    }
+}
+
+impl From<dw_vault::VaultError> for PlatformError {
+    fn from(e: dw_vault::VaultError) -> Self {
+        use dw_vault::VaultError as V;
+        match e {
+            // Unlock, enter the passphrase, or the wallet has no keys at all
+            // (watch-only): m4 §4 gives all of them `signer_unavailable`.
+            V::NoVault
+            | V::Locked
+            | V::MixingOnly
+            | V::CredentialRequired
+            | V::PassphraseStale
+            | V::NoSecret => Self::SignerUnavailable,
+            V::GrantInvalid | V::GrantPurposeMismatch => Self::GrantInvalid,
+            V::InvalidArgument(detail) => Self::InvalidArgument { detail },
+            e @ (V::Storage(_) | V::Corrupt(_) | V::OsStoreUnavailable(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
+            other => internal(other),
+        }
+    }
+}
+
+impl From<crate::EngineError> for PlatformError {
+    fn from(e: crate::EngineError) -> Self {
+        use crate::EngineError as E;
+        match e {
+            E::InvalidArgument(detail) | E::InvalidConfig(detail) => {
+                Self::InvalidArgument { detail }
+            }
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen,
+            E::WalletNotFound(_) => Self::WalletNotFound,
+            e @ (E::Storage(_) | E::StorageInUse(_) | E::Io(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
+            E::InsufficientCredits {
+                needed, available, ..
+            } => Self::InsufficientCredits { needed, available },
+            E::Vault(e) => e.into(),
+            E::Signer(dw_vault::SignerError::Locked) => Self::SignerUnavailable,
+            E::Signer(dw_vault::SignerError::Vault(e)) => e.into(),
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            other => internal(other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+    use crate::EngineError;
+    use dw_vault::{SignerError, VaultError};
+    use platform_wallet::PlatformWalletError;
+
+    #[test]
+    fn engine_errors_keep_their_common_codes() {
+        let cases = [
+            (EngineError::InvalidArgument("x".into()), "invalid_argument"),
+            (
+                EngineError::NetworkNotOpen("regtest".into()),
+                "network_not_open",
+            ),
+            (EngineError::WalletNotFound("w".into()), "wallet_not_found"),
+            (EngineError::Storage("disk".into()), "storage"),
+            (
+                EngineError::InsufficientCredits {
+                    identity_id: "i".into(),
+                    needed: 5,
+                    available: 2,
+                },
+                "platform.insufficient_credits",
+            ),
+            (
+                EngineError::Vault(VaultError::Locked),
+                "platform.signer_unavailable",
+            ),
+            (
+                EngineError::Signer(SignerError::Locked),
+                "platform.signer_unavailable",
+            ),
+            (
+                EngineError::Vault(VaultError::GrantInvalid),
+                "platform.grant_invalid",
+            ),
+            (
+                EngineError::NotImplemented("x".into()),
+                "platform.not_implemented",
+            ),
+            (EngineError::SpvNotRunning, "internal"),
+        ];
+        for (engine, code) in cases {
+            assert_eq!(PlatformError::from(engine).code(), code);
+        }
+        assert_eq!(
+            PlatformError::from(EngineError::InsufficientCredits {
+                identity_id: "i".into(),
+                needed: 5,
+                available: 2,
+            }),
+            PlatformError::InsufficientCredits {
+                needed: 5,
+                available: 2
+            }
+        );
+    }
+
+    #[test]
+    fn vault_errors_ask_for_a_signer_or_a_grant() {
+        for e in [
+            VaultError::NoVault,
+            VaultError::Locked,
+            VaultError::MixingOnly,
+            VaultError::CredentialRequired,
+            VaultError::PassphraseStale,
+            VaultError::NoSecret,
+        ] {
+            assert_eq!(PlatformError::from(e).code(), "platform.signer_unavailable");
+        }
+        assert_eq!(
+            PlatformError::from(VaultError::GrantPurposeMismatch).code(),
+            "platform.grant_invalid"
+        );
+        assert_eq!(
+            PlatformError::from(VaultError::Corrupt("x".into())).code(),
+            "storage"
+        );
+        assert_eq!(PlatformError::from(VaultError::NotEmpty).code(), "internal");
+    }
+
+    #[test]
+    fn library_errors_map_to_their_platform_codes() {
+        let id = dpp::prelude::Identifier::from([3u8; 32]);
+        let cases = [
+            (
+                PlatformWalletError::WalletLocked,
+                "platform.signer_unavailable",
+            ),
+            (
+                PlatformWalletError::SeedMismatch {
+                    wallet_id: "w".into(),
+                },
+                "platform.seed_mismatch",
+            ),
+            (
+                PlatformWalletError::SeedBindingUnanswered {
+                    wallet_id: "w".into(),
+                },
+                "platform.timeout",
+            ),
+            (
+                PlatformWalletError::IdentityNotFound(id),
+                "identity.not_found",
+            ),
+            (
+                PlatformWalletError::ContactSyncUnreachable { identities: 1 },
+                "platform.unavailable",
+            ),
+            (
+                PlatformWalletError::InvalidParameter("bad".into()),
+                "invalid_argument",
+            ),
+            (
+                PlatformWalletError::InsufficientIdentityCredits {
+                    identity_id: id,
+                    required: 9,
+                    available: 1,
+                },
+                "platform.insufficient_credits",
+            ),
+            (PlatformWalletError::NoPrimaryIdentity, "internal"),
+        ];
+        for (library, code) in cases {
+            assert_eq!(PlatformError::from(library).code(), code);
+        }
+    }
+
+    #[test]
+    fn sdk_errors_map_to_their_platform_codes() {
+        use dash_sdk::Error as Sdk;
+        let timeout = Sdk::TimeoutReached(std::time::Duration::from_secs(1), "x".into());
+        assert_eq!(PlatformError::from(timeout).code(), "platform.timeout");
+        let wrapped = PlatformWalletError::Sdk(Sdk::Generic("boom".into()));
+        assert_eq!(PlatformError::from(wrapped).code(), "internal");
+        let retry = Sdk::NoAvailableAddressesToRetry(Box::new(Sdk::Generic("x".into())));
+        assert_eq!(PlatformError::from(retry).code(), "platform.unavailable");
+    }
+}
