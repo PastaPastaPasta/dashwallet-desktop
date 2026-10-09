@@ -152,15 +152,17 @@ status 1.
   without panicking, the wallet list without an error, and the engine runtime must run a task, all within 10 s. The
   session goes on if the probe passes; otherwise it ends with `session_poisoned` as its last line.
 - **How dwcli ends the engine (DEC-110).** Any panic in any engine task marks the engine poisoned for the process
-  (`dw_engine::engine_poisoned`), whatever became of the task's result. Before stopping SPV (`--spv`) or shutting
-  the engine down, dwcli probes a poisoned engine as above. Every SPV stop and the engine's shutdown run under a
-  deadline: `--shutdown-timeout SECS` (or `DWCLI_SHUTDOWN_TIMEOUT`), 10 s by default. A failed probe, a missed
-  deadline or a poisoned session abandons the engine: dwcli neither stops SPV nor shuts the engine down (either may
-  never finish), wipes the passphrase it read, then writes the lines it owes and exits with status 1, whatever the
-  command's own result; stderr says why. The command's line is unchanged: a write that went through still reads
-  `ok: true`. Key material the engine holds is left to the OS. The last lines are written best effort: a failed
-  write or flush (a closed pipe, a full disk) changes neither the exit status nor the skipped shutdown. A healthy
-  shutdown takes well under the deadline, and its exit status is the command's.
+  (`dw_engine::engine_poisoned`), whatever became of the task's result. Before stopping SPV (`--spv`) or shutting the
+  engine down, dwcli probes a poisoned engine as above. Every SPV stop and the engine's shutdown run under a deadline:
+  `--shutdown-timeout SECS` (or `DWCLI_SHUTDOWN_TIMEOUT`), 10 s by default; a thread the deadline needs that the OS
+  will not start counts as a missed deadline (DEC-118). A failed probe, a missed deadline or a poisoned session
+  abandons the engine: dwcli neither stops SPV nor shuts the engine down (either may never finish), wipes the
+  passphrase it read, then writes the lines it owes and exits with status 1, whatever the command's own result; stderr
+  says why. The command's line is unchanged: a write that went through still reads `ok: true`. The engine is never
+  dropped on dwcli's own thread (its drop may wait for wedged workers); it and the key material it holds are left to
+  the OS. The last lines are written best effort: a failed write or flush (a closed pipe, a full disk) changes neither
+  the exit status nor the skipped shutdown. A healthy shutdown takes well under the deadline, and its exit status is
+  the command's.
 - **Callers must drain stdout.** As any CLI, dwcli blocks on a write to a stdout that is full and that nobody reads,
   its last lines included, and does not exit until the write goes through or fails (DEC-106).
 - `--no-platform` (a chain with no Platform) refuses every DashPay command, a session included, with

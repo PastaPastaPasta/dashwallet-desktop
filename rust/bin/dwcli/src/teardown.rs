@@ -6,11 +6,14 @@
 //!   stopped or the engine shut down, and abandoned if it fails the probe.
 //! - Every SPV stop and engine shutdown runs under a deadline
 //!   (`--shutdown-timeout`, 10 s by default), and the engine is abandoned if
-//!   it misses it.
+//!   it misses it. A thread the deadline needs that cannot be started counts
+//!   as a missed deadline (DEC-118); the engine is then never dropped on the
+//!   caller's thread, whose drop could block on a wedged runtime.
 //!
 //! An abandoned engine is neither stopped nor shut down: `main` wipes the
 //! passphrase, writes what it owes best effort and exits with status 1.
 
+use std::mem::ManuallyDrop;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -91,9 +94,12 @@ pub fn healthy(session: &Arc<NetworkSession>, fail: bool) -> bool {
     let session = Arc::clone(session);
     within("dwcli-health-probe", PROBE_TIMEOUT, move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(debug_assertions)]
             if fail {
                 panic!("injected poison");
             }
+            #[cfg(not(debug_assertions))]
+            let _ = fail;
             let _ = session.vault().status();
             session.is_open()
                 && session.wallet_infos().is_ok()
@@ -117,8 +123,8 @@ pub fn stop_spv(session: &Arc<NetworkSession>, probe_fault: bool) -> Result<(), 
     within("dwcli-stop-spv", deadline(), move || {
         wait(stopping.stop_spv())
     })
-    .unwrap_or_else(|| {
-        let why = format!("stopping SPV missed its {:?} deadline", deadline());
+    .unwrap_or_else(|missed| {
+        let why = format!("stopping SPV {missed}");
         abandon(why.clone());
         Err(EngineError::Spv(why))
     })
@@ -135,34 +141,74 @@ pub fn shut_down(
     if must_abandon(session, probe_fault) {
         // Its drop would close the sessions in the background.
         std::mem::forget(engine);
-    } else if let Some(done) = within("dwcli-shutdown", deadline(), move || {
+        return Err(abandoned().unwrap_or_default());
+    }
+    // Only the started thread takes the engine out: if none starts, the
+    // closure is dropped here and the engine is leaked, since dropping it
+    // could wait forever for its runtime's workers (DEC-118).
+    let engine = ManuallyDrop::new(engine);
+    match within("dwcli-shutdown", deadline(), move || {
+        let engine = ManuallyDrop::into_inner(engine);
         engine.block_on(engine.shutdown())
     }) {
-        return Ok(done);
-    } else {
-        abandon(format!(
-            "the engine's shutdown missed its {:?} deadline",
-            deadline()
-        ));
+        Ok(done) => Ok(done),
+        Err(missed) => {
+            abandon(format!("the engine's shutdown {missed}"));
+            Err(abandoned().unwrap_or_default())
+        }
     }
-    Err(abandoned().unwrap_or_default())
 }
 
-/// Runs `f` on a thread of its own for up to `timeout`: `None` if it did
-/// not finish (the thread is then left behind) or could not start.
+/// Runs `f` on a thread of its own for up to `timeout`. `Err` says how it
+/// missed the deadline: it did not finish (the thread is then left behind),
+/// or its thread could not start (`f` is then dropped on this thread).
 fn within<T: Send + 'static>(
     name: &str,
     timeout: Duration,
     f: impl FnOnce() -> T + Send + 'static,
-) -> Option<T> {
+) -> Result<T, String> {
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name(name.into())
-        .spawn(move || {
-            let _ = tx.send(f());
-        })
-        .ok()?;
-    rx.recv_timeout(timeout).ok()
+    let spawned = match refused_spawn() {
+        Some(e) => {
+            drop(f);
+            Err(e)
+        }
+        None => std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let _ = tx.send(f());
+            })
+            .map(drop),
+    };
+    if let Err(e) = spawned {
+        return Err(format!(
+            "could not start its thread ({e}), which counts as missing its {timeout:?} deadline"
+        ));
+    }
+    rx.recv_timeout(timeout)
+        .map_err(|_| format!("missed its {timeout:?} deadline"))
+}
+
+/// Debug builds only: with `DWCLI_FAULT_INJECT` ending in `-spawn-fail`, no
+/// teardown thread starts, as when the OS has no thread to give. On Linux
+/// the process's `RLIMIT_NPROC` is lowered first, so that no other thread
+/// starts either, such as the engine drop's own (unless the process is
+/// privileged).
+fn refused_spawn() -> Option<std::io::Error> {
+    #[cfg(debug_assertions)]
+    if std::env::var("DWCLI_FAULT_INJECT").is_ok_and(|v| v.ends_with("-spawn-fail")) {
+        #[cfg(target_os = "linux")]
+        // SAFETY: setrlimit reads a valid, initialised rlimit.
+        unsafe {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_NPROC, &none);
+        }
+        return Some(std::io::ErrorKind::WouldBlock.into());
+    }
+    None
 }
 
 /// Polls `fut` to completion on this thread, which runs no runtime: for a

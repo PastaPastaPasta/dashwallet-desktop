@@ -78,9 +78,11 @@ fn a_stalled_engine_misses_the_shutdown_deadline() {
     let dir = dw_testutil::private_tempdir();
     vault(dir.path());
     let stall = ("DWCLI_FAULT_INJECT", "stall");
-    // Parking the workers takes about a second, then 2 s of deadline: far
-    // below the 10 s health probe, which no panic triggers here anyway.
-    let bound = Duration::from_secs(8);
+    // Vault and engine start-up, about a second to park the workers, then
+    // 2 s of deadline; the bound leaves room for a loaded machine (Sol r6
+    // measured up to 16 s for such runs). The deadline is checked by the
+    // message, and no panic triggers the health probe here.
+    let bound = Duration::from_secs(25);
 
     let args = [
         "--verbose-events",

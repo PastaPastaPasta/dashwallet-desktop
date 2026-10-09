@@ -1016,7 +1016,8 @@ thread_local! {
 /// health probe panic, and `-wedge` (after a task panic) then blocks every
 /// engine worker, so the probe times out. `stall` blocks every engine
 /// worker after any DashPay command, with no panic, so only the shutdown's
-/// deadline ends the process.
+/// deadline ends the process. A `-spawn-fail` suffix starts no teardown
+/// thread (see `teardown`).
 #[cfg(debug_assertions)]
 fn injected_fault(point: &str) -> bool {
     #[cfg(test)]
@@ -1031,6 +1032,7 @@ fn injected_fault(point: &str) -> bool {
         _ => {
             v.split_once("-poison")
                 .or(v.split_once("-wedge"))
+                .or(v.split_once("-spawn-fail"))
                 .map_or(&*v, |(f, _)| f)
                 == point
         }
@@ -1757,13 +1759,23 @@ mod tests {
         "invite",
     ];
 
+    /// The calls with real bodies (DP1-05). On the tests' wallet, with no
+    /// identity and no Platform, they answer with a result or their own
+    /// error, never a stub's.
+    const IMPLEMENTED: &[&str] = &[
+        "DashPay.identities",
+        "DashPay.set_main_identity",
+        "DashPay.discover_identities",
+    ];
+
     /// What tests feed a command that reads a bearer input.
     const SECRET: &[u8] = b"  dash:?du=alice&dapk=SECRET-MATERIAL\n";
 
     /// Every DashPay command but `dashpay session` with the facade call it
     /// reaches first while the bodies are stubs. A write asks for its grant
     /// first, so its first call is its quote or `grant_request`. A DP task
-    /// that fills in a body moves its rows on to the next stub, or out.
+    /// that fills in a body moves its rows on to the next stub, or names
+    /// the call in [`IMPLEMENTED`].
     const TABLE: &[(&str, &str)] = &[
         ("dashpay status", "DashPay.status"),
         ("dashpay sync", "DashPay.sync_now"),
@@ -2354,6 +2366,14 @@ mod tests {
         let (engine, session) = session(&dir.path().join("data"));
         for (args, call) in TABLE {
             let line = envelope(&run(&engine, &session, args));
+            assert!(!line.to_string().contains("SECRET"), "{args:?}");
+            if IMPLEMENTED.contains(call) {
+                assert_ne!(
+                    line["error"]["code"], "platform.not_implemented",
+                    "{args:?}"
+                );
+                continue;
+            }
             assert_eq!(
                 line,
                 json!({
@@ -2366,7 +2386,6 @@ mod tests {
                 }),
                 "{args:?}"
             );
-            assert!(!line.to_string().contains("SECRET"), "{args:?}");
         }
         engine.block_on(engine.shutdown()).unwrap();
     }

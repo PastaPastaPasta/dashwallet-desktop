@@ -24,6 +24,10 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Debug builds' fault injection (`-spawn-fail`) lowers RLIMIT_NPROC.
+libc = "0.2"
+
 [dev-dependencies]
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }

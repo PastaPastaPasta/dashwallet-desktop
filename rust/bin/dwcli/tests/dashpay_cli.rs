@@ -61,12 +61,10 @@ fn dashpay_commands_print_one_json_line() {
     );
 
     // A write's grant comes from the encrypted vault with the passphrase
-    // (`identity discover` authorizes before its stubbed call).
+    // (`identity discover` authorizes before it reaches Platform, which is
+    // unreachable here).
     let out = dwcli(dir.path(), &["identity", "discover"], b"");
-    assert_eq!(
-        line(&out)["error"]["params"],
-        json!({"call": "DashPay.discover_identities"})
-    );
+    assert_eq!(line(&out)["error"]["code"], "platform.unavailable");
 
     // The link comes from stdin and is quoted nowhere.
     let secret = "dash:?invitation=E2E-BEARER-SECRET";
