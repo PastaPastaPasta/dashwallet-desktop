@@ -10,6 +10,7 @@ use std::sync::Arc;
 use dw_vault::GrantKind;
 
 use crate::events::{WalletName, unix_now};
+use crate::platform::RevokeCause;
 use crate::{EngineError, EngineEvent, NetworkSession, NoticeCode, WalletBalances, WalletId};
 
 /// Longest wallet name, in characters, after trimming.
@@ -212,6 +213,9 @@ impl NetworkSession {
                 this.vault
                     .check_grant(&grant_id, GrantKind::Wipe, Some(&id.0))?;
             }
+            // E0-04 §8.6: the wallet's leases end and its permits drain
+            // before anything of it goes.
+            let _barrier = this.revoke_wallet(id, RevokeCause::WalletRemoved).await;
             let vault = this.vault.clone();
             // The grant is redeemed (consumed) before anything is deleted. Its
             // token carries the key of a passphrase grant on a locked vault.
@@ -251,6 +255,7 @@ impl NetworkSession {
                 Ok(Err(e)) => Some(e.to_string()),
                 Err(e) => Some(e.to_string()),
             };
+            this.erase_dispatch_rows(id).await;
             if let Some(detail) = failure {
                 tracing::warn!(wallet_id = %id, error = %detail, "removed wallet's vault records were not deleted");
                 this.sink.emit(EngineEvent::Notice {

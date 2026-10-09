@@ -44,6 +44,12 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.register_name",
     "DashPay.set_main_name",
     "DashPay.main_name",
+    // E0-04.P2a: the lease surface.
+    "NetworkSession.begin_flow",
+    "NetworkSession.end_flow",
+    "NetworkSession.leases",
+    "DashPay.grant_request",
+    "DashPay.dispatch_status",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -67,13 +73,14 @@ const FACADE: &[&str] = &[
 /// Files of `src/platform/` that are not part of the facade: the module
 /// root, the vault signers (E0-03), `platform-status` (E0-02), the
 /// identity key policy (DP1-01), the bring-up runtime (E0-05), the names
-/// network seam and session tests (DP1-03) and the changeset tap and trust
-/// records (E0-06).
+/// network seam and session tests (DP1-03), the changeset tap and trust
+/// records (E0-06) and the lease table and dispatch fence (E0-04).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
+    "lease",
     "mod.rs",
     "names_net.rs",
     "provenance.rs",
@@ -1065,15 +1072,20 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(session.invitation_status(s()).await);
         c.stub(session.pending_invitations().await);
         c.stub(session.forget_invitation(s()).await);
-        c.stub(
+        // The lease surface (E0-04.P2a) is implemented; its behaviour is
+        // tested in `platform::lease`.
+        assert_eq!(
             session
                 .begin_flow(wallet, FlowKind::AcceptAndPay, vec![s()])
                 .await,
+            Err(PlatformError::WalletNotFound)
         );
-        c.stub(session.end_flow(s()));
-        c.stub(session.leases());
-        c.stub(dp.grant_request(s(), GrantAction::SendRequest).await);
-        c.stub(dp.dispatch_status(s()).await);
+        assert_eq!(session.end_flow(s()), Err(PlatformError::GrantInvalid));
+        assert_eq!(session.leases(), Ok(vec![]));
+        assert!(matches!(
+            dp.dispatch_status(s()).await,
+            Err(PlatformError::InvalidArgument { .. })
+        ));
 
         // DP1-05's calls are implemented: an unknown wallet is refused.
         assert_eq!(dp.identities().unwrap_err().code(), "wallet_not_found");

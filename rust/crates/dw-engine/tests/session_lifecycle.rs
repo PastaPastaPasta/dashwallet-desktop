@@ -381,7 +381,7 @@ fn import_without_usable_vault_registers_nothing() {
     assert!(s.wallet_infos().unwrap().is_empty());
 
     create_vault(&engine, &s, true);
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     let err = import(&engine, &s, ABANDON_12);
     assert!(
         matches!(err, Err(EngineError::Vault(VaultError::Locked))),

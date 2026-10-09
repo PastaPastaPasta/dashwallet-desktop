@@ -67,21 +67,24 @@ pub enum NoticeCode {
     WalletSecretNotDeleted,
 }
 
-impl From<dw_engine::NoticeCode> for NoticeCode {
-    fn from(c: dw_engine::NoticeCode) -> Self {
-        match c {
-            dw_engine::NoticeCode::PlatformContextUnavailable => Self::PlatformContextUnavailable,
-            dw_engine::NoticeCode::SpvError => Self::SpvError,
-            dw_engine::NoticeCode::UncleanShutdown => Self::UncleanShutdown,
-            dw_engine::NoticeCode::SyncStalled => Self::SyncStalled,
-            dw_engine::NoticeCode::BackupFailed => Self::BackupFailed,
-            dw_engine::NoticeCode::WalletSecretNotDeleted => Self::WalletSecretNotDeleted,
-            // Withheld by `ObserverSink` until E0-13 binds it.
-            dw_engine::NoticeCode::DashPayStartupIncomplete => {
-                debug_assert!(false, "DashPayStartupIncomplete reached the bindings");
-                Self::PlatformContextUnavailable
-            }
-        }
+impl NoticeCode {
+    /// The binding's code; `None` for the engine-side codes the frozen
+    /// bindings do not carry yet (E0-04 §16.8; E0-13 forwards them).
+    fn forward(c: dw_engine::NoticeCode) -> Option<Self> {
+        use dw_engine::NoticeCode as C;
+        Some(match c {
+            C::PlatformContextUnavailable => Self::PlatformContextUnavailable,
+            C::SpvError => Self::SpvError,
+            C::UncleanShutdown => Self::UncleanShutdown,
+            C::SyncStalled => Self::SyncStalled,
+            C::BackupFailed => Self::BackupFailed,
+            C::WalletSecretNotDeleted => Self::WalletSecretNotDeleted,
+            // Withheld until E0-13 binds them.
+            C::DashPayStartupIncomplete
+            | C::DispatchRecordMissing
+            | C::UnscopedDispatch
+            | C::DispatchJournalUnavailable => return None,
+        })
     }
 }
 
@@ -169,10 +172,12 @@ pub enum EngineEvent {
     },
 }
 
-impl From<dw_engine::EngineEvent> for EngineEvent {
-    fn from(e: dw_engine::EngineEvent) -> Self {
+impl EngineEvent {
+    /// The binding's event; `None` for the engine-side variants the frozen
+    /// bindings do not carry yet (E0-04 §13; E0-13 forwards them).
+    pub(crate) fn forward(e: dw_engine::EngineEvent) -> Option<Self> {
         use dw_engine::EngineEvent as E;
-        match e {
+        Some(match e {
             E::SessionOpened { network } => Self::SessionOpened {
                 network: network.into(),
             },
@@ -219,7 +224,7 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 detail,
             } => Self::Notice {
                 network: network.map(Into::into),
-                code: code.into(),
+                code: NoticeCode::forward(code)?,
                 detail,
             },
             E::VaultLockState { network, state } => Self::LockState {
@@ -246,23 +251,17 @@ impl From<dw_engine::EngineEvent> for EngineEvent {
                 wallet_id: wallet_id.to_string(),
                 loaded,
             },
-            // Withheld by `ObserverSink` until E0-13 binds it; a stray one
-            // reloads the history, which is harmless.
-            E::Platform {
-                network, wallet_id, ..
-            } => {
-                debug_assert!(false, "a Platform signal reached the bindings");
-                Self::HistoryChanged {
-                    network: network.into(),
-                    wallet_id: wallet_id.to_string(),
-                    txids: Vec::new(),
-                }
-            }
             E::CoinJoin { network, wallet_id } => Self::CoinJoin {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
             },
-        }
+            // Withheld until E0-13 binds them: the DashPay signals (E0-06)
+            // and E0-04's lease, lock and dispatch events.
+            E::Platform { .. }
+            | E::LeaseChanged { .. }
+            | E::LockProgress { .. }
+            | E::DispatchResolved { .. } => return None,
+        })
     }
 }
 
@@ -277,18 +276,9 @@ pub(crate) struct ObserverSink(pub(crate) Arc<dyn EngineObserver>);
 
 impl dw_engine::EventSink for ObserverSink {
     fn emit(&self, event: dw_engine::EngineEvent) {
-        // The DashPay notices reach Swift with the facade bindings (E0-13);
-        // the generated Swift is frozen until then.
-        if matches!(
-            event,
-            dw_engine::EngineEvent::Notice {
-                code: dw_engine::NoticeCode::DashPayStartupIncomplete,
-                ..
-            } | dw_engine::EngineEvent::Platform { .. }
-        ) {
-            return;
+        if let Some(event) = EngineEvent::forward(event) {
+            self.0.on_event(event);
         }
-        self.0.on_event(event.into());
     }
 }
 

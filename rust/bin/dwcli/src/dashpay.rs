@@ -2277,7 +2277,7 @@ mod tests {
         engine
             .block_on(session.vault_op(move |v| v.create(Some(&create[..]))))
             .unwrap();
-        session.lock_vault().unwrap();
+        session.lock_vault_sync().unwrap();
         sink.armed.store(true, Ordering::SeqCst);
         let result = assert_abandoned(
             engine,

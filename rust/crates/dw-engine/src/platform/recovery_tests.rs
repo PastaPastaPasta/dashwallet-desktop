@@ -1385,7 +1385,7 @@ fn a_passphrase_grant_discovers_on_a_locked_or_mixing_only_vault() {
     });
     let (engine, s) = session_with(dir.path(), Arc::clone(&platform), Some(PASSPHRASE));
     let id = restore(&engine, &s);
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     for scope in [None, Some(UnlockScope::MixingOnly)] {
         if let Some(scope) = scope {
             engine
@@ -1433,7 +1433,7 @@ fn a_lock_after_discovery_stored_an_identity_keeps_its_recovery() {
         wait_until("the identity stored", || {
             platform.discovery_stored.load(Ordering::SeqCst)
         });
-        s.lock_vault().unwrap();
+        s.lock_vault_sync().unwrap();
         call.join().unwrap()
     });
     assert_eq!(ended.unwrap_err().code(), "platform.cancelled");

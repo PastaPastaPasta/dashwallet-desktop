@@ -15,7 +15,7 @@ use dashcore::Address;
 use dw_uri::keyio::{Destination, decode_destination};
 use dw_vault::MnemonicError;
 use dw_vault::mnemonic;
-use dw_vault::{GrantKind, LockState, Vault, VaultError, VaultStatus, WalletSecret, WalletSigner};
+use dw_vault::{GrantKind, LockState, Vault, VaultError, WalletSecret, WalletSigner};
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
@@ -130,6 +130,14 @@ impl NetworkSession {
     /// Runs a vault operation on the engine's blocking pool (Argon2id, file
     /// writes and OS secret store calls block) and emits `VaultLockState`
     /// when it changed the lock state.
+    ///
+    /// E0-04: it first waits while a lock's vault gate is pending, so an
+    /// unlock issued after a lock's call is ordered after that lock (H14).
+    /// It compares the vault's epoch before and after (H9): a call that
+    /// ended the epoch moves every lease to `NeedsGrant` and re-creates
+    /// the background leases where the vault stays prompt-free. Calls that
+    /// end the epoch on purpose (encrypt, passphrase change, recover,
+    /// destroy) go through [`Self::revoking_vault_op`] instead.
     pub async fn vault_op<T, F>(self: &Arc<Self>, f: F) -> Result<T, EngineError>
     where
         F: FnOnce(&Vault) -> Result<T, VaultError> + Send + 'static,
@@ -138,33 +146,27 @@ impl NetworkSession {
         let this = Arc::clone(self);
         let _op = self.enter().await?;
         self.manager()?;
-        self.rt
+        self.leases.wait_gates().await;
+        let (out, epoch_changed) = self
+            .rt
             .spawn_blocking(move || {
                 let before = this.vault.lock_state();
+                let epoch = this.vault.epoch();
                 let out = f(&this.vault);
                 this.emit_lock_state_change(before);
-                out.map_err(EngineError::from)
+                let after = this.vault.epoch();
+                if after != epoch {
+                    this.leases.epoch_changed(after);
+                }
+                (out.map_err(EngineError::from), after != epoch)
             })
-            .await?
-    }
-
-    /// Drops the vault's data key and revokes every grant. In-memory; waits
-    /// only for vault operations already running (about a millisecond
-    /// each, dw-vault `Vault::lock`). Cancels a pending
-    /// [`Self::relock_after`] timer.
-    pub fn lock_vault(&self) -> Result<VaultStatus, EngineError> {
-        let _op = self.try_enter()?;
-        self.manager()?;
-        self.cancel_relock();
-        Ok(self.lock_now())
-    }
-
-    fn lock_now(&self) -> VaultStatus {
-        let before = self.vault.lock_state();
-        let status = self.vault.lock();
-        self.platform.note_lock();
-        self.emit_lock_state_change(before);
-        status
+            .await?;
+        if epoch_changed {
+            // Inline: the call returns with no task still holding the
+            // session, and an unlock returns with its background leases.
+            self.ensure_background().await;
+        }
+        out
     }
 
     /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the
@@ -212,7 +214,7 @@ impl NetworkSession {
             .is_some()
     }
 
-    fn emit_lock_state_change(&self, before: LockState) {
+    pub(crate) fn emit_lock_state_change(&self, before: LockState) {
         let state = self.vault.lock_state();
         if state != before {
             self.platform.note_lock_state(before, state);

@@ -267,6 +267,10 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            // E0-04 §8.6: the wallet's leases end and its permits drain.
+            let _barrier = this
+                .revoke_wallet(id, crate::platform::RevokeCause::WalletClosed)
+                .await;
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
             // Its discoveries end first, as for a removal: none may apply

@@ -17,6 +17,7 @@ pub(crate) mod journal;
 #[cfg(test)]
 mod journal_tests;
 pub mod keys_policy;
+pub mod lease;
 mod names;
 mod notifications;
 mod payments;
@@ -56,6 +57,7 @@ pub use identity::{
     IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, SecurityLevel,
 };
 pub use invitations::{InvitationInvalidReason, InvitationStatus};
+pub use lease::{FlowOutcome, FlowReport, LeaseError, LockPhase, LockReport};
 pub use names::{
     ContestContender, ContestState, ContestStatus, NameAvailability, NameOutcome, UserHit,
     UsernameCheck, UsernameRule, UsernameRuleCheck, check_username,

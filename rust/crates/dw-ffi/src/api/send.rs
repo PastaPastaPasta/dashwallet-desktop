@@ -243,7 +243,9 @@ impl From<dw_engine::EngineError> for SendError {
                 F::VaultLocked => Self::VaultLocked,
                 F::GrantInvalid => Self::GrantInvalid,
                 F::GrantExceeded { max_duffs, .. } => Self::GrantExceeded { max_duffs },
-                F::PreparedTxSpent => Self::PreparedTxSpent,
+                // A lock before the hand-off (E0-04 §8): nothing was sent and
+                // the draft is spent, which the frozen bindings already say.
+                F::PreparedTxSpent | F::Cancelled => Self::PreparedTxSpent,
                 F::NoPeers => Self::NoPeers,
                 F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
                 F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },

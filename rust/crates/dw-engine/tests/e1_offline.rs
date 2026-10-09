@@ -239,7 +239,7 @@ fn remove_wallet_refuses_a_locked_vault_and_reports_a_seed_left_behind() {
         .block_on(s.vault_op(|v| v.create(Some(b"remove passphrase"))))
         .unwrap();
     let a = import(&engine, &s, ABANDON_12, genesis()).unwrap();
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     let r = engine.block_on(s.remove_wallet(a, "not-a-grant".into()));
     assert!(
         matches!(r, Err(EngineError::Vault(dw_vault::VaultError::Locked))),

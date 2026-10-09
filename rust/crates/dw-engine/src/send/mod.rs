@@ -43,6 +43,10 @@ use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use self::plan::{InputChoice, MAX_MONEY, Plan, PlanError, PlanOutput, dust_threshold};
 use crate::coins::{CoinSnapshot, now_secs};
+use crate::platform::lease::{
+    AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, LeaseError, Outcome, Settlement,
+    Verdict,
+};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// dash-qt `-maxtxfee` default: a fee above 0.1 DASH is absurd (QT-058).
@@ -175,6 +179,11 @@ pub enum SendFailure {
     BroadcastRejected { reason: String },
     #[error("broadcast outcome unknown: {reason}")]
     BroadcastUnknown { reason: String },
+    /// A payment under a lease that Lock (or another revocation) ended
+    /// before it was handed off: nothing was sent (E0-04 §4.6, DP3-01
+    /// `send.cancelled`).
+    #[error("cancelled before anything was sent")]
+    Cancelled,
 }
 
 impl From<SendFailure> for EngineError {
@@ -198,6 +207,48 @@ impl From<PlanError> for SendFailure {
             PlanError::TooManyInputs { .. } => SendFailure::TxTooLarge,
             // A sum beyond u64 is far beyond MAX_MONEY.
             PlanError::Overflow => SendFailure::TxTooLarge,
+        }
+    }
+}
+
+/// Maps a lease's refusal at `prepare` (E0-04 §4.6, §16.4).
+fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
+    match e {
+        LeaseError::Revoked(_) | LeaseError::Locked => SendFailure::Cancelled,
+        LeaseError::Ended | LeaseError::Invalid => SendFailure::GrantInvalid,
+        LeaseError::Parked(_) | LeaseError::NeedsGrant(_) | LeaseError::Vault(_) => {
+            SendFailure::VaultLocked
+        }
+        LeaseError::Exceeded { remaining, .. } => SendFailure::GrantExceeded {
+            max_duffs: remaining,
+            outflow,
+        },
+    }
+    .into()
+}
+
+/// A lease's Spend charge made before signing (E0-04 §4.2): refunded on
+/// drop unless bound to the signed txid.
+struct SpendCharge {
+    lease: Lease,
+    charge: Option<crate::platform::lease::budget::Charge>,
+}
+
+impl SpendCharge {
+    fn bind(mut self, txid: ArtifactId) {
+        if let Some(charge) = self.charge.take() {
+            self.lease
+                .table
+                .bind_spend(self.lease.id(), self.lease.wallet(), txid, charge);
+        }
+    }
+}
+
+impl Drop for SpendCharge {
+    fn drop(&mut self) {
+        if let Some(charge) = self.charge.take() {
+            self.lease
+                .refund(crate::platform::BudgetPurpose::Spend, charge);
         }
     }
 }
@@ -754,6 +805,12 @@ impl TxDraft {
     /// inputs. Never broadcasts. The grant is redeemed only after the plan
     /// and an unsigned dry-run build of it succeeded, so a balance error or
     /// an unbuildable coin-control choice does not consume it.
+    ///
+    /// `grant_id` may also name a lease (E0-04 §16.1, "Accept and pay"):
+    /// the payment is then charged to the lease's Spend budget before it is
+    /// signed, the charge is bound to its txid, and `broadcast` hands it
+    /// off through the dispatch fence, so a lock before the hand-off
+    /// cancels it (`send.cancelled`).
     pub async fn prepare(
         self: &Arc<Self>,
         grant_id: String,
@@ -776,6 +833,17 @@ impl TxDraft {
         if !session.vault.has_wallet_secret(&wallet_id.0) {
             return Err(SendFailure::WatchOnly.into());
         }
+        let lease = session
+            .lease_for(&wallet_id, &grant_id)
+            .transpose()
+            .map_err(|e| lease_failure(e, 0))?;
+        if let Some(lease) = &lease {
+            if !lease.has_spend() {
+                return Err(SendFailure::GrantInvalid.into());
+            }
+            lease.spend_signer().map_err(|e| lease_failure(e, 0))?;
+            return self.prepare_leased(lease.clone()).await;
+        }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
         // unknown, expired, of another purpose or for another wallet fails
@@ -789,9 +857,69 @@ impl TxDraft {
         }
         let r = self.resolve().await?;
         let wallet = session.wallet(&wallet_id).await?;
-        let network = self.network();
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
 
-        // What leaves the wallet: outputs to scripts it does not own.
+        // What the grant caps: everything that leaves the wallet, fee
+        // included (the same outflow `sign_psbt` caps).
+        let outflow = external_sent.saturating_add(r.plan.fee);
+        let vault = session.vault.clone();
+        let signer = tokio::task::spawn_blocking(move || {
+            let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
+            let max_duffs = token.max_duffs().unwrap_or(0);
+            if outflow > max_duffs {
+                return Ok(Err(SendFailure::GrantExceeded { max_duffs, outflow }));
+            }
+            vault.signer(&wallet_id.0, &token).map(Ok)
+        })
+        .await?
+        .map_err(vault_failure)??;
+        self.sign_and_reserve(
+            r,
+            wallet,
+            recipient_mine,
+            change_mine,
+            external_sent,
+            signer,
+            None,
+        )
+        .await
+    }
+
+    /// `prepare` under a lease: the plan, then the Spend charge before
+    /// signing (E0-04 §4.2: "a lease cannot sign a spend above its cap").
+    async fn prepare_leased(
+        self: &Arc<Self>,
+        lease: Lease,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
+        let r = self.resolve().await?;
+        let wallet = self.session.wallet(&self.wallet_id).await?;
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
+        let outflow = external_sent.saturating_add(r.plan.fee);
+        let charge = lease
+            .charge_spend(outflow)
+            .map_err(|e| lease_failure(e, outflow))?;
+        let charge = SpendCharge {
+            lease: lease.clone(),
+            charge: Some(charge),
+        };
+        let signer = lease
+            .spend_signer()
+            .map_err(|e| lease_failure(e, outflow))?;
+        self.sign_and_reserve(
+            r,
+            wallet,
+            recipient_mine,
+            change_mine,
+            external_sent,
+            signer,
+            Some(charge),
+        )
+        .await
+    }
+
+    /// Which recipients and change the wallet owns, and what leaves it:
+    /// the outputs to scripts it does not own.
+    async fn outflow_of(&self, r: &Resolved, wallet: &PlatformWallet) -> (Vec<bool>, bool, u64) {
         let (recipient_mine, change_mine) = {
             let state = wallet.state().await;
             let owns = |a: &Address| crate::coins::wallet_owns(&state.core_wallet, a);
@@ -815,21 +943,29 @@ impl TxDraft {
             } else {
                 r.plan.change.unwrap_or(0)
             };
+        (recipient_mine, change_mine, external_sent)
+    }
 
-        // What the grant caps: everything that leaves the wallet, fee
-        // included (the same outflow `sign_psbt` caps).
-        let outflow = external_sent.saturating_add(r.plan.fee);
-        let vault = session.vault.clone();
-        let signer = tokio::task::spawn_blocking(move || {
-            let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
-            let max_duffs = token.max_duffs().unwrap_or(0);
-            if outflow > max_duffs {
-                return Ok(Err(SendFailure::GrantExceeded { max_duffs, outflow }));
-            }
-            vault.signer(&wallet_id.0, &token).map(Ok)
-        })
-        .await?
-        .map_err(vault_failure)??;
+    /// Signs the plan with `signer`, checks it and reserves its inputs.
+    /// A lease's `charge` is bound to the txid once signed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the two prepare paths' shared tail"
+    )]
+    async fn sign_and_reserve(
+        self: &Arc<Self>,
+        r: Resolved,
+        wallet: Arc<PlatformWallet>,
+        recipient_mine: Vec<bool>,
+        change_mine: bool,
+        external_sent: u64,
+        signer: dw_vault::VaultSigner,
+        charge: Option<SpendCharge>,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
+        let session = &self.session;
+        let wallet_id = self.wallet_id;
+        let network = self.network();
+        let lease = charge.as_ref().map(|c| c.lease.clone());
 
         if r.coinjoin {
             let outputs: Vec<TxOut> = r
@@ -856,6 +992,10 @@ impl TxDraft {
             );
             let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
             session.spends.add(wallet_id, inputs.iter().copied());
+            let artifact = ArtifactId::from_txid(&tx.txid());
+            if let Some(charge) = charge {
+                charge.bind(artifact);
+            }
             return Ok(Arc::new(PreparedTx {
                 session: Arc::clone(session),
                 wallet_id,
@@ -870,6 +1010,7 @@ impl TxDraft {
                 signed: Mutex::new(None),
                 mixed: Some(tx),
                 phase: Mutex::new(Phase::Pending),
+                lease: lease.map(|l| (l, artifact)),
             }));
         }
 
@@ -916,6 +1057,10 @@ impl TxDraft {
             .map(|i| i.previous_output)
             .collect();
         session.spends.add(wallet_id, inputs.iter().copied());
+        let artifact = ArtifactId::from_txid(&signed.transaction().txid());
+        if let Some(charge) = charge {
+            charge.bind(artifact);
+        }
         Ok(Arc::new(PreparedTx {
             session: Arc::clone(session),
             wallet_id,
@@ -930,6 +1075,7 @@ impl TxDraft {
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
             phase: Mutex::new(Phase::Pending),
+            lease: lease.map(|l| (l, artifact)),
         }))
     }
 
@@ -996,8 +1142,14 @@ impl TxDraft {
             *phase = Phase::Broadcasting;
             first
         };
-        let outcome = self.dispatch(&prepared, first).await;
-        let next = settle(first, &outcome);
+        let (outcome, next) = match &prepared.lease {
+            Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
+            None => {
+                let outcome = self.dispatch(&prepared, first).await;
+                let next = settle(first, &outcome);
+                (outcome, next)
+            }
+        };
         *prepared.phase() = next;
         match next {
             Phase::Sent => self
@@ -1038,6 +1190,77 @@ impl TxDraft {
             self.session.hub.pump.mark_history(self.wallet_id, None);
         }
         outcome
+    }
+
+    /// A leased payment's hand-off through the dispatch fence (E0-04 §5.4,
+    /// §5.5): the fence decides First, Resend or refusal, and the release
+    /// follows the artifact's settlement, never this attempt alone. A lock
+    /// before the hand-off is `send.cancelled`.
+    async fn fenced(
+        &self,
+        prepared: &PreparedTx,
+        lease: &Lease,
+        artifact: ArtifactId,
+        first: bool,
+    ) -> (Result<BroadcastOutcome, EngineError>, Phase) {
+        let table = std::sync::Arc::clone(&lease.table);
+        let wallet = self.wallet_id;
+        let verdict = lease
+            .scope(async move {
+                table
+                    .admit(AdmitRequest {
+                        wallet,
+                        artifact,
+                        kind: ArtifactKind::CoreTx { asset_lock: false },
+                        tracked_row: false,
+                        scope: DispatchScope::current(),
+                    })
+                    .await
+            })
+            .await;
+        let unknown = |reason: String| -> (Result<BroadcastOutcome, EngineError>, Phase) {
+            (
+                Err(SendFailure::BroadcastUnknown { reason }.into()),
+                Phase::Unknown,
+            )
+        };
+        let (result, settlement) = match verdict {
+            Verdict::First(permit) => {
+                // The hand-off starts at once; a lock's drain stops waiting
+                // for it at the permit's deadline, while the network's
+                // verdict may come later (L5/L10 clamp the drain, not this).
+                let result = self.dispatch(prepared, first).await;
+                let s = permit.finish(attempt_outcome(&result));
+                (result, s)
+            }
+            Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
+                let result = self.dispatch(prepared, false).await;
+                let s = guard.finish(attempt_outcome(&result));
+                (result, s)
+            }
+            Verdict::Refused { .. } => {
+                return (Err(SendFailure::Cancelled.into()), Phase::Released);
+            }
+            Verdict::Deferred => return unknown("the hand-off was deferred".into()),
+        };
+        match settlement {
+            Settlement::Sent => (
+                result.or_else(|_| {
+                    Ok(BroadcastOutcome {
+                        txid: artifact.to_string(),
+                    })
+                }),
+                Phase::Sent,
+            ),
+            Settlement::DefinitelyUnsent => (result, Phase::Released),
+            Settlement::MaybeOut => match result {
+                Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => {
+                    (result, Phase::Unknown)
+                }
+                Err(e) => unknown(format!("another attempt may have sent it: {e}")),
+                Ok(_) => unknown("accepted, but recorded as unknown".into()),
+            },
+        }
     }
 
     /// One broadcast attempt. `first`: the transaction was never handed to
@@ -1149,6 +1372,21 @@ fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase
         // Not dispatched (session closed, wallet gone): as before.
         Err(_) if first => Phase::Pending,
         Err(_) => Phase::Unknown,
+    }
+}
+
+/// What one attempt says about its own bytes (E0-04 §5.5): only a
+/// rejection before the network took them is a definite `NotSent`.
+fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) -> Outcome {
+    match result {
+        Ok(_) => Outcome::Sent,
+        Err(EngineError::Send(
+            SendFailure::NoPeers
+            | SendFailure::BroadcastRejected { .. }
+            | SendFailure::PreparedTxSpent,
+        ))
+        | Err(EngineError::NetworkNotOpen(_) | EngineError::WalletNotFound(_)) => Outcome::NotSent,
+        Err(_) => Outcome::MaybeSent,
     }
 }
 
@@ -1335,6 +1573,9 @@ pub struct PreparedTx {
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
     phase: Mutex<Phase>,
+    /// Prepared under a lease: its hand-offs go through the dispatch
+    /// fence, scoped to the lease, as this artifact (E0-04 §5.4).
+    lease: Option<(Lease, ArtifactId)>,
 }
 
 impl std::fmt::Debug for PreparedTx {
@@ -1370,6 +1611,9 @@ impl PreparedTx {
     /// Releases the reservation (key-wallet's, owner-guarded, and the
     /// engine's) of a transaction that will not be sent.
     async fn release(&self, session: &NetworkSession) {
+        if let Some((lease, artifact)) = &self.lease {
+            lease.table.unbind_spend(*artifact);
+        }
         session
             .spends
             .remove(&self.wallet_id, self.inputs.iter().copied());
@@ -1388,6 +1632,9 @@ impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
             return;
+        }
+        if let Some((lease, artifact)) = &self.lease {
+            lease.table.unbind_spend(*artifact);
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;

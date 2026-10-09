@@ -866,7 +866,7 @@ impl ConsoleContext {
             }
             "walletlock" => {
                 arity(method, args, 0, 0)?;
-                s.lock_vault().rpc()?;
+                s.lock_vault_sync().rpc()?;
                 Ok(Json::Null)
             }
             "walletpassphrase" => {
