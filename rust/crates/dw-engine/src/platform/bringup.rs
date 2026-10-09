@@ -759,13 +759,13 @@ fn background_contact_crypto(
     VaultContactCrypto::new(vault.dashpay_crypto_signer(&id.0)?)
 }
 
-/// The identity-scan key of an unattended bring-up, under a grant the engine
-/// authorizes itself; that works only while the vault is prompt-free
-/// (dw-vault `Vault::scan_key`). E0-04 moves it to its `IdentityScan`
-/// purpose (E0-04 design §3.2).
+/// The identity-scan key of an unattended bring-up, under an `IdentityScan`
+/// grant the engine authorizes itself (E0-04 design §3.2); that works only
+/// while the vault is prompt-free (dw-vault `Vault::scan_key`), and its token
+/// carries the vault's key, so it needs no hold.
 fn unattended_scan_key(vault: &dw_vault::Vault, id: WalletId) -> Result<VaultScanKey, EngineError> {
-    let grant = vault.authorize(GrantPurpose::PlatformOp, Some(&id.0), Credential::None)?;
-    let token = vault.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&id.0))?;
+    let grant = vault.authorize(GrantPurpose::IdentityScan, Some(&id.0), Credential::None)?;
+    let token = vault.redeem_grant(&grant.id, GrantKind::IdentityScan, Some(&id.0))?;
     Ok(VaultScanKey::new(vault.scan_key(&id.0, &token)?))
 }
 
