@@ -156,7 +156,8 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: rust
         run: cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings
-      # Builds the Halo 2 proving key in a cold process (about 30 s upstream); no network.
+      # Builds the Halo 2 proving key in a cold process (about 3 s on agentbox, 30 s in the upstream
+      # doc comment); no network.
       - name: Prover warm-up
         if: ${{ !cancelled() }}
         working-directory: rust
