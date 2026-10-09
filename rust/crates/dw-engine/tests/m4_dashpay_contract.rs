@@ -39,6 +39,11 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.identities",
     "DashPay.set_main_identity",
     "DashPay.discover_identities",
+    "check_username",
+    "DashPay.name_availability",
+    "DashPay.register_name",
+    "DashPay.set_main_name",
+    "DashPay.main_name",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -61,13 +66,15 @@ const FACADE: &[&str] = &[
 
 /// Files of `src/platform/` that are not part of the facade: the module
 /// root, the vault signers (E0-03), `platform-status` (E0-02), the
-/// identity key policy (DP1-01) and the bring-up runtime (E0-05).
+/// identity key policy (DP1-01), the bring-up runtime (E0-05) and the names
+/// session tests (DP1-03).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "keys_policy.rs",
     "mod.rs",
     "recovery.rs",
     "recovery_tests.rs",
+    "names_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "signers.rs",
@@ -1049,7 +1056,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     };
     let mut c = Calls::default();
     engine.block_on(async {
-        c.stub(check_username("alice"));
         c.stub(session.stash_invitation(secret()).await);
         c.stub(session.invitation_status(s()).await);
         c.stub(session.pending_invitations().await);
@@ -1089,8 +1095,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(dp.finish_asset_locks(s()).await);
         c.stub(dp.prepare_faucet_lock(s()).await);
 
-        c.stub(dp.name_availability(s()).await);
-        c.stub(dp.register_name(s(), s(), s()).await);
         c.stub(dp.contest_status(s(), s()).await);
         c.stub(dp.search_users(s(), 10).await);
         c.stub(dp.resolve_user(s()).await);

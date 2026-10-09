@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 5
+Contract-Version: 6
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, and E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, and DP1-03's `names_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -66,7 +66,7 @@ type is `pub(crate)`.
 | `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
 | `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
 | `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
-| `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `contest_status`, `search_users`, `resolve_user` |
+| `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
 | `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
@@ -108,8 +108,9 @@ scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path car
 
 ## 2. Calls
 
-Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `set_main_identity` and
-`discover_identities` (§2.1). Kind is `sync`, `async` or `free, pure` (§1).
+Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and
+`discover_identities` (§2.1), and DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
+`register_name`, `set_main_name`, `main_name`). Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -140,9 +141,11 @@ Every call's status today: **stub**, except §2.10 and DP1-05's `identities`, `s
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `check_username(label)` | free, pure | The rule checklist (F4: 3–23 characters, `[A-Za-z0-9-]`, no edge hyphen), the normalized label and whether it is contested. A bad label is `valid: false`, not an error. | `NameError` |
+| `check_username(label)` | free, pure | The rule checklist (F4: 3–23 characters, `[A-Za-z0-9-]`, no edge hyphen, no `--`), the normalized label and whether it is contested. A bad label is `valid: false`, not an error. | `NameError` |
 | `name_availability(label)` | async | `Invalid{rules}`, `Available{contested}`, `Taken{owner}`, `ContestOpen{ends_at, contenders}`, `Locked` or `Unknown`. | `NameError` |
-| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. | `NameError` |
+| `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. A contested label needs the contest fund in credits and returns `ContestStarted{ends_at}`; a plain name registered while the identity's own contest is open becomes its temporary name. | `NameError` |
+| `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). | `NameError` |
+| `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the oldest owned name. `None` if it owns none. | `NameError` |
 | `contest_status(identity, label)` | async | The own contest: state, deadline, contenders and votes, the temporary name. | `NameError` |
 | `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI. `relation` is relative to the main identity. | `NameError` |
 | `resolve_user(username)` | async | Exact lookup; `None` if no such name. `relation` as in `search_users`. | `NameError` |
@@ -241,7 +244,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: b5596978c2bea9d9d266e7303ed483da73a5c308da9da978858e9ea5b3fb5eda version: 5 -->
+<!-- surface-sha256: d0f4e21b8dbcba0cf3214280c72dd6677f2f18924a2526f8e890e9d77594575b version: 6 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -781,6 +784,7 @@ pub enum UsernameRule {
     MaxLength,
     AllowedCharacters,
     NoEdgeHyphen,
+    NoDoubleHyphen,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -835,6 +839,8 @@ pub fn check_username(label: &str) -> Result<UsernameCheck, NameError>;
 impl DashPay {
     pub async fn name_availability(&self, label: String) -> Result<NameAvailability, NameError>;
     pub async fn register_name(&self, identity: String, label: String, grant: String) -> Result<NameOutcome, NameError>;
+    pub async fn set_main_name(&self, identity: String, label: Option<String>) -> Result<(), NameError>;
+    pub async fn main_name(&self, identity: String) -> Result<Option<String>, NameError>;
     pub async fn contest_status(&self, identity: String, label: String) -> Result<ContestStatus, NameError>;
     pub async fn search_users(&self, prefix: String, limit: u32) -> Result<Vec<UserHit>, NameError>;
     pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError>;
@@ -1550,3 +1556,7 @@ renames or reshapes them takes the next version bump:
     `dispatch_status(txid) == Some(NotSent)`, or a ChainLocked conflicting spend of one of the payment's inputs; never
     "not found on chain or in the wallet". `LockResolution::Unknown` reads like `MaybeSent` and `None`, and the lock
     stays (§2.5).
+35. **Names (DP1-03, version 6).** `UsernameRule::NoDoubleHyphen`: dash-platform-queries' `is_valid_username` and
+    the iOS register path refuse `--`, so the checklist does too. `set_main_name` and `main_name` are new: the main
+    name is a per-identity pick in `dp_prefs` that sync never rewrites (#4978); a pick the identity no longer owns is
+    skipped, not deleted.

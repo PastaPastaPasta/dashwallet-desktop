@@ -704,6 +704,27 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The values of `keys` for one identity of a wallet, in `keys` order;
+    /// `None` where unset.
+    pub fn identity_dp_prefs(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        keys: &[&str],
+    ) -> Result<Vec<Option<String>>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT value FROM dp_prefs WHERE wallet_id = ?1 AND identity = ?2 AND key = ?3",
+        )?;
+        keys.iter()
+            .map(|key| {
+                Ok(stmt
+                    .query_row(params![wallet_id, identity, key], |r| r.get(0))
+                    .optional()?)
+            })
+            .collect()
+    }
+
     /// Sets an identity's preference, or deletes it for `None`.
     pub fn set_dp_pref(
         &self,
@@ -961,6 +982,35 @@ mod tests {
         assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("w"));
         db.set_setting(GLOBAL_SCOPE, "k", None).unwrap();
         assert_eq!(db.setting(GLOBAL_SCOPE, "k").unwrap(), None);
+    }
+
+    #[test]
+    fn dp_prefs_set_get_delete_per_identity() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_dp_pref(W, "id1", "main_name", Some("alice"))
+            .unwrap();
+        db.set_dp_pref(W, "id1", "main_name", Some("bob")).unwrap();
+        db.set_dp_pref(W, "id2", "main_name", Some("carol"))
+            .unwrap();
+        db.set_dp_pref(W2, "id1", "main_name", Some("dave"))
+            .unwrap();
+        assert_eq!(
+            db.identity_dp_prefs(W, "id1", &["main_name", "temporary_name"])
+                .unwrap(),
+            vec![Some("bob".into()), None]
+        );
+        db.set_dp_pref(W, "id1", "main_name", None).unwrap();
+        assert_eq!(db.identity_dp_prefs(W, "id1", &["main_name"]).unwrap(), vec![None]);
+        assert_eq!(
+            db.identity_dp_prefs(W, "id2", &["main_name"]).unwrap(),
+            vec![Some("carol".into())]
+        );
+        db.delete_wallet(W).unwrap();
+        assert_eq!(db.identity_dp_prefs(W, "id2", &["main_name"]).unwrap(), vec![None]);
+        assert_eq!(
+            db.identity_dp_prefs(W2, "id1", &["main_name"]).unwrap(),
+            vec![Some("dave".into())]
+        );
     }
 
     #[test]

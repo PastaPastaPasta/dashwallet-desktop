@@ -26,7 +26,9 @@ platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 dpp = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
 dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+# `dpns-contract`: the provider serves the DPNS contract that the contested-name
+# vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it.
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", features = ["dpns-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
 platform-encryption = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
