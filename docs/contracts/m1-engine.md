@@ -173,9 +173,10 @@ Derived scalars stay in dw-vault, with two exceptions:
 **Key holds and the epoch** (E0-04 design §3.5 and §15's P1 follow-ups; engine-internal). A grant authorized on a
 vault with no full-scope key (`Locked`, `UnlockedMixingOnly`) carries its own copy of the data key.
 `Vault::hold_key(tokens)` moves that copy out of every token of a grant set into one `KeyHold`, or fails changing
-none: every token must carry its own key, be this vault's of the current epoch (`vault.grant_invalid`,
-`vault.locked`), not be held already and have issued no signer (`invalid_argument`); `Ok(None)` for a set of
-vault-key tokens, and a mixed set is `invalid_argument`. A held token issues signers only through its hold
+none: every token, vault-key ones included, must be this vault's of the current epoch (`vault.grant_invalid`,
+`vault.locked`); every token must carry its own key, not be held already and never have issued a signer, even one
+since dropped (`invalid_argument`); `Ok(None)` for a valid set of vault-key tokens, and a mixed set is
+`invalid_argument`. A held token issues signers only through its hold
 (`Vault::platform_signer_held`, `signer_held`, `scan_key_held`; `invalid_argument` anywhere else). Dropping the hold
 erases the key in place: every use copies it under the hold's mutex inside the vault gate, so an operation under way
 finishes with its copy and every later call of a held signer is `vault.locked` (a held token issues nothing once

@@ -2350,8 +2350,9 @@ Each question has a recommendation. Q1 is pasta's (B5). The rest are the manager
   (`invalid_argument`); so is a held token of any purpose outside its own hold. Vault-key tokens (an unlocked vault)
   need no hold and issue directly.
 - **No partial holds.** `hold_key` returns `Result<Option<KeyHold>, VaultError>`: it covers every token it is given
-  or fails, changing none. It refuses a set mixing vault-key and own-key tokens, a token already held, a token that
-  issued a signer, and a token of another vault or of an ended epoch. `Ok(None)` means a set of vault-key tokens.
+  or fails, changing none. It refuses any token of another vault or of an ended epoch (vault-key tokens included), a
+  set mixing vault-key and own-key tokens, a token already held, and a token that has ever issued a signer (a mark
+  set at its first issue and never cleared, review r2). `Ok(None)` means a valid set of vault-key tokens.
 - **Liveness is the hold's state, not a reference count.** The hold keeps its key in a mutex-guarded slot that its
   `Drop` empties, erasing the key in place. Every use copies the key under that mutex, inside the vault gate, so no use, and
   no signer issue, begins after the drop, while an operation already past its copy finishes. A transient strong

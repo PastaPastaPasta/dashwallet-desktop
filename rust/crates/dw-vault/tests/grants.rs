@@ -613,10 +613,11 @@ fn a_hold_covers_the_whole_set_or_nothing() {
         Credential::Passphrase(PASS),
     );
 
-    // Mixed vault-key and own-key tokens (the vault-key one also of an
-    // ended epoch: the mix is refused first).
+    // Mixed vault-key and own-key tokens. Both cannot be of one epoch (a
+    // vault-key grant needs the full key in memory, an own-key one its
+    // absence), so the vault-key token's ended epoch refuses the set.
     let mut mixed = [own(&v), vault_key];
-    invalid(v.hold_key(&mut mixed));
+    assert_eq!(v.hold_key(&mut mixed).map(drop), Err(VaultError::Locked));
     assert!(!format!("{:?}", mixed[0]).contains("held"));
 
     // A token that issued a signer, in a set with one that did not.
@@ -629,14 +630,11 @@ fn a_hold_covers_the_whole_set_or_nothing() {
             .all(|t| format!("{t:?}").contains("\"own\""))
     );
     drop(direct);
-    // Once that signer is gone, the same set is held whole.
-    let hold = v.hold_key(&mut with_signer).unwrap().unwrap();
-    assert!(with_signer.iter().all(|t| hold.holds(t)));
 
     // A token already held, alone or with a fresh one.
-    invalid(v.hold_key(&mut with_signer));
     let mut again = [own(&v)];
     let other = v.hold_key(&mut again).unwrap().unwrap();
+    invalid(v.hold_key(&mut again));
     let [held] = again;
     let mut with_held = [own(&v), held];
     invalid(v.hold_key(&mut with_held));
@@ -654,6 +652,77 @@ fn a_hold_covers_the_whole_set_or_nothing() {
         with_stale
             .iter()
             .all(|t| format!("{t:?}").contains("\"own\""))
+    );
+}
+
+/// Review DW-E0-04-P1 r2: a token that has issued a signer is never held,
+/// even once that signer is gone (the mark lasts the token's lifetime),
+/// alone or in a set, and the refusal changes no token.
+#[test]
+fn a_token_that_issued_a_signer_is_never_held() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    v.lock();
+    let pass = Credential::Passphrase(PASS);
+    for purpose in [
+        GrantPurpose::Spend { max_duffs: 1 },
+        GrantPurpose::SignMessage,
+    ] {
+        let used = token(&v, purpose, pass);
+        drop(v.signer(&wallet(1), &used).unwrap());
+        let mut alone = [used];
+        assert!(
+            matches!(v.hold_key(&mut alone), Err(VaultError::InvalidArgument(_))),
+            "{purpose:?} alone"
+        );
+        let [used] = alone;
+        let mut set = [token(&v, platform_op(1, 1), pass), used];
+        assert!(
+            matches!(v.hold_key(&mut set), Err(VaultError::InvalidArgument(_))),
+            "{purpose:?} in a set"
+        );
+        assert!(set.iter().all(|t| format!("{t:?}").contains("\"own\"")));
+    }
+}
+
+/// Review DW-E0-04-P1 r2: `hold_key` checks every token's binding, vault-key
+/// ones included: another vault's token is `GrantInvalid`, one of an ended
+/// epoch `Locked`. A valid vault-key set needs no hold (`Ok(None)`).
+#[test]
+fn a_hold_refuses_foreign_or_stale_vault_key_tokens() {
+    let (fx, other) = (Fixture::new(), Fixture::new());
+    let v = encrypted(&fx);
+    let w = encrypted(&other);
+    let none = Credential::None;
+
+    let mut fresh = [
+        token(&v, platform_op(1, 1), none),
+        token(&v, GrantPurpose::IdentityScan, none),
+    ];
+    assert!(v.hold_key(&mut fresh).unwrap().is_none());
+
+    let mut foreign = [token(&w, platform_op(1, 1), none)];
+    assert_eq!(
+        v.hold_key(&mut foreign).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    let [foreign] = foreign;
+    let mut with_foreign = [token(&v, platform_op(1, 1), none), foreign];
+    assert_eq!(
+        v.hold_key(&mut with_foreign).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+
+    let stale = token(&v, platform_op(1, 1), none);
+    v.lock();
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    let mut alone = [stale];
+    assert_eq!(v.hold_key(&mut alone).map(drop), Err(VaultError::Locked));
+    let [stale] = alone;
+    let mut with_stale = [token(&v, platform_op(1, 1), none), stale];
+    assert_eq!(
+        v.hold_key(&mut with_stale).map(drop),
+        Err(VaultError::Locked)
     );
 }
 

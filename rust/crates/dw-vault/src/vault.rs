@@ -76,6 +76,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use key_wallet::Network;
@@ -1308,6 +1309,7 @@ impl Vault {
             key: issued
                 .key
                 .map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key))),
+            issued: AtomicBool::new(false),
         })
     }
 
@@ -1817,15 +1819,24 @@ impl Vault {
     /// grant set is this vault's data key, so one hold serves the whole set
     /// ("Accept and pay"'s two grants).
     ///
-    /// The hold covers every token or the call fails, changing nothing: each
-    /// must carry its own key (authorized while the vault held no
-    /// full-scope key), have been redeemed by this vault in its current
-    /// epoch (`GrantInvalid`, `Locked`), not be held already and have issued
-    /// no signer, whose copy no hold could erase (`InvalidArgument`).
-    /// `Ok(None)` when no token carries its own key (the vault's key serves
-    /// them, and needs no hold); a set mixing both kinds is
-    /// `InvalidArgument`.
+    /// The hold covers every token or the call fails, changing nothing.
+    /// Every token, vault-key ones included, must have been redeemed by this
+    /// vault in its current epoch (`GrantInvalid`, `Locked`). Each must then
+    /// carry its own key (authorized while the vault held no full-scope
+    /// key), not be held already and never have issued a signer, even one
+    /// since dropped: a direct signer's copy is one no hold could erase
+    /// (`InvalidArgument`). `Ok(None)` for a valid set without own keys (the
+    /// vault's key serves them, and needs no hold); a set mixing both kinds
+    /// is `InvalidArgument`.
     pub fn hold_key(&self, tokens: &mut [GrantToken]) -> Result<Option<KeyHold>, VaultError> {
+        // Every token's binding first, vault-key ones included (review
+        // DW-E0-04-P1 r2).
+        {
+            let inner = self.inner();
+            for token in tokens.iter() {
+                self.token_current(&inner, token)?;
+            }
+        }
         let own = tokens
             .iter()
             .filter(|t| !matches!(t.key, KeySource::Vault))
@@ -1839,16 +1850,14 @@ impl Vault {
             ));
         }
         let key = {
-            let inner = self.inner();
             for token in tokens.iter() {
-                self.token_current(&inner, token)?;
                 match &token.key {
-                    KeySource::Own(key) if Arc::strong_count(key) == 1 => {}
-                    KeySource::Own(_) => {
+                    KeySource::Own(_) if token.issued.load(Ordering::Relaxed) => {
                         return Err(VaultError::InvalidArgument(
                             "a token that issued a signer cannot be held".into(),
                         ));
                     }
+                    KeySource::Own(_) => {}
                     _ => {
                         return Err(VaultError::InvalidArgument(
                             "the token is already held".into(),
@@ -1925,7 +1934,10 @@ impl Vault {
         if matches!(token.key, KeySource::Vault) && inner.dek.is_none() {
             return Err(VaultError::Locked);
         }
-        self.signer_locked(&inner, wallet, scope, token.key.clone())
+        let signer = self.signer_locked(&inner, wallet, scope, token.key.clone())?;
+        // `hold_key` takes the tokens `&mut`, so it never runs beside this.
+        token.issued.store(true, Ordering::Relaxed);
+        Ok(signer)
     }
 
     /// The background DashPay crypto signer ([`SignerScope::DashPayCrypto`],

@@ -1,5 +1,6 @@
 //! Public value types of the vault.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -206,6 +207,10 @@ pub struct GrantToken {
     pub(crate) epoch: u64,
     /// Which data key the token acts with.
     pub(crate) key: KeySource,
+    /// Set when the token first issues a signer and never cleared: such a
+    /// token is never held ([`crate::Vault::hold_key`]), even once that
+    /// signer is gone (review DW-E0-04-P1 r2).
+    pub(crate) issued: AtomicBool,
 }
 
 /// The data key a grant token or a signer acts with.
