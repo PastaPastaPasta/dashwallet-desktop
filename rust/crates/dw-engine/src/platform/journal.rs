@@ -9,12 +9,12 @@
 //!   so the library's whole-snapshot changesets, seen again and again, add
 //!   each event once. Contact events are once per relationship: a rotated
 //!   request (new `$createdAt`) is not news.
-//! - Catch-up silence (DEC-114, DEC-125, DEC-135). Each wallet has one
-//!   boundary ([`CATCH_UP_BEFORE_KEY`], persisted), which every recovery
+//! - Catch-up silence (DEC-114, DEC-125, DEC-135, DEC-139). Each wallet has
+//!   one boundary ([`CATCH_UP_BEFORE_KEY`], persisted), which every recovery
 //!   phase start raises to `max(boundary, now)` in one atomic upsert
-//!   ([`ChangesetTap::advance_catch_up`]): a discovery, a names pass, and a
-//!   bring-up that runs for a wallet with an identity on file or one not
-//!   created here (a restore). An event whose authoritative time
+//!   ([`ChangesetTap::advance_catch_up`]): a discovery, a names pass, a
+//!   restore's bring-up, and the bring-up after a discovery stored
+//!   identities. A plain warm start never moves it. An event whose authoritative time
 //!   predates the boundary is stored read: a request's `$createdAt`, a
 //!   payment's confirmed block time, a name's marketplace row time, the last
 //!   two read from the persister ([`Times`]). Local fetch or observation

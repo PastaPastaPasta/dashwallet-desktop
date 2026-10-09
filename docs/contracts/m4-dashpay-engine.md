@@ -1420,8 +1420,10 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`unverified`** on `IdentitySummary`, `ContactSummary`, `UserHit` and `ScannedContact` (DEC-125, positive
   provenance): once the trusted-quorum fallback has served a read in this installation (a persisted latch, the
   global setting `trust.fallback_used_at`), Platform data counts as unverified unless dw-appdb's `dp_trust_verified`
-  has a record for it. The latch is durable before use (DEC-135): the fallback serves a fetch only after the latch
-  is written, and if the write fails that fetch fails or degrades as if there were no fallback. In memory the latch
+  has a record for it. The latch is durable before use (DEC-135, DEC-139): the fallback serves a fetch only after the
+  latch is committed and a full WAL checkpoint has made it power-loss durable (app.sqlite runs `synchronous=NORMAL`,
+  under which a commit alone is not synced); if either fails, that fetch fails or degrades as if there were no
+  fallback. In memory the latch
   only caches the durable value; a latch that cannot be read counts as set, and the next use still writes it. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
   `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
   `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
@@ -1517,17 +1519,17 @@ The shapes are in §3. What they mean, where the name does not say:
   - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
     `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
     and `ContactEstablished` once it has either of them.
-  - **catch-up (DEC-114, DEC-125 monotone boundary, DEC-135):** each wallet has a catch-up boundary, the local,
-    unexported setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start moves it to
+  - **catch-up (DEC-114, DEC-125 monotone boundary, DEC-135, DEC-139):** each wallet has a catch-up boundary, the
+    local, unexported setting `dashpay.catch_up_before` (UNIX seconds). Every recovery phase start moves it to
     `max(boundary, now)` in one atomic upsert whose returned value the cache takes (also only ever raised), so
-    overlapping starts cannot lower it. The phase starts are `discover_identities`, a names pass, and every bring-up
-    that runs (not one skipped as watch-only or as proven to have no identity, nor one whose first reads time out)
-    except that of a wallet created here with no identity on file: a restore's (no identity on file, not created
-    here), and any bring-up of a wallet with an identity on file, whichever path admitted it (the bring-up a
-    discovery queues, the one that replaces it when SPV was stopped, an ordinary start). So on a warm start, events
-    Platform dates before the start (a request received while the app was closed) are stored read. The first
-    bring-up in this installation sets the boundary if absent. Nothing is carried between phases and nothing moves
-    it back. An event is stored read (no OS notification, DASHPAY §2.7) when its **authoritative** time predates the
+    overlapping starts cannot lower it. The phase starts are `discover_identities`, a names pass, and a bring-up
+    that starts a recovery: a restore's (no identity on file, not created here), or that of a wallet with
+    identities a discovery stored since its last bring-up took the marker, whichever path admitted it (the bring-up the
+    discovery queues, or the one that replaces it when SPV was stopped). The discovery marker is in memory: a
+    session closed, or the wallet unloaded, before that bring-up drops it, like the names pass it owes. A plain warm start is no recovery
+    and never moves the boundary, so what arrived while the app was closed is news and notifies. The first
+    bring-up in this installation sets the boundary if absent. Apart from the discovery marker, nothing is carried
+    between phases, and nothing moves the boundary back. An event is stored read (no OS notification, DASHPAY §2.7) when its **authoritative** time predates the
     boundary: a request's `$createdAt`, a relationship's later request, a payment's confirmed block time and a name's
     marketplace row time (transfer, else creation), the last two read from the persister. Local fetch or
     observation time (a name's `acquired_at`, the history's first-seen) is never an age. Everything else, an

@@ -11,9 +11,10 @@
 //! SPV syncs, until a verified re-fetch records it. Before the latch (no
 //! fallback ever used here) every fetch was proof-verified against the
 //! provider in use, and nothing is unverified. The latch is durable before
-//! the fallback serves anything (DEC-135): [`Provenance::fallback_in_use`]
-//! writes it and the caller refuses the fallback when that fails, so a
-//! reopened session can never forget it. In memory it only caches the
+//! the fallback serves anything (DEC-135, DEC-139): [`Provenance::fallback_in_use`]
+//! commits it and checkpoints the WAL (so it survives power loss), and the
+//! caller refuses the fallback when either fails, so a reopened session can
+//! never forget it. In memory it only caches the
 //! durable value, except that a latch that cannot be read counts as set.
 //!
 //! Reads are in memory (the facade's `identities()` is), loaded at open and
@@ -97,13 +98,15 @@ impl Provenance {
         if self.latch_durable.load(Ordering::SeqCst) {
             return Ok(());
         }
-        // The first write's time stays.
+        // The first write's time stays. Then power-loss durable (DEC-139):
+        // a committed write under `synchronous=NORMAL` is not yet synced.
         (self.appdb).raise_setting(
             dw_appdb::GLOBAL_SCOPE,
             TRUST_FALLBACK_USED_KEY,
             unix_now(),
             true,
         )?;
+        self.appdb.checkpoint_full()?;
         self.latch_durable.store(true, Ordering::SeqCst);
         self.fallback_used.store(true, Ordering::SeqCst);
         Ok(())
@@ -179,6 +182,28 @@ mod tests {
         p.fallback_in_use().unwrap();
         assert!(p.is_unverified(kind::IDENTITY, "a"));
         assert!(open().is_unverified(kind::IDENTITY, "a"), "after a reopen");
+    }
+
+    /// DEC-139: the latch is power-loss durable before `fallback_in_use`
+    /// returns. A copy of the database file alone (what survives when the
+    /// unsynced WAL does not) has it.
+    #[test]
+    fn the_latch_is_in_the_database_file_before_the_fallback_is_used() {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join(dw_appdb::APP_DB_FILE);
+        let p = Provenance::open(Arc::new(AppDb::open(&path).unwrap()));
+        p.fallback_in_use().unwrap();
+        let copy = dir.path().join("file-alone.sqlite");
+        std::fs::copy(&path, &copy).unwrap();
+        let latch: Option<String> = rusqlite::Connection::open(&copy)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [dw_appdb::GLOBAL_SCOPE, TRUST_FALLBACK_USED_KEY],
+                |r| r.get(0),
+            )
+            .ok();
+        assert!(latch.is_some(), "the latch is only in the WAL");
     }
 
     /// Sol r3's read-error probe: a latch that cannot be read counts as set,

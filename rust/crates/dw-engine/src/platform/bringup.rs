@@ -458,12 +458,15 @@ impl NetworkSession {
             return;
         }
         // A recovery phase starts (catch-up silence, DASHPAY §2.7; DEC-125,
-        // DEC-135): a seed not created here with no identity on file is a
+        // DEC-139): a seed not created here with no identity on file is a
         // restore, whose first pass finds what happened before; a wallet
-        // with an identity on file replays recovered state, whichever path
-        // brought it up (the bring-up a discovery queued, or the one that
-        // replaces it after an SPV restart dropped the queued signal).
-        if identity.is_some() || !created_here {
+        // with identities a discovery stored since its last bring-up
+        // replays them, whichever path brought it up (the bring-up the
+        // discovery queued, or the one that replaces it after an SPV
+        // restart dropped the queued signal). A plain warm start is no
+        // recovery: what arrived while the app was closed is news.
+        let discovered = self.platform.recovery.take_discovered(&id);
+        if discovered || (identity.is_none() && !created_here) {
             self.advance_catch_up(id).await;
         }
         self.platform.set_status(id, StartupStatus::Starting);

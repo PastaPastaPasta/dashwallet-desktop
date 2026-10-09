@@ -690,6 +690,25 @@ impl AppDb {
         Ok(stored)
     }
 
+    /// Makes every committed write durable against power loss: a full WAL
+    /// checkpoint, which syncs the WAL, copies it into the database file and
+    /// syncs that (the connection runs `synchronous=NORMAL`, under which a
+    /// commit alone is not synced). `Err` (`SQLITE_BUSY`) when another
+    /// connection kept the checkpoint from completing.
+    pub fn checkpoint_full(&self) -> Result<()> {
+        let busy: i64 = self
+            .conn()
+            .query_row("PRAGMA wal_checkpoint(FULL)", [], |r| r.get(0))?;
+        if busy != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("the WAL checkpoint did not complete".into()),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Every `(key, value)` of `scope` whose key starts with `prefix`, by
     /// key.
     pub fn settings_with_prefix(&self, scope: &str, prefix: &str) -> Result<Vec<(String, String)>> {
@@ -1017,6 +1036,43 @@ mod tests {
         assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("w"));
         db.set_setting(GLOBAL_SCOPE, "k", None).unwrap();
         assert_eq!(db.setting(GLOBAL_SCOPE, "k").unwrap(), None);
+    }
+
+    /// After a full checkpoint the write is in the database file itself:
+    /// a copy of that file alone (no `-wal`) has it; an ordinary commit is
+    /// only in the WAL.
+    #[test]
+    fn a_full_checkpoint_puts_committed_writes_in_the_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        let db = AppDb::open(&path).unwrap();
+        // Migrations leave a WAL; start from a checkpointed file.
+        db.checkpoint_full().unwrap();
+        let in_file_alone = |key: &str| {
+            let copy = dir.path().join("copy.sqlite");
+            std::fs::copy(&path, &copy).unwrap();
+            let conn = Connection::open(&copy).unwrap();
+            let found: Option<String> = conn
+                .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .unwrap();
+            drop(conn);
+            std::fs::remove_file(&copy).unwrap();
+            found.is_some()
+        };
+        db.set_setting(GLOBAL_SCOPE, "wal_only", Some("1")).unwrap();
+        assert!(!in_file_alone("wal_only"));
+        db.checkpoint_full().unwrap();
+        assert!(in_file_alone("wal_only"));
+
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT * FROM settings_kv;")
+            .unwrap();
+        db.set_setting(GLOBAL_SCOPE, "later", Some("1")).unwrap();
+        assert!(db.checkpoint_full().is_err(), "a reader pins the WAL");
     }
 
     #[test]

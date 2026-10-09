@@ -132,6 +132,10 @@ pub(crate) struct Recovery {
     choice_writer: tokio::sync::Mutex<()>,
     snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
+    /// Wallets with identities a discovery stored that no bring-up has
+    /// taken yet: the next bring-up that runs starts a recovery phase
+    /// (DEC-139). Dropped with the wallet's other state on unload or close.
+    discovered: Mutex<HashSet<WalletId>>,
     /// Per wallet, the admission of its explicit discoveries (review r1 M3,
     /// r2 M3-R2).
     discoveries: Mutex<HashMap<WalletId, DiscoveryGate>>,
@@ -256,11 +260,18 @@ impl Recovery {
         guard(&self.names_due).drain().collect()
     }
 
+    /// Whether a discovery stored identities for `id` that no bring-up has
+    /// taken yet; a bring-up past its early returns takes it.
+    pub(super) fn take_discovered(&self, id: &WalletId) -> bool {
+        guard(&self.discovered).remove(id)
+    }
+
     /// Forgets a removed or closed wallet.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.choices).remove(id);
         guard(&self.snapshots).remove(id);
         guard(&self.names_due).remove(id);
+        guard(&self.discovered).remove(id);
     }
 
     #[cfg(test)]
@@ -738,6 +749,7 @@ impl NetworkSession {
         if stored > 0 {
             self.refresh_identities(manager, id).await;
             self.platform.recovery.names_due(id);
+            guard(&self.platform.recovery.discovered).insert(id);
             self.platform.signal(PlatformSignal::Readmit(id));
         }
         u32::try_from(stored).unwrap_or(u32::MAX)

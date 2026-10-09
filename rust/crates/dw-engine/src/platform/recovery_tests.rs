@@ -974,6 +974,60 @@ fn a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// DEC-139: a plain warm start is no recovery phase. A contact request
+/// Platform dates after the last session's boundary, while the app was
+/// closed, arrives after the next start's bring-up and stays news (it
+/// notifies); the start did not move the boundary.
+#[test]
+fn a_warm_start_keeps_events_from_while_closed_as_news() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the restore's recovery", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+            && s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+    });
+    let closed_at = boundary(&engine, &s, id).unwrap();
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    // Received while the app was closed, a second after the boundary.
+    let while_closed_ms = (closed_at + 1) * 1_000 + 1;
+    while crate::events::unix_now() < closed_at + 3 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let (engine, s) = reopen(dir.path(), Arc::clone(&platform));
+    start(&engine, &s);
+    wait_until("the warm start's bring-up", || {
+        platform.bring_ups.load(Ordering::SeqCst) == 2
+            && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    assert_eq!(boundary(&engine, &s, id), Some(closed_at), "not moved");
+    let request = super::journal_tests::contacts(super::journal_tests::incoming(
+        ALICE[0],
+        9,
+        while_closed_ms,
+    ));
+    s.live().unwrap().store.store(id.0, request).unwrap();
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "request_received".into(),
+            while_closed_ms.to_string(),
+            false
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// Sol r3 R3-1's session probe (DEC-135): the latch is on file before the
 /// fallback serves anything, so an identity it fetched stays unverified
 /// after the session closes and the network is opened again, with no

@@ -101,14 +101,14 @@ fn identities(entries: Vec<IdentityEntry>) -> PlatformWalletChangeSet {
     }
 }
 
-fn contacts(cs: ContactChangeSet) -> PlatformWalletChangeSet {
+pub(super) fn contacts(cs: ContactChangeSet) -> PlatformWalletChangeSet {
     PlatformWalletChangeSet {
         contacts: Some(cs),
         ..Default::default()
     }
 }
 
-fn incoming(owner: u8, sender: u8, created_at: u64) -> ContactChangeSet {
+pub(super) fn incoming(owner: u8, sender: u8, created_at: u64) -> ContactChangeSet {
     let mut cs = ContactChangeSet::default();
     cs.incoming_requests.insert(
         ReceivedContactRequestKey {
