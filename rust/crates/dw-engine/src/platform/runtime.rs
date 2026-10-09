@@ -88,6 +88,8 @@ pub(crate) struct PlatformRuntime {
     /// The clock that orders signals' events against bring-up admissions
     /// (review r4 M4-R4).
     events: AtomicU64,
+    /// The identity read model and the names passes (DP1-05).
+    pub(crate) recovery: super::recovery::Recovery,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -255,6 +257,7 @@ impl PlatformRuntime {
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
             events: AtomicU64::new(0),
+            recovery: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -421,6 +424,7 @@ impl PlatformRuntime {
             task.abort();
         }
         self.write_startup().remove(id);
+        self.recovery.forget(id);
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {

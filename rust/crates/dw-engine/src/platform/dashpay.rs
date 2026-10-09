@@ -22,8 +22,7 @@ use crate::{NetworkSession, WalletId};
 /// that outlives a call (avatar candidates, scan proofs, caches) lives in
 /// the session, so any number of handles may exist for one wallet.
 pub struct DashPay {
-    #[expect(dead_code, reason = "read by the bodies the DP tasks write")]
-    session: Arc<NetworkSession>,
+    pub(super) session: Arc<NetworkSession>,
     wallet_id: WalletId,
 }
 

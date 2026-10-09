@@ -84,6 +84,9 @@ enum Ended {
 enum Job {
     BringUp,
     Unlock,
+    /// The names pass after a bring-up that discovered identities
+    /// (`recovery.rs`).
+    Names,
 }
 
 impl NetworkSession {
@@ -233,6 +236,9 @@ impl NetworkSession {
         }
         self.apply_cadence(&manager);
         let mut loops_pending = !self.start_loops(&manager).await;
+        if !self.names_passes(&manager, &mut cancel).await {
+            return;
+        }
 
         // The session must not be kept open by a task only close ends.
         let session: Weak<Self> = Arc::downgrade(&self);
@@ -287,10 +293,34 @@ impl NetworkSession {
             if matches!(job, Job::Unlock) {
                 this.kick_dashpay_sync(&manager);
             }
-            if !done {
+            if !done || !this.names_passes(&manager, &mut cancel).await {
                 return;
             }
         }
+    }
+
+    /// Runs the names pass (recovery pass 2) of every wallet whose identities
+    /// a bring-up or `discover_identities` has just discovered. `false` when
+    /// cancelled.
+    async fn names_passes(
+        self: &Arc<Self>,
+        manager: &Arc<Manager>,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> bool {
+        let due = self.platform.recovery.take_names_due();
+        if due.is_empty() {
+            return true;
+        }
+        let done = self
+            .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)
+            .await;
+        if !done {
+            // Cut off: the next start runs them, the identities on file then.
+            for id in due {
+                self.platform.recovery.names_due(id);
+            }
+        }
+        done
     }
 
     /// Starts the loops once no pass of an earlier start is in flight: a pass
@@ -345,6 +375,7 @@ impl NetworkSession {
                 match job {
                     Job::BringUp => this.bring_up_wallet(&manager, id, since).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
+                    Job::Names => this.names_pass(&manager, id).await,
                 }
             });
             owners.insert(task.id(), id);
@@ -369,7 +400,10 @@ impl NetworkSession {
                         && e.is_panic()
                     {
                         tracing::warn!(wallet_id = %id, error = %e, "a wallet's Platform task panicked");
-                        if let Some(entry) = self.platform.write_startup().get_mut(&id) {
+                        // A names pass leaves the bring-up's answer standing.
+                        if !matches!(job, Job::Names)
+                            && let Some(entry) = self.platform.write_startup().get_mut(&id)
+                        {
                             entry.startup = StartupStatus::NotRun;
                         }
                     }
@@ -500,7 +534,14 @@ impl NetworkSession {
                 StartupStatus::IdentityUnsettled
             };
         }
+        // Identities found where none were on file: a restore or a seed used
+        // elsewhere. Their names get a full pass right after (DP1-05).
+        if identity.is_none() && startup.identity.is_some() {
+            self.platform.recovery.names_due(id);
+        }
         self.finish_bring_up(id, startup, since, budget).await;
+        self.load_identity_choices(id).await;
+        self.refresh_identities(manager, id).await;
     }
 
     /// Records a bring-up's outcome: the proven-absence marker, the notice
@@ -550,6 +591,13 @@ impl NetworkSession {
         keys: Option<&BringUpKeys>,
         locks: u64,
     ) -> Ended {
+        #[cfg(test)]
+        if let Some(mock) = self.platform.recovery.mock() {
+            let Ok(manager) = self.manager() else {
+                return Ended::OverBudget;
+            };
+            return Ended::Done(mock.bring_up(manager, id).await);
+        }
         let resolve = || match keys {
             Some(keys) => keys.scan.resolve(),
             None => Err(ScanKeyError::Unavailable("the vault is locked".into())),
@@ -719,8 +767,8 @@ impl NetworkSession {
     }
 
     /// Forgets that Platform proved `id` owns no identity, so the next
-    /// bring-up runs discovery again: DP6-01's "find" (E0-05 r1 ruling).
-    #[cfg_attr(not(test), expect(dead_code, reason = "DP6-01's find calls it"))]
+    /// bring-up runs discovery again: `discover_identities`, DP6-01's "find"
+    /// (E0-05 r1 ruling).
     pub(crate) async fn forget_proven_absence(&self, id: WalletId) -> Result<(), EngineError> {
         let scope = dw_appdb::local_scope(&id.to_string());
         self.appdb_op(move |db| db.set_setting(&scope, NO_IDENTITY_KEY, None))

@@ -1,5 +1,7 @@
 //! The wallet's identities and their keys (DP1-01, DP1-05, DP6-01).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
@@ -76,27 +78,45 @@ pub enum KeyType {
     EddsaHash160,
 }
 
-#[expect(unused_variables, reason = "stubs until the DP tasks")]
 impl DashPay {
+    /// The wallet's identities by index, from memory (DP1-05). The main
+    /// identity is the chosen one while the wallet still has it, else the
+    /// lowest index; an identity's main name is the chosen one while it still
+    /// owns it, else the name it acquired first (`recovery.rs`).
     pub fn identities(&self) -> Result<Vec<IdentitySummary>, PlatformError> {
-        stub("DashPay.identities")
+        Ok(self.session.identity_summaries(self.wallet_id())?)
     }
 
+    /// Chooses the main identity: one of the wallet's, else
+    /// `identity.not_found`. Stored in `dp_main_identity`, so a `.dwbackup`
+    /// carries it.
     pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError> {
-        stub("DashPay.set_main_identity")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.set_main_identity_of(id, identity).await) })
+            .await?
     }
 
+    #[expect(unused_variables, reason = "stub until DP6-01")]
     pub async fn identity_detail(&self, identity: String) -> Result<IdentityDetail, PlatformError> {
         stub("DashPay.identity_detail")
     }
 
+    #[expect(unused_variables, reason = "stub until DP6-01")]
     pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError> {
         stub("DashPay.refresh_balance")
     }
 
-    /// `grant` is an `IdentityScan` grant id only; a lease id is
-    /// `platform.grant_invalid`.
+    /// Same-seed discovery past the highest identity index on file (DP1-05,
+    /// DP6-01's "find"); the number of identities found, whose DashPay state
+    /// and names follow in the background. `grant` is an `IdentityScan` grant
+    /// id only; a lease id is `platform.grant_invalid`. Also clears
+    /// Platform's earlier proof that the seed owns none, so the next start's
+    /// bring-up looks again.
     pub async fn discover_identities(&self, grant: String) -> Result<u32, PlatformError> {
-        stub("DashPay.discover_identities")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.discover_identities_of(id, grant).await) })
+            .await?
     }
 }

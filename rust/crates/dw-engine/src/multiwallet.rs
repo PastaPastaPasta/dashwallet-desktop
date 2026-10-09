@@ -306,6 +306,7 @@ impl NetworkSession {
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             this.refresh_wallet_state(&live.manager, id).await;
+            this.load_identity_choices(id).await;
             this.load_history_for(vec![id]).await?;
             this.hub.pump.mark_history(id, None);
             this.hub.pump.mark_balances(id);

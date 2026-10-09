@@ -18,6 +18,9 @@ mod names;
 mod notifications;
 mod payments;
 mod profile;
+mod recovery;
+#[cfg(test)]
+mod recovery_tests;
 mod registration;
 pub(crate) mod runtime;
 #[cfg(test)]
