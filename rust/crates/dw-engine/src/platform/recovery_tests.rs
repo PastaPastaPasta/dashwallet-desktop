@@ -499,11 +499,10 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     assert!(shown(&s, id).is_empty());
 
     start(&engine, &s);
-    wait_until("pass 1", || !shown(&s, id).is_empty());
-    assert_eq!(
-        s.dashpay_startup(&id).unwrap().startup,
-        StartupStatus::Ready
-    );
+    // Review r3 N1: the identity can show before pass 1 publishes `Ready`.
+    wait_until("pass 1", || {
+        !shown(&s, id).is_empty() && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
     // After pass 1: the identity, as main, without its names yet.
     assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
@@ -692,7 +691,12 @@ fn discovery_forgets_the_proven_absence_and_recovers_what_it_finds() {
         .unwrap();
     assert_eq!(found, 1);
     assert!(marker().is_none());
-    wait_until("the names pass", || {
+    // Review r3 N1: the supervisor may run the names pass before the
+    // `Readmit` bring-up, so the names alone do not prove that bring-up
+    // published `Ready`. Wait for both.
+    // Review r1 N1: the bring-up after it sees the identity on file and
+    // does not prove the absence again.
+    wait_until("the names pass and the final Ready", || {
         shown(&s, id)
             == vec![(
                 base58(ALICE),
@@ -700,15 +704,10 @@ fn discovery_forgets_the_proven_absence_and_recovers_what_it_finds() {
                 Some("alice".into()),
                 true,
             )]
+            && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
     });
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
-    // Review r1 N1: the bring-up after it sees the identity on file and
-    // does not prove the absence again.
-    assert_eq!(
-        s.dashpay_startup(&id).unwrap().startup,
-        StartupStatus::Ready
-    );
     assert!(marker().is_none());
     engine.block_on(engine.shutdown()).unwrap();
 }
