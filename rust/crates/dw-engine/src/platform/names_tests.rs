@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -643,8 +643,10 @@ fn the_main_name_follows_the_rows_on_a_session() {
 // Review DP1-03 R1–R3: `register_name` on a scripted network.
 
 struct FakeNet {
-    /// Answers in order; the last one repeats.
+    /// Answers in order, the last one repeating: for any label, and per
+    /// normalized label ([`FakeNet::script`]).
     lookups: Mutex<VecDeque<Lookup>>,
+    scripts: Mutex<HashMap<String, VecDeque<Lookup>>>,
     balance: Option<u64>,
     end: Option<u64>,
     /// The write fails, and the label's state is whatever the next lookup
@@ -658,6 +660,7 @@ impl FakeNet {
     fn new(lookups: Vec<Lookup>) -> Self {
         Self {
             lookups: Mutex::new(lookups.into()),
+            scripts: Mutex::default(),
             balance: Some(u64::MAX / 2),
             end: None,
             fails: false,
@@ -673,6 +676,13 @@ impl FakeNet {
 
     fn balance(mut self, credits: u64) -> Self {
         self.balance = Some(credits);
+        self
+    }
+
+    /// Answers for `label` alone.
+    fn script(self, label: &str, lookups: Vec<Lookup>) -> Self {
+        let key = convert_to_homograph_safe_chars(label);
+        self.scripts.lock().unwrap().insert(key, lookups.into());
         self
     }
 
@@ -696,8 +706,10 @@ impl NameNet for FakeNet {
         PlatformVersion::latest()
     }
 
-    async fn lookup(&self, _: &UsernameCheck) -> Result<Lookup, PlatformError> {
-        let mut lookups = self.lookups.lock().unwrap();
+    async fn lookup(&self, check: &UsernameCheck) -> Result<Lookup, PlatformError> {
+        let mut scripts = self.scripts.lock().unwrap();
+        let mut any = self.lookups.lock().unwrap();
+        let lookups = scripts.get_mut(&check.normalized).unwrap_or(&mut any);
         let found = match lookups.len() {
             0 => panic!("no lookup scripted"),
             1 => lookups[0].clone(),
@@ -795,6 +807,7 @@ impl Fixture {
             identity: IDENTITY.into(),
             label: label.into(),
             check: valid_label(label).unwrap(),
+            ours: false,
         };
         let (net, grant) = (Arc::clone(net), grant.to_string());
         self.engine
@@ -822,12 +835,20 @@ impl Fixture {
             .unwrap();
     }
 
-    fn set_pending(&self, pending: &[(NameKind, &str)]) {
-        let prefs = MainNamePrefs {
-            pending: pending.iter().map(|(k, l)| (*k, l.to_string())).collect(),
-            ..MainNamePrefs::default()
-        };
-        self.set_pref(PREF_PENDING_NAME, &prefs.pending_value().unwrap());
+    /// A write of each of `labels` returned, as far as the library knows
+    /// (it lists the label), and the process stopped before the engine
+    /// heard Platform's answer.
+    fn cut_short(&self, labels: &[&str], listed: &[&str]) {
+        self.set_pref(PREF_PENDING_NAME, &labels.join("\n"));
+        let mut all = self.labels().0;
+        all.extend(listed.iter().map(|l| l.to_string()));
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        self.sync_names(&all, DpnsFetch::Partial);
+    }
+
+    fn pick(&self, label: &str) -> Result<(), NameError> {
+        self.engine
+            .block_on(self.dp().set_main_name(identity_id(), Some(label.into())))
     }
 
     fn labels(&self) -> (Vec<String>, Vec<String>) {
@@ -999,11 +1020,11 @@ fn a_retry_after_a_failed_write_needs_a_new_grant() {
         "platform.grant_exceeded"
     );
     assert_eq!(net.submits(), 1);
-    // The write did not land, so the intent stays pending, and a read
-    // leaves it so.
-    assert_eq!(f.prefs().pending, [(NameKind::Extra, "alice2".to_string())]);
+    // Platform does not show the write, so it may still land: the label
+    // stays pending, and a read records nothing.
+    assert_eq!(f.prefs().pending, ["alice2"]);
     assert_eq!(f.main_name().as_deref(), Some("carol"));
-    assert_eq!(f.prefs().pending.len(), 1);
+    assert_eq!(f.prefs().pending, ["alice2"]);
 }
 
 /// Review DP1-03 R2: joining another identity's contest needs its deadline.
@@ -1044,44 +1065,37 @@ fn contending(dir: &Path) -> Fixture {
     f
 }
 
-/// Review DP1-03 R3: every path that observes a temporary name records it.
+fn taken_by(owner: Option<String>) -> Lookup {
+    Lookup::verdict(NameAvailability::Taken { owner })
+}
+
+/// Review DP1-03 R3: every path on which Platform shows a temporary name
+/// records it.
 #[test]
 fn a_temporary_name_is_recorded_on_every_path() {
-    // The library listed it, then the process stopped: a retry answers
-    // from the wallet, with no network and no grant.
+    // Cut short after the library listed it: not a name until Platform
+    // says so, then the temporary name.
     let dir = dw_testutil::private_tempdir();
     let f = contending(dir.path());
-    f.set_pending(&[(NameKind::Temporary, "alice2")]);
-    f.sync_names(&["carol2", "alice2"], DpnsFetch::Partial);
-    let net = Arc::new(offline());
+    f.cut_short(&["alice2"], &["alice2"]);
+    assert_eq!(f.main_name().as_deref(), Some("carol2"));
+    let net = Arc::new(FakeNet::new(vec![taken_by(me())]));
     assert_eq!(
         f.register(&net, "alice2", "no grant"),
         Ok(NameOutcome::Registered)
     );
     assert_eq!(f.main_name().as_deref(), Some("alice2"));
+    assert!(f.prefs().pending.is_empty());
 
-    // Platform has it but the wallet does not: Taken by this identity.
+    // Platform has it, the wallet does not, and no write of it was the
+    // engine's: a name, not the temporary name.
     let dir = dw_testutil::private_tempdir();
     let f = contending(dir.path());
-    f.set_pending(&[(NameKind::Temporary, "alice2")]);
-    let net = Arc::new(FakeNet::new(vec![Lookup::verdict(
-        NameAvailability::Taken { owner: me() },
-    )]));
     assert_eq!(
         f.register(&net, "alice2", "no grant"),
         Ok(NameOutcome::Registered)
     );
     assert_eq!(f.labels().0, ["carol2", "alice2"]);
-    assert_eq!(f.main_name().as_deref(), Some("alice2"));
-    assert!(f.prefs().pending.is_empty());
-
-    // A name the identity got some other way is not its temporary name.
-    let dir = dw_testutil::private_tempdir();
-    let f = contending(dir.path());
-    assert_eq!(
-        f.register(&net, "alice2", "no grant"),
-        Ok(NameOutcome::Registered)
-    );
     assert_eq!(f.prefs().temporary, None);
     assert_eq!(f.main_name().as_deref(), Some("carol2"));
 
@@ -1091,7 +1105,7 @@ fn a_temporary_name_is_recorded_on_every_path() {
     let net = Arc::new(
         FakeNet::new(vec![
             Lookup::verdict(NameAvailability::Available { contested: false }),
-            Lookup::verdict(NameAvailability::Taken { owner: me() }),
+            taken_by(me()),
         ])
         .failing(),
     );
@@ -1110,7 +1124,7 @@ fn a_temporary_name_is_recorded_on_every_path() {
     let net = Arc::new(
         FakeNet::new(vec![
             Lookup::verdict(NameAvailability::Available { contested: false }),
-            Lookup::verdict(NameAvailability::Taken { owner: b58(2) }),
+            taken_by(b58(2)),
         ])
         .failing(),
     );
@@ -1120,7 +1134,8 @@ fn a_temporary_name_is_recorded_on_every_path() {
     assert_eq!(f.main_name().as_deref(), Some("carol2"));
 }
 
-/// Review DP1-03 R3: every path that observes a contest records it.
+/// Review DP1-03 R3: every path on which Platform shows a contest records
+/// it.
 #[test]
 fn a_contest_is_recorded_on_every_path() {
     let recorded = |f: &Fixture| {
@@ -1164,9 +1179,7 @@ fn a_contest_is_recorded_on_every_path() {
     recorded(&f);
 
     // A contest the identity won shows as its name.
-    let net = Arc::new(FakeNet::new(vec![Lookup::verdict(
-        NameAvailability::Taken { owner: me() },
-    )]));
+    let net = Arc::new(FakeNet::new(vec![taken_by(me())]));
     assert_eq!(
         f.register(&net, "alice", "no grant"),
         Ok(NameOutcome::Registered)
@@ -1175,65 +1188,18 @@ fn a_contest_is_recorded_on_every_path() {
     assert_eq!(f.main_name().as_deref(), Some("alice"));
 }
 
-/// Review DP1-03 R3: a registration stopped between the library's record
-/// and the engine's is settled by the next read, after a restart too, each
-/// of several.
+/// Review DP1-03 r2 R2-1: a contested label the library listed after its
+/// write may be a running contest, so it is no name and no pick until
+/// Platform shows the identity owns it.
 #[test]
-fn registrations_cut_short_are_settled_by_the_next_read() {
+fn a_pending_label_is_not_owned_until_platform_says_so() {
     let dir = dw_testutil::private_tempdir();
-    let mut f = Fixture::signing(dir.path(), &["carol2"]);
-    // A contested join and then the temporary name returned; the process
-    // stopped before either was recorded. The contest shows once the
-    // library's contest sweep lists it.
-    f.set_pending(&[
-        (NameKind::Contested, "alice"),
-        (NameKind::Temporary, "alice2"),
-        (NameKind::Extra, "never-landed"),
-    ]);
-    f.sync_names(&["carol2", "alice2"], DpnsFetch::Partial);
-    f.with_identity(|m, p| m.add_contested_dpns_name("a11ce".into(), p));
-    f.reopen();
-    assert_eq!(f.main_name().as_deref(), Some("alice2"));
-    let prefs = f.prefs();
-    assert_eq!(prefs.temporary.as_deref(), Some("alice2"));
-    assert_eq!(prefs.contested.as_deref(), Some("alice"));
-    // A write that never showed stays pending.
-    assert_eq!(
-        prefs.pending,
-        [(NameKind::Extra, "never-landed".to_string())]
-    );
-}
+    let f = Fixture::signing(dir.path(), &[]);
+    f.cut_short(&["alice"], &["alice"]);
+    assert_eq!(f.main_name(), None);
+    assert_eq!(f.pick("alice").unwrap_err().code(), "invalid_argument");
 
-/// A contested label the library lists may be a running contest (its
-/// write returned) or a won one (a sync found the domain): only a
-/// marketplace row, or Platform on a retry, tells them apart.
-#[test]
-fn a_listed_contested_label_is_settled_only_on_evidence() {
-    // Listed, no row: left as it is, then a retry asks Platform.
-    let dir = dw_testutil::private_tempdir();
-    let f = Fixture::signing(dir.path(), &["carol"]);
-    f.set_pending(&[(NameKind::Contested, "alice")]);
-    f.sync_names(&["carol", "alice"], DpnsFetch::Partial);
-    let _ = f.main_name();
-    assert_eq!(f.labels(), (vec!["carol".into(), "alice".into()], vec![]));
-    assert_eq!(f.prefs().pending.len(), 1);
-    let net = Arc::new(FakeNet::new(vec![contest_with(
-        vec![IDENTITY.into()],
-        Some(5),
-    )]));
-    assert_eq!(
-        f.register(&net, "alice", "no grant"),
-        Ok(NameOutcome::ContestStarted { ends_at: Some(5) })
-    );
-    assert_eq!(f.labels(), (vec!["carol".into()], vec!["a11ce".into()]));
-    assert_eq!(f.main_name().as_deref(), Some("carol"));
-    assert!(f.prefs().pending.is_empty());
-
-    // Listed with a row: the contest was won before the read.
-    let dir = dw_testutil::private_tempdir();
-    let f = Fixture::signing(dir.path(), &["carol"]);
-    f.set_pending(&[(NameKind::Contested, "alice")]);
-    f.sync_names(&["carol", "alice"], DpnsFetch::Partial);
+    // A marketplace row is Platform's word that the identity owns it.
     f.give_rows(vec![row(
         1,
         "alice",
@@ -1242,13 +1208,146 @@ fn a_listed_contested_label_is_settled_only_on_evidence() {
         None,
     )]);
     assert_eq!(f.main_name().as_deref(), Some("alice"));
-    assert_eq!(f.labels(), (vec!["carol".into(), "alice".into()], vec![]));
-    assert_eq!(f.prefs().contested.as_deref(), Some("alice"));
+    assert_eq!(f.pick("alice"), Ok(()));
+
+    // So is a domain document, on a retry.
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &[]);
+    f.cut_short(&["alice"], &["alice"]);
+    let net = Arc::new(FakeNet::new(vec![taken_by(me())]));
+    assert_eq!(
+        f.register(&net, "alice", "no grant"),
+        Ok(NameOutcome::Registered)
+    );
     assert!(f.prefs().pending.is_empty());
+    assert_eq!(f.main_name().as_deref(), Some("alice"));
+    assert_eq!(f.pick("alice"), Ok(()));
 }
 
-/// Review F5: asking for a contested name the identity already owns
-/// changes no pref.
+/// Review DP1-03 r2 R2-2: a registration asks Platform about the
+/// identity's earlier cut-short writes before it classifies its own label,
+/// and a retry derives its kind from Platform's state now.
+#[test]
+fn a_cut_short_contest_is_concluded_before_the_next_name() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol2"]);
+    f.give_rows(vec![row(
+        1,
+        "carol2",
+        DpnsNameSaleStatus::Owned,
+        Some(100),
+        None,
+    )]);
+    f.cut_short(&["alice"], &["alice"]);
+    let net = Arc::new(
+        FakeNet::available(false)
+            .script("alice", vec![contest_with(vec![IDENTITY.into()], Some(5))]),
+    );
+    let grant = f.grant(NAME_FEE_BOUND);
+    assert_eq!(
+        f.register(&net, "alice2", &grant),
+        Ok(NameOutcome::Registered)
+    );
+    assert_eq!(
+        f.labels(),
+        (vec!["carol2".into(), "alice2".into()], vec!["a11ce".into()])
+    );
+    let prefs = f.prefs();
+    assert_eq!(prefs.contested.as_deref(), Some("alice"));
+    assert_eq!(prefs.temporary.as_deref(), Some("alice2"));
+    assert!(prefs.pending.is_empty());
+    assert_eq!(f.main_name().as_deref(), Some("alice2"));
+}
+
+/// A contested cut-short write Platform cannot place yet leaves a plain
+/// registration unclassifiable: refused before anything is spent.
+#[test]
+fn an_unplaced_contest_holds_back_the_next_plain_name() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol2"]);
+    f.cut_short(&["alice"], &["alice"]);
+    let crowded: Vec<Identifier> = (100..200).map(id).collect();
+    for found in [
+        Lookup::verdict(NameAvailability::Unknown),
+        contest_with(vec![id(2)], None),
+        contest_with(crowded, Some(u64::MAX / 2)),
+    ] {
+        let net = Arc::new(FakeNet::available(false).script("alice", vec![found]));
+        let grant = f.grant(NAME_FEE_BOUND);
+        assert_eq!(
+            f.register(&net, "alice2", &grant).unwrap_err().code(),
+            "platform.unavailable"
+        );
+        assert_eq!(net.submits(), 0);
+        assert!(f.grant_unused(&grant));
+        assert_eq!(f.prefs().pending, ["alice"]);
+    }
+}
+
+/// A contest Platform shows closed is forgotten only well past its join
+/// deadline (DAPI nodes and clocks lag); just after it, the intent stays.
+#[test]
+fn a_contest_just_closed_keeps_the_intent() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol"]);
+    f.cut_short(&["alice"], &["alice"]);
+    let now = crate::events::unix_now();
+    let lag = now - join_deadline(now, &f.session.network, PlatformVersion::latest());
+    // The join deadline was a minute ago.
+    let net = Arc::new(FakeNet::new(vec![contest_with(
+        vec![id(2)],
+        Some(now + lag - 60),
+    )]));
+    assert_eq!(
+        f.register(&net, "alice", "no grant").unwrap_err().code(),
+        "name.contest_open"
+    );
+    assert_eq!(f.prefs().pending, ["alice"]);
+    assert_eq!(net.submits(), 0);
+}
+
+/// Review DP1-03 r2 R2-3: a refusal that rests on incomplete evidence keeps
+/// the intent; a refusal for good clears it and the copy the library
+/// listed. Neither ever becomes `Registered`.
+#[test]
+fn refusals_never_turn_a_pending_label_into_a_name() {
+    // A full vote-state page may hide the identity among the contenders.
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &[]);
+    f.cut_short(&["alice"], &["alice"]);
+    let crowded: Vec<Identifier> = (100..200).map(id).collect();
+    let net = Arc::new(FakeNet::new(vec![contest_with(crowded, Some(5))]));
+    for _ in 0..2 {
+        assert_eq!(
+            f.register(&net, "alice", "no grant").unwrap_err().code(),
+            "name.contest_open"
+        );
+        assert_eq!(f.prefs().pending, ["alice"]);
+        assert_eq!(f.main_name(), None);
+    }
+
+    for (found, code) in [
+        (Lookup::verdict(NameAvailability::Locked), "name.locked"),
+        (taken_by(b58(2)), "name.taken"),
+        (contest_with(vec![id(2)], Some(1)), "name.contest_open"),
+    ] {
+        let dir = dw_testutil::private_tempdir();
+        let f = Fixture::signing(dir.path(), &["carol"]);
+        f.cut_short(&["alice"], &["alice"]);
+        let net = Arc::new(FakeNet::new(vec![found]));
+        for _ in 0..2 {
+            assert_eq!(
+                f.register(&net, "alice", "no grant").unwrap_err().code(),
+                code
+            );
+            assert!(f.prefs().pending.is_empty(), "{code}");
+            assert_eq!(f.labels(), (vec!["carol".into()], vec![]), "{code}");
+            assert_eq!(f.main_name().as_deref(), Some("carol"));
+        }
+        assert_eq!(net.submits(), 0);
+    }
+}
+
 #[test]
 fn an_owned_contested_name_is_not_a_won_contest() {
     let dir = dw_testutil::private_tempdir();
@@ -1264,24 +1363,19 @@ fn an_owned_contested_name_is_not_a_won_contest() {
     assert_eq!(f.main_name().as_deref(), Some("carol"));
 }
 
-/// One identity's registrations run one at a time, and a read does not
-/// settle what a registration under way will.
+/// One identity's registrations run one at a time.
 #[test]
 fn registrations_of_one_identity_are_serial() {
     let dir = dw_testutil::private_tempdir();
     let f = Fixture::signing(dir.path(), &["carol"]);
-    f.set_pending(&[(NameKind::Extra, "alice2")]);
-    f.sync_names(&["carol", "alice2"], DpnsFetch::Partial);
-    let lock = identity_lock(f.wallet, IDENTITY.into());
-    let held = f.engine.block_on(Arc::clone(&lock).lock_owned());
-    assert_eq!(f.main_name().as_deref(), Some("carol"));
-    assert_eq!(f.prefs().pending.len(), 1);
-
+    let locks = identity_locks(f.wallet, IDENTITY.into());
+    let held = f.engine.block_on(async { locks.serial.lock().await });
     let ask = Registration {
         wallet_id: f.wallet,
         identity: IDENTITY.into(),
-        label: "alice2".into(),
-        check: valid_label("alice2").unwrap(),
+        label: "carol".into(),
+        check: valid_label("carol").unwrap(),
+        ours: false,
     };
     let (session, dp) = (Arc::clone(&f.session), f.dp());
     let call = f.session.rt.spawn(async move {
@@ -1292,12 +1386,13 @@ fn registrations_of_one_identity_are_serial() {
     });
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(!call.is_finished());
+    // Reads do not wait for a registration.
+    assert_eq!(f.main_name().as_deref(), Some("carol"));
     drop(held);
     assert_eq!(
         f.engine.block_on(call).unwrap(),
         Ok(NameOutcome::Registered)
     );
-    assert!(f.prefs().pending.is_empty());
 }
 
 /// Settling never writes the user's pick.
@@ -1318,26 +1413,4 @@ fn settling_keeps_the_pick() {
     assert_eq!(prefs.pick.as_deref(), Some("carol2"));
     assert_eq!(prefs.temporary.as_deref(), Some("alice2"));
     assert_eq!(f.main_name().as_deref(), Some("carol2"));
-}
-
-/// Review r2: a retry Platform refuses for good drops its pending intent,
-/// which could otherwise mark a name got later some other way.
-#[test]
-fn a_refused_retry_drops_its_pending_intent() {
-    let dir = dw_testutil::private_tempdir();
-    let f = Fixture::signing(dir.path(), &["carol"]);
-    for (label, found) in [
-        (
-            "alice",
-            Lookup::verdict(NameAvailability::Taken { owner: b58(2) }),
-        ),
-        ("dasher", Lookup::verdict(NameAvailability::Locked)),
-        ("bob", contest_with(vec![id(2)], Some(1))),
-    ] {
-        f.set_pending(&[(NameKind::Contested, label)]);
-        let net = Arc::new(FakeNet::new(vec![found]));
-        assert!(f.register(&net, label, "no grant").is_err());
-        assert!(f.prefs().pending.is_empty(), "{label}");
-        assert_eq!(net.submits(), 0);
-    }
 }
