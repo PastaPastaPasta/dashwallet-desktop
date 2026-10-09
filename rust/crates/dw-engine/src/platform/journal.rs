@@ -10,14 +10,19 @@
 //!   so the library's whole-snapshot changesets, seen again and again, add
 //!   each event once. Contact events are once per relationship: a rotated
 //!   request (new `$createdAt`) is not news.
-//! - Catch-up silence: an event is stored read when it is history, in two
-//!   ways. While a restore's passes run ([`ChangesetTap::catch_up`]), every
-//!   event of the wallet is. And whatever happened before this installation
-//!   first brought the wallet up ([`CATCH_UP_BEFORE_KEY`], persisted, so a
-//!   restore cut off by a budget, a lock or a kill stays silent) is history
-//!   whenever it arrives: a request by its `$createdAt`, a payment by its
-//!   transaction's time, a name the library found with no acquisition time
-//!   (discovery's) or one acquired before then.
+//! - Catch-up silence (DEC-114). While a recovery phase runs, every event
+//!   of the wallet is stored read: a restore's bring-up, the discovery of
+//!   identities, the bring-up queued after it and the names pass
+//!   ([`ChangesetTap::catch_up`], and the recovery mark that carries a
+//!   recovery from one phase to the next). Outside them, an event is stored
+//!   read when its authoritative time predates this installation's first
+//!   bring-up of the wallet ([`CATCH_UP_BEFORE_KEY`]): a request's
+//!   `$createdAt`, a payment's confirmed block time, a name's marketplace
+//!   row time, all read from the persister ([`Times`]). Local fetch or
+//!   observation times are never ages. An event with no authoritative time
+//!   (an unconfirmed payment, a name with no row) is news; an old one that
+//!   first surfaces outside every recovery phase may show unread once
+//!   (declared residual, cosmetic).
 //! - Trust flags fail closed: while the fallback is in use they are written
 //!   before the SQLite persister sees the changeset, and a failure refuses
 //!   the store (`Transient` when the database is busy, nothing applied), so
@@ -38,7 +43,7 @@ use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use dw_appdb::{AppDb, AppDbError, JournalEntry, UnverifiedEntity};
 use key_wallet::account::AccountType;
-use platform_wallet::changeset::{Merge, PlatformWalletChangeSet};
+use platform_wallet::changeset::{Merge, PlatformWalletChangeSet, PlatformWalletPersistence};
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
@@ -111,15 +116,48 @@ fn b58(id: &Identifier) -> String {
     id.to_string(Encoding::Base58)
 }
 
-/// How old what an event reports is, for catch-up.
+/// How old what an event reports is, for catch-up (DEC-114).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Age {
-    /// The source's own time, UNIX ms.
+    /// The source's authoritative time, UNIX ms.
     At(u64),
-    /// Known to be history (a name discovery found, with no time).
-    History,
-    /// Not known yet (a payment whose transaction is not in view).
+    /// No authoritative time: news outside a recovery phase.
     Unknown,
+    /// The companion of an event that notifies (a won contest's username):
+    /// stored read whatever its time.
+    Shadowed,
+}
+
+/// Where the tap reads authoritative times (DEC-114): the persister, which
+/// has accepted the changeset by the time the tap records it.
+pub(crate) trait Times {
+    /// The block time (s) of the wallet's confirmed transaction.
+    fn block_time(&self, wallet: WalletId, txid: &Txid) -> Option<u32>;
+    /// When the identity acquired the name on Platform (ms): its marketplace
+    /// row's transfer, else creation time.
+    fn name_time(&self, wallet: WalletId, identity: &Identifier, normalized: &str) -> Option<u64>;
+}
+
+impl<P: PlatformWalletPersistence + ?Sized> Times for P {
+    fn block_time(&self, wallet: WalletId, txid: &Txid) -> Option<u32> {
+        match self.get_core_tx_record(wallet.0, txid) {
+            Ok(record) => Some(record?.context.block_info()?.timestamp()),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "could not read a transaction's time");
+                None
+            }
+        }
+    }
+
+    fn name_time(&self, wallet: WalletId, identity: &Identifier, normalized: &str) -> Option<u64> {
+        match self.get_dpns_name_state(wallet.0, identity, normalized) {
+            Ok(row) => row.and_then(|r| r.transferred_at_ms.or(r.created_at_ms)),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "could not read a name's time");
+                None
+            }
+        }
+    }
 }
 
 /// One journal event before its read state is known.
@@ -142,10 +180,8 @@ pub(crate) struct Classified {
     locks: BTreeSet<OutPoint>,
     /// Contact and payment events.
     events: Vec<Event>,
-    /// The DPNS names of the wallet's own identities, by identity (Base58).
-    names: BTreeMap<String, Vec<DpnsNameInfo>>,
-    /// Block times (s) of the transactions in the changeset.
-    tx_times: HashMap<Txid, u32>,
+    /// The DPNS names of the wallet's own identities, by identity.
+    names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
     unverified: BTreeSet<UnverifiedEntity>,
 }
 
@@ -193,7 +229,7 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             c.unverified.extend(labels.map(label_entity));
             // Names of identities the wallet only watches are not news.
             if entry.identity_index.is_some() && !entry.dpns_names.is_empty() {
-                c.names.insert(b58(id), entry.dpns_names.clone());
+                c.names.insert(*id, entry.dpns_names.clone());
             }
         }
     }
@@ -289,14 +325,6 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                 }
             }
         }
-        // The transactions often ride the same round (the event bridge).
-        if let Some(core) = &cs.core {
-            c.tx_times.extend(
-                core.records
-                    .iter()
-                    .filter_map(|r| Some((r.txid, r.context.block_info()?.timestamp()))),
-            );
-        }
     }
 
     // `account_registrations`: contact accounts.
@@ -333,10 +361,42 @@ pub(crate) struct ChangesetTap {
     appdb: Arc<AppDb>,
     /// Wallets whose restore passes are running, with how many hold them.
     catch_up: Mutex<HashMap<WalletId, usize>>,
+    /// Wallets in a recovery that spans tasks, with the phases it still owes:
+    /// from a restore's bring-up or a discovery that found identities until
+    /// the bring-up queued after a discovery and the names pass are done.
+    recovering: Mutex<HashMap<WalletId, Owed>>,
     /// [`CATCH_UP_BEFORE_KEY`] per wallet, UNIX seconds, once known.
     catch_up_before: Mutex<HashMap<WalletId, u64>>,
     /// The trusted-quorum fallback is in use (E0-10b sets it).
     trust_fallback: AtomicBool,
+}
+
+/// A phase a recovery hands on to (DEC-114).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    /// The bring-up queued after a discovery.
+    BringUp,
+    /// The names pass (DP1-05 pass 2).
+    Names,
+}
+
+/// The phases a wallet's recovery still owes.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Owed {
+    bring_up: bool,
+    names: bool,
+}
+
+/// Ends a [`Phase::BringUp`] when dropped, on any path out of a bring-up.
+pub(crate) struct BringUpPhase {
+    tap: Arc<ChangesetTap>,
+    id: WalletId,
+}
+
+impl Drop for BringUpPhase {
+    fn drop(&mut self) {
+        self.tap.end_phase(&self.id, Phase::BringUp);
+    }
 }
 
 /// Holds a wallet in catch-up until dropped ([`ChangesetTap::catch_up`]).
@@ -363,6 +423,7 @@ impl ChangesetTap {
             hub,
             appdb,
             catch_up: Mutex::new(HashMap::new()),
+            recovering: Mutex::new(HashMap::new()),
             catch_up_before: Mutex::new(HashMap::new()),
             trust_fallback: AtomicBool::new(false),
         }
@@ -380,7 +441,41 @@ impl ChangesetTap {
     }
 
     fn in_catch_up(&self, id: &WalletId) -> bool {
-        guard(&self.catch_up).contains_key(id)
+        guard(&self.catch_up).contains_key(id) || guard(&self.recovering).contains_key(id)
+    }
+
+    /// Marks `id` recovering until the phases it hands on are done: its
+    /// names pass, and with `bring_up` the bring-up queued after a
+    /// discovery. Its events are stored read meanwhile.
+    pub(crate) fn begin_recovery(&self, id: WalletId, bring_up: bool) {
+        let mut all = guard(&self.recovering);
+        let owed = all.entry(id).or_default();
+        owed.names = true;
+        owed.bring_up |= bring_up;
+    }
+
+    /// One owed phase is done; the recovery ends with the last.
+    pub(crate) fn end_phase(&self, id: &WalletId, phase: Phase) {
+        let mut all = guard(&self.recovering);
+        if let Some(owed) = all.get_mut(id) {
+            match phase {
+                Phase::BringUp => owed.bring_up = false,
+                Phase::Names => owed.names = false,
+            }
+            if !owed.bring_up && !owed.names {
+                all.remove(id);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_recovering(&self, id: &WalletId) -> bool {
+        guard(&self.recovering).contains_key(id)
+    }
+
+    /// Ends `id`'s recovery whatever it owes (removal, unload, rollback).
+    pub(crate) fn end_recovery(&self, id: &WalletId) {
+        guard(&self.recovering).remove(id);
     }
 
     /// While on, every entity a changeset touches gets a
@@ -451,6 +546,7 @@ impl ChangesetTap {
     /// imported again is a new first bring-up.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.catch_up_before).remove(id);
+        self.end_recovery(id);
     }
 
     /// Flags what `c` touches while the fallback is in use. Runs before the
@@ -464,25 +560,9 @@ impl ChangesetTap {
             .flag_unverified(&id.to_string(), &unverified, unix_now())
     }
 
-    /// The age of a payment: its transaction's block time, else its time in
-    /// the history (`None` while unconfirmed and unseen: news).
-    fn payment_age(&self, id: &WalletId, c: &Classified, txid: &str) -> Age {
-        let Ok(txid) = Txid::from_str(txid) else {
-            return Age::Unknown;
-        };
-        let secs = match c.tx_times.get(&txid) {
-            Some(t) => Some(u64::from(*t)),
-            None => self
-                .hub
-                .history
-                .get(id, &txid)
-                .and_then(|e| crate::history::timestamp_of(&e)),
-        };
-        secs.map_or(Age::Unknown, |s| Age::At(s.saturating_mul(1000)))
-    }
-
-    /// Finishes and records a changeset the persister accepted.
-    pub(crate) fn record(&self, id: WalletId, mut c: Classified) {
+    /// Finishes and records a changeset the persister accepted, reading
+    /// authoritative times from `times`.
+    pub(crate) fn record(&self, id: WalletId, mut c: Classified, times: &dyn Times) {
         let wallet = id.to_string();
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
@@ -504,9 +584,13 @@ impl ChangesetTap {
             .iter_mut()
             .filter(|e| e.kind == EventKind::PaymentReceived)
         {
-            e.age = self.payment_age(&id, &c, &e.reference);
+            // The confirmed transaction's block time.
+            let block = Txid::from_str(&e.reference)
+                .ok()
+                .and_then(|txid| times.block_time(id, &txid));
+            e.age = block.map_or(Age::Unknown, |s| Age::At(u64::from(s) * 1000));
         }
-        events.extend(self.name_events(&wallet, std::mem::take(&mut c.names)));
+        events.extend(self.name_events(id, std::mem::take(&mut c.names), times));
 
         let silent = self.in_catch_up(&id);
         let before_ms = (!silent && !events.is_empty())
@@ -515,7 +599,7 @@ impl ChangesetTap {
             .map(|s| s.saturating_mul(1000));
         let history = |age: Age| match age {
             Age::At(at) => before_ms.is_some_and(|before| at < before),
-            Age::History => true,
+            Age::Shadowed => true,
             Age::Unknown => false,
         };
         let entries: Vec<JournalEntry> = events
@@ -546,9 +630,19 @@ impl ChangesetTap {
     /// locked outcomes need Platform's answer: DP1-04's contest watch
     /// writes them, and removes the watch row when the contest resolves (a
     /// row left behind would call a later purchase of the label a win).
-    fn name_events(&self, wallet: &str, names: BTreeMap<String, Vec<DpnsNameInfo>>) -> Vec<Event> {
+    /// A name's age is its marketplace row time, never its `acquired_at`
+    /// (a fetch's wall clock on some library paths).
+    fn name_events(
+        &self,
+        id: WalletId,
+        names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
+        times: &dyn Times,
+    ) -> Vec<Event> {
+        let wallet = id.to_string();
+        let wallet = wallet.as_str();
         let mut out = Vec::new();
-        for (identity, names) in names {
+        for (identity_id, names) in names {
+            let identity = b58(&identity_id);
             let watches: Vec<(String, u64)> = self
                 .appdb
                 .contest_watches(wallet, &identity)
@@ -569,15 +663,16 @@ impl ChangesetTap {
             for name in names {
                 let safe = convert_to_homograph_safe_chars(&name.label);
                 let won = watches.iter().find(|(label, _)| *label == safe);
-                // Discovery stores the names it finds with no time.
-                let mut age = name.acquired_at.map_or(Age::History, Age::At);
+                let mut age = times
+                    .name_time(id, &identity_id, &safe)
+                    .map_or(Age::Unknown, Age::At);
                 if let Some((_, ends_at)) = won {
                     out.push(event(
                         EventKind::ContestWon,
                         name_ref(&name.label, Some(*ends_at)),
                         age,
                     ));
-                    age = Age::History;
+                    age = Age::Shadowed;
                 }
                 out.push(event(
                     EventKind::UsernameRegistered,
@@ -591,9 +686,37 @@ impl ChangesetTap {
 }
 
 impl NetworkSession {
-    /// Holds `id` in catch-up while a restore pass runs: `None` after close.
+    /// Holds `id` in catch-up while a recovery phase runs: `None` after
+    /// close.
     pub(super) fn catch_up(&self, id: WalletId) -> Option<CatchUp> {
         Some(self.live().ok()?.tap.catch_up(id))
+    }
+
+    /// [`ChangesetTap::begin_recovery`]: a recovery goes on in later phases.
+    pub(super) fn begin_recovery(&self, id: WalletId, bring_up: bool) {
+        if let Ok(live) = self.live() {
+            live.tap.begin_recovery(id, bring_up);
+        }
+    }
+
+    /// [`ChangesetTap::end_phase`].
+    pub(super) fn end_phase(&self, id: &WalletId, phase: Phase) {
+        if let Ok(live) = self.live() {
+            live.tap.end_phase(id, phase);
+        }
+    }
+
+    /// Ends the owed bring-up phase of `id` when the guard drops.
+    pub(super) fn bring_up_phase(&self, id: WalletId) -> Option<BringUpPhase> {
+        let tap = self.live().ok()?.tap;
+        Some(BringUpPhase { tap, id })
+    }
+
+    /// [`ChangesetTap::end_recovery`].
+    pub(crate) fn end_recovery(&self, id: &WalletId) {
+        if let Ok(live) = self.live() {
+            live.tap.end_recovery(id);
+        }
     }
 
     /// [`ChangesetTap::note_first_bring_up`] off the caller's thread.

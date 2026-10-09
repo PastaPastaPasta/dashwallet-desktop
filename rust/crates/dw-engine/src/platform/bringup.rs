@@ -32,6 +32,7 @@ use platform_wallet::manager::startup::{
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
+use super::journal::Phase;
 use super::runtime::{PlatformSignal, Stamped, Supervisor, guard, prompt_free};
 use super::startup::StartupStatus;
 use super::startup_status::{DashPayStartup, SpvState};
@@ -314,8 +315,16 @@ impl NetworkSession {
         let done = self
             .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)
             .await;
-        if !done {
-            // Cut off: the next start runs them, the identities on file then.
+        if done {
+            // The recoveries are over, unless a discovery has queued another
+            // pass meanwhile.
+            let again = self.platform.recovery.names_due_of();
+            for id in due.iter().filter(|id| !again.contains(id)) {
+                self.end_phase(id, Phase::Names);
+            }
+        } else {
+            // Cut off: the next start runs them, the identities on file then,
+            // still as catch-up.
             for id in due {
                 self.platform.recovery.names_due(id);
             }
@@ -429,12 +438,15 @@ impl NetworkSession {
             // last one ends.
             None => return,
             Some(false) => {
+                self.end_phase(&id, Phase::BringUp);
                 self.platform
                     .record(id, DashPayStartup::new(StartupStatus::NotRun, true));
                 return;
             }
             Some(true) => {}
         }
+        // A recovery that owed this bring-up has had it, however it ends.
+        let _phase = self.bring_up_phase(id);
         self.note_first_bring_up(id).await;
         // The budget is known once the markers are read; the shorter one
         // bounds reading them.
@@ -543,7 +555,10 @@ impl NetworkSession {
         }
         // Identities found where none were on file: a restore or a seed used
         // elsewhere. Their names get a full pass right after (DP1-05).
+        // The recovery goes on there: its events stay catch-up until that
+        // pass is done (DEC-114).
         if identity.is_none() && startup.identity.is_some() {
+            self.begin_recovery(id, false);
             self.platform.recovery.names_due(id);
         }
         self.finish_bring_up(id, startup, since, budget).await;

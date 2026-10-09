@@ -2,7 +2,7 @@
 //! idempotence, catch-up silence, the trust fallback, and the wiring through
 //! a session's `WalletStore` and bring-up.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,15 +18,15 @@ use key_wallet::managed_account::transaction_record::{TransactionDirection, Tran
 use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
 use platform_wallet::changeset::{
     AccountRegistrationEntry, AssetLockChangeSet, ContactChangeSet, ContactRequestEntry,
-    CoreChangeSet, DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry,
-    IdentityChangeSet, IdentityEntry, IdentityKeysChangeSet, Merge, PlatformWalletChangeSet,
+    DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry, IdentityChangeSet,
+    IdentityEntry, IdentityKeysChangeSet, Merge, PlatformWalletChangeSet,
     PlatformWalletPersistence, ReceivedContactRequestKey, SentContactRequestKey,
 };
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact, IdentityStatus};
 use zeroize::Zeroizing;
 
-use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, classify, kind_name};
+use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, Phase, Times, classify, kind_name};
 use super::notifications::EventKind;
 use crate::events::SessionHub;
 use crate::{
@@ -211,10 +211,47 @@ impl EventSink for Recorder {
     }
 }
 
+/// The persister's authoritative times, as a test sets them.
+#[derive(Default)]
+struct FakeTimes {
+    blocks: Mutex<HashMap<Txid, u32>>,
+    names: Mutex<HashMap<(Identifier, String), u64>>,
+}
+
+impl FakeTimes {
+    /// The record as the persister holds it: confirmed in its block, or not.
+    fn confirm(&self, record: &TransactionRecord) {
+        if let Some(block) = record.context.block_info() {
+            self.blocks
+                .lock()
+                .unwrap()
+                .insert(record.txid, block.timestamp());
+        }
+    }
+
+    /// The marketplace row of `label` for identity `n`, created at `ms`.
+    fn name(&self, n: u8, label: &str, ms: u64) {
+        let key = (id(n), convert_to_homograph_safe_chars(label));
+        self.names.lock().unwrap().insert(key, ms);
+    }
+}
+
+impl Times for FakeTimes {
+    fn block_time(&self, _: WalletId, txid: &Txid) -> Option<u32> {
+        self.blocks.lock().unwrap().get(txid).copied()
+    }
+
+    fn name_time(&self, _: WalletId, identity: &Identifier, normalized: &str) -> Option<u64> {
+        let key = (*identity, normalized.to_string());
+        self.names.lock().unwrap().get(&key).copied()
+    }
+}
+
 struct Harness {
     hub: Arc<SessionHub>,
     appdb: Arc<AppDb>,
     tap: Arc<ChangesetTap>,
+    times: FakeTimes,
 }
 
 impl Harness {
@@ -225,7 +262,12 @@ impl Harness {
         ));
         let appdb = Arc::new(AppDb::open_in_memory().unwrap());
         let tap = Arc::new(ChangesetTap::new(Arc::clone(&hub), Arc::clone(&appdb)));
-        Self { hub, appdb, tap }
+        Self {
+            hub,
+            appdb,
+            tap,
+            times: FakeTimes::default(),
+        }
     }
 
     /// A tap whose wallet `W` was first brought up here at [`BEFORE`].
@@ -246,7 +288,7 @@ impl Harness {
     fn feed_to(&self, wallet: WalletId, cs: PlatformWalletChangeSet) {
         if let Some(c) = classify(&cs) {
             self.tap.flag(wallet, &c).unwrap();
-            self.tap.record(wallet, c);
+            self.tap.record(wallet, c, &self.times);
         }
     }
 
@@ -342,7 +384,7 @@ fn row_identities_signal_and_journal_usernames() {
 
     // The next snapshot carries the same name: nothing new. A second name,
     // and the first one held again after it left, are new events. A name
-    // with no acquisition time is one discovery found: history.
+    // with no marketplace row has no authoritative time: news (DEC-114).
     h.feed(identities(vec![identity(
         ME,
         Some(0),
@@ -369,7 +411,7 @@ fn row_identities_signal_and_journal_usernames() {
                 &format!("alice@{}", NEW_MS + 2),
                 false
             ),
-            row(EventKind::UsernameRegistered, "", "found", true),
+            row(EventKind::UsernameRegistered, "", "found", false),
         ]
     );
 
@@ -577,75 +619,42 @@ fn row_asset_locks_signal_their_registration() {
 }
 
 /// §3.5 row `dashpay_payments_overlay`: `Payments{identity}`; "Received …
-/// from @alice" for a received payment, stored read when its transaction
-/// predates the wallet's first bring-up here (catch-up).
+/// from @alice" for a received payment. Its age is the block time of its
+/// confirmed transaction, as the persister has it (DEC-114): a payment the
+/// library reconstructs after a restore's passes, from a transaction older
+/// than the wallet's first bring-up here, is stored read; an unconfirmed
+/// one, or one with no transaction on file, is news.
 #[test]
 fn row_payments_journal_received_payments() {
     let h = Harness::restored();
-    let with_tx = |record: &TransactionRecord| {
-        let mut cs = payment(
-            ME,
-            &record.txid.to_string(),
-            BOB,
-            PaymentDirection::Received,
-        );
-        cs.core = Some(CoreChangeSet {
-            records: vec![record.clone()],
-            ..Default::default()
-        });
-        cs
-    };
     let old = tx_record(1, Some(500));
     let new = tx_record(2, Some(2_000));
     let mempool = tx_record(3, None);
-    // In the history only, as an earlier round stored it.
-    let seen = tx_record(4, Some(600));
-    h.hub
-        .history
-        .with_wallet(W, |w| w.upsert(&seen, Some(5_000)));
-
-    h.feed(with_tx(&old));
-    h.feed(with_tx(&new));
-    h.feed(with_tx(&mempool));
-    h.feed(payment(
-        ME,
-        &seen.txid.to_string(),
-        BOB,
-        PaymentDirection::Received,
-    ));
+    for record in [&old, &new, &mempool] {
+        h.times.confirm(record);
+    }
+    for txid in [old.txid, new.txid, mempool.txid] {
+        h.feed(payment(
+            ME,
+            &txid.to_string(),
+            BOB,
+            PaymentDirection::Received,
+        ));
+    }
     h.feed(payment(ME, "bb22", CAROL, PaymentDirection::Sent));
     assert_eq!(
         h.changes(),
         BTreeSet::from([PlatformChange::Payments { identity: b58(ME) }])
     );
     let bob = b58(BOB);
+    let received =
+        |txid: Txid, read| row(EventKind::PaymentReceived, &bob, &txid.to_string(), read);
     assert_eq!(
         h.rows(),
         vec![
-            row(
-                EventKind::PaymentReceived,
-                &bob,
-                &old.txid.to_string(),
-                true
-            ),
-            row(
-                EventKind::PaymentReceived,
-                &bob,
-                &new.txid.to_string(),
-                false
-            ),
-            row(
-                EventKind::PaymentReceived,
-                &bob,
-                &mempool.txid.to_string(),
-                false
-            ),
-            row(
-                EventKind::PaymentReceived,
-                &bob,
-                &seen.txid.to_string(),
-                true
-            ),
+            received(old.txid, true),
+            received(new.txid, false),
+            received(mempool.txid, false),
         ]
     );
 }
@@ -805,18 +814,30 @@ fn events_of_a_restore_pass_are_stored_read() {
 }
 
 /// What happened before the wallet's first bring-up here stays history
-/// when it arrives after the restore's passes (a pass cut off by its
-/// budget, a lock or a kill; review C1): requests by `$createdAt`,
-/// relationships by their later request, names by their acquisition.
+/// when it arrives after the recovery phases (a pass cut off by its
+/// budget, a lock or a kill; review C1), by authoritative time only
+/// (DEC-114): requests by `$createdAt`, relationships by their later
+/// request, names by their marketplace row. A name's `acquired_at` (a
+/// refresh stamps the fetch's wall clock) is never its age.
 #[test]
 fn history_arriving_after_the_restore_passes_is_stored_read() {
     let h = Harness::restored();
     h.feed(contacts(incoming(ME, BOB, OLD_MS)));
     h.feed(contacts(established(ME, CAROL, OLD_MS, OLD_MS + 1)));
+    h.times.name(ME, "old", OLD_MS);
+    h.times.name(ME, "new", NEW_MS);
+    h.times.name(ME, "refreshed", OLD_MS);
     h.feed(identities(vec![identity(
         ME,
         Some(0),
-        &[("old", Some(OLD_MS)), ("new", Some(NEW_MS))],
+        &[
+            ("old", Some(OLD_MS)),
+            ("new", Some(NEW_MS)),
+            // Fetched now, created on Platform long ago.
+            ("refreshed", Some(NEW_MS + 5)),
+            // An old stamp, but no row: no authoritative time.
+            ("unrowed", Some(OLD_MS)),
+        ],
     )]));
     // Accepted after the restore, although the first request is older.
     h.feed(contacts(established(ME, 9, OLD_MS, NEW_MS)));
@@ -829,11 +850,43 @@ fn history_arriving_after_the_restore_passes_is_stored_read() {
             ("request_accepted", true),
             ("username_registered", true),
             ("username_registered", false),
+            ("username_registered", true),
+            ("username_registered", false),
             ("request_accepted", false),
             ("request_received", false),
         ]
         .map(|(k, r)| (k.to_string(), r))
     );
+}
+
+/// A recovery handed on to later phases (DEC-114) keeps the wallet's events
+/// read until every phase it owes is done, in either order: the names pass
+/// may run before the bring-up a discovery queued, or after it.
+#[test]
+fn a_recovery_stays_catch_up_until_its_last_phase() {
+    let h = Harness::new();
+    let mut created = NEW_MS;
+    let mut feed = |h: &Harness| {
+        created += 1;
+        h.feed(contacts(incoming(ME, created as u8, created)));
+        h.journal().last().unwrap().read_at.is_some()
+    };
+    for (first, second) in [
+        (Phase::Names, Phase::BringUp),
+        (Phase::BringUp, Phase::Names),
+    ] {
+        h.tap.begin_recovery(W, true);
+        assert!(feed(&h));
+        h.tap.end_phase(&W, first);
+        assert!(feed(&h), "{first:?} done, {second:?} owed");
+        h.tap.end_phase(&W, second);
+        assert!(!feed(&h), "over");
+    }
+    // A restore's own bring-up owes the names pass only; removal ends it.
+    h.tap.begin_recovery(W, false);
+    assert!(feed(&h));
+    h.tap.forget(&W);
+    assert!(!feed(&h));
 }
 
 /// The first bring-up's time is kept, persisted, and read back by a later
@@ -853,7 +906,7 @@ fn the_first_bring_up_time_is_kept() {
     // A later session over the same database uses it.
     let later = ChangesetTap::new(Arc::clone(&h.hub), Arc::clone(&h.appdb));
     if let Some(c) = classify(&contacts(incoming(ME, BOB, OLD_MS))) {
-        later.record(W, c);
+        later.record(W, c, &h.times);
     }
     assert!(h.journal()[0].read_at.is_some());
 }

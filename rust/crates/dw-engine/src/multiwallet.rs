@@ -279,6 +279,7 @@ impl NetworkSession {
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
             this.platform.forget(&id);
+            live.tap.forget(&id);
             this.sink.emit(EngineEvent::WalletLoadChanged {
                 network: this.network.clone(),
                 wallet_id: id,

@@ -1508,11 +1508,19 @@ The shapes are in §3. What they mean, where the name does not say:
   - **contact events are once per relationship:** a rotated request (a key rotation re-sends it with a newer
     `$createdAt`) is no news. `RequestReceived` is skipped once the contact has any contact row; `RequestAccepted`
     and `ContactEstablished` once it has either of them.
-  - **catch-up:** an event is stored read (no OS notification, DASHPAY §2.7) while a restore pass holds the wallet,
-    and whenever what it reports predates the wallet's first bring-up in this installation (the local, unexported
-    setting `dashpay.catch_up_before`, UNIX seconds): a request by its `$createdAt`, a relationship by its later
-    request, a payment by its transaction's time, a name by its `acquired_at` (a name with none is discovery's:
-    history). DP1-05's restore passes (pass 2, `discover_identities`) hold `catch_up(wallet)` for their duration.
+  - **catch-up (DEC-114):** while a recovery phase runs, every event of the wallet is stored read (no OS
+    notification, DASHPAY §2.7). The phases are a restore's bring-up (no identity on file, not created here),
+    `discover_identities`, the bring-up it queues and the names pass; the tap carries a recovery from one phase to
+    the next until both owed later phases are done, in either order, and drops it on removal, unload or a restore's
+    rollback. Outside them, an event is stored read when its **authoritative** time predates the wallet's first
+    bring-up in this installation (the local, unexported setting `dashpay.catch_up_before`, UNIX seconds): a
+    request's `$createdAt`, a relationship's later request, a payment's confirmed block time and a name's
+    marketplace row time (transfer, else creation), the last two read from the persister. Local fetch or
+    observation time (a name's `acquired_at`, the history's first-seen) is never an age. An unconfirmed payment, or
+    an event with no authoritative time, is news.
+  - **declared residual (DEC-114):** an old event that first surfaces outside every recovery phase and has no
+    authoritative time may show as unread once. It is cosmetic: no trust flag or money movement depends on read
+    state, and no reconciliation is built for it.
   - **trust flags fail closed:** while the trusted-quorum fallback is in use, the tap writes the `dp_trust_unverified`
     rows of everything a changeset touches (identities, including identity and key tombstones; contact requests;
     DPNS labels) *before* the SQLite persister sees it. If that write fails, `store` is refused with nothing applied

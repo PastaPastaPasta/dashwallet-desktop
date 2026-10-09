@@ -670,6 +670,94 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// The journal of `id` as (kind, ref, read).
+fn journal(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> Vec<(String, String, bool)> {
+    engine
+        .block_on(s.appdb_op(move |db| db.journal(&id.to_string())))
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.kind, r.reference, r.read_at.is_some()))
+        .collect()
+}
+
+/// E0-06 / DEC-114: the names pass is a recovery phase. What it stores is
+/// read although nothing gives the names an authoritative time (the mock's
+/// rows are not persisted, its stamps are fetch times), and the recovery
+/// ends with it.
+#[test]
+fn a_restores_names_pass_is_stored_read() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_names = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("alice", Some(100)), ("zed", None)])],
+        hold_names: Some(Arc::clone(&hold_names)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("pass 1", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    let tap = s.live().unwrap().tap;
+    // Pass 1 is over; the recovery owes its names pass.
+    assert!(tap.is_recovering(&id));
+
+    hold_names.notify_one();
+    wait_until("pass 2", || !tap.is_recovering(&id));
+    let at = |label: &str| format!("{label}@{FETCHED_AT}");
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![
+            ("username_registered".into(), at("alice"), true),
+            ("username_registered".into(), at("zed"), true),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// E0-06 / DEC-114: an explicit discovery, the bring-up it queues and the
+/// names pass after it are one recovery: what they store is read, and the
+/// recovery ends once both later phases are done.
+#[test]
+fn a_discovery_and_the_passes_it_queues_are_stored_read() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        discovered: vec![(ALICE, 3)],
+        names: vec![(ALICE, vec![("alice", Some(1))])],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
+    });
+    let tap = s.live().unwrap().tap;
+    assert!(!tap.is_recovering(&id));
+
+    let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
+    let found = engine
+        .block_on(s.dashpay(id).discover_identities(scan))
+        .unwrap();
+    assert_eq!(found, 1);
+    wait_until("the names pass and the queued bring-up", || {
+        !shown(&s, id)[0].1.is_empty()
+            && platform.bring_ups.load(Ordering::SeqCst) == 2
+            && !tap.is_recovering(&id)
+    });
+    assert_eq!(
+        journal(&engine, &s, id),
+        vec![(
+            "username_registered".into(),
+            format!("alice@{FETCHED_AT}"),
+            true
+        )]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A wallet restored while SPV runs (a `.dwbackup` carrying its main
 /// identity, here the row written before its bring-up) recovers the same
 /// way, and keeps the restored main identity; `set_main_identity` refuses

@@ -255,6 +255,11 @@ impl Recovery {
         guard(&self.names_due).drain().collect()
     }
 
+    /// The wallets that owe a names pass now.
+    pub(super) fn names_due_of(&self) -> HashSet<WalletId> {
+        guard(&self.names_due).clone()
+    }
+
     /// Forgets a removed or closed wallet.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.choices).remove(id);
@@ -572,7 +577,9 @@ impl NetworkSession {
     /// The names pass of a recovery (pass 2): a full DPNS refresh of the
     /// wallet's identities, within [`NAMES_PASS_BUDGET`]. Failures are
     /// logged; `dpns_sync` repairs them on its next pass.
+    /// A recovery phase: what it stores is catch-up (DEC-114).
     pub(super) async fn names_pass(&self, manager: &Arc<Manager>, id: WalletId) {
+        let _catch_up = self.catch_up(id);
         self.run_names_pass(manager, id).await;
         self.refresh_identities(manager, id).await;
     }
@@ -631,6 +638,8 @@ impl NetworkSession {
             .begin_discovery(id)
             .ok_or(PlatformError::WalletNotFound)?;
         self.require_wallet(&id)?;
+        // A recovery phase: what it stores is catch-up (DEC-114).
+        let _catch_up = self.catch_up(id);
         let manager = self.manager()?;
         let before = wallet_identities(&manager, id).await;
         tokio::select! {
@@ -718,6 +727,9 @@ impl NetworkSession {
             .filter(|identity| !before.contains(identity))
             .count();
         if stored > 0 {
+            // The bring-up and names pass that follow are still the
+            // recovery: catch-up until both are done, in either order.
+            self.begin_recovery(id, true);
             self.refresh_identities(manager, id).await;
             self.platform.recovery.names_due(id);
             self.platform.signal(PlatformSignal::Readmit(id));

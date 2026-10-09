@@ -115,7 +115,8 @@ impl PlatformWalletPersistence for WalletStore {
         }
         self.inner.store(wallet_id, changeset)?;
         if let Some(classified) = classified {
-            self.tap.record(WalletId(wallet_id), classified);
+            self.tap
+                .record(WalletId(wallet_id), classified, self.inner.as_ref());
         }
         Ok(())
     }
