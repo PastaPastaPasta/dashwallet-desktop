@@ -369,14 +369,18 @@ element comes from iOS; new strings only where neither has one (mark them in L10
   About as normal rows (same style, PNG `settings-*` icons), replacing today's bold blue link buttons
   (`CrossUI/WalletRootView.swift` `toolButton`).
 - **Toolbar** (macOS): wallet picker (QT-014), discreet toggle (`eye`/`eye.slash`), lock button. Nothing
-  else.
+  else. The lock button and the menu's "Lock wallet" stay enabled in the "key held" state: they run Lock, which
+  revokes the flow's lease although the vault is already locked.
 - **Status bar**: §C3. Left: sync text (dash-qt strings) + thin `accent` progress bar while syncing
   (click → sync overlay). Right, in dash-qt order: unit selector, HD (green `checkmark.shield` /
   hidden), lock (`lock.fill` green = locked, `lock.open.fill` red = unlocked/unencrypted, orange =
-  mixing only), proxy, connections (`antenna.radiowaves.left.and.right` + count; red when disabled),
+  mixing only; **key held**: the vault's own icon with a badge while a flow holds its own key, that is an orange
+  `lock.fill` with a badge on a locked vault and the mixing-only icon with a badge on a mixing-only one. Tooltip
+  "Registration of @name holds a key for 4:12 — Lock to cancel" before the funds are committed, "… — Lock to stop"
+  after; E0-04 design §16.10 C7), proxy, connections (`antenna.radiowaves.left.and.right` + count; red when disabled),
   governance clock (§4.24), sync (`checkmark.circle.fill` green / `arrow.triangle.2.circlepath` orange
   spinning). Tooltips verbatim (research 02 §2.3). Cross: the same items as short text ("tDASH", "HD",
-  "Locked", "8 peers", "Synced").
+  "Locked", "8 peers", "Synced"); in the key-held state "Locked · key held" or "Mixing only · key held".
 - **App menus**: dash-qt menus exactly (QT-015…018, `WalletCommands.swift`, `CrossUI/ShellMenus.swift`);
   M3 adds Help ▸ "CoinJoin information", Window ▸ "Masternode Keys" and "Governance information".
 
@@ -653,7 +657,8 @@ Footer:     "25 transactions"  (footnote secondary)
        (🔄) Change passphrase…           ›
        (📄) Show recovery phrase…         ›
 ‹card› (☝) Touch ID                      toggle | "Not available on this Mac" (help text)
-       (⏱) Auto lock                     5 minutes ▾
+       (⏱) Auto lock                     5 minutes ▾   (= Lock, armed only while the vault holds its key; a
+                                                          flow's progress screen is not activity; E0-04 §4.8, C5)
        (✓) Require authentication for every payment   toggle
        (👁) Autohide balance              toggle
 ‹card› (?) Forgot passphrase?            ›
