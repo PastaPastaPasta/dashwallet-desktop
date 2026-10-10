@@ -49,6 +49,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dw_appdb::dispatch::StoredFundingKey;
+use dw_vault::SignerError;
 use platform_wallet::AssetLockFundingType;
 use tokio::time::Instant;
 
@@ -232,6 +233,14 @@ impl SignatureCount {
 
     pub(crate) fn note_locked(&self) {
         self.locked.store(true, Ordering::SeqCst);
+    }
+
+    /// A signer's error under this count: a `Locked` refusal is reported
+    /// ([`Self::locked`]). Touches neither `signing` nor `closed`.
+    pub(crate) fn observe_err(&self, e: &SignerError) {
+        if matches!(e, SignerError::Locked) {
+            self.note_locked();
+        }
     }
 
     /// A signer is about to ask the vault for one signature: counted

@@ -240,9 +240,7 @@ pub(crate) fn attributed_row(
 pub struct DraftKey {
     /// The draft's funding step, `registration/<draft>/funding`.
     pub step: String,
-    pub funding_type: AssetLockFundingType,
-    pub identity_index: u32,
-    pub account: u32,
+    pub key: FundingKey,
 }
 
 impl DraftKey {
@@ -251,16 +249,16 @@ impl DraftKey {
     pub fn registration(draft: i64, identity_index: u32) -> Self {
         Self {
             step: format!("registration/{draft}/funding"),
-            funding_type: AssetLockFundingType::IdentityRegistration,
-            identity_index,
-            account: 0,
+            key: FundingKey {
+                funding_type: AssetLockFundingType::IdentityRegistration,
+                identity_index,
+                account: 0,
+            },
         }
     }
 
     fn matches(&self, key: &FundingKey) -> bool {
-        self.funding_type == key.funding_type
-            && self.identity_index == key.identity_index
-            && self.account == key.account
+        self.key == *key
     }
 }
 
@@ -314,9 +312,8 @@ impl ModeB {
     pub(super) fn forget(&mut self, wallet: &WalletId) {
         self.snapshots.remove(wallet);
         self.derived.retain(|(w, _), _| w != wallet);
-        self.resumed.retain(|(w, _)| w != wallet);
         self.foreign.retain(|(w, _), _| w != wallet);
-        self.passes.end(wallet);
+        self.wallet_closed(wallet);
         *self.epochs.entry(*wallet).or_default() += 1;
     }
 
@@ -434,7 +431,7 @@ fn unattributed_row<'a>(
     let step_type = info
         .funding
         .map(|k| k.funding_type)
-        .or(draft.map(|d| d.funding_type));
+        .or(draft.map(|d| d.key.funding_type));
     s.rows.iter().find(|r| {
         !r.trusted
             && step_type.is_none_or(|t| t == r.key.funding_type)
@@ -464,7 +461,7 @@ fn markerless_unattributed_row<'a>(
     s.rows.iter().find(|r| {
         !r.trusted
             && r.key.funding_type == AssetLockFundingType::IdentityRegistration
-            && draft.is_none_or(|d| d.account == r.key.account)
+            && draft.is_none_or(|d| d.key.account == r.key.account)
             && info.funding.as_ref() != Some(&r.key)
             && !draft.is_some_and(|d| d.matches(&r.key))
     })
@@ -503,9 +500,8 @@ pub(super) fn funds_committed(i: &Inner, e: &Entry) -> bool {
 
 /// The funding gate (§2a.3), in the J step that would take `step`'s permit.
 pub(super) fn funding_gate(i: &Inner, wallet: WalletId, step: &str) -> Option<FundingBlock> {
-    let snap = match i.mode_b.snapshots.get(&wallet) {
-        Some(s) => s,
-        None => return Some(FundingBlock::RowsUnknown),
+    let Some(snap) = i.mode_b.snapshots.get(&wallet) else {
+        return Some(FundingBlock::RowsUnknown);
     };
     let marked = matches!(
         i.fence.call_step_status(&wallet, step),

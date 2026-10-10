@@ -354,6 +354,11 @@ impl ChangesetTap {
         }
     }
 
+    /// The lease table [`Self::watch_locks`] was given, if it still lives.
+    fn table(&self) -> Option<Arc<LeaseTable>> {
+        self.locks_changed.get().and_then(Weak::upgrade)
+    }
+
     /// Has every tracked asset-lock change of a wallet refresh `table`'s
     /// Mode B snapshot of it (once).
     pub(crate) fn watch_locks(&self, table: &Arc<LeaseTable>) {
@@ -364,7 +369,7 @@ impl ChangesetTap {
     /// one of Repair's self-spends (§2a.5 row 1), so a wallet awaiting one
     /// is refreshed. Spawned: this runs inside the library's store call.
     pub(crate) fn core_changed(&self, id: WalletId) {
-        if let Some(table) = self.locks_changed.get().and_then(Weak::upgrade)
+        if let Some(table) = self.table()
             && table.awaits_self_spend_lock(id)
         {
             table.request_refresh(id);
@@ -465,7 +470,7 @@ impl ChangesetTap {
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
         if !c.locks.is_empty()
-            && let Some(table) = self.locks_changed.get().and_then(Weak::upgrade)
+            && let Some(table) = self.table()
         {
             // A funding call's coin fence: one J step, no await.
             table.note_tracked(id, &c.tracked);

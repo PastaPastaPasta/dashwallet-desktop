@@ -60,6 +60,7 @@ use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind};
 use key_wallet::Utxo;
 use key_wallet::bip32::ChildNumber;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
+use key_wallet::managed_account::managed_account_collection::ManagedAccountCollection;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -350,17 +351,24 @@ fn pending_lock_inputs<'a>(
         .collect()
 }
 
+/// The funding accounts: BIP44, BIP32 and DashPay receiving, which
+/// platform-wallet's `ASSET_LOCK_FUNDING_SOURCES` pools (CoinJoin accounts
+/// are no funding source).
+fn funding_accounts(
+    accounts: &ManagedAccountCollection,
+) -> impl Iterator<Item = &ManagedCoreFundsAccount> {
+    accounts
+        .standard_bip44_accounts
+        .values()
+        .chain(accounts.standard_bip32_accounts.values())
+        .chain(accounts.dashpay_receival_accounts.values())
+}
+
 /// Reads every funds account of `info` (key-wallet state only).
 fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
-    for a in accounts.standard_bip44_accounts.values() {
-        collect(&mut coins, a, true, false);
-    }
-    for a in accounts.standard_bip32_accounts.values() {
-        collect(&mut coins, a, true, false);
-    }
-    for a in accounts.dashpay_receival_accounts.values() {
+    for a in funding_accounts(accounts) {
         collect(&mut coins, a, true, false);
     }
     for a in accounts.coinjoin_accounts.values() {
@@ -392,10 +400,7 @@ pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
             .is_some_and(|r| r.context.is_chain_locked())
             || a.transaction_is_finalized(txid)
     };
-    accounts.standard_bip44_accounts.values().any(locked)
-        || accounts.standard_bip32_accounts.values().any(locked)
-        || accounts.dashpay_receival_accounts.values().any(locked)
-        || accounts.coinjoin_accounts.values().any(locked)
+    funding_accounts(accounts).any(locked) || accounts.coinjoin_accounts.values().any(locked)
 }
 
 /// A transaction of the funding accounts (BIP44, BIP32, DashPay receiving)
@@ -411,12 +416,7 @@ pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
             .find(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
             .map(|r| r.txid)
     };
-    accounts
-        .standard_bip44_accounts
-        .values()
-        .chain(accounts.standard_bip32_accounts.values())
-        .chain(accounts.dashpay_receival_accounts.values())
-        .find_map(pending)
+    funding_accounts(accounts).find_map(pending)
 }
 
 /// How many unspent outputs the asset-lock builder may fund from: every coin
@@ -537,8 +537,10 @@ impl NetworkSession {
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             coin.user_locked = locked.contains(&lock_key(&o));
-            coin.lock_input = !reserved.contains(&o) && lock_inputs.contains(&o);
-            coin.reserved = reserved.contains(&o) || lock_inputs.contains(&o);
+            let spend_reserved = reserved.contains(&o);
+            let lock_reserved = lock_inputs.contains(&o);
+            coin.lock_input = !spend_reserved && lock_reserved;
+            coin.reserved = spend_reserved || lock_reserved;
         }
         Ok(snapshot)
     }

@@ -161,8 +161,8 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 // Not this identity's key: try the next identity.
                 Err(SignerError::KeyMismatch(_)) => continue,
                 Err(e) => {
-                    if let (SignerError::Locked, Some(count)) = (&e, &self.count) {
-                        count.note_locked();
+                    if let Some(count) = &self.count {
+                        count.observe_err(&e);
                     }
                     return Err(ProtocolError::ExternalSignerError(e.to_string()));
                 }
@@ -201,8 +201,8 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                     {
                         Ok(matches) => matches,
                         Err(e) => {
-                            if let (SignerError::Locked, Some(count)) = (&e, &self.count) {
-                                count.note_locked();
+                            if let Some(count) = &self.count {
+                                count.observe_err(&e);
                             }
                             false
                         }
@@ -232,8 +232,8 @@ impl CountingFundingSigner {
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
-        if let Err(SignerError::Locked) = &r {
-            self.count.note_locked();
+        if let Err(e) = &r {
+            self.count.observe_err(e);
         }
         r
     }

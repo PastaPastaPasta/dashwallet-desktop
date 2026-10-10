@@ -925,11 +925,13 @@ impl DispatchJournal {
     }
 
     /// Every `funding_marker` row, in sequence order (tests).
+    #[cfg(test)]
     pub fn funding_rows(&self) -> Result<Vec<FundingRow>> {
         funding_rows(&self.conn())
     }
 
     /// Every `self_spend` row, in sequence order (tests).
+    #[cfg(test)]
     pub fn self_spend_rows(&self) -> Result<Vec<SelfSpendRow>> {
         self_spend_rows(&self.conn())
     }
