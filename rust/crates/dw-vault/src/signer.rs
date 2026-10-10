@@ -20,7 +20,7 @@
 //! module doc, "Release").
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{All, Message, PublicKey, Secp256k1, ecdsa};
+use dashcore::secp256k1::{Message, PublicKey, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
@@ -241,7 +241,6 @@ impl VaultSigner {
             body(&Op {
                 signer: self,
                 master,
-                secp: Secp256k1::new(),
             })
         })
     }
@@ -252,7 +251,7 @@ impl VaultSigner {
         &self,
         path: &DerivationPath,
         key_use: KeyUse,
-        f: impl FnOnce(&Secp256k1<All>, &ExtendedPrivKey) -> T,
+        f: impl FnOnce(&ExtendedPrivKey) -> T,
     ) -> Result<T, SignerError> {
         self.run(&[(key_use, path)], |op| op.with_key(path, key_use, f))
     }
@@ -263,7 +262,6 @@ impl VaultSigner {
 pub(crate) struct Op<'a> {
     signer: &'a VaultSigner,
     master: ExtendedPrivKey,
-    secp: Secp256k1<All>,
 }
 
 impl Op<'_> {
@@ -273,14 +271,14 @@ impl Op<'_> {
         &self,
         path: &DerivationPath,
         key_use: KeyUse,
-        f: impl FnOnce(&Secp256k1<All>, &ExtendedPrivKey) -> T,
+        f: impl FnOnce(&ExtendedPrivKey) -> T,
     ) -> Result<T, SignerError> {
         self.signer.check(key_use, path)?;
         let mut xpriv = self
             .master
-            .derive_priv(&self.secp, path)
+            .derive_priv(path)
             .map_err(|e| SignerError::Derivation(e.to_string()))?;
-        let out = f(&self.secp, &xpriv);
+        let out = f(&xpriv);
         xpriv.private_key.non_secure_erase();
         Ok(out)
     }
@@ -362,17 +360,17 @@ impl Signer for VaultSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
-        self.with_key(path, KeyUse::Sign, |secp, x| {
+        self.with_key(path, KeyUse::Sign, |x| {
             // Low-R grinding, as Dash Core's `CKey::Sign`: one byte smaller on
             // average, and the same signature dashd makes for the sighash.
-            let sig = secp.sign_ecdsa_low_r(&Message::from_digest(sighash), &x.private_key);
-            (sig, PublicKey::from_secret_key(secp, &x.private_key))
+            let sig = ecdsa::sign_low_r(Message::from_digest(sighash), &x.private_key);
+            (sig, PublicKey::from_secret_key(&x.private_key))
         })
     }
 
     async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
-        self.with_key(path, KeyUse::PublicKey, |secp, x| {
-            PublicKey::from_secret_key(secp, &x.private_key)
+        self.with_key(path, KeyUse::PublicKey, |x| {
+            PublicKey::from_secret_key(&x.private_key)
         })
     }
 }
@@ -398,9 +396,9 @@ impl WalletSigner for VaultSigner {
         path: &DerivationPath,
         message: &[u8],
     ) -> Result<String, SignerError> {
-        self.with_key(path, KeyUse::Message, |_, x| {
+        self.with_key(path, KeyUse::Message, |x| {
             let secret = dw_uri::keyio::Secret {
-                key: Zeroizing::new(x.private_key.secret_bytes()),
+                key: Zeroizing::new(x.private_key.to_secret_bytes()),
                 compressed: true,
             };
             dw_message::sign_message(&secret, message)

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use common::*;
 use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
-use dashcore::secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dashcore::signer::double_sha;
 use dw_vault::{
     Credential, GrantKind, GrantPurpose, GrantToken, SignerError, SignerScope, UnlockScope, Vault,
@@ -142,10 +142,7 @@ const NONE: Uses = Uses {
 };
 
 async fn uses(s: &VaultSigner, p: &DerivationPath) -> Uses {
-    let peer = PublicKey::from_secret_key(
-        &Secp256k1::new(),
-        &SecretKey::from_slice(&[0x42; 32]).unwrap(),
-    );
+    let peer = PublicKey::from_secret_key(&SecretKey::from_secret_bytes([0x42; 32]).unwrap());
     // A key-data mismatch is not a scope refusal: pass the real key when the
     // scope lets us read it, garbage otherwise.
     let key_data = s
@@ -552,11 +549,7 @@ async fn the_scan_key_needs_an_identity_scan_grant_for_its_wallet() {
     let p = path("m/9'/1'/5'/0'/0'/0'/0'");
     let identity = platform_signer(&v, SignerScope::PlatformIdentity);
     assert_eq!(
-        master
-            .derive_priv(&Secp256k1::new(), &p)
-            .unwrap()
-            .private_key
-            .public_key(&Secp256k1::new()),
+        master.derive_priv(&p).unwrap().private_key.public_key(),
         identity.public_key(&p).await.unwrap()
     );
 
@@ -673,7 +666,6 @@ async fn identity_signatures_need_the_named_key_and_verify() {
     let fx = Fixture::new();
     let v = unencrypted_vault(&fx);
     let s = platform_signer(&v, SignerScope::PlatformIdentity);
-    let secp = Secp256k1::new();
     let data = b"state transition signable bytes";
     let digest: [u8; 32] = double_sha(data).try_into().unwrap();
     for key in 0..=5 {
@@ -688,9 +680,8 @@ async fn identity_signatures_need_the_named_key_and_verify() {
             let rec = RecoverableSignature::from_compact(&sig[1..], recid).unwrap();
             assert!(sig[0] >= 31, "compressed flag");
             let msg = Message::from_digest(digest);
-            assert_eq!(secp.recover_ecdsa(&msg, &rec).unwrap(), public);
-            secp.verify_ecdsa(&msg, &rec.to_standard(), &public)
-                .unwrap();
+            assert_eq!(rec.recover_ecdsa(msg).unwrap(), public);
+            public.verify(msg, &rec.to_standard()).unwrap();
         }
         // Another key's data: refused before signing.
         let other = s
