@@ -70,11 +70,13 @@ impl std::error::Error for SignError {}
 /// `MessageSign`: base64 of the 65-byte compact signature. Signing is
 /// deterministic (RFC 6979, no extra entropy), as in Core's `SignCompact`.
 pub fn sign_message(secret: &Secret, message: &[u8]) -> Result<String, SignError> {
-    let sk = SecretKey::from_secret_bytes(*secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
+    let mut sk =
+        SecretKey::from_secret_bytes(*secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
     let sig = ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
         Message::from_digest(message_hash(message)),
         &sk,
     );
+    sk.non_secure_erase();
     let (recid, rs) = sig.serialize_compact();
     let mut out = [0u8; COMPACT_SIGNATURE_SIZE];
     out[0] = 27 + recid.to_u8() + if secret.compressed { 4 } else { 0 };
