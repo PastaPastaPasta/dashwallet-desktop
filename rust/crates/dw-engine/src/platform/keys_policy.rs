@@ -8,7 +8,7 @@
 //! IdentityUpdate fallback). iOS takes keys 0–3 from SwiftDashSDK's
 //! `prePersistIdentityKeysForRegistration`, whose policy is Rust:
 //! `rs-platform-wallet-ffi/src/identity_derive_and_persist.rs` at platform
-//! `bc41f1bc23`.
+//! `ebe37f8a67` (the policy is unchanged since `bc41f1bc23`).
 //!
 //! | id | purpose        | security level | contract bounds                    |
 //! |----|----------------|----------------|------------------------------------|

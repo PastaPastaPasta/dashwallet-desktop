@@ -654,9 +654,8 @@ fn row_payments_journal_received_payments() {
 #[test]
 fn row_contact_accounts_signal_contacts() {
     let h = Harness::new();
-    let secp = dashcore::secp256k1::Secp256k1::new();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
-    let xpub = ExtendedPubKey::from_priv(&secp, &master);
+    let xpub = ExtendedPubKey::from_priv(&master);
     let account = |account_type| AccountRegistrationEntry {
         account_type,
         account_xpub: xpub,

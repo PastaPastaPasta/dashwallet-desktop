@@ -156,7 +156,7 @@ fn decode_base58_check_core(s: &str, max_ret_len: usize) -> Option<Vec<u8>> {
 }
 
 fn encode_base58_check(payload: &[u8]) -> String {
-    dashcore::base58::encode_check(payload)
+    dashcore::base58::Base58CkString::encode_unbounded(payload).to_string()
 }
 
 /// Encodes a destination as a Base58 address for `network`.

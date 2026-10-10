@@ -1,7 +1,6 @@
 //! testdata/message_cases.json: dashd v24 signmessagewithprivkey/signmessage/
 //! verifymessage results, plus Dash Core's unit and functional test vectors.
 
-use dashcore::secp256k1::Secp256k1;
 use dw_message::{VerifyError, message_hash, sign_message, sign_message_with_wif, verify_message};
 use dw_uri::Network;
 use dw_uri::keyio::Secret;
@@ -136,7 +135,6 @@ fn core_unit_and_functional_vectors() {
 #[test]
 fn agrees_with_rust_dashcore_sign_message() {
     let doc = load();
-    let secp = Secp256k1::verification_only();
     for c in doc["sign"].as_array().unwrap() {
         let m = c["message"].as_str().unwrap();
         let theirs = dashcore::sign_message::signed_msg_hash(m);
@@ -150,7 +148,7 @@ fn agrees_with_rust_dashcore_sign_message() {
         let addr: dashcore::Address<dashcore::address::NetworkUnchecked> =
             c["address"].as_str().unwrap().parse().unwrap();
         let addr = addr.require_network(Network::Regtest).unwrap();
-        assert!(sig.is_signed_by_address(&secp, &addr, theirs).unwrap());
+        assert!(sig.is_signed_by_address(&addr, theirs).unwrap());
     }
 }
 
@@ -160,9 +158,8 @@ proptest! {
                         msg in prop::collection::vec(any::<u8>(), 0..400)) {
         let s = Secret { key: Zeroizing::new(key), compressed };
         let sig = sign_message(&s, &msg).unwrap();
-        let secp = Secp256k1::signing_only();
-        let sk = dashcore::secp256k1::SecretKey::from_byte_array(&key).unwrap();
-        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(key).unwrap();
+        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&sk);
         let ser = if compressed { pk.serialize().to_vec() } else { pk.serialize_uncompressed().to_vec() };
         let hash = <dashcore::hashes::hash160::Hash as dashcore::hashes::Hash>::hash(&ser);
         let addr = dw_uri::keyio::encode_destination(

@@ -41,7 +41,8 @@ and identity index, keys 0–5 with id, purpose, security level, key type, contr
 
 - iOS: dashwallet-ios `37c0e78a2f557fa35c98c051a4ce40b77be350ee` (`DWDashPayIdentityKeys.swift` last changed in
   `6836db798b`). iOS builds against a sibling `../platform` checkout, not a pinned revision.
-- Platform: `bc41f1bc233dec4607d387101c1d9c2f111019b2`, the desktop's pin.
+- Platform: `PastaPastaPasta/platform` `ebe37f8a679b1a552483dc7ff12c306291e9a32b`, the desktop's pin. The vectors were
+  first built at `bc41f1bc23`; rebuilt at this pin they are identical apart from this field.
 - Seeds: the BIP39 `abandon … about` and `legal winner … yellow` phrases with no passphrase (the only kind iOS can
   derive from at this platform revision: its resolver entry points use `to_seed("")`) on mainnet, testnet and regtest,
   identities 0 and 1; and `legal winner … yellow` with passphrase `TREZOR` on testnet, which iOS cannot produce yet.
@@ -69,7 +70,9 @@ for keys 0–3, the metadata too), and the E0-03 vectors where they overlap. The
 To regenerate (prints public keys and paths only):
 
 ```sh
-git -C <platform checkout> worktree add --detach /tmp/platform-dp101 bc41f1bc233dec4607d387101c1d9c2f111019b2
+git -C <platform checkout> fetch https://github.com/PastaPastaPasta/platform dw/e0-10c-v5.1-spv-trust
+git -C <platform checkout> worktree add --detach /tmp/platform-dp101 ebe37f8a679b1a552483dc7ff12c306291e9a32b
+mkdir -p /tmp/platform-dp101/packages/rs-platform-wallet-ffi/examples
 cp <this dir>/dp1_01_identity_key_vectors.harness.rs /tmp/platform-dp101/packages/rs-platform-wallet-ffi/examples/dp101_vectors.rs
 cd /tmp/platform-dp101 && CARGO_TARGET_DIR=/tmp/platform-dp101-target \
   cargo run -p platform-wallet-ffi --example dp101_vectors > /tmp/dp101-ffi.txt
@@ -82,7 +85,9 @@ git -C <platform checkout> worktree remove --force /tmp/platform-dp101
 ## `dp1_03_username_vectors.json`
 
 Username rule vectors (roadmap DP1-03, `tests/dp1_03_names.rs`), homographs included. Every expectation is an
-assertion of an upstream test or rule at the pin `bc41f1bc233dec4607d387101c1d9c2f111019b2`, cited per vector:
+assertion of an upstream test or rule at the pin `PastaPastaPasta/platform@ebe37f8a679b1a552483dc7ff12c306291e9a32b`,
+cited per vector. The four cited files are identical at `bc41f1bc23`, where the vectors were written, and at #5307
+`f475f72a11`:
 
 - `dash-platform-queries/src/dpns_usernames.rs` tests (`is_valid_username`, `is_contested_username`,
   `convert_to_homograph_safe_chars`, the functions `check_username` builds on);

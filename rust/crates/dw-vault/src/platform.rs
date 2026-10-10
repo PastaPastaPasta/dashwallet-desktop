@@ -17,6 +17,7 @@
 //! for the outputs.
 
 use dashcore::hashes::{Hash, hash160};
+use dashcore::secp256k1::ecdsa::RecoverableSignature;
 use dashcore::secp256k1::{Message, PublicKey};
 use dashcore::signer::{CompactSignature, double_sha};
 use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
@@ -79,7 +80,7 @@ fn require(shape: bool, path: &DerivationPath) -> Result<(), SignerError> {
 }
 
 fn secret_bytes(x: &ExtendedPrivKey) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new(x.private_key.secret_bytes())
+    Zeroizing::new(x.private_key.to_secret_bytes())
 }
 
 impl VaultSigner {
@@ -98,9 +99,9 @@ impl VaultSigner {
         key_data: &[u8],
     ) -> Result<bool, SignerError> {
         self.require_identity_key(path)?;
-        self.with_key(path, KeyUse::PublicKey, |secp, x| {
+        self.with_key(path, KeyUse::PublicKey, |x| {
             key_data_matches(
-                &PublicKey::from_secret_key(secp, &x.private_key).serialize(),
+                &PublicKey::from_secret_key(&x.private_key).serialize(),
                 key_data,
             )
         })
@@ -123,12 +124,15 @@ impl VaultSigner {
         let digest: [u8; 32] = double_sha(data)
             .try_into()
             .map_err(|_| SignerError::Derivation("digest length".into()))?;
-        self.with_key(path, KeyUse::Sign, |secp, x| {
-            let public = PublicKey::from_secret_key(secp, &x.private_key).serialize();
+        self.with_key(path, KeyUse::Sign, |x| {
+            let public = PublicKey::from_secret_key(&x.private_key).serialize();
             if !key_data_matches(&public, key_data) {
                 return Err(SignerError::KeyMismatch(path.to_string()));
             }
-            let sig = secp.sign_ecdsa_recoverable(&Message::from_digest(digest), &x.private_key);
+            let sig = RecoverableSignature::sign_ecdsa_recoverable(
+                Message::from_digest(digest),
+                &x.private_key,
+            );
             Ok(sig.to_compact_signature(true))
         })?
     }
@@ -142,7 +146,7 @@ impl VaultSigner {
         peer: &PublicKey,
     ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
         self.require_identity_key(path)?;
-        self.with_key(path, KeyUse::Agreement, |_, x| {
+        self.with_key(path, KeyUse::Agreement, |x| {
             dip15::ecdh(&x.private_key, peer)
         })
     }
@@ -157,7 +161,7 @@ impl VaultSigner {
         version: u32,
     ) -> Result<u32, SignerError> {
         self.require_identity_key(path)?;
-        self.with_key(path, KeyUse::Agreement, |_, x| {
+        self.with_key(path, KeyUse::Agreement, |x| {
             dip15::account_reference(&secret_bytes(x), compact_xpub, account_index, version)
         })
     }
@@ -170,7 +174,7 @@ impl VaultSigner {
         account_reference: u32,
     ) -> Result<(u32, u32), SignerError> {
         self.require_identity_key(path)?;
-        self.with_key(path, KeyUse::Agreement, |_, x| {
+        self.with_key(path, KeyUse::Agreement, |x| {
             dip15::unmask_account_reference(account_reference, &secret_bytes(x), compact_xpub)
         })
     }
@@ -199,10 +203,8 @@ impl VaultSigner {
                 (KeyUse::ContactInfo, &data_path),
             ],
             |op| {
-                let enc_key =
-                    op.with_key(&enc_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
-                let data_key =
-                    op.with_key(&data_path, KeyUse::ContactInfo, |_, x| secret_bytes(x))?;
+                let enc_key = op.with_key(&enc_path, KeyUse::ContactInfo, secret_bytes)?;
+                let data_key = op.with_key(&data_path, KeyUse::ContactInfo, secret_bytes)?;
                 Ok(f(&enc_key, &data_key))
             },
         )
@@ -254,7 +256,7 @@ impl VaultSigner {
         path: &DerivationPath,
     ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
         require(paths::is_auto_accept_key(path, self.network()), path)?;
-        self.with_key(path, KeyUse::Export, |_, x| secret_bytes(x))
+        self.with_key(path, KeyUse::Export, secret_bytes)
     }
 }
 
@@ -294,7 +296,7 @@ impl ScanKey {
     /// It erases itself when dropped (key-wallet `ExtendedPrivKey: Drop`).
     pub fn master_key(&self) -> Result<ExtendedPrivKey, SignerError> {
         self.signer
-            .with_key(&DerivationPath::master(), KeyUse::Export, |_, x| x.clone())
+            .with_key(&DerivationPath::master(), KeyUse::Export, |x| x.clone())
     }
 }
 
@@ -351,9 +353,8 @@ mod tests {
 
     #[test]
     fn key_data_binding() {
-        let secp = dashcore::secp256k1::Secp256k1::new();
-        let sk = dashcore::secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
-        let pk = PublicKey::from_secret_key(&secp, &sk).serialize();
+        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
+        let pk = PublicKey::from_secret_key(&sk).serialize();
         assert!(key_data_matches(&pk, &pk));
         let h = hash160::Hash::hash(&pk);
         assert!(key_data_matches(&pk, h.as_byte_array()));

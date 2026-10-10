@@ -65,13 +65,13 @@ deleted (platform #5307 pins a rust-dashcore without it).
 - `raw.rs`: one `return Err(..)?` lost its `return` (clippy 1.98).
 - Source formatted with the workspace's `rustfmt`.
 
-## Checks while the old module still exists
+## Checks against the old module
 
-`src/old_vs_vendored.rs` compares this code against key-wallet's `psbt` module at the
-current pin over the dashd vectors, a PSBT with every kept field set, every
-truncation and every single-byte flip of those. **Delete it, with its `mod`
-line in `lib.rs`, at the pin move (E0-10c).** After that nothing in the
-workspace refers to key-wallet's `psbt` module.
+Until the pin move (E0-10c), `src/old_vs_vendored.rs` compared this code with
+key-wallet's `psbt` module at rust-dashcore 40268cc0 over the dashd vectors, a
+PSBT with every kept field set, every truncation and every single-byte flip of
+those. The move deleted it with the module; nothing in the workspace refers to
+key-wallet's `psbt` module any more.
 
 ## Updating
 

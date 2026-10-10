@@ -7,7 +7,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
     MasternodeFailure, MasternodeKeyRole, NetworkSession, SessionOptions, WalletId,
@@ -72,12 +71,11 @@ fn import(e: &Engine, s: &Arc<NetworkSession>) -> WalletId {
 /// The secp256k1 key at `path` of `PHRASE` on regtest: P2PKH address and WIF.
 fn secp_at(path: &str) -> (String, String) {
     let secret = dw_vault::mnemonic::derive_secret(PHRASE.as_bytes(), b"", false).unwrap();
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
     let child = master
-        .derive_priv(&secp, &DerivationPath::from_str(path).unwrap())
+        .derive_priv(&DerivationPath::from_str(path).unwrap())
         .unwrap();
-    let pubkey = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+    let pubkey = dashcore::PublicKey::new(child.private_key.public_key());
     let address = dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string();
     let wif = dashcore::PrivateKey {
         compressed: true,

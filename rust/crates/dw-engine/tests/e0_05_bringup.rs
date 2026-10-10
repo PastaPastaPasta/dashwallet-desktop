@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     CREATED_HERE_BUDGET, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink,
     ImportOptions, NetworkSession, NoticeCode, SessionOptions, SpvState, StartupStatus, SyncLoop,
@@ -460,12 +459,11 @@ fn a_lock_drops_a_running_bring_up() {
 fn a_watch_only_wallet_is_read_only() {
     let f = Fixture::new(false);
     let secret = dw_vault::mnemonic::derive_secret(ABANDON_12.as_bytes(), b"", false).unwrap();
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
     let account = master
-        .derive_priv(&secp, &DerivationPath::from_str("m/44'/1'/0'").unwrap())
+        .derive_priv(&DerivationPath::from_str("m/44'/1'/0'").unwrap())
         .unwrap();
-    let tpub = ExtendedPubKey::from_priv(&secp, &account).to_string();
+    let tpub = ExtendedPubKey::from_priv(&account).to_string();
     let id = f
         .engine
         .block_on(

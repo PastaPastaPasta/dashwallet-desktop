@@ -222,7 +222,7 @@ impl ContactCryptoProvider for VaultContactCrypto {
             .export_auto_accept_key(path)
             .map_err(provider_error)?;
         // The trait's type: a secp256k1 `SecretKey` does not erase itself.
-        SecretKey::from_slice(&scalar[..])
+        SecretKey::from_secret_bytes(*scalar)
             .map_err(|e| PlatformWalletError::InvalidIdentityData(e.to_string()))
     }
 

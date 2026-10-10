@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::Secp256k1;
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen};
 use dw_engine::platform::{FlowKind, LeaseStateView, RevokeCause};
 use dw_engine::{
@@ -104,12 +103,11 @@ fn genesis() -> ImportOptions {
 
 fn address_at(phrase: &str, path: &str) -> String {
     let secret = dw_vault::mnemonic::derive_secret(phrase.as_bytes(), b"", false).unwrap();
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
     let child = master
-        .derive_priv(&secp, &DerivationPath::from_str(path).unwrap())
+        .derive_priv(&DerivationPath::from_str(path).unwrap())
         .unwrap();
-    let pubkey = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+    let pubkey = dashcore::PublicKey::new(child.private_key.public_key());
     dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string()
 }
 

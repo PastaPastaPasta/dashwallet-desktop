@@ -53,7 +53,7 @@ const SHA256_BLOCK: usize = 64;
 pub(crate) fn ecdh(secret: &SecretKey, peer: &PublicKey) -> Zeroizing<[u8; 32]> {
     let mut shared = SharedSecret::new(peer, secret);
     let mut out = Zeroizing::new([0u8; 32]);
-    out.copy_from_slice(shared.as_ref());
+    out.copy_from_slice(shared.as_secret_bytes());
     shared.non_secure_erase();
     out
 }
@@ -320,7 +320,6 @@ pub(crate) fn decrypt_private_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashcore::secp256k1::Secp256k1;
 
     fn key(n: u8) -> Key32 {
         Zeroizing::new(std::array::from_fn(|i| {
@@ -339,10 +338,9 @@ mod tests {
 
     #[test]
     fn ecdh_matches_platform_encryption() {
-        let secp = Secp256k1::new();
         for (a, b) in [(1u8, 2u8), (0x42, 0xC0), (0x0D, 0xFE)] {
-            let sk = SecretKey::from_slice(&[a; 32]).unwrap();
-            let peer = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[b; 32]).unwrap());
+            let sk = SecretKey::from_secret_bytes([a; 32]).unwrap();
+            let peer = PublicKey::from_secret_key(&SecretKey::from_secret_bytes([b; 32]).unwrap());
             assert_eq!(
                 *ecdh(&sk, &peer),
                 platform_encryption::derive_shared_key_ecdh(&sk, &peer)

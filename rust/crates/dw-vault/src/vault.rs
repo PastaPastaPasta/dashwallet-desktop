@@ -2954,8 +2954,7 @@ mod tests {
         let w = [1u8; 32];
         let key = DerivationPath::from_str("m/9'/1'/5'/0'/0'/0'/0'").unwrap();
         let peer = dashcore::secp256k1::PublicKey::from_secret_key(
-            &dashcore::secp256k1::Secp256k1::new(),
-            &dashcore::secp256k1::SecretKey::from_slice(&[0x42; 32]).unwrap(),
+            &dashcore::secp256k1::SecretKey::from_secret_bytes([0x42; 32]).unwrap(),
         );
 
         v.lock();
@@ -3025,7 +3024,7 @@ mod tests {
         );
         assert_eq!(
             spend_signer
-                .with_key(&key, crate::signer::KeyUse::PublicKey, |_, _| ())
+                .with_key(&key, crate::signer::KeyUse::PublicKey, |_| ())
                 .map(drop),
             Err(SignerError::Locked)
         );

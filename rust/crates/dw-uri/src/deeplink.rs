@@ -374,7 +374,8 @@ mod tests {
     #[test]
     fn dashpay_user_link() {
         let id = [7u8; 32];
-        let b58 = dashcore::base58::encode_slice(&id);
+        // base58 of `id`; base58ck has no plain encoder.
+        let b58 = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
         let link =
             DashPayUserLink::parse(&format!("DashPay://USER?ID={b58}&username=bob.dash")).unwrap();
         assert_eq!(

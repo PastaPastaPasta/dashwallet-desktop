@@ -7,7 +7,6 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use dashcore::secp256k1::Secp256k1;
 use dashcore::{Address, Network, PublicKey};
 use dw_compat::bip39core::core_seed;
 use dw_compat::descriptor::parse_listdescriptors;
@@ -23,12 +22,11 @@ fn manifest() -> serde_json::Value {
 }
 
 fn addresses(master: &ExtendedPrivKey, chain: &str, n: usize) -> Vec<String> {
-    let secp = Secp256k1::new();
     (0..n)
         .map(|i| {
             let path = DerivationPath::from_str(&format!("{chain}/{i}")).unwrap();
-            let child = master.derive_priv(&secp, &path).unwrap();
-            let pk = PublicKey::new(child.private_key.public_key(&secp));
+            let child = master.derive_priv(&path).unwrap();
+            let pk = PublicKey::new(child.private_key.public_key());
             Address::p2pkh(&pk, Network::Regtest).to_string()
         })
         .collect()
@@ -79,14 +77,13 @@ fn test_qt_106_wallet_dat_restores_dashd_addresses() {
             }
             (None, None) => {
                 let xprv = ExtendedPrivKey::from_str(w["xprv"].as_str().unwrap()).unwrap();
-                assert_eq!(xprv.private_key.secret_bytes(), *root.master_secret);
+                assert_eq!(xprv.private_key.to_secret_bytes(), *root.master_secret);
                 xprv
             }
             other => panic!("{file}: mnemonic presence differs: {:?}", other.1),
         };
-        let secp = Secp256k1::new();
         assert_eq!(
-            master.private_key.public_key(&secp).serialize(),
+            master.private_key.public_key().serialize(),
             root.master_pubkey,
             "{file}: phrase does not give the wallet's master key"
         );
