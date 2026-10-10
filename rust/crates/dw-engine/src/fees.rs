@@ -200,7 +200,10 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let wallet = this.wallet(&wallet_id).await?;
-            let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
+            let snapshot = {
+                let fence = this.coin_fence(wallet_id).await?;
+                this.coin_snapshot(&fence, &wallet).await?
+            };
             let unspent: HashMap<OutPoint, u64> = snapshot
                 .coins
                 .iter()

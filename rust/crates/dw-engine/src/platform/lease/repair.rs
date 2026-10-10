@@ -121,10 +121,15 @@ impl NetworkSession {
             }
             let rows = this.leases.check_stuck_funding(wallet_id, &step)?;
             let wallet = this.wallet(&wallet_id).await?;
+            // The coins are read under the fence; the draft's prepare reads
+            // them again under its own, so a coin locked in between is
+            // refused there (`send.outpoint_unavailable`).
+            let fence = this.coin_fence(wallet_id).await?;
             if let Some(txid) = crate::coins::unsettled_spend(&wallet.state().await.core_wallet) {
                 return Err(StuckFundingRefusal::SpendUnsettled(txid).into());
             }
-            let snapshot = this.coin_snapshot(&wallet, wallet_id).await?;
+            let snapshot = this.coin_snapshot(&fence, &wallet).await?;
+            drop(fence);
             let coins: Vec<_> = snapshot
                 .coins
                 .iter()

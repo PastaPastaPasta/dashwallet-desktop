@@ -42,7 +42,7 @@ use platform_wallet::wallet::core::{SEND_FUNDING_SOURCES, SignedCoreTransaction}
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use self::plan::{InputChoice, MAX_MONEY, Plan, PlanError, PlanOutput, dust_threshold};
-use crate::coins::{CoinSnapshot, now_secs};
+use crate::coins::{CoinFence, CoinSnapshot, now_secs};
 use crate::platform::lease::fence::HandOff;
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, LeaseError, Outcome, Settlement,
@@ -637,29 +637,28 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let (coins, _) = this
-                .source_coins(wallet_id, &source, &HashSet::new())
-                .await?;
+            let fence = this.coin_fence(wallet_id).await?;
+            let (coins, _) = this.source_coins(&fence, &source, &HashSet::new()).await?;
             Ok(coins.iter().map(Utxo::value).sum())
         })
         .await
     }
 
-    /// The coins `source` offers and the wallet height they were read at;
-    /// coin control may also take the `exempt` ones a tracked asset lock
-    /// reserves.
+    /// The coins `source` offers and the wallet height they were read at,
+    /// under the fenced wallet's coin fence; coin control may also take the
+    /// `exempt` ones a tracked asset lock reserves.
     async fn source_coins(
         &self,
-        wallet_id: WalletId,
+        fence: &CoinFence,
         source: &CoinSource,
         exempt: &HashSet<OutPoint>,
     ) -> Result<(Vec<Utxo>, u32), EngineError> {
         if *source == CoinSource::FullyMixedOnly {
-            let view = self.mix_view(wallet_id).await?;
+            let view = self.mix_view(fence).await?;
             return Ok((crate::coinjoin::fully_mixed_candidates(&view), view.height));
         }
-        let wallet = self.wallet(&wallet_id).await?;
-        let snapshot = self.coin_snapshot(&wallet, wallet_id).await?;
+        let wallet = self.wallet(&fence.wallet_id()).await?;
+        let snapshot = self.coin_snapshot(fence, &wallet).await?;
         Ok((candidates(&snapshot, source, exempt)?, snapshot.height))
     }
 
@@ -770,8 +769,9 @@ impl TxDraft {
         Ok(())
     }
 
-    /// Plans the draft against the wallet's current coins.
-    async fn resolve(&self) -> Result<Resolved, EngineError> {
+    /// Plans the draft against the wallet's current coins, read under
+    /// `fence` (the draft's wallet's).
+    async fn resolve(&self, fence: &CoinFence) -> Result<Resolved, EngineError> {
         let state = self.state().clone();
         if state.recipients.is_empty() {
             return Err(SendFailure::NoRecipients.into());
@@ -785,7 +785,7 @@ impl TxDraft {
         }
         let (coins, height) = self
             .session
-            .source_coins(self.wallet_id, &state.source, &self.exempt)
+            .source_coins(fence, &state.source, &self.exempt)
             .await?;
         let outputs: Vec<PlanOutput> = state
             .recipients
@@ -845,7 +845,8 @@ impl TxDraft {
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
-                let r = this.resolve().await?;
+                let fence = this.session.coin_fence(this.wallet_id).await?;
+                let r = this.resolve(&fence).await?;
                 Ok(TxEstimate {
                     fee: r.plan.fee,
                     size_bytes: r.plan.estimated_size as u32,
@@ -867,6 +868,10 @@ impl TxDraft {
     /// signed, the charge is bound to its txid, and `broadcast` hands it
     /// off through the dispatch fence, so a lock before the hand-off
     /// cancels it (`send.cancelled`).
+    ///
+    /// One coin fence of the wallet is held from the coin read through the
+    /// signing and the reservation of the inputs (`coins.rs`): a coin
+    /// locked meanwhile waits for the reservation, and is never signed.
     pub async fn prepare(
         self: &Arc<Self>,
         grant_id: String,
@@ -889,6 +894,7 @@ impl TxDraft {
         if !session.vault.has_wallet_secret(&wallet_id.0) {
             return Err(SendFailure::WatchOnly.into());
         }
+        let fence = session.coin_fence(wallet_id).await?;
         let lease = session
             .lease_for(&wallet_id, &grant_id)
             .transpose()
@@ -898,7 +904,7 @@ impl TxDraft {
                 return Err(SendFailure::GrantInvalid.into());
             }
             lease.spend_signer().map_err(|e| lease_failure(e, 0))?;
-            return self.prepare_leased(lease.clone()).await;
+            return self.prepare_leased(lease.clone(), fence).await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -911,7 +917,7 @@ impl TxDraft {
         {
             return Err(vault_failure(e));
         }
-        let r = self.resolve().await?;
+        let r = self.resolve(&fence).await?;
         let wallet = session.wallet(&wallet_id).await?;
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
 
@@ -937,6 +943,7 @@ impl TxDraft {
             external_sent,
             signer,
             None,
+            fence,
         )
         .await
     }
@@ -946,8 +953,9 @@ impl TxDraft {
     async fn prepare_leased(
         self: &Arc<Self>,
         lease: Lease,
+        fence: CoinFence,
     ) -> Result<Arc<PreparedTx>, EngineError> {
-        let r = self.resolve().await?;
+        let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
         let outflow = external_sent.saturating_add(r.plan.fee);
@@ -967,6 +975,7 @@ impl TxDraft {
             external_sent,
             signer,
             Some(charge),
+            fence,
         )
         .await
     }
@@ -1000,8 +1009,9 @@ impl TxDraft {
         (recipient_mine, change_mine, external_sent)
     }
 
-    /// Signs the plan with `signer`, checks it and reserves its inputs.
-    /// A lease's `charge` is bound to the txid once signed.
+    /// Signs the plan with `signer`, checks it and reserves its inputs,
+    /// then releases `fence`, the coin fence `r` was planned under. A
+    /// lease's `charge` is bound to the txid once signed.
     #[expect(
         clippy::too_many_arguments,
         reason = "the two prepare paths' shared tail"
@@ -1015,7 +1025,9 @@ impl TxDraft {
         external_sent: u64,
         signer: dw_vault::VaultSigner,
         charge: Option<SpendCharge>,
+        fence: CoinFence,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        self.session.coin_fences.prepare_pause_point().await;
         let session = &self.session;
         let wallet_id = self.wallet_id;
         let network = self.network();
@@ -1046,6 +1058,7 @@ impl TxDraft {
             );
             let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
             session.spends.add(wallet_id, inputs.iter().copied());
+            drop(fence);
             let artifact = ArtifactId::from_txid(&tx.txid());
             if let Some(charge) = charge {
                 charge.bind(artifact);
@@ -1111,6 +1124,7 @@ impl TxDraft {
             .map(|i| i.previous_output)
             .collect();
         session.spends.add(wallet_id, inputs.iter().copied());
+        drop(fence);
         let artifact = ArtifactId::from_txid(&signed.transaction().txid());
         if let Some(charge) = charge {
             charge.bind(artifact);

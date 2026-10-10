@@ -596,6 +596,48 @@ call permit when its task lands.
   while the wallet's rows are unknown (`RowsUnknown`, `unavailable`). DP1-02 needs no gate of its own.
 - `register_name` under a lease: `NameAuthority`, `DashPay::register_name_for_flow`, `Lease::available`.
 - `WalletCoin::lock_input` tells a tracked lock's input (reserved for it) from a pending payment's input.
+- **The coin fence** (DP1-02 Sol r2 R2-04, DEC-173 (3); `coins.rs`). One async mutex per wallet orders every change of
+  what a build may spend against every build that reads it:
+  - `NetworkSession::coin_fence(&self, wallet_id: WalletId) -> Result<CoinFence, EngineError>` waits for it;
+    `CoinFence` (`dw_engine::CoinFence`, `wallet_id()`) is the held guard. Not reentrant: a holder passes it down and
+    never asks again, and nobody awaits it while holding the wallet's state or manager lock. It is public for
+    DP1-02's policy check; a host that holds one stalls the wallet's "Lock unspent", coin list and payments until it
+    drops it.
+  - `NetworkSession::fenced_coins(&self, fence: &CoinFence) -> Result<CoinSnapshot, EngineError>` reads the coins under
+    it; `CoinSnapshot::held_funding_coins()` lists the funding accounts' coins the user locked or an engine payment
+    reserves (`user_locked || (reserved && !lock_input)`): DP1-02's policy check refuses while any stands. It
+    includes dust locks (dust protection locks small coins as the user's): a dust payment to a funding account, under
+    the threshold, blocks registration until the user releases it. DP1-02 decides whether to exempt dust locks (or
+    reserve the held coins in key-wallet instead of refusing). Dust that arrives during the call is not locked until
+    the next coin read, so the library may spend it: dust protection's usual window.
+  - `funding_call_permit(lease, label, amount, step, key, fence: CoinFence)` takes the fence that check ran under
+    and moves it into the permit's call. **Release rule:** at the first of (a) the changeset tap storing a tracked
+    row of the wallet under the permit's funding key, of any status, that is not foreign to its step, once the call
+    released a signature (platform-wallet tracks and persists the lock `Built` after signing it and before
+    broadcasting it, and from then on its inputs read reserved through `lock_input`; the persister may fold that
+    `Built` into `Broadcast` before the tap sees it, so any status counts; a row before the call's first signature is
+    not its lock), or (b) the call's end (`finish` or drop); a refused permit drops it with the refusal. It is
+    released outside J and never held through the library's proof wait past that row. While the permit holds it, the
+    caller asks for no coin fence of the wallet (it would wait for itself).
+  - Who takes it: `lock_outpoints`/`unlock_outpoints` across their check and write; every coin read
+    (`coin_snapshot` requires a `&CoinFence`, so dust locks are applied only under it): `utxos`, `max_spendable`,
+    `coin_selection_summary`, `TxDraft::estimate` and `create_unsigned`, CoinJoin's status, start, recovery scan,
+    sweep plan and session coin reads; and one fence held from the coin read through selection, signing and the
+    reservation (`PendingSpends::add`) by `TxDraft::prepare` (every path: plain, leased, CoinJoin source, Repair's
+    self-spend), CoinJoin's automatic pass (denomination and collateral funding spend BIP44 coins; released before
+    the funding transaction's broadcast) and "Move mixed coins" (every chunk signed and reserved under it, released
+    before the broadcasts; a failed broadcast gives back its chunk's and the later chunks' reservations).
+  - Nothing the library or SPV runs inside a call takes it: the changeset tap (`LeaseTable::note_tracked` is one J
+    step), Mode B's refresh, `fee_bound_worst`/`funding_coin_count`, the event handlers and the catch-up's resume
+    pass. The CoinJoin status refresher only tries it: a held fence skips that wallet's tick and keeps its cached
+    status. `lock_vault`, a wallet's unload or removal, and the session's close never take it; they wait only for the
+    engine operations and permits they always waited for (up to a permit's deadline), some of which may hold it. A
+    removed or unloaded wallet's fence is dropped unless held or awaited.
+  - **CoinJoin decision:** mixing sessions (denominations of the CoinJoin account, unattended) read their coins under
+    a fence released at once and reserve and sign their inputs outside it. A user lock taken after the session read
+    its coins does not stop that session from spending a denomination it already picked; the next session's read
+    honours it. Such inputs are the CoinJoin account's own denominations, never BIP44 coins, and a session's
+    reservation excludes them from a concurrent "Move mixed coins" plan read after it.
 
 **Decisions taken in P2b** (the manager's rulings D1–D5 on its plan, and the implementation's):
 - D2: `register_name` takes a lease id or a raw grant; a raw grant is checked without consuming it, then redeemed
@@ -663,7 +705,14 @@ call permit when its task lands.
   no engine test over a real SQLite journal.
 - A resumable step that resolves `NotSent` emits no event (as before P2b). While a held tombstone of §5.5 is being
   watched, every J step re-checks it, at a cost linear in the entries.
-- `sign_psbt` does not check reserved coins (outside `TxDraft`).
+- `sign_psbt` does not check reserved coins (outside `TxDraft`), and does not take the coin fence: it signs the
+  inputs the PSBT names, with no coin read of its own.
+- The coin fence has no deadline of its own: a funding call that hangs before tracking its lock keeps the wallet's
+  "Lock unspent", coin list and payments waiting until its permit ends. It is not released at the permit's deadline
+  or at a vault lock either: a call still signing could then sign a coin locked after; after a lock the library's
+  next signature fails and ends the call, which releases it. The first `coinjoin_status` of a wallet (no cached
+  status yet) waits for a held fence. Repair's self-spend reads its coin list under one fence and prepares under another: a coin locked in
+  between is refused by the prepare (`send.outpoint_unavailable`), not signed.
 - §2a.5 row 4's second resolution, "the pin's `Rejected` arm untracked the row before any send", is not implemented
   (review M-2): the pin offers no signal for it, and "no tracked row" alone is not `NotSent` (a sweep or a wallet's
   removal leaves the same state). A funding call rejected not-ready after signing reads `MaybeSent`; Repair's

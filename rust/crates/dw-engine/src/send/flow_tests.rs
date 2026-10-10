@@ -1403,3 +1403,166 @@ fn test_IOS_016_send_quick_unlock_limit_includes_the_fee() {
     assert_eq!(p.summary().total_debit, limit);
     assert_eq!(vault.lock_state(), dw_vault::LockState::Locked);
 }
+
+// --- The coin fence (E0-04 §2a.6, `coins.rs`) ------------------------------
+
+/// Waits up to 5 s for `f`.
+fn eventually(what: &str, mut f: impl FnMut() -> bool) {
+    for _ in 0..250 {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// A coin locked after a prepare read the coins is not signed by it: the
+/// lock waits for the prepare's fence, which is held from the coin read
+/// through the signing and the reservation, and the signed inputs are the
+/// read's. Locked first, the coin is never selected or chosen.
+#[test]
+fn a_coin_locked_after_prepare_read_the_coins_is_not_signed_by_it() {
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN / 2);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    draft.set_source(CoinSource::Outpoints(vec![a])).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
+    let prepare = f.session.rt.spawn({
+        let draft = Arc::clone(&draft);
+        async move { draft.prepare(grant).await }
+    });
+    eventually("the prepare's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let lock = f.session.rt.spawn({
+        let s = Arc::clone(&f.session);
+        let w = f.wallet;
+        async move { s.lock_outpoints(w, vec![a]).await }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !lock.is_finished(),
+        "the lock waits for the prepare's fence"
+    );
+    // Read without the fence (the coin list would wait for it).
+    assert!(
+        f.session.spends.snapshot(&f.wallet).is_empty(),
+        "nothing reserved yet"
+    );
+    pause.release.notify_one();
+    let prepared = f.engine.block_on(prepare).unwrap().unwrap();
+    f.engine.block_on(lock).unwrap().unwrap();
+    assert_eq!(
+        prepared
+            .summary()
+            .inputs
+            .iter()
+            .map(|i| i.outpoint)
+            .collect::<Vec<_>>(),
+        vec![a],
+        "the inputs of the coin read"
+    );
+    let raw = prepared.raw().unwrap();
+    let tx: Transaction = dashcore::consensus::deserialize(&raw).unwrap();
+    assert_eq!(
+        tx.input
+            .iter()
+            .map(|i| i.previous_output)
+            .collect::<Vec<_>>(),
+        vec![a]
+    );
+    assert_eq!(f.reserved(), vec![a], "reserved before the lock returned");
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+
+    // The reverse order: locked first, neither chosen nor selected.
+    f.engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![b]))
+        .unwrap();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    draft.set_source(CoinSource::Outpoints(vec![b])).unwrap();
+    assert_eq!(
+        send_failure(
+            f.engine
+                .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        ),
+        SendFailure::OutpointUnavailable(b)
+    );
+    draft.set_source(CoinSource::Any).unwrap();
+    assert!(matches!(
+        send_failure(
+            f.engine
+                .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        ),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    ));
+}
+
+/// A held coin fence stalls nothing that does not read the wallet's
+/// coins: the CoinJoin status refresh skips the wallet (its cached status
+/// stays), and locking the vault and unloading the wallet finish; the
+/// unloaded wallet's held fence is kept until released (`coins.rs`).
+#[test]
+fn a_held_coin_fence_stalls_no_status_refresh_vault_lock_or_unload() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let s = &f.session;
+    let fence = f.engine.block_on(s.coin_fence(f.wallet)).unwrap();
+    f.engine.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            s.refresh_coinjoin_status(f.wallet).await;
+            s.lock_vault().await.unwrap();
+            s.unload_wallet(f.wallet).await.unwrap();
+        })
+        .await
+        .expect("nothing here waits for the coin fence")
+    });
+    assert!(
+        s.coin_fences.try_acquire(f.wallet).is_none(),
+        "the unloaded wallet's held fence is kept"
+    );
+    drop(fence);
+    drop(s.coin_fences.try_acquire(f.wallet).expect("released"));
+}
+
+/// Dust locks are applied only under the coin fence: a coin read while
+/// another holder has the wallet's fence waits for it, and so does its
+/// dust lock.
+#[test]
+fn dust_locks_are_applied_only_under_the_fence() {
+    let f = fixture(false);
+    f.engine
+        .block_on(f.session.set_dust_protection(Some(10_000)))
+        .unwrap();
+    let dust = f.credit(1, 5_000);
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let listing = f.session.rt.spawn({
+        let s = Arc::clone(&f.session);
+        let w = f.wallet;
+        async move {
+            s.utxos(
+                w,
+                CoinFilter {
+                    include_locked: true,
+                    ..Default::default()
+                },
+            )
+            .await
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!listing.is_finished(), "the coin read waits for the fence");
+    let locked = || {
+        f.engine
+            .block_on(f.session.locked_outpoints(f.wallet))
+            .unwrap()
+    };
+    assert!(locked().is_empty(), "no dust lock outside the fence");
+    drop(fence);
+    let coins = f.engine.block_on(listing).unwrap().unwrap();
+    assert!(coins.iter().any(|c| c.outpoint == dust && c.user_locked));
+    assert_eq!(locked(), vec![dust]);
+}

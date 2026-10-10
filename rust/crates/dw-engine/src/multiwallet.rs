@@ -282,6 +282,7 @@ impl NetworkSession {
             }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
+            this.coin_fences.forget(&id);
             this.platform.forget(&id);
             this.leases.wallet_closed(id);
             this.sink.emit(EngineEvent::WalletLoadChanged {

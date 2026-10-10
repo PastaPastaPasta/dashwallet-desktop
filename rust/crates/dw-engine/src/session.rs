@@ -182,6 +182,8 @@ pub struct NetworkSession {
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
     pub(crate) spends: crate::send::PendingSpends,
+    /// One coin fence per wallet (`coins.rs`, E0-04 §2a.6).
+    pub(crate) coin_fences: crate::coins::CoinFences,
     /// When this session opened, UNIX seconds ("Startup time").
     pub(crate) opened_at: u64,
     /// The previous session of this network did not close cleanly (its
@@ -435,6 +437,7 @@ impl NetworkSession {
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
+            coin_fences: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
             startup_list: Mutex::new(startup_list),

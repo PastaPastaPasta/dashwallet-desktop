@@ -115,7 +115,7 @@ use crate::platform::errors::PlatformError;
 use crate::platform::flows::{
     DispatchResolution, DispatchResolved, DispatchState, is_funding_step,
 };
-use crate::{EngineEvent, NetworkSession, WalletId};
+use crate::{CoinFence, EngineEvent, NetworkSession, WalletId};
 
 /// A tracked row's status (platform-wallet `AssetLockStatus`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -830,6 +830,51 @@ impl LeaseTable {
         })
     }
 
+    /// The changeset tap stored tracked rows of `wallet`, of any status
+    /// (`tracked`: their txids and keys): a running funding call of the
+    /// wallet that released a signature, whose key one carries, and to
+    /// whose step it is not foreign (it was not standing when the step was
+    /// marked), has signed its lock and the library tracks it, so its
+    /// inputs read reserved from now on: the call's coin fence is
+    /// released, outside J ([`super::call::FundingFence`]). Takes no lock
+    /// but J and awaits nothing: it runs inside the library's store call.
+    pub(crate) fn note_tracked(&self, wallet: WalletId, tracked: &[(Txid, FundingKey)]) {
+        if tracked.is_empty() {
+            return;
+        }
+        self.with_j(|i, fx| {
+            for run in i.calls.values_mut() {
+                let releases = run.fence.as_ref().is_some_and(|f| {
+                    f.fence.wallet_id() == wallet
+                        && f.signatures.released() > 0
+                        && tracked.iter().any(|(txid, key)| {
+                            *key == f.key
+                                && !i
+                                    .mode_b
+                                    .foreign
+                                    .get(&(wallet, f.step.clone()))
+                                    .is_some_and(|rows| rows.contains(txid))
+                        })
+                });
+                if releases && let Some(f) = run.fence.take() {
+                    fx.drop_later(f);
+                }
+            }
+        });
+    }
+
+    /// Whether a running call of `wallet` holds a coin fence (tests).
+    #[cfg(test)]
+    pub(crate) fn call_holds_fence(&self, wallet: WalletId) -> bool {
+        self.with_j(|i, _| {
+            i.calls.values().any(|r| {
+                r.fence
+                    .as_ref()
+                    .is_some_and(|f| f.fence.wallet_id() == wallet)
+            })
+        })
+    }
+
     /// Whether tracked row `txid` of `wallet` was resumed this session.
     #[cfg(test)]
     pub(crate) fn resumed(&self, wallet: WalletId, txid: Txid) -> bool {
@@ -984,6 +1029,16 @@ impl NetworkSession {
     /// is durable when it returns. DP1-02's registration and top-up
     /// funding take their permits here.
     ///
+    /// `fence` is the wallet's coin fence ([`Self::coin_fence`]) the
+    /// caller's coin policy check ran under ([`Self::fenced_coins`]): the
+    /// permit keeps it until the library has tracked the lock it signed
+    /// (`Built`, whose inputs then read reserved) or the call ends
+    /// ([`super::call::FundingFence`]), so no coin locked after the check
+    /// is signed by the call: "Lock unspent" waits for it. Refused, the
+    /// fence is released with the refusal. While the permit holds it, the
+    /// caller asks for no coin fence of the wallet (it would wait for
+    /// itself) and reads no coins through one.
+    ///
     /// Of a refused step, the code names the step: `broadcast_unknown`
     /// (`MaybeSent`), `will_be_sent` (`WillBeSent`), or `invalid_argument`
     /// (a funded step, or a marker a self-spend resolved: a new funding
@@ -995,7 +1050,8 @@ impl NetworkSession {
     /// credit task gives it one (E0-04 §2a.6); and a registration step
     /// whose `key` is not its draft's own (`DraftKey`, from `app.sqlite`),
     /// or whose draft has no known key: a row under another key would be
-    /// found by neither the marker nor the draft.
+    /// found by neither the marker nor the draft; and a `fence` of another
+    /// wallet.
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -1003,8 +1059,12 @@ impl NetworkSession {
         amount: u64,
         step: String,
         key: FundingKey,
+        fence: CoinFence,
     ) -> Result<CallPermit, PlatformError> {
         let refuse = |detail: String| Err(PlatformError::InvalidArgument { detail });
+        if fence.wallet_id() != lease.wallet() {
+            return refuse("the coin fence is another wallet's".into());
+        }
         if !is_funding_step(&step) {
             return refuse(format!("{step} is not a funding step"));
         }
@@ -1026,13 +1086,14 @@ impl NetworkSession {
             fee_bound_worst,
         };
         lease
-            .call_permit_step(
+            .call_permit_step_fenced(
                 label,
                 Some(quote.into()),
                 CallStep::Funding {
                     step: step.clone(),
                     key,
                 },
+                Some(fence),
             )
             .await
             .map_err(|e| match e {

@@ -64,7 +64,7 @@ use rand::seq::SliceRandom;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::coins::{WalletCoin, now_secs};
+use crate::coins::{CoinFence, WalletCoin, now_secs};
 use crate::{EngineError, EngineEvent, NetworkSession, WalletId};
 
 /// Why a CoinJoin call failed (`coinjoin.*` codes).
@@ -834,11 +834,12 @@ impl NetworkSession {
         Ok(salt)
     }
 
-    /// The wallet's coins with rounds, the fully-mixed rule and Core's
-    /// balances.
-    pub(crate) async fn mix_view(&self, wallet_id: WalletId) -> Result<MixView, EngineError> {
+    /// The fenced wallet's coins with rounds, the fully-mixed rule and
+    /// Core's balances, read under `fence` (`coins.rs`).
+    pub(crate) async fn mix_view(&self, fence: &CoinFence) -> Result<MixView, EngineError> {
+        let wallet_id = fence.wallet_id();
         let wallet = self.wallet(&wallet_id).await?;
-        let snapshot = self.coin_snapshot(&wallet, wallet_id).await?;
+        let snapshot = self.coin_snapshot(fence, &wallet).await?;
         let salt = self.salt_of(wallet_id).await?;
         let settings = self.coinjoin.settings();
         let network = self.network.core_network();
@@ -919,6 +920,13 @@ impl NetworkSession {
         })
     }
 
+    /// [`Self::mix_view`] under a fence taken for the read only: for
+    /// callers that spend nothing of what they read.
+    pub(crate) async fn read_mix_view(&self, wallet_id: WalletId) -> Result<MixView, EngineError> {
+        let fence = self.coin_fence(wallet_id).await?;
+        self.mix_view(&fence).await
+    }
+
     // ---- status ----------------------------------------------------------
 
     /// The wallet's mixing status. In-memory read of the status the
@@ -953,17 +961,24 @@ impl NetworkSession {
         let rt = self.rt.clone();
         std::thread::scope(|scope| {
             scope
-                .spawn(move || rt.block_on(this.compute_coinjoin_status(wallet_id)))
+                .spawn(move || {
+                    rt.block_on(async {
+                        let fence = this.coin_fence(wallet_id).await?;
+                        this.compute_coinjoin_status(&fence).await
+                    })
+                })
                 .join()
                 .map_err(|_| EngineError::Internal("CoinJoin status computation panicked".into()))?
         })
     }
 
+    /// The fenced wallet's status, computed and cached.
     async fn compute_coinjoin_status(
         &self,
-        wallet_id: WalletId,
+        fence: &CoinFence,
     ) -> Result<CoinJoinStatus, EngineError> {
-        let view = self.mix_view(wallet_id).await?;
+        let wallet_id = fence.wallet_id();
+        let view = self.mix_view(fence).await?;
         self.hub
             .set_fully_mixed(wallet_id, view.balances.fully_mixed);
         let status = self.status_from_view(wallet_id, &view);
@@ -1069,7 +1084,19 @@ impl NetworkSession {
     }
 
     /// Recomputes one wallet's status and emits `CoinJoin` when it changed.
+    /// Skipped while the wallet's coin fence is held (a build, a funding
+    /// call, "Move mixed coins"): the cached status stays, and the
+    /// refresher's next tick reads it again, so a held fence stalls no other
+    /// wallet's status and no caller (`coins.rs`).
     pub(crate) async fn refresh_coinjoin_status(&self, wallet_id: WalletId) {
+        let fence = match self.try_coin_fence(wallet_id).await {
+            Ok(Some(fence)) => fence,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!(%wallet_id, error = %e, "CoinJoin status refresh failed");
+                return;
+            }
+        };
         let before = self
             .coinjoin
             .status
@@ -1077,7 +1104,7 @@ impl NetworkSession {
             .unwrap_or_else(|p| p.into_inner())
             .get(&wallet_id)
             .cloned();
-        match self.compute_coinjoin_status(wallet_id).await {
+        match self.compute_coinjoin_status(&fence).await {
             Ok(after) if before.as_ref() != Some(&after) => self.sink.emit(EngineEvent::CoinJoin {
                 network: self.network.clone(),
                 wallet_id,
@@ -1166,7 +1193,7 @@ impl NetworkSession {
             if this.coinjoin.is_mixing(&wallet_id) {
                 return Ok(());
             }
-            let view = this.mix_view(wallet_id).await?;
+            let view = this.read_mix_view(wallet_id).await?;
             if view.total < MIN_MIXING_BALANCE {
                 return Err(CoinJoinFailure::InsufficientFunds {
                     min_duffs: MIN_MIXING_BALANCE,
@@ -1466,9 +1493,12 @@ impl NetworkSession {
     /// Builds, signs with the funding signer and broadcasts a transaction
     /// spending `coins` into `plan`'s outputs (fresh CoinJoin-account
     /// addresses) and change (BIP44 change for BIP44 coins, the CoinJoin
-    /// internal chain otherwise). Returns the txid.
+    /// internal chain otherwise). Returns the txid. `fence`, the coin fence
+    /// `coins` were read under, is released once the inputs are reserved
+    /// and signed, before the broadcast (`coins.rs`).
     async fn commit_funding_tx(
         &self,
+        fence: &mut Option<CoinFence>,
         wallet_id: WalletId,
         coins: &[&MixViewCoin],
         plan: &TxPlan,
@@ -1536,6 +1566,7 @@ impl NetworkSession {
             self.release_coinjoin_addresses(wallet_id, &reserved).await;
             return Err(e);
         }
+        drop(fence.take());
         match wallet.core().broadcast_transaction(&tx).await {
             Ok(txid) => {
                 self.hub.note_announced(txid);
@@ -1562,6 +1593,7 @@ impl NetworkSession {
     /// `CreateDenominated(nBalanceToDenominate)` (client.cpp:2194-2224).
     async fn create_denominated(
         &self,
+        fence: &mut Option<CoinFence>,
         wallet_id: WalletId,
         view: &MixView,
         to_denominate: i64,
@@ -1589,7 +1621,9 @@ impl NetworkSession {
             ) else {
                 continue;
             };
-            let txid = self.commit_funding_tx(wallet_id, coins, &plan).await?;
+            let txid = self
+                .commit_funding_tx(fence, wallet_id, coins, &plan)
+                .await?;
             tracing::info!(%wallet_id, %txid, outputs = plan.outputs.len(), "CoinJoin denominations created");
             return Ok(true);
         }
@@ -1599,6 +1633,7 @@ impl NetworkSession {
     /// `MakeCollateralAmounts()` (client.cpp:2022-2060).
     async fn make_collateral_amounts(
         &self,
+        fence: &mut Option<CoinFence>,
         wallet_id: WalletId,
         view: &MixView,
     ) -> Result<bool, EngineError> {
@@ -1622,7 +1657,9 @@ impl NetworkSession {
                 if plan.outputs.len() == 2 && !is_collateral_amount(plan.outputs[1]) {
                     plan.change = plan.outputs.pop();
                 }
-                let txid = self.commit_funding_tx(wallet_id, coins, &plan).await?;
+                let txid = self
+                    .commit_funding_tx(fence, wallet_id, coins, &plan)
+                    .await?;
                 tracing::info!(%wallet_id, %txid, "CoinJoin collateral inputs created");
                 return Ok(true);
             }
@@ -1719,7 +1756,14 @@ impl NetworkSession {
                 .unwrap_or_else(|p| p.into_inner());
             picker.trim_used();
         }
-        let view = self.mix_view(wallet_id).await?;
+        // One fence over the pass, from its coin read through the signing
+        // and reservation of what it spends: denomination and collateral
+        // funding spend funding-account (BIP44) coins. A funding
+        // transaction releases it before its broadcast; a session's own
+        // denominations are reserved outside it (`coins.rs`).
+        let fence = self.coin_fence(wallet_id).await?;
+        let view = self.mix_view(&fence).await?;
+        let mut fence = Some(fence);
         let (active, last_success) = {
             let mixers = self.coinjoin.mixers();
             let m = mixers.get(&wallet_id);
@@ -1774,7 +1818,7 @@ impl NetworkSession {
         if anonymizable_non_denom >= value_min + COLLATERAL_AMOUNT
             && to_denominate > 0
             && self
-                .create_denominated(wallet_id, &view, to_denominate)
+                .create_denominated(&mut fence, wallet_id, &view, to_denominate)
                 .await?
         {
             self.note_success_height(wallet_id, view.height);
@@ -1782,7 +1826,9 @@ impl NetworkSession {
         }
         if !view.has_collateral_inputs(true) {
             if !view.has_collateral_inputs(false)
-                && self.make_collateral_amounts(wallet_id, &view).await?
+                && self
+                    .make_collateral_amounts(&mut fence, wallet_id, &view)
+                    .await?
             {
                 self.note_success_height(wallet_id, view.height);
             }
@@ -2094,7 +2140,7 @@ impl NetworkSession {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
             }
-            let view = this.mix_view(wallet_id).await?;
+            let view = this.read_mix_view(wallet_id).await?;
             let coinjoin_balance = view
                 .coins
                 .iter()
@@ -2115,9 +2161,9 @@ impl NetworkSession {
     /// The CoinJoin account's coins above the threshold, in sweep chunks.
     async fn sweep_coins(
         &self,
-        wallet_id: WalletId,
+        fence: &CoinFence,
     ) -> Result<(Vec<MixViewCoin>, Vec<dw_coinjoin::recovery::SweepChunk>), EngineError> {
-        let view = self.mix_view(wallet_id).await?;
+        let view = self.mix_view(fence).await?;
         let coins: Vec<MixViewCoin> = view
             .coins
             .into_iter()
@@ -2150,7 +2196,10 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let (_, chunks) = this.sweep_coins(wallet_id).await?;
+            let (_, chunks) = {
+                let fence = this.coin_fence(wallet_id).await?;
+                this.sweep_coins(&fence).await?
+            };
             if chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
@@ -2190,7 +2239,10 @@ impl NetworkSession {
             if !this.vault.has_wallet_secret(&wallet_id.0) {
                 return Err(CoinJoinFailure::WatchOnly.into());
             }
-            let (coins, chunks) = this.sweep_coins(wallet_id).await?;
+            // Held from the coin read through every chunk's signing and
+            // reservation; released before the broadcasts (`coins.rs`).
+            let fence = this.coin_fence(wallet_id).await?;
+            let (coins, chunks) = this.sweep_coins(&fence).await?;
             if chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
@@ -2221,8 +2273,22 @@ impl NetworkSession {
                 remaining: total,
                 failure_code: None,
             };
+            // Every chunk is signed and reserved under the fence, then
+            // broadcast in order; the first failure stops the sweep.
+            let mut signed: Vec<(Transaction, u64)> = Vec::with_capacity(chunks.len());
+            let mut sign_failure = None;
             for chunk in &chunks {
-                let dest = wallet.core().next_receive_address_for_account(0).await?;
+                let dest = match wallet.core().next_receive_address_for_account(0).await {
+                    Ok(dest) => dest,
+                    Err(e) => {
+                        // Nothing was broadcast: give back every reservation.
+                        for (unsent, _) in &signed {
+                            this.spends
+                                .remove(&wallet_id, unsent.input.iter().map(|i| i.previous_output));
+                        }
+                        return Err(e.into());
+                    }
+                };
                 let picked: Vec<&MixViewCoin> = chunk.coins.iter().map(|i| &coins[*i]).collect();
                 let mut tx = Transaction {
                     version: 2,
@@ -2247,20 +2313,28 @@ impl NetworkSession {
                     })
                     .collect();
                 if let Err(e) = sign_p2pkh_inputs(&signer, &mut tx, &to_sign, SIGHASH_ALL).await {
-                    result.failure_code = Some(e.code().to_string());
+                    sign_failure = Some(e.code().to_string());
                     break;
                 }
-                let outpoints: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-                this.spends.add(wallet_id, outpoints.iter().copied());
-                match wallet.core().broadcast_transaction(&tx).await {
+                this.spends
+                    .add(wallet_id, tx.input.iter().map(|i| i.previous_output));
+                signed.push((tx, chunk.amount + chunk.fee));
+            }
+            drop(fence);
+            for (n, (tx, value)) in signed.iter().enumerate() {
+                match wallet.core().broadcast_transaction(tx).await {
                     Ok(txid) => {
                         this.hub.note_announced(txid);
                         result.txids.push(txid.to_string());
-                        result.moved += chunk.amount + chunk.fee;
-                        result.remaining -= chunk.amount + chunk.fee;
+                        result.moved += value;
+                        result.remaining -= value;
                     }
                     Err(e) => {
-                        this.spends.remove(&wallet_id, outpoints);
+                        // This chunk and the unsent ones after it.
+                        for (unsent, _) in &signed[n..] {
+                            this.spends
+                                .remove(&wallet_id, unsent.input.iter().map(|i| i.previous_output));
+                        }
                         result.failure_code = Some(
                             if e.to_string().to_lowercase().contains("no peers") {
                                 "coinjoin.no_peers"
@@ -2272,6 +2346,9 @@ impl NetworkSession {
                         break;
                     }
                 }
+            }
+            if result.failure_code.is_none() {
+                result.failure_code = sign_failure;
             }
             if let Ok(manager) = this.manager() {
                 this.refresh_wallet_state(&manager, wallet_id).await;
@@ -2375,8 +2452,10 @@ impl EngineMixingWallet {
 impl MixingWallet for EngineMixingWallet {
     async fn ready_to_mix(&self, amount: u64) -> Result<Vec<MixCoin>, WalletError> {
         let s = self.session()?;
+        // Read under a fence released at once: a session's denominations
+        // are reserved outside it (`coins.rs`).
         let view = s
-            .mix_view(self.wallet_id)
+            .read_mix_view(self.wallet_id)
             .await
             .map_err(|e| WalletError(e.to_string()))?;
         Ok(view.ready_to_mix(amount))

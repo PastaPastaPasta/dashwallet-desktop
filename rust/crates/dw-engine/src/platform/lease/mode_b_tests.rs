@@ -895,6 +895,115 @@ async fn a_later_funding_under_the_same_key_does_not_read_an_earlier_ones_row() 
     assert_eq!(t2.funding_status(W, C), Some(Sent));
 }
 
+/// A funding call's coin fence (E0-04 §2a.6) is released by the first
+/// tracked row the changeset tap reports under the call's key in its
+/// wallet that is not foreign to its step, once the call released a
+/// signature: not by a row that preceded its marker (an earlier
+/// funding's, stored again), one of another key or one of another wallet,
+/// nor by its own key's row before its first signature. A waiter for the
+/// fence ("Lock unspent") gets it then; the call itself keeps running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_funding_calls_fence_is_released_by_its_own_tracked_row_only() {
+    const A: &str = "topup/a/funding";
+    const B: &str = "topup/b/funding";
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    // An earlier funding's lock under the same key.
+    l.call_permit_step("funding", quote(10, 0), funding(A, 5))
+        .await
+        .unwrap()
+        .finish(true);
+    src.set_rows(W, vec![row(1, 5, R::Consumed)]);
+    t.refresh_funding(W).await;
+
+    let fences = Arc::new(crate::coins::CoinFences::default());
+    let fence = fences.acquire(W).await;
+    let p = l
+        .call_permit_step_fenced("funding", quote(10, 0), funding(B, 5), Some(fence))
+        .await
+        .unwrap();
+    assert!(t.call_holds_fence(W));
+    let waiter = tokio::spawn({
+        let fences = Arc::clone(&fences);
+        async move { fences.acquire(W).await }
+    });
+    // Before the call's first signature no row is its lock.
+    t.note_tracked(W, &[(txid(2), key(5))]);
+    p.signatures().note_released();
+    t.note_tracked(W, &[(txid(1), key(5))]);
+    t.note_tracked(W, &[(txid(2), key(6))]);
+    t.note_tracked(W, &[]);
+    t.note_tracked(W2, &[(txid(2), key(5))]);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiter.is_finished(), "still fenced");
+    assert!(t.call_holds_fence(W));
+    // The call's own lock.
+    t.note_tracked(W, &[(txid(1), key(5)), (txid(2), key(5))]);
+    let got = tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("released")
+        .unwrap();
+    assert_eq!(got.wallet_id(), W);
+    assert!(!t.call_holds_fence(W));
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+}
+
+/// A funding call's fence is released at the call's end and with a
+/// refusal; a resumable step's call holds none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_funding_calls_fence_is_released_at_its_end_or_refusal() {
+    let (t, _, _, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let fences = crate::coins::CoinFences::default();
+    let reacquired = |what: &'static str| {
+        let fences = &fences;
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), fences.acquire(W))
+                .await
+                .expect(what)
+        }
+    };
+    let p = l
+        .call_permit_step_fenced(
+            "funding",
+            quote(10, 0),
+            funding(REG, 7),
+            Some(fences.acquire(W).await),
+        )
+        .await
+        .unwrap();
+    assert!(t.call_holds_fence(W));
+    p.signatures().note_released();
+    drop(p);
+    assert!(!t.call_holds_fence(W));
+    drop(reacquired("released at the call's end").await);
+    // Refused by the gate (the step reads MaybeSent): released with it.
+    assert!(
+        l.call_permit_step_fenced(
+            "funding",
+            quote(10, 0),
+            funding(REG, 7),
+            Some(fences.acquire(W).await),
+        )
+        .await
+        .is_err()
+    );
+    drop(reacquired("released with the refusal").await);
+    // A resumable step's call holds none.
+    let p = l
+        .call_permit_step_fenced(
+            "submit",
+            None,
+            CallStep::Resumable("withdrawal/w/submit".into()),
+            Some(fences.acquire(W).await),
+        )
+        .await
+        .unwrap();
+    assert!(!t.call_holds_fence(W));
+    drop(reacquired("never held by a resumable step's call").await);
+    p.finish(true);
+}
+
 // --- DispatchResolved's baseline ------------------------------------------
 
 /// A step's first derivation is silent, unless its status was reported

@@ -262,6 +262,13 @@ impl Fixture {
             .unwrap();
     }
 
+    /// The wallet's coin fence (`coins.rs`).
+    fn fence(&self) -> crate::CoinFence {
+        self.engine
+            .block_on(self.session.coin_fence(self.wallet))
+            .unwrap()
+    }
+
     /// Funding `step` of identity 0 after a call that released a signature
     /// and failed: `MaybeSent`, its marker standing. `step` is the funding
     /// step of the wallet's first draft, inserted here at index 0.
@@ -283,6 +290,7 @@ impl Fixture {
                     identity_index: 0,
                     account: 0,
                 },
+                self.fence(),
             ))
             .unwrap();
         permit.signatures().note_released();
@@ -1157,6 +1165,7 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
         1_000_000 - fee + 1,
         STEP.into(),
         key,
+        f.fence(),
     ));
     assert_eq!(
         too_much.unwrap_err(),
@@ -1174,6 +1183,7 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
             500_000,
             STEP.into(),
             key,
+            f.fence(),
         ))
         .unwrap();
     let view = l.view().unwrap();
@@ -1254,6 +1264,7 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
             1_000_000,
             step.into(),
             key,
+            f.fence(),
         ))
     };
     let refused = |step: &str, key: FundingKey, detail: &str| match permit(step, key) {
@@ -1320,6 +1331,7 @@ fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
                 identity_index: 0,
                 account: 0,
             },
+            f.fence(),
         ))
         .unwrap();
     let kept = permit.funding_signer().unwrap().clone();
@@ -1497,6 +1509,7 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
             1_000_000,
             STEP.into(),
             key,
+            f.fence(),
         ))
         .unwrap();
     assert!(
@@ -1694,4 +1707,180 @@ fn an_unrecorded_self_spend_is_released_unsent() {
         .block_on(s.send_self_spend(&draft, STEP, grant))
         .unwrap();
     assert!(seam.seen.lock().unwrap().is_some());
+}
+
+/// A changeset of one tracked asset-lock row stored with `status` under
+/// `(IdentityRegistration, identity_index, 0)`: `Built` as the library
+/// stores it after signing and before broadcasting.
+fn lock_changeset(
+    seed: u8,
+    identity_index: u32,
+    status: platform_wallet::AssetLockStatus,
+) -> platform_wallet::changeset::PlatformWalletChangeSet {
+    use platform_wallet::changeset::{AssetLockChangeSet, AssetLockEntry};
+    let out_point = OutPoint::new(Txid::from_byte_array([seed; 32]), 0);
+    let mut locks = AssetLockChangeSet::default();
+    locks.asset_locks.insert(
+        out_point,
+        AssetLockEntry {
+            out_point,
+            transaction: dashcore::Transaction {
+                version: 3,
+                lock_time: 0,
+                input: Vec::new(),
+                output: Vec::new(),
+                special_transaction_payload: None,
+            },
+            account_index: 0,
+            funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+            identity_index,
+            amount_duffs: COIN,
+            status,
+            proof: None,
+        },
+    );
+    platform_wallet::changeset::PlatformWalletChangeSet {
+        asset_locks: Some(locks),
+        ..Default::default()
+    }
+}
+
+/// E0-04 §2a.6's coin fence in a funding call (DP1-02 Sol r2 R2-04): the
+/// fence the policy check read the coins under moves into the permit. A
+/// concurrent "Lock unspent" waits until the changeset tap stores the
+/// call's own lock after its first signature (not a row of another key,
+/// nor one before the call signed), of any status (the persister may fold
+/// `Built` into `Broadcast`), or until the call ends. Nothing the library runs inside the call waits for the fence:
+/// the tap, Mode B's refresh, the fee bound and `dispatch_status` all
+/// finish while the permit holds it. (A row that preceded the marker:
+/// `mode_b_tests`; under a draft's own key it would block the gate.)
+#[test]
+fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
+    use platform_wallet::changeset::PlatformWalletPersistence as _;
+    use platform_wallet::{AssetLockFundingType as T, AssetLockStatus as A};
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN);
+    let s = &f.session;
+    let draft = f.registration_draft(0);
+    let step = format!("registration/{draft}/funding");
+    let key = FundingKey {
+        funding_type: T::IdentityRegistration,
+        identity_index: 0,
+        account: 0,
+    };
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    // The policy check, under the fence the permit then holds.
+    let fence = f.fence();
+    let coins = f.engine.block_on(s.fenced_coins(&fence)).unwrap();
+    assert_eq!(coins.held_funding_coins().count(), 0);
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            step.clone(),
+            key,
+            fence,
+        ))
+        .unwrap();
+    assert!(s.leases.call_holds_fence(f.wallet));
+    let lock = |o: OutPoint| {
+        let s = Arc::clone(s);
+        let w = f.wallet;
+        s.rt.clone()
+            .spawn(async move { s.lock_outpoints(w, vec![o]).await })
+    };
+    let lock_a = lock(a);
+    // What the library may run inside its call does not wait for it.
+    let dashpay = s.dashpay(f.wallet);
+    f.engine.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert!(s.leases.refresh_funding(f.wallet).await);
+            s.leases.request_refresh(f.wallet);
+            s.fee_bound_worst(f.wallet).await.unwrap();
+            dashpay.dispatch_status(step.clone()).await.unwrap();
+        })
+        .await
+        .expect("nothing the call runs waits for its coin fence")
+    });
+    let store = Arc::clone(&s.live().unwrap().store);
+    let stored = |cs| {
+        let store = Arc::clone(&store);
+        let w = f.wallet.0;
+        f.engine.block_on(async move {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::task::spawn_blocking(move || store.store(w, cs).unwrap()),
+            )
+            .await
+        })
+    };
+    // A row of another key, and the call's key before it signed: not its
+    // lock.
+    stored(lock_changeset(62, 1, A::Built))
+        .expect("the tap does not wait")
+        .unwrap();
+    stored(lock_changeset(61, 0, A::Built))
+        .expect("the tap does not wait")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!lock_a.is_finished(), "the lock waits for the call's fence");
+    assert!(s.leases.call_holds_fence(f.wallet));
+    // The call's own lock after its signature, its `Built` folded into
+    // `Broadcast`: released, the call still runs.
+    permit.signatures().note_released();
+    stored(lock_changeset(63, 0, A::Broadcast))
+        .expect("the tap does not wait")
+        .unwrap();
+    f.engine.block_on(lock_a).unwrap().unwrap();
+    assert!(!s.leases.call_holds_fence(f.wallet));
+    assert!(l.view().unwrap().call_running);
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+
+    // A call that never tracks a lock: released at its end.
+    let draft = f.registration_draft(1);
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            format!("registration/{draft}/funding"),
+            FundingKey {
+                identity_index: 1,
+                ..key
+            },
+            f.fence(),
+        ))
+        .unwrap();
+    let lock_b = lock(b);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!lock_b.is_finished(), "the lock waits for the call's fence");
+    drop(permit);
+    f.engine.block_on(lock_b).unwrap().unwrap();
+    assert!(!s.leases.call_holds_fence(f.wallet));
+
+    // A refused permit releases the fence with its refusal.
+    let refused = f.engine.block_on(s.funding_call_permit(
+        &l,
+        "create_funded_asset_lock_proof",
+        1_000_000,
+        "withdrawal/1/submit".into(),
+        key,
+        f.fence(),
+    ));
+    assert!(matches!(
+        refused,
+        Err(PlatformError::InvalidArgument { .. })
+    ));
+    f.engine
+        .block_on(s.unlock_outpoints(f.wallet, vec![a, b]))
+        .unwrap();
 }

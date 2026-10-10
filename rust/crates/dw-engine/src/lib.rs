@@ -47,7 +47,7 @@ mod wallets;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};
 pub use coinjoin::CoinJoinFailure;
-pub use coins::{CoinFilter, CoinInfo, DUST_PROTECTION_MAX};
+pub use coins::{CoinFence, CoinFilter, CoinInfo, DUST_PROTECTION_MAX};
 pub use compat::{
     CompatFailure, CoreExportFormat, CoreMnemonicCompatibility, ExportReport, ExportWarning,
     ImportReport, KeyMaterial, WalletFileKind, inspect_wallet_file,

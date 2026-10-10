@@ -42,7 +42,7 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
-use super::lease::LeaseTable;
+use super::lease::{FundingKey, LeaseTable};
 use super::notifications::EventKind;
 use super::runtime::guard;
 use crate::events::{SessionHub, unix_now};
@@ -169,10 +169,22 @@ pub(crate) struct Classified {
     changes: BTreeSet<PlatformChange>,
     /// Tracked asset locks touched: each signals its registration.
     locks: BTreeSet<OutPoint>,
+    /// The tracked rows stored, of any status (their txids and funding
+    /// keys): a funding call's coin fence is released by its own (E0-04
+    /// §2a.6).
+    tracked: Vec<(Txid, FundingKey)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
     names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
+}
+
+impl Classified {
+    /// The tracked rows stored (tests).
+    #[cfg(test)]
+    pub(crate) fn tracked(&self) -> &[(Txid, FundingKey)] {
+        &self.tracked
+    }
 }
 
 /// Classifies a changeset by the §3.5 table. `None` when it touches nothing
@@ -244,6 +256,16 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     if let Some(locks) = cs.asset_locks.as_ref().filter(|l| !l.is_empty()) {
         c.locks.extend(locks.asset_locks.keys().copied());
         c.locks.extend(locks.removed.iter().copied());
+        // Any status: the persister may fold a lock's `Built` into a later
+        // status before it stores the changeset.
+        c.tracked.extend(locks.asset_locks.values().map(|e| {
+            let key = FundingKey {
+                funding_type: e.funding_type,
+                identity_index: e.identity_index,
+                account: e.account_index,
+            };
+            (e.out_point.txid, key)
+        }));
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -445,6 +467,8 @@ impl ChangesetTap {
         if !c.locks.is_empty()
             && let Some(table) = self.locks_changed.get().and_then(Weak::upgrade)
         {
+            // A funding call's coin fence: one J step, no await.
+            table.note_tracked(id, &c.tracked);
             // Spawned: this runs inside the library's store call.
             table.request_refresh(id);
         }

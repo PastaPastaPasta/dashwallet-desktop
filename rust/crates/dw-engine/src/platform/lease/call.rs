@@ -289,6 +289,28 @@ pub(crate) struct CallRun {
     pub(crate) lease: LeaseId,
     pub(crate) deadline: Instant,
     pub(crate) label: String,
+    /// A funding call's coin fence, until the library tracked the lock it
+    /// signed or the call ends ([`FundingFence`]).
+    pub(crate) fence: Option<FundingFence>,
+}
+
+/// The coin fence a funding call holds (`coins.rs`, E0-04 §2a.6): the one
+/// its caller's policy check read the coins under. Released, outside J, at
+/// the first of: the changeset tap reporting a tracked row of the wallet
+/// under `key`, of any status, that is not foreign to `step`, once the
+/// call released a signature (the library tracks and persists its lock
+/// `Built` after signing it and before broadcasting it, and from then on
+/// the lock's inputs read reserved; the persister may fold that `Built`
+/// into a later status before the tap sees it, so any status counts; a row
+/// before the call's first signature is not its lock); or the call's end.
+/// Never held through the library's proof wait past that row.
+#[derive(Debug)]
+pub(crate) struct FundingFence {
+    pub(crate) step: String,
+    pub(crate) key: FundingKey,
+    /// The call's own count ([`CallPermit::signatures`]).
+    pub(crate) signatures: Arc<SignatureCount>,
+    pub(crate) fence: crate::coins::CoinFence,
 }
 
 /// A finished call of a lease, for the lock's report (§8.4).
@@ -390,6 +412,22 @@ impl Lease {
         quote: Option<CallQuote>,
         step: CallStep,
     ) -> Result<CallPermit, LeaseError> {
+        self.call_permit_step_fenced(label, quote, step, None).await
+    }
+
+    /// [`Self::call_permit_step`] for a funding call that holds `fence`,
+    /// its wallet's coin fence: the permit's J step moves it into the
+    /// call, which keeps it until the library tracked its lock or the call
+    /// ends ([`FundingFence`]). Refused, it is dropped with the refusal.
+    pub(crate) async fn call_permit_step_fenced(
+        &self,
+        label: impl Into<String>,
+        quote: Option<CallQuote>,
+        step: CallStep,
+        fence: Option<crate::coins::CoinFence>,
+    ) -> Result<CallPermit, LeaseError> {
+        let mut fence = fence;
+        let signatures = Arc::<SignatureCount>::default();
         let label = label.into();
         let purpose = quote.map_or(BudgetPurpose::Crypto, |q| q.purpose);
         let table = &self.table;
@@ -409,6 +447,20 @@ impl Lease {
                 }
                 let backend = backend.expect("checked by the gate");
                 let (id, charge, deadline) = self.take_call(i, fx, label.clone(), quote)?;
+                if let Some(fence) = fence.take() {
+                    match (step.funding(), i.calls.get_mut(&id)) {
+                        (Some(key), Some(run)) => {
+                            run.fence = Some(FundingFence {
+                                step: step.id().to_owned(),
+                                key,
+                                signatures: Arc::clone(&signatures),
+                                fence,
+                            });
+                        }
+                        // Only a funding call holds one.
+                        _ => fx.drop_later(fence),
+                    }
+                }
                 let (prior, write) = table.call_step_mark(i, backend, self.wallet, &step);
                 if let Some(fkey) = step.funding() {
                     super::mode_b::note_marked(i, self.wallet, step.id(), fkey);
@@ -437,6 +489,7 @@ impl Lease {
             }
         };
         let mut permit = self.permit(id, charge, deadline, prior, Some(key.1));
+        permit.signatures = signatures;
         permit.funding = step.funding().is_some();
         // Before the write returns the permit is not handed out: dropped
         // here, it ends as a call that never started.
@@ -546,6 +599,7 @@ impl Lease {
                 lease: self.id,
                 deadline,
                 label,
+                fence: None,
             },
         );
         fx.notify();
@@ -648,7 +702,11 @@ impl CallPermit {
         let backend = step.as_ref().and_then(|_| self.table.journal.get());
         let table = Arc::clone(&self.table);
         let resolve = table.with_j(|i, fx| {
-            let run = i.calls.remove(&id);
+            let mut run = i.calls.remove(&id);
+            // Released outside J (J stays a leaf).
+            if let Some(f) = run.as_mut().and_then(|r| r.fence.take()) {
+                fx.drop_later(f);
+            }
             if let Some(e) = i.leases.get_mut(&lease) {
                 e.calls = e.calls.saturating_sub(1);
                 e.last_use = Instant::now();
