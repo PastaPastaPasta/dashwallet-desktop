@@ -88,6 +88,9 @@ pub struct RegistrationChange {
     pub failure: Option<Option<(String, bool)>>,
     /// The `ProfileCreated` step consumed it.
     pub clear_initial_profile: bool,
+    /// The library dropped the lock before it reached the wire (a
+    /// definitive rejection): the flow is unfunded again.
+    pub clear_outpoint: bool,
 }
 
 /// How a compare-and-set update ended.
@@ -257,7 +260,7 @@ impl AppDb {
                  phase = COALESCE(?4, phase),
                  identity_index = COALESCE(?5, identity_index),
                  identity = COALESCE(?6, identity),
-                 asset_lock_outpoint = COALESCE(?7, asset_lock_outpoint),
+                 asset_lock_outpoint = CASE WHEN ?14 THEN NULL ELSE COALESCE(?7, asset_lock_outpoint) END,
                  error = CASE WHEN ?8 THEN ?9 ELSE error END,
                  retryable = CASE WHEN ?8 THEN ?10 ELSE retryable END,
                  initial_profile = CASE WHEN ?11 THEN NULL ELSE initial_profile END,
@@ -277,6 +280,7 @@ impl AppDb {
                 change.clear_initial_profile,
                 now as i64,
                 failed,
+                change.clear_outpoint,
             ],
         );
         match written {
@@ -457,6 +461,43 @@ mod tests {
             db.update_registration(W, id, "keys_prepared", false, &to_keys, 7)
                 .unwrap(),
             RegistrationUpdate::Stale
+        );
+    }
+
+    #[test]
+    fn a_rejected_lock_leaves_the_flow_unfunded() {
+        let db = AppDb::open_in_memory().unwrap();
+        let id = db.insert_registration(W, &draft("alice"), 1).unwrap();
+        let lock = LockOutpoint::parse(&format!("{TXID}:0")).unwrap();
+        let funded = RegistrationChange {
+            phase: Some("funding_sent".into()),
+            outpoint: Some(lock.clone()),
+            ..Default::default()
+        };
+        db.update_registration(W, id, "draft", false, &funded, 2)
+            .unwrap();
+        let rejected = RegistrationChange {
+            phase: Some("keys_prepared".into()),
+            clear_outpoint: true,
+            failure: Some(Some(("platform.broadcast_rejected".into(), true))),
+            ..Default::default()
+        };
+        assert_eq!(
+            db.update_registration(W, id, "funding_sent", false, &rejected, 3)
+                .unwrap(),
+            RegistrationUpdate::Applied
+        );
+        let row = db.registration_row(W, id).unwrap().unwrap();
+        assert_eq!(
+            (row.phase.as_str(), row.asset_lock_outpoint, row.retryable),
+            ("keys_prepared", None, true)
+        );
+        // The lock is free for another flow again.
+        let other = db.insert_registration(W, &draft("bob"), 4).unwrap();
+        assert_eq!(
+            db.update_registration(W, other, "draft", false, &funded, 5)
+                .unwrap(),
+            RegistrationUpdate::Applied
         );
     }
 
