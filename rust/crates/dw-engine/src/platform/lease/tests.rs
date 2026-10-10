@@ -2243,10 +2243,12 @@ async fn r1_f2_a_marker_write_never_settles_a_sent_artifact() {
     t.note_seen(W, a);
     assert_eq!(running.finish(Outcome::NotSent), Settlement::Sent);
     // DEC-154: the copy waits for the artifact's Sent row; it is handed
-    // off only once both markers stand on disk.
+    // off only once the fence has acknowledged it Durable, which follows
+    // the row reaching disk (review r5 N1).
     let v = match copy.await.unwrap() {
         Verdict::Deferred => {
-            until(|| j.load().1.iter().all(|s| s.sent)).await;
+            until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable))
+                .await;
             t.admit(step_copy(&l, a, "t")).await
         }
         v => v,
