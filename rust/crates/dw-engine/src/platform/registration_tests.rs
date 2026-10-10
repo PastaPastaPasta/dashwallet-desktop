@@ -31,6 +31,7 @@ use super::registration_flow::{
     self as flow, Driver, FundError, LockInfo, LockStatus, RegistrationLib, Spendable,
 };
 use super::registration_rows::{Funding, Phase, ProfileRecord};
+use crate::send::SpendOwner;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
 const PHRASE: &str =
@@ -144,11 +145,16 @@ impl Fixture {
     /// A confirmed coin of 1 DASH on the wallet's BIP44 account 0 (no
     /// transaction behind it: the asset-lock builds stay offline).
     fn coin(&self) -> (Arc<platform_wallet::PlatformWallet>, OutPoint) {
+        self.coin_at(0)
+    }
+
+    /// A confirmed 1 DASH BIP44 coin at output `vout` of txid 0xee….
+    fn coin_at(&self, vout: u32) -> (Arc<platform_wallet::PlatformWallet>, OutPoint) {
         let wallet = self
             .engine
             .block_on(self.session.wallet(&self.wallet))
             .unwrap();
-        let outpoint = OutPoint::new(Txid::from_byte_array([0xee; 32]), 0);
+        let outpoint = OutPoint::new(Txid::from_byte_array([0xee; 32]), vout);
         self.engine.block_on(async {
             let address = wallet
                 .core()
@@ -2214,6 +2220,107 @@ fn a_built_lock_keeps_its_inputs_from_other_spends() {
         wallet.state_mut().await.tracked_asset_locks.remove(&lock);
     });
     assert!(!reads_reserved(&f, coin));
+}
+
+/// Funds `lock` from `coin` as the library does up to the tap, offline: the
+/// lock tracked as built in the wallet, then reported by the tap.
+fn track_built(
+    f: &Fixture,
+    wallet: &Arc<platform_wallet::PlatformWallet>,
+    lib: &flow::PwLib,
+    lock: OutPoint,
+    coin: OutPoint,
+) {
+    f.engine.block_on(async {
+        lib.fenced(1, async {
+            // As the library tracks the lock it built, before the tap.
+            let tx = dashcore::Transaction {
+                version: 3,
+                lock_time: 0,
+                input: vec![dashcore::TxIn {
+                    previous_output: coin,
+                    ..Default::default()
+                }],
+                output: Vec::new(),
+                special_transaction_payload: None,
+            };
+            let tracked = platform_wallet::TrackedAssetLock {
+                out_point: lock,
+                transaction: tx,
+                account_index: 0,
+                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index: 1,
+                amount: flow::LOCK_DUFFS,
+                status: platform_wallet::AssetLockStatus::Built,
+                proof: None,
+            };
+            wallet
+                .state_mut()
+                .await
+                .tracked_asset_locks
+                .insert(lock, tracked);
+            let flows = &f.session.platform.registrations;
+            flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(1), true).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    });
+}
+
+/// Sol r3 R3-01: a built lock's inputs read reserved only while the library
+/// tracks it (the coin view derives them, E0-04 §2a.6), and hold no funding
+/// back; once it stops (a later rejection, a sweep) nothing stale is left,
+/// so the ordinary `start` gate does not refuse on its own funding's lock.
+#[test]
+fn an_untracked_locks_reservation_does_not_block_the_next_start() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let lock = OutPoint::new(Txid::from_byte_array([0xda; 32]), 0);
+    track_built(&f, &wallet, &lib, lock, coin);
+    // Tracked: the coin reads reserved, the library's own reservation.
+    let held = f.engine.block_on(lib.spendable()).unwrap();
+    assert_eq!(held.protected, 0);
+    assert!(reads_reserved(&f, coin));
+    // The library drops the lock, as a later definite rejection does.
+    f.engine.block_on(async {
+        wallet.state_mut().await.tracked_asset_locks.remove(&lock);
+    });
+    assert!(!reads_reserved(&f, coin));
+    let grant = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+    let started = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::new(f.pw_lib(&wallet)),
+        request(PLAIN),
+        grant,
+    ));
+    assert!(
+        !matches!(started, Err(RegistrationError::CoinsLocked)),
+        "the stale reservation refused the next start: {started:?}"
+    );
+    assert_eq!(f.rows().len(), 1);
+}
+
+/// R3-01: the lock's untracking frees its inputs and no other operation's
+/// reservation.
+#[test]
+fn freeing_an_untracked_locks_inputs_keeps_other_reservations() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let (_, other) = f.coin_at(1);
+    let lib = f.pw_lib(&wallet);
+    let lock = OutPoint::new(Txid::from_byte_array([0xdb; 32]), 0);
+    track_built(&f, &wallet, &lib, lock, coin);
+    f.session
+        .spends
+        .reserve(f.wallet, SpendOwner::mixing_session(), [other]);
+    f.engine.block_on(async {
+        wallet.state_mut().await.tracked_asset_locks.remove(&lock);
+    });
+    assert!(!reads_reserved(&f, coin));
+    assert!(reads_reserved(&f, other));
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known
