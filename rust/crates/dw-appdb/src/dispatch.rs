@@ -759,8 +759,10 @@ impl DispatchJournal {
     }
 
     /// Repair's self-spend `txid` of the funding marked by `step_id`
-    /// (§6.5, §2a.5), recorded against the step's standing marker; the
-    /// engine writes the `NotSent` row only once the spend is ChainLocked.
+    /// (§6.5, §2a.5), recorded against the step's standing marker before
+    /// the spend is broadcast. The engine writes no `NotSent` row for it:
+    /// the step derives `NotSent` from this row once the wallet sees the
+    /// spend ChainLocked.
     /// `Ok(false)`: no marker of the step stands, so nothing is recorded.
     /// Idempotent.
     pub fn insert_self_spend(
@@ -1531,8 +1533,8 @@ mod tests {
                 .collect()
         };
         assert_eq!(spends(&j), vec![tx1, tx2], "idempotent per txid");
-        // The spend ChainLocked: NotSent supersedes the marker, and the
-        // self-spends with it. A new call's marker does not inherit them.
+        // A NotSent row (a later call's definite resolution) supersedes
+        // the marker, and the self-spends with it. A new call's marker does not inherit them.
         j.resolve(&W, &T, Resolution::NotSent, 5).unwrap();
         assert!(spends(&j).is_empty());
         assert!(!j.insert_self_spend(&W, step, &T, &tx1, 6).unwrap());

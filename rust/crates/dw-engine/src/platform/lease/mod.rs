@@ -8,6 +8,7 @@
 //! - [`call`]: Mode B's call permits around library write calls (§2a.3).
 //! - [`mode_b`]: Mode B's derived funding statuses and its funding gate
 //!   (§2a.5, H15).
+//! - [`repair`]: Repair's "Resolve stuck funding" self-spend (§6.5, C9).
 //! - [`fence`]: `register`, `admit`, `abandon` and the attempt guards; the
 //!   in-memory journal, the row-less set and its tombstones;
 //!   `dispatch_status` (§5.4, §5.5, §16.6).
@@ -25,6 +26,7 @@ pub(crate) mod call;
 pub(crate) mod fence;
 pub(crate) mod lock;
 pub(crate) mod mode_b;
+pub(crate) mod repair;
 pub(crate) mod resume;
 pub(crate) mod session;
 pub(crate) mod table;
@@ -54,7 +56,7 @@ pub use fence::{
     AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,
     NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
 };
-pub use mode_b::{DraftKey, FundingBlock, TrackedRow, TrackedStatus};
+pub use mode_b::{DraftKey, FundingBlock, StuckFundingRefusal, TrackedRow, TrackedStatus};
 pub use table::{Lease, LeaseTable};
 
 /// A lease's id: 128 bits from the OS RNG, in memory only (H5, I7).

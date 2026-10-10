@@ -2589,6 +2589,7 @@ mod tests {
                 foreign_incoming: true,
                 user_locked: false,
                 reserved: false,
+                lock_input: false,
             },
             path: Some(path.parse().unwrap()),
             rounds,

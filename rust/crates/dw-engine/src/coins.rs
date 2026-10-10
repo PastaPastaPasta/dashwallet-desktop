@@ -14,9 +14,10 @@
 //! by coin control. They are read with the coins, from one wallet state,
 //! so the exclusion holds from the first build of a session, before any
 //! resume ran, and lifts once the row reaches a proof, is consumed or is
-//! untracked. Repair's "Cancel it" self-spend (§6.5) is the one build that
-//! must spend them; it has to lift this exclusion for its own inputs
-//! explicitly.
+//! untracked. Repair's "Resolve stuck funding" self-spend (§6.5, §2a.5) is
+//! the one build that must spend them: its draft names exactly those
+//! inputs as exempt ([`WalletCoin::self_spend_selectable`]); every other
+//! build still refuses them.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -76,6 +77,9 @@ pub(crate) struct WalletCoin {
     pub foreign_incoming: bool,
     pub user_locked: bool,
     pub reserved: bool,
+    /// Reserved only as the input of a tracked `Built` or `Broadcast`
+    /// asset lock (module doc), not by a payment of the engine.
+    pub lock_input: bool,
 }
 
 impl WalletCoin {
@@ -94,6 +98,13 @@ impl WalletCoin {
     /// unconfirmed coins, never locked, reserved or immature ones).
     pub(crate) fn chosen_selectable(&self, height: u32) -> bool {
         self.utxo.is_spendable(height) && !self.user_locked && !self.reserved
+    }
+
+    /// Eligible for Repair's self-spend when the draft exempts it (E0-04
+    /// §6.5): as when picked by hand, except that a tracked asset lock's
+    /// reservation does not hold it back.
+    pub(crate) fn self_spend_selectable(&self, height: u32) -> bool {
+        self.utxo.is_spendable(height) && !self.user_locked && (!self.reserved || self.lock_input)
     }
 
     fn denominated(&self) -> bool {
@@ -183,6 +194,7 @@ fn collect(
             }),
             user_locked: false,
             reserved: false,
+            lock_input: false,
         });
     }
 }
@@ -245,6 +257,27 @@ pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
         || accounts.standard_bip32_accounts.values().any(locked)
         || accounts.dashpay_receival_accounts.values().any(locked)
         || accounts.coinjoin_accounts.values().any(locked)
+}
+
+/// A transaction of the funding accounts (BIP44, BIP32, DashPay receiving)
+/// that spends one of the wallet's coins and is not ChainLocked yet, if
+/// any. Repair's self-spend waits for none (`platform/lease/repair.rs`):
+/// a coin such a transaction spends is no coin of the self-spend, so a lost
+/// asset lock that conflicts only with it is not beaten by the self-spend.
+pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
+    let accounts = &info.accounts;
+    let pending = |a: &ManagedCoreFundsAccount| {
+        a.transactions()
+            .values()
+            .find(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
+            .map(|r| r.txid)
+    };
+    accounts
+        .standard_bip44_accounts
+        .values()
+        .chain(accounts.standard_bip32_accounts.values())
+        .chain(accounts.dashpay_receival_accounts.values())
+        .find_map(pending)
 }
 
 /// How many unspent outputs the asset-lock builder may fund from: every coin
@@ -324,9 +357,10 @@ impl NetworkSession {
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         for coin in &mut snapshot.coins {
-            coin.user_locked = locked.contains(&lock_key(&coin.utxo.outpoint));
-            coin.reserved =
-                reserved.contains(&coin.utxo.outpoint) || lock_inputs.contains(&coin.utxo.outpoint);
+            let o = coin.utxo.outpoint;
+            coin.user_locked = locked.contains(&lock_key(&o));
+            coin.lock_input = !reserved.contains(&o) && lock_inputs.contains(&o);
+            coin.reserved = reserved.contains(&o) || lock_inputs.contains(&o);
         }
         Ok(snapshot)
     }

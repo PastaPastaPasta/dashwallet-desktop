@@ -275,9 +275,10 @@ pub enum FundingBlock {
 /// first: the lock reached a proof, so a ChainLocked self-spend cannot have
 /// consumed its inputs, and §2a.5's first row ("a self-spend of one of the
 /// lock's inputs") does not apply. Repair's self-spend spends every coin of
-/// the funding accounts and the inputs of every tracked `Built` and
-/// `Broadcast` row (commit 7's obligation), so once ChainLocked it reads
-/// `NotSent` over such a row too.
+/// the funding accounts, among them an input of every tracked `Built` and
+/// `Broadcast` row of the step, and only while no other spend of the
+/// wallet's coins is short of a ChainLock (`repair.rs`, which refuses
+/// otherwise), so once ChainLocked it reads `NotSent` over such a row too.
 pub(crate) fn derive_funding(
     status: CallStepStatus,
     rows: Option<&[TrackedStatus]>,
@@ -362,6 +363,87 @@ pub(super) fn funding_gate(i: &Inner, wallet: WalletId, step: &str) -> Option<Fu
         .iter()
         .find(|r| r.status.pending() && !i.mode_b.resumed.contains(&(wallet, r.txid)))
         .map(|r| FundingBlock::Row(ArtifactId::from_txid(&r.txid)))
+}
+
+/// Why Repair's "Resolve stuck funding" (§6.5, §16.10 C9) refuses a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum StuckFundingRefusal {
+    /// The wallet's tracked rows were never read this session.
+    #[error("the wallet's tracked asset locks are not known yet")]
+    RowsUnknown,
+    /// Only a `MaybeSent` or `WillBeSent` funding is stuck: the others
+    /// need nothing (`Sent`, `NotSent`) or never started (`None`).
+    #[error("the funding is not stuck (its status is {0:?})")]
+    NotStuck(Option<DispatchState>),
+    /// No marker of the step stands to record the self-spend against: a
+    /// row found only by the draft's own key, or a marker a `NotSent` row
+    /// superseded.
+    #[error("no marker of the funding step stands")]
+    NoMarker,
+    /// A call runs under the step's marker, or its `NotSent` row is being
+    /// written: its outcome is not known yet.
+    #[error("a call of the funding step is running")]
+    CallRunning,
+    #[error("the dispatch journal is unavailable")]
+    JournalUnavailable,
+    /// A transaction spending coins of the funding accounts is not
+    /// ChainLocked yet (an earlier self-spend, a payment, the lost lock
+    /// itself): a lock that conflicts only with it could still confirm
+    /// over a self-spend of the other coins. Wait for its ChainLock, or
+    /// abandon it.
+    #[error("transaction {0} spends the wallet's coins and is not ChainLocked yet")]
+    SpendUnsettled(Txid),
+    /// A tracked `Built` or `Broadcast` lock of the step spends no coin the
+    /// self-spend can take, so the self-spend would not conflict with it.
+    #[error("tracked asset lock {0} spends no coin the self-spend can take")]
+    LockInputsSpent(Txid),
+}
+
+/// The tracked `Built` and `Broadcast` rows of funding `step` (J): their
+/// txids and inputs. Repair's self-spend must conflict with each.
+pub(super) fn pending_step_rows(
+    i: &Inner,
+    wallet: WalletId,
+    step: &str,
+) -> Vec<(Txid, Vec<OutPoint>)> {
+    let Some(s) = i.mode_b.snapshots.get(&wallet) else {
+        return Vec::new();
+    };
+    let info = i.fence.call_step_info(&wallet, step);
+    let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
+    s.rows
+        .iter()
+        .filter(|r| r.status.pending() && matches_step(s, step, &info, foreign, r))
+        .map(|r| (r.txid, r.inputs.clone()))
+        .collect()
+}
+
+/// Whether Repair may resolve funding `step` with a self-spend now (J):
+/// the wallet's rows are known, the step reads `MaybeSent` or
+/// `WillBeSent` (a proof-less tracked row), its marker stands, and no call
+/// runs under it.
+pub(super) fn stuck_funding(
+    i: &Inner,
+    wallet: WalletId,
+    step: &str,
+) -> Result<(), StuckFundingRefusal> {
+    if !i.mode_b.snapshots.contains_key(&wallet) {
+        return Err(StuckFundingRefusal::RowsUnknown);
+    }
+    match funding_status(i, wallet, step) {
+        Some(DispatchState::MaybeSent | DispatchState::WillBeSent) => {}
+        other => return Err(StuckFundingRefusal::NotStuck(other)),
+    }
+    if !matches!(
+        i.fence.call_step_status(&wallet, step),
+        CallStepStatus::Marked { .. }
+    ) {
+        return Err(StuckFundingRefusal::NoMarker);
+    }
+    if i.fence.call_busy(&(wallet, step.to_owned())) {
+        return Err(StuckFundingRefusal::CallRunning);
+    }
+    Ok(())
 }
 
 /// The J step that marks `step` under `key` records the wallet's rows
@@ -521,6 +603,21 @@ impl LeaseTable {
                 .self_spends_of(&wallet)
                 .iter()
                 .any(|t| !snap.locked_spends.contains(t))
+        })
+    }
+
+    /// Whether Repair may resolve funding `step` with a self-spend now
+    /// ([`stuck_funding`]).
+    /// Returns the step's tracked `Built` and `Broadcast` rows
+    /// ([`pending_step_rows`]).
+    pub(crate) fn check_stuck_funding(
+        &self,
+        wallet: WalletId,
+        step: &str,
+    ) -> Result<Vec<(Txid, Vec<OutPoint>)>, StuckFundingRefusal> {
+        self.with_j(|i, _| {
+            stuck_funding(i, wallet, step)?;
+            Ok(pending_step_rows(i, wallet, step))
         })
     }
 

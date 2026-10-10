@@ -239,6 +239,8 @@ pub(super) struct FakeJournal {
     /// 0: ok; 1: lost (nothing written, error); 2: durable, then an error.
     pub(super) dispatch_fault: AtomicU64,
     pub(super) fail_step: AtomicBool,
+    /// A `self_spend` row: lost (nothing written, error).
+    pub(super) fail_self_spend: AtomicBool,
     /// A `NotSent` row: lost (nothing written, error).
     pub(super) fail_resolve: AtomicBool,
     pub(super) panic_resolve: AtomicBool,
@@ -345,6 +347,9 @@ impl JournalBackend for FakeJournal {
         artifact: &[u8; 32],
         txid: &[u8; 32],
     ) -> Result<bool, String> {
+        if self.fail_self_spend.load(Ordering::SeqCst) {
+            return Err("injected self-spend failure".into());
+        }
         let log = self.log.lock().unwrap();
         let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
             return Ok(false);

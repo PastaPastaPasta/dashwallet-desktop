@@ -491,6 +491,10 @@ pub struct TxDraft {
     /// Binds the drafts's `PreparedTx`s to it.
     id: u64,
     state: Mutex<DraftState>,
+    /// Coins coin control may spend although a tracked asset lock reserves
+    /// them: only Repair's self-spend sets any (E0-04 §6.5,
+    /// [`crate::coins::WalletCoin::self_spend_selectable`]).
+    exempt: HashSet<OutPoint>,
     /// Stands in for the library's broadcast, so the leased hand-off runs
     /// end to end without SPV (E0-04 L5, review P2a r1 F3).
     #[cfg(test)]
@@ -586,6 +590,16 @@ impl NetworkSession {
         self: &Arc<Self>,
         wallet_id: WalletId,
     ) -> Result<Arc<TxDraft>, EngineError> {
+        self.new_draft(wallet_id, HashSet::new())
+    }
+
+    /// A new draft whose coin control may spend `exempt` although tracked
+    /// asset locks reserve them (Repair's self-spend, E0-04 §6.5).
+    pub(crate) fn new_draft(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        exempt: HashSet<OutPoint>,
+    ) -> Result<Arc<TxDraft>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
         if manager.get_wallet_blocking(&wallet_id.0).is_none() {
@@ -601,6 +615,7 @@ impl NetworkSession {
                 fee: FeeRate::new(MIN_FEE_PER_KB),
                 change: ChangeTarget::Auto,
             }),
+            exempt,
             #[cfg(test)]
             broadcaster: Mutex::new(None),
         }))
@@ -622,17 +637,22 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let (coins, _) = this.source_coins(wallet_id, &source).await?;
+            let (coins, _) = this
+                .source_coins(wallet_id, &source, &HashSet::new())
+                .await?;
             Ok(coins.iter().map(Utxo::value).sum())
         })
         .await
     }
 
-    /// The coins `source` offers and the wallet height they were read at.
+    /// The coins `source` offers and the wallet height they were read at;
+    /// coin control may also take the `exempt` ones a tracked asset lock
+    /// reserves.
     async fn source_coins(
         &self,
         wallet_id: WalletId,
         source: &CoinSource,
+        exempt: &HashSet<OutPoint>,
     ) -> Result<(Vec<Utxo>, u32), EngineError> {
         if *source == CoinSource::FullyMixedOnly {
             let view = self.mix_view(wallet_id).await?;
@@ -640,7 +660,7 @@ impl NetworkSession {
         }
         let wallet = self.wallet(&wallet_id).await?;
         let snapshot = self.coin_snapshot(&wallet, wallet_id).await?;
-        Ok((candidates(&snapshot, source)?, snapshot.height))
+        Ok((candidates(&snapshot, source, exempt)?, snapshot.height))
     }
 
     pub(crate) async fn wallet(
@@ -654,8 +674,14 @@ impl NetworkSession {
     }
 }
 
-/// The coins `source` offers to a build.
-fn candidates(snapshot: &CoinSnapshot, source: &CoinSource) -> Result<Vec<Utxo>, EngineError> {
+/// The coins `source` offers to a build. Coin control may also take an
+/// `exempt` coin that only a tracked asset lock reserves; automatic
+/// selection never does.
+fn candidates(
+    snapshot: &CoinSnapshot,
+    source: &CoinSource,
+    exempt: &HashSet<OutPoint>,
+) -> Result<Vec<Utxo>, EngineError> {
     match source {
         CoinSource::Any => Ok(snapshot
             .coins
@@ -672,7 +698,11 @@ fn candidates(snapshot: &CoinSnapshot, source: &CoinSource) -> Result<Vec<Utxo>,
                     .coins
                     .iter()
                     .find(|c| c.utxo.outpoint == *o)
-                    .filter(|c| c.send_account && c.chosen_selectable(snapshot.height))
+                    .filter(|c| {
+                        c.send_account
+                            && (c.chosen_selectable(snapshot.height)
+                                || (exempt.contains(o) && c.self_spend_selectable(snapshot.height)))
+                    })
                     .map(|c| c.utxo.clone())
                     .ok_or_else(|| SendFailure::OutpointUnavailable(*o).into())
             })
@@ -755,7 +785,7 @@ impl TxDraft {
         }
         let (coins, height) = self
             .session
-            .source_coins(self.wallet_id, &state.source)
+            .source_coins(self.wallet_id, &state.source, &self.exempt)
             .await?;
         let outputs: Vec<PlanOutput> = state
             .recipients

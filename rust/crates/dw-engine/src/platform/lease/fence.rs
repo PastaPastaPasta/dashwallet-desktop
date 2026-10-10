@@ -58,9 +58,8 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         key: &StoredFundingKey,
     ) -> Result<(), String>;
     /// Repair's self-spend `txid` of a funding step (§6.5), recorded against
-    /// the step's standing marker; `Ok(false)` when none stands. Repair's
-    /// self-spend (P2b, later) writes it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// the step's standing marker; `Ok(false)` when none stands
+    /// ([`LeaseTable::record_self_spend`]).
     fn insert_self_spend(
         &self,
         wallet: &[u8; 32],
@@ -817,6 +816,22 @@ impl FenceState {
     /// Whether a `NotSent` row of the call step is being written.
     pub(super) fn call_resolving(&self, key: &(WalletId, String)) -> bool {
         self.call_steps.get(key).is_some_and(|r| r.resolving)
+    }
+
+    /// Whether a call runs under the step's marker, or its `NotSent` row is
+    /// being written.
+    pub(super) fn call_busy(&self, key: &(WalletId, String)) -> bool {
+        self.call_steps
+            .get(key)
+            .is_some_and(|r| r.running > 0 || r.resolving)
+    }
+
+    /// Whether the step's own marker stands in memory (any mark).
+    fn call_marked(&self, wallet: &WalletId, step: &str) -> bool {
+        let id = ArtifactId::of_step(wallet, step);
+        self.steps
+            .get(&(*wallet, step.to_owned()))
+            .is_some_and(|m| m.contains_key(&id))
     }
 
     /// The funding keys a write of `id`'s `steps` carries: those of its
@@ -2781,6 +2796,76 @@ impl LeaseTable {
     /// self-spends (§2a.3, §2a.5).
     pub fn call_step(&self, wallet: WalletId, step: &str) -> CallStepInfo {
         self.with_j(|i, _| i.fence.call_step_info(&wallet, step))
+    }
+
+    /// Records Repair's self-spend `txid` (display order) of the stuck
+    /// funding `step` (§6.5, §2a.5), before the self-spend is broadcast:
+    /// one append to the journal's `self_spend` table, against the step's
+    /// standing marker, then the step's in-memory self-spends. Never a
+    /// `NotSent` row: the step reads `NotSent` only once the self-spend is
+    /// ChainLocked ([`super::mode_b::derive_funding`]), and after a restart
+    /// the row and the wallet's ChainLock say so again.
+    ///
+    /// Refused unless the step is stuck now
+    /// ([`super::mode_b::stuck_funding`]); refused with `NoMarker` when no
+    /// marker of the step stands on disk (a `NotSent` row superseded it
+    /// meanwhile). A write that fails or panics may have landed: the caller
+    /// must then not broadcast, and a row of a self-spend never sent is
+    /// harmless (it is never ChainLocked). Outside J.
+    pub(crate) async fn record_self_spend(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        step: &str,
+        txid: [u8; 32],
+    ) -> Result<(), super::mode_b::StuckFundingRefusal> {
+        use super::mode_b::StuckFundingRefusal as R;
+        let backend = self.journal.get().ok_or(R::JournalUnavailable)?;
+        self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready {
+                return Err(R::JournalUnavailable);
+            }
+            super::mode_b::stuck_funding(i, wallet, step)?;
+            i.fence.writes += 1;
+            Ok(())
+        })?;
+        // The write and the J step that ends it run on the blocking task,
+        // so `writes` comes down even if this future is dropped.
+        let table = Arc::clone(self);
+        let step = step.to_owned();
+        self.rt
+            .spawn_blocking(move || {
+                let id = ArtifactId::of_step(&wallet, &step);
+                let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    backend.insert_self_spend(&wallet.0, &step, &id.0, &txid)
+                }))
+                .unwrap_or_else(|_| Err("the journal write panicked".into()))
+                .inspect_err(|e| tracing::warn!(step, error = %e, "recording a self-spend failed"))
+                .ok();
+                table.with_j(|i, fx| {
+                    fx.notify();
+                    i.fence.writes -= 1;
+                    note_write(i, fx, written.is_some());
+                    match written {
+                        None => Err(R::JournalUnavailable),
+                        Some(false) => Err(R::NoMarker),
+                        Some(true) => {
+                            // A `NotSent` row that superseded the marker
+                            // since dropped the row with it, on disk as in
+                            // memory.
+                            if i.fence.call_marked(&wallet, &step) {
+                                let spends = i.fence.self_spends.entry((wallet, step));
+                                let spends = spends.or_default();
+                                if !spends.contains(&txid) {
+                                    spends.push(txid);
+                                }
+                            }
+                            Ok(())
+                        }
+                    }
+                })
+            })
+            .await
+            .unwrap_or(Err(R::JournalUnavailable))
     }
 
     fn discard(&self, attempt: u64) {

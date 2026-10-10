@@ -2,6 +2,7 @@
 //! §2a.3, §2a.4 item 7, §16.5–§16.7), against a fake evidence source.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -976,4 +977,184 @@ async fn a_refresh_overtaken_by_the_wallets_removal_is_dropped() {
     src.release.notify_one();
     assert!(!refresh.await.unwrap());
     assert!(!t.has_tracked_snapshot(W));
+}
+
+// --- Repair's self-spend (§6.5, §2a.5 row 1; commit 7) --------------------
+
+/// Repair records its self-spend against the step's standing marker in the
+/// journal (append-only), and in memory once that write landed. Recording
+/// is no resolution: the step stays `MaybeSent` while the self-spend is
+/// not ChainLocked (it may never confirm), across a restart too, and reads
+/// `NotSent`, with `DispatchResolved(NotSent)`, once it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
+    use dw_appdb::dispatch::{Resolution, StepEvent};
+    let (t, rec, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, TOPUP, 9).await;
+    let id = ArtifactId::of_step(&W, TOPUP);
+    let marker = j
+        .log()
+        .iter()
+        .find(|r| r.artifact == id.0)
+        .map(|r| r.seq)
+        .unwrap();
+
+    t.record_self_spend(W, TOPUP, [0xee; 32]).await.unwrap();
+    assert_eq!(t.call_step(W, TOPUP).self_spends, vec![[0xee; 32]]);
+    let rows = j.load_calls().self_spends;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].step_id.as_str(), rows[0].artifact, rows[0].txid),
+        (TOPUP, id.0, [0xee; 32])
+    );
+    assert_eq!(rows[0].marker, marker, "it answers the standing marker");
+    assert!(
+        !j.log()
+            .iter()
+            .any(|r| r.artifact == id.0 && r.event == StepEvent::Resolved(Resolution::NotSent)),
+        "no NotSent row is written for it"
+    );
+    assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
+    assert!(t.awaits_self_spend_lock(W));
+
+    // Never confirmed: MaybeSent, refresh after refresh.
+    t.refresh_funding(W).await;
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
+    assert!(rec.resolved().is_empty());
+
+    // A second self-spend (the first one rejected and abandoned, so its
+    // coins are the second's too: `repair.rs`) is appended as well.
+    t.record_self_spend(W, TOPUP, [0xef; 32]).await.unwrap();
+    assert_eq!(j.load_calls().self_spends.len(), 2);
+
+    // A restart keeps both rows with their marker.
+    let (t2, rec2) = reload(&j, &src).await;
+    assert_eq!(
+        t2.call_step(W, TOPUP).self_spends,
+        vec![[0xee; 32], [0xef; 32]]
+    );
+    assert_eq!(t2.funding_status(W, TOPUP), Some(MaybeSent));
+    assert!(rec2.resolved().is_empty());
+
+    // The second one is ChainLocked: NotSent, announced once.
+    src.locked.lock().unwrap().insert([0xef; 32]);
+    t2.refresh_funding(W).await;
+    assert_eq!(t2.funding_status(W, TOPUP), Some(NotSent));
+    assert_eq!(
+        rec2.resolved(),
+        vec![(TOPUP.to_owned(), DispatchResolution::NotSent)]
+    );
+    t2.refresh_funding(W).await;
+    assert_eq!(rec2.resolved().len(), 1);
+    // Resolved, so nothing is stuck any more.
+    assert_eq!(
+        t2.record_self_spend(W, TOPUP, [0xf0; 32]).await,
+        Err(StuckFundingRefusal::NotStuck(Some(NotSent)))
+    );
+}
+
+/// A tracked `Built` row of the step (`WillBeSent`, no proof) is stuck too;
+/// the self-spend spends its inputs, so once ChainLocked it reads `NotSent`
+/// over the row (§2a.5 row 1 before row 3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_will_be_sent_funding_resolves_by_its_self_spend() {
+    let (t, rec, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, TOPUP, 9).await;
+    src.set_rows(W, vec![row(1, 9, R::Built)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(WillBeSent));
+    t.record_self_spend(W, TOPUP, [0xee; 32]).await.unwrap();
+    assert_eq!(t.funding_status(W, TOPUP), Some(WillBeSent));
+    src.locked.lock().unwrap().insert([0xee; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(NotSent));
+    assert_eq!(
+        rec.resolved(),
+        vec![(TOPUP.to_owned(), DispatchResolution::NotSent)]
+    );
+}
+
+/// What Repair refuses, before anything is written: unknown rows, a step
+/// that is not stuck (never started, sent, definitely unsent), a step
+/// stuck only by the draft's own key (no marker to answer), a call running
+/// under the marker, and a journal that is not ready or fails the write
+/// (then nothing is recorded in memory either).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repair_refuses_a_step_that_is_not_stuck() {
+    use StuckFundingRefusal as F;
+    let (t, _, j, src) = setup().await;
+    assert_eq!(
+        t.record_self_spend(W, REG, [1; 32]).await,
+        Err(F::NotStuck(None)),
+        "never started"
+    );
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    l.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap()
+        .finish(true);
+    assert_eq!(
+        t.record_self_spend(W, REG, [1; 32]).await,
+        Err(F::NotStuck(Some(Sent)))
+    );
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 8))
+        .await
+        .unwrap();
+    assert_eq!(
+        t.record_self_spend(W, TOPUP, [1; 32]).await,
+        Err(F::CallRunning)
+    );
+    p.signatures().note_locked();
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled);
+    until(|| t.funding_status(W, TOPUP) == Some(NotSent)).await;
+    assert_eq!(
+        t.record_self_spend(W, TOPUP, [1; 32]).await,
+        Err(F::NotStuck(Some(NotSent)))
+    );
+
+    // A draft's own row with no marker (a lost journal).
+    const LOST: &str = "registration/5/funding";
+    src.set_drafts(W, vec![DraftKey::registration(5, 5)]);
+    src.set_rows(W, vec![row(2, 5, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, LOST), Some(WillBeSent));
+    assert_eq!(
+        t.record_self_spend(W, LOST, [1; 32]).await,
+        Err(F::NoMarker)
+    );
+
+    // A failed write records nothing, on disk or in memory.
+    const ORPHAN: &str = "topup/o/funding";
+    src.set_rows(W, Vec::new());
+    t.refresh_funding(W).await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, ORPHAN, 11).await;
+    j.fail_self_spend.store(true, Ordering::SeqCst);
+    assert_eq!(
+        t.record_self_spend(W, ORPHAN, [1; 32]).await,
+        Err(F::JournalUnavailable)
+    );
+    assert!(t.call_step(W, ORPHAN).self_spends.is_empty());
+    assert!(j.load_calls().self_spends.is_empty());
+    j.fail_self_spend.store(false, Ordering::SeqCst);
+    t.record_self_spend(W, ORPHAN, [1; 32]).await.unwrap();
+
+    // Rows never read this session.
+    let (t2, _) = table();
+    let _j2 = with_journal(&t2);
+    t2.install_tracked(src.clone());
+    assert_eq!(
+        t2.record_self_spend(W, ORPHAN, [1; 32]).await,
+        Err(F::RowsUnknown)
+    );
+    // No journal at all.
+    let (t3, _) = table();
+    assert_eq!(
+        t3.record_self_spend(W, ORPHAN, [1; 32]).await,
+        Err(F::JournalUnavailable)
+    );
 }

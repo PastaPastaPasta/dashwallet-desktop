@@ -19,8 +19,10 @@ use super::table::LeaseState;
 use super::tests::{Recorder, art, status, table_with, with_journal};
 use super::*;
 use crate::platform::PlatformError;
-use crate::platform::flows::{BudgetPurpose, DispatchState, FlowKind, LeaseStateView, RevokeCause};
-use crate::send::{Recipient, SendFailure};
+use crate::platform::flows::{
+    BudgetPurpose, DispatchResolution, DispatchState, FlowKind, LeaseStateView, RevokeCause,
+};
+use crate::send::{CoinSource, Recipient, SendFailure};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
@@ -151,6 +153,137 @@ impl Fixture {
                 .await
                 .unwrap()
         })
+    }
+
+    /// Tracks asset lock `seed` of identity `identity_index` spending
+    /// `inputs`, with `status`. key-wallet's coins stay unspent, as for a
+    /// lock the wallet never saw sent.
+    fn track_lock(
+        &self,
+        seed: u8,
+        identity_index: u32,
+        inputs: &[OutPoint],
+        status: platform_wallet::AssetLockStatus,
+    ) -> Txid {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let txid = Txid::from_byte_array([seed; 32]);
+        let out_point = OutPoint::new(txid, 0);
+        let input = inputs
+            .iter()
+            .map(|o| dashcore::TxIn {
+                previous_output: *o,
+                ..Default::default()
+            })
+            .collect();
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                wallet.state_mut().await.tracked_asset_locks.insert(
+                    out_point,
+                    platform_wallet::TrackedAssetLock {
+                        out_point,
+                        transaction: dashcore::Transaction {
+                            version: 3,
+                            lock_time: 0,
+                            input,
+                            output: Vec::new(),
+                            special_transaction_payload: None,
+                        },
+                        account_index: 0,
+                        funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                        identity_index,
+                        amount: COIN,
+                        status,
+                        proof: None,
+                    },
+                );
+                Ok(())
+            }))
+            .unwrap();
+        txid
+    }
+
+    /// Records `tx` in BIP44 account 0 as key-wallet would, with
+    /// `context`; `spends`: as spending one of the wallet's coins.
+    fn record_tx(
+        &self,
+        tx: dashcore::Transaction,
+        context: key_wallet::transaction_checking::TransactionContext,
+        spends: bool,
+    ) {
+        use key_wallet::account::{AccountType, StandardAccountType};
+        use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use key_wallet::managed_account::transaction_record::{
+            InputDetail, TransactionDirection, TransactionRecord,
+        };
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let address = wallet.core().next_receive_address_for_account(0).await?;
+                let input_details = if spends {
+                    vec![InputDetail {
+                        index: 0,
+                        value: COIN,
+                        address,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let record = TransactionRecord::new(
+                    tx,
+                    AccountType::Standard {
+                        index: 0,
+                        standard_account_type: StandardAccountType::BIP44Account,
+                    },
+                    context,
+                    key_wallet::transaction_checking::TransactionType::Standard,
+                    TransactionDirection::Internal,
+                    input_details,
+                    Vec::new(),
+                    0,
+                );
+                wallet
+                    .state_mut()
+                    .await
+                    .core_wallet
+                    .accounts
+                    .standard_bip44_accounts
+                    .get_mut(&0)
+                    .expect("BIP44 account 0")
+                    .transactions_mut()
+                    .insert(record.txid, record);
+                Ok(())
+            }))
+            .unwrap();
+    }
+
+    /// Funding `step` of identity 0 after a call that released a signature
+    /// and failed: `MaybeSent`, its marker standing.
+    fn stuck(&self, step: &str) {
+        let l = self
+            .lease(FlowKind::Registration, &[self.platform_op(10_000_000, 0)])
+            .unwrap();
+        let permit = self
+            .engine
+            .block_on(self.session.funding_call_permit(
+                &l,
+                "create_funded_asset_lock_proof",
+                1_000_000,
+                step.into(),
+                FundingKey {
+                    funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                    identity_index: 0,
+                    account: 0,
+                },
+            ))
+            .unwrap();
+        permit.signatures().note_released();
+        assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     }
 
     fn reserved(&self) -> usize {
@@ -1042,4 +1175,280 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
             .block_on(dashpay.dispatch_status("not a step".into())),
         Err(PlatformError::InvalidArgument { .. })
     ));
+}
+
+/// The library's broadcast for Repair's self-spend: accepts, and records
+/// what it was handed and the step's self-spends at that moment.
+struct SelfSpendSeam {
+    session: Arc<NetworkSession>,
+    wallet: WalletId,
+    step: &'static str,
+    seen: std::sync::Mutex<Option<(dashcore::Transaction, Vec<[u8; 32]>)>>,
+}
+
+impl crate::send::TestBroadcaster for SelfSpendSeam {
+    fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn broadcast(
+        &self,
+        tx: &dashcore::Transaction,
+        _first: bool,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Txid, platform_wallet::PlatformWalletError>> + Send>,
+    > {
+        let spends = self
+            .session
+            .leases
+            .call_step(self.wallet, self.step)
+            .self_spends;
+        *self.seen.lock().unwrap() = Some((tx.clone(), spends));
+        let txid = tx.txid();
+        Box::pin(async move { Ok(txid) })
+    }
+}
+
+/// E0-04 §6.5 (C9), commit 7, on a real session: Repair's "Resolve stuck
+/// funding" spends every coin of the funding accounts, the inputs of a
+/// tracked `Built` lock included, to a fresh address of the wallet. Its
+/// txid is in the journal before the library sees the transaction, and the
+/// step stays `MaybeSent` (no ChainLock yet). The exemption is the
+/// repair's alone: plain coin control still refuses the lock's input, a
+/// user-locked coin makes the repair refuse, and a step that is not stuck
+/// is refused before anything is signed.
+#[test]
+fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
+    use platform_wallet::{AssetLockFundingType, AssetLockStatus};
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN / 2);
+    let s = &f.session;
+    let dashpay = s.dashpay(f.wallet);
+    let status = || {
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap()
+    };
+    let repair_draft = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
+    assert!(
+        matches!(repair_draft(), Err(EngineError::InvalidArgument(_))),
+        "never started: nothing is stuck"
+    );
+
+    // A funding call that released a signature and failed: MaybeSent.
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::IdentityRegistration,
+        identity_index: 0,
+        account: 0,
+    };
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            STEP.into(),
+            key,
+        ))
+        .unwrap();
+    assert!(
+        matches!(repair_draft(), Err(EngineError::InvalidArgument(_))),
+        "a call runs under the marker"
+    );
+    permit.signatures().note_released();
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(status(), Some(DispatchState::MaybeSent));
+    // Another funding's lock, Built and never sent, holds `a`.
+    f.track_lock(50, 3, &[a], AssetLockStatus::Built);
+    let plain = f.draft(1_000_000);
+    plain.set_source(CoinSource::Outpoints(vec![a])).unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(plain.estimate())),
+        SendFailure::OutpointUnavailable(a)
+    );
+
+    // A coin the user locked is not exempt: the repair refuses it.
+    f.engine
+        .block_on(s.lock_outpoints(f.wallet, vec![b]))
+        .unwrap();
+    let draft = repair_draft().unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.estimate())),
+        SendFailure::OutpointUnavailable(b)
+    );
+    f.engine
+        .block_on(s.unlock_outpoints(f.wallet, vec![b]))
+        .unwrap();
+
+    let draft = repair_draft().unwrap();
+    let seam = Arc::new(SelfSpendSeam {
+        session: Arc::clone(s),
+        wallet: f.wallet,
+        step: STEP,
+        seen: Default::default(),
+    });
+    *draft.broadcaster.lock().unwrap() = Some(seam.clone());
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    let out = f
+        .engine
+        .block_on(s.send_self_spend(&draft, STEP, grant))
+        .unwrap();
+    let txid: Txid = out.txid.parse().unwrap();
+    let (tx, spends) = seam.seen.lock().unwrap().take().expect("broadcast");
+    assert_eq!(tx.txid(), txid);
+    assert_eq!(
+        spends,
+        vec![ArtifactId::from_txid(&txid).0],
+        "recorded before the library saw it"
+    );
+    let mut inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    inputs.sort();
+    let mut every = vec![a, b];
+    every.sort();
+    assert_eq!(inputs, every, "every coin, the lock's input included");
+    assert_eq!(tx.output.len(), 1, "one output, no change");
+    let fee = COIN + COIN / 2 - tx.output[0].value;
+    assert!(fee > 0 && fee < 10_000, "{fee}");
+    let own = f.engine.block_on(s.on_runtime({
+        let (s, w, script) = (Arc::clone(s), f.wallet, tx.output[0].script_pubkey.clone());
+        async move {
+            let wallet = s.wallet(&w).await?;
+            let state = wallet.state().await;
+            let address =
+                dashcore::Address::from_script(&script, dashcore::Network::Regtest).unwrap();
+            Ok(crate::coins::wallet_owns(&state.core_wallet, &address))
+        }
+    }));
+    assert!(own.unwrap(), "to the wallet itself");
+
+    // Not ChainLocked: still MaybeSent, the self-spend standing.
+    assert_eq!(status(), Some(DispatchState::MaybeSent));
+    assert_eq!(
+        s.leases.call_step(f.wallet, STEP).self_spends,
+        vec![ArtifactId::from_txid(&txid).0]
+    );
+    // The wallet sees it ChainLocked: the step reads NotSent, once.
+    f.record_tx(
+        tx,
+        key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(
+            key_wallet::transaction_checking::BlockInfo::new(
+                2,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            ),
+        ),
+        true,
+    );
+    let (leases, w) = (Arc::clone(&s.leases), f.wallet);
+    let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+    assert!(f.engine.block_on(refreshed).unwrap());
+    assert_eq!(status(), Some(DispatchState::NotSent));
+    assert_eq!(
+        f.rec.resolved(),
+        vec![(STEP.to_owned(), DispatchResolution::NotSent)]
+    );
+}
+
+/// E0-04 §6.5 (C9), review of commit 7: the self-spend beats a lost lock
+/// only if no other spend of the wallet's coins is pending and it spends
+/// an input of every tracked row of the step. Repair refuses otherwise.
+#[test]
+fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::AssetLockStatus;
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let s = &f.session;
+    let repair = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
+    let refused = |r: StuckFundingRefusal| match repair() {
+        Err(EngineError::InvalidArgument(m)) => assert_eq!(m, r.to_string()),
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("not refused: {r:?}"),
+    };
+    f.stuck(STEP);
+
+    // A spend of the wallet's coins short of its ChainLock (here in the
+    // mempool) may be what the lost lock conflicts with.
+    let pending = dashcore::Transaction {
+        version: 2,
+        lock_time: 7,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            ..Default::default()
+        }],
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    let pending_id = pending.txid();
+    f.record_tx(pending.clone(), TransactionContext::Mempool, true);
+    refused(StuckFundingRefusal::SpendUnsettled(pending_id));
+    // In a block, not yet ChainLocked: still.
+    let block = BlockInfo::new(2, dashcore::BlockHash::all_zeros(), 0);
+    f.record_tx(pending.clone(), TransactionContext::InBlock(block), true);
+    refused(StuckFundingRefusal::SpendUnsettled(pending_id));
+    // An incoming payment spends none of the wallet's coins.
+    let incoming = dashcore::Transaction {
+        lock_time: 8,
+        ..pending.clone()
+    };
+    f.record_tx(incoming, TransactionContext::Mempool, false);
+    f.record_tx(pending, TransactionContext::InChainLockedBlock(block), true);
+    assert!(repair().is_ok());
+
+    // A tracked Broadcast lock of the step: the self-spend takes `a`, one
+    // of its inputs, so it conflicts.
+    let gone = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
+    f.track_lock(60, 0, &[gone, a], AssetLockStatus::Broadcast);
+    assert!(repair().is_ok());
+    // One whose every input the wallet saw spent: the self-spend would
+    // not conflict with it.
+    let lock = f.track_lock(61, 0, &[gone], AssetLockStatus::Broadcast);
+    refused(StuckFundingRefusal::LockInputsSpent(lock));
+}
+
+/// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
+/// unsent: never broadcast, its inputs free, no row.
+#[test]
+fn an_unrecorded_self_spend_is_released_unsent() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let s = &f.session;
+    f.stuck(STEP);
+    let draft = f
+        .engine
+        .block_on(s.stuck_funding_draft(f.wallet, STEP))
+        .unwrap();
+    let seam = Arc::new(SelfSpendSeam {
+        session: Arc::clone(s),
+        wallet: f.wallet,
+        step: STEP,
+        seen: Default::default(),
+    });
+    *draft.broadcaster.lock().unwrap() = Some(seam.clone());
+    let real = s.leases.journal.get();
+    let failing = Arc::new(super::tests::FakeJournal::default());
+    failing
+        .fail_self_spend
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    s.leases.journal.set(Some(failing));
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    let out = f.engine.block_on(s.send_self_spend(&draft, STEP, grant));
+    s.leases.journal.set(real);
+    assert!(matches!(out, Err(EngineError::Storage(_))), "{out:?}");
+    assert!(seam.seen.lock().unwrap().is_none(), "never broadcast");
+    assert_eq!(f.reserved(), 0, "its inputs released");
+    assert!(s.leases.call_step(f.wallet, STEP).self_spends.is_empty());
+    // The repair runs again once the journal records.
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    f.engine
+        .block_on(s.send_self_spend(&draft, STEP, grant))
+        .unwrap();
+    assert!(seam.seen.lock().unwrap().is_some());
 }
