@@ -722,11 +722,14 @@ fn funds_committed_after_bind(l: &Lease, step: &str) -> bool {
 }
 
 /// A definitely-unsent funding allows funding again: a Lock before the
-/// first signature (Cancelled → `NotSent`, the same step funds afresh), a
-/// not-ready rejection (refused before any marker), and Repair's ChainLocked
-/// self-spend (`NotSent`; discard is allowed, and a new step funds).
+/// first signature (Cancelled → `NotSent`, the same step funds afresh) and
+/// Repair's ChainLocked self-spend (`NotSent`; discard is allowed, and a
+/// new step funds). So does a funding the gate refused before its marker
+/// (here over an unresumed `Built` row): it never registered (`None`).
+/// A not-ready rejection after signing is not covered: Mode B at the pin
+/// cannot tell it (§2a.6, review M-2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_definitely_unsent_funding_allows_funding_again() {
+async fn an_unsent_or_never_started_funding_allows_funding_again() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
 
@@ -745,7 +748,7 @@ async fn a_definitely_unsent_funding_allows_funding_again() {
         .unwrap();
     assert_eq!(p.finish(true), FlowOutcome::Sent);
 
-    // A not-ready rejection: refused before any marker, so never registered.
+    // Refused by the gate before any marker, so never registered.
     src.set_rows(W, vec![row(1, 1, R::Built)]);
     t.refresh_funding(W).await;
     assert!(

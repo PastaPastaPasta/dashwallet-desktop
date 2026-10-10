@@ -438,7 +438,8 @@ recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at lo
     means the step's outcome is `MaybeSent`, not `Cancelled`.
 - **Signatures.** The vault gate ends the epoch at the lock, so every signer issued before fails `Locked` after it.
   The engine's signer adapters count the signatures they release during each call permit. The count is host-visible
-  and only grows (review GPT r2 10).
+  and only grows (review GPT r2 10). A signature is counted before the vault is asked for it, and the count closes
+  when the permit ends, so a signer kept past its permit signs nothing (§2a.6, review M-1).
 - **Outcome per call:**
   - `Sent` when the call returned Ok;
   - `Cancelled` only when the call failed (a signer `Locked`, or refused before it started), **released no signature
@@ -505,7 +506,9 @@ recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at lo
    - a top-up's `broadcast_unknown` offers no retry;
    - a restart after a withdrawal's `broadcast_unknown` offers no retry (H16);
    - `DispatchResolved` from row transitions, from DP1-05's adoption and from Repair's ChainLocked self-spend;
-   - a definitely-unsent funding (a Lock before signing, a not-ready rejection, a self-spend) allows funding again.
+   - a definitely-unsent funding (a Lock before signing, a self-spend) allows funding again, and so does a funding
+     refused before its marker (it never registered). Mode B at the pin cannot tell a not-ready rejection after
+     signing (§2a.6, review M-2).
 8. The Lock copy of §16.10 with its precedence:
    - the signed-before-broadcast barrier through the UI shows DEC-67's line, never a stop promise;
    - the "key held" lock state, with its mixing-only and Cross forms, and its Lock control (§4.6).
@@ -542,7 +545,7 @@ Mode B has no registered journal entries, so it derives every status from three 
 | Repair's self-spend of one of the lock's inputs is ChainLocked | `NotSent` (it can no longer confirm) |
 | a matching row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain` | `Sent` |
 | a matching row is `Built` or `Broadcast`, with or without a marker | `WillBeSent` (the catch-up and the deferred resume resend it) |
-| no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send | `NotSent` |
+| no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send (Mode B at the pin: the first only, §2a.6) | `NotSent` |
 | no marker and no matching row: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6) |
 | anything else: a marker, no row, no definite resolution | `MaybeSent`, possibly indefinitely |
 
@@ -576,7 +579,8 @@ call permit when its task lands.
 **What DP1-02 builds on.**
 - `CallPermit::funding_signer()` (a `CountingFundingSigner`) and `CallPermit::identity_signer(indices)`: every
   released signature and a `Locked` refusal count into the permit. Both are issued with the budget at 0, since the
-  permit's J step charged the quote. Only these count (`Lease::identity_signer` does not). A signature is counted
+  permit's J step charged the quote. Only these count (`Lease::identity_signer` and `Lease::funding_signer` do
+  not). A signature is counted
   before the vault is asked for it, and the count closes at the permit's end: a signer (or a clone of it) used after
   the end refuses `Locked`, and one in flight at the end makes the call `MaybeSent` (review M-1).
 - `NetworkSession::funding_call_permit(lease, label, amount, step, key)` (`Lease::call_permit_step` with
@@ -598,7 +602,8 @@ call permit when its task lands.
   into a one-shot `NameRegistration` lease that ends with the call. The pending label is the write's durable marker
   (DP1-03), so it takes a plain call permit, not a step marker.
 - D3: `dispatch.sqlite` schema 3 adds the append-only `funding_marker` and `self_spend` tables. The DEC-160
-  predicate counts a funding marker as a marker, and the DEC-163 `Sent` bundle includes it.
+  predicate is unchanged: a `funding_marker` row shares its `seq` with its `step_log` marker, which is why compaction
+  treats it as a marker. The DEC-163 `Sent` bundle includes it.
 - D4: the self-spend row is appended before the broadcast; no `NotSent` row is written. The step derives `NotSent`
   once the wallet holds the self-spend ChainLocked.
 - D5: the fee bound is snapshotted outside J and compared inside J (below for the re-check).
@@ -630,7 +635,9 @@ call permit when its task lands.
   stays untrusted is *unattributed*. While an unattributed row of a step's funding type stands that the step does not
   match by key, the step's ChainLocked self-spend reads `MaybeSent`, not `NotSent`, and Repair refuses it
   (`UnattributedLock`, `invalid_argument`): liveness, fail closed, until DP1-05's adoption attributes the row (or the
-  identity it created is registered). The step's matching rows read as before.
+  identity it created is registered). The step's matching rows read as before. The engine cannot tell such a row
+  from the wallet's own index-0 registration lock once that lock has left `Built`: while it is in flight, or if it
+  is abandoned unused, it blocks every other registration draft's Repair the same way.
 - The funding gate does not consult unattributed rows: blocking on them would block every registration of a
   restored wallet holding an unused recovered lock. So a draft at index k ≠ 0 whose marker is gone (a deleted
   journal) and whose row came back at index 0 reads `None` and may fund again until DP1-05 adopts the lock. Not fail
@@ -651,6 +658,19 @@ call permit when its task lands.
 - A resumable step that resolves `NotSent` emits no event (as before P2b). While a held tombstone of §5.5 is being
   watched, every J step re-checks it, at a cost linear in the entries.
 - `sign_psbt` does not check reserved coins (outside `TxDraft`).
+- §2a.5 row 4's second resolution, "the pin's `Rejected` arm untracked the row before any send", is not implemented
+  (review M-2): the pin offers no signal for it, and "no tracked row" alone is not `NotSent` (a sweep or a wallet's
+  removal leaves the same state). A funding call rejected not-ready after signing reads `MaybeSent`; Repair's
+  self-spend resolves it.
+- A catch-up resume that returned an error stops blocking the funding gate, as any returned attempt (review L-1).
+  That only strands the step's row until the next pass; it never double-pays, since the library re-reserves the
+  inputs of the rows it knows for its own coin selection.
+- A step's derived status can move again after it resolved: a later funding under the same draft key (or an
+  attribution that re-keys a row) may make a row match it, so a step that read `NotSent` can read `Sent` (and emit
+  `DispatchResolved` again) (review L-2). Fail closed: the move is towards "sent".
+- An unattributed row read after a step's self-spend `NotSent` was announced moves the step back to `MaybeSent`
+  with no `DispatchResolved` (only `LeaseChanged`): the retraction has no event of its own. Fail closed for the
+  engine's gates; a host that acted on the `NotSent` (a new draft) is not told.
 
 ## 3. Grants (dw-vault)
 

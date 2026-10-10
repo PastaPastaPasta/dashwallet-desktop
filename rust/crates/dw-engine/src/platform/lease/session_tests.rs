@@ -1356,6 +1356,7 @@ fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
         f.engine.block_on(identity.sign(&key, b"data")),
         Err(dpp::ProtocolError::ExternalSignerError(m)) if m == dw_vault::SignerError::Locked.to_string()
     ));
+    assert!(!identity.can_sign_with(&key), "the preflight asks nothing");
     assert_eq!(count.released(), 0);
     assert_eq!(
         f.engine

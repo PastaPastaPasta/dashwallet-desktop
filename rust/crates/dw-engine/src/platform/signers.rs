@@ -188,9 +188,11 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
     /// decrypt and derivation); a locked vault or any other signer error
     /// answers `false`, and the `sign` that follows reports the error. A
     /// `Locked` refusal is reported to the call permit's count here too
-    /// (review L-3): dpp may stop at the preflight, with no `sign`.
+    /// (review L-3): dpp may stop at the preflight, with no `sign`. Once
+    /// the call permit ended it answers `false` without asking the vault.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
+            && !self.count.as_ref().is_some_and(|c| c.closed())
             && self.identity_indices.iter().any(|&i| {
                 self.slot(i, key).is_some_and(|path| {
                     match self

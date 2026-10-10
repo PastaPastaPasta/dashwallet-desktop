@@ -219,6 +219,11 @@ impl SignatureCount {
         self.locked.load(Ordering::SeqCst)
     }
 
+    /// Whether the permit has ended: its signers sign nothing more.
+    pub(crate) fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
     /// A released signature, as a counting signer reports one (tests).
     #[cfg(test)]
     pub(crate) fn note_released(&self) {
@@ -373,6 +378,12 @@ impl Lease {
     /// call the same way, with the lease's own refusal. A step whose marker
     /// stands under another funding key (or none) is refused before the
     /// charge: `StepKeyMismatch`.
+    ///
+    /// A funding step's step id and key are not checked here: a Mode B
+    /// funding call takes its permit through
+    /// [`crate::NetworkSession::funding_call_permit`], which refuses a
+    /// step that is no registration funding step, or a key that is not
+    /// its draft's own (reviews M-3, M-4).
     pub async fn call_permit_step(
         &self,
         label: impl Into<String>,
