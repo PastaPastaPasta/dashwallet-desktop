@@ -14,7 +14,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# ---- dashpay/platform, pinned to v5.0-dev@bc41f1bc23 (DESIGN.md R3) ----
+# ---- dashpay/platform, pinned to #5307 (v5.1 move)@f475f72a11 (DESIGN.md R3, DEC-168) ----
 # Cargo.lock was seeded from the platform checkout's lock at this revision so
 # the shared transitive graph (grovedb, rusqlite, tokio, ...) resolves to the
 # versions upstream builds and tests with.
