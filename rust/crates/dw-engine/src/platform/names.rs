@@ -1015,7 +1015,8 @@ impl DashPay {
 
     /// `register_name` under a lease the caller holds (DP1-02's
     /// registration flow), on the runtime the caller already runs on.
-    pub async fn register_name_for_flow(
+    #[expect(dead_code, reason = "DP1-02's registration flow calls it")]
+    pub(crate) async fn register_name_for_flow(
         session: &Arc<NetworkSession>,
         wallet_id: WalletId,
         identity: Identifier,
