@@ -24,7 +24,10 @@ platform-wallet = { git = "https://github.com/dashpay/platform", rev = "f475f72a
 platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", default-features = false, features = ["sqlite", "secrets"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["wallet", "dashpay-contract", "dpns-contract"] }
-dpp = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3" }
+# `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
+# but its manifest does not enable the feature (the platform workspace gets it by
+# feature unification).
+dpp = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["ed25519-dalek"] }
 dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3" }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it.
