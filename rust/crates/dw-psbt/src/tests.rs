@@ -200,6 +200,23 @@ async fn sighash_types_other_than_all_are_refused() {
     assert_eq!(sign(&mut all, &p, &signer()).await.unwrap(), 2);
 }
 
+/// Values that are no standard sighash type at all are refused too, not
+/// signed as `SIGHASH_ALL`.
+#[tokio::test]
+async fn non_standard_sighash_types_are_refused() {
+    for raw in [0x00, 0x04, 0x80, 0x101, 0xdddd_dddd] {
+        let mut psbt = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+        psbt.inputs[0].sighash_type = Some(PsbtSighashType::from_u32(raw));
+        let p = paths(&psbt);
+        let err = sign(&mut psbt, &p, &signer()).await.unwrap_err();
+        assert!(
+            matches!(err, PsbtError::Signing { index: 0, .. }),
+            "{raw:#x}: {err}"
+        );
+        assert!(psbt.inputs[0].partial_sigs.is_empty());
+    }
+}
+
 /// Review H1: a `witness_utxo` (no segwit on Dash, value not committed to)
 /// never stands in for the previous transaction, so it can neither feed the
 /// fee nor make an input signable.

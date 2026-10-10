@@ -306,8 +306,8 @@ pub fn estimated_size(psbt: &PartiallySignedTransaction) -> usize {
 pub type KeyPaths = BTreeMap<usize, DerivationPath>;
 
 /// Signs every P2PKH input listed in `paths` that is not yet complete, with
-/// `SIGHASH_ALL` (or the input's own sighash type), and returns how many
-/// inputs got a signature. With a low-R signer (the vault's, like Dash
+/// `SIGHASH_ALL` (an input asking for another sighash type is refused), and
+/// returns how many inputs got a signature. With a low-R signer (the vault's, like Dash
 /// Core's `CKey::Sign`) the signatures equal `walletprocesspsbt`'s. Each signature is checked against the input's
 /// script before it is stored.
 pub async fn sign<S: Signer>(

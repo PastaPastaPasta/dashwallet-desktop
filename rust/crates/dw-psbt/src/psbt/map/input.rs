@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 //
 // Vendored from rust-dashcore key-wallet/src/psbt/map/input.rs @ 40268cc0
-// (see ../../../VENDORED.md); taproot fields, combine, `FromStr` and serde
-// removed.
+// (see ../../../VENDORED.md); taproot fields, combine and serde removed, along
+// with `FromStr`, `From<TapSighashType>` and the `ecdsa_hash_ty` and
+// `taproot_hash_ty` helpers on `Input`; `PsbtSighashType` rewritten to build
+// on the sighash types of later rust-dashcore revs (no `taproot_hash_ty`).
 
 use core::convert::TryFrom;
 use core::fmt;

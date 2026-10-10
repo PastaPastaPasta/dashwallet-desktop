@@ -190,3 +190,42 @@ fn sighash_type_text_matches_upstream() {
         );
     }
 }
+
+/// An explicit version-0 global pair (written back without it, as upstream
+/// does) parses the same in both.
+#[test]
+fn explicit_global_version_zero_matches_upstream() {
+    let mut bytes = vector("psbt/unsigned.b64");
+    // PSBT_GLOBAL_VERSION = 0: <key len 1> <type 0xfb> <value len 4> <0u32>.
+    let pair = [0x01, 0xfb, 0x04, 0, 0, 0, 0];
+    bytes.splice(5..5, pair);
+    assert_agree("global version 0", &bytes);
+    let parsed = Vendored::deserialize(&bytes).unwrap();
+    assert_eq!(parsed.version, 0);
+    assert_eq!(parsed.serialize(), vector("psbt/unsigned.b64"));
+    // Any other version is refused by both.
+    bytes[5 + 3] = 1;
+    assert_agree("global version 1", &bytes);
+    assert!(Vendored::deserialize(&bytes).is_err());
+}
+
+/// The one deliberate difference: a taproot field upstream parses into
+/// `tap_internal_key` stays a raw pair in `unknown` here, same key and value.
+#[test]
+fn taproot_field_from_upstream_is_kept_as_unknown() {
+    let mut old =
+        upstream::PartiallySignedTransaction::deserialize(&vector("psbt/unsigned.b64")).unwrap();
+    let secp = Secp256k1::new();
+    let sk = secp256k1::SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let (xonly, _) = secp256k1::Keypair::from_secret_key(&secp, &sk).x_only_public_key();
+    old.inputs[0].tap_internal_key = Some(xonly);
+
+    let new = Vendored::deserialize(&old.serialize()).unwrap();
+    let key = crate::psbt::raw::Key {
+        type_value: 0x17, // PSBT_IN_TAP_INTERNAL_KEY
+        key: vec![],
+    };
+    assert_eq!(new.inputs[0].unknown[&key], xonly.serialize().to_vec());
+    // Same pairs, so the same bytes up to where the pair is written.
+    assert_eq!(new.serialize().len(), old.serialize().len());
+}

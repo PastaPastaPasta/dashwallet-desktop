@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 //
 // Vendored from rust-dashcore key-wallet/src/psbt/raw.rs @ 40268cc0
-// (see ../../VENDORED.md); serde support removed.
+// (see ../../VENDORED.md); serde support and the unused `Deserialize for Pair`
+// removed.
 
 //! Raw PSBT key-value pairs.
 //!
