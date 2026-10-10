@@ -83,7 +83,25 @@ all in `dw-psbt`. Options:
 Default: option 1, as its own task before the pin move merges; the manager decides. The measurement used an
 uncommitted type-only stand-in.
 
-### 1.3 Not broken
+### 1.3 Before this branch merges
+
+The branch pins the plain #5307 head, an open PR's head that a force-push can drop, and that head lacks #4978 (§2).
+Merging waits for:
+
+- the re-pin to the fork branch (§5 step 1), once pasta approves the push;
+- the PSBT decision (§1.2);
+- the fixtures and vectors that name `bc41f1bc23` as the desktop's pin (`dw-engine/tests/fixtures/README.md`, the
+  DP1-01 and DP1-03 vectors and their generators, `keys_policy.rs`, and the string `dp1_03_names.rs` asserts). Upstream
+  identity key derivation and `identity_public_key` changed between the pins (4 files), so those vectors' rules need a
+  re-check at the new pin, not only a new revision string. They pass at the fork pin today.
+
+The port review found the signing paths equivalent: low-R signing, recoverable signatures, the compact-signature
+header and the digests are unchanged. One behaviour change in BLS: the dash-pkc legacy decoder masks two flag bits in
+the first byte, as Core's does, where blsful rejected them. It accepts a few more encodings of the same points. The new
+test `verifies_with_the_legacy_form_of_the_operator_key` covers the legacy path. A known-answer vector from a real
+DSQ or DSTX is still missing.
+
+### 1.4 Not broken
 
 No desktop crate calls `masternode_list_engine` (#1094) or the SPV runtime errors #5307 changed. platform-wallet,
 dash-sdk and dpp needed nothing beyond the `dpp/ed25519-dalek` feature (#5307's platform-wallet uses it but relies on
@@ -217,7 +235,7 @@ fork carries the commit.
 2. The dash-spv fix is not in `8fe0a381`. Until it merges upstream and platform re-pins, the desktop graph needs a
    `[patch."https://github.com/dashpay/rust-dashcore"]` to the `8fe0a381`-based branch (`67770b9fc`) on pasta's
    rust-dashcore fork. Publishing it is a manager decision (ROADMAP E0-10c, DEC-09).
-3. The PSBT decision (§1.2) gates the pin move merging.
+3. The PSBT decision and the vector re-check (§1.2, §1.3) gate the pin move merging.
 4. E0-10b's `trust.rs` then requires `status == Verified`. Enforcement (DP3-04 / H-09 full mode) still waits for #1117.
 
 ## 6. Open questions (defaults in force)
