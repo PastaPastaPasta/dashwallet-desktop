@@ -1,0 +1,155 @@
+# E0-10b: the layered quorum provider (`platform/trust.rs`)
+
+Status: design notes for ROADMAP row E0-10b (DASHPAY §2.2 rules 1–4 and 6). It ships in the degraded mode of §2.2
+(DEC-168): E0-10a failed R7 at platform's pin, and full enforcement (DP3-04 / H-09) waits for chain anchoring of
+quorum lists (dashpay/rust-dashcore#1117).
+
+Counterpart (ROADMAP §0, second-agent review): iOS builds its SDK with `TrustedHttpContextProvider`
+(`rs-sdk-ffi/src/sdk.rs`, `dash_sdk_create_trusted`) or a host callback provider (`rs-sdk-ffi/src/context_provider.rs`,
+`CallbackContextProvider`). Neither consults SPV. The SPV lookup is platform-wallet's
+`SpvRuntime::get_quorum_public_key_with_status` (platform#5366, on the fork pin), which E0-10b is the first to call.
+
+## 1. Where it sits
+
+The SDK calls `ContextProvider::get_quorum_public_key(type, hash, core_chain_locked_height)` synchronously from a
+tokio worker, once per proof it verifies, for reads and for the result proofs of writes. An `Err` makes the proof
+fail verification (`drive_proof_verifier::Error::ContextProviderError`). The fetch is never accepted unproven.
+
+```
+SdkBuilder::with_context_provider(SharedContext)
+  SharedContext ── quorum keys ──▶ TrustProvider (trust.rs)
+                │                    ├─ SpvQuorums: SpvRuntime::get_quorum_public_key_with_status (+ cache)
+                │                    ├─ TrustedQuorums: LazyTrustedContext (context.rs, unchanged)
+                │                    ├─ Provenance (E0-06): fallback latch, dp_trust_verified
+                │                    └─ masternode sync flag (SessionHub progress)
+                └─ contracts, token configs, activation height ──▶ LazyTrustedContext (rule 6)
+```
+
+The SDK is built before the wallet manager, so `SpvRuntime` and `Provenance` are attached right after the manager
+exists (`TrustProvider::attach`). A lookup before that serves no fallback: the latch cannot be set yet, so it fails
+closed.
+
+## 2. Modes
+
+| Mode | When | Quorum key source | `QuorumSource` |
+|---|---|---|---|
+| `Degraded` | **default** (DEC-168) | the trusted service; when SPV holds the quorum, its key is compared, and a mismatch refuses. A `Verified` SPV key is served when the service is unreachable | `Trusted` |
+| `Enforcing` | R7 full mode (H-09 makes it the default once #1117 lands); selectable in tests | SPV `Verified` only; the trusted service before masternode sync, for reads | `Spv`, or `TrustedFallback` before masternode sync |
+| trusted-only toggle | developer setting `trust.trusted_only` (global, app.sqlite) | the trusted service only; SPV is not consulted | `Trusted` |
+
+The toggle wins over the mode. It exists to compare behaviour with iOS and to work around a broken SPV state during
+development. It is not offered as a user setting.
+
+## 3. One lookup
+
+`SpvQuorums::lookup` answers one of: `Verified(key)`, `Held(key, status)` (any other status), `Absent` (not found,
+or SPV not started). The status mapping, from the E0-10c doc (§5 step 4, §5.1):
+
+| dash-spv status | Treated as | Why |
+|---|---|---|
+| `Verified` | `Verified` | the only status where dash-spv checked the commitment against the members it derives (§5 step 4) |
+| `Skipped(MissedList)` | `Held` | transient during initial sync; #1150 makes the first quorum after a start `Verified` on arrival |
+| `Skipped(NotMarkedForVerification)` | `Held` | a quorum that rotated out before the client's start height (§5.1). Errs strict: never `Verified` without verification |
+| `Unknown` | `Held` | not verified yet |
+| `Invalid` | refusal | the lookup never returns it (platform-wallet skips invalid entries); if it ever does, SPV has judged the quorum invalid |
+
+A `Held` key is compared with the trusted key (rule 4 does not depend on the status), but it never counts as
+SPV-verified. So a lying peer can make Platform reads refuse (availability), and can never make data count as
+verified.
+
+**Degraded** (default):
+
+1. `t` = trusted key (may fail: offline, DNS).
+2. `Verified(k)`: if `t` is known and `t != k`, refuse (mismatch). Otherwise serve `k`, SPV-verified.
+3. `Held(k, _)`: `t` is required; `k != t` refuses; otherwise serve `t` behind the latch, unverified.
+4. `Absent`: `t` is required; serve `t` behind the latch, unverified.
+
+**Enforcing**:
+
+1. `Verified(k)`: serve `k`. The trusted service is not consulted (rule 2).
+2. Before masternode sync: `t` is required; a `Held(k)` with `k != t` refuses; serve `t` behind the latch, unverified.
+3. After masternode sync (rule 3): never the trusted service. Wait up to `unknown_quorum_wait` (default 2 minutes),
+   polling SPV once a second for `Verified`; serve it if it comes, otherwise fail closed. A quorum that failed closed
+   fails at once for `FAILED_CLOSED_FOR` (30 s), so the SDK's retries on other DAPI nodes (which cite the same quorum)
+   do not each wait another 2 minutes. Concurrent lookups of one quorum share one wait. "Rebuild the lookup from
+   storage" is not offered by platform-wallet's API at the pin; a follow-up if the wait proves too short.
+
+**Trusted-only**: serve `t` behind the latch, unverified.
+
+"Masternode sync" is the masternode phase of `SyncTracker` (`done()`: `Synced`, or `WaitForEvents` with the target
+reached), fed by `SessionHub::on_progress`. It is sticky for the session: once SPV has synced, a later restart of SPV
+does not reopen the fallback (rule 3: "once SPV is synced, an unknown quorum never falls back").
+
+**Behind the latch** means `Provenance::fallback_in_use()` returned `Ok` first: the latch is committed and a full WAL
+checkpoint made it power-loss durable (DEC-135, DEC-139, DEC-143). On `Err` (a writer holds app.sqlite, a reader
+keeps the checkpoint from completing, no provenance attached yet) the lookup fails: the trusted key is not served.
+The latch is blocking SQLite work, done under `block_in_place` on the multi-thread engine runtime.
+
+**Cache (rule 1).** `Verified` SPV keys are cached by `(type, hash)`; the key of a mined quorum commitment does not
+change. Misses run the async SPV lookup as a task on the runtime and wait for it (`dash_async::block_on`, the call the
+trusted provider uses for its own refetch). The cache holds at most 256 entries and is cleared when full. Nothing else
+is cached, except the failed-closed window above.
+
+**Mismatch (rule 4).** The lookup fails with `ContextProviderError::InvalidQuorum` carrying a fixed marker.
+`PlatformError::from(dash_sdk::Error)` maps it to `platform.trust_mismatch` (directly, or wrapped in
+`Error::Proof(ContextProviderError)`), and the engine emits `Notice{PlatformTrustMismatch}` once per quorum hash per
+session (an engine-side notice code: the frozen bindings do not carry it yet). Other quorum-key failures inside a
+proof map to `platform.context_unavailable`, not `proof_invalid`: the proof was not judged.
+
+## 4. Positive provenance: `record_verified`
+
+A fetch counts as SPV-verified when every quorum key its proofs used was `Verified` by SPV (and matched the trusted
+key where both were consulted), and it used at least one. The provider cannot see which entity a proof is for, so the
+engine runs a fetch it wants to record inside `trust::scoped(fut)`, a tokio task-local that each lookup updates.
+A lookup outside a scope (platform-wallet's own sync loops), or in a task the SDK spawned, updates nothing, so a scope
+can only ever under-count verification: it fails closed.
+
+## 5. Re-fetching unverified entities after sync
+
+Once the latch is set and masternode sync completes, a session task re-fetches what the read models show as
+unverified (the kinds with consumers today):
+
+| Kind | Fetch | Recorded when |
+|---|---|---|
+| `identity` | `Identity::fetch` | it verified and its public keys equal the library's |
+| `profile` | the DashPay `profile` document of the identity | it verified and the fields shown equal the library's |
+| `dpns_label` | `Sdk::resolve_dpns_name` | it verified and resolves to the identity holding it |
+
+A verified fetch that differs from what the library holds records nothing: the library's own sync replaces the data,
+and the next run records it. The task runs at the sync transition and then every 10 minutes while unverified entities
+remain and the session is open. `contact_request` and `payment` records are left to their consumers (DP2's read
+models, DP3-04's gate), which re-fetch through the same `scoped`.
+
+In the degraded mode this works the same way: with #1150 the Platform quorums are `Verified` on first ask, so most
+re-fetches record.
+
+## 6. Writes (rule 2)
+
+In the degraded mode writes proceed (rule 5 is suspended). In `Enforcing`, writes must wait for masternode sync.
+`TrustProvider::writes_wait()` answers that; wiring it into the write flows (registration, top-up, profile and name
+writes) belongs to H-09, when `Enforcing` becomes reachable. A gate at the provider would come too late: the state
+transition is already broadcast when its result proof is verified.
+
+## 7. Status
+
+`DashPay::sync_status` is filled from what exists: the bring-up status, the contact-crypto queue, the loops, and
+`quorum_source` (§2). `last_pass` stays `None` until a sync-pass report exists. `NetworkSession::quorum_source()` reads
+the same value without a wallet.
+
+## 8. Tests (T0, with fake SPV and trusted sources over a real app.sqlite)
+
+| Rule | Test |
+|---|---|
+| 1 | a `Verified` SPV key is served and cached (one SPV call for two lookups) |
+| 2 | Enforcing, before sync: the trusted key is served, the latch is on file, the source is `TrustedFallback` |
+| 2 | the fallback is used only before sync: after sync the trusted service is never called |
+| 3 | after sync an unknown quorum waits, then fails closed; a retry within the window fails at once; a key that turns `Verified` during the wait is served |
+| 4 | a mismatch refuses in both modes, maps to `platform.trust_mismatch`, and emits one notice per quorum |
+| 4 | a forged trusted key with SPV holding the real one refuses every lookup, so every DashPay read refuses |
+| latch | a held writer, and a checkpoint a reader blocks, refuse the fallback (nothing served) |
+| status map | `Skipped(*)` and `Unknown` count as held (compared, never verified); `Invalid` refuses |
+| degraded | SPV `Verified` + equal: served and verified; trusted unreachable + SPV `Verified`: served |
+| toggle | trusted-only never consults SPV and reports `Trusted` |
+| §4 | a scope records only when every lookup was SPV-verified; no lookup records nothing |
+| §5 | the post-sync re-fetch records equal, verified entities and skips differing ones |
+| §7 | `sync_status().quorum_source` per mode |
