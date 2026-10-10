@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dw_appdb::dispatch::{DiskState, DispatchRow, Registered, StepRow};
+use dw_appdb::dispatch::{
+    DiskState, DispatchRow, Registered, Resolution, StepEvent, StepLogRow, StepRow,
+};
 use tokio::runtime::Handle;
 use tokio::time::Instant;
 
@@ -212,8 +214,6 @@ fn budget(lease: &Lease, purpose: BudgetPurpose) -> Option<(u64, u64)> {
 
 /// A row: (wallet, txid) → (origin lease, 0 unsent / 1 dispatching).
 type Rows = HashMap<([u8; 32], [u8; 32]), (LeaseId, u8)>;
-/// A step marker: (wallet, step id, artifact).
-type Step = ([u8; 32], String, [u8; 32]);
 
 /// A journal with injected faults (§12 "Journal").
 #[derive(Default)]
@@ -222,12 +222,21 @@ pub(super) struct FakeJournal {
     /// 0: ok; 1: lost (nothing written, error); 2: durable, then an error.
     pub(super) dispatch_fault: AtomicU64,
     pub(super) fail_step: AtomicBool,
+    /// A `NotSent` row: lost (nothing written, error).
     pub(super) fail_resolve: AtomicBool,
     pub(super) panic_resolve: AtomicBool,
+    /// A `NotSent` row: durable, then an error.
+    pub(super) resolve_durable_err: AtomicBool,
+    /// A `Sent` row: lost.
+    pub(super) fail_sent: AtomicBool,
+    /// A `Sent` row: durable, then an error.
+    pub(super) sent_durable_err: AtomicBool,
+    pub(super) panic_sent: AtomicBool,
     /// Real-time stall of every write (row, `Dispatching`, step), in ms.
     pub(super) stall_ms: AtomicU64,
     rows: Mutex<Rows>,
-    steps: Mutex<Vec<Step>>,
+    /// `step_log`, append-only (DEC-154).
+    log: Mutex<Vec<StepLogRow>>,
 }
 
 impl JournalBackend for FakeJournal {
@@ -281,32 +290,55 @@ impl JournalBackend for FakeJournal {
         if self.fail_step.load(Ordering::SeqCst) {
             return Err("injected step failure".into());
         }
-        self.steps
-            .lock()
-            .unwrap()
-            .push((*wallet, step.to_owned(), *artifact));
+        let mut log = self.log.lock().unwrap();
+        let stands = dw_appdb::dispatch::standing(&log)
+            .iter()
+            .any(|s| s.wallet == *wallet && s.artifact == *artifact && s.step_id == step);
+        if !stands {
+            log.push(StepLogRow {
+                wallet: *wallet,
+                artifact: *artifact,
+                event: StepEvent::Marked(step.to_owned()),
+                at: 0,
+            });
+        }
         Ok(())
     }
 
-    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String> {
+    fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         self.stall();
-        if self.fail_resolve.load(Ordering::SeqCst) {
+        let not_sent = r == Resolution::NotSent;
+        if not_sent && self.fail_resolve.load(Ordering::SeqCst)
+            || !not_sent && self.fail_sent.load(Ordering::SeqCst)
+        {
             return Err("injected resolve failure".into());
         }
-        assert!(
-            !self.panic_resolve.load(Ordering::SeqCst),
-            "injected resolve panic"
-        );
-        self.steps
-            .lock()
-            .unwrap()
-            .retain(|(w, _, a)| w != wallet || a != artifact);
+        let panic = if not_sent {
+            &self.panic_resolve
+        } else {
+            &self.panic_sent
+        };
+        assert!(!panic.load(Ordering::SeqCst), "injected resolve panic");
+        self.log.lock().unwrap().push(StepLogRow {
+            wallet: *wallet,
+            artifact: *artifact,
+            event: StepEvent::Resolved(r),
+            at: 0,
+        });
+        let durable_err = if not_sent {
+            &self.resolve_durable_err
+        } else {
+            &self.sent_durable_err
+        };
+        if durable_err.load(Ordering::SeqCst) {
+            return Err("injected: durable, then an error".into());
+        }
         Ok(())
     }
 
     fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
         self.rows.lock().unwrap().retain(|(w, _), _| w != wallet);
-        self.steps.lock().unwrap().retain(|(w, _, _)| w != wallet);
+        self.log.lock().unwrap().retain(|r| r.wallet != *wallet);
         Ok(())
     }
 }
@@ -338,19 +370,16 @@ impl FakeJournal {
                 dispatched_at: None,
             })
             .collect();
-        let steps = self
-            .steps
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(wallet, step_id, artifact)| StepRow {
-                wallet: *wallet,
-                step_id: step_id.clone(),
-                artifact: *artifact,
-                at: 0,
-            })
-            .collect();
+        let steps: Vec<StepRow> = dw_appdb::dispatch::standing(&self.log.lock().unwrap());
         (rows, steps)
+    }
+
+    /// Whether `step`'s marker of `artifact` stands on disk now, as the
+    /// next process would read it.
+    pub(super) fn stands(&self, wallet: &WalletId, artifact: &ArtifactId, step: &str) -> bool {
+        dw_appdb::dispatch::standing(&self.log.lock().unwrap())
+            .iter()
+            .any(|r| r.wallet == wallet.0 && r.artifact == artifact.0 && r.step_id == step)
     }
 }
 
@@ -1729,9 +1758,9 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
-    fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<(), String> {
+    fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         self.db
-            .resolve_unsent(wallet, artifact)
+            .resolve(wallet, artifact, r, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -2107,7 +2136,18 @@ async fn r1_f2_a_marker_write_never_settles_a_sent_artifact() {
     until(|| committing(&t, "t", a)).await;
     t.note_seen(W, a);
     assert_eq!(running.finish(Outcome::NotSent), Settlement::Sent);
-    resend(copy.await.unwrap()).finish(Outcome::Sent);
+    // DEC-154: the copy waits for the artifact's Sent row; it is handed
+    // off only once both markers stand on disk.
+    let v = match copy.await.unwrap() {
+        Verdict::Deferred => {
+            until(|| j.load().1.iter().all(|s| s.sent)).await;
+            t.admit(step_copy(&l, a, "t")).await
+        }
+        v => v,
+    };
+    assert!(j.stands(&W, &a, "s") && j.stands(&W, &a, "t"));
+    assert!(j.load().1.iter().all(|s| s.sent));
+    resend(v).finish(Outcome::Sent);
     assert_eq!(j.load().1.len(), 2, "both markers are kept");
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
     assert_eq!(
@@ -2116,8 +2156,9 @@ async fn r1_f2_a_marker_write_never_settles_a_sent_artifact() {
     );
 }
 
-/// Review of r1 (fix round): seen sent while its resolution is being
-/// written, an artifact keeps its charge and gets its marker back.
+/// Review of r1 (fix round), DEC-154: seen sent while its resolution is
+/// being written, an artifact keeps its charge, and its Sent row keeps its
+/// marker standing over the NotSent row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r1_f2_an_artifact_seen_sent_during_its_resolution_keeps_its_marker() {
     let (t, rec) = table();
@@ -2130,7 +2171,9 @@ async fn r1_f2_an_artifact_seen_sent_during_its_resolution_keeps_its_marker() {
     until(|| resolving(&t, a)).await;
     t.note_seen(W, a);
     assert_eq!(finish.await.unwrap(), Settlement::MaybeOut);
-    assert_eq!(j.load().1.len(), 1, "the marker is written again");
+    // DEC-154: the Sent row makes the marker stand over the NotSent row.
+    until(|| j.load().1.len() == 1).await;
+    assert!(j.load().1[0].sent);
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
     assert_eq!(
         rec.resolved(),
@@ -2197,4 +2240,444 @@ async fn r1_f2_a_panicking_resolution_is_retried() {
         rec.resolved()[0],
         (a.to_string(), DispatchResolution::NotSent)
     );
+}
+
+/// Sol r2 R2-F1's probes (DEC-154): a file-backed `dispatch.sqlite` whose
+/// `NotSent` and `Sent` writes can be held, and which injects one fault.
+struct R2Journal {
+    db: dw_appdb::dispatch::DispatchJournal,
+    path: std::path::PathBuf,
+    fault: R2Fault,
+    sent_writes: AtomicU64,
+    resolving: AtomicBool,
+    sending: AtomicBool,
+    /// (`NotSent` released, `Sent` released).
+    gate: Mutex<(bool, bool)>,
+    wake: std::sync::Condvar,
+    _dir: tempfile::TempDir,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum R2Fault {
+    None,
+    /// The first `Sent` write fails before writing.
+    SentLost,
+    /// The `NotSent` write commits, then reports an error.
+    NotSentDurableThenError,
+    /// The `Sent` write is held until released.
+    SentHeld,
+}
+
+impl R2Journal {
+    fn new(fault: R2Fault) -> Arc<Self> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        let dw_appdb::dispatch::JournalOpen::Ready(db) =
+            dw_appdb::dispatch::DispatchJournal::open(&path, 0).unwrap()
+        else {
+            panic!("a fresh journal");
+        };
+        Arc::new(Self {
+            db,
+            path,
+            fault,
+            sent_writes: AtomicU64::new(0),
+            resolving: AtomicBool::new(false),
+            sending: AtomicBool::new(false),
+            gate: Mutex::new((false, fault != R2Fault::SentHeld)),
+            wake: std::sync::Condvar::new(),
+            _dir: dir,
+        })
+    }
+
+    fn release(&self, sent: bool) {
+        let mut g = self.gate.lock().unwrap();
+        if sent {
+            g.1 = true;
+        } else {
+            g.0 = true;
+        }
+        self.wake.notify_all();
+    }
+
+    fn wait(&self, sent: bool) {
+        let mut g = self.gate.lock().unwrap();
+        while !(if sent { g.1 } else { g.0 }) {
+            g = self.wake.wait(g).unwrap();
+        }
+    }
+
+    /// What a reopen of the file loads.
+    fn reopen(
+        &self,
+    ) -> (
+        Vec<DispatchRow>,
+        Vec<StepRow>,
+        dw_appdb::dispatch::DispatchJournal,
+    ) {
+        let dw_appdb::dispatch::JournalOpen::Ready(db) =
+            dw_appdb::dispatch::DispatchJournal::open(&self.path, 1).unwrap()
+        else {
+            panic!("the journal reopens");
+        };
+        let (rows, steps) = db.load().unwrap();
+        (rows, steps, db)
+    }
+}
+
+struct R2Release(Arc<R2Journal>);
+
+impl Drop for R2Release {
+    fn drop(&mut self) {
+        self.0.release(false);
+        self.0.release(true);
+    }
+}
+
+impl JournalBackend for R2Journal {
+    fn register(
+        &self,
+        wallet: &[u8; 32],
+        txid: &[u8; 32],
+        origin: &LeaseId,
+        process: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<Registered, String> {
+        self.db
+            .register(wallet, txid, origin, process, payload, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn mark_dispatching(&self, wallet: &[u8; 32], txid: &[u8; 32]) -> Result<bool, String> {
+        self.db
+            .mark_dispatching(wallet, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<(), String> {
+        self.db
+            .insert_step(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
+        if r == Resolution::NotSent {
+            self.resolving.store(true, Ordering::SeqCst);
+            self.wait(false);
+            self.db
+                .resolve(wallet, artifact, r, 0)
+                .map_err(|e| e.to_string())?;
+            if self.fault == R2Fault::NotSentDurableThenError {
+                return Err("injected: durable, then an error".into());
+            }
+            return Ok(());
+        }
+        let n = self.sent_writes.fetch_add(1, Ordering::SeqCst);
+        self.sending.store(true, Ordering::SeqCst);
+        if self.fault == R2Fault::SentLost && n == 0 {
+            return Err("injected: lost before writing".into());
+        }
+        self.wait(true);
+        self.db
+            .resolve(wallet, artifact, r, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
+        self.db.erase_wallet(wallet).map_err(|e| e.to_string())
+    }
+}
+
+/// Sol r2's interleaving: a step First settles definitely unsent while its
+/// `NotSent` write is held; the artifact is seen sent meanwhile; then the
+/// write is released. Returns the table, journal and lease.
+async fn r2_seen_during_resolution(
+    fault: R2Fault,
+) -> (
+    Arc<LeaseTable>,
+    Arc<Recorder>,
+    Arc<R2Journal>,
+    Lease,
+    ArtifactId,
+) {
+    let (t, rec) = table();
+    let j = R2Journal::new(fault);
+    t.load_journal(Some(j.clone()), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(240);
+    let p = first(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
+    assert_eq!(j.db.load().unwrap().1.len(), 1);
+    let finish = tokio::task::spawn_blocking(move || p.finish(Outcome::NotSent));
+    until(|| j.resolving.load(Ordering::SeqCst)).await;
+    t.note_seen(W, a);
+    j.release(false);
+    assert_eq!(finish.await.unwrap(), Settlement::MaybeOut);
+    assert_eq!(t.dispatch_status(W, a), Some(DispatchState::Sent));
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((100, 10)));
+    assert_eq!(
+        rec.resolved(),
+        vec![(a.to_string(), DispatchResolution::Sent)]
+    );
+    (t, rec, j, l, a)
+}
+
+/// After a reopen of the file, under a dead lease, the step still reads as
+/// possibly dispatched: its marker stands and the artifact reads `Sent`.
+async fn r2_evidence_survives_a_reopen(j: &R2Journal, a: ArtifactId) {
+    let (rows, steps, db) = j.reopen();
+    assert_eq!(steps.len(), 1, "the durable marker stands");
+    assert!(steps[0].sent);
+    let (reloaded, _) = table();
+    reloaded.load_journal(Some(Arc::new(db)), rows, steps);
+    let dead = begin(&reloaded, W, 0, 100, 0).await.unwrap();
+    reloaded.lock(RevokeCause::Lock, status).await;
+    assert_eq!(reloaded.dispatch_status(W, a), Some(DispatchState::Sent));
+    resend(
+        reloaded
+            .admit(step_copy(&dead, a, "withdrawal/d/submit"))
+            .await,
+    )
+    .finish(Outcome::Sent);
+    // Different bytes for the step read as possibly dispatched.
+    assert!(matches!(
+        reloaded
+            .admit(step_copy(&dead, art(241), "withdrawal/d/submit"))
+            .await,
+        Verdict::Refused {
+            step_possibly_dispatched: true,
+            ..
+        }
+    ));
+}
+
+/// Sol r2 R2-F1 probe 1: while the `Sent` row is held, with the `NotSent`
+/// row durable and no marker standing on disk, a copy waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_f1_a_copy_waits_while_the_sent_row_is_held() {
+    let (t, _, j, l, a) = r2_seen_during_resolution(R2Fault::SentHeld).await;
+    let _release = R2Release(Arc::clone(&j));
+    until(|| j.sending.load(Ordering::SeqCst)).await;
+    assert!(
+        j.db.load().unwrap().1.is_empty(),
+        "the NotSent row is durable"
+    );
+    assert_eq!(
+        t.admit(step_copy(&l, a, "withdrawal/d/submit")).await,
+        Verdict::Deferred
+    );
+    j.release(true);
+    until(|| j.db.load().unwrap().1.len() == 1).await;
+    let copy = resend(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
+    t.log_transport(a, copy.id(), Some("withdrawal/d/submit".into()));
+    copy.finish(Outcome::Sent);
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+    r2_evidence_survives_a_reopen(&j, a).await;
+}
+
+/// Sol r2 R2-F1 probe 2: a `Sent` row lost before writing stays owed; the
+/// next copy writes it before it transports, and a reopen finds the
+/// evidence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_f1_a_lost_sent_row_is_written_before_any_copy() {
+    let (t, _, j, l, a) = r2_seen_during_resolution(R2Fault::SentLost).await;
+    let _release = R2Release(Arc::clone(&j));
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Ambiguous)).await;
+    assert!(j.db.load().unwrap().1.is_empty());
+    let copy = resend(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
+    assert_eq!(j.sent_writes.load(Ordering::SeqCst), 2, "the copy wrote it");
+    assert_eq!(j.db.load().unwrap().1.len(), 1);
+    t.log_transport(a, copy.id(), Some("withdrawal/d/submit".into()));
+    copy.finish(Outcome::Sent);
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+    r2_evidence_survives_a_reopen(&j, a).await;
+}
+
+/// Sol r2 R2-F1 probe 3: a `NotSent` write that committed and then
+/// reported an error loses nothing: the `Sent` row outranks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_f1_a_not_sent_row_committed_then_failed_keeps_the_evidence() {
+    let (t, _, j, l, a) = r2_seen_during_resolution(R2Fault::NotSentDurableThenError).await;
+    let _release = R2Release(Arc::clone(&j));
+    until(|| j.db.load().unwrap().1.len() == 1).await;
+    let copy = resend(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
+    t.log_transport(a, copy.id(), Some("withdrawal/d/submit".into()));
+    copy.finish(Outcome::Sent);
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+    r2_evidence_survives_a_reopen(&j, a).await;
+}
+
+/// The control: nothing fails; the evidence survives a reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_f1_sent_evidence_survives_a_reopen() {
+    let (_t, _, j, _l, a) = r2_seen_during_resolution(R2Fault::None).await;
+    let _release = R2Release(Arc::clone(&j));
+    until(|| j.db.load().unwrap().1.len() == 1).await;
+    r2_evidence_survives_a_reopen(&j, a).await;
+}
+
+/// DEC-154 (3): a `NotSent` write that failed may have committed, so its
+/// markers no longer count as standing: copies wait until a retry lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_f1_a_failed_not_sent_write_counts_as_committed() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(97);
+    j.resolve_durable_err.store(true, Ordering::SeqCst);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    assert_eq!(permit.finish(Outcome::NotSent), Settlement::MaybeOut);
+    assert!(j.load().1.is_empty(), "the NotSent row committed");
+    // Each copy retries the resolution first, and defers while it fails.
+    assert_eq!(t.admit(step_copy(&l, a, "s")).await, Verdict::Deferred);
+    assert_eq!(t.admit(step_copy(&l, a, "t")).await, Verdict::Deferred);
+    assert!(rec.resolved().is_empty());
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
+    j.resolve_durable_err.store(false, Ordering::SeqCst);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+    assert_eq!(
+        rec.resolved()[0],
+        (a.to_string(), DispatchResolution::NotSent)
+    );
+    assert_eq!(j.load().1.len(), 1, "the new First's marker stands");
+}
+
+/// Review r2 H1: a marker whose write failed is superseded by a `NotSent`
+/// row and comes back with a sighting as it was, not durable: the next
+/// copy of its step writes it before transport.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_h1_a_superseded_marker_that_never_landed_is_written_again() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(98);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    j.fail_step.store(true, Ordering::SeqCst);
+    let _ = t.admit(step_copy(&l, a, "t")).await;
+    j.fail_step.store(false, Ordering::SeqCst);
+    assert_eq!(
+        t.with_j(|i, _| i.fence.mark(&W, "t", &a)),
+        Some(fence::Mark::Ambiguous)
+    );
+    permit.finish(Outcome::NotSent);
+    until(|| {
+        rec.resolved()
+            .contains(&(a.to_string(), DispatchResolution::NotSent))
+    })
+    .await;
+    assert!(j.load().1.is_empty(), "the NotSent row supersedes s");
+    t.note_seen(W, a);
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    assert!(j.stands(&W, &a, "s"), "the Sent row makes s stand");
+    assert!(!j.stands(&W, &a, "t"), "t never landed");
+    let copy = resend(t.admit(step_copy(&l, a, "t")).await);
+    assert!(
+        j.stands(&W, &a, "t"),
+        "the copy wrote t before its hand-off"
+    );
+    copy.finish(Outcome::Sent);
+}
+
+/// Review r2 M2: a `Sent` row whose write failed (lost, landed and then an
+/// error, or panicked) is begun again by the next journal write that
+/// lands, or the next sighting, with no copy of the artifact needed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_m2_a_failed_sent_row_is_retried_without_a_copy() {
+    for (n, fault) in [0u8, 1, 2].into_iter().enumerate() {
+        let (t, _) = table();
+        let j = with_journal(&t);
+        let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+        let a = art(100 + n as u8);
+        let flag = match fault {
+            0 => &j.fail_sent,
+            1 => &j.sent_durable_err,
+            _ => &j.panic_sent,
+        };
+        first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+        flag.store(true, Ordering::SeqCst);
+        t.note_seen(W, a);
+        until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Ambiguous))
+            .await;
+        flag.store(false, Ordering::SeqCst);
+        if fault == 2 {
+            // A second sighting begins it again.
+            t.note_seen(W, a);
+        } else {
+            // Another artifact's marker landing begins it again.
+            first(t.admit(step_copy(&l, art(110 + n as u8), "u")).await).finish(Outcome::Sent);
+        }
+        until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable))
+            .await;
+        let sent = j
+            .load()
+            .1
+            .into_iter()
+            .find(|r| r.artifact == a.0)
+            .is_some_and(|r| r.sent);
+        assert!(sent, "fault {fault}: the Sent row is on disk");
+    }
+}
+
+/// Review r2 L2: another wallet's sighting of an artifact neither marks it
+/// sent nor keeps this wallet's entry from settling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_l2_another_wallets_sighting_is_not_this_ones() {
+    let (t, rec) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(99);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    t.note_seen(W2, a);
+    assert_ne!(t.dispatch_status(W, a), Some(DispatchState::Sent));
+    assert_eq!(t.with_j(|i, _| i.fence.evidence_mark(&W2, &a)), None);
+    permit.finish(Outcome::NotSent);
+    until(|| {
+        rec.resolved()
+            .contains(&(a.to_string(), DispatchResolution::NotSent))
+    })
+    .await;
+    assert!(j.load().1.is_empty());
+}
+
+/// Review r2 L1: closing the journal waits for the writes running, so none
+/// lands after the next session's sweep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_l1_closing_the_journal_waits_for_its_writes() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(97);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+    j.stall_ms.store(300, Ordering::SeqCst);
+    t.note_seen(W, a);
+    assert!(matches!(
+        t.with_j(|i, _| i.fence.evidence_mark(&W, &a)),
+        Some(fence::Mark::Committing { .. })
+    ));
+    t.close_journal().await;
+    assert!(
+        j.load().1.iter().any(|r| r.artifact == a.0 && r.sent),
+        "the Sent row landed before close returned"
+    );
+}
+
+/// Review r2 M2: a `Sent` row left owed with no later write or sighting
+/// gets a last try when the journal closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2_m2_closing_the_journal_retries_an_owed_sent_row() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(95);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+    j.fail_sent.store(true, Ordering::SeqCst);
+    t.note_seen(W, a);
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Ambiguous)).await;
+    j.fail_sent.store(false, Ordering::SeqCst);
+    t.close_journal().await;
+    assert!(j.load().1.iter().any(|r| r.artifact == a.0 && r.sent));
 }

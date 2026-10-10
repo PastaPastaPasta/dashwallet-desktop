@@ -82,11 +82,21 @@ pub(crate) enum LogEvent {
         artifact: ArtifactId,
         step: Option<String>,
     },
-    /// A row-less artifact settled definitely unsent: its markers deleted
-    /// in the journal, `refund` returned to its lease.
+    /// A row-less artifact settled definitely unsent: its `NotSent` row
+    /// durable, `refund` returned to its lease.
     Resolved {
         artifact: ArtifactId,
         refund: u64,
+    },
+    /// A `NotSent` row's write began: from here on it may have committed,
+    /// superseding the artifact's markers on disk (DEC-154).
+    Superseding {
+        artifact: ArtifactId,
+    },
+    /// The artifact's `Sent` row is durable: its markers stand for good,
+    /// also those a `NotSent` row superseded (DEC-154).
+    Evidence {
+        artifact: ArtifactId,
     },
     /// The fake library handed the artifact off (bytes may be out);
     /// `step`: the scope's step of the copy that did.
@@ -142,6 +152,18 @@ pub(crate) enum Mutation {
     LateEntry,
     /// F4: a duplicate `register` writes too.
     DuplicateRegister,
+    /// Sol r2 R2-F1: a copy does not wait for its artifact's `Sent` row.
+    SkipEvidence,
+    /// DEC-154 (3): a failed `NotSent` write is taken as uncommitted, so
+    /// copies read the markers it may have superseded as standing.
+    FailedUncommitted,
+    /// Sol r2 R2-F1: a sighting trusts memory and appends no `Sent` row.
+    NoSentRow,
+    /// Review r2 H1: a superseded marker comes back durable whatever its
+    /// write did. Its trace (a failed own-step write, a settlement, a
+    /// sighting, a copy of that step) is too rare for the stress; the
+    /// `r2_h1` regression catches it.
+    StashDurable,
 }
 
 impl Mutation {
@@ -159,6 +181,10 @@ impl Mutation {
             Self::MarkerOutlives,
             Self::LateEntry,
             Self::DuplicateRegister,
+            Self::SkipEvidence,
+            Self::FailedUncommitted,
+            Self::NoSentRow,
+            Self::StashDurable,
         ]
         .into_iter()
         .find(|m| format!("{m:?}") == name)
@@ -213,6 +239,13 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
     let mut since: HashMap<ArtifactId, Vec<u64>> = HashMap::new();
     let mut charged: HashMap<ArtifactId, u64> = HashMap::new();
     let mut markers: HashMap<ArtifactId, HashMap<String, bool>> = HashMap::new();
+    // DEC-154: markers a `NotSent` row superseded, and artifacts whose
+    // `Sent` row is durable.
+    let mut superseded: HashMap<ArtifactId, Vec<String>> = HashMap::new();
+    let mut evidence: HashSet<ArtifactId> = HashSet::new();
+    // Markers whose write landed at some point: only those a `Sent` row
+    // makes stand (review r2 H1, M1).
+    let mut written: HashMap<ArtifactId, HashSet<String>> = HashMap::new();
     let mut resolved: HashSet<ArtifactId> = HashSet::new();
     let mut registered: HashSet<ArtifactId> = HashSet::new();
     let mut recorded: HashSet<ArtifactId> = HashSet::new();
@@ -346,6 +379,7 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
                     ));
                 };
                 *m = true;
+                written.entry(*artifact).or_default().insert(s.clone());
             }
             LogEvent::Resolved { artifact, refund } => {
                 let attempts = since.remove(artifact).unwrap_or_default();
@@ -367,8 +401,33 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
                         "I10: event {n}: {artifact} refunded {refund}, charged {owed}"
                     ));
                 }
-                markers.remove(artifact);
+                if let Some(m) = markers.remove(artifact) {
+                    superseded
+                        .entry(*artifact)
+                        .or_default()
+                        .extend(m.into_keys());
+                }
                 resolved.insert(*artifact);
+            }
+            LogEvent::Superseding { artifact } => {
+                if !evidence.contains(artifact)
+                    && let Some(m) = markers.get_mut(artifact)
+                {
+                    m.values_mut().for_each(|d| *d = false);
+                }
+            }
+            LogEvent::Evidence { artifact } => {
+                evidence.insert(*artifact);
+                let m = markers.entry(*artifact).or_default();
+                for s in superseded.remove(artifact).unwrap_or_default() {
+                    m.entry(s).or_insert(false);
+                }
+                let on_disk = written.get(artifact);
+                for (s, d) in m.iter_mut() {
+                    *d = on_disk.is_some_and(|w| w.contains(s));
+                }
+                // A seen-sent artifact may be resent with no new charge.
+                resolved.remove(artifact);
             }
             LogEvent::Transport {
                 artifact,
@@ -515,6 +574,10 @@ struct Run {
     /// Owning handles kept past their flow, until a lock or epoch change.
     kept: Mutex<Vec<Lease>>,
     salt: u8,
+    /// The first step copy handed off with its marker not standing in the
+    /// journal itself (review r2 M1): an oracle that does not depend on
+    /// the order of the logged events.
+    disk: Mutex<Option<String>>,
 }
 
 impl Run {
@@ -580,6 +643,16 @@ impl Run {
                 },
                 |()| async move {
                     if outcome != Outcome::NotSent {
+                        // A registered artifact's record fences it instead.
+                        if let Some(s) = &step
+                            && !self.registered.lock().unwrap().contains(&a)
+                            && !self.j.stands(&W, &a, s)
+                        {
+                            self.disk.lock().unwrap().get_or_insert(format!(
+                                "I11: {a} handed off for {s} with its marker not standing \
+                                 in the journal"
+                            ));
+                        }
                         self.t.log_transport(a, id, step);
                     }
                     tokio::time::sleep(Duration::from_millis(within)).await;
@@ -593,7 +666,25 @@ impl Run {
             HandOff::NotEntered => Outcome::NotSent,
             HandOff::Cut => Outcome::MaybeSent,
         };
-        match v {
+        // Sol r2 R2-F1: the artifact seen sent while its definite
+        // resolution is written, so the finish runs on a blocking thread.
+        let sight = outcome == Outcome::NotSent && self.below(3) == 0;
+        if sight {
+            let t = Arc::clone(&self.t);
+            self.spawn(async move {
+                tokio::task::yield_now().await;
+                t.note_seen(W, a);
+            });
+        } else if outcome == Outcome::NotSent && self.below(4) == 0 {
+            // Review r2 H1: seen sent after it settled, when its superseded
+            // markers come back.
+            let (t, wait) = (Arc::clone(&self.t), self.below(100));
+            self.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                t.note_seen(W, a);
+            });
+        }
+        let finish = move || match v {
             Verdict::First(p) => {
                 p.finish(outcome);
             }
@@ -601,6 +692,11 @@ impl Run {
                 g.finish(outcome);
             }
             Verdict::Refused { .. } | Verdict::Deferred => {}
+        };
+        if sight {
+            tokio::task::spawn_blocking(finish).await.unwrap();
+        } else {
+            finish();
         }
     }
 
@@ -786,6 +882,13 @@ impl Run {
             self.j
                 .fail_resolve
                 .store(self.below(6) == 0, Ordering::SeqCst);
+            self.j
+                .resolve_durable_err
+                .store(self.below(6) == 0, Ordering::SeqCst);
+            self.j.fail_sent.store(self.below(6) == 0, Ordering::SeqCst);
+            self.j
+                .sent_durable_err
+                .store(self.below(6) == 0, Ordering::SeqCst);
             match self.below(5) {
                 0 => {
                     self.t.lock_sync(RevokeCause::Lock, status);
@@ -812,6 +915,9 @@ impl Run {
         self.j.dispatch_fault.store(0, Ordering::SeqCst);
         self.j.fail_step.store(false, Ordering::SeqCst);
         self.j.fail_resolve.store(false, Ordering::SeqCst);
+        self.j.resolve_durable_err.store(false, Ordering::SeqCst);
+        self.j.fail_sent.store(false, Ordering::SeqCst);
+        self.j.sent_durable_err.store(false, Ordering::SeqCst);
         self.stop.store(true, Ordering::SeqCst);
     }
 }
@@ -837,6 +943,7 @@ async fn stress(seed: u64, mutation: Option<Mutation>, cycles: usize) -> Result<
         registered: Mutex::new(HashSet::new()),
         kept: Mutex::new(Vec::new()),
         salt: seed as u8,
+        disk: Mutex::new(None),
     });
     let rng = |n: u64| RefCell::new(StdRng::seed_from_u64(seed << 8 | n));
     let mut tasks = Vec::new();
@@ -894,6 +1001,40 @@ async fn stress(seed: u64, mutation: Option<Mutation>, cycles: usize) -> Result<
             3,
         ),
         (
+            "Sent rows over a NotSent write",
+            {
+                let mut superseding = HashSet::new();
+                log.iter()
+                    .filter(|e| match e {
+                        LogEvent::Superseding { artifact } => {
+                            superseding.insert(*artifact);
+                            false
+                        }
+                        LogEvent::Evidence { artifact } => superseding.contains(artifact),
+                        _ => false,
+                    })
+                    .count()
+            },
+            5,
+        ),
+        (
+            "Sent rows after a settlement",
+            {
+                let mut settled = HashSet::new();
+                log.iter()
+                    .filter(|e| match e {
+                        LogEvent::Resolved { artifact, .. } => {
+                            settled.insert(*artifact);
+                            false
+                        }
+                        LogEvent::Evidence { artifact } => settled.contains(artifact),
+                        _ => false,
+                    })
+                    .count()
+            },
+            3,
+        ),
+        (
             "registers",
             count(|e| matches!(e, LogEvent::Registering { .. })),
             20,
@@ -921,7 +1062,11 @@ async fn stress(seed: u64, mutation: Option<Mutation>, cycles: usize) -> Result<
                 .join(", ")
         );
     }
-    check(&log)
+    check(&log)?;
+    match run.disk.lock().unwrap().take() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// The seeds to run: `DW_LEASE_STRESS_SEEDS` of them (3 by default; the
@@ -956,11 +1101,14 @@ async fn the_stress_catches_every_mutation() {
         (Mutation::MarkerOutlives, "I16"),
         (Mutation::LateEntry, "L5"),
         (Mutation::DuplicateRegister, "DEC-134"),
+        (Mutation::SkipEvidence, "I11"),
+        (Mutation::FailedUncommitted, "I11"),
+        (Mutation::NoSentRow, "I11"),
     ] {
         let mut seen = Vec::new();
         for seed in 1..=5 {
             if let Err(e) = stress(seed, Some(mutation), 300).await {
-                let hit = e.starts_with(invariant);
+                let hit = e.starts_with(&format!("{invariant}:"));
                 seen.push(e);
                 if hit {
                     break;
@@ -969,7 +1117,7 @@ async fn the_stress_catches_every_mutation() {
         }
         let e = seen
             .iter()
-            .find(|e| e.starts_with(invariant))
+            .find(|e| e.starts_with(&format!("{invariant}:")))
             .unwrap_or_else(|| panic!("{mutation:?} did not break {invariant}: {seen:?}"));
         eprintln!("{mutation:?}: {e}");
     }
@@ -1041,7 +1189,7 @@ fn the_checker_flags_each_invariant() {
     };
     let fails = |log: &[LogEvent], label: &str| {
         let e = check(log).expect_err(label);
-        assert!(e.starts_with(label), "{label}: {e}");
+        assert!(e.starts_with(&format!("{label}:")), "{label}: {e}");
     };
     // I1: a registered artifact before its record.
     let reg = [
@@ -1099,6 +1247,54 @@ fn the_checker_flags_each_invariant() {
     );
     // I6: two cleanups.
     fails(&[refused(true), refused(true)], "I6");
+    // I11 under DEC-154 (Sol r2 R2-F1): a NotSent write that began may
+    // have superseded the markers, so a copy needs the Sent row (or a new
+    // marker) first; a Sent row also brings back markers a NotSent row
+    // superseded.
+    let superseding = LogEvent::Superseding { artifact: a };
+    let evidence = LogEvent::Evidence { artifact: a };
+    let marked = [
+        begin.clone(),
+        marking("s"),
+        durable(Some("s")),
+        first(1),
+        transport(1, Some("s")),
+        finish(1, Outcome::NotSent),
+    ];
+    fails(
+        &[
+            &marked[..],
+            &[superseding.clone(), resend(2), transport(2, Some("s"))],
+        ]
+        .concat(),
+        "I11",
+    );
+    check(
+        &[
+            &marked[..],
+            &[
+                superseding.clone(),
+                evidence.clone(),
+                resend(2),
+                transport(2, Some("s")),
+            ],
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let settled = [&marked[..], &[superseding.clone(), resolved(0)]].concat();
+    fails(
+        &[&settled[..], &[resend(2), transport(2, Some("s"))]].concat(),
+        "I16",
+    );
+    check(
+        &[
+            &settled[..],
+            &[evidence.clone(), resend(2), transport(2, Some("s"))],
+        ]
+        .concat(),
+    )
+    .unwrap();
     // I10: a resolution with an attempt running or possibly out, or
     // refunding other than it charged.
     let charged = [begin.clone(), grant(1, Some(l), GrantKind::First, 5)];

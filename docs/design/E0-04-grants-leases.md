@@ -32,7 +32,7 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
   `SDK` = `packages/rs-sdk/src`.
 - rust-dashcore `40268cc0` (`dash-spv`, `key-wallet`).
 
-**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 80 checks).
+**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 86 checks).
 
 ## Amendment 2: closure round 3
 
@@ -1395,23 +1395,40 @@ CREATE TABLE dispatch (                                      -- registered artif
   dispatched_at INTEGER,
   PRIMARY KEY (wallet, txid)
 ) WITHOUT ROWID;
-CREATE TABLE step (                                          -- resumable steps' write-ahead markers, both modes
+CREATE TABLE step_log (                                      -- resumable steps' markers, append-only (DEC-154)
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
   wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
-  step_id   TEXT NOT NULL,                                   -- e.g. "registration/<draft>/identity"
   artifact  BLOB NOT NULL CHECK (length(artifact) = 32),     -- ST hash or txid (Mode A); call id (Mode B)
-  state     INTEGER NOT NULL CHECK (state = 1),              -- written only as "possibly dispatched"
-  at        INTEGER NOT NULL,
-  PRIMARY KEY (wallet, step_id, artifact)
-) WITHOUT ROWID;
+  kind      INTEGER NOT NULL CHECK (kind IN (0, 1, 2, 3)),   -- 0 marker, 1 NotSent, 2 Sent, 3 MaybeSent
+  step_id   TEXT CHECK ((kind = 0) = (step_id IS NOT NULL)), -- e.g. "registration/<draft>/identity"
+  at        INTEGER NOT NULL
+);
+CREATE INDEX step_log_artifact ON step_log (wallet, artifact, seq);
 ```
+
+Schema 2 (DEC-154, review P2a r2 R2-F1). Schema 1 had a `step` table whose rows a definite resolution deleted;
+it holds no resolution, so the migration at open copies every row into `step_log` as a marker, all standing, and
+drops `step`, in one transaction.
+
+**Reading the log.** A marker stands unless a later `NotSent` row of its artifact supersedes it. A `Sent` (or
+`MaybeSent`) row is final evidence: every marker of its artifact stands whatever follows, and no row revokes it.
+Recovery takes the rows in `seq` order. P2a writes no `MaybeSent` row; the kind is reserved for the funding marker
+of Mode B (§2a.5).
 
 - **Statements:**
   - `register`: `INSERT … ON CONFLICT DO NOTHING`, then a read-back. A row with another origin is an error.
   - `Dispatching`: `UPDATE dispatch SET state = 1, dispatched_at = ? WHERE wallet = ? AND txid = ? AND state = 0`,
     or a no-op if the row is already 1.
-  - Step marker: `INSERT … ON CONFLICT DO NOTHING`, `FULL`, before the step's transport (§7.6).
-  - No statement sets `state` to 0. The only delete is the wiping `remove_wallet` of §6.5, which waits until the
-    wallet tracks no row. So an entry outlives its row, which is why an asset lock's `None` means "never
+  - Step marker: an appended kind-0 row, `FULL`, before the step's transport (§7.6). A marker of the same step that
+    already stands is not appended again.
+  - Resolution: an appended `NotSent`, `Sent` or `MaybeSent` row (§7.6). A `NotSent` row is not repeated while it
+    is the artifact's latest row; a `Sent` row is written once.
+  - No statement sets `state` to 0, and no statement updates or deletes a `step_log` row while its artifact or its
+    flow is live. Compaction runs only where nothing can be on the wire: the wiping `remove_wallet` of §6.5, which
+    waits until the wallet tracks no row and runs no copy when it checks (a guard has no deadline, so the drain alone
+    does not wait for it: review r2 L3; a Resend admitted between that check and the erase is a residual that
+    predates DEC-154, since `decide` does not consult the removal barrier), and a sweep at open that drops the rows of artifacts with no standing
+    marker and no final row (terminal: settled `NotSent`, and no copy can resend on them). So an entry outlives its row, which is why an asset lock's `None` means "never
     registered" (§16.6).
 
 ### 6.3 States
@@ -1476,7 +1493,7 @@ CREATE TABLE step (                                          -- resumable steps'
 - **Wallet removal** (review Opus 10, F18).
   - dw's `remove_wallet` secure-erases the wallet's rows in `wallet.sqlite`.
   - Once the wallet has no tracked row left, a `remove_wallet` with its `Wipe` grant also deletes the wallet's
-    `dispatch` and `step` rows and its `seeded:` mark, with `secure_delete=ON` and a WAL checkpoint (TRUNCATE).
+    `dispatch` and `step_log` rows and its `seeded:` mark, with `secure_delete=ON` and a WAL checkpoint (TRUNCATE).
   - A wallet removed while it still tracks a possibly-sent lock keeps those entries until the lock is consumed, and
     the removal says so.
   - If PWS's auto-backup is later restored, its rows meet no entry: kept, not sent, with a `Notice` (safe).
@@ -1585,15 +1602,31 @@ returns, too late to record a hand-off. So:
   `Committing`; a missing marker of its own step, or an `Ambiguous` one, is written first, and the copy is handed
   off only after every marker of the artifact is durable. The check is repeated after the copy's own write
   returns: a marker another copy began meanwhile is owed too.
-- **Definite resolution** (review P2a r1 F2). A definite not-sent outcome (refunded, or definitely unsent) is
-  made durable by deleting the artifact's markers in the journal, before the refund and the `NotSent` tombstone.
-  It supersedes every step marker: a later Lock, reload or resume finds no marker, so the step needs a fresh,
-  charged First. While the delete runs, and after the journal refuses it, the artifact is `Resolving`: it stays
-  charged and possibly out (`MaybeOut`), and no copy resends on its old marker. Each later admit retries the
-  delete first and defers while it fails; once it lands, the artifact is refunded and `NotSent`, and a fresh First
-  may follow. A settlement that waits on another copy's marker write (every attempt ended definitely unsent, but a
-  write is `Committing`) proceeds when that write returns, whether it landed or not. An artifact seen sent is
-  never settled or refunded: seen before the delete, it keeps its markers; seen during it, they are written again.
+- **Definite resolution** (review P2a r1 F2; DEC-154 after r2 R2-F1). The journal is append-only (§6.2). A
+  definite not-sent outcome (refunded, or definitely unsent) appends a `NotSent` row of the artifact, before the
+  refund and the `NotSent` tombstone. It supersedes the artifact's earlier markers: a later Lock, reload or resume
+  finds none standing, so the step needs a fresh, charged First, whose marker is a new row. The row is begun in the
+  J step that decides the resolution and written outside J. While it is written, and after the journal refuses it,
+  the artifact is `Resolving`: it stays charged and possibly out (`MaybeOut`), and no copy resends on its old
+  marker. **A write that fails or panics counts as possibly committed** (it may have landed and then errored):
+  each later admit retries it first and defers meanwhile; once it lands, the artifact is refunded and `NotSent`,
+  and a fresh First may follow. A settlement that waits on another copy's marker write (every attempt ended
+  definitely unsent, but a write is `Committing`) proceeds when that write returns, whether it landed or not.
+- **Sent evidence.** An artifact seen sent (a sighting, or an executed result) is never settled or refunded. At its
+  first sighting the fence begins a `Sent` row for every marked artifact, in the sighting's J step, and holds the
+  evidence `Committing` until it lands. Every copy owes it like a marker: it defers while the row is `Committing`,
+  and writes it first when an earlier write failed. A sighting during a `NotSent` write does not undo the write; the
+  `Sent` row that follows wins over it, so no marker is deleted or restored. On disk the `Sent` row makes every
+  marker of the artifact that was written stand again; in memory the markers the `NotSent` row superseded come back
+  at the sighting, each as its own write left it (review r2 H1): one whose write returned ok is durable, any other
+  is `Ambiguous`, so a copy of its step writes it before transport (a no-op if it had landed). Copies are gated by
+  the `Sent` row meanwhile. A `NotSent` row after a `Sent` row changes nothing.
+- **A `Sent` row that failed** (lost, landed and then an error, or panicked) stays owed: a copy writes it first,
+  and without any copy it is begun again by the next sighting or the next journal write of the wallet that lands
+  (review r2 M2). Only a journal that keeps failing until a crash can lose it; the next process then reads the
+  markers as superseded (an accepted residual: DEC-154 (3) asks for the in-memory obligation).
+- **Close** (review r2 L1). Closing the journal gives each owed `Sent` row a last try, stops new writes and waits
+  for the running ones, so none of this session lands after the next session's sweep.
 - **Reading, in a later process:**
   - identical bytes find their marker: a Resend;
   - different bytes for the same step, under a revoked lease, get `Refused{step_possibly_dispatched: true}`, which
@@ -1607,7 +1640,9 @@ returns, too late to record a hand-off. So:
 | marker write in progress | marker or nothing | as the row above, or as the row below |
 | after the marker, before or after the broadcast | marker | identical bytes: Resend; otherwise MaybeSent |
 | after the response, before the phase write | marker | as above; the flow's re-query then finds the identity |
-| after a definite not-sent resolution | no marker | a fresh First, charged again |
+| `NotSent` write in progress | marker, or marker and `NotSent` | `Resolving` in the old process; the next reads either |
+| after a definite not-sent resolution | marker superseded by `NotSent` | a fresh First, charged again |
+| after a sighting's `Sent` row | marker and `Sent`, whatever `NotSent` rows sit between | identical bytes: Resend; otherwise MaybeSent |
 
 ## 8. Lock, close and other revocations
 
@@ -1851,7 +1886,7 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
 
 ### 10.1 What it models, and its limits
 
-`docs/design/checks/e0_04_design_model.py` (75 checks):
+`docs/design/checks/e0_04_design_model.py` (86 checks):
 - **Part 1** explores every interleaving of these actors:
   - O, the original flow, which may be dropped between track and admit, and may repeat its hand-off;
   - R, a resume of the same row, or in the row-less scenarios a second holder of the same bytes; after a crash, R
@@ -1890,6 +1925,16 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
   - the row-less tombstone, the asset-lock reading of `None` in both modes, and the nonce evidence for `NotSent`.
 
   It also checks that rev2 never strands a definitely-unsent funding.
+- **Part 6** is the step-marker journal (DEC-154, review P2a r2 R2-F1): one marked artifact whose First ended
+  definitely unsent, its `NotSent` write, a sighting that may overtake it, one copy and a crash; every journal
+  write lands, is lost, or lands and then errors. In two of its three starts a second step's marker was begun
+  before the settlement and its write failed (lost, or landed then an error), and the copy is of that step
+  (review r2 H1). The oracle reads the log as recovery does, where a `Sent` row makes only written markers stand:
+  a copy's transport needs its step's marker standing on disk, and after a crash the copy's marker must stand if
+  it went out, and the first marker if the process held the evidence durable. rev1's delete-and-restore fails
+  both. So do five rejected rules: a copy that skips the `Sent` row, a failed `NotSent` write taken as
+  uncommitted, a sighting kept only in memory, "latest row wins" letting `NotSent` revoke `Sent`, and superseded
+  markers brought back durable whatever their write did. DEC-154 passes.
 
 **The oracle** (review GPT 8). Every definite verdict (`Cancelled`, `Failed`, `NotSent`) is judged against the
 immutable send history, the attempts still running and the journal, never against the bookkeeping under test. The
@@ -2116,6 +2161,20 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
   is refused; a handle looked up by id and dropped leaves the lease `Active` while its owner lives; a `begin_flow`
   lease stays `Active` with no host handle until `end_flow`.
 - **QuickUnlock for `PlatformOp`:** within and just above the limits, and with a stale passphrase.
+- **Marker log** (DEC-154, review P2a r2 R2-F1), against a file-backed `dispatch.sqlite` with gated writes: a copy
+  defers while a sighting's `Sent` row is held (Sol's blocked restore); a lost `Sent` row is written by the copy
+  before its transport (failed restore); a `NotSent` row that lands and then errors, overtaken by the sighting,
+  loses nothing and the evidence survives a reopen (delete committed then error); the reopened journal reads
+  `Sent`, Resends identical bytes and refuses others with `step_possibly_dispatched`. A failed `NotSent` write
+  against the fake journal keeps the artifact `Resolving{failed}` and copies defer until a retry lands. Review r2:
+  a superseded marker whose write failed comes back `Ambiguous` and the copy of its step writes it (H1); a failed
+  `Sent` row (lost, landed then an error, panicked) is begun again with no copy (M2); another wallet's sighting is
+  not this one's (L2); closing the journal waits for a running `Sent` write (L1). `dw-appdb` checks supersession,
+  finality of `Sent`, the sweep and the v1 migration. The stress checker logs supersession and evidence, carries
+  which markers were ever written, and flags a copy on superseded markers (I11); after the checker, a step copy of
+  a row-less artifact is checked against the fake journal's own `standing()` at each transport. The run sights
+  artifacts during and after their settlement. The `SkipEvidence`, `FailedUncommitted` and `NoSentRow` mutations
+  are each caught by the stress; `StashDurable` (H1) is caught by its regression.
 
 **[A+B] Row-less attempts and step markers (rev1)**
 - **Concurrent holders** (GPT 1): O's First and R's Resend of the same bytes; O definitely rejected, the lock comes,

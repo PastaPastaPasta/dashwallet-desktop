@@ -5,10 +5,15 @@
 //!   recovery payload. On disk a row moves 0 (`Unsent`) → 1 (`Dispatching`)
 //!   only; 2 (`PreFence`) is written only by the seeding. No statement sets
 //!   `state` to 0, and the only delete is [`DispatchJournal::erase_wallet`].
-//! - `step` holds the write-ahead markers of resumable row-less steps (§7.6),
-//!   written once as "possibly dispatched" and never changed. An artifact's
-//!   markers are deleted only by [`DispatchJournal::resolve_unsent`], once it
-//!   settled definitely unsent (review P2a r1 F2), and by `erase_wallet`.
+//! - `step_log` is append-only (DEC-154): the write-ahead markers of
+//!   resumable row-less steps (§7.6), each "possibly dispatched", and the
+//!   artifacts' resolutions (`NotSent`, `Sent`, `MaybeSent`), in one
+//!   sequence. A `NotSent` row supersedes the artifact's earlier markers; a
+//!   `Sent` or `MaybeSent` row is final, so no later `NotSent` revokes them
+//!   ([`standing`]). No row is changed, and rows are deleted only where
+//!   nothing can be on the wire: [`DispatchJournal::erase_wallet`] after the
+//!   removal's barrier, and the sweep at open of artifacts with no standing
+//!   marker.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -33,10 +38,11 @@ use crate::{AppDbError, Result};
 /// File name of the journal inside a network directory.
 pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 
-/// The schema this build reads and writes.
-pub const DISPATCH_SCHEMA: u32 = 1;
+/// The schema this build reads and writes. Version 1 (a `step` table whose
+/// rows a definite resolution deleted) is migrated at open (DEC-154).
+pub const DISPATCH_SCHEMA: u32 = 2;
 
-const SCHEMA_V1: &str = "
+const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE dispatch (
   wallet        BLOB NOT NULL CHECK (length(wallet) = 32),
@@ -49,6 +55,11 @@ CREATE TABLE dispatch (
   dispatched_at INTEGER,
   PRIMARY KEY (wallet, txid)
 ) WITHOUT ROWID;
+";
+
+/// Version 1's marker table, for the migration's tests.
+#[cfg(test)]
+const STEP_V1: &str = "
 CREATE TABLE step (
   wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
   step_id   TEXT NOT NULL,
@@ -57,6 +68,29 @@ CREATE TABLE step (
   at        INTEGER NOT NULL,
   PRIMARY KEY (wallet, step_id, artifact)
 ) WITHOUT ROWID;
+";
+
+/// `kind`: 0 a marker of `step_id`, 1 `NotSent`, 2 `Sent`, 3 `MaybeSent`.
+const STEP_LOG: &str = "
+CREATE TABLE step_log (
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
+  artifact  BLOB NOT NULL CHECK (length(artifact) = 32),
+  kind      INTEGER NOT NULL CHECK (kind IN (0, 1, 2, 3)),
+  step_id   TEXT CHECK ((kind = 0) = (step_id IS NOT NULL)),
+  at        INTEGER NOT NULL
+);
+CREATE INDEX step_log_artifact ON step_log (wallet, artifact, seq);
+";
+
+/// Version 1 → 2: the markers move to `step_log` in a stable order. A
+/// version 1 file holds no resolution (its definite resolutions deleted
+/// their markers), so every marker stands.
+const MIGRATE_V1: &str = "
+INSERT INTO step_log (wallet, artifact, kind, step_id, at)
+  SELECT wallet, artifact, 0, step_id, at FROM step ORDER BY at, wallet, step_id, artifact;
+DROP TABLE step;
+UPDATE meta SET v = 2 WHERE k = 'schema';
 ";
 
 /// A registered artifact's state on disk (§6.3).
@@ -95,13 +129,100 @@ pub struct DispatchRow {
     pub dispatched_at: Option<u64>,
 }
 
-/// One `step` marker.
+/// One standing step marker, as recovery reads it ([`standing`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepRow {
     pub wallet: [u8; 32],
     pub step_id: String,
     pub artifact: [u8; 32],
     pub at: u64,
+    /// The artifact has a `Sent` row: it was seen sent (DEC-154).
+    pub sent: bool,
+}
+
+/// An artifact's resolution, appended to `step_log` (DEC-154).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    /// Definitely unsent: supersedes the artifact's earlier markers.
+    NotSent,
+    /// Seen sent: final.
+    Sent,
+    /// Possibly sent: final. Nothing in P2a writes it.
+    MaybeSent,
+}
+
+impl Resolution {
+    fn kind(self) -> i64 {
+        match self {
+            Self::NotSent => 1,
+            Self::Sent => 2,
+            Self::MaybeSent => 3,
+        }
+    }
+}
+
+/// One `step_log` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepEvent {
+    Marked(String),
+    Resolved(Resolution),
+}
+
+/// One `step_log` row, in sequence order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepLogRow {
+    pub wallet: [u8; 32],
+    pub artifact: [u8; 32],
+    pub event: StepEvent,
+    pub at: u64,
+}
+
+/// Recovery's reading of `step_log` (DEC-154): the markers that stand, one
+/// per (wallet, step, artifact), earliest first. A marker stands unless a
+/// later `NotSent` row of its artifact supersedes it; any `Sent` or
+/// `MaybeSent` row of the artifact is final, so all its markers stand
+/// whatever follows.
+pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
+    use std::collections::{HashMap, HashSet};
+    type Key = ([u8; 32], [u8; 32]);
+    let mut last_not_sent: HashMap<Key, usize> = HashMap::new();
+    let mut sent: HashSet<Key> = HashSet::new();
+    let mut final_: HashSet<Key> = HashSet::new();
+    for (n, r) in log.iter().enumerate() {
+        let key = (r.wallet, r.artifact);
+        match r.event {
+            StepEvent::Resolved(Resolution::NotSent) => {
+                last_not_sent.insert(key, n);
+            }
+            StepEvent::Resolved(Resolution::Sent) => {
+                sent.insert(key);
+                final_.insert(key);
+            }
+            StepEvent::Resolved(Resolution::MaybeSent) => {
+                final_.insert(key);
+            }
+            StepEvent::Marked(_) => {}
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (n, r) in log.iter().enumerate() {
+        let StepEvent::Marked(step) = &r.event else {
+            continue;
+        };
+        let key = (r.wallet, r.artifact);
+        let stands = final_.contains(&key) || last_not_sent.get(&key).is_none_or(|&m| n > m);
+        if stands && seen.insert((key, step.clone())) {
+            out.push(StepRow {
+                wallet: r.wallet,
+                step_id: step.clone(),
+                artifact: r.artifact,
+                at: r.at,
+                sent: sent.contains(&key),
+            });
+        }
+    }
+    out
 }
 
 /// What `register` found.
@@ -176,6 +297,10 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
+                Some(1) => {
+                    tx.execute_batch(STEP_LOG)?;
+                    tx.execute_batch(MIGRATE_V1)?;
+                }
                 Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
                     return Ok(JournalOpen::NewerSchema(
                         u32::try_from(v).unwrap_or(u32::MAX),
@@ -188,12 +313,14 @@ impl DispatchJournal {
                 }
             }
         } else {
-            tx.execute_batch(SCHEMA_V1)?;
+            tx.execute_batch(SCHEMA_BASE)?;
+            tx.execute_batch(STEP_LOG)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
             )?;
         }
+        sweep(&tx)?;
         tx.commit()?;
         Ok(JournalOpen::Ready(Self {
             conn: Mutex::new(conn),
@@ -263,7 +390,9 @@ impl DispatchJournal {
         Ok(matches!(state, Some(1 | 2)))
     }
 
-    /// A resumable step's write-ahead marker (§7.6). Idempotent.
+    /// A resumable step's write-ahead marker (§7.6), appended unless one of
+    /// the same step already stands (after a `NotSent` row, a later First
+    /// of the same bytes appends it again). Idempotent.
     pub fn insert_step(
         &self,
         wallet: &[u8; 32],
@@ -272,21 +401,38 @@ impl DispatchJournal {
         now: u64,
     ) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO step (wallet, step_id, artifact, state, at) VALUES (?1, ?2, ?3, 1, ?4)
-             ON CONFLICT DO NOTHING",
-            params![&wallet[..], step_id, &artifact[..], now as i64],
+            "INSERT INTO step_log (wallet, artifact, kind, step_id, at)
+             SELECT ?1, ?2, 0, ?3, ?4 WHERE NOT EXISTS (
+               SELECT 1 FROM step_log m WHERE m.wallet = ?1 AND m.artifact = ?2
+                 AND m.kind = 0 AND m.step_id = ?3
+                 AND (EXISTS (SELECT 1 FROM step_log f WHERE f.wallet = ?1
+                        AND f.artifact = ?2 AND f.kind IN (2, 3))
+                      OR m.seq > (SELECT coalesce(max(n.seq), 0) FROM step_log n
+                        WHERE n.wallet = ?1 AND n.artifact = ?2 AND n.kind = 1)))",
+            params![&wallet[..], &artifact[..], step_id, now as i64],
         )?;
         Ok(())
     }
 
-    /// `artifact` settled definitely unsent (§5.5): every step marker of it
-    /// goes, so no reload or resume takes it for possibly dispatched. The
-    /// engine refunds and reports `NotSent` only after this returned
-    /// (review P2a r1 F2). Idempotent.
-    pub fn resolve_unsent(&self, wallet: &[u8; 32], artifact: &[u8; 32]) -> Result<()> {
+    /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
+    /// markers so far: the engine refunds and reports it only after this
+    /// returned (review P2a r1 F2). `Sent` is written once; a repeated
+    /// `NotSent` with nothing in between is not written again.
+    pub fn resolve(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        resolution: Resolution,
+        now: u64,
+    ) -> Result<()> {
         self.conn().execute(
-            "DELETE FROM step WHERE wallet = ?1 AND artifact = ?2",
-            params![&wallet[..], &artifact[..]],
+            "INSERT INTO step_log (wallet, artifact, kind, step_id, at)
+             SELECT ?1, ?2, ?3, NULL, ?4 WHERE CASE WHEN ?3 = 1
+               THEN coalesce((SELECT kind FROM step_log WHERE wallet = ?1 AND artifact = ?2
+                              ORDER BY seq DESC LIMIT 1), -1) <> 1
+               ELSE NOT EXISTS (SELECT 1 FROM step_log
+                                WHERE wallet = ?1 AND artifact = ?2 AND kind = ?3) END",
+            params![&wallet[..], &artifact[..], resolution.kind(), now as i64],
         )?;
         Ok(())
     }
@@ -361,27 +507,12 @@ impl DispatchJournal {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut stmt = conn.prepare("SELECT wallet, step_id, artifact, at FROM step")?;
-        let steps = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Vec<u8>>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })?
-            .map(|row| {
-                let (wallet, step_id, artifact, at) = row?;
-                Ok(StepRow {
-                    wallet: fixed(wallet, "step.wallet")?,
-                    step_id,
-                    artifact: fixed(artifact, "step.artifact")?,
-                    at: at as u64,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((rows, steps))
+        Ok((rows, standing(&step_log(&conn)?)))
+    }
+
+    /// `step_log` in sequence order (tests and the sweep).
+    pub fn step_log(&self) -> Result<Vec<StepLogRow>> {
+        step_log(&self.conn())
     }
 
     /// Erases `wallet`'s rows, markers and `seeded:` mark with
@@ -394,12 +525,79 @@ impl DispatchJournal {
             "DELETE FROM dispatch WHERE wallet = ?1",
             params![&wallet[..]],
         )?;
-        tx.execute("DELETE FROM step WHERE wallet = ?1", params![&wallet[..]])?;
+        tx.execute(
+            "DELETE FROM step_log WHERE wallet = ?1",
+            params![&wallet[..]],
+        )?;
         tx.execute("DELETE FROM meta WHERE k = ?1", params![seeded_key(wallet)])?;
         tx.commit()?;
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
+}
+
+fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
+    let mut stmt =
+        conn.prepare("SELECT wallet, artifact, kind, step_id, at FROM step_log ORDER BY seq")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?
+        .map(|row| {
+            let (wallet, artifact, kind, step_id, at) = row?;
+            let event = match (kind, step_id) {
+                (0, Some(s)) => StepEvent::Marked(s),
+                (1, None) => StepEvent::Resolved(Resolution::NotSent),
+                (2, None) => StepEvent::Resolved(Resolution::Sent),
+                (3, None) => StepEvent::Resolved(Resolution::MaybeSent),
+                (k, _) => return Err(AppDbError::Corrupt(format!("step_log.kind {k}"))),
+            };
+            Ok(StepLogRow {
+                wallet: fixed(wallet, "step_log.wallet")?,
+                artifact: fixed(artifact, "step_log.artifact")?,
+                event,
+                at: at as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// The sweep at open (DEC-154 (4)): nothing of this process is on the
+/// wire yet, so an artifact with no standing marker and no final row reads
+/// the same with no rows at all; its rows go.
+fn sweep(conn: &Connection) -> Result<()> {
+    use std::collections::HashSet;
+    let log = step_log(conn)?;
+    let keep: HashSet<([u8; 32], [u8; 32])> = standing(&log)
+        .into_iter()
+        .map(|s| (s.wallet, s.artifact))
+        .chain(log.iter().filter_map(|r| {
+            matches!(
+                r.event,
+                StepEvent::Resolved(Resolution::Sent | Resolution::MaybeSent)
+            )
+            .then_some((r.wallet, r.artifact))
+        }))
+        .collect();
+    let gone: HashSet<([u8; 32], [u8; 32])> = log
+        .iter()
+        .map(|r| (r.wallet, r.artifact))
+        .filter(|k| !keep.contains(k))
+        .collect();
+    for (wallet, artifact) in gone {
+        conn.execute(
+            "DELETE FROM step_log WHERE wallet = ?1 AND artifact = ?2",
+            params![&wallet[..], &artifact[..]],
+        )?;
+    }
+    Ok(())
 }
 
 fn seeded_key(wallet: &[u8; 32]) -> String {
@@ -476,7 +674,7 @@ mod tests {
         // Schema test (§12 "Journal"): every statement that writes `state`
         // in this file writes 1 or 2; only the INSERT of `register` writes 0.
         let src = include_str!("dispatch.rs");
-        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
         let lower = code.to_ascii_lowercase();
         for (i, _) in lower.match_indices("set state") {
             let rest = &lower[i..i + 16];
@@ -497,22 +695,129 @@ mod tests {
         assert_eq!(steps[0].at, 1);
     }
 
+    fn markers(j: &DispatchJournal) -> Vec<(String, [u8; 32], bool)> {
+        j.load()
+            .unwrap()
+            .1
+            .into_iter()
+            .map(|s| (s.step_id, s.artifact, s.sent))
+            .collect()
+    }
+
     #[test]
-    fn a_definite_resolution_deletes_only_that_artifacts_markers() {
+    fn a_not_sent_row_supersedes_only_that_artifacts_earlier_markers() {
         let j = journal();
         let other = [9; 32];
         j.insert_step(&W, "registration/d/identity", &T, 1).unwrap();
         j.insert_step(&W, "withdrawal/d/submit", &T, 1).unwrap();
         j.insert_step(&W, "registration/d/identity", &other, 1)
             .unwrap();
-        j.resolve_unsent(&W, &T).unwrap();
-        j.resolve_unsent(&W, &T).unwrap();
-        let (_, steps) = j.load().unwrap();
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].artifact, other);
-        // A later First of the same bytes writes its marker again.
-        j.insert_step(&W, "registration/d/identity", &T, 2).unwrap();
-        assert_eq!(j.load().unwrap().1.len(), 2);
+        j.resolve(&W, &T, Resolution::NotSent, 2).unwrap();
+        j.resolve(&W, &T, Resolution::NotSent, 3).unwrap();
+        assert_eq!(
+            markers(&j),
+            vec![("registration/d/identity".into(), other, false)]
+        );
+        // DEC-154: nothing was deleted; one NotSent row was appended.
+        assert_eq!(j.step_log().unwrap().len(), 4);
+        // A later First of the same bytes appends its marker again, and
+        // it stands until the next NotSent row.
+        j.insert_step(&W, "registration/d/identity", &T, 4).unwrap();
+        j.insert_step(&W, "registration/d/identity", &T, 5).unwrap();
+        assert_eq!(markers(&j).len(), 2);
+        assert_eq!(j.step_log().unwrap().len(), 5);
+        j.resolve(&W, &T, Resolution::NotSent, 6).unwrap();
+        assert_eq!(markers(&j).len(), 1);
+    }
+
+    #[test]
+    fn a_sent_row_is_final_whatever_follows() {
+        let j = journal();
+        j.insert_step(&W, "s", &T, 1).unwrap();
+        // Sent overtaking a NotSent resolution (Sol r2 R2-F1).
+        j.resolve(&W, &T, Resolution::NotSent, 2).unwrap();
+        assert!(markers(&j).is_empty());
+        j.resolve(&W, &T, Resolution::Sent, 3).unwrap();
+        assert_eq!(markers(&j), vec![("s".into(), T, true)]);
+        // A later NotSent revokes nothing; Sent is written once.
+        j.resolve(&W, &T, Resolution::NotSent, 4).unwrap();
+        j.resolve(&W, &T, Resolution::Sent, 5).unwrap();
+        assert_eq!(markers(&j), vec![("s".into(), T, true)]);
+        assert_eq!(j.step_log().unwrap().len(), 4);
+        // MaybeSent is final too, without reading as sent.
+        let u = [8; 32];
+        j.insert_step(&W, "s", &u, 6).unwrap();
+        j.resolve(&W, &u, Resolution::MaybeSent, 7).unwrap();
+        j.resolve(&W, &u, Resolution::NotSent, 8).unwrap();
+        assert!(markers(&j).contains(&("s".into(), u, false)));
+    }
+
+    #[test]
+    fn the_sweep_at_open_keeps_every_standing_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let open = |now| match DispatchJournal::open(&path, now).unwrap() {
+            JournalOpen::Ready(j) => j,
+            JournalOpen::NewerSchema(v) => panic!("newer schema {v}"),
+        };
+        let j = open(1);
+        let (gone, kept, sent) = ([7; 32], [8; 32], [9; 32]);
+        for a in [gone, kept, sent] {
+            j.insert_step(&W, "s", &a, 1).unwrap();
+            j.resolve(&W, &a, Resolution::NotSent, 2).unwrap();
+        }
+        j.insert_step(&W, "s", &kept, 3).unwrap();
+        j.resolve(&W, &sent, Resolution::Sent, 3).unwrap();
+        let before = markers(&j);
+        drop(j);
+        let j = open(2);
+        assert_eq!(markers(&j), before);
+        let log = j.step_log().unwrap();
+        assert!(log.iter().all(|r| r.artifact != gone));
+        assert_eq!(log.len(), 6, "kept and sent keep every row");
+    }
+
+    #[test]
+    fn a_version_1_journal_migrates_with_every_marker_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_V1).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 1), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        for (step, at) in [("b", 2), ("a", 1)] {
+            conn.execute(
+                "INSERT INTO step (wallet, step_id, artifact, state, at) VALUES (?1, ?2, ?3, 1, ?4)",
+                params![&W[..], step, &T[..], at],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        assert_eq!(
+            markers(&j),
+            vec![("a".into(), T, false), ("b".into(), T, false)]
+        );
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 2);
+        let old: bool = j
+            .conn()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'step')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!old);
     }
 
     #[test]

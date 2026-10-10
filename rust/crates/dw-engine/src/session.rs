@@ -697,7 +697,7 @@ impl NetworkSession {
         drop(live.tap);
         drop(live.provenance);
         // Per network, so the last to close (§8.5).
-        self.leases.close_journal();
+        self.leases.close_journal().await;
         self.sink.emit(EngineEvent::SessionClosed {
             network: self.network.clone(),
         });
