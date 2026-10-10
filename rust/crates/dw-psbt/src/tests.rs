@@ -36,18 +36,16 @@ impl Signer for SeedSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(secp256k1::ecdsa::Signature, PublicKey), String> {
-        let secp = Secp256k1::new();
-        let k = self.0.derive_priv(&secp, path).map_err(|e| e.to_string())?;
+        let k = self.0.derive_priv(path).map_err(|e| e.to_string())?;
         Ok((
-            secp.sign_ecdsa_low_r(&Message::from_digest(sighash), &k.private_key),
-            PublicKey::from_secret_key(&secp, &k.private_key),
+            secp256k1::ecdsa::sign_low_r(Message::from_digest(sighash), &k.private_key),
+            PublicKey::from_secret_key(&k.private_key),
         ))
     }
 
     async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, String> {
-        let secp = Secp256k1::new();
-        let k = self.0.derive_priv(&secp, path).map_err(|e| e.to_string())?;
-        Ok(PublicKey::from_secret_key(&secp, &k.private_key))
+        let k = self.0.derive_priv(path).map_err(|e| e.to_string())?;
+        Ok(PublicKey::from_secret_key(&k.private_key))
     }
 }
 

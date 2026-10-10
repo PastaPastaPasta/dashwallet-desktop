@@ -26,7 +26,7 @@ use dashcore::blockdata::script::{Builder, PushBytesBuf, ScriptBuf};
 use dashcore::blockdata::transaction::Transaction;
 use dashcore::crypto::ecdsa;
 use dashcore::hashes::Hash;
-use dashcore::secp256k1::{self, Message, Secp256k1};
+use dashcore::secp256k1::{self, Message};
 use dashcore::sighash::{EcdsaSighashType, SighashCache};
 use dashcore::{Address, Network, PubkeyHash, Txid};
 use key_wallet::Signer;
@@ -317,7 +317,6 @@ pub async fn sign<S: Signer>(
 ) -> Result<usize, PsbtError> {
     let tx = psbt.unsigned_tx.clone();
     let cache = SighashCache::new(&tx);
-    let secp = Secp256k1::verification_only();
     let mut signed = 0;
     for (&index, path) in paths {
         if index >= psbt.inputs.len() || input_complete(psbt, index) {
@@ -363,11 +362,12 @@ pub async fn sign<S: Signer>(
                 detail: format!("the key at {path} does not pay this input"),
             });
         }
-        secp.verify_ecdsa(&Message::from_digest(digest), &sig, &pk.inner)
-            .map_err(|e| PsbtError::Signing {
+        secp256k1::ecdsa::verify(&sig, Message::from_digest(digest), &pk.inner).map_err(|e| {
+            PsbtError::Signing {
                 index,
                 detail: format!("signature does not verify: {e}"),
-            })?;
+            }
+        })?;
         psbt.inputs[index]
             .partial_sigs
             .insert(pk, ecdsa::Signature { sig, hash_ty });
