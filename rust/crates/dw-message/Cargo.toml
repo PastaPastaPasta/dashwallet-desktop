@@ -8,7 +8,7 @@ publish.workspace = true
 description = "Dash Core signmessage / verifymessage (\"DarkCoin Signed Message:\\n\", 65-byte compact signatures, base64)"
 
 [dependencies]
-# Same git source and revision that dashpay/platform f475f72a11 pins.
+# Same git source and revision that the platform pin (rust/Cargo.toml) pins.
 dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "8fe0a38170059742ff902acc29a696b72490903c", default-features = false, features = ["secp-recovery"] }
 dw-uri = { path = "../dw-uri" }
 zeroize = "1.8"

@@ -14,27 +14,30 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# ---- dashpay/platform, pinned to #5307 (v5.1 move)@f475f72a11 (DESIGN.md R3, DEC-168) ----
+# ---- dashpay/platform, pinned to pasta's fork (DESIGN.md R3, DEC-18, DEC-168) ----
+# PastaPastaPasta/platform dw/e0-10c-v5.1-spv-trust@ebe37f8a67 = #5307 (v5.1 move)@f475f72a11
+# + #4978 (ad601d1d8b) + #5366 (SPV quorum key with its status). Move back to an
+# upstream revision once both are on v5.1-dev.
 # Cargo.lock was seeded from the platform checkout's lock at this revision so
 # the shared transitive graph (grovedb, rusqlite, tokio, ...) resolves to the
 # versions upstream builds and tests with.
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["bls", "eddsa"] }
+platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", features = ["bls", "eddsa"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03).
 # `shielded` is deliberately off for M0 (halo2 build cost, DESIGN-opus G4).
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", default-features = false, features = ["sqlite", "secrets"] }
+platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", default-features = false, features = ["sqlite", "secrets"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
 # but its manifest does not enable the feature (the platform workspace gets it by
 # feature unification).
-dpp = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["ed25519-dalek"] }
-dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3" }
+dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", features = ["ed25519-dalek"] }
+dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b" }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it.
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3", features = ["dpns-contract"] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", features = ["dpns-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
-platform-encryption = { git = "https://github.com/dashpay/platform", rev = "f475f72a1112f2c6d84b9d7cd1bc4d6ab7540bd3" }
+platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b" }
 
 # ---- dashpay/rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
