@@ -97,6 +97,7 @@ pub(crate) const REBROADCAST_WAIT: Duration = Duration::from_secs(5);
 /// The pause before a run that waits for the sync, or for the network,
 /// steps again (the run keeps its lease, §2.6's one prompt).
 const SYNC_POLL: Duration = Duration::from_secs(5);
+const NETWORK_RETRY_MIN: Duration = Duration::from_secs(2);
 const NETWORK_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Mode B's worst-case funding fee (E0-04 §2a.3): spending every
@@ -191,10 +192,14 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// The wallet's identities: (index, base58 id).
     fn identities(&self) -> impl Future<Output = Vec<(u32, String)>> + Send;
     fn spendable(&self) -> impl Future<Output = Spendable> + Send;
-    /// SPV has synced and the wallet's DashPay bring-up (DP1-05's
+    /// What holds a funding (§3.4 Restore rule 1, §2.2 rule 5's hold):
+    /// `None` once SPV has synced and the wallet's DashPay bring-up (DP1-05's
     /// same-seed discovery; the library's asset-lock reconstruction runs
-    /// with the sync) has run: §3.4 Restore rule 1, and §2.2 rule 5's hold.
-    fn ready_to_fund(&self) -> bool;
+    /// with the sync) answered which identity indexes the seed uses. `Sync`
+    /// while that is under way; `Unlock` for a bring-up that runs again at
+    /// the first unlock; `Network` for one that runs again only at the next
+    /// start.
+    fn funding_hold(&self) -> Option<RegistrationWait>;
     /// `create_funded_asset_lock_proof` for `IdentityRegistration` at
     /// `identity_index`, signed by the lease's funding signer: builds,
     /// tracks, broadcasts, and waits up to 300 s for an InstantSend lock.
@@ -296,6 +301,8 @@ pub(crate) struct Flows {
     /// Orders the choice of an identity index and its write, so no two
     /// flows take one index.
     index: tokio::sync::Mutex<()>,
+    /// Woken when a discard stops deciding.
+    stops: tokio::sync::Notify,
 }
 
 impl Flows {
@@ -329,6 +336,7 @@ impl Flows {
             }
             s.running = true;
             s.generation = s.generation.wrapping_add(1);
+            s.offered = None;
             Some(Claim {
                 flows: Arc::clone(self),
                 key,
@@ -337,23 +345,43 @@ impl Flows {
         })
     }
 
-    /// Marks a library call of the flow, unless a discard is deciding:
-    /// atomic with [`Self::begin_stop`].
-    fn enter_call(&self, key: (WalletId, i64)) -> Option<InCall<'_>> {
-        self.with(key, |s| {
-            if s.stopping {
-                return false;
+    /// Marks a library call of the flow, atomic with [`Self::begin_stop`].
+    /// While a discard decides, it waits: `Err(Again)` once the discard was
+    /// refused (the flow steps on from its row as it is now), `Err(Stop)`
+    /// for a flow that is gone (discarded, or forgotten).
+    async fn enter_call(&self, key: (WalletId, i64)) -> Result<InCall<'_>, Step> {
+        let mut waited = false;
+        loop {
+            let stopped = self.stops.notified();
+            tokio::pin!(stopped);
+            stopped.as_mut().enable();
+            let entered = {
+                let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+                match map.get_mut(&key) {
+                    None => Some(Err(Step::Stop)),
+                    Some(s) if s.stopping => None,
+                    Some(_) if waited => Some(Err(Step::Again)),
+                    Some(s) => {
+                        s.in_call = true;
+                        Some(Ok(()))
+                    }
+                }
+            };
+            match entered {
+                Some(Ok(())) => return Ok(InCall(self, key)),
+                Some(Err(step)) => return Err(step),
+                None => {}
             }
-            s.in_call = true;
-            true
-        })
-        .then_some(InCall(self, key))
+            stopped.await;
+            waited = true;
+        }
     }
 
-    /// A discard starts deciding: `false` while a library call of the flow
-    /// runs; otherwise none starts until [`Self::end_stop`] or
-    /// [`Self::forget`].
-    pub(crate) fn begin_stop(&self, key: (WalletId, i64)) -> bool {
+    /// A discard starts deciding: `None` while a library call of the flow
+    /// runs; otherwise no call starts until the guard is dropped (the
+    /// discard refused: the flow runs on, untouched) or the flow is
+    /// forgotten.
+    pub(crate) fn begin_stop(&self, key: (WalletId, i64)) -> Option<Stopping<'_>> {
         self.with(key, |s| {
             if s.in_call {
                 return false;
@@ -361,21 +389,24 @@ impl Flows {
             s.stopping = true;
             true
         })
+        .then_some(Stopping(self, key))
     }
 
-    /// The discard was refused: the flow runs on, untouched.
-    pub(crate) fn end_stop(&self, key: (WalletId, i64)) {
-        self.with_existing(key, |s| s.stopping = false);
-    }
-
-    /// Hands `lease` to the flow's run (see [`FlowState::offered`]).
-    pub(crate) fn offer(&self, key: (WalletId, i64), lease: Lease) {
-        self.with(key, |s| {
-            if let Some(task) = &s.task {
-                lease.register_task(task.clone());
+    /// Hands `lease` to the flow's running driver (see
+    /// [`FlowState::offered`]); `Err` gives it back when no run is left to
+    /// take it.
+    pub(crate) fn offer(&self, key: (WalletId, i64), lease: Lease) -> Result<(), Lease> {
+        let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        match map.get_mut(&key) {
+            Some(s) if s.running => {
+                if let Some(task) = &s.task {
+                    lease.register_task(task.clone());
+                }
+                s.offered = Some(Offered(lease));
+                Ok(())
             }
-            s.offered = Some(Offered(lease));
-        });
+            _ => Err(lease),
+        }
     }
 
     pub(crate) fn forget(&self, key: (WalletId, i64)) {
@@ -387,6 +418,7 @@ impl Flows {
         if let Some(task) = state.and_then(|s| s.task) {
             task.abort();
         }
+        self.stops.notify_waiters();
     }
 
     pub(crate) fn abort_all(&self) {
@@ -424,7 +456,21 @@ impl Drop for Claim {
             s.task = None;
             s.lease = None;
             s.offered = None;
+            // A row no task drives reads its wait from the row and the
+            // world (`idle_wait`), never from a run that ended.
+            s.wait = None;
         });
+    }
+}
+
+/// A discard deciding ([`Flows::begin_stop`]); dropped, it lets the
+/// flow's calls start again.
+pub(crate) struct Stopping<'a>(&'a Flows, (WalletId, i64));
+
+impl Drop for Stopping<'_> {
+    fn drop(&mut self) {
+        self.0.with_existing(self.1, |s| s.stopping = false);
+        self.0.stops.notify_waiters();
     }
 }
 
@@ -442,7 +488,12 @@ impl Drop for InCall<'_> {
 enum Step {
     /// The row changed; read it and step again.
     Again,
-    /// Waits for `RegistrationWait`; the row keeps its phase.
+    /// Waits for `RegistrationWait` in the run, if it is a task's (it
+    /// keeps its lease); otherwise as `Park`.
+    Wait(RegistrationWait),
+    /// Waits for `RegistrationWait` with the run ended (an authority it
+    /// lacks, a bring-up outcome of the next start); the row keeps its
+    /// phase.
     Park(RegistrationWait),
     /// Fails the flow with a code.
     Fail(&'static str, bool),
@@ -709,7 +760,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
 
     async fn steps(&self, draft: i64) -> Result<(), PlatformError> {
         let key = (self.wallet, draft);
-        let mut retry = Duration::from_secs(2);
+        let mut retry = NETWORK_RETRY_MIN;
         loop {
             let Some(row) = self.row(draft).await? else {
                 return Ok(());
@@ -717,24 +768,26 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             if row.error.is_some() {
                 return Ok(());
             }
-            self.flows().with(key, |s| s.wait = None);
             match self.step(&row).await? {
-                Step::Again => continue,
-                Step::Park(wait @ (RegistrationWait::Sync | RegistrationWait::Network))
-                    if self.waits =>
-                {
-                    self.flows().with(key, |s| s.wait = Some(wait));
-                    let pause = if wait == RegistrationWait::Sync {
-                        SYNC_POLL
-                    } else {
-                        tracing::info!(draft, phase = %row.phase, "registration retries");
-                        let pause = retry;
-                        retry = (retry * 2).min(NETWORK_RETRY_MAX);
-                        pause
+                Step::Again => {
+                    retry = NETWORK_RETRY_MIN;
+                    self.flows().with_existing(key, |s| s.wait = None);
+                }
+                Step::Wait(wait) if self.waits => {
+                    self.flows().with_existing(key, |s| s.wait = Some(wait));
+                    let pause = match wait {
+                        RegistrationWait::Sync => SYNC_POLL,
+                        RegistrationWait::ChainLock => CHAINLOCK_POLL,
+                        _ => {
+                            tracing::info!(draft, phase = %row.phase, "registration retries");
+                            let pause = retry;
+                            retry = (retry * 2).min(NETWORK_RETRY_MAX);
+                            pause
+                        }
                     };
                     tokio::time::sleep(pause).await;
                 }
-                Step::Park(wait) => {
+                Step::Wait(wait) | Step::Park(wait) => {
                     tracing::info!(draft, phase = %row.phase, ?wait, "registration parked");
                     self.flows().with(key, |s| s.wait = Some(wait));
                     return Ok(());
@@ -893,9 +946,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             | PlatformError::SignerUnavailable => Step::Park(self.authority_wait()),
             PlatformError::Unavailable
             | PlatformError::Timeout
-            | PlatformError::ContextUnavailable => Step::Park(RegistrationWait::Network),
+            | PlatformError::ContextUnavailable => Step::Wait(RegistrationWait::Network),
             other => Step::Fail(other.code(), true),
         }
+    }
+
+    /// The funding hold as a step: the sync is waited for in the run, the
+    /// others park it.
+    fn funding_hold(&self) -> Option<Step> {
+        Some(match self.lib.funding_hold()? {
+            RegistrationWait::Sync => Step::Wait(RegistrationWait::Sync),
+            other => Step::Park(other),
+        })
     }
 
     async fn identity_at(&self, index: u32) -> Option<String> {
@@ -941,8 +1003,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 )
                 .await;
         }
-        if !self.lib.ready_to_fund() {
-            return Ok(Step::Park(RegistrationWait::Sync));
+        if let Some(step) = self.funding_hold() {
+            return Ok(step);
         }
         self.take_index(row, Phase::KeysPrepared).await
     }
@@ -1018,8 +1080,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
 
     /// KeysPrepared → FundingSent: the one step that commits funds.
     async fn fund(&self, row: &RegistrationRow, lock_duffs: u64) -> Result<Step, PlatformError> {
-        if !self.lib.ready_to_fund() {
-            return Ok(Step::Park(RegistrationWait::Sync));
+        if let Some(step) = self.funding_hold() {
+            return Ok(step);
         }
         let Some(index) = row.identity_index else {
             return Ok(Step::Fail(internal(), false));
@@ -1093,9 +1155,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         // (`funding_call_permit`) and its marker (`funding_step`, with the
         // funding key) before the call.
         let key = (self.wallet, row.id);
-        let Some(in_call) = self.flows().enter_call(key) else {
-            // A discard is deciding.
-            return Ok(Step::Stop);
+        // Held until the outcome is written: a discard deciding meanwhile
+        // would read an unfunded row whose lock may be out.
+        let _in_call = match self.flows().enter_call(key).await {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
         };
         self.flows().with(key, |s| {
             s.is_until = Some(Instant::now() + IS_WINDOW);
@@ -1111,7 +1175,6 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 funded
             })
             .await;
-        drop(in_call);
         // platform-wallet tracks the lock (`Built`, stored through the tap)
         // before it hands it to the broadcaster, and untracks it only on a
         // definitive rejection (`build.rs` `broadcast_funded_asset_lock_with_funding`).
@@ -1229,13 +1292,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
         let locks = self.lib.tracked_locks().await;
         let Some(lock) = locks.iter().find(|l| l.outpoint == outpoint) else {
-            // Its row was lost (Mode B residual): DP1-05's reconstruction
-            // tracks it again once it is on the chain.
-            return Ok(Step::Park(RegistrationWait::ChainLock));
+            // Its row was lost, or untracked as swept (Mode B residual):
+            // DP1-05's reconstruction tracks it again once it is on the
+            // chain, and the run looks again.
+            return Ok(Step::Wait(RegistrationWait::ChainLock));
         };
         if lock.status == LockStatus::Consumed {
             // Platform took the lock; its identity is not visible yet.
-            return Ok(Step::Park(RegistrationWait::Network));
+            return Ok(Step::Wait(RegistrationWait::Network));
         }
         if !lock.status.has_proof() {
             if phase == Phase::FundingSent {
@@ -1248,8 +1312,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         };
         // The call holds a plain call permit. P2b seam: the step marker of
         // `identity_step` written before the call.
-        let Some(in_call) = self.flows().enter_call((self.wallet, row.id)) else {
-            return Ok(Step::Stop);
+        let in_call = match self.flows().enter_call((self.wallet, row.id)).await {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
         };
         let created = lease
             .scope_step(Some(identity_step(row.id)), async {
@@ -1273,7 +1338,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
 
     /// The proof wait: InstantSend while the in-memory window lasts, then
     /// the ChainLock with no limit, in bounded waits. No key is needed; an
-    /// own key is dropped when the window ends.
+    /// own key is dropped when the window ends (§2.6), and a key given
+    /// later lasts its own hold.
     async fn wait_proof(&self, draft: i64, outpoint: OutPoint, status: LockStatus) -> Step {
         let key = (self.wallet, draft);
         let now = Instant::now();
@@ -1287,22 +1353,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Some(_) => RegistrationWait::InstantSend,
             None => RegistrationWait::ChainLock,
         };
-        if window.is_none()
-            && let Some(lease) = self.lease(draft)
-        {
-            self.drop_own_key(&lease);
-        }
         if !self.waits {
             // A `Built` lock is broadcast again, the proof not waited for.
-            if status == LockStatus::Built
-                && let Err(e) = self.lib.wait_proof(outpoint, REBROADCAST_WAIT).await
-                && e != FundError::IsTimeout
-            {
-                tracing::info!(draft, "the lock's re-broadcast failed: {e:?}");
+            if status == LockStatus::Built {
+                match self.lib.wait_proof(outpoint, REBROADCAST_WAIT).await {
+                    Ok(()) => return Step::Again,
+                    Err(FundError::IsTimeout) => {}
+                    Err(e) => tracing::info!(draft, "the lock's re-broadcast failed: {e:?}"),
+                }
             }
             return Step::Park(wait);
         }
-        self.flows().with(key, |s| s.wait = Some(wait));
+        self.flows().with_existing(key, |s| s.wait = Some(wait));
         match self
             .lib
             .wait_proof(outpoint, window.unwrap_or(CHAINLOCK_POLL))
@@ -1311,7 +1373,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(()) => Step::Again,
             Err(FundError::IsTimeout) => {
                 if window.is_some() {
-                    self.flows().with(key, |s| s.is_until = None);
+                    self.flows().with_existing(key, |s| s.is_until = None);
+                    if let Some(lease) = self.lease(draft) {
+                        self.drop_own_key(&lease);
+                    }
                 }
                 Step::Again
             }
@@ -1329,8 +1394,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
         };
-        let Some(_in_call) = self.flows().enter_call((self.wallet, row.id)) else {
-            return Ok(Step::Stop);
+        let _in_call = match self.flows().enter_call((self.wallet, row.id)).await {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
         };
         match self.lib.register_name(identity, &row.label, &lease).await {
             Ok(NameOutcome::Registered) => self.to_phase(row, Phase::NameRegistered).await,
@@ -1373,8 +1439,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
         };
-        let Some(_in_call) = self.flows().enter_call((self.wallet, row.id)) else {
-            return Ok(Step::Stop);
+        let _in_call = match self.flows().enter_call((self.wallet, row.id)).await {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
         };
         match self
             .lib
@@ -1564,8 +1631,8 @@ impl RegistrationLib for PwLib {
         out
     }
 
-    fn ready_to_fund(&self) -> bool {
-        use super::startup::StartupStatus;
+    fn funding_hold(&self) -> Option<RegistrationWait> {
+        use super::startup::StartupStatus as S;
         let synced = self
             .session
             .hub
@@ -1573,23 +1640,28 @@ impl RegistrationLib for PwLib {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .caught_up();
+        if !synced {
+            return Some(RegistrationWait::Sync);
+        }
         // Restore rule 1: the same-seed discovery answered which identity
-        // indexes the seed uses. A scan that did not (it never reached
-        // Platform, failed locally, left indexes unanswered, or ran without
-        // signers) holds the funding.
-        let brought_up = self
+        // indexes the seed uses. One that did not holds the funding: it
+        // runs again at the first unlock (no signers), or at the next start
+        // (it never reached Platform, failed locally, or left indexes
+        // unanswered).
+        match self
             .session
             .dashpay_startup(&self.wallet_id)
-            .is_ok_and(|s| {
-                matches!(
-                    s.startup,
-                    StartupStatus::Ready
-                        | StartupStatus::NoIdentity
-                        | StartupStatus::PartialAccountsPending
-                        | StartupStatus::SeedBindingUnverified
-                )
-            });
-        synced && brought_up
+            .map(|s| s.startup)
+        {
+            Ok(S::Ready | S::NoIdentity | S::PartialAccountsPending | S::SeedBindingUnverified) => {
+                None
+            }
+            Ok(S::IdentityUnsettled) => Some(RegistrationWait::Unlock),
+            Ok(S::PartialNoIdentity | S::DiscoveryFailed | S::IdentityScanIncomplete) => {
+                Some(RegistrationWait::Network)
+            }
+            Ok(S::NotRun | S::Starting) | Err(_) => Some(RegistrationWait::Sync),
+        }
     }
 
     async fn fund(
@@ -1622,7 +1694,14 @@ impl RegistrationLib for PwLib {
             .resume_asset_lock(&outpoint, Some(timeout))
             .await
             .map(|_| ())
-            .map_err(fund_error)
+            .map_err(|e| match e {
+                // A `Built` lock's re-broadcast that reached no peer: the
+                // lock stays tracked; the network is waited for.
+                platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_) => {
+                    FundError::Failed(PlatformError::Unavailable)
+                }
+                e => fund_error(e),
+            })
     }
 
     async fn find_identity(&self, outpoint: OutPoint) -> Result<Option<String>, PlatformError> {
@@ -1728,5 +1807,44 @@ impl RegistrationLib for PwLib {
         use dash_sdk::query_types::IdentityBalance;
         let id = parse_identity(identity)?;
         Ok(IdentityBalance::fetch(&self.sdk, id).await?)
+    }
+}
+
+#[cfg(test)]
+mod flows_tests {
+    use super::*;
+
+    const KEY: (WalletId, i64) = (WalletId([3; 32]), 1);
+
+    /// A call reached while a discard decides waits: the flow steps on
+    /// (`Again`) if the discard is refused, and ends (`Stop`) if it went
+    /// through.
+    #[tokio::test]
+    async fn a_call_waits_for_a_deciding_discard() {
+        let flows = Arc::new(Flows::default());
+        let _claim = flows.claim(KEY).unwrap();
+        let stopping = flows.begin_stop(KEY).unwrap();
+        let waiter = {
+            let flows = Arc::clone(&flows);
+            tokio::spawn(async move { flows.enter_call(KEY).await.map(|_| ()) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "no call starts while it decides");
+        drop(stopping);
+        assert_eq!(waiter.await.unwrap(), Err(Step::Again));
+        assert!(!flows.get(KEY).stopping);
+        // Entered once the discard is refused; a discard is refused then.
+        let call = flows.enter_call(KEY).await.ok().unwrap();
+        assert!(flows.begin_stop(KEY).is_none());
+        drop(call);
+
+        let _stopping = flows.begin_stop(KEY).unwrap();
+        let waiter = {
+            let flows = Arc::clone(&flows);
+            tokio::spawn(async move { flows.enter_call(KEY).await.map(|_| ()) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        flows.forget(KEY);
+        assert_eq!(waiter.await.unwrap(), Err(Step::Stop));
     }
 }

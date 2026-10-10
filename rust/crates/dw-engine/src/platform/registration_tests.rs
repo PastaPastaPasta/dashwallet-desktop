@@ -392,8 +392,8 @@ impl RegistrationLib for Fake {
         self.w().spendable
     }
 
-    fn ready_to_fund(&self) -> bool {
-        self.ready.load(Ordering::SeqCst)
+    fn funding_hold(&self) -> Option<RegistrationWait> {
+        (!self.ready.load(Ordering::SeqCst)).then_some(RegistrationWait::Sync)
     }
 
     async fn fund(&self, _: u64, index: u32, lease: &Lease) -> Result<OutPoint, FundError> {
@@ -1414,4 +1414,53 @@ fn two_flows_never_take_one_identity_index() {
         .map(|d| f.row(*d).identity_index.unwrap())
         .collect();
     assert_eq!(indexes.len(), 2, "{indexes:?}");
+}
+
+/// "Finish transfers" runs every row under one lease: a row without its
+/// proof parks itself, not that lease, so an own-key grant still signs
+/// the rows that have theirs.
+#[test]
+fn finish_keeps_an_own_key_past_a_proofless_row() {
+    let f = fixture(true);
+    f.session.lock_vault_sync().unwrap();
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    lib.lock_at(0, LockStatus::Broadcast);
+    lib.lock_at(1, LockStatus::ChainLocked);
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::Passphrase(PASS)),
+        ))
+        .unwrap();
+    assert_eq!(
+        (report.resumed, report.completed, report.still_pending),
+        (2, 1, 1)
+    );
+    assert_eq!(lib.counts(), (0, 1));
+    let waiting: Vec<_> = f.statuses(&lib).into_iter().map(|s| s.waiting).collect();
+    assert!(
+        waiting.contains(&Some(RegistrationWait::ChainLock)),
+        "{waiting:?}"
+    );
+}
+
+/// A lease is offered only to a running driver; one offered too late
+/// comes back to `resume_registration`, which runs the flow with it.
+#[test]
+fn a_lease_is_offered_only_to_a_running_flow() {
+    let f = fixture(false);
+    let flows = &f.session.platform.registrations;
+    assert!(flows.offer((f.wallet, 99), f.lease()).is_err());
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    let draft = adopted_lock_row(&f, &lib, 0, LockStatus::Broadcast);
+    f.spawn(&lib, draft, None);
+    eventually("the proof wait", || !lib.w().waits.is_empty());
+    assert!(flows.offer((f.wallet, draft), f.lease()).is_ok());
+    f.kill(draft);
+    assert!(flows.offer((f.wallet, draft), f.lease()).is_err());
 }

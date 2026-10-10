@@ -247,22 +247,28 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 - **Indexes.** A flow takes its identity index after the sync hold, one past every index the wallet's identities,
   tracked registration locks and rows use, under one lock so no two flows take one index. The hold (Restore rule 1)
   lasts until SPV has synced and the bring-up's discovery has answered which indexes the seed uses (`Ready`,
-  `NoIdentity`, `PartialAccountsPending`, `SeedBindingUnverified`); another outcome keeps the flow at `Sync`. A
+  `NoIdentity`, `PartialAccountsPending`, `SeedBindingUnverified`). Until then the flow waits at `Sync`; a bring-up
+  that runs again only at the first unlock (`IdentityUnsettled`) parks it at `Unlock`, and one that runs again only at
+  the next start (`PartialNoIdentity`, `DiscoveryFailed`, `IdentityScanIncomplete`) parks it at `Network`. A
   registration lock another row holds is that row's: a flow behind reality at its index takes a new index instead.
-- **Waits.** A running flow waits for the sync, for the network (backing off to 60 s) and for its proof in its own
-  task, keeping its lease, so one grant carries it through. The `ChainLock` wait has no limit, in bounded waits
-  (the library's own unbounded wait gives up after 180 s). A flow parks, ending its run and lease, only at a step
-  that needs an authority it lacks.
+- **Waits.** A running flow waits for the sync, for the network (backing off to 60 s), for its proof and for a lock
+  the library untracked to be tracked again, in its own task, keeping its lease, so one grant carries it through.
+  The `ChainLock` wait has no limit, in bounded waits (the library's own unbounded wait gives up after 180 s). An own
+  key is dropped when the InstantSend window ends; a key given later lasts its own hold. A flow parks, ending its run
+  and lease, only at a step that needs an authority it lacks, or at a bring-up hold above. A row no task drives
+  reports the wait derived from the row and the world, never a wait left by a run that ended.
 - **`resume_registration`** with a grant uses it whatever `waiting` says, so the flow does not stop at its next
   signing step; without one the flow runs its keyless steps (the sync hold, the proof wait) and parks at the first
   that signs. A flow that runs already takes the grant: its parked lease through `rebind_lease`, or, when it has no
   lease that signs, a new lease handed to its run. A row failed for good is `invalid_argument`.
 - **`discard_registration`** stops the flow only once it is allowed: while it decides, no library call of the flow
-  starts; a call running refuses it, and so do committed funds, and then the flow runs on untouched.
+  starts (a run that reaches one waits); a call running refuses it, and so do committed funds, and then the flow runs
+  on from its row as it is. A funding call's outcome is written before the call counts as ended.
 - **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed and that no row
   holds (into the `KeysPrepared` row at its index, live or failed with nothing committed, else a new row with label
   `""`, which skips the name step), then runs each funded row once under the grant, without waiting for a proof; a
-  `Built` lock is resumed briefly so the library broadcasts it again. `resumed` counts the rows it ran.
+  `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone: the
+  grant's lease keeps its key for the other rows. `resumed` counts the rows it ran.
 - **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
   `platform.feature_off{feature: "faucet"}`.
 - **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, `Sync` before
