@@ -180,7 +180,8 @@ pub(crate) struct Classified {
     /// Registration locks of account 0 written (DP1-02's funding key):
     /// outpoint and identity index, when the index is known
     /// (`LockInfo::known_index`).
-    registration_locks: Vec<(OutPoint, Option<u32>)>,
+    /// (outpoint, known identity index, tracked as `Built`).
+    registration_locks: Vec<(OutPoint, Option<u32>, bool)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -287,11 +288,10 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                         && e.account_index == 0
                 })
                 .map(|e| {
-                    use super::registration_flow::{known_index, lock_status};
-                    (
-                        e.out_point,
-                        known_index(lock_status(&e.status), e.identity_index),
-                    )
+                    use super::registration_flow::{LockStatus, known_index, lock_status};
+                    let status = lock_status(&e.status);
+                    let built = status == LockStatus::Built;
+                    (e.out_point, known_index(status, e.identity_index), built)
                 }),
         );
     }
@@ -374,6 +374,9 @@ pub(crate) struct ChangesetTap {
     /// automatic backup of §3.4 Restore rule 4). Set once the session
     /// exists.
     pub(crate) on_funded: OnceLock<Box<dyn Fn(WalletId, i64) + Send + Sync>>,
+    /// The session's registration flows, whose actors write a tracked
+    /// lock's outpoint (DEC-173). Set once the session exists.
+    pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
 }
 
 impl ChangesetTap {
@@ -384,6 +387,7 @@ impl ChangesetTap {
             catch_up_before: Mutex::new(HashMap::new()),
             locks_changed: OnceLock::new(),
             on_funded: OnceLock::new(),
+            registrations: OnceLock::new(),
         }
     }
 
@@ -529,24 +533,35 @@ impl ChangesetTap {
         let mut changes = std::mem::take(&mut c.changes);
         // Before the library broadcasts a registration's lock, its
         // outpoint goes to the flow's row (§3.4 Restore rule 3).
-        for (outpoint, index) in std::mem::take(&mut c.registration_locks) {
-            match super::registration_flow::note_lock_tracked(
-                &self.appdb,
-                &wallet,
-                outpoint,
-                index,
-                now,
-            ) {
-                Ok(Some(draft)) => {
-                    if let Some(funded) = self.on_funded.get() {
-                        funded(id, draft);
+        let locks = std::mem::take(&mut c.registration_locks);
+        match self.registrations.get() {
+            Some(flows) => {
+                for (outpoint, index, built) in locks {
+                    let tracked = super::registration_flow::lock_tracked(
+                        flows,
+                        &self.appdb,
+                        id,
+                        outpoint,
+                        index,
+                        built,
+                    );
+                    match tracked {
+                        Ok(Some(draft)) => {
+                            if let Some(funded) = self.on_funded.get() {
+                                funded(id, draft);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(wallet_id = %id, error = %e, "could not record a registration's lock")
+                        }
                     }
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(wallet_id = %id, error = %e, "could not record a registration's lock")
-                }
             }
+            None if !locks.is_empty() => {
+                tracing::warn!(wallet_id = %id, "a registration lock was tracked before the session's flows")
+            }
+            None => {}
         }
         if !c.locks.is_empty()
             && let Some(table) = self.table()

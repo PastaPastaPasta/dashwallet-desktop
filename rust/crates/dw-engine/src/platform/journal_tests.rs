@@ -688,6 +688,7 @@ fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
     let _ = h.tap.on_funded.set(Box::new(move |id, draft| {
         seen.lock().unwrap().push((id, draft))
     }));
+    let _ = h.tap.registrations.set(Arc::default());
     let entry = |op: OutPoint, funding_type: T, account_index: u32, identity_index: u32| {
         let tx = Transaction {
             version: 3,

@@ -300,6 +300,14 @@ impl CoinFences {
         })
     }
 
+    /// Tests: how many hold or wait for `wallet`'s fence.
+    #[cfg(test)]
+    pub(crate) fn users(&self, wallet: WalletId) -> usize {
+        self.map()
+            .get(&wallet)
+            .map_or(0, |f| Arc::strong_count(f) - 1)
+    }
+
     /// Drops a removed or unloaded wallet's fence unless it is held or
     /// awaited (a new one for the same id would let two holders in).
     pub(crate) fn forget(&self, wallet: &WalletId) {

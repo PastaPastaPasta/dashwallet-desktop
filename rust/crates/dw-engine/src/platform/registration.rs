@@ -427,6 +427,10 @@ fn in_progress(row: &RegistrationRow, ev: &flow::Evidence) -> bool {
     }
 }
 
+fn any_in_progress(ev: &flow::Evidence) -> bool {
+    ev.rows().iter().any(|r| in_progress(r, ev))
+}
+
 /// The wallet's evidence for the funding gates.
 async fn evidence<L: RegistrationLib>(
     session: &NetworkSession,
@@ -495,10 +499,12 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     grant: String,
 ) -> Result<String, RegistrationError> {
     let plan = plan(&*lib, &req, "DashPay.start_registration").await?;
-    let flows = &session.platform.registrations;
-    let _start = flows.start.lock().await;
-    let ev = evidence(session, wallet, &*lib).await?;
-    if ev.rows().iter().any(|r| in_progress(r, &ev)) {
+    // Checked here so a refused start keeps its grant, and again with the
+    // insert, in the one job of the wallet's actor (DEC-173).
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let rows = registration_rows(session, wallet).await?;
+    let ev = flow::Evidence::new(locks.clone(), identities.clone(), rows);
+    if any_in_progress(&ev) {
         return Err(RegistrationError::InProgress);
     }
     if let Funding::CoreBalance { lock_duffs } = plan.funding {
@@ -535,10 +541,15 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     };
     let wallet_text = wallet.to_string();
     let now = crate::events::unix_now();
-    let draft = session
-        .appdb_op(move |db| db.insert_registration(&wallet_text, &row, now))
-        .await
-        .map_err(PlatformError::from)?;
+    let draft = flow::rows_op(session, wallet, move |db, _| {
+        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&wallet_text)?);
+        if any_in_progress(&ev) {
+            return Ok(None);
+        }
+        db.insert_registration(&wallet_text, &row, now).map(Some)
+    })
+    .await?
+    .ok_or(RegistrationError::InProgress)?;
     tracing::info!(draft, "registration started");
     flow::signal(session, wallet, draft);
     flow::start_run(session, wallet, lib, draft, Some(lease)).await?;
@@ -670,26 +681,37 @@ fn idle_wait<L: RegistrationLib>(
     flow::authority_wait(session)
 }
 
-/// Clears a failed row's failure (a resume) under `claim`, keeping its
-/// phase.
-async fn clear_failure(
+/// Clears the failure of `claim`'s row (a resume), keeping its phase, if
+/// the row may run again (read and written in one job of the actor);
+/// otherwise why not.
+async fn clear_failure<L: RegistrationLib>(
     session: &NetworkSession,
     claim: &flow::Claim,
     wallet: WalletId,
-    row: &RegistrationRow,
-) -> Result<(), PlatformError> {
-    let (wallet, id, owner, phase) = (wallet.to_string(), row.id, claim.owner(), row.phase.clone());
-    let change = RegistrationChange {
-        failure: Some(None),
-        ..Default::default()
-    };
+    lib: &L,
+) -> Result<Result<(), String>, PlatformError> {
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let (w, id, owner) = (wallet.to_string(), claim.draft(), claim.owner());
     let now = crate::events::unix_now();
-    session
-        .appdb_op(move |db| {
-            db.update_registration(&wallet, id, Some(owner), &phase, true, &change, now)
-        })
-        .await?;
-    Ok(())
+    flow::rows_op(session, wallet, move |db, _| {
+        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&w)?);
+        let Some(row) = ev.rows().iter().find(|r| r.id == id) else {
+            return Ok(Err("unknown draft".into()));
+        };
+        let Some(code) = row.error.as_deref() else {
+            return Ok(Ok(()));
+        };
+        if !flow::resumable(row, &ev) {
+            return Ok(Err(format!("registration {id} failed for good ({code})")));
+        }
+        let change = RegistrationChange {
+            failure: Some(None),
+            ..Default::default()
+        };
+        db.update_registration(&w, id, owner, &row.phase, true, &change, now)?;
+        Ok(Ok(()))
+    })
+    .await
 }
 
 pub(crate) async fn resume<L: RegistrationLib + 'static>(
@@ -746,17 +768,8 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
         // Another run, or a discard deciding, holds it now.
         return Ok(());
     };
-    // The row as it is now that it is this resume's.
-    let row = registration_row(session, wallet, draft).await?;
-    if row.error.is_some() {
-        let ev = evidence(session, wallet, &*lib).await?;
-        if !flow::resumable(&row, &ev) {
-            let code = row.error.as_deref().unwrap_or_default();
-            return Err(invalid(format!(
-                "registration {draft} failed for good ({code})"
-            )));
-        }
-        clear_failure(session, &claim, wallet, &row).await?;
+    if let Err(why) = clear_failure(session, &claim, wallet, &*lib).await? {
+        return Err(invalid(why));
     }
     let lease = match (lease, grant) {
         (Some(lease), _) => Some(lease),
@@ -796,35 +809,32 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     }
     // Then with the flow taken from its run (DEC-171): no call of it starts
     // and no write of the run applies from here on.
-    let Some((mut claim, preempted)) = flows.take(key) else {
+    let Some((claim, preempted)) = flows.take(session, key).await? else {
         return Err(invalid("a registration call is running"));
     };
-    let decided: Result<(), RegistrationError> = async {
-        if !claim.persist(session).await? {
-            return Err(invalid("unknown draft"));
+    // Judged again on the rows read in the delete's own job (DEC-173).
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let (w, id, owner) = (wallet.to_string(), row.id, claim.owner());
+    let decided = flow::rows_op(session, wallet, move |db, flows| {
+        let rows = db.registration_rows(&w)?;
+        let Some(row) = rows.iter().find(|r| r.id == id).cloned() else {
+            return Ok(Err("unknown draft"));
+        };
+        if let Some(why) =
+            discard_refused(&row, &flow::Evidence::new(locks, identities, rows), false)
+        {
+            return Ok(Err(why));
         }
-        let row = registration_row(session, wallet, draft).await?;
-        let ev = evidence(session, wallet, &*lib).await?;
-        if let Some(why) = discard_refused(&row, &ev, false) {
-            return Err(invalid(why));
+        let outpoint = row.asset_lock_outpoint.as_deref();
+        if !db.delete_registration(&w, id, owner, &row.phase, outpoint)? {
+            return Ok(Err("the registration changed meanwhile"));
         }
-        let (w, id, owner, phase, outpoint) = (
-            wallet.to_string(),
-            row.id,
-            claim.owner(),
-            row.phase.clone(),
-            row.asset_lock_outpoint.clone(),
-        );
-        let deleted = session
-            .appdb_op(move |db| db.delete_registration(&w, id, owner, &phase, outpoint.as_deref()))
-            .await
-            .map_err(PlatformError::from)?;
-        if !deleted {
-            return Err(invalid("the registration changed meanwhile"));
-        }
-        Ok(())
-    }
-    .await;
+        flows.forget(key);
+        Ok(Ok(()))
+    })
+    .await
+    .map_err(RegistrationError::from)
+    .and_then(|judged| judged.map_err(invalid));
     if let Err(e) = decided {
         // Refused (funded since the first look), or the decision failed:
         // the run it took goes on.
@@ -834,7 +844,6 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
         }
         return Err(e);
     }
-    flows.forget(key);
     flow::signal(session, wallet, row.id);
     tracing::info!(draft = row.id, "registration discarded");
     Ok(())
@@ -858,66 +867,13 @@ pub(crate) async fn finish<L: RegistrationLib>(
         completed: 0,
         still_pending: 0,
     };
-    {
-        // DEC-171 (2): a new row's index is chosen as every flow's is,
-        // never the library's reconstructed one.
-        let _index = flows.index.lock().await;
-        let ev = evidence(session, wallet, lib).await?;
-        let stranded: Vec<flow::LockInfo> = if lib.funding_hold().is_some() {
-            // Until discovery has answered which indexes the seed uses, a
-            // fresh index may be another device's identity's.
-            report.still_pending += ev.stranded().count() as u32;
-            Vec::new()
-        } else {
-            ev.stranded().cloned().collect()
-        };
-        let mut next = flow::next_index(&ev);
-        let mut waiting = ev.awaiting_a_lock();
-        for lock in stranded {
-            // A lock whose index the library lost goes to the oldest
-            // restored row waiting for one it can fund, not to a new row
-            // beside it: that row would then fund a second lock.
-            let known = lock.known_index().or_else(|| {
-                let at = waiting.iter().position(|r| r.lock_duffs <= lock.amount)?;
-                Some(waiting.remove(at).index)
-            });
-            let (w, outpoint) = (wallet.to_string(), lock.outpoint);
-            let row = NewRegistration {
-                identity_index: Some(next),
-                identity: None,
-                // A stranded lock has no name to register.
-                label: String::new(),
-                temp_label: None,
-                funding: Funding::CoreBalance {
-                    lock_duffs: lock.amount,
-                }
-                .encode(),
-                initial_profile: None,
-                phase: if lock.status.has_proof() {
-                    Phase::ProofWaiting
-                } else {
-                    Phase::FundingSent
-                }
-                .as_str()
-                .into(),
-            };
-            let now = crate::events::unix_now();
-            let inserted = session
-                .appdb_op(move |db| {
-                    if flow::note_lock_tracked(db, &w, outpoint, known, now)?.is_some() {
-                        return Ok(false);
-                    }
-                    Ok(db
-                        .adopt_registration_lock(&w, &flow::canonical(outpoint), &row, now)?
-                        .1)
-                })
-                .await
-                .map_err(PlatformError::from)?;
-            if inserted {
-                next = next.saturating_add(1);
-            }
-        }
-    }
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let held = lib.funding_hold().is_some();
+    let now = crate::events::unix_now();
+    report.still_pending += flow::rows_op(session, wallet, move |db, flows| {
+        flow::import_stranded(db, flows, wallet, locks, identities, held, now)
+    })
+    .await?;
     let ev = evidence(session, wallet, lib).await?;
     for row in ev.rows() {
         // DEC-171 (4): funded by its evidence, whatever its phase says.
@@ -935,8 +891,8 @@ pub(crate) async fn finish<L: RegistrationLib>(
             report.still_pending += 1;
             continue;
         };
-        if row.error.is_some() {
-            clear_failure(session, &claim, wallet, row).await?;
+        if clear_failure(session, &claim, wallet, lib).await?.is_err() {
+            continue;
         }
         report.resumed += 1;
         let driver = flow::Driver::new(session, lib, &claim, Some(lease.clone()), false);

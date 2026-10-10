@@ -4,8 +4,11 @@
 //! "Finish transfers".
 
 use std::collections::BTreeSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
@@ -131,7 +134,59 @@ impl Fixture {
     }
 
     fn fake(&self) -> Arc<Fake> {
-        Arc::new(Fake::new(self.appdb(), self.wallet))
+        Arc::new(Fake::new(
+            self.appdb(),
+            self.wallet,
+            Arc::clone(&self.session.platform.registrations),
+        ))
+    }
+
+    /// A confirmed coin of 1 DASH on the wallet's BIP44 account 0 (no
+    /// transaction behind it: the asset-lock builds stay offline).
+    fn coin(&self) -> (Arc<platform_wallet::PlatformWallet>, OutPoint) {
+        let wallet = self
+            .engine
+            .block_on(self.session.wallet(&self.wallet))
+            .unwrap();
+        let outpoint = OutPoint::new(Txid::from_byte_array([0xee; 32]), 0);
+        self.engine.block_on(async {
+            let address = wallet
+                .core()
+                .next_receive_address_for_account(0)
+                .await
+                .unwrap();
+            let mut utxo = key_wallet::Utxo::new(
+                outpoint,
+                dashcore::TxOut {
+                    value: COIN,
+                    script_pubkey: address.script_pubkey(),
+                },
+                address,
+                1,
+                false,
+            );
+            utxo.is_confirmed = true;
+            wallet
+                .state_mut()
+                .await
+                .core_wallet
+                .accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .unwrap()
+                .utxos
+                .insert(outpoint, utxo);
+        });
+        (wallet, outpoint)
+    }
+
+    fn pw_lib(&self, wallet: &Arc<platform_wallet::PlatformWallet>) -> flow::PwLib {
+        flow::PwLib {
+            session: Arc::clone(&self.session),
+            wallet_id: self.wallet,
+            wallet: Arc::clone(wallet),
+            sdk: self.session.manager().unwrap().sdk_arc(),
+        }
     }
 
     fn insert(&self, row: NewRegistration) -> i64 {
@@ -170,6 +225,28 @@ impl Fixture {
                     .await
             })
             .unwrap();
+    }
+
+    fn claim(&self, draft: i64) -> flow::Claim {
+        self.engine
+            .block_on(
+                self.session
+                    .platform
+                    .registrations
+                    .claim(&self.session, (self.wallet, draft)),
+            )
+            .unwrap()
+            .expect("the flow is free")
+    }
+
+    /// `claim`'s run inline, which must end.
+    fn run_claim(&self, lib: &Fake, claim: &flow::Claim) {
+        let lease = self.lease();
+        let run = self.engine.block_on(async {
+            let driver = Driver::new(&self.session, lib, claim, Some(lease), false);
+            tokio::time::timeout(Duration::from_secs(30), driver.run()).await
+        });
+        assert!(matches!(run, Ok(Ok(()))), "the run did not end: {run:?}");
     }
 
     fn spawn(&self, lib: &Arc<Fake>, draft: i64, lease: Option<Lease>) {
@@ -234,6 +311,15 @@ fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     while !ok() {
         assert!(Instant::now() < deadline, "timed out: {what}");
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// [`eventually`] for async code: waits up to 30 s, leaving the check to the
+/// caller.
+async fn until(mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ok() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -336,16 +422,18 @@ struct World {
 struct Fake {
     appdb: Arc<AppDb>,
     wallet: WalletId,
+    flows: Arc<flow::Flows>,
     ready: AtomicBool,
     hung: AtomicBool,
     w: Mutex<World>,
 }
 
 impl Fake {
-    fn new(appdb: Arc<AppDb>, wallet: WalletId) -> Self {
+    fn new(appdb: Arc<AppDb>, wallet: WalletId, flows: Arc<flow::Flows>) -> Self {
         Self {
             appdb,
             wallet,
+            flows,
             ready: AtomicBool::new(true),
             hung: AtomicBool::new(false),
             w: Mutex::new(World {
@@ -439,12 +527,13 @@ impl RegistrationLib for Fake {
         }
         // Tracked as Built, stored through the tap before the broadcast.
         let outpoint = self.lock_at(index, LockStatus::Built);
-        flow::note_lock_tracked(
+        flow::lock_tracked(
+            &self.flows,
             &self.appdb,
-            &self.wallet.to_string(),
+            self.wallet,
             outpoint,
             Some(index),
-            2,
+            false,
         )
         .unwrap();
         self.maybe_hang(Call::Fund, When::Tracked).await;
@@ -1077,8 +1166,15 @@ fn an_unbacked_funding_is_maybe_sent_until_its_lock_is_tracked() {
     // The lock shows up (the restore's reconstruction): positive evidence,
     // and the tap hands it to the row.
     let lock = lib.lock_at(index, LockStatus::ChainLocked);
-    let moved =
-        flow::note_lock_tracked(&f.appdb(), &f.wallet.to_string(), lock, Some(index), 3).unwrap();
+    let moved = flow::lock_tracked(
+        &f.session.platform.registrations,
+        &f.appdb(),
+        f.wallet,
+        lock,
+        Some(index),
+        false,
+    )
+    .unwrap();
     assert_eq!(moved, Some(draft));
     let row = f.row(draft);
     assert_eq!((phase(&row), row.error), (Phase::FundingSent, None));
@@ -1386,7 +1482,7 @@ fn a_lock_another_flow_holds_moves_this_one_to_a_new_index() {
         .update_registration(
             &w,
             draft,
-            None,
+            0,
             Phase::KeysPrepared.as_str(),
             false,
             &RegistrationChange {
@@ -1629,7 +1725,7 @@ fn keys_prepared_row_with_own_outpoint_is_recovered() {
         .update_registration(
             &w,
             draft,
-            None,
+            0,
             Phase::KeysPrepared.as_str(),
             false,
             &change,
@@ -1664,7 +1760,7 @@ fn keys_prepared_row_with_own_outpoint_is_recovered() {
         .update_registration(
             &w,
             draft,
-            None,
+            0,
             Phase::KeysPrepared.as_str(),
             false,
             &change,
@@ -1761,7 +1857,7 @@ fn unknown_funding_with_tracked_lock_still_refuses_discard() {
         .update_registration(
             &f.wallet.to_string(),
             draft,
-            None,
+            0,
             Phase::FundingSent.as_str(),
             false,
             &change,
@@ -1781,45 +1877,11 @@ fn unknown_funding_with_tracked_lock_still_refuses_discard() {
 #[test]
 fn real_spendable_excludes_a_manually_locked_coin() {
     let f = fixture(false);
-    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
-    let outpoint = OutPoint::new(Txid::from_byte_array([0xee; 32]), 0);
-    f.engine.block_on(async {
-        let address = wallet
-            .core()
-            .next_receive_address_for_account(0)
-            .await
-            .unwrap();
-        let mut utxo = key_wallet::Utxo::new(
-            outpoint,
-            dashcore::TxOut {
-                value: COIN,
-                script_pubkey: address.script_pubkey(),
-            },
-            address,
-            1,
-            false,
-        );
-        utxo.is_confirmed = true;
-        wallet
-            .state_mut()
-            .await
-            .core_wallet
-            .accounts
-            .standard_bip44_accounts
-            .get_mut(&0)
-            .unwrap()
-            .utxos
-            .insert(outpoint, utxo);
-    });
+    let (wallet, outpoint) = f.coin();
     f.engine
         .block_on(f.session.lock_outpoints(f.wallet, vec![outpoint]))
         .unwrap();
-    let lib = Arc::new(flow::PwLib {
-        session: Arc::clone(&f.session),
-        wallet_id: f.wallet,
-        wallet: Arc::clone(&wallet),
-        sdk: f.session.manager().unwrap().sdk_arc(),
-    });
+    let lib = Arc::new(f.pw_lib(&wallet));
     let spendable = f.engine.block_on(lib.spendable()).unwrap();
     assert_eq!((spendable.duffs, spendable.protected), (0, 1));
 
@@ -1847,4 +1909,339 @@ fn real_spendable_excludes_a_manually_locked_coin() {
         ))
         .unwrap();
     assert!(tx.input.iter().any(|i| i.previous_output == outpoint));
+}
+
+/// Sol r2 R2-02 (DEC-173 (2)): a lock whose index the library lost, which a
+/// row this build cannot read and with no outpoint may own, is no other
+/// row's. "Finish transfers" imports none and runs none, and the unreadable
+/// row's funds count as committed until positive evidence settles it.
+#[test]
+fn an_unreadable_row_parks_a_lock_whose_index_was_lost() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(7);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    row.funding = r#"{"v":2,"kind":"core_balance","lock_duffs":3000000}"#.into();
+    let draft = f.insert(row);
+    lib.lock_at(0, LockStatus::RecoveredFromChain);
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert_eq!(
+        lib.counts(),
+        (0, 0),
+        "Finish took the possibly unread row's lock"
+    );
+    assert_eq!((f.rows().len(), report.completed), (1, 0));
+    assert!(f.status(&lib, draft).funds_committed);
+}
+
+/// Polls `fut` once: a claim sends its job to the actor on its first poll.
+async fn send_once<F: Future + Unpin>(fut: &mut F) {
+    std::future::poll_fn(|cx| {
+        assert!(Pin::new(&mut *fut).poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+}
+
+/// Sol r2 R2-01 (DEC-173 (1)): claims run on the wallet's actor in the
+/// order they were sent, so a claim sent before its wallet was unloaded
+/// and still queued behind it cannot raise the row past the claim sent
+/// after: the retired claim's run stops at once, writing nothing, and the
+/// reopened one runs to the end.
+#[test]
+fn a_retired_claim_cannot_invalidate_the_reopened_owner() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let draft = f.insert(core_row(PLAIN));
+    let key = (f.wallet, draft);
+    let (retired, reopened) = f.engine.block_on(async {
+        let flows = &f.session.platform.registrations;
+        // Hold the actor so both claims queue behind the unload.
+        let (open, gate) = std::sync::mpsc::channel::<()>();
+        let mut held = Box::pin(flow::rows_op(&f.session, f.wallet, move |_, _| {
+            let _ = gate.recv();
+            Ok(())
+        }));
+        send_once(&mut held).await;
+        let mut retired = Box::pin(flows.claim(&f.session, key));
+        send_once(&mut retired).await;
+        flows.forget_wallet(f.wallet);
+        let mut reopened = Box::pin(flows.claim(&f.session, key));
+        send_once(&mut reopened).await;
+        open.send(()).unwrap();
+        held.await.unwrap();
+        (retired.await, reopened.await)
+    });
+    let (retired, reopened) = (retired.unwrap().unwrap(), reopened.unwrap().unwrap());
+    assert!(reopened.owner() > retired.owner());
+    assert_eq!(f.row(draft).owner, reopened.owner());
+    f.run_claim(&lib, &retired);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.owner), (Phase::Draft, reopened.owner()));
+    f.run_claim(&lib, &reopened);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+}
+
+/// DEC-173 (1): a run whose generation was lost (the row claimed again)
+/// stops at the funding gate instead of stepping again: it funds nothing
+/// and the row keeps its phase.
+#[test]
+fn a_run_that_lost_its_generation_stops_before_funding() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(1);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    let draft = f.insert(row);
+    let claim = f.claim(draft);
+    let raised = f
+        .appdb()
+        .claim_registration(&f.wallet.to_string(), draft)
+        .unwrap();
+    assert!(raised > Some(claim.owner()));
+    f.run_claim(&lib, &claim);
+    assert_eq!(lib.counts(), (0, 0));
+    assert_eq!(phase(&f.row(draft)), Phase::KeysPrepared);
+}
+
+/// Sol r2 R2-03 (DEC-173 (1)): the tap's evidence is read and written in
+/// one job of the actor, under the owner it read, so an index reassignment
+/// sent while it runs waits for it, and then finds the row moved: the row
+/// never carries one index with the lock funded for another.
+#[test]
+fn tap_evidence_cannot_land_inside_an_index_reassignment() {
+    let f = fixture(false);
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(7);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    let draft = f.insert(row);
+    let flows = Arc::clone(&f.session.platform.registrations);
+    let claim = f.claim(draft);
+    let lock = OutPoint::new(Txid::from_byte_array([0xab; 32]), 0);
+    let (paused, on_pause) = std::sync::mpsc::channel();
+    let (go, on_go) = std::sync::mpsc::channel();
+    *flow::NOTE_PAUSE.lock().unwrap() = Some((lock, paused, on_go));
+    let tap = {
+        let (flows, appdb, wallet) = (Arc::clone(&flows), f.appdb(), f.wallet);
+        std::thread::spawn(move || flow::lock_tracked(&flows, &appdb, wallet, lock, Some(7), false))
+    };
+    on_pause.recv().unwrap();
+    // The claim's reassignment (`assign_index`), from its read of the row.
+    let (session, wallet, owner) = (Arc::clone(&f.session), f.wallet, claim.owner());
+    let reassign = f.session.rt.spawn(async move {
+        flow::rows_op(&session, wallet, move |db, _| {
+            let change = RegistrationChange {
+                identity_index: Some(8),
+                ..Default::default()
+            };
+            let w = wallet.to_string();
+            db.update_registration(
+                &w,
+                draft,
+                owner,
+                Phase::KeysPrepared.as_str(),
+                false,
+                &change,
+                3,
+            )
+        })
+        .await
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!reassign.is_finished(), "a write ran inside the tap's job");
+    go.send(()).unwrap();
+    assert_eq!(tap.join().unwrap().unwrap(), Some(draft));
+    let written = f.engine.block_on(reassign).unwrap().unwrap();
+    assert_eq!(written, dw_appdb::RegistrationUpdate::Stale);
+    let row = f.row(draft);
+    assert_eq!(
+        (
+            row.identity_index,
+            row.asset_lock_outpoint.clone(),
+            phase(&row)
+        ),
+        (
+            Some(7),
+            Some(flow::canonical(lock).as_str().to_owned()),
+            Phase::FundingSent
+        )
+    );
+}
+
+/// Builds the registration lock of `index` offline (nothing is sent),
+/// tracks it as built in the wallet's state and reports it through the tap,
+/// as the library does; returns the lock and its inputs.
+async fn build_and_track(
+    f: &Fixture,
+    wallet: &platform_wallet::PlatformWallet,
+    index: u32,
+    lease: &Lease,
+) -> (OutPoint, Vec<OutPoint>) {
+    let signer = lease.funding_signer().unwrap();
+    let (tx, _) = wallet
+        .asset_locks()
+        .build_asset_lock_transaction(
+            flow::LOCK_DUFFS,
+            0,
+            platform_wallet::AssetLockFundingType::IdentityRegistration,
+            index,
+            &signer,
+        )
+        .await
+        .unwrap();
+    let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    let lock = OutPoint::new(tx.txid(), 0);
+    let tracked = platform_wallet::TrackedAssetLock {
+        out_point: lock,
+        transaction: tx,
+        account_index: 0,
+        funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+        identity_index: index,
+        amount: flow::LOCK_DUFFS,
+        status: platform_wallet::AssetLockStatus::Built,
+        proof: None,
+    };
+    wallet
+        .state_mut()
+        .await
+        .tracked_asset_locks
+        .insert(lock, tracked);
+    let flows = &f.session.platform.registrations;
+    flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(index), true).unwrap();
+    (lock, inputs)
+}
+
+/// Whether `coin` reads reserved in the wallet's coin view.
+fn reads_reserved(f: &Fixture, coin: OutPoint) -> bool {
+    f.engine.block_on(async {
+        let fence = f.session.coin_fence(f.wallet).await.unwrap();
+        let coins = f.session.fenced_coins(&fence).await.unwrap();
+        coins
+            .coins
+            .iter()
+            .any(|c| c.utxo.outpoint == coin && c.reserved)
+    })
+}
+
+/// Sol r2 R2-04 (DEC-173 (3)): a funding's coin check and the library's
+/// selection and signing run under the wallet's coin fence, so "Lock
+/// unspent" completes before the check (and the funding is refused) or
+/// after the lock is built, never between them. The fence comes down when
+/// the built lock is tracked, its inputs then reading reserved.
+#[test]
+fn a_coin_lock_waits_for_the_funding_it_did_not_precede() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let locked = Arc::new(AtomicBool::new(false));
+    let (inputs, locked_inside, locked_after_tracking) = f.engine.block_on(async {
+        let locker = {
+            let (session, locked, w) = (Arc::clone(&f.session), Arc::clone(&locked), f.wallet);
+            async move {
+                session.lock_outpoints(w, vec![coin]).await.unwrap();
+                locked.store(true, Ordering::SeqCst);
+            }
+        };
+        let mut locking = None;
+        let built = lib
+            .fenced(1, async {
+                // "Lock unspent" after the check, while the coins are
+                // selected and signed.
+                locking = Some(tokio::spawn(locker));
+                // The locker waits for the fence this call holds.
+                until(|| f.session.coin_fences.users(f.wallet) >= 2).await;
+                assert_eq!(f.session.coin_fences.users(f.wallet), 2);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let inside = locked.load(Ordering::SeqCst);
+                let (_, inputs) = build_and_track(&f, &wallet, 1, &lease).await;
+                // The broadcast and the proof wait run unfenced.
+                until(|| locked.load(Ordering::SeqCst)).await;
+                Ok((inputs, inside, locked.load(Ordering::SeqCst)))
+            })
+            .await
+            .unwrap();
+        locking.unwrap().await.unwrap();
+        built
+    });
+    assert!(
+        !locked_inside,
+        "lock_outpoints completed inside the funding's fence"
+    );
+    assert!(
+        locked_after_tracking,
+        "the fence outlived the built lock's tracking"
+    );
+    // Selected before the lock, and reserved from the build on.
+    assert!(inputs.contains(&coin));
+    assert!(reads_reserved(&f, coin));
+    // With the lock in place the next funding is refused before the library.
+    let refused = f.engine.block_on(lib.fenced(1, async { Ok(()) }));
+    assert_eq!(refused, Err(FundError::CoinsLocked));
+}
+
+/// DEC-173 (3) on E0-04 §2a.6's coin view: a built lock's inputs read
+/// reserved while the library tracks the lock, so no engine build spends
+/// them, yet they hold no funding back (the library reserves them itself);
+/// once the library untracks the lock (positively not sent) they are free,
+/// with no reservation of the engine's to clean up.
+#[test]
+fn a_built_lock_keeps_its_inputs_from_other_spends() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let (lock, inputs) = f
+        .engine
+        .block_on(lib.fenced(1, async {
+            Ok(build_and_track(&f, &wallet, 1, &lease).await)
+        }))
+        .unwrap();
+    assert!(inputs.contains(&coin));
+    assert!(reads_reserved(&f, coin));
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+    assert_eq!(f.engine.block_on(lib.fenced(1, async { Ok(()) })), Ok(()));
+    f.engine.block_on(async {
+        wallet.state_mut().await.tracked_asset_locks.remove(&lock);
+    });
+    assert!(!reads_reserved(&f, coin));
+}
+
+/// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known
+/// index's lock is not parked for a row this build cannot read that has no
+/// index: "Finish transfers" imports it, and that row's funds stay
+/// uncommitted.
+#[test]
+fn an_unreadable_row_without_an_index_parks_no_indexed_lock() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let mut row = core_row(PLAIN);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    row.funding = r#"{"v":2,"kind":"core_balance","lock_duffs":3000000}"#.into();
+    let draft = f.insert(row);
+    let lock = lib.lock_at(4, LockStatus::ChainLocked);
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    let held = f
+        .rows()
+        .into_iter()
+        .filter(|r| r.id != draft)
+        .any(|r| r.asset_lock_outpoint.as_deref() == Some(flow::canonical(lock).as_str()));
+    assert!(held, "the indexed lock stayed parked: {:?}", f.rows());
+    assert!(!f.status(&lib, draft).funds_committed);
 }

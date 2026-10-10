@@ -484,6 +484,10 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_funded.set(Box::new(funded));
+            let _ = live
+                .tap
+                .registrations
+                .set(Arc::clone(&session.platform.registrations));
         }
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))

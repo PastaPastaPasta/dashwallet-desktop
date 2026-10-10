@@ -212,7 +212,8 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
-**Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`).** What the bodies
+**Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`; Sol r2,
+DEC-173).** What the bodies
 decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
@@ -226,8 +227,15 @@ decided where the rows leave room:
   the library's. The pinned asset-lock builder cannot be told to skip a coin, so while any coin it could spend is
   locked by the user (or the dust protection) or reserved by a send, `start_registration` and the funding step refuse
   with the new code `registration.coins_locked` (retryable once the coin is unlocked or the send ends) and fund
-  nothing. With dust protection on, a dust coin it locked blocks registration until the user unlocks it. E0-04 P2b's
-  coin-control exclusion replaces the refusal.
+  nothing. The funding step checks under the wallet's coin fence and holds it through the library's coin selection
+  and signing, until the library tracks the lock it built (DEC-173 (3)): "Lock unspent", the dust protection's
+  locks and CoinJoin's funding transaction's reservation wait for it, so a lock lands before the check (refused) or
+  after the build, never between. The built lock's inputs are then reserved as a send's until they are spent or the
+  library stops tracking the lock (positively not sent, rejected later, swept), which the funding step checks after a
+  `NotSent` and before its coin check; CoinJoin's funding transaction backs off a reserved coin. With dust
+  protection on, a dust coin it locked blocks registration until the user unlocks it. E0-04 P2b's fenced coin-control
+  exclusion replaces the refusal and the fence, and fences the other sends' reservations (until then a send whose
+  coins were chosen before the fence may conflict with the lock, and one of the two fails to broadcast).
 - **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
@@ -239,7 +247,8 @@ decided where the rows leave room:
   `platform.feature_off`. The failure is derived when read, never written: an unknown row is never funded, advanced
   or deleted (`discard_registration` refuses it), and stays as written for the build that can read it. Unknown means
   committed: its `funds_committed` is `true`, and it counts as in progress, whenever a lock or proof exists for it (an
-  outpoint, an identity, or a tracked lock that is its own); without one it stops counting. Every encoding of the
+  outpoint, an identity, or a tracked lock that is its own, or a registration lock no row holds whose index the
+  library lost, which may be its own: DEC-173 (2)); without one it stops counting. Every encoding of the
   row, the profile included, is read before anything is funded.
 - **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
   uncontested (`invalid_argument`). An `initial_profile` naming an avatar candidate is `invalid_argument` until
@@ -255,7 +264,8 @@ decided where the rows leave room:
   discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap hands the
   lock to it (the row resumes at `FundingSent`, no second row).
 - **Indexes.** A flow takes its identity index after the sync hold, one past every index the wallet's identities,
-  tracked registration locks and rows use, under one lock so no two flows take one index. The hold (Restore rule 1)
+  tracked registration locks and rows use, chosen from the rows read in the write's own job of the wallet's
+  registration actor, so no two flows take one index. The hold (Restore rule 1)
   lasts until SPV has synced and the bring-up's discovery has answered which indexes the seed uses (`Ready`,
   `NoIdentity`, `PartialAccountsPending`, `SeedBindingUnverified`). Until then the flow waits at `Sync`; a bring-up
   that runs again only at the first unlock (`IdentityUnsettled`) parks it at `Unlock`, and one that runs again only at
@@ -279,13 +289,19 @@ decided where the rows leave room:
   signing step; without one the flow runs its keyless steps (the sync hold, the proof wait) and parks at the first
   that signs. A flow that runs already takes the grant: its parked lease through `rebind_lease`, or, when it has no
   lease that signs, a new lease handed to its run. A row failed for good is `invalid_argument`.
-- **One owner per row (DEC-171).** A run, `discard_registration`, `resume_registration` and "Finish transfers" act
-  on a row only under its claim: they raise the row's persisted `owner` generation, and every write and delete names
-  the generation it holds, so a run whose claim was taken writes nothing. Only evidence the library reports (the
-  changeset tap's outpoint, and "Finish transfers" giving a stranded lock to a waiting row or to a new row) is
-  written without a claim. A row this build cannot read holds the lock built for its index, which is never given to
-  another row. `resume_registration` asks the
-  running flow to take its grant rather than start another run.
+- **One owner per row (DEC-171), one actor per wallet (DEC-173).** A run, `discard_registration`,
+  `resume_registration` and "Finish transfers" act on a row only under its claim: they raise the row's persisted
+  `owner` generation, and every write and delete names the generation it holds. Every claim, every read of a row
+  that leads to a write and every write runs as a job of the wallet's registration actor, one at a time in the order
+  sent, and runs to its end whatever happens to the task that sent it: no claim or write of an aborted task lands
+  after a newer one, and an unloaded wallet's flows are forgotten in a job, so a claim sent before the unload is
+  forgotten with them. A run whose generation was taken stops at its next write or at its funding call. Evidence the library reports (the
+  changeset tap's outpoint, and "Finish transfers" giving a stranded lock to a waiting row or to a new row) is read
+  and written in one job, under the owner read with it. The tap's lock goes to the row whose funding call runs, else
+  to the row at its index; not while a row this build cannot read, with no outpoint or identity and past `Draft`
+  as far as it reads, sits at that index. A row this build cannot read
+  holds the lock built for its index, which is never given to another row. `resume_registration` asks the running
+  flow to take its grant rather than start another run.
 - **`discard_registration`** takes the flow's claim between library calls: a call running refuses it, and so do
   committed funds and a row this build cannot read, and then the flow runs on from its row as it is (a run it stopped
   starts again). It never waits for a run. A funding call's outcome is written before the call counts as ended. The
@@ -293,8 +309,11 @@ decided where the rows leave room:
 - **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed, that no row
   holds and whose identity the wallet does not have: into the `KeysPrepared` row at its index when the index is known
   (live or failed with nothing committed), a lock whose index is unknown into the oldest `KeysPrepared` row without a
-  lock whose amount it covers, else a new row with label `""` at a fresh index, which skips the name step. While the
-  funding hold lasts (the indexes the seed uses are not known yet) it adopts none and counts them `still_pending`. It
+  lock whose amount it covers (not one whose funding call runs), else a new row with label `""` at a fresh index,
+  which skips the name step. A lock stays where it is while a row this build cannot read may own it (DEC-173 (2)):
+  one with no outpoint or identity, past `Draft` as far as it reads, at the lock's index, or anywhere once the lock's
+  index is unknown. Such a lock counts as that row's possible funding; one whose index is unknown also counts in
+  `still_pending`. While the funding hold lasts (the indexes the seed uses are not known yet) it adopts none and counts them `still_pending`. It
   then runs each row funded by evidence (an outpoint, or a funded phase) once under the grant, without waiting for a
   proof; a `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone:
   the grant's lease keeps its key for the other rows. `resumed` counts the rows it ran.

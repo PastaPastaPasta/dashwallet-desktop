@@ -49,7 +49,8 @@ use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProo
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_appdb::{
-    AppDb, AppDbError, LockOutpoint, RegistrationChange, RegistrationRow, RegistrationUpdate,
+    AppDb, AppDbError, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
+    RegistrationUpdate,
 };
 use dw_vault::LockState;
 use tokio::time::Instant;
@@ -60,6 +61,7 @@ use super::lease::Lease;
 use super::names::NameOutcome;
 use super::registration::RegistrationWait;
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
 
 /// The asset lock of a registration with a plain name: 0.03 DASH, as the
@@ -204,6 +206,10 @@ pub(crate) enum FundError {
     /// The engine refused before the library call started (a lease that
     /// no longer signs): nothing was signed, so nothing can be out.
     Refused(PlatformError),
+    /// Refused before the library call: a funding coin is held back (locked,
+    /// or reserved by a send), read under the coin fence the call then
+    /// holds (DEC-173 (3)).
+    CoinsLocked,
     /// The proof wait ended without a proof (the 300 s InstantSend wait,
     /// or one bounded ChainLock wait); the lock is still tracked.
     IsTimeout,
@@ -351,22 +357,47 @@ pub(crate) struct Preempted {
     pub(crate) lease: Option<Lease>,
 }
 
-/// Every flow's [`FlowState`], keyed by wallet and draft.
+/// A job of a wallet's registration actor.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Every flow's [`FlowState`], keyed by wallet and draft, and each wallet's
+/// registration actor (DEC-173): one thread that runs, one at a time and in
+/// the order sent, every claim of the wallet's flows, every read of its
+/// `dp_registration` rows that leads to a write, and every write. A job
+/// runs to its end whatever happens to the task that sent it, so no claim
+/// or write of a task that was aborted lands after a newer one.
 #[derive(Debug, Default)]
 pub(crate) struct Flows {
     flows: Mutex<HashMap<(WalletId, i64), FlowState>>,
     /// The next claim's `run`.
     runs: AtomicU64,
-    /// Orders `start_registration`'s in-progress check and its insert.
-    pub(crate) start: tokio::sync::Mutex<()>,
-    /// Orders every choice of an identity index with its write, and the
-    /// funding step's reading of who owns an index: no two flows take one
-    /// index.
-    pub(crate) index: tokio::sync::Mutex<()>,
+    /// Each wallet's actor's queue.
+    actors: Mutex<HashMap<WalletId, std::sync::mpsc::Sender<Job>>>,
+    /// The coin fence a funding call holds, by wallet. It comes down when
+    /// the library tracks the lock it built, whose inputs then read
+    /// reserved ([`lock_tracked`]), or when the call ends.
+    fences: Mutex<HashMap<WalletId, HeldFence>>,
+}
+
+/// A funding call's coin fence ([`PwLib::fenced`]).
+struct HeldFence {
+    token: u64,
+    /// The identity index the call funds.
+    index: u32,
+    _fence: CoinFence,
+}
+
+impl std::fmt::Debug for HeldFence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldFence")
+            .field("token", &self.token)
+            .field("index", &self.index)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Flows {
-    pub(crate) fn with<R>(&self, key: (WalletId, i64), f: impl FnOnce(&mut FlowState) -> R) -> R {
+    fn with<R>(&self, key: (WalletId, i64), f: impl FnOnce(&mut FlowState) -> R) -> R {
         let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
         f(map.entry(key).or_default())
     }
@@ -383,8 +414,18 @@ impl Flows {
 
     /// `f` on the flow's state while `claim` still holds it.
     fn with_held<R>(&self, claim: &Claim, f: impl FnOnce(&mut FlowState) -> R) -> Option<R> {
-        self.with_existing(claim.key, |s| {
-            (s.holder.map(|h| h.run) == Some(claim.run)).then(|| f(s))
+        self.with_run(claim.key, claim.run, f)
+    }
+
+    /// `f` on the flow's state while `run` still holds it.
+    fn with_run<R>(
+        &self,
+        key: (WalletId, i64),
+        run: u64,
+        f: impl FnOnce(&mut FlowState) -> R,
+    ) -> Option<R> {
+        self.with_existing(key, |s| {
+            (s.holder.map(|h| h.run) == Some(run)).then(|| f(s))
         })
         .flatten()
     }
@@ -396,6 +437,64 @@ impl Flows {
             .get(&key)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Sends `job` to `wallet`'s actor, which starts with the first.
+    fn send(&self, wallet: WalletId, job: Job) {
+        let mut actors = self.actors.lock().unwrap_or_else(PoisonError::into_inner);
+        let actor = actors.entry(wallet).or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Job>();
+            let started = std::thread::Builder::new()
+                .name("dw-registrations".into())
+                .spawn(move || {
+                    // Ends with the session's `Flows`, the last sender.
+                    for job in rx {
+                        // A job that panics fails its own sender only.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                    }
+                });
+            if let Err(e) = started {
+                tracing::error!(error = %e, "could not start the registration actor");
+            }
+            tx
+        });
+        let _ = actor.send(job);
+    }
+
+    /// Runs `f` on `wallet`'s actor, after every job sent before it.
+    async fn act<R: Send + 'static>(
+        &self,
+        wallet: WalletId,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> Result<R, PlatformError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.send(
+            wallet,
+            Box::new(move || {
+                let _ = tx.send(f());
+            }),
+        );
+        rx.await.map_err(|_| PlatformError::Internal {
+            detail: "the registration actor stopped".into(),
+        })
+    }
+
+    /// [`Self::act`] for the changeset tap, which runs inside the
+    /// persister and cannot await. No job calls the library, so waiting
+    /// for one there cannot wait for the library's own locks.
+    fn act_blocking<R: Send + 'static>(
+        &self,
+        wallet: WalletId,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> Option<R> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.send(
+            wallet,
+            Box::new(move || {
+                let _ = tx.send(f());
+            }),
+        );
+        rx.recv().ok()
     }
 
     fn new_claim(self: &Arc<Self>, key: (WalletId, i64), s: &mut FlowState, kind: Kind) -> Claim {
@@ -411,14 +510,55 @@ impl Flows {
         }
     }
 
-    /// A driver's claim in this process; `None` while another holds the
-    /// flow. [`Claim::persist`] takes the row.
-    pub(crate) fn hold(self: &Arc<Self>, key: (WalletId, i64)) -> Option<Claim> {
-        self.with(key, |s| {
-            s.holder
-                .is_none()
-                .then(|| self.new_claim(key, s, Kind::Run))
+    /// The in-memory half of a claim: a run's while no one holds the flow;
+    /// a decision's (a discard) while no call runs and no other decision
+    /// holds it, taken from a run between its calls, whose task ends.
+    fn admit(self: &Arc<Self>, key: (WalletId, i64), kind: Kind) -> Option<(Claim, Preempted)> {
+        let (claim, task, preempted) = self.with(key, |s| {
+            let free = match kind {
+                Kind::Run => s.holder.is_none(),
+                Kind::Decide => !s.in_call && s.holder.is_none_or(|h| h.kind == Kind::Run),
+            };
+            if !free {
+                return None;
+            }
+            let preempted = Preempted {
+                ran: s.running(),
+                // A lease offered to the run is the newer authority.
+                lease: s.offered.take().or(s.lease.take()).map(|h| h.0),
+            };
+            let task = s.task.take();
+            Some((self.new_claim(key, s, kind), task, preempted))
+        })?;
+        if let Some(task) = task {
+            task.abort();
+        }
+        Some((claim, preempted))
+    }
+
+    /// A claim of the flow and its row, in one job of the actor: admitted,
+    /// then the row's `owner` raised, so every write of an earlier claim is
+    /// refused and no earlier claim's can follow it. `None` while another
+    /// holds the flow (see [`Self::admit`]); a run's also once the row is
+    /// gone (a decision's then finds it gone).
+    async fn acquire(
+        self: &Arc<Self>,
+        session: &NetworkSession,
+        key: (WalletId, i64),
+        kind: Kind,
+    ) -> Result<Option<(Claim, Preempted)>, PlatformError> {
+        rows_op(session, key.0, move |db, flows| {
+            let Some((mut claim, preempted)) = flows.admit(key, kind) else {
+                return Ok(None);
+            };
+            let owner = db.claim_registration(&key.0.to_string(), key.1)?;
+            if owner.is_none() && kind == Kind::Run {
+                return Ok(None);
+            }
+            claim.owner = owner.unwrap_or(0);
+            Ok(Some((claim, preempted)))
         })
+        .await
     }
 
     /// A driver's claim of the flow and its row; `None` while another holds
@@ -428,36 +568,24 @@ impl Flows {
         session: &NetworkSession,
         key: (WalletId, i64),
     ) -> Result<Option<Claim>, PlatformError> {
-        let Some(mut claim) = self.hold(key) else {
-            return Ok(None);
-        };
-        Ok(claim.persist(session).await?.then_some(claim))
+        Ok(self
+            .acquire(session, key, Kind::Run)
+            .await?
+            .map(|(claim, _)| claim))
     }
 
-    /// A decision's claim (a discard): taken from a run between its calls,
-    /// whose task ends; `None` while a call runs or another decision holds
-    /// the flow.
-    pub(crate) fn take(self: &Arc<Self>, key: (WalletId, i64)) -> Option<(Claim, Preempted)> {
-        let (claim, task, preempted) = self.with(key, |s| {
-            if s.in_call || s.holder.is_some_and(|h| h.kind == Kind::Decide) {
-                return None;
-            }
-            let preempted = Preempted {
-                ran: s.running(),
-                // A lease offered to the run is the newer authority.
-                lease: s.offered.take().or(s.lease.take()).map(|h| h.0),
-            };
-            let task = s.task.take();
-            Some((self.new_claim(key, s, Kind::Decide), task, preempted))
-        })?;
-        if let Some(task) = task {
-            task.abort();
-        }
-        Some((claim, preempted))
+    /// A decision's claim (a discard); `None` while a call runs or another
+    /// decision holds the flow.
+    pub(crate) async fn take(
+        self: &Arc<Self>,
+        session: &NetworkSession,
+        key: (WalletId, i64),
+    ) -> Result<Option<(Claim, Preempted)>, PlatformError> {
+        self.acquire(session, key, Kind::Decide).await
     }
 
-    /// Marks a library call of `claim`'s run, atomic with [`Self::take`]:
-    /// `Err(Stop)` once the flow is no longer its.
+    /// Marks a library call of `claim`'s run, atomic with a decision's
+    /// [`Self::admit`]: `Err(Stop)` once the flow is no longer its.
     fn enter_call<'a>(&'a self, claim: &'a Claim) -> Result<InCall<'a>, Step> {
         self.with_held(claim, |s| s.in_call = true)
             .map(|()| InCall(self, claim))
@@ -504,17 +632,98 @@ impl Flows {
         }
     }
 
-    pub(crate) fn forget_wallet(&self, wallet: WalletId) {
-        let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
-        map.retain(|(w, _), s| {
-            if *w == wallet
-                && let Some(task) = s.task.take()
-            {
-                task.abort();
+    /// An unloaded wallet's flows: their tasks end now, and their states go
+    /// in a job of the actor, so a claim sent before it is forgotten with
+    /// them and none sent after it (the wallet loaded again) finds them.
+    pub(crate) fn forget_wallet(self: &Arc<Self>, wallet: WalletId) {
+        {
+            let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+            for (_, s) in map.iter_mut().filter(|((w, _), _)| *w == wallet) {
+                if let Some(task) = s.task.take() {
+                    task.abort();
+                }
             }
-            *w != wallet
-        });
+        }
+        let flows = Arc::clone(self);
+        let clear = move || {
+            let mut map = flows.flows.lock().unwrap_or_else(PoisonError::into_inner);
+            map.retain(|(w, _), s| {
+                if *w == wallet
+                    && let Some(task) = s.task.take()
+                {
+                    task.abort();
+                }
+                *w != wallet
+            });
+        };
+        let actors = self.actors.lock().unwrap_or_else(PoisonError::into_inner);
+        match actors.get(&wallet) {
+            Some(actor) => {
+                let _ = actor.send(Box::new(clear));
+            }
+            // No job is queued, and none can be while the queues are held.
+            None => clear(),
+        }
     }
+
+    /// Holds `fence` for the funding call of `identity_index`; the token
+    /// [`Self::release_fence`] takes. It comes down at the built lock's
+    /// tracking ([`Self::release_built`]) at the latest.
+    fn hold_fence(&self, wallet: WalletId, index: u32, fence: CoinFence) -> u64 {
+        let token = self.runs.fetch_add(1, Ordering::Relaxed) + 1;
+        let held = HeldFence {
+            token,
+            index,
+            _fence: fence,
+        };
+        self.fences
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(wallet, held);
+        token
+    }
+
+    /// Takes the wallet's held fence out if `is` it.
+    fn take_fence(
+        &self,
+        wallet: WalletId,
+        is: impl FnOnce(&HeldFence) -> bool,
+    ) -> Option<HeldFence> {
+        let mut fences = self.fences.lock().unwrap_or_else(PoisonError::into_inner);
+        if fences.get(&wallet).is_some_and(is) {
+            fences.remove(&wallet)
+        } else {
+            None
+        }
+    }
+
+    /// Releases the wallet's held fence if it is `token`'s.
+    fn release_fence(&self, wallet: WalletId, token: u64) {
+        self.take_fence(wallet, |h| h.token == token);
+    }
+
+    /// Releases the fence of the funding call of `index`, whose built lock
+    /// the library tracks: its inputs read reserved from now on
+    /// ([`NetworkSession::coin_snapshot`]).
+    fn release_built(&self, wallet: WalletId, index: u32) {
+        self.take_fence(wallet, |h| h.index == index);
+    }
+}
+
+/// Runs `f` with the app database and the flows on `wallet`'s registration
+/// actor (DEC-173).
+pub(crate) async fn rows_op<T: Send + 'static>(
+    session: &NetworkSession,
+    wallet: WalletId,
+    f: impl FnOnce(&AppDb, &Arc<Flows>) -> Result<T, AppDbError> + Send + 'static,
+) -> Result<T, PlatformError> {
+    let db = session.live()?.appdb;
+    let flows = Arc::clone(&session.platform.registrations);
+    let actor = Arc::clone(&flows);
+    actor
+        .act(wallet, move || f(&db, &flows))
+        .await?
+        .map_err(|e| crate::EngineError::from(e).into())
 }
 
 /// One holder's claim of a flow (DEC-171); released when dropped. Its
@@ -525,7 +734,7 @@ pub(crate) struct Claim {
     flows: Arc<Flows>,
     key: (WalletId, i64),
     run: u64,
-    /// The row's `owner` this claim raised it to; 0 until persisted.
+    /// The row's `owner` this claim raised it to.
     owner: u64,
 }
 
@@ -537,20 +746,6 @@ impl Claim {
     /// The row's generation this claim holds.
     pub(crate) fn owner(&self) -> u64 {
         self.owner
-    }
-
-    /// Takes the row: raises its `owner`, so a write of every earlier claim
-    /// is refused. `false` if the row is gone.
-    pub(crate) async fn persist(
-        &mut self,
-        session: &NetworkSession,
-    ) -> Result<bool, PlatformError> {
-        let (wallet, id) = (self.key.0.to_string(), self.key.1);
-        let owner = session
-            .appdb_op(move |db| db.claim_registration(&wallet, id))
-            .await?;
-        self.owner = owner.unwrap_or(0);
-        Ok(owner.is_some())
     }
 }
 
@@ -598,6 +793,17 @@ enum Step {
     Fail(&'static str, bool),
     /// Nothing left to do.
     Stop,
+}
+
+/// What a driver's write found ([`Driver::write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    Applied,
+    /// The row moved since it was read (evidence written meanwhile, or a
+    /// lock another flow took); the claim still holds it.
+    Moved,
+    /// A newer claim took the row, or it is gone: the run stops (DEC-173).
+    Lost,
 }
 
 fn unsupported() -> &'static str {
@@ -677,12 +883,6 @@ pub(crate) struct Evidence {
     rows: Vec<RegistrationRow>,
 }
 
-/// A row [`Evidence::awaiting_a_lock`] lists.
-pub(crate) struct AwaitingLock {
-    pub(crate) index: u32,
-    pub(crate) lock_duffs: u64,
-}
-
 /// Who an identity index belongs to, as [`Evidence::index_owner`] reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IndexOwner {
@@ -720,21 +920,20 @@ impl Evidence {
     }
 
     /// Restored rows that wait for a lock whose index the library lost
-    /// (`IndexOwner::Unknown` before funding), oldest first.
-    pub(crate) fn awaiting_a_lock(&self) -> Vec<AwaitingLock> {
+    /// (`IndexOwner::Unknown` before funding), oldest first, with the lock
+    /// each funds.
+    fn awaiting_a_lock(&self) -> Vec<(&RegistrationRow, u64)> {
         self.rows
             .iter()
             .filter(|r| {
                 r.phase == Phase::KeysPrepared.as_str()
                     && r.asset_lock_outpoint.is_none()
                     && r.identity.is_none()
+                    && r.identity_index.is_some()
                     && (r.error.is_none() || r.retryable)
             })
             .filter_map(|r| match interpret(r) {
-                Ok((_, Funding::CoreBalance { lock_duffs })) => Some(AwaitingLock {
-                    index: r.identity_index?,
-                    lock_duffs,
-                }),
+                Ok((_, Funding::CoreBalance { lock_duffs })) => Some((r, lock_duffs)),
                 _ => None,
             })
             .collect()
@@ -776,17 +975,42 @@ impl Evidence {
         })
     }
 
-    /// A registration lock no row holds whose index the library lost.
-    fn unindexed_stranded(&self) -> bool {
-        self.stranded().any(|l| l.known_index().is_none())
-    }
-
     /// Locks no row holds and no identity of the wallet consumed: funds of
-    /// the seed that wait for a flow ("Finish transfers" gives each a row).
-    pub(crate) fn stranded(&self) -> impl Iterator<Item = &LockInfo> {
+    /// the seed that wait for a flow.
+    fn unclaimed(&self) -> impl Iterator<Item = &LockInfo> {
         self.unheld().filter(|l| {
             l.status != LockStatus::Consumed && !self.has_identity(&b58(&identity_for(l.outpoint)))
         })
+    }
+
+    /// An unclaimed registration lock whose index the library lost.
+    fn unindexed_stranded(&self) -> bool {
+        self.unclaimed().any(|l| l.known_index().is_none())
+    }
+
+    /// A row this build cannot read may own `lock` (DEC-173 (2)): one at
+    /// its index (a lock is a row's by its index, DEC-171 (2)), or any such
+    /// row once the library lost the lock's index.
+    fn may_be_unreadables(&self, lock: &LockInfo) -> bool {
+        let index = lock.known_index();
+        self.rows.iter().any(|r| {
+            may_own_an_unrecorded_lock(r) && (index.is_none() || r.identity_index == index)
+        })
+    }
+
+    /// The unclaimed locks "Finish transfers" gives a row. One a row this
+    /// build cannot read may own stays parked: that row counts it as
+    /// possible funding until positive evidence (its identity, a readable
+    /// row) settles it.
+    fn stranded(&self) -> impl Iterator<Item = &LockInfo> {
+        self.unclaimed().filter(|l| !self.may_be_unreadables(l))
+    }
+
+    /// The unclaimed locks [`Self::stranded`] parks.
+    fn parked(&self) -> usize {
+        self.unclaimed()
+            .filter(|l| self.may_be_unreadables(l))
+            .count()
     }
 
     /// The unfunded `row` cannot fund before "Finish transfers" or the
@@ -858,6 +1082,16 @@ pub(crate) fn is_unsupported(row: &RegistrationRow) -> bool {
     interpret(row) == Err(unsupported())
 }
 
+/// A row this build cannot read that may have funded a lock it records no
+/// outpoint of (DEC-173 (2)): none it can parse, no identity, and a phase
+/// past `Draft` as far as it reads.
+fn may_own_an_unrecorded_lock(row: &RegistrationRow) -> bool {
+    is_unsupported(row)
+        && outpoint_of(row).is_none()
+        && row.identity.is_none()
+        && row.phase != Phase::Draft.as_str()
+}
+
 /// What the engine's funding gate reads for a row's funding (E0-04 §16.6):
 /// `None` and `Some(NotSent)` allow a discard or a second funding.
 ///
@@ -870,9 +1104,12 @@ pub(crate) fn funding_status(row: &RegistrationRow, ev: &Evidence) -> Option<Dis
             // DEC-171 (3): a row this build cannot read is funded once
             // anything says it may be: its outpoint, its identity, a lock
             // built for its index.
+            // An unclaimed lock whose index the library lost may be its
+            // too (DEC-173 (2)).
             let maybe = row.asset_lock_outpoint.is_some()
                 || row.identity.is_some()
-                || ev.lock_of(row).is_some();
+                || ev.lock_of(row).is_some()
+                || ev.unindexed_stranded();
             return maybe.then_some(DispatchState::MaybeSent);
         }
         Ok((_, Funding::CoreBalance { .. })) => {}
@@ -925,7 +1162,7 @@ pub(crate) fn funds_committed(row: &RegistrationRow, ev: &Evidence, in_call: boo
 
 /// One past every identity index the wallet's identities, its tracked
 /// registration locks and its flows use.
-pub(crate) fn next_index(ev: &Evidence) -> u32 {
+fn next_index(ev: &Evidence) -> u32 {
     let used = ev
         .identities
         .iter()
@@ -941,66 +1178,204 @@ pub(crate) fn next_index(ev: &Evidence) -> u32 {
     used.map_or(0, |i| i.saturating_add(1))
 }
 
-/// Writes the outpoint of a lock the library just tracked into the
-/// `KeysPrepared` row it funds, before the library broadcasts it (§3.4
-/// Restore rule 3): platform-wallet stores the `Built` row inline, and the
-/// changeset tap calls this from that store. `index` is the lock's
-/// [`LockInfo::known_index`]: a lock whose index is not known is no row's
-/// by index. Returns the draft moved to `FundingSent`.
-pub(crate) fn note_lock_tracked(
-    appdb: &AppDb,
-    wallet: &str,
+/// The changeset tap's report of a registration lock the library tracked,
+/// from inside the persister, before the library broadcasts it. `index` is
+/// the lock's [`LockInfo::known_index`]: a lock whose index is not known is
+/// no row's by index. A lock tracked as `built` releases the coin fence of
+/// the funding call of that index: its inputs read reserved now. The
+/// outpoint goes to the
+/// `KeysPrepared` row it funds (§3.4 Restore rule 3), in a job of the
+/// wallet's actor. Returns the draft moved to `FundingSent`.
+pub(crate) fn lock_tracked(
+    flows: &Arc<Flows>,
+    appdb: &Arc<AppDb>,
+    wallet: WalletId,
     outpoint: OutPoint,
     index: Option<u32>,
-    now: u64,
+    built: bool,
 ) -> Result<Option<i64>, AppDbError> {
-    let Some(identity_index) = index else {
+    let Some(index) = index else {
         return Ok(None);
     };
+    if built {
+        flows.release_built(wallet, index);
+    }
+    let (db, job_flows) = (Arc::clone(appdb), Arc::clone(flows));
+    let now = crate::events::unix_now();
+    flows
+        .act_blocking(wallet, move || {
+            note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
+        })
+        .unwrap_or(Ok(None))
+}
+
+/// [`lock_tracked`]'s write, on the actor: the row at `index` the lock
+/// funds, read and written in the one job, under the owner read with it.
+/// The row whose funding call runs built it; else a live flow first, then
+/// one that failed with nothing committed (a retryable failure, or
+/// `broadcast_unknown`, which this lock settles), so it resumes instead of
+/// a second row. A row this build cannot read at the index may own the
+/// lock too: then no other row takes it (DEC-173 (2)).
+fn note_lock_tracked(
+    db: &AppDb,
+    flows: &Flows,
+    wallet: WalletId,
+    outpoint: OutPoint,
+    index: u32,
+    now: u64,
+) -> Result<Option<i64>, AppDbError> {
+    let w = wallet.to_string();
     let lock = canonical(outpoint);
-    if appdb
-        .registration_for_lock(wallet, lock.as_str())?
-        .is_some()
-    {
+    if db.registration_for_lock(&w, lock.as_str())?.is_some() {
         return Ok(None);
     }
-    let mut rows = appdb.registration_rows(wallet)?;
-    // A live flow first; then one that failed with nothing committed (a
-    // retryable failure, or `broadcast_unknown`, which this lock settles):
-    // the lock is that flow's, so it resumes instead of a second row.
-    rows.sort_by_key(|r| r.error.is_some());
-    for row in rows {
-        let failed = row.error.is_some();
-        let funds_it =
-            (!failed || row.retryable || row.error.as_deref() == Some(broadcast_unknown()))
-                && row.phase == Phase::KeysPrepared.as_str()
-                && row.identity_index == Some(identity_index)
-                && row.asset_lock_outpoint.is_none()
-                && is_core_balance(&row);
-        if !funds_it {
+    let mut rows: Vec<RegistrationRow> = db
+        .registration_rows(&w)?
+        .into_iter()
+        .filter(|r| r.identity_index == Some(index) && outpoint_of(r).is_none())
+        .collect();
+    #[cfg(test)]
+    note_pause(outpoint);
+    let unreadable = rows.iter().any(may_own_an_unrecorded_lock);
+    rows.retain(|r| {
+        r.asset_lock_outpoint.is_none()
+            && (r.error.is_none() || r.retryable || r.error.as_deref() == Some(broadcast_unknown()))
+            && r.phase == Phase::KeysPrepared.as_str()
+            && is_core_balance(r)
+    });
+    let row = rows
+        .iter()
+        .find(|r| flows.get((wallet, r.id)).in_call)
+        .or_else(|| {
+            if unreadable {
+                return None;
+            }
+            rows.iter().find(|r| r.error.is_none()).or(rows.first())
+        });
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    attach_lock(db, &w, row, &lock, now)
+}
+
+/// A pause of [`note_lock_tracked`] between its read and its write, for
+/// the lock a test names: (that lock, "paused", "go on").
+#[cfg(test)]
+type NotePause = (
+    OutPoint,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+pub(crate) static NOTE_PAUSE: Mutex<Option<NotePause>> = Mutex::new(None);
+
+#[cfg(test)]
+fn note_pause(outpoint: OutPoint) {
+    let mut pause = NOTE_PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+    if pause.as_ref().is_some_and(|(op, _, _)| *op == outpoint)
+        && let Some((_, paused, go)) = pause.take()
+    {
+        drop(pause);
+        let _ = paused.send(());
+        let _ = go.recv();
+    }
+}
+
+/// Moves `row` (`KeysPrepared`, as read on the actor) to `FundingSent` with
+/// `lock`, clearing a failure; the draft if it moved.
+fn attach_lock(
+    db: &AppDb,
+    wallet: &str,
+    row: &RegistrationRow,
+    lock: &LockOutpoint,
+    now: u64,
+) -> Result<Option<i64>, AppDbError> {
+    let failed = row.error.is_some();
+    let change = RegistrationChange {
+        phase: Some(Phase::FundingSent.as_str().into()),
+        outpoint: Some(lock.clone()),
+        failure: failed.then_some(None),
+        ..Default::default()
+    };
+    let written = db.update_registration(
+        wallet,
+        row.id,
+        row.owner,
+        Phase::KeysPrepared.as_str(),
+        failed,
+        &change,
+        now,
+    )?;
+    Ok((written == RegistrationUpdate::Applied).then_some(row.id))
+}
+
+/// "Finish transfers"' import, on the actor (DEC-171 (2), DEC-173): every
+/// stranded lock gets a row, the `KeysPrepared` row its known index names,
+/// else a new one at an unused index. A lock whose index the library lost
+/// goes to the oldest restored row waiting for one it can fund (not one
+/// whose funding call runs), not to a new row beside it: that row would
+/// then fund a second lock. `held`: the funding hold is on, and until
+/// discovery has answered which indexes the seed uses, a fresh index may be
+/// another device's identity's, so nothing is imported. Returns the locks
+/// left pending, the ones parked for a row this build cannot read
+/// included.
+pub(crate) fn import_stranded(
+    db: &AppDb,
+    flows: &Flows,
+    wallet: WalletId,
+    locks: Vec<LockInfo>,
+    identities: Vec<(u32, String)>,
+    held: bool,
+    now: u64,
+) -> Result<u32, AppDbError> {
+    let w = wallet.to_string();
+    let ev = Evidence::new(locks, identities, db.registration_rows(&w)?);
+    if held {
+        return Ok(ev.unclaimed().count() as u32);
+    }
+    let mut next = next_index(&ev);
+    let mut waiting: Vec<(&RegistrationRow, u64)> = ev
+        .awaiting_a_lock()
+        .into_iter()
+        .filter(|(r, _)| !flows.get((wallet, r.id)).in_call)
+        .collect();
+    for lock in ev.stranded() {
+        let outpoint = canonical(lock.outpoint);
+        let given = match lock.known_index() {
+            Some(index) => note_lock_tracked(db, flows, wallet, lock.outpoint, index, now)?,
+            None => match waiting.iter().position(|(_, duffs)| *duffs <= lock.amount) {
+                Some(at) => attach_lock(db, &w, waiting.remove(at).0, &outpoint, now)?,
+                None => None,
+            },
+        };
+        if given.is_some() {
             continue;
         }
-        let change = RegistrationChange {
-            phase: Some(Phase::FundingSent.as_str().into()),
-            outpoint: Some(lock.clone()),
-            failure: failed.then_some(None),
-            ..Default::default()
+        let row = NewRegistration {
+            identity_index: Some(next),
+            identity: None,
+            // A stranded lock has no name to register.
+            label: String::new(),
+            temp_label: None,
+            funding: Funding::CoreBalance {
+                lock_duffs: lock.amount,
+            }
+            .encode(),
+            initial_profile: None,
+            phase: if lock.status.has_proof() {
+                Phase::ProofWaiting
+            } else {
+                Phase::FundingSent
+            }
+            .as_str()
+            .into(),
         };
-        // Evidence, not a step: no claim's generation gates it.
-        let written = appdb.update_registration(
-            wallet,
-            row.id,
-            None,
-            Phase::KeysPrepared.as_str(),
-            failed,
-            &change,
-            now,
-        )?;
-        if written == RegistrationUpdate::Applied {
-            return Ok(Some(row.id));
+        if db.adopt_registration_lock(&w, &outpoint, &row, now)?.1 {
+            next = next.saturating_add(1);
         }
     }
-    Ok(None)
+    Ok(ev.parked() as u32)
 }
 
 /// One run of one flow: steps the row until it parks, fails or is done.
@@ -1021,7 +1396,7 @@ pub(crate) struct Driver<'a, L> {
 }
 
 impl<'a, L: RegistrationLib> Driver<'a, L> {
-    /// `claim` must be persisted ([`Claim::persist`]).
+    /// `claim` from [`Flows::claim`].
     pub(crate) fn new(
         session: &'a Arc<NetworkSession>,
         lib: &'a L,
@@ -1142,35 +1517,38 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     }
 
     async fn evidence(&self) -> Result<Evidence, PlatformError> {
+        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await);
         let wallet = self.wallet.to_string();
-        let rows = self
-            .session
-            .appdb_op(move |db| db.registration_rows(&wallet))
-            .await?;
-        Ok(Evidence::new(
-            self.lib.tracked_locks().await,
-            self.lib.identities().await,
-            rows,
-        ))
+        let rows = rows_op(self.session, self.wallet, move |db, _| {
+            db.registration_rows(&wallet)
+        })
+        .await?;
+        Ok(Evidence::new(locks, identities, rows))
     }
 
     async fn row(&self) -> Result<Option<RegistrationRow>, PlatformError> {
         let (wallet, draft) = (self.wallet.to_string(), self.draft());
-        Ok(self
-            .session
-            .appdb_op(move |db| db.registration_row(&wallet, draft))
-            .await?)
+        rows_op(self.session, self.wallet, move |db, _| {
+            db.registration_row(&wallet, draft)
+        })
+        .await
     }
 
-    /// Compare-and-set from the row as read, under the run's claim.
-    /// `Stale`: another writer moved the row, or a decision took it (the
-    /// loop ends then). `LockTaken`: another flow took the lock this one
-    /// would adopt meanwhile; the next step reads it as that flow's.
     async fn write(
         &self,
         row: &RegistrationRow,
         change: RegistrationChange,
-    ) -> Result<(), PlatformError> {
+    ) -> Result<Written, PlatformError> {
+        self.write_from(row, move |_| Ok(change)).await
+    }
+
+    /// Compare-and-set from the row as read, under the run's claim, of the
+    /// change `change` makes on the actor (DEC-173).
+    async fn write_from(
+        &self,
+        row: &RegistrationRow,
+        change: impl FnOnce(&AppDb) -> Result<RegistrationChange, AppDbError> + Send + 'static,
+    ) -> Result<Written, PlatformError> {
         let (wallet, id, owner, phase, failed) = (
             self.wallet.to_string(),
             row.id,
@@ -1179,25 +1557,48 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             row.error.is_some(),
         );
         let now = crate::events::unix_now();
-        let written = self
-            .session
-            .appdb_op(move |db| {
-                db.update_registration(&wallet, id, Some(owner), &phase, failed, &change, now)
-            })
-            .await?;
-        if written == RegistrationUpdate::Applied {
-            signal(self.session, self.wallet, id);
+        let written = rows_op(self.session, self.wallet, move |db, _| {
+            let change = change(db)?;
+            Ok(
+                match db.update_registration(&wallet, id, owner, &phase, failed, &change, now)? {
+                    RegistrationUpdate::Applied => Written::Applied,
+                    RegistrationUpdate::LockTaken => Written::Moved,
+                    RegistrationUpdate::Stale => match db.registration_row(&wallet, id)? {
+                        Some(r) if r.owner == owner => Written::Moved,
+                        _ => Written::Lost,
+                    },
+                },
+            )
+        })
+        .await?;
+        match written {
+            Written::Applied => signal(self.session, self.wallet, id),
+            Written::Moved => {}
+            Written::Lost => tracing::info!(draft = id, "a newer claim took the registration"),
         }
-        Ok(())
+        Ok(written)
     }
 
+    /// Writes `change`, then steps again; a run whose row a newer claim
+    /// took stops.
     async fn advance(
         &self,
         row: &RegistrationRow,
         change: RegistrationChange,
     ) -> Result<Step, PlatformError> {
-        self.write(row, change).await?;
-        Ok(Step::Again)
+        self.advance_from(row, move |_| Ok(change)).await
+    }
+
+    /// [`Self::advance`] with the change [`Self::write_from`] makes.
+    async fn advance_from(
+        &self,
+        row: &RegistrationRow,
+        change: impl FnOnce(&AppDb) -> Result<RegistrationChange, AppDbError> + Send + 'static,
+    ) -> Result<Step, PlatformError> {
+        Ok(match self.write_from(row, change).await? {
+            Written::Lost => Step::Stop,
+            Written::Applied | Written::Moved => Step::Again,
+        })
     }
 
     async fn to_phase(&self, row: &RegistrationRow, phase: Phase) -> Result<Step, PlatformError> {
@@ -1321,25 +1722,23 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         if let Some(step) = self.funding_hold() {
             return Ok(step);
         }
-        let _index = self.flows().index.lock().await;
-        self.assign_index(row, &self.evidence().await?).await
+        self.assign_index(row).await
     }
 
     /// Writes `KeysPrepared` with a new identity index, one past every used
-    /// one; under the index lock, so no two flows take one index.
-    async fn assign_index(
-        &self,
-        row: &RegistrationRow,
-        ev: &Evidence,
-    ) -> Result<Step, PlatformError> {
-        self.advance(
-            row,
-            RegistrationChange {
+    /// one, chosen from the rows read in the write's own job: no two flows
+    /// take one index.
+    async fn assign_index(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
+        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await);
+        let wallet = self.wallet.to_string();
+        self.advance_from(row, move |db| {
+            let ev = Evidence::new(locks, identities, db.registration_rows(&wallet)?);
+            Ok(RegistrationChange {
                 phase: Some(Phase::KeysPrepared.as_str().into()),
-                identity_index: Some(next_index(ev)),
+                identity_index: Some(next_index(&ev)),
                 ..Default::default()
-            },
-        )
+            })
+        })
         .await
     }
 
@@ -1365,6 +1764,41 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         Ok(step)
     }
 
+    /// Marks the funding call of the run, on the actor with the row read
+    /// there (DEC-173): unchanged since the funding gate read it, so no
+    /// evidence written meanwhile ("Finish transfers" giving it a lock) is
+    /// funded over, and none is written to it while the call runs
+    /// ([`import_stranded`]). Otherwise the step: `Again` for a changed
+    /// row of the run's generation, `Stop` once the generation is lost.
+    async fn enter_funding(
+        &self,
+        row: &RegistrationRow,
+    ) -> Result<Result<InCall<'_>, Step>, PlatformError> {
+        let (wallet, key, run, owner, phase) = (
+            self.wallet.to_string(),
+            self.claim.key,
+            self.claim.run,
+            self.claim.owner,
+            row.phase.clone(),
+        );
+        let entered = rows_op(self.session, self.wallet, move |db, flows| {
+            let Some(r) = db
+                .registration_row(&wallet, key.1)?
+                .filter(|r| r.owner == owner)
+            else {
+                return Ok(Err(Step::Stop));
+            };
+            if r.phase != phase || r.asset_lock_outpoint.is_some() || r.error.is_some() {
+                return Ok(Err(Step::Again));
+            }
+            Ok(flows
+                .with_run(key, run, |s| s.in_call = true)
+                .ok_or(Step::Stop))
+        })
+        .await?;
+        Ok(entered.map(|()| InCall(self.flows(), self.claim)))
+    }
+
     /// KeysPrepared → FundingSent: the one step that commits funds.
     async fn fund(&self, row: &RegistrationRow, lock_duffs: u64) -> Result<Step, PlatformError> {
         if let Some(step) = self.funding_hold() {
@@ -1373,31 +1807,25 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Some(index) = row.identity_index else {
             return Ok(Step::Fail(internal(), false));
         };
+        let ev = self.evidence().await?;
+        match ev.index_owner(row, index) {
+            IndexOwner::Free => {}
+            // §3.4 Restore rule 2: what an earlier run left.
+            IndexOwner::Lock(outpoint) => {
+                return self.record_lock(row, outpoint, Phase::FundingSent).await;
+            }
+            // Another flow funded this index (a restored row behind
+            // reality whose lock "Finish transfers" adopted): this one
+            // takes a new index rather than a second lock for it.
+            IndexOwner::Taken => return self.assign_index(row).await,
+            IndexOwner::Unknown => return Ok(Step::Wait(RegistrationWait::ChainLock)),
+        }
+        // The funding gate (H11): a second funding only after `NotSent`
+        // or `None`. P2b seam: the funding marker's status joins here.
+        if let Some(state) = funding_status(row, &ev)
+            && state != DispatchState::NotSent
         {
-            // Who owns the index, read with every index choice held off.
-            let _index = self.flows().index.lock().await;
-            let ev = self.evidence().await?;
-            match ev.index_owner(row, index) {
-                IndexOwner::Free => {}
-                // §3.4 Restore rule 2: what an earlier run left.
-                IndexOwner::Lock(outpoint) => {
-                    return self.record_lock(row, outpoint, Phase::FundingSent).await;
-                }
-                // Another flow funded this index (a restored row behind
-                // reality whose lock "Finish transfers" adopted): this one
-                // takes a new index rather than a second lock for it.
-                IndexOwner::Taken => {
-                    return self.assign_index(row, &ev).await;
-                }
-                IndexOwner::Unknown => return Ok(Step::Wait(RegistrationWait::ChainLock)),
-            }
-            // The funding gate (H11): a second funding only after `NotSent`
-            // or `None`. P2b seam: the funding marker's status joins here.
-            if let Some(state) = funding_status(row, &ev)
-                && state != DispatchState::NotSent
-            {
-                return Ok(Step::Fail(broadcast_unknown(), false));
-            }
+            return Ok(Step::Fail(broadcast_unknown(), false));
         }
         let Some(lease) = self.lease() else {
             return Ok(Step::Park(self.authority_wait()));
@@ -1443,7 +1871,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         // funding key) before the call.
         // Held until the outcome is written: a discard deciding meanwhile
         // would read an unfunded row whose lock may be out.
-        let _in_call = match self.flows().enter_call(self.claim) {
+        let _in_call = match self.enter_funding(row).await? {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
@@ -1493,6 +1921,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             }
             // Refused before the call: nothing was signed.
             (Err(FundError::Refused(e)), None) => Ok(self.failed(&e)),
+            (Err(FundError::CoinsLocked), None) => {
+                Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true))
+            }
             (Err(FundError::NotSent(e)), None) => {
                 tracing::info!(draft = row.id, "the funding never reached the wire: {e}");
                 self.unfund(e.code()).await
@@ -1669,6 +2100,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Err(FundError::Refused(e) | FundError::NotSent(e) | FundError::Failed(e)) => {
                 self.failed(&e)
             }
+            Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
         }
     }
 
@@ -1785,7 +2217,7 @@ pub(crate) async fn start_run<L: RegistrationLib + 'static>(
     Ok(())
 }
 
-/// Runs `claim`'s flow in a task; `claim` must be persisted.
+/// Runs `claim`'s flow (from [`Flows::claim`]) in a task.
 pub(crate) fn spawn<L: RegistrationLib + 'static>(
     session: &Arc<NetworkSession>,
     lib: Arc<L>,
@@ -1887,6 +2319,72 @@ fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
     }
 }
 
+/// What a funding may spend of the engine's coin view. `protected` counts
+/// the funding coins the library's builder would not skip
+/// ([`crate::coins::CoinSnapshot::held_funding_coins`]: the users' and the
+/// dust protection's locks, the sends' reservations); a tracked lock's
+/// inputs are the library's own reservation, not among them.
+fn spendable_of(snapshot: &crate::coins::CoinSnapshot) -> Spendable {
+    let mut out = Spendable {
+        protected: snapshot.held_funding_coins().count(),
+        ..Spendable::default()
+    };
+    for c in snapshot.coins.iter().filter(|c| c.send_account) {
+        out.inputs += 1;
+        if c.auto_selectable(snapshot.height) {
+            out.duffs = out.duffs.saturating_add(c.utxo.value());
+        }
+    }
+    out
+}
+
+/// Releases a funding's coin fence when the call ends, if the library's
+/// tracking of its lock has not ([`lock_tracked`]).
+struct FenceHeld<'a>(&'a Flows, WalletId, u64);
+
+impl Drop for FenceHeld<'_> {
+    fn drop(&mut self) {
+        self.0.release_fence(self.1, self.2);
+    }
+}
+
+impl PwLib {
+    /// Runs `call`, a funding's coin selection and signing in the library,
+    /// under the wallet's coin fence (E0-04 §2a.6, DEC-173 (3)), refused
+    /// while a funding coin is held back (`held_funding_coins`): the pinned
+    /// builder cannot be told to exclude one (`ReservationToken::next` is
+    /// crate-private). The check and the selection see one policy: "Lock
+    /// unspent", the dust locks and every engine build wait for the fence,
+    /// which comes down once the library tracks the lock it built (whose
+    /// inputs then read reserved, until it is spent or untracked), or when
+    /// `call` ends.
+    ///
+    /// E0-04.P2b seam: `funding_call_permit` takes this fence into the
+    /// funding's call permit.
+    pub(crate) async fn fenced<T>(
+        &self,
+        identity_index: u32,
+        call: impl Future<Output = Result<T, FundError>>,
+    ) -> Result<T, FundError> {
+        let refused = |e: crate::EngineError| FundError::Refused(e.into());
+        let fence = self
+            .session
+            .coin_fence(self.wallet_id)
+            .await
+            .map_err(refused)?;
+        let snapshot = self.session.fenced_coins(&fence).await.map_err(refused)?;
+        if spendable_of(&snapshot).protected > 0 {
+            return Err(FundError::CoinsLocked);
+        }
+        let flows = &self.session.platform.registrations;
+        let token = flows.hold_fence(self.wallet_id, identity_index, fence);
+        let held = FenceHeld(flows, self.wallet_id, token);
+        let out = call.await;
+        drop(held);
+        out
+    }
+}
+
 impl RegistrationLib for PwLib {
     async fn tracked_locks(&self) -> Vec<LockInfo> {
         use platform_wallet::AssetLockFundingType;
@@ -1916,24 +2414,9 @@ impl RegistrationLib for PwLib {
     }
 
     async fn spendable(&self) -> Result<Spendable, PlatformError> {
-        // The engine's own coin view: its users' and the dust protection's
-        // locks and its sends' reservations, the funding coins the library's
-        // builder would not skip (`held_funding_coins`). A tracked lock's
-        // inputs are the library's own reservation, not among them.
         let fence = self.session.coin_fence(self.wallet_id).await?;
         let snapshot = self.session.fenced_coins(&fence).await?;
-        drop(fence);
-        let mut out = Spendable {
-            protected: snapshot.held_funding_coins().count(),
-            ..Spendable::default()
-        };
-        for c in snapshot.coins.iter().filter(|c| c.send_account) {
-            out.inputs += 1;
-            if c.auto_selectable(snapshot.height) {
-                out.duffs = out.duffs.saturating_add(c.utxo.value());
-            }
-        }
-        Ok(out)
+        Ok(spendable_of(&snapshot))
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
@@ -1979,18 +2462,21 @@ impl RegistrationLib for PwLib {
         let signer = lease
             .funding_signer()
             .map_err(|e| FundError::Refused(e.into()))?;
-        self.wallet
-            .asset_locks()
-            .create_funded_asset_lock_proof(
-                lock_duffs,
-                0,
-                AssetLockFundingType::IdentityRegistration,
-                identity_index,
-                &signer,
-            )
-            .await
-            .map(|(_, _, outpoint)| outpoint)
-            .map_err(fund_error)
+        self.fenced(identity_index, async {
+            self.wallet
+                .asset_locks()
+                .create_funded_asset_lock_proof(
+                    lock_duffs,
+                    0,
+                    AssetLockFundingType::IdentityRegistration,
+                    identity_index,
+                    &signer,
+                )
+                .await
+                .map(|(_, _, outpoint)| outpoint)
+                .map_err(fund_error)
+        })
+        .await
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
@@ -2121,23 +2607,31 @@ mod flows_tests {
 
     const KEY: (WalletId, i64) = (WalletId([3; 32]), 1);
 
+    fn hold(flows: &Arc<Flows>) -> Option<Claim> {
+        flows.admit(KEY, Kind::Run).map(|(claim, _)| claim)
+    }
+
+    fn take(flows: &Arc<Flows>) -> Option<Claim> {
+        flows.admit(KEY, Kind::Decide).map(|(claim, _)| claim)
+    }
+
     /// A decision takes the flow from a run between its calls: the run's
     /// calls are refused from then on, whatever the decision ends with. A
     /// call running refuses a decision.
     #[test]
     fn a_decision_takes_the_flow_between_calls() {
         let flows = Arc::new(Flows::default());
-        let run = flows.hold(KEY).unwrap();
+        let run = hold(&flows).unwrap();
         let call = flows.enter_call(&run).ok().unwrap();
-        assert!(flows.take(KEY).is_none(), "a call runs");
+        assert!(take(&flows).is_none(), "a call runs");
         drop(call);
-        let (decision, _) = flows.take(KEY).unwrap();
+        let decision = take(&flows).unwrap();
         assert!(!flows.get(KEY).running());
         assert_eq!(flows.enter_call(&run).err(), Some(Step::Stop));
         drop(decision);
         assert_eq!(flows.enter_call(&run).err(), Some(Step::Stop));
         // The taken run's end does not release the next holder.
-        let next = flows.hold(KEY).unwrap();
+        let next = hold(&flows).unwrap();
         drop(run);
         assert!(flows.get(KEY).running());
         assert!(flows.enter_call(&next).is_ok());
@@ -2148,9 +2642,9 @@ mod flows_tests {
     #[test]
     fn two_discard_guards_keep_calls_excluded() {
         let flows = Arc::new(Flows::default());
-        let run = flows.hold(KEY).unwrap();
-        let (first, _) = flows.take(KEY).unwrap();
-        assert!(flows.take(KEY).is_none(), "one decision at a time");
+        let run = hold(&flows).unwrap();
+        let first = take(&flows).unwrap();
+        assert!(take(&flows).is_none(), "one decision at a time");
         drop(first);
         assert_eq!(
             flows.enter_call(&run).err(),
@@ -2161,15 +2655,54 @@ mod flows_tests {
 
     /// Sol r1 R1-08: a claim of a forgotten flow (its wallet closed) that
     /// ends after the flow was claimed again leaves the new claim alone.
-    #[test]
-    fn a_retired_claim_cannot_clear_a_reopened_flow() {
+    #[tokio::test]
+    async fn a_retired_claim_cannot_clear_a_reopened_flow() {
         let flows = Arc::new(Flows::default());
-        let retired = flows.hold(KEY).unwrap();
+        let retired = hold(&flows).unwrap();
         flows.forget_wallet(KEY.0);
-        let reopened = flows.hold(KEY).unwrap();
+        flows.act(KEY.0, || ()).await.unwrap();
+        let reopened = hold(&flows).unwrap();
         drop(retired);
         assert!(flows.get(KEY).running(), "the reopened run was cleared");
-        assert!(flows.hold(KEY).is_none(), "a second driver was admitted");
+        assert!(hold(&flows).is_none(), "a second driver was admitted");
         assert!(flows.enter_call(&reopened).is_ok());
+    }
+
+    /// DEC-173: a claim sent before an unload but run after it is
+    /// forgotten with the wallet's flows, so the wallet loaded again admits
+    /// its own claim.
+    #[tokio::test]
+    async fn a_claim_sent_before_an_unload_is_forgotten_with_it() {
+        let flows = Arc::new(Flows::default());
+        let (gate, wait) = std::sync::mpsc::channel::<()>();
+        flows.send(
+            KEY.0,
+            Box::new(move || {
+                let _ = wait.recv();
+            }),
+        );
+        let early = {
+            let flows = Arc::clone(&flows);
+            tokio::spawn(async move {
+                let job = Arc::clone(&flows);
+                flows.act(KEY.0, move || hold(&job)).await.unwrap()
+            })
+        };
+        // The current-thread runtime polls the early claim, which queues
+        // it behind the gate, before the unload's job.
+        tokio::task::yield_now().await;
+        flows.forget_wallet(KEY.0);
+        let job = Arc::clone(&flows);
+        let reopened = flows.act(KEY.0, move || hold(&job));
+        gate.send(()).unwrap();
+        let early = early.await.unwrap();
+        let reopened = reopened.await.unwrap();
+        assert!(early.is_some(), "the early claim ran before the unload");
+        let reopened = reopened.expect("the reloaded wallet admits its claim");
+        assert!(flows.enter_call(&reopened).is_ok());
+        assert_eq!(
+            flows.enter_call(early.as_ref().unwrap()).err(),
+            Some(Step::Stop)
+        );
     }
 }
