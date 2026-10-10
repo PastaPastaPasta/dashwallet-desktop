@@ -219,8 +219,10 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
   coin of the funding sources (n × 149 + 300 bytes at 1 duff/byte), a true upper bound on the library's selection.
   `grant.max_credits` is IdentityCreate (bounded at 300 000 000 credits until DP1-06's cost table) plus
   `register_name`'s grant for the label and the temporary label, plus 300 000 000 with an `initial_profile`.
-  `start_registration` checks the lease's Funding budget and the balance against lock + fee before it writes a row
-  (`platform.grant_exceeded`, `registration.funding_insufficient`), and the funding step checks again.
+  `start_registration` checks the grant's Funding cap (without redeeming it) and the balance against lock + fee
+  before it writes a row (`platform.grant_exceeded`, `registration.funding_insufficient`), and the funding step
+  checks the lease again. User-locked coins count toward the fee bound (the library does not know the engine's locks)
+  but not toward the balance.
 - **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
@@ -235,17 +237,32 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 - **Funding failures (H12).** platform-wallet tracks the lock (`Built`, stored through the changeset tap, which writes
   the outpoint to the row: §3.4 Restore rule 3) before the broadcaster sees it, and untracks it only on a definitive
   rejection. So after a failed funding call a tracked row for the draft's funding key means committed (the row
-  moves on to it), and none means nothing reached the wire: the row goes back to `KeysPrepared`, retryable, with the
-  library's code. A row that says funded with no tracked row behind it (a power loss before the library's store)
-  reads `MaybeSent`: `platform.broadcast_unknown`, not retryable; `resume_registration` refuses it until the lock is
-  tracked again (positive evidence, after which the flow adopts it), and discard refuses it.
+  moves on to it). With none, the error's class decides: a definite rejection (`TransactionBroadcast`) or a failure
+  before the lock was built (coin selection, the builder) is `NotSent`, and the row goes back to `KeysPrepared`,
+  retryable, with the library's code. Any other failure with no tracked row (a lock the library untracked as swept,
+  the wallet closing under the call) is `MaybeSent`: a row whose outpoint the tap wrote stays funded and waits for the
+  `ChainLock`; one without fails `platform.broadcast_unknown`, not retryable. Both count as in progress and refuse
+  discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap hands the
+  lock to it (the row resumes at `FundingSent`, no second row).
+- **Indexes.** A flow takes its identity index after the sync hold, one past every index the wallet's identities,
+  tracked registration locks and rows use, under one lock so no two flows take one index. The hold (Restore rule 1)
+  lasts until SPV has synced and the bring-up's discovery has answered which indexes the seed uses (`Ready`,
+  `NoIdentity`, `PartialAccountsPending`, `SeedBindingUnverified`); another outcome keeps the flow at `Sync`. A
+  registration lock another row holds is that row's: a flow behind reality at its index takes a new index instead.
+- **Waits.** A running flow waits for the sync, for the network (backing off to 60 s) and for its proof in its own
+  task, keeping its lease, so one grant carries it through. The `ChainLock` wait has no limit, in bounded waits
+  (the library's own unbounded wait gives up after 180 s). A flow parks, ending its run and lease, only at a step
+  that needs an authority it lacks.
 - **`resume_registration`** with a grant uses it whatever `waiting` says, so the flow does not stop at its next
   signing step; without one the flow runs its keyless steps (the sync hold, the proof wait) and parks at the first
-  that signs. A flow that runs already takes the grant through `rebind_lease`. A row failed for good is
-  `invalid_argument`.
+  that signs. A flow that runs already takes the grant: its parked lease through `rebind_lease`, or, when it has no
+  lease that signs, a new lease handed to its run. A row failed for good is `invalid_argument`.
+- **`discard_registration`** stops the flow only once it is allowed: while it decides, no library call of the flow
+  starts; a call running refuses it, and so do committed funds, and then the flow runs on untouched.
 - **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed and that no row
-  holds (into the `KeysPrepared` row at its index, else a new row with label `""`, which skips the name step), then
-  runs each funded row once under the grant, without waiting for a proof. `resumed` counts the rows it ran.
+  holds (into the `KeysPrepared` row at its index, live or failed with nothing committed, else a new row with label
+  `""`, which skips the name step), then runs each funded row once under the grant, without waiting for a proof; a
+  `Built` lock is resumed briefly so the library broadcasts it again. `resumed` counts the rows it ran.
 - **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
   `platform.feature_off{feature: "faucet"}`.
 - **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, `Sync` before
@@ -255,7 +272,9 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 - **Waiting on E0-04.P2b (Mode B):** the call permits that charge the Funding budget (the cap is checked before the
   call meanwhile), the funding and step markers, released-signature counting, `DispatchResolved` for a flow's steps,
   and the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
-  `resume_registration` or "Finish transfers".
+  `resume_registration` or "Finish transfers". The Funding cap holds per lock: a host lease passed by id that funds a
+  second registration is charged by P2b's permits, not here. `register_name` takes a vault grant only; the flow's
+  name step runs under its own lease, and P2b's `register_name` under a host lease replaces that.
 
 ### 2.3 Names
 

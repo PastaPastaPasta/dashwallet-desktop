@@ -1136,6 +1136,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             "wallet_not_found"
         );
         assert_eq!(
+            dp.start_registration(request(), s())
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
             dp.prepare_faucet_lock(s()).await.unwrap_err().code(),
             "platform.feature_off"
         );

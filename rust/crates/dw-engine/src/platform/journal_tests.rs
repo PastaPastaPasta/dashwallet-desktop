@@ -655,6 +655,90 @@ fn asset_locks_report_their_tracked_rows() {
     );
 }
 
+/// §3.4 Restore rule 3 through the real tap: a tracked registration lock
+/// (account 0) moves the `KeysPrepared` flow at its identity index to
+/// `FundingSent` with the outpoint, once, and tells the session (which
+/// schedules the backup); a top-up's or another account's lock moves none.
+#[test]
+fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
+    use super::registration_flow::{LOCK_DUFFS, canonical};
+    use super::registration_rows::{Funding, Phase};
+    use platform_wallet::AssetLockFundingType as T;
+    use platform_wallet::changeset::AssetLockEntry;
+    use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+    let h = Harness::new();
+    let row = |index: u32| dw_appdb::NewRegistration {
+        identity_index: Some(index),
+        identity: None,
+        label: format!("alice{index}"),
+        temp_label: None,
+        funding: Funding::CoreBalance {
+            lock_duffs: LOCK_DUFFS,
+        }
+        .encode(),
+        initial_profile: None,
+        phase: Phase::KeysPrepared.as_str().into(),
+    };
+    let w = W.to_string();
+    let three = h.appdb.insert_registration(&w, &row(3), 1).unwrap();
+    let four = h.appdb.insert_registration(&w, &row(4), 1).unwrap();
+    let funded = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&funded);
+    let _ = h.tap.on_funded.set(Box::new(move |id, draft| {
+        seen.lock().unwrap().push((id, draft))
+    }));
+    let entry = |op: OutPoint, funding_type: T, account_index: u32, identity_index: u32| {
+        let tx = Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        (
+            op,
+            AssetLockEntry {
+                out_point: op,
+                transaction: tx,
+                account_index,
+                funding_type,
+                identity_index,
+                amount_duffs: LOCK_DUFFS,
+                status: AssetLockStatus::Built,
+                proof: None,
+            },
+        )
+    };
+    let (reg, topup, other) = (outpoint(30, 0), outpoint(31, 0), outpoint(32, 0));
+    let changeset = || PlatformWalletChangeSet {
+        asset_locks: Some(AssetLockChangeSet {
+            asset_locks: BTreeMap::from([
+                entry(reg, T::IdentityRegistration, 0, 3),
+                entry(topup, T::IdentityTopUp, 0, 4),
+                entry(other, T::IdentityRegistration, 1, 4),
+            ]),
+            removed: BTreeSet::new(),
+        }),
+        ..Default::default()
+    };
+    h.feed(changeset());
+    let three_row = h.appdb.registration_row(&w, three).unwrap().unwrap();
+    assert_eq!(three_row.phase, Phase::FundingSent.as_str());
+    assert_eq!(
+        three_row.asset_lock_outpoint.as_deref(),
+        Some(canonical(reg).as_str())
+    );
+    let four_row = h.appdb.registration_row(&w, four).unwrap().unwrap();
+    assert_eq!(
+        (four_row.phase.as_str(), four_row.asset_lock_outpoint),
+        (Phase::KeysPrepared.as_str(), None)
+    );
+    // The library stores the row again at each status: the flow moved once.
+    h.feed(changeset());
+    assert_eq!(*funded.lock().unwrap(), [(W, three)]);
+}
+
 /// §3.5 row `dashpay_payments_overlay`: `Payments{identity}`; "Received …
 /// from @alice" for a received payment. Its age is the block time of its
 /// confirmed transaction, as the persister has it (DEC-114): a payment the

@@ -153,14 +153,9 @@ impl Fixture {
             .unwrap()
     }
 
-    fn drive(&self, lib: &Fake, draft: i64, lease: Option<Lease>, wait_for_proof: bool) {
-        let driver = Driver {
-            session: &self.session,
-            wallet: self.wallet,
-            lib,
-            lease,
-            wait_for_proof,
-        };
+    /// One run inline; `waits`: a task's run (see `Driver::waits`).
+    fn drive(&self, lib: &Fake, draft: i64, lease: Option<Lease>, waits: bool) {
+        let driver = Driver::new(&self.session, self.wallet, lib, lease, waits);
         self.engine.block_on(driver.run(draft)).unwrap();
     }
 
@@ -171,7 +166,6 @@ impl Fixture {
             Arc::clone(lib),
             draft,
             lease,
-            true
         ));
     }
 
@@ -289,6 +283,11 @@ enum FundScript {
     Rejected,
     /// Failed before anything was tracked (coin selection).
     FailUntracked,
+    /// Tracked, then untracked as swept, with an unknown outcome.
+    Swept,
+    /// Failed with an unknown outcome and no tracked row (the wallet
+    /// closing under the call).
+    LostUntracked,
 }
 
 #[derive(Default)]
@@ -305,6 +304,8 @@ struct World {
     contested: BTreeSet<String>,
     /// The proof `wait_proof` delivers (`None`: it times out).
     proof_arrives: bool,
+    /// Every `wait_proof` bound asked for.
+    waits: Vec<Duration>,
 }
 
 /// platform-wallet as the flow sees it, scripted.
@@ -402,10 +403,14 @@ impl RegistrationLib for Fake {
         self.maybe_hang(Call::Fund, When::Before).await;
         let script = self.w().fund_script.unwrap_or(FundScript::Ok);
         self.w().funds += 1;
-        if script == FundScript::FailUntracked {
-            return Err(FundError::Failed(PlatformError::Internal {
-                detail: "no coins".into(),
-            }));
+        match script {
+            FundScript::FailUntracked => {
+                return Err(FundError::NotSent(PlatformError::Internal {
+                    detail: "no coins".into(),
+                }));
+            }
+            FundScript::LostUntracked => return Err(FundError::Failed(PlatformError::Unavailable)),
+            _ => {}
         }
         // Tracked as Built, stored through the tap before the broadcast.
         let outpoint = self.lock_at(index, LockStatus::Built);
@@ -426,19 +431,26 @@ impl RegistrationLib for Fake {
             }
             FundScript::Rejected => {
                 self.w().locks.retain(|l| l.outpoint != outpoint);
-                Err(FundError::Failed(PlatformError::Internal {
+                Err(FundError::NotSent(PlatformError::Internal {
                     detail: "rejected".into(),
                 }))
             }
-            FundScript::FailUntracked => unreachable!(),
+            FundScript::Swept => {
+                self.w().locks.retain(|l| l.outpoint != outpoint);
+                Err(FundError::Failed(PlatformError::Unavailable))
+            }
+            FundScript::FailUntracked | FundScript::LostUntracked => unreachable!(),
         };
         self.maybe_hang(Call::Fund, When::After).await;
         result
     }
 
-    async fn wait_proof(&self, outpoint: OutPoint, _: Option<Duration>) -> Result<(), FundError> {
+    async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
+        self.w().waits.push(timeout);
         self.maybe_hang(Call::WaitProof, When::Before).await;
         if !self.w().proof_arrives {
+            // The bound elapsing, compressed.
+            tokio::time::sleep(Duration::from_millis(5)).await;
             return Err(FundError::IsTimeout);
         }
         self.set_status(outpoint, LockStatus::ChainLocked);
@@ -646,7 +658,9 @@ fn a_second_registration_waits_for_the_first() {
         ))
     };
     let draft: i64 = start(PLAIN).unwrap().parse().unwrap();
-    f.settle(draft);
+    eventually("the sync hold", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
+    });
     assert_eq!(start("bob2"), Err(RegistrationError::InProgress));
     // Parked before funding: the sync hold (Restore rule 1).
     let status = f.status(&lib, draft);
@@ -909,14 +923,16 @@ fn an_islock_timeout_parks_keyless_until_the_chainlock() {
 }
 
 /// H12: a funding failure is retryable exactly when nothing can be on the
-/// wire; a tracked lock is adopted.
+/// wire; a tracked lock is adopted, and a lock untracked with an unknown
+/// outcome keeps its row funded.
 #[test]
 fn funding_failures_follow_the_tracked_row() {
     let f = fixture(false);
-    for (script, retryable_unfunded) in [
-        (FundScript::FailUntracked, true),
-        (FundScript::Rejected, true),
-        (FundScript::FailTracked, false),
+    for script in [
+        FundScript::FailUntracked,
+        FundScript::Rejected,
+        FundScript::FailTracked,
+        FundScript::Swept,
     ] {
         let lib = f.fake();
         lib.w().fund_script = Some(script);
@@ -924,64 +940,78 @@ fn funding_failures_follow_the_tracked_row() {
         let draft = f.insert(core_row(PLAIN));
         f.drive(&lib, draft, Some(f.lease()), false);
         let row = f.row(draft);
-        if retryable_unfunded {
-            assert_eq!(phase(&row), Phase::KeysPrepared, "{script:?}");
-            assert_eq!(row.asset_lock_outpoint, None, "{script:?}");
-            assert!(row.retryable && row.error.is_some(), "{script:?}");
-            let status = f.status(&lib, draft);
-            assert!(!status.funds_committed, "{script:?}");
-            // NotSent: discard is allowed.
-            f.engine
-                .block_on(registration::discard(
+        let status = f.status(&lib, draft);
+        match script {
+            FundScript::FailUntracked | FundScript::Rejected => {
+                assert_eq!(phase(&row), Phase::KeysPrepared, "{script:?}");
+                assert_eq!(row.asset_lock_outpoint, None, "{script:?}");
+                assert!(row.retryable && row.error.is_some(), "{script:?}");
+                assert!(!status.funds_committed, "{script:?}");
+                // NotSent: discard is allowed.
+                f.engine
+                    .block_on(registration::discard(
+                        &f.session,
+                        f.wallet,
+                        &*lib,
+                        &draft.to_string(),
+                    ))
+                    .unwrap();
+            }
+            FundScript::FailTracked => {
+                assert_eq!(
+                    (phase(&row), row.error.as_deref()),
+                    (Phase::ProofWaiting, None),
+                    "{script:?}"
+                );
+                assert!(status.funds_committed);
+                // Finish it so the next one can start.
+                lib.w().proof_arrives = true;
+                f.drive(&lib, draft, Some(f.lease()), true);
+                assert_eq!(phase(&f.row(draft)), Phase::Done);
+            }
+            FundScript::Swept => {
+                // The outpoint reached the row; no tracked row is evidence
+                // of nothing: MaybeSent, waiting for the chain.
+                assert_eq!(
+                    (phase(&row), row.error.as_deref()),
+                    (Phase::FundingSent, None),
+                    "{script:?}"
+                );
+                assert!(row.asset_lock_outpoint.is_some());
+                assert!(status.funds_committed);
+                assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
+                let discard = f.engine.block_on(registration::discard(
                     &f.session,
                     f.wallet,
                     &*lib,
                     &draft.to_string(),
-                ))
-                .unwrap();
-        } else {
-            assert_eq!(
-                (phase(&row), row.error.as_deref()),
-                (Phase::ProofWaiting, None),
-                "{script:?}"
-            );
-            assert!(f.status(&lib, draft).funds_committed);
-            // Finish it so the next one can start.
-            lib.w().proof_arrives = true;
-            f.drive(&lib, draft, Some(f.lease()), true);
-            assert_eq!(phase(&f.row(draft)), Phase::Done);
+                ));
+                assert_eq!(discard.unwrap_err().code(), "invalid_argument");
+            }
+            _ => unreachable!(),
         }
     }
 }
 
-/// A row that says funded while no tracked row backs it (a power loss
-/// before the library's store) is MaybeSent: discard and a retry wait for
-/// evidence, and a lock tracked later is adopted.
+/// A funding that failed with an unknown outcome before any row was
+/// tracked (the wallet closing under the call) is MaybeSent: the row fails
+/// `broadcast_unknown`, and discard, a retry and a new registration wait
+/// for evidence; the lock tracked later (a restore's reconstruction,
+/// through the tap) resumes it.
 #[test]
-fn an_unbacked_funded_row_is_maybe_sent() {
+fn an_unbacked_funding_is_maybe_sent_until_its_lock_is_tracked() {
     let f = fixture(false);
     let lib = f.fake();
-    let lock = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
-    let mut row = core_row(PLAIN);
-    row.identity_index = Some(8);
-    row.phase = Phase::KeysPrepared.as_str().into();
-    let draft = f.insert(row);
-    let w = f.wallet.to_string();
-    f.appdb()
-        .update_registration(
-            &w,
-            draft,
-            "keys_prepared",
-            false,
-            &RegistrationChange {
-                phase: Some("keys_prepared".into()),
-                outpoint: Some(flow::canonical(lock)),
-                failure: Some(Some((flow::broadcast_unknown().into(), false))),
-                ..Default::default()
-            },
-            2,
-        )
-        .unwrap();
+    lib.w().fund_script = Some(FundScript::LostUntracked);
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), true);
+    let row = f.row(draft);
+    assert_eq!(phase(&row), Phase::KeysPrepared);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (Some(flow::broadcast_unknown()), false)
+    );
+    let index = row.identity_index.unwrap();
     let status = f.status(&lib, draft);
     assert!(status.funds_committed);
     assert_eq!(status.phase, RegistrationPhase::Failed);
@@ -1010,15 +1040,13 @@ fn an_unbacked_funded_row_is_maybe_sent() {
     ));
     assert_eq!(start, Err(RegistrationError::InProgress));
 
-    // The lock shows up (the restore's reconstruction): positive evidence.
-    lib.w().locks.push(LockInfo {
-        outpoint: lock,
-        registration: true,
-        identity_index: 8,
-        account: 0,
-        amount: flow::LOCK_DUFFS,
-        status: LockStatus::ChainLocked,
-    });
+    // The lock shows up (the restore's reconstruction): positive evidence,
+    // and the tap hands it to the row.
+    let lock = lib.lock_at(index, LockStatus::ChainLocked);
+    let moved = flow::note_lock_tracked(&f.appdb(), &f.wallet.to_string(), lock, index, 3).unwrap();
+    assert_eq!(moved, Some(draft));
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.error), (Phase::FundingSent, None));
     f.engine
         .block_on(registration::resume(
             &f.session,
@@ -1030,7 +1058,7 @@ fn an_unbacked_funded_row_is_maybe_sent() {
         .unwrap();
     f.settle(draft);
     assert_eq!(phase(&f.row(draft)), Phase::Done);
-    assert_eq!(lib.w().funds, 0);
+    assert_eq!(lib.counts(), (1, 1));
 }
 
 #[test]
@@ -1049,6 +1077,16 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
     let mut odd_phase = core_row("gina2");
     odd_phase.phase = "verified_on_mars".into();
     let odd_phase = f.insert(odd_phase);
+    // None of them blocks a new registration, before any status read
+    // swept them.
+    let started = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        request("hank2"),
+        f.grant(COIN, 10 * COIN * 1000, Credential::None),
+    ));
+    assert!(started.is_ok(), "{started:?}");
     let statuses = f.statuses(&lib);
     for (draft, code) in [
         (invitation, "invitation.invalid"),
@@ -1064,15 +1102,7 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
         assert_eq!((failure.code.as_str(), failure.retryable), (code, false));
         assert!(!s.funds_committed);
     }
-    // None of them blocks a new registration, and each can be discarded.
-    let started = f.engine.block_on(registration::start(
-        &f.session,
-        f.wallet,
-        Arc::clone(&lib),
-        request("hank2"),
-        f.grant(COIN, 10 * COIN * 1000, Credential::None),
-    ));
-    assert!(started.is_ok(), "{started:?}");
+    // Each can be discarded.
     for draft in [invitation, newer, odd_phase] {
         f.engine
             .block_on(registration::discard(
@@ -1153,7 +1183,10 @@ fn discard_stops_an_unfunded_flow() {
     lib.ready.store(false, Ordering::SeqCst);
     let draft = f.insert(core_row(PLAIN));
     f.spawn(&lib, draft, Some(f.lease()));
-    f.settle(draft);
+    // The run waits for the sync, in its task.
+    eventually("the sync hold", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
+    });
     f.engine
         .block_on(registration::discard(
             &f.session,
@@ -1163,6 +1196,7 @@ fn discard_stops_an_unfunded_flow() {
         ))
         .unwrap();
     assert!(f.rows().is_empty());
+    f.settle(draft);
     let err = f
         .engine
         .block_on(registration::discard(
@@ -1207,4 +1241,177 @@ fn an_existing_identity_registers_only_its_name() {
     assert_eq!((phase(&row), row.identity_index), (Phase::Done, Some(3)));
     assert_eq!(lib.w().funds, 0);
     assert_eq!(lib.w().names, [(id, PLAIN.to_string())]);
+}
+
+/// A `KeysPrepared` row at `index` whose lock the library tracks already:
+/// the run adopts it and goes on to the proof.
+fn adopted_lock_row(f: &Fixture, lib: &Fake, index: u32, status: LockStatus) -> i64 {
+    lib.lock_at(index, status);
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(index);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    f.insert(row)
+}
+
+fn resume(f: &Fixture, lib: &Arc<Fake>, draft: i64, grant: Option<String>) {
+    f.engine
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(lib),
+            &draft.to_string(),
+            grant,
+        ))
+        .unwrap();
+}
+
+/// The ChainLock wait has no limit, in bounded waits (the library's own
+/// unbounded wait gives up after 180 s): a run keeps waiting, and a
+/// refused discard leaves it running.
+#[test]
+fn the_chainlock_wait_is_bounded_and_survives_a_refused_discard() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    let draft = adopted_lock_row(&f, &lib, 0, LockStatus::Broadcast);
+    f.spawn(&lib, draft, Some(f.lease()));
+    eventually("several bounded waits", || lib.w().waits.len() >= 3);
+    assert!(lib.w().waits.iter().all(|w| *w == flow::CHAINLOCK_POLL));
+    let status = f.status(&lib, draft);
+    assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
+    let discard = f.engine.block_on(registration::discard(
+        &f.session,
+        f.wallet,
+        &*lib,
+        &draft.to_string(),
+    ));
+    assert_eq!(discard.unwrap_err().code(), "invalid_argument");
+    assert!(f.running(draft), "the refused discard stopped the flow");
+    lib.w().proof_arrives = true;
+    f.settle(draft);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    assert_eq!(lib.counts(), (0, 1));
+}
+
+/// A grant given to a flow that waits keyless reaches its run: it signs
+/// when the proof arrives, without parking for a second prompt.
+#[test]
+fn a_grant_reaches_a_flow_that_waits_keyless() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    let draft = adopted_lock_row(&f, &lib, 0, LockStatus::Broadcast);
+    f.spawn(&lib, draft, None);
+    eventually("the proof wait", || !lib.w().waits.is_empty());
+    resume(
+        &f,
+        &lib,
+        draft,
+        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    );
+    lib.w().proof_arrives = true;
+    f.settle(draft);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.error), (Phase::Done, None));
+    assert_eq!(lib.counts(), (0, 1));
+}
+
+/// A run held for the sync keeps its lease and goes on when the sync
+/// ends: one prompt (§2.6).
+#[test]
+fn a_run_waits_for_the_sync_with_its_lease() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.ready.store(false, Ordering::SeqCst);
+    let draft: i64 = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap()
+        .parse()
+        .unwrap();
+    eventually("the sync hold", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
+    });
+    assert!(f.running(draft));
+    lib.ready.store(true, Ordering::SeqCst);
+    f.settle(draft);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// A failed row behind reality whose index another flow funded (Finish
+/// transfers adopted the lock) takes a new index; it neither adopts the
+/// other flow's lock nor sticks.
+#[test]
+fn a_lock_another_flow_holds_moves_this_one_to_a_new_index() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let lock = lib.lock_at(0, LockStatus::ChainLocked);
+    let w = f.wallet.to_string();
+    let mut held = core_row("");
+    held.identity_index = Some(0);
+    held.initial_profile = None;
+    held.phase = Phase::ProofWaiting.as_str().into();
+    let (holder, _) = f
+        .appdb()
+        .adopt_registration_lock(&w, &flow::canonical(lock), &held, 1)
+        .unwrap();
+    let mut behind = core_row(PLAIN);
+    behind.identity_index = Some(0);
+    behind.phase = Phase::KeysPrepared.as_str().into();
+    let draft = f.insert(behind);
+    f.appdb()
+        .update_registration(
+            &w,
+            draft,
+            Phase::KeysPrepared.as_str(),
+            false,
+            &RegistrationChange {
+                failure: Some(Some(("registration.funding_insufficient".into(), true))),
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert!(!f.status(&lib, draft).funds_committed);
+    resume(
+        &f,
+        &lib,
+        draft,
+        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    );
+    f.settle(draft);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.error.as_deref()), (Phase::Done, None));
+    assert_eq!(row.identity_index, Some(1));
+    assert_ne!(flow::outpoint_of(&row), Some(lock));
+    let holder = f.row(holder);
+    assert_eq!(flow::outpoint_of(&holder), Some(lock));
+    assert_eq!(phase(&holder), Phase::ProofWaiting);
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// Two flows that choose their index at once never take one index.
+#[test]
+fn two_flows_never_take_one_identity_index() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let drafts = [f.insert(core_row(PLAIN)), f.insert(core_row("bob2"))];
+    for draft in drafts {
+        f.spawn(&lib, draft, Some(f.lease()));
+    }
+    for draft in drafts {
+        f.settle(draft);
+    }
+    let indexes: BTreeSet<_> = drafts
+        .iter()
+        .map(|d| f.row(*d).identity_index.unwrap())
+        .collect();
+    assert_eq!(indexes.len(), 2, "{indexes:?}");
 }

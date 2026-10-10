@@ -29,9 +29,13 @@
 //!   step's marker are not written; the calls run in their step scope
 //!   (`Lease::scope_step`) already, and the funding gate reads the tracked
 //!   rows by the draft's funding key, which survives a deleted journal;
-//! - without the signature count, a funding call that failed after it
-//!   started and left no tracked row is `MaybeSent`: the row fails, not
-//!   retryable, until positive evidence says `NotSent` (H12).
+//! - without the signature count, a failed funding call is read from the
+//!   tracked rows and the error's class (H12): a tracked row is a
+//!   committed lock; a definite rejection or a failure before anything was
+//!   built, with no tracked row, is `NotSent` and the row is retryable
+//!   again; any other failure with no tracked row is `MaybeSent`, and the
+//!   row waits (or fails `platform.broadcast_unknown`) until the lock is
+//!   tracked again or positive evidence says `NotSent`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -82,6 +86,18 @@ const FIXED_BYTES: u64 = 300;
 /// The library's own InstantSend wait in `create_funded_asset_lock_proof`
 /// (`build.rs:1265-1300`): the in-memory key window (§2.6).
 pub(crate) const IS_WINDOW: Duration = Duration::from_secs(300);
+/// One bounded proof wait of the ChainLock wait, which has no limit: the
+/// library's unbounded wait gives up after 180 s with a do-not-retry error
+/// (`resume_asset_lock`), a bounded one returns `FinalityTimeout` and the
+/// flow waits again.
+pub(crate) const CHAINLOCK_POLL: Duration = Duration::from_secs(120);
+/// "Finish transfers" waits for no proof, but a `Built` lock is resumed
+/// this long so the library broadcasts it again.
+pub(crate) const REBROADCAST_WAIT: Duration = Duration::from_secs(5);
+/// The pause before a run that waits for the sync, or for the network,
+/// steps again (the run keeps its lease, §2.6's one prompt).
+const SYNC_POLL: Duration = Duration::from_secs(5);
+const NETWORK_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Mode B's worst-case funding fee (E0-04 §2a.3): spending every
 /// spendable coin of the funding sources, a true upper bound on what the
@@ -141,11 +157,14 @@ pub(crate) struct LockInfo {
     pub(crate) status: LockStatus,
 }
 
-/// The coins the library's pooled funding may select (BIP44, BIP32,
+/// The coins of the library's pooled funding sources (BIP44, BIP32,
 /// DashPay receiving).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Spendable {
+    /// What the engine lets a funding spend: the coins it auto-selects.
     pub(crate) duffs: u64,
+    /// Every coin of the sources, user-locked ones too: the library does
+    /// not know the engine's locks, so the fee bound counts them all.
     pub(crate) inputs: usize,
 }
 
@@ -154,10 +173,14 @@ pub(crate) enum FundError {
     /// The engine refused before the library call started (a lease that
     /// no longer signs): nothing was signed, so nothing can be out.
     Refused(PlatformError),
-    /// The 300 s InstantSend wait ended without a lock; the row waits for
-    /// a ChainLock.
+    /// The proof wait ended without a proof (the 300 s InstantSend wait,
+    /// or one bounded ChainLock wait); the lock is still tracked.
     IsTimeout,
-    /// The library call failed after it started.
+    /// The library failed before anything reached the wire: a definite
+    /// broadcast rejection, or no lock built at all (coin selection, the
+    /// build, a key). Positive evidence of `NotSent` (H12).
+    NotSent(PlatformError),
+    /// Any other failure after the call started.
     Failed(PlatformError),
 }
 
@@ -182,11 +205,13 @@ pub(crate) trait RegistrationLib: Send + Sync {
         lease: &Lease,
     ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
     /// `resume_asset_lock`: waits for the tracked lock's proof, at most
-    /// `timeout` (`None`: the ChainLock wait, unbounded). Needs no key.
+    /// `timeout` (`IsTimeout` then), broadcasting a `Built` lock again
+    /// first. Always bounded: the library's unbounded wait ends after
+    /// 180 s with an error that says nothing about the lock. Needs no key.
     fn wait_proof(
         &self,
         outpoint: OutPoint,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> impl Future<Output = Result<(), FundError>> + Send;
     /// The identity the lock created, if Platform (or the wallet) has it.
     fn find_identity(
@@ -232,18 +257,34 @@ pub(crate) trait RegistrationLib: Send + Sync {
 pub(crate) struct FlowState {
     /// A task drives the flow now.
     pub(crate) running: bool,
+    /// Which claim runs it: a task handle is stored for its own claim only.
+    generation: u64,
     /// A library call of the flow runs: discard is refused.
     pub(crate) in_call: bool,
+    /// A discard is deciding: no library call of the flow may start.
+    stopping: bool,
     /// What the flow waits for, set when it parks or starts a wait.
     pub(crate) wait: Option<RegistrationWait>,
     /// The InstantSend window's end, from an in-memory instant taken at the
     /// funding call (never `updated_at`, §3.4).
     pub(crate) is_until: Option<Instant>,
-    /// The lease the flow last ran under.
+    /// The lease the running flow signs with.
     pub(crate) lease: Option<LeaseId>,
+    /// A lease `resume_registration` handed to a run that has none (or one
+    /// that no longer signs); the run takes it at its next keyed step.
+    offered: Option<Offered>,
     /// The automatic backup of `FundingSent` was scheduled.
     pub(crate) backed_up: bool,
     pub(crate) task: Option<tokio::task::AbortHandle>,
+}
+
+#[derive(Clone)]
+struct Offered(Lease);
+
+impl std::fmt::Debug for Offered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Offered").field(&self.0.id()).finish()
+    }
 }
 
 /// Every flow's [`FlowState`], keyed by wallet and draft.
@@ -252,12 +293,23 @@ pub(crate) struct Flows {
     flows: Mutex<HashMap<(WalletId, i64), FlowState>>,
     /// Orders `start_registration`'s in-progress check and its insert.
     pub(crate) start: tokio::sync::Mutex<()>,
+    /// Orders the choice of an identity index and its write, so no two
+    /// flows take one index.
+    index: tokio::sync::Mutex<()>,
 }
 
 impl Flows {
     pub(crate) fn with<R>(&self, key: (WalletId, i64), f: impl FnOnce(&mut FlowState) -> R) -> R {
         let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
         f(map.entry(key).or_default())
+    }
+
+    /// Like [`Self::with`], but leaves a forgotten flow forgotten.
+    fn with_existing(&self, key: (WalletId, i64), f: impl FnOnce(&mut FlowState)) {
+        let mut map = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(s) = map.get_mut(&key) {
+            f(s);
+        }
     }
 
     pub(crate) fn get(&self, key: (WalletId, i64)) -> FlowState {
@@ -276,25 +328,54 @@ impl Flows {
                 return None;
             }
             s.running = true;
+            s.generation = s.generation.wrapping_add(1);
             Some(Claim {
                 flows: Arc::clone(self),
                 key,
+                generation: s.generation,
             })
         })
     }
 
-    /// Aborts the flow's task unless a library call of it runs; `false`
-    /// when one does. Atomic with the driver's marking of its calls.
-    pub(crate) fn stop_unless_in_call(&self, key: (WalletId, i64)) -> bool {
+    /// Marks a library call of the flow, unless a discard is deciding:
+    /// atomic with [`Self::begin_stop`].
+    fn enter_call(&self, key: (WalletId, i64)) -> Option<InCall<'_>> {
+        self.with(key, |s| {
+            if s.stopping {
+                return false;
+            }
+            s.in_call = true;
+            true
+        })
+        .then_some(InCall(self, key))
+    }
+
+    /// A discard starts deciding: `false` while a library call of the flow
+    /// runs; otherwise none starts until [`Self::end_stop`] or
+    /// [`Self::forget`].
+    pub(crate) fn begin_stop(&self, key: (WalletId, i64)) -> bool {
         self.with(key, |s| {
             if s.in_call {
                 return false;
             }
-            if let Some(task) = s.task.take() {
-                task.abort();
-            }
+            s.stopping = true;
             true
         })
+    }
+
+    /// The discard was refused: the flow runs on, untouched.
+    pub(crate) fn end_stop(&self, key: (WalletId, i64)) {
+        self.with_existing(key, |s| s.stopping = false);
+    }
+
+    /// Hands `lease` to the flow's run (see [`FlowState::offered`]).
+    pub(crate) fn offer(&self, key: (WalletId, i64), lease: Lease) {
+        self.with(key, |s| {
+            if let Some(task) = &s.task {
+                lease.register_task(task.clone());
+            }
+            s.offered = Some(Offered(lease));
+        });
     }
 
     pub(crate) fn forget(&self, key: (WalletId, i64)) {
@@ -332,14 +413,17 @@ impl Flows {
 pub(crate) struct Claim {
     flows: Arc<Flows>,
     key: (WalletId, i64),
+    generation: u64,
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.flows.with(self.key, |s| {
+        self.flows.with_existing(self.key, |s| {
             s.running = false;
             s.in_call = false;
             s.task = None;
+            s.lease = None;
+            s.offered = None;
         });
     }
 }
@@ -349,7 +433,7 @@ struct InCall<'a>(&'a Flows, (WalletId, i64));
 
 impl Drop for InCall<'_> {
     fn drop(&mut self) {
-        self.0.with(self.1, |s| s.in_call = false);
+        self.0.with_existing(self.1, |s| s.in_call = false);
     }
 }
 
@@ -392,14 +476,66 @@ pub(crate) fn canonical(outpoint: OutPoint) -> LockOutpoint {
     LockOutpoint::parse(&outpoint.to_string()).expect("OutPoint displays canonically")
 }
 
-/// The tracked lock a `CoreBalance` draft at `index` funds: by the draft's
-/// own funding key, so it is found even when no outpoint reached the row
-/// (E0-04 §2a.5, review Opus r3 F-2). A lock that matches several drafts
-/// counts for each, which fails closed.
-pub(crate) fn matching_lock(locks: &[LockInfo], index: u32) -> Option<&LockInfo> {
-    locks
-        .iter()
-        .find(|l| l.registration && l.identity_index == index && l.account == 0)
+/// What the funding gates read: the wallet's tracked locks, and the locks
+/// rows hold already.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Evidence {
+    pub(crate) locks: Vec<LockInfo>,
+    /// Every row's `asset_lock_outpoint`.
+    held: Vec<OutPoint>,
+}
+
+impl Evidence {
+    pub(crate) fn new(locks: Vec<LockInfo>, rows: &[RegistrationRow]) -> Self {
+        Self {
+            locks,
+            held: rows.iter().filter_map(outpoint_of).collect(),
+        }
+    }
+
+    fn tracked(&self, outpoint: OutPoint) -> Option<&LockInfo> {
+        self.locks.iter().find(|l| l.outpoint == outpoint)
+    }
+
+    /// The tracked lock behind `row`: its outpoint's, or before one reached
+    /// the row, the unheld lock of its funding key.
+    pub(crate) fn lock_of(&self, row: &RegistrationRow) -> Option<&LockInfo> {
+        match outpoint_of(row) {
+            Some(op) => self.tracked(op),
+            None => row.identity_index.and_then(|i| self.unheld_lock(i)),
+        }
+    }
+
+    /// A registration lock at `index` (account 0) that no row holds: the
+    /// one a `CoreBalance` draft at `index` funds, by the draft's own
+    /// funding key, so it is found even when no outpoint reached the row
+    /// (E0-04 §2a.5, review Opus r3 F-2). A lock another row holds is that
+    /// row's.
+    pub(crate) fn unheld_lock(&self, index: u32) -> Option<&LockInfo> {
+        self.at_index(index)
+            .find(|l| !self.held.contains(&l.outpoint))
+    }
+
+    /// A registration lock at `index` that another row than `row` holds:
+    /// the index is that flow's, and `row` must take another.
+    fn held_elsewhere(&self, row: &RegistrationRow, index: u32) -> bool {
+        let own = outpoint_of(row);
+        self.at_index(index)
+            .any(|l| self.held.contains(&l.outpoint) && Some(l.outpoint) != own)
+    }
+
+    fn at_index(&self, index: u32) -> impl Iterator<Item = &LockInfo> {
+        self.locks
+            .iter()
+            .filter(move |l| l.registration && l.identity_index == index && l.account == 0)
+    }
+}
+
+fn is_core_balance(row: &RegistrationRow) -> bool {
+    matches!(
+        Funding::decode(&row.funding),
+        Decoded::Known(Funding::CoreBalance { .. })
+    )
 }
 
 /// What the engine's funding gate reads for a row's funding (E0-04 §16.6):
@@ -408,16 +544,13 @@ pub(crate) fn matching_lock(locks: &[LockInfo], index: u32) -> Option<&LockInfo>
 /// P2b seam: §2a.5's derivation from the funding marker and its definite
 /// resolutions joins here; P2a has no markers, so this reads the row and
 /// the tracked locks only.
-pub(crate) fn funding_status(row: &RegistrationRow, locks: &[LockInfo]) -> Option<DispatchState> {
-    let Decoded::Known(Funding::CoreBalance { .. }) = Funding::decode(&row.funding) else {
+pub(crate) fn funding_status(row: &RegistrationRow, ev: &Evidence) -> Option<DispatchState> {
+    if !is_core_balance(row) {
         // No funding of the user's: an existing identity, or a lock that is
         // the inviter's or the faucet's.
         return None;
-    };
-    let lock = outpoint_of(row)
-        .and_then(|op| locks.iter().find(|l| l.outpoint == op))
-        .or_else(|| row.identity_index.and_then(|i| matching_lock(locks, i)));
-    if let Some(lock) = lock {
+    }
+    if let Some(lock) = ev.lock_of(row) {
         return Some(
             if lock.status.has_proof() || lock.status == LockStatus::Consumed {
                 DispatchState::Sent
@@ -431,9 +564,10 @@ pub(crate) fn funding_status(row: &RegistrationRow, locks: &[LockInfo]) -> Optio
         || Phase::parse(&row.phase).is_some_and(|p| !p.unfunded())
     {
         // Funded once, its row now lost (a power loss, a journal deleted by
-        // hand): possibly out, until positive evidence settles it. A phase
-        // this build does not know counts by its outpoint alone: every
-        // build writes it before the broadcast (Restore rule 3).
+        // hand, a lock the library untracked as swept): possibly out, until
+        // positive evidence settles it. A phase this build does not know
+        // counts by its outpoint alone: every build writes it before the
+        // broadcast (Restore rule 3).
         return Some(DispatchState::MaybeSent);
     }
     None
@@ -441,16 +575,12 @@ pub(crate) fn funding_status(row: &RegistrationRow, locks: &[LockInfo]) -> Optio
 
 /// `funds_committed` (E0-04 §16.5) for a row: a funding committed and not
 /// definitely unsent, or a funding call running now.
-pub(crate) fn funds_committed(row: &RegistrationRow, locks: &[LockInfo], in_call: bool) -> bool {
+pub(crate) fn funds_committed(row: &RegistrationRow, ev: &Evidence, in_call: bool) -> bool {
     let funded = matches!(
-        funding_status(row, locks),
+        funding_status(row, ev),
         Some(DispatchState::WillBeSent | DispatchState::MaybeSent | DispatchState::Sent)
     );
-    let core = matches!(
-        Funding::decode(&row.funding),
-        Decoded::Known(Funding::CoreBalance { .. })
-    );
-    funded || (core && in_call)
+    funded || (is_core_balance(row) && in_call)
 }
 
 /// Writes the outpoint of a lock the library just tracked into the
@@ -472,28 +602,33 @@ pub(crate) fn note_lock_tracked(
     {
         return Ok(None);
     }
-    for row in appdb.registration_rows(wallet)? {
-        let funds_it = row.error.is_none()
-            && row.phase == Phase::KeysPrepared.as_str()
-            && row.identity_index == Some(identity_index)
-            && row.asset_lock_outpoint.is_none()
-            && matches!(
-                Funding::decode(&row.funding),
-                Decoded::Known(Funding::CoreBalance { .. })
-            );
+    let mut rows = appdb.registration_rows(wallet)?;
+    // A live flow first; then one that failed with nothing committed (a
+    // retryable failure, or `broadcast_unknown`, which this lock settles):
+    // the lock is that flow's, so it resumes instead of a second row.
+    rows.sort_by_key(|r| r.error.is_some());
+    for row in rows {
+        let failed = row.error.is_some();
+        let funds_it =
+            (!failed || row.retryable || row.error.as_deref() == Some(broadcast_unknown()))
+                && row.phase == Phase::KeysPrepared.as_str()
+                && row.identity_index == Some(identity_index)
+                && row.asset_lock_outpoint.is_none()
+                && is_core_balance(&row);
         if !funds_it {
             continue;
         }
         let change = RegistrationChange {
             phase: Some(Phase::FundingSent.as_str().into()),
             outpoint: Some(lock.clone()),
+            failure: failed.then_some(None),
             ..Default::default()
         };
         let written = appdb.update_registration(
             wallet,
             row.id,
             Phase::KeysPrepared.as_str(),
-            false,
+            failed,
             &change,
             now,
         )?;
@@ -506,29 +641,75 @@ pub(crate) fn note_lock_tracked(
 
 /// One run of one flow: steps the row until it parks, fails or is done.
 pub(crate) struct Driver<'a, L> {
-    pub(crate) session: &'a Arc<NetworkSession>,
-    pub(crate) wallet: WalletId,
-    pub(crate) lib: &'a L,
+    session: &'a Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &'a L,
     /// The authority the run signs with; `None` runs only the steps that
-    /// need no key (the proof wait) and parks at the first that does.
-    pub(crate) lease: Option<Lease>,
-    /// Wait for a missing proof in this run (`false`: park on it, as
-    /// "Finish transfers" does).
-    pub(crate) wait_for_proof: bool,
+    /// need no key (the proof wait) and parks at the first that does,
+    /// unless `resume_registration` offers one meanwhile.
+    lease: Mutex<Option<Lease>>,
+    /// A task's run: it waits for a missing proof, for the sync and for
+    /// the network itself, keeping its lease (one prompt, §2.6). `false`
+    /// parks at each, as "Finish transfers" does.
+    waits: bool,
 }
 
-impl<L: RegistrationLib> Driver<'_, L> {
+impl<'a, L: RegistrationLib> Driver<'a, L> {
+    pub(crate) fn new(
+        session: &'a Arc<NetworkSession>,
+        wallet: WalletId,
+        lib: &'a L,
+        lease: Option<Lease>,
+        waits: bool,
+    ) -> Self {
+        Self {
+            session,
+            wallet,
+            lib,
+            lease: Mutex::new(lease),
+            waits,
+        }
+    }
+
     fn flows(&self) -> &Flows {
         &self.session.platform.registrations
+    }
+
+    /// The run's lease; one offered meanwhile replaces it.
+    fn lease(&self, draft: i64) -> Option<Lease> {
+        let mut lease = self.lease.lock().unwrap_or_else(PoisonError::into_inner);
+        let offered = self.flows().with((self.wallet, draft), |s| {
+            let offered = s.offered.take()?;
+            s.lease = Some(offered.0.id());
+            Some(offered.0)
+        });
+        if offered.is_some() {
+            *lease = offered;
+        }
+        lease.clone()
     }
 
     /// Steps `draft` until it parks, fails or ends. An error is a storage
     /// failure: the row keeps the phase it had, and the flow is resumable.
     pub(crate) async fn run(&self, draft: i64) -> Result<(), PlatformError> {
         let key = (self.wallet, draft);
-        if let Some(lease) = &self.lease {
-            self.flows().with(key, |s| s.lease = Some(lease.id()));
+        let lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(Lease::id);
+        self.flows().with(key, |s| s.lease = lease);
+        let ran = self.steps(draft).await;
+        if ran.is_err() {
+            self.flows().with_existing(key, |s| s.wait = None);
         }
+        ran
+    }
+
+    async fn steps(&self, draft: i64) -> Result<(), PlatformError> {
+        let key = (self.wallet, draft);
+        let mut retry = Duration::from_secs(2);
         loop {
             let Some(row) = self.row(draft).await? else {
                 return Ok(());
@@ -539,6 +720,20 @@ impl<L: RegistrationLib> Driver<'_, L> {
             self.flows().with(key, |s| s.wait = None);
             match self.step(&row).await? {
                 Step::Again => continue,
+                Step::Park(wait @ (RegistrationWait::Sync | RegistrationWait::Network))
+                    if self.waits =>
+                {
+                    self.flows().with(key, |s| s.wait = Some(wait));
+                    let pause = if wait == RegistrationWait::Sync {
+                        SYNC_POLL
+                    } else {
+                        tracing::info!(draft, phase = %row.phase, "registration retries");
+                        let pause = retry;
+                        retry = (retry * 2).min(NETWORK_RETRY_MAX);
+                        pause
+                    };
+                    tokio::time::sleep(pause).await;
+                }
                 Step::Park(wait) => {
                     tracing::info!(draft, phase = %row.phase, ?wait, "registration parked");
                     self.flows().with(key, |s| s.wait = Some(wait));
@@ -546,16 +741,35 @@ impl<L: RegistrationLib> Driver<'_, L> {
                 }
                 Step::Fail(code, retryable) => {
                     tracing::info!(draft, phase = %row.phase, code, retryable, "registration failed");
-                    let change = RegistrationChange {
-                        failure: Some(Some((code.into(), retryable))),
-                        ..Default::default()
-                    };
-                    self.write(&row, change).await?;
+                    self.fail(&row, code, retryable).await?;
                     return Ok(());
                 }
                 Step::Stop => return Ok(()),
             }
         }
+    }
+
+    async fn fail(
+        &self,
+        row: &RegistrationRow,
+        code: &str,
+        retryable: bool,
+    ) -> Result<(), PlatformError> {
+        let change = RegistrationChange {
+            failure: Some(Some((code.into(), retryable))),
+            ..Default::default()
+        };
+        self.write(row, change).await?;
+        Ok(())
+    }
+
+    async fn evidence(&self) -> Result<Evidence, PlatformError> {
+        let wallet = self.wallet.to_string();
+        let rows = self
+            .session
+            .appdb_op(move |db| db.registration_rows(&wallet))
+            .await?;
+        Ok(Evidence::new(self.lib.tracked_locks().await, &rows))
     }
 
     async fn row(&self, draft: i64) -> Result<Option<RegistrationRow>, PlatformError> {
@@ -595,10 +809,11 @@ impl<L: RegistrationLib> Driver<'_, L> {
         change: RegistrationChange,
     ) -> Result<Step, PlatformError> {
         Ok(match self.write(row, change).await? {
-            RegistrationUpdate::Applied | RegistrationUpdate::Stale => Step::Again,
-            // Another flow holds the lock this one would adopt: two drafts
-            // on one funding key, which the engine never makes.
-            RegistrationUpdate::LockTaken => Step::Fail(internal(), false),
+            // `LockTaken`: another flow took the lock this one would adopt
+            // meanwhile; the next step reads it as that flow's.
+            RegistrationUpdate::Applied
+            | RegistrationUpdate::Stale
+            | RegistrationUpdate::LockTaken => Step::Again,
         })
     }
 
@@ -729,11 +944,18 @@ impl<L: RegistrationLib> Driver<'_, L> {
         if !self.lib.ready_to_fund() {
             return Ok(Step::Park(RegistrationWait::Sync));
         }
+        self.take_index(row, Phase::KeysPrepared).await
+    }
+
+    /// Writes `phase` with a new identity index, one past every used one;
+    /// under the index lock, so no two flows take one index.
+    async fn take_index(&self, row: &RegistrationRow, phase: Phase) -> Result<Step, PlatformError> {
+        let _index = self.flows().index.lock().await;
         let index = self.next_index().await?;
         self.advance(
             row,
             RegistrationChange {
-                phase: Some(Phase::KeysPrepared.as_str().into()),
+                phase: Some(phase.as_str().into()),
                 identity_index: Some(index),
                 ..Default::default()
             },
@@ -815,20 +1037,26 @@ impl<L: RegistrationLib> Driver<'_, L> {
                 )
                 .await;
         }
-        let locks = self.lib.tracked_locks().await;
-        if let Some(lock) = matching_lock(&locks, index) {
+        let ev = self.evidence().await?;
+        if let Some(lock) = ev.unheld_lock(index) {
             return self
                 .record_lock(row, lock.outpoint, Phase::FundingSent)
                 .await;
         }
+        if ev.held_elsewhere(row, index) {
+            // Another flow funded this index (a restored row behind
+            // reality whose lock "Finish transfers" adopted): this one
+            // takes a new index rather than a second lock for it.
+            return self.take_index(row, Phase::KeysPrepared).await;
+        }
         // The funding gate (H11): a second funding only after `NotSent` or
         // `None`. P2b seam: the funding marker's status joins here.
-        if let Some(state) = funding_status(row, &locks)
+        if let Some(state) = funding_status(row, &ev)
             && state != DispatchState::NotSent
         {
             return Ok(Step::Fail(broadcast_unknown(), false));
         }
-        let Some(lease) = &self.lease else {
+        let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
         };
         // The funding cap (E0-04 §2a.3): the lock plus the worst-case fee
@@ -865,36 +1093,46 @@ impl<L: RegistrationLib> Driver<'_, L> {
         // (`funding_call_permit`) and its marker (`funding_step`, with the
         // funding key) before the call.
         let key = (self.wallet, row.id);
+        let Some(in_call) = self.flows().enter_call(key) else {
+            // A discard is deciding.
+            return Ok(Step::Stop);
+        };
         self.flows().with(key, |s| {
-            s.in_call = true;
             s.is_until = Some(Instant::now() + IS_WINDOW);
             s.wait = Some(RegistrationWait::InstantSend);
         });
-        let in_call = InCall(self.flows(), key);
         let funded = lease
             .scope_step(Some(funding_step(row.id)), async {
                 let call = lease
                     .call_permit(funding_step(row.id), None)
                     .map_err(|e| FundError::Refused(e.into()))?;
-                let funded = self.lib.fund(lock_duffs, index, lease).await;
+                let funded = self.lib.fund(lock_duffs, index, &lease).await;
                 call.finish(funded.is_ok());
                 funded
             })
             .await;
         drop(in_call);
-        self.flows().with(key, |s| s.is_until = None);
         // platform-wallet tracks the lock (`Built`, stored through the tap)
         // before it hands it to the broadcaster, and untracks it only on a
         // definitive rejection (`build.rs` `broadcast_funded_asset_lock_with_funding`).
-        // So after the call, a tracked row is a committed lock, and no
-        // tracked row for the draft's funding key is positive evidence that
-        // nothing reached the wire: `NotSent` (H12), and the row is
-        // unfunded and retryable again.
-        let tracked = matching_lock(&self.lib.tracked_locks().await, index).map(|l| l.outpoint);
+        // So after the call a tracked row is a committed lock. With none,
+        // the error's class decides (H12): a definite rejection or a
+        // failure before the build is `NotSent`, anything else (a lock the
+        // library untracked as swept, a wallet closing) may be out.
+        let current = self.row(row.id).await?;
+        let ev = self.evidence().await?;
+        let tracked = match &current {
+            Some(r) => ev.lock_of(r),
+            None => ev.unheld_lock(index),
+        }
+        .map(|l| l.outpoint);
         match (funded, tracked) {
             (Ok(outpoint), _) => self.record_lock(row, outpoint, Phase::FundingSent).await,
             (Err(FundError::IsTimeout), Some(outpoint)) => {
-                self.drop_own_key(lease);
+                // The window is over. A call that ended sooner (an unknown
+                // broadcast outcome) keeps the rest of it for the proof wait.
+                self.flows().with(key, |s| s.is_until = None);
+                self.drop_own_key(&lease);
                 self.record_lock(row, outpoint, Phase::ProofWaiting).await
             }
             (Err(e), Some(outpoint)) => {
@@ -906,13 +1144,13 @@ impl<L: RegistrationLib> Driver<'_, L> {
             }
             // Refused before the call: nothing was signed.
             (Err(FundError::Refused(e)), None) => Ok(self.failed(&e)),
+            (Err(FundError::NotSent(e)), None) => {
+                tracing::info!(draft = row.id, "the funding never reached the wire: {e}");
+                self.unfund(row.id, e.code()).await
+            }
             (Err(e), None) => {
-                tracing::info!(draft = row.id, "the funding call failed untracked: {e:?}");
-                let code = match &e {
-                    FundError::Failed(e) => e.code(),
-                    _ => RegistrationError::IslockTimeout.code(),
-                };
-                self.unfund(row.id, code).await
+                tracing::warn!(draft = row.id, "the funding call failed untracked: {e:?}");
+                self.maybe_sent(row.id).await
             }
         }
     }
@@ -937,16 +1175,29 @@ impl<L: RegistrationLib> Driver<'_, L> {
         Ok(Step::Stop)
     }
 
+    /// A funding that may be out with no tracked row behind it: a row with
+    /// the outpoint waits for the lock to be tracked again (its outpoint
+    /// reads `MaybeSent`); one without fails `platform.broadcast_unknown`,
+    /// not retryable, until the lock is tracked (the tap adopts it) or
+    /// positive evidence says `NotSent`.
+    async fn maybe_sent(&self, draft: i64) -> Result<Step, PlatformError> {
+        let Some(row) = self.row(draft).await? else {
+            return Ok(Step::Stop);
+        };
+        if row.error.is_some() {
+            return Ok(Step::Stop);
+        }
+        if row.asset_lock_outpoint.is_some() {
+            return Ok(Step::Again);
+        }
+        self.fail(&row, broadcast_unknown(), false).await?;
+        Ok(Step::Stop)
+    }
+
     /// An own-key lease drops its key when the InstantSend window ends
     /// (§2.6): the flow parks keyless and asks again at identity creation.
     fn drop_own_key(&self, lease: &Lease) {
-        if lease.view().is_some_and(|v| {
-            v.own_key
-                && matches!(
-                    v.state,
-                    LeaseStateView::Active | LeaseStateView::AwaitingProof
-                )
-        }) {
+        if holds_own_key(lease) {
             lease.park();
         }
     }
@@ -965,8 +1216,11 @@ impl<L: RegistrationLib> Driver<'_, L> {
             identity: Some(id),
             ..Default::default()
         };
-        if let Some(id) = self.identity_at(index).await {
-            return self.advance(row, registered(id)).await;
+        // Only the identity this lock makes: another at the index is not
+        // this flow's.
+        let own = b58(&identity_for(outpoint));
+        if self.identity_at(index).await.as_ref() == Some(&own) {
+            return self.advance(row, registered(own)).await;
         }
         match self.lib.find_identity(outpoint).await {
             Ok(Some(id)) => return self.advance(row, registered(id)).await,
@@ -987,20 +1241,20 @@ impl<L: RegistrationLib> Driver<'_, L> {
             if phase == Phase::FundingSent {
                 return self.to_phase(row, Phase::ProofWaiting).await;
             }
-            return Ok(self.wait_proof(row.id, outpoint).await);
+            return Ok(self.wait_proof(row.id, outpoint, lock.status).await);
         }
-        let Some(lease) = &self.lease else {
+        let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
         };
         // The call holds a plain call permit. P2b seam: the step marker of
         // `identity_step` written before the call.
-        let key = (self.wallet, row.id);
-        self.flows().with(key, |s| s.in_call = true);
-        let in_call = InCall(self.flows(), key);
+        let Some(in_call) = self.flows().enter_call((self.wallet, row.id)) else {
+            return Ok(Step::Stop);
+        };
         let created = lease
             .scope_step(Some(identity_step(row.id)), async {
                 let call = lease.call_permit(identity_step(row.id), None)?;
-                let created = self.lib.register_identity(outpoint, index, lease).await;
+                let created = self.lib.register_identity(outpoint, index, &lease).await;
                 call.finish(created.is_ok());
                 created
             })
@@ -1018,9 +1272,9 @@ impl<L: RegistrationLib> Driver<'_, L> {
     }
 
     /// The proof wait: InstantSend while the in-memory window lasts, then
-    /// the ChainLock with no limit. No key is needed; an own key is dropped
-    /// when the window ends.
-    async fn wait_proof(&self, draft: i64, outpoint: OutPoint) -> Step {
+    /// the ChainLock with no limit, in bounded waits. No key is needed; an
+    /// own key is dropped when the window ends.
+    async fn wait_proof(&self, draft: i64, outpoint: OutPoint, status: LockStatus) -> Step {
         let key = (self.wallet, draft);
         let now = Instant::now();
         let window = self
@@ -1034,21 +1288,36 @@ impl<L: RegistrationLib> Driver<'_, L> {
             None => RegistrationWait::ChainLock,
         };
         if window.is_none()
-            && let Some(lease) = &self.lease
+            && let Some(lease) = self.lease(draft)
         {
-            self.drop_own_key(lease);
+            self.drop_own_key(&lease);
         }
-        if !self.wait_for_proof {
+        if !self.waits {
+            // A `Built` lock is broadcast again, the proof not waited for.
+            if status == LockStatus::Built
+                && let Err(e) = self.lib.wait_proof(outpoint, REBROADCAST_WAIT).await
+                && e != FundError::IsTimeout
+            {
+                tracing::info!(draft, "the lock's re-broadcast failed: {e:?}");
+            }
             return Step::Park(wait);
         }
         self.flows().with(key, |s| s.wait = Some(wait));
-        match self.lib.wait_proof(outpoint, window).await {
+        match self
+            .lib
+            .wait_proof(outpoint, window.unwrap_or(CHAINLOCK_POLL))
+            .await
+        {
             Ok(()) => Step::Again,
             Err(FundError::IsTimeout) => {
-                self.flows().with(key, |s| s.is_until = None);
+                if window.is_some() {
+                    self.flows().with(key, |s| s.is_until = None);
+                }
                 Step::Again
             }
-            Err(FundError::Refused(e) | FundError::Failed(e)) => self.failed(&e),
+            Err(FundError::Refused(e) | FundError::NotSent(e) | FundError::Failed(e)) => {
+                self.failed(&e)
+            }
         }
     }
 
@@ -1057,19 +1326,24 @@ impl<L: RegistrationLib> Driver<'_, L> {
         let Some(identity) = row.identity.as_deref() else {
             return Ok(Step::Fail(internal(), false));
         };
-        let Some(lease) = &self.lease else {
+        let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
         };
-        match self.lib.register_name(identity, &row.label, lease).await {
+        let Some(_in_call) = self.flows().enter_call((self.wallet, row.id)) else {
+            return Ok(Step::Stop);
+        };
+        match self.lib.register_name(identity, &row.label, &lease).await {
             Ok(NameOutcome::Registered) => self.to_phase(row, Phase::NameRegistered).await,
             Ok(NameOutcome::ContestStarted { .. }) => {
                 if let Some(temp) = row.temp_label.as_deref() {
-                    match self.lib.register_name(identity, temp, lease).await {
+                    match self.lib.register_name(identity, temp, &lease).await {
                         Ok(_) => {}
-                        Err(NameError::Platform(e))
-                            if !matches!(self.failed(&e), Step::Fail(..)) =>
-                        {
-                            return Ok(self.failed(&e));
+                        Err(NameError::Platform(e)) => {
+                            let step = self.failed(&e);
+                            if !matches!(step, Step::Fail(..)) {
+                                return Ok(step);
+                            }
+                            tracing::info!(draft = row.id, "no temporary name: {e}");
                         }
                         // The temporary name is a courtesy: losing it to
                         // another owner leaves the contest as it is.
@@ -1096,12 +1370,15 @@ impl<L: RegistrationLib> Driver<'_, L> {
         let (Some(identity), Some(index)) = (row.identity.as_deref(), row.identity_index) else {
             return Ok(Step::Fail(internal(), false));
         };
-        let Some(lease) = &self.lease else {
+        let Some(lease) = self.lease(row.id) else {
             return Ok(Step::Park(self.authority_wait()));
+        };
+        let Some(_in_call) = self.flows().enter_call((self.wallet, row.id)) else {
+            return Ok(Step::Stop);
         };
         match self
             .lib
-            .create_profile(identity, index, &profile, lease)
+            .create_profile(identity, index, &profile, &lease)
             .await
         {
             Ok(()) => {
@@ -1146,32 +1423,26 @@ pub(crate) fn spawn<L: RegistrationLib + 'static>(
     lib: Arc<L>,
     draft: i64,
     lease: Option<Lease>,
-    wait_for_proof: bool,
 ) -> bool {
     let flows = &session.platform.registrations;
     let Some(claim) = flows.claim((wallet, draft)) else {
         return false;
     };
+    let generation = claim.generation;
     let task = {
         let session = Arc::clone(session);
         let lease = lease.clone();
         session.rt.clone().spawn(async move {
             let _claim = claim;
-            let driver = Driver {
-                session: &session,
-                wallet,
-                lib: &*lib,
-                lease,
-                wait_for_proof,
-            };
+            let driver = Driver::new(&session, wallet, &*lib, lease, true);
             if let Err(e) = driver.run(draft).await {
                 tracing::warn!(draft, error = %e, "registration stopped");
             }
         })
     };
     let handle = task.abort_handle();
-    flows.with((wallet, draft), |s| {
-        if s.running {
+    flows.with_existing((wallet, draft), |s| {
+        if s.running && s.generation == generation {
             s.task = Some(handle.clone());
         }
     });
@@ -1190,6 +1461,25 @@ pub(crate) fn backup_once(session: &Arc<NetworkSession>, wallet: WalletId, draft
     if first {
         session.schedule_automatic_backup(wallet);
     }
+}
+
+/// The lease holds its own vault key now (§2.6).
+pub(crate) fn holds_own_key(lease: &Lease) -> bool {
+    lease.view().is_some_and(|v| {
+        v.own_key
+            && matches!(
+                v.state,
+                LeaseStateView::Active | LeaseStateView::AwaitingProof
+            )
+    })
+}
+
+fn parse_identity(identity: &str) -> Result<Identifier, PlatformError> {
+    Identifier::from_string(identity, Encoding::Base58).map_err(|_| {
+        PlatformError::InvalidArgument {
+            detail: "identity is not a base58 identifier".into(),
+        }
+    })
 }
 
 /// The base58 text of an identity id.
@@ -1218,8 +1508,17 @@ fn lock_status(s: &platform_wallet::wallet::asset_lock::tracked::AssetLockStatus
 }
 
 fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
+    use platform_wallet::PlatformWalletError as E;
     match e {
-        platform_wallet::PlatformWalletError::FinalityTimeout(_) => FundError::IsTimeout,
+        E::FinalityTimeout(_) => FundError::IsTimeout,
+        // The definite-rejection contract (`build.rs`: the row is gone, the
+        // inputs are free), and the failures before the lock is built and
+        // tracked.
+        e @ (E::TransactionBroadcast(_)
+        | E::AssetLockTransaction(_)
+        | E::AssetLockInsufficientFunds { .. }
+        | E::InputMidBroadcast { .. }
+        | E::TransactionBuild(_)) => FundError::NotSent(e.into()),
         e => FundError::Failed(e.into()),
     }
 }
@@ -1255,14 +1554,12 @@ impl RegistrationLib for PwLib {
     async fn spendable(&self) -> Spendable {
         let state = self.wallet.state().await;
         let snapshot = crate::coins::read_coins(&state.core_wallet);
-        let coins = snapshot
-            .coins
-            .iter()
-            .filter(|c| c.send_account && c.auto_selectable(snapshot.height));
         let mut out = Spendable::default();
-        for c in coins {
-            out.duffs = out.duffs.saturating_add(c.utxo.value());
+        for c in snapshot.coins.iter().filter(|c| c.send_account) {
             out.inputs += 1;
+            if c.auto_selectable(snapshot.height) {
+                out.duffs = out.duffs.saturating_add(c.utxo.value());
+            }
         }
         out
     }
@@ -1276,10 +1573,22 @@ impl RegistrationLib for PwLib {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .caught_up();
+        // Restore rule 1: the same-seed discovery answered which identity
+        // indexes the seed uses. A scan that did not (it never reached
+        // Platform, failed locally, left indexes unanswered, or ran without
+        // signers) holds the funding.
         let brought_up = self
             .session
             .dashpay_startup(&self.wallet_id)
-            .is_ok_and(|s| !matches!(s.startup, StartupStatus::NotRun | StartupStatus::Starting));
+            .is_ok_and(|s| {
+                matches!(
+                    s.startup,
+                    StartupStatus::Ready
+                        | StartupStatus::NoIdentity
+                        | StartupStatus::PartialAccountsPending
+                        | StartupStatus::SeedBindingUnverified
+                )
+            });
         synced && brought_up
     }
 
@@ -1307,14 +1616,10 @@ impl RegistrationLib for PwLib {
             .map_err(fund_error)
     }
 
-    async fn wait_proof(
-        &self,
-        outpoint: OutPoint,
-        timeout: Option<Duration>,
-    ) -> Result<(), FundError> {
+    async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
         self.wallet
             .asset_locks()
-            .resume_asset_lock(&outpoint, timeout)
+            .resume_asset_lock(&outpoint, Some(timeout))
             .await
             .map(|_| ())
             .map_err(fund_error)
@@ -1367,11 +1672,7 @@ impl RegistrationLib for PwLib {
         label: &str,
         lease: &Lease,
     ) -> Result<NameOutcome, NameError> {
-        let identity = Identifier::from_string(identity, Encoding::Base58).map_err(|_| {
-            NameError::from(PlatformError::InvalidArgument {
-                detail: "identity is not a base58 identifier".into(),
-            })
-        })?;
+        let identity = parse_identity(identity)?;
         super::dashpay::DashPay::register_name_for_flow(
             &self.session,
             self.wallet_id,
@@ -1389,11 +1690,7 @@ impl RegistrationLib for PwLib {
         profile: &ProfileRecord,
         lease: &Lease,
     ) -> Result<(), PlatformError> {
-        let id = Identifier::from_string(identity, Encoding::Base58).map_err(|_| {
-            PlatformError::InvalidArgument {
-                detail: "identity is not a base58 identifier".into(),
-            }
-        })?;
+        let id = parse_identity(identity)?;
         let has_profile = {
             let state = self.wallet.state().await;
             state
@@ -1429,11 +1726,7 @@ impl RegistrationLib for PwLib {
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::query_types::IdentityBalance;
-        let id = Identifier::from_string(identity, Encoding::Base58).map_err(|_| {
-            PlatformError::InvalidArgument {
-                detail: "identity is not a base58 identifier".into(),
-            }
-        })?;
+        let id = parse_identity(identity)?;
         Ok(IdentityBalance::fetch(&self.sdk, id).await?)
     }
 }
