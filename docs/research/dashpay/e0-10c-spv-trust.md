@@ -31,7 +31,7 @@ backport (§5).
   needs; only the QRInfo path did, once per rotation cycle. A tip update now fetches it, and the quorum is `Verified` in
   the first list that carries it. Regtest: fails before, passes after. Testnet and mainnet, fix vs `dev` side by side:
   every Platform quorum that entered after the start was `Verified` on arrival with the fix (4/4 testnet, 3/3 mainnet,
-  3/3 for a second testnet client on `962654cbc`, before the request cap); on `dev` the first one on each network stayed
+  3/3 for a client on `962654cbc` and 3/3 for one on the final head `3e60a819d`); on `dev` the first one on each network stayed
   `Skipped(MissedList)` until the run ended, 3.3 h and 2.7 h later (§3.4).
 - **The status-carrying lookup** is one additive method on platform-wallet's `SpvRuntime`,
   `get_quorum_public_key_with_status`, returning the key and dash-spv's `LLMQEntryVerificationStatus` (§4).
@@ -178,7 +178,8 @@ Code: `dash-spv/src/sync/masternodes/sync_manager.rs` (MnListDiff handler) and `
 E0-10a's dash-spv probe (`tools/trust-spike/`, the `spv` mode fed by the pin's `capture` tuples), read-only, started
 side by side at 12:33 UTC on 2026-10-10 for 3.5 h: `dev` `0eaf0284c` ("ctl") and `dev` + the fix's first commit
 `4c142bafc` ("fix") on both networks. A third testnet client on `962654cbc` ("fin", before the request cap) started at 13:12 and
-ran to the same end. Data: `/work/scratch/e0-10c/probe/run1/` (agentbox, not tracked).
+ran to the same end. A fourth testnet client on #1150's final head `3e60a819d` ("cap", with the request cap) ran
+20:00–22:50 UTC. Data: `/work/scratch/e0-10c/probe/run1/` (agentbox, not tracked).
 
 Platform quorums that entered the newest list after each client's initial sync:
 
@@ -187,15 +188,16 @@ Platform quorums that entered the newest list after each client's initial sync:
 | fix | testnet | 4 | 4 `Verified` | 4 `Verified` |
 | ctl | testnet | 4 | first `Skipped(MissedList(1569760))`, 3 `Verified` | unchanged: the first stayed `Skipped` 3.3 h |
 | fin | testnet | 3 | 3 `Verified` | 3 `Verified` |
+| cap | testnet | 3 | 3 `Verified` | 3 `Verified` |
 | fix | mainnet | 3 | 3 `Verified` | 3 `Verified` |
 | ctl | mainnet | 3 | first `Skipped(MissedList(2552944))`, 2 `Verified` | unchanged: the first stayed `Skipped` 2.7 h |
 
 The first quorum after the start is the case under test in every client. ctl and fix synced to 1569778 (testnet) and
 2552953 (mainnet); the first quorum's work blocks are 1569760 and 2552944. fin synced to 1569792; its first quorum's
-work block is 1569784. The quorums after the first are `Verified` in both builds: by then the client holds a list for
+work block is 1569784. cap synced to 1569984; its first quorum's block is 1569984, work block 1569976. The quorums after the first are `Verified` in both builds: by then the client holds a list for
 every block.
 
-Every live tuple found once synced was `Verified` on first ask, in all clients (52–53 per client). Platform did not cite
+Every live tuple found once synced was `Verified` on first ask, in the clients started with the capture (52–53 per client). cap started 7.5 h after the capture, so its tuples cited heights below its sync height; the quorums among them that had rotated out came back `Skipped(NotMarkedForVerification)` (§5.1). Platform did not cite
 the first quorum while ctl held it `Skipped`, as in E0-10a §4.2, so the lookups do not show the difference. On mainnet
 one tuple, cited at ChainLock height 2532096 (about 20 800 blocks below the tip, a stale evonode, E0-10a §2), was not
 found 120 times in both ctl and fix. During initial sync each client had a lookup answered `Skipped(MissedList)` that
