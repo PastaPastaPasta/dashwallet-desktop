@@ -24,7 +24,7 @@ backport (§5).
 
 - **The pin move costs 14 mechanical commits** (36 files, +158/−212 outside `Cargo.lock` and the workspace manifest),
   mostly the secp256k1 0.33 port, **plus PSBT**: rust-dashcore #1041 removed `key_wallet::psbt`, which `dw-psbt` is
-  built on; E0-10d vendors the container (§1).
+  built on; E0-10d vendored the container (§1).
 - **DEC-18 picks:** #5307 already contains #4623, #4997, #4764, #5206, #5294 and #5305. Of the fixes the desktop gets
   from v5.0-dev today, only #4978 is missing; it cherry-picks cleanly onto #5307 (§2).
 - **The first quorum after the start is fixed.** Root cause: a tip update never fetched the work-block list a new quorum
@@ -36,8 +36,7 @@ backport (§5).
 - **The status-carrying lookup** is one additive method on platform-wallet's `SpvRuntime`,
   `get_quorum_public_key_with_status`, returning the key and dash-spv's `LLMQEntryVerificationStatus` (§4).
 - **What the desktop graph needs for E0-10b to require `Verified`:** the fork pin (#5307 + #4978 + the status lookup)
-  and the dash-spv fix, which #5307's rust-dashcore pin does not carry. This branch has both (§5); it merges after
-  E0-10d.
+  and the dash-spv fix, which #5307's rust-dashcore pin does not carry. This branch has both (§5).
 
 ---
 
@@ -60,10 +59,12 @@ for every pin, which resolves the `zeroize` / `bitcoin_hashes` conflicts a plain
 
 dw-ffi, dw-appdb, dw-console, dw-desktop, dw-fs, dw-p2p, dw-units and dwcli needed no change.
 
-The gate at the committed pins (platform fork `ebe37f8a67`, rust-dashcore patched to `d3d50520a`), with the
-uncommitted type-only PSBT stand-in: `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`
-pass; `cargo test --workspace`: 839 passed, 13 failed, 4 ignored, and all 13 failures are PSBT tests hitting the
-stand-in (8 in dw-psbt, 3 in dw-engine `send::flow_tests`, 2 in dw-ffi).
+The gate at the committed pins (platform fork `ebe37f8a67`, rust-dashcore patched to `d3d50520a`), on desktop main
+`bdccfa4` with E0-10d's vendored PSBT container: `cargo fmt --check` and
+`cargo clippy --workspace --all-targets -D warnings` pass; `cargo test --workspace`: 857 passed, 1 failed, 4 ignored.
+The failure is dw-desktop's `test_QT_031_a_failing_notify_send_is_an_os_error`, which got `ETXTBSY` executing its fake
+`notify-send` script while other tests forked; dw-desktop's tests pass 3 of 3 runs alone, and this branch does not
+touch the crate. Before E0-10d, with a type-only PSBT stand-in: 839 passed, 13 failed (all 13 the stand-in).
 
 Earlier, against the fork pin through a local `file://` URL and without the dash-spv patch, every `cargo test` failure
 was either a PSBT test hitting the stand-in (8 in dw-psbt, 3 in dw-engine `send::flow_tests`, 2 in dw-ffi) or
@@ -88,8 +89,8 @@ all in `dw-psbt`. Options:
 2. move `dw-psbt` to another PSBT implementation;
 3. drop PSBT from 1.0.
 
-Decided: option 1, as its own task, E0-10d, from desktop main. This branch rebases onto it once it merges. Until then
-the measurements here use an uncommitted type-only stand-in.
+Done: option 1, as E0-10d (desktop main `bdccfa4`). This branch rebased onto it and deleted E0-10d's temporary
+comparison with key-wallet's module (`dw-psbt/src/old_vs_vendored.rs`), which cannot build at the new pin.
 
 ### 1.3 Before this branch merges
 
@@ -98,7 +99,8 @@ independent Python derivation agree on all 86 keys, and the rebuilt fixture equa
 platform field (`identity_derive_and_persist.rs` changed only for the secp256k1 0.33 API). DP1-03: the four cited
 upstream files are identical at `bc41f1bc23`, `f475f72a11` and `ebe37f8a67`, so only the pin string changed.
 
-Merging waits for E0-10d (§1.2): rebase onto it, then the gate without the stand-in.
+E0-10d is merged and this branch is rebased onto it; the gate passes without the stand-in, apart from one known
+test race outside this branch (§1.1).
 
 The port review found the signing paths equivalent: low-R signing, recoverable signatures, the compact-signature
 header and the digests are unchanged. One behaviour change in BLS: the dash-pkc legacy decoder masks two flag bits in
@@ -244,8 +246,24 @@ based on #5307's branch (its test needs #5307's rust-dashcore), and the fork car
    `[patch."https://github.com/dashpay/rust-dashcore"]` to the backport `d3d50520a` on
    `PastaPastaPasta/rust-dashcore-dashpay` (DEC-09). It patches seven crates, and all twelve rust-dashcore packages
    in the lock then come from the fork, one copy each. Drop it when platform re-pins to a rust-dashcore with #1150.
-3. Merging waits for E0-10d (§1.3).
+3. Done: E0-10d (§1.2).
 4. E0-10b's `trust.rs` then requires `status == Verified`. Enforcement (DP3-04 / H-09 full mode) still waits for #1117.
+
+### 5.1 Note for E0-10b: quorums that rotated out before the client started
+
+A lookup below the height the client started at can return `Skipped(NotMarkedForVerification)` for a quorum that has
+since left the active set. dash-spv verifies the quorums of its newest list. The walk-back
+(`quorum_entry_for_hash_at_or_before_height`) finds such a quorum only in a list from the client's initial sync,
+which still carries the diff's default status. A quorum still in the newest list gets its status copied to
+every list holding it, so this affects only quorums that are no longer active.
+
+Seen in the probe of #1150's head (§3.4): its lookups replayed ChainLock heights captured 7.5 h earlier, below its
+sync height, and the 4 quorums cited there that had since rotated out came back `Skipped(NotMarkedForVerification)`.
+The 24 quorums of the newest list were all `Verified`. The answer errs strict: never `Verified` without verification.
+
+For E0-10b: a `trust.rs` that requires `Verified` refuses a proof citing such a quorum. Live proofs cite recent
+ChainLock heights, so this needs a proof older than the client's start whose quorum has also rotated out. The
+default is to refuse and retry, and to show the status (Tools ▸ Information, DP6-03) rather than accept it.
 
 ## 6. Open questions (defaults in force)
 
@@ -261,4 +279,13 @@ based on #5307's branch (its test needs #5307's rust-dashcore), and the fork car
 - The testnet probes ran `dev` `0eaf0284c` with and without the fix, not `8fe0a381`. The commits between them (#1144 and
   #1149's serde changes) do not touch masternode sync.
 - One start per probe: each run covers the first quorum after one start, not a distribution.
-- Desktop tests with the pin move ran with a type-only PSBT stand-in, until E0-10d lands.
+
+## 8. Follow-ups
+
+- **No desktop consumer reads the status yet.** `SharedContext::get_quorum_public_key`
+  (`dw-engine/src/context.rs`) delegates to `TrustedHttpContextProvider`; nothing in the desktop calls `SpvRuntime`'s
+  lookup. E0-10b's `trust.rs` is where it will: a `ContextProvider` whose `get_quorum_public_key` calls
+  `SpvRuntime::get_quorum_public_key_with_status` and requires `Verified` (§5 step 4, §5.1).
+- **Possible upstream cleanup in platform-wallet:** `SpvRuntime`'s lookup narrows the `u32` `quorum_type` to `u8`
+  (`LLMQType::from(quorum_type as u8)`), so values above 255 wrap and unmapped values become `LlmqtypeUnknown`
+  instead of an error. This predates #5366, which keeps the existing conversion.
