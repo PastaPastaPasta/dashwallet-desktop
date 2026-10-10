@@ -2222,6 +2222,30 @@ fn a_built_lock_keeps_its_inputs_from_other_spends() {
     assert!(!reads_reserved(&f, coin));
 }
 
+/// `lock`, tracked as built, spending `coin`.
+fn built_lock(lock: OutPoint, coin: OutPoint) -> platform_wallet::TrackedAssetLock {
+    let transaction = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: coin,
+            ..Default::default()
+        }],
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    platform_wallet::TrackedAssetLock {
+        out_point: lock,
+        transaction,
+        account_index: 0,
+        funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+        identity_index: 1,
+        amount: flow::LOCK_DUFFS,
+        status: platform_wallet::AssetLockStatus::Built,
+        proof: None,
+    }
+}
+
 /// Funds `lock` from `coin` as the library does up to the tap, offline: the
 /// lock tracked as built in the wallet, then reported by the tap.
 fn track_built(
@@ -2234,31 +2258,11 @@ fn track_built(
     f.engine.block_on(async {
         lib.fenced(1, async {
             // As the library tracks the lock it built, before the tap.
-            let tx = dashcore::Transaction {
-                version: 3,
-                lock_time: 0,
-                input: vec![dashcore::TxIn {
-                    previous_output: coin,
-                    ..Default::default()
-                }],
-                output: Vec::new(),
-                special_transaction_payload: None,
-            };
-            let tracked = platform_wallet::TrackedAssetLock {
-                out_point: lock,
-                transaction: tx,
-                account_index: 0,
-                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
-                identity_index: 1,
-                amount: flow::LOCK_DUFFS,
-                status: platform_wallet::AssetLockStatus::Built,
-                proof: None,
-            };
             wallet
                 .state_mut()
                 .await
                 .tracked_asset_locks
-                .insert(lock, tracked);
+                .insert(lock, built_lock(lock, coin));
             let flows = &f.session.platform.registrations;
             flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(1), true).unwrap();
             Ok(())
@@ -2284,9 +2288,7 @@ fn an_untracked_locks_reservation_does_not_block_the_next_start() {
     assert_eq!(held.protected, 0);
     assert!(reads_reserved(&f, coin));
     // The library drops the lock, as a later definite rejection does.
-    f.engine.block_on(async {
-        wallet.state_mut().await.tracked_asset_locks.remove(&lock);
-    });
+    untrack(&f, &wallet, lock);
     assert!(!reads_reserved(&f, coin));
     let grant = f.grant(COIN, 10 * COIN * 1000, Credential::None);
     let started = f.engine.block_on(registration::start(
@@ -2303,8 +2305,8 @@ fn an_untracked_locks_reservation_does_not_block_the_next_start() {
     assert_eq!(f.rows().len(), 1);
 }
 
-/// R3-01: the lock's untracking frees its inputs and no other operation's
-/// reservation.
+/// R3-01, DEC-179: the lock's untracking frees its inputs and no other
+/// operation's reservation, of another coin or of the same one.
 #[test]
 fn freeing_an_untracked_locks_inputs_keeps_other_reservations() {
     let f = fixture(false);
@@ -2313,14 +2315,80 @@ fn freeing_an_untracked_locks_inputs_keeps_other_reservations() {
     let lib = f.pw_lib(&wallet);
     let lock = OutPoint::new(Txid::from_byte_array([0xdb; 32]), 0);
     track_built(&f, &wallet, &lib, lock, coin);
-    f.session
-        .spends
-        .reserve(f.wallet, SpendOwner::mixing_session(), [other]);
+    let mixing = SpendOwner::mixing_session();
+    f.session.spends.reserve(f.wallet, mixing, [other]);
+    // A CoinJoin session that chose the lock's coin before the fence (it
+    // reserves outside the fence) claims it too.
+    f.session.spends.reserve(f.wallet, mixing, [coin]);
+    untrack(&f, &wallet, lock);
+    assert!(
+        reads_reserved(&f, coin),
+        "the session's claim went with the lock"
+    );
+    assert!(reads_reserved(&f, other));
+    f.session.spends.release(&f.wallet, mixing);
+    assert!(!reads_reserved(&f, coin) && !reads_reserved(&f, other));
+}
+
+/// The library drops `lock` (a later definite rejection).
+fn untrack(f: &Fixture, wallet: &Arc<platform_wallet::PlatformWallet>, lock: OutPoint) {
     f.engine.block_on(async {
         wallet.state_mut().await.tracked_asset_locks.remove(&lock);
     });
+}
+
+/// Sol r4 R4-01, DEC-179: a prepared send holding the same coin as a built
+/// lock the library later drops keeps its reservation through the lock's
+/// untracking, until the send itself releases it. (Sol's probe reaches the
+/// two by pausing the send's selection before the funding's fence; here the
+/// send is prepared first and the library then tracks a lock of its coin.)
+#[test]
+fn an_untracked_locks_cleanup_keeps_a_prepared_sends_claim_on_the_same_coin() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft
+        .set_source(crate::send::CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    draft
+        .set_recipients(vec![crate::send::Recipient {
+            address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
+            amount: 10_000_000,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    let grant = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend { max_duffs: COIN },
+            Some(&f.wallet.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let prepared = f.engine.block_on(draft.prepare(grant)).unwrap();
+    let raw = prepared.raw().unwrap();
+    let tx: dashcore::Transaction = dashcore::consensus::deserialize(&raw).unwrap();
+    assert!(tx.input.iter().any(|i| i.previous_output == coin));
+    let lock = OutPoint::new(Txid::from_byte_array([0xd6; 32]), 0);
+    f.engine.block_on(async {
+        wallet
+            .state_mut()
+            .await
+            .tracked_asset_locks
+            .insert(lock, built_lock(lock, coin));
+    });
+    untrack(&f, &wallet, lock);
+    assert!(
+        reads_reserved(&f, coin),
+        "the lock's untracking freed the prepared send's coin"
+    );
+    // The send's own release frees it.
+    drop(prepared);
     assert!(!reads_reserved(&f, coin));
-    assert!(reads_reserved(&f, other));
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known

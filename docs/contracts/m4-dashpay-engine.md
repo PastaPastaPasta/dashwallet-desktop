@@ -224,18 +224,20 @@ decided where the rows leave room:
   `start_registration` checks the grant's Funding cap (without redeeming it) and the balance against lock + fee
   before it writes a row (`platform.grant_exceeded`, `registration.funding_insufficient`), and the funding step
   checks the lease again. The balance is the engine's spendable set (the coin snapshot's auto-selectable coins), not
-  the library's. The pinned asset-lock builder cannot be told to skip a coin, so while any coin it could spend is
-  locked by the user (or the dust protection) or reserved by a send, `start_registration` and the funding step refuse
-  with the new code `registration.coins_locked` (retryable once the coin is unlocked or the send ends) and fund
-  nothing. The funding step checks under the wallet's coin fence and holds it through the library's coin selection
-  and signing, until the library tracks the lock it built (DEC-173 (3)): "Lock unspent", the dust protection's
-  locks and CoinJoin's funding transaction's reservation wait for it, so a lock lands before the check (refused) or
-  after the build, never between. The built lock's inputs are then reserved as a send's until they are spent or the
-  library stops tracking the lock (positively not sent, rejected later, swept), which the funding step checks after a
-  `NotSent` and before its coin check; CoinJoin's funding transaction backs off a reserved coin. With dust
-  protection on, a dust coin it locked blocks registration until the user unlocks it. E0-04 P2b's fenced coin-control
-  exclusion replaces the refusal and the fence, and fences the other sends' reservations (until then a send whose
-  coins were chosen before the fence may conflict with the lock, and one of the two fails to broadcast).
+  the library's. The pinned asset-lock builder cannot be told to skip a coin, so while any coin of the funding
+  accounts is locked by the user (or the dust protection) or reserved by an engine payment (the coin snapshot's held
+  funding coins), `start_registration` and the funding step refuse with the new code `registration.coins_locked`
+  (retryable once the coin is unlocked or the payment ends) and fund nothing. A tracked lock's inputs are no such
+  coin: the library reserves those itself. The funding step checks under the wallet's coin fence (E0-04 §2a.6) and
+  holds it through the library's coin selection and signing, until the library tracks the lock it built (DEC-173 (3)):
+  "Lock unspent", the dust protection's locks and every engine build wait for it, so a lock lands before the check
+  (refused) or after the build, never between. From then on the built lock's inputs read reserved in every coin view,
+  derived from the library's tracked `Built` and `Broadcast` locks rather than stored, so no engine build spends them;
+  they are free again once spent or untracked (positively not sent, rejected later, swept), with no reservation of the
+  engine's to clean up. Reservations are owner-keyed (DEC-179): a coin is reserved while any payment or CoinJoin
+  session claims it, and a lock's untracking releases none of those claims. With dust protection on, a dust coin it
+  locked blocks registration until the user unlocks it. Phase B: the funding call permit (`funding_call_permit`) takes
+  the fence into the call.
 - **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
