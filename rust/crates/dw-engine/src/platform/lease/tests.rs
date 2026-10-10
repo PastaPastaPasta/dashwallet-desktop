@@ -237,6 +237,8 @@ pub(super) struct FakeJournal {
     rows: Mutex<Rows>,
     /// `step_log`, append-only (DEC-154).
     log: Mutex<Vec<StepLogRow>>,
+    /// Every artifact a marker row was ever appended for.
+    ever_marked: Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>,
 }
 
 impl JournalBackend for FakeJournal {
@@ -295,6 +297,10 @@ impl JournalBackend for FakeJournal {
             .iter()
             .any(|s| s.wallet == *wallet && s.artifact == *artifact && s.step_id == step);
         if !stands {
+            self.ever_marked
+                .lock()
+                .unwrap()
+                .insert((*wallet, *artifact));
             log.push(StepLogRow {
                 wallet: *wallet,
                 artifact: *artifact,
@@ -336,10 +342,31 @@ impl JournalBackend for FakeJournal {
         Ok(())
     }
 
-    fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
+    fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
+        if dispatch {
+            self.rows.lock().unwrap().retain(|(w, _), _| w != wallet);
+        }
+        // DEC-160's predicate, under the log's lock like a transaction.
+        let mut log = self.log.lock().unwrap();
+        let gone: Vec<[u8; 32]> = dw_appdb::dispatch::compactable(&log)
+            .into_iter()
+            .filter(|(w, _)| w == wallet)
+            .map(|(_, a)| a)
+            .collect();
+        log.retain(|r| r.wallet != *wallet || !gone.contains(&r.artifact));
+        Ok(gone)
+    }
+
+    fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
         self.rows.lock().unwrap().retain(|(w, _), _| w != wallet);
-        self.log.lock().unwrap().retain(|r| r.wallet != *wallet);
-        Ok(())
+        let mut log = self.log.lock().unwrap();
+        let gone: std::collections::BTreeSet<[u8; 32]> = log
+            .iter()
+            .filter(|r| r.wallet == *wallet)
+            .map(|r| r.artifact)
+            .collect();
+        log.retain(|r| r.wallet != *wallet);
+        Ok(gone.into_iter().collect())
     }
 }
 
@@ -380,6 +407,30 @@ impl FakeJournal {
         dw_appdb::dispatch::standing(&self.log.lock().unwrap())
             .iter()
             .any(|r| r.wallet == wallet.0 && r.artifact == artifact.0 && r.step_id == step)
+    }
+
+    /// An artifact whose marker rows are gone from under its final row:
+    /// evidence that recovery reads as never handed off. (A marker that
+    /// never landed leaves a final row bare too, rightly: no copy went
+    /// out on it.)
+    pub(super) fn bare_final_row(&self) -> Option<ArtifactId> {
+        let log = self.log.lock().unwrap();
+        let ever = self.ever_marked.lock().unwrap();
+        log.iter()
+            .filter(|r| {
+                matches!(
+                    r.event,
+                    StepEvent::Resolved(Resolution::Sent | Resolution::MaybeSent)
+                )
+            })
+            .find(|f| {
+                ever.contains(&(f.wallet, f.artifact))
+                    && !log.iter().any(|r| {
+                        (r.wallet, r.artifact) == (f.wallet, f.artifact)
+                            && matches!(r.event, StepEvent::Marked(_))
+                    })
+            })
+            .map(|f| ArtifactId(f.artifact))
     }
 }
 
@@ -1764,8 +1815,16 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
-    fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
-        self.db.erase_wallet(wallet).map_err(|e| e.to_string())
+    fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
+        self.db
+            .erase_wallet(wallet, dispatch)
+            .map_err(|e| e.to_string())
+    }
+
+    fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        self.db
+            .erase_wallet_unconditionally(wallet)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -2388,8 +2447,16 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
-    fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<(), String> {
-        self.db.erase_wallet(wallet).map_err(|e| e.to_string())
+    fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
+        self.db
+            .erase_wallet(wallet, dispatch)
+            .map_err(|e| e.to_string())
+    }
+
+    fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        self.db
+            .erase_wallet_unconditionally(wallet)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -2471,7 +2538,9 @@ async fn r2_f1_a_copy_waits_while_the_sent_row_is_held() {
         Verdict::Deferred
     );
     j.release(true);
-    until(|| j.db.load().unwrap().1.len() == 1).await;
+    // The row lands before the write's completion marks it durable.
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    assert_eq!(j.db.load().unwrap().1.len(), 1);
     let copy = resend(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
     t.log_transport(a, copy.id(), Some("withdrawal/d/submit".into()));
     copy.finish(Outcome::Sent);
@@ -2503,7 +2572,8 @@ async fn r2_f1_a_lost_sent_row_is_written_before_any_copy() {
 async fn r2_f1_a_not_sent_row_committed_then_failed_keeps_the_evidence() {
     let (t, _, j, l, a) = r2_seen_during_resolution(R2Fault::NotSentDurableThenError).await;
     let _release = R2Release(Arc::clone(&j));
-    until(|| j.db.load().unwrap().1.len() == 1).await;
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    assert_eq!(j.db.load().unwrap().1.len(), 1);
     let copy = resend(t.admit(step_copy(&l, a, "withdrawal/d/submit")).await);
     t.log_transport(a, copy.id(), Some("withdrawal/d/submit".into()));
     copy.finish(Outcome::Sent);
@@ -2680,4 +2750,328 @@ async fn r2_m2_closing_the_journal_retries_an_owed_sent_row() {
     j.fail_sent.store(false, Ordering::SeqCst);
     t.close_journal().await;
     assert!(j.load().1.iter().any(|r| r.artifact == a.0 && r.sent));
+}
+
+/// A file-backed journal for Sol r3's removal probes: a removal's erase can
+/// be held after it entered, and `Sent` rows held before they write.
+struct R3Journal {
+    db: dw_appdb::dispatch::DispatchJournal,
+    path: std::path::PathBuf,
+    erase_entered: AtomicBool,
+    /// The erase commits, then reports an error.
+    erase_err: AtomicBool,
+    sending: AtomicBool,
+    /// (erase released, `Sent` released).
+    gate: Mutex<(bool, bool)>,
+    wake: std::sync::Condvar,
+    _dir: tempfile::TempDir,
+}
+
+impl R3Journal {
+    fn new(hold_erase: bool, hold_sent: bool) -> Arc<Self> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        let dw_appdb::dispatch::JournalOpen::Ready(db) =
+            dw_appdb::dispatch::DispatchJournal::open(&path, 0).unwrap()
+        else {
+            panic!("a fresh journal");
+        };
+        Arc::new(Self {
+            db,
+            path,
+            erase_entered: AtomicBool::new(false),
+            erase_err: AtomicBool::new(false),
+            sending: AtomicBool::new(false),
+            gate: Mutex::new((!hold_erase, !hold_sent)),
+            wake: std::sync::Condvar::new(),
+            _dir: dir,
+        })
+    }
+
+    fn release(&self, sent: bool) {
+        let mut g = self.gate.lock().unwrap();
+        if sent {
+            g.1 = true;
+        } else {
+            g.0 = true;
+        }
+        self.wake.notify_all();
+    }
+
+    fn wait(&self, sent: bool) {
+        let mut g = self.gate.lock().unwrap();
+        while !(if sent { g.1 } else { g.0 }) {
+            g = self.wake.wait(g).unwrap();
+        }
+    }
+
+    /// The markers standing in a reopen of the file.
+    fn reopened(&self) -> (Vec<StepRow>, Vec<StepLogRow>) {
+        let dw_appdb::dispatch::JournalOpen::Ready(db) =
+            dw_appdb::dispatch::DispatchJournal::open(&self.path, 1).unwrap()
+        else {
+            panic!("the journal reopens");
+        };
+        (db.load().unwrap().1, db.step_log().unwrap())
+    }
+}
+
+struct R3Release(Arc<R3Journal>);
+
+impl Drop for R3Release {
+    fn drop(&mut self) {
+        self.0.release(false);
+        self.0.release(true);
+    }
+}
+
+impl JournalBackend for R3Journal {
+    fn register(
+        &self,
+        wallet: &[u8; 32],
+        txid: &[u8; 32],
+        origin: &LeaseId,
+        process: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<Registered, String> {
+        self.db
+            .register(wallet, txid, origin, process, payload, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn mark_dispatching(&self, wallet: &[u8; 32], txid: &[u8; 32]) -> Result<bool, String> {
+        self.db
+            .mark_dispatching(wallet, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<(), String> {
+        self.db
+            .insert_step(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
+        if r != Resolution::NotSent {
+            self.sending.store(true, Ordering::SeqCst);
+            self.wait(true);
+        }
+        self.db
+            .resolve(wallet, artifact, r, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
+        self.erase_entered.store(true, Ordering::SeqCst);
+        self.wait(false);
+        let erased = self
+            .db
+            .erase_wallet(wallet, dispatch)
+            .map_err(|e| e.to_string())?;
+        if self.erase_err.load(Ordering::SeqCst) {
+            return Err("injected: erased, then an error".into());
+        }
+        Ok(erased)
+    }
+
+    fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        self.erase_entered.store(true, Ordering::SeqCst);
+        self.wait(false);
+        self.db
+            .erase_wallet_unconditionally(wallet)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Sol r3 R3-F1 probe 1: a step that ended possibly sent and sits idle
+/// keeps its evidence through the wallet's removal (DEC-160): its marker
+/// stands, so the predicate keeps its rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r3_f1_removal_keeps_an_idle_possibly_out_step() {
+    let (t, _) = table();
+    let j = R3Journal::new(false, false);
+    let _release = R3Release(Arc::clone(&j));
+    t.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(242);
+    let p = first(t.admit(step_copy(&l, a, "s")).await);
+    t.log_transport(a, p.id(), Some("s".into()));
+    p.finish(Outcome::MaybeSent);
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    t.erase_wallet_rows(W).await;
+    let (standing, log) = j.reopened();
+    assert!(!log.is_empty(), "the removal kept the step's rows");
+    assert_eq!(standing.len(), 1, "its marker stands on reopen");
+    assert_eq!(t.dispatch_status(W, a), Some(DispatchState::MaybeSent));
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+}
+
+/// Sol r3 R3-F1 probe 2: a copy admitted while the removal's erase runs
+/// never transports on erased evidence. It waits for the erase (DEC-160),
+/// then Resends on the marker the predicate kept, which stands at its
+/// transport and after a reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r3_f1_a_copy_during_the_erase_transports_on_standing_evidence() {
+    let (t, _) = table();
+    let j = R3Journal::new(true, false);
+    let _release = R3Release(Arc::clone(&j));
+    t.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(243);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::MaybeSent);
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    let erase = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.erase_wallet_rows(W).await }
+    });
+    until(|| j.erase_entered.load(Ordering::SeqCst)).await;
+    let during = t.admit(step_copy(&l, a, "s")).await;
+    assert_eq!(during, Verdict::Deferred, "copies wait for the erase");
+    j.release(false);
+    erase.await.unwrap();
+    let copy = resend(t.admit(step_copy(&l, a, "s")).await);
+    let mut standing = 0;
+    t.hand_off(None, async { Ok::<_, ()>(()) }, |()| async {
+        standing = j.db.load().unwrap().1.len();
+        t.log_transport(a, copy.id(), Some("s".into()));
+    })
+    .await
+    .unwrap();
+    copy.finish(Outcome::MaybeSent);
+    assert!(standing >= 1, "a marker stands at the transport");
+    assert_eq!(j.reopened().0.len(), 1, "and after a reopen");
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+}
+
+/// DEC-160's window: a sighting's `Sent` row still running when the
+/// removal starts is joined before the predicate reads the log, so an
+/// artifact settled unsent and then seen sent keeps its markers; without
+/// the window the delete takes them and the row lands alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r3_f1_a_running_sent_row_is_joined_before_the_erase() {
+    let (t, rec) = table();
+    let j = R3Journal::new(false, true);
+    let _release = R3Release(Arc::clone(&j));
+    t.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(244);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::NotSent);
+    until(|| {
+        rec.resolved()
+            .contains(&(a.to_string(), DispatchResolution::NotSent))
+    })
+    .await;
+    t.note_seen(W, a);
+    until(|| j.sending.load(Ordering::SeqCst)).await;
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    let erase = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.erase_wallet_rows(W).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let early = j.erase_entered.load(Ordering::SeqCst);
+    j.release(true);
+    erase.await.unwrap();
+    let (standing, _) = j.reopened();
+    assert!(!early, "the erase waited for the running Sent row");
+    assert_eq!(standing.len(), 1, "the marker stands over its NotSent row");
+    assert!(standing[0].sent);
+}
+
+/// Hands off a Resend of `a`'s step `s` and returns how many markers stood
+/// in the journal at its transport.
+async fn r3_transport(t: &Arc<LeaseTable>, j: &R3Journal, l: &Lease, a: ArtifactId) -> usize {
+    let copy = resend(t.admit(step_copy(l, a, "s")).await);
+    let mut standing = 0;
+    t.hand_off(None, async { Ok::<_, ()>(()) }, |()| async {
+        standing = j.db.load().unwrap().1.len();
+        t.log_transport(a, copy.id(), Some("s".into()));
+    })
+    .await
+    .unwrap();
+    copy.finish(Outcome::Sent);
+    standing
+}
+
+/// Review of the r3 fix, B2: an artifact settled unsent and seen sent while
+/// the removal's erase runs keeps its evidence. The erase takes its rows
+/// (marker and `NotSent`), and the engine appends its marker and its `Sent`
+/// row again instead of forgetting it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r3_f1_a_sighting_during_the_erase_keeps_its_evidence() {
+    let (t, rec) = table();
+    let j = R3Journal::new(true, false);
+    let _release = R3Release(Arc::clone(&j));
+    t.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(245);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::NotSent);
+    until(|| {
+        rec.resolved()
+            .contains(&(a.to_string(), DispatchResolution::NotSent))
+    })
+    .await;
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    let erase = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.erase_wallet_rows(W).await }
+    });
+    until(|| j.erase_entered.load(Ordering::SeqCst)).await;
+    t.note_seen(W, a);
+    j.release(false);
+    erase.await.unwrap();
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    drop(removal);
+    assert!(
+        r3_transport(&t, &j, &l, a).await >= 1,
+        "a marker stands at the transport"
+    );
+    let (standing, _) = j.reopened();
+    assert_eq!(standing.len(), 1, "the marker stands on reopen");
+    assert!(standing[0].sent);
+    super::stress_tests::check(&t.inspect(|i| i.log.clone())).unwrap();
+}
+
+/// Review of the r3 fix, B1: an erase that reports an error may have
+/// committed, so every mark of the wallet is written again before a copy
+/// relies on it; a marker the erase took is back on disk at the copy's
+/// transport.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r3_f1_a_failed_erase_counts_as_possibly_committed() {
+    let (t, rec) = table();
+    let j = R3Journal::new(false, false);
+    let _release = R3Release(Arc::clone(&j));
+    t.load_journal(Some(j.clone() as Arc<dyn JournalBackend>), vec![], vec![]);
+    let l = begin(&t, W, 0, 100, 0).await.unwrap();
+    let a = art(246);
+    first(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::NotSent);
+    until(|| {
+        rec.resolved()
+            .contains(&(a.to_string(), DispatchResolution::NotSent))
+    })
+    .await;
+    let mut removal = t.freeze(RevokeCause::WalletRemoved, Scope::Wallet(W), false);
+    removal.drained().await;
+    j.erase_err.store(true, Ordering::SeqCst);
+    t.erase_wallet_rows(W).await;
+    assert!(j.reopened().1.is_empty(), "the erase committed");
+    drop(removal);
+    t.note_seen(W, a);
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    assert!(
+        r3_transport(&t, &j, &l, a).await >= 1,
+        "a marker stands at the transport"
+    );
+    let (standing, _) = j.reopened();
+    assert_eq!(standing.len(), 1);
+    assert!(standing[0].sent);
 }

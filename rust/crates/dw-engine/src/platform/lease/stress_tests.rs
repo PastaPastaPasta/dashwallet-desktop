@@ -130,6 +130,12 @@ pub(crate) enum LogEvent {
         wallet: WalletId,
         done: bool,
     },
+    /// That erase compacted the artifact's rows, and the engine forgot it
+    /// (DEC-160).
+    Erased {
+        wallet: WalletId,
+        artifact: ArtifactId,
+    },
 }
 
 /// Builds the stress must catch (§10.4, review P2a r1 F7).
@@ -164,6 +170,13 @@ pub(crate) enum Mutation {
     /// sighting, a copy of that step) is too rare for the stress; the
     /// `r2_h1` regression catches it.
     StashDurable,
+    /// Sol r3 R3-F1: a removal deletes all of the wallet's `step_log` rows,
+    /// as before DEC-160.
+    EraseAll,
+    /// DEC-160: the removal's erase neither excludes the wallet's copies
+    /// nor joins its running writes. A `Sent` row racing the delete is too
+    /// rare for the stress; the `r3_f1` regressions catch it.
+    NoEraseWindow,
 }
 
 impl Mutation {
@@ -185,6 +198,8 @@ impl Mutation {
             Self::FailedUncommitted,
             Self::NoSentRow,
             Self::StashDurable,
+            Self::EraseAll,
+            Self::NoEraseWindow,
         ]
         .into_iter()
         .find(|m| format!("{m:?}") == name)
@@ -253,6 +268,10 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
     let mut cleaned: HashSet<ArtifactId> = HashSet::new();
     let mut writing: HashMap<(WalletId, ArtifactId), u32> = HashMap::new();
     let mut erasing: HashSet<WalletId> = HashSet::new();
+    // When each artifact's `Sent` row was last logged durable, and each
+    // wallet's erase last began.
+    let mut evidence_at: HashMap<ArtifactId, usize> = HashMap::new();
+    let mut erase_began: HashMap<WalletId, usize> = HashMap::new();
     for (n, e) in log.iter().enumerate() {
         match e {
             LogEvent::Begin { lease, wallet } => {
@@ -418,6 +437,7 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
             }
             LogEvent::Evidence { artifact } => {
                 evidence.insert(*artifact);
+                evidence_at.insert(*artifact, n);
                 let m = markers.entry(*artifact).or_default();
                 for s in superseded.remove(artifact).unwrap_or_default() {
                     m.entry(s).or_insert(false);
@@ -545,9 +565,46 @@ pub(crate) fn check(log: &[LogEvent]) -> Result<(), String> {
                     ));
                 }
                 erasing.insert(*wallet);
+                erase_began.insert(*wallet, n);
             }
             LogEvent::Erase { wallet, done: true } => {
                 erasing.remove(wallet);
+            }
+            LogEvent::Erased { wallet, artifact } => {
+                if !erasing.contains(wallet) {
+                    return Err(format!(
+                        "DEC-160: event {n}: {artifact} erased outside its wallet's erase"
+                    ));
+                }
+                if evidence_at
+                    .get(artifact)
+                    .is_some_and(|e| erase_began.get(wallet).is_some_and(|b| e < b))
+                {
+                    return Err(format!(
+                        "I11: event {n}: {artifact} erased with its Sent row durable"
+                    ));
+                }
+                // Otherwise a seen-sent artifact's markers stand only on a
+                // `Sent` row landing during the erase, which only the disk
+                // orders.
+                if !evidence.contains(artifact)
+                    && let Some((s, _)) = markers
+                        .get(artifact)
+                        .and_then(|m| m.iter().find(|(_, durable)| **durable))
+                {
+                    return Err(format!(
+                        "I11: event {n}: {artifact} erased with its marker for {s} standing"
+                    ));
+                }
+                // The engine starts it afresh, as after a restart's sweep.
+                markers.remove(artifact);
+                superseded.remove(artifact);
+                evidence.remove(artifact);
+                evidence_at.remove(artifact);
+                written.remove(artifact);
+                resolved.remove(artifact);
+                charged.remove(artifact);
+                since.remove(artifact);
             }
         }
     }
@@ -870,7 +927,7 @@ impl Run {
     }
 
     /// The lock driver: `cycles` lock (async or sync), epoch change,
-    /// removal of the second wallet, and journal fault cycles at random
+    /// removal of either wallet, and journal fault cycles at random
     /// intervals.
     async fn locks(self: Arc<Self>, cycles: usize) {
         for _ in 0..cycles {
@@ -900,11 +957,17 @@ impl Run {
                     self.kept.lock().unwrap().clear();
                 }
                 2 => {
+                    // Sol r3 R3-F1: the flows' own wallet too, whose
+                    // row-less step copies run across its removal.
+                    let w = if self.below(2) == 0 { W } else { W2 };
                     let mut removal =
                         self.t
-                            .freeze(RevokeCause::WalletRemoved, Scope::Wallet(W2), false);
+                            .freeze(RevokeCause::WalletRemoved, Scope::Wallet(w), false);
                     removal.drained().await;
-                    self.t.erase_wallet_rows(W2).await;
+                    self.t.erase_wallet_rows(w).await;
+                    if w == W {
+                        self.kept.lock().unwrap().clear();
+                    }
                 }
                 _ => {
                     self.t.lock(RevokeCause::Lock, status).await;
@@ -1045,6 +1108,11 @@ async fn stress(seed: u64, mutation: Option<Mutation>, cycles: usize) -> Result<
             3,
         ),
         (
+            "erases of the flows' wallet",
+            count(|e| matches!(e, LogEvent::Erase { wallet, done: true } if *wallet == W)),
+            1,
+        ),
+        (
             "epoch changes",
             count(|e| matches!(e, LogEvent::EpochChanged)),
             3,
@@ -1063,8 +1131,13 @@ async fn stress(seed: u64, mutation: Option<Mutation>, cycles: usize) -> Result<
         );
     }
     check(&log)?;
-    match run.disk.lock().unwrap().take() {
-        Some(e) => Err(e),
+    if let Some(e) = run.disk.lock().unwrap().take() {
+        return Err(e);
+    }
+    match run.j.bare_final_row() {
+        Some(a) => Err(format!(
+            "I11: {a}'s Sent row is on disk with its markers erased"
+        )),
         None => Ok(()),
     }
 }
@@ -1104,6 +1177,7 @@ async fn the_stress_catches_every_mutation() {
         (Mutation::SkipEvidence, "I11"),
         (Mutation::FailedUncommitted, "I11"),
         (Mutation::NoSentRow, "I11"),
+        (Mutation::EraseAll, "I11"),
     ] {
         let mut seen = Vec::new();
         for seed in 1..=5 {

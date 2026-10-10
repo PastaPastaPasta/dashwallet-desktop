@@ -10,10 +10,11 @@
 //!   artifacts' resolutions (`NotSent`, `Sent`, `MaybeSent`), in one
 //!   sequence. A `NotSent` row supersedes the artifact's earlier markers; a
 //!   `Sent` or `MaybeSent` row is final, so no later `NotSent` revokes them
-//!   ([`standing`]). No row is changed, and rows are deleted only where
-//!   nothing can be on the wire: [`DispatchJournal::erase_wallet`] after the
-//!   removal's barrier, and the sweep at open of artifacts with no standing
-//!   marker.
+//!   ([`standing`]). No row is changed. Rows are deleted under one
+//!   predicate only (DEC-160): an artifact's rows go once it has no standing
+//!   marker and no `Sent` or `MaybeSent` row ([`compactable`]). The sweep at
+//!   open and [`DispatchJournal::erase_wallet`] evaluate it inside their
+//!   `DELETE`; whatever it keeps outlives a wallet's removal.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -28,10 +29,11 @@
 //! one connection behind a mutex; async callers run them on the blocking
 //! pool.
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::{AppDbError, Result};
 
@@ -177,13 +179,66 @@ pub struct StepLogRow {
     pub at: u64,
 }
 
+/// The (wallet, artifact) pairs whose `step_log` rows may be deleted
+/// (DEC-160): no standing marker and no `Sent` or `MaybeSent` row. The
+/// journal evaluates the same predicate in SQL ([`COMPACTABLE`]); this is
+/// its reading for in-memory journals and the tests that hold them equal.
+pub fn compactable(log: &[StepLogRow]) -> HashSet<([u8; 32], [u8; 32])> {
+    let keep: HashSet<_> = standing(log)
+        .into_iter()
+        .map(|s| (s.wallet, s.artifact))
+        .chain(log.iter().filter_map(|r| {
+            matches!(
+                r.event,
+                StepEvent::Resolved(Resolution::Sent | Resolution::MaybeSent)
+            )
+            .then_some((r.wallet, r.artifact))
+        }))
+        .collect();
+    log.iter()
+        .map(|r| (r.wallet, r.artifact))
+        .filter(|k| !keep.contains(k))
+        .collect()
+}
+
+/// DEC-160's predicate over `step_log l`, in SQL: [`compactable`].
+const COMPACTABLE: &str = "
+  NOT EXISTS (SELECT 1 FROM step_log f
+              WHERE f.wallet = l.wallet AND f.artifact = l.artifact AND f.kind IN (2, 3))
+  AND NOT EXISTS (SELECT 1 FROM step_log m
+                  WHERE m.wallet = l.wallet AND m.artifact = l.artifact AND m.kind = 0
+                    AND NOT EXISTS (SELECT 1 FROM step_log n
+                                    WHERE n.wallet = m.wallet AND n.artifact = m.artifact
+                                      AND n.kind = 1 AND n.seq > m.seq))";
+
+/// Deletes the rows of every compactable artifact (of `wallet`, or of all
+/// wallets) in one statement, so the predicate and the delete see the same
+/// rows; returns the artifacts it erased.
+fn compact(conn: &Connection, wallet: Option<&[u8; 32]>) -> Result<Vec<([u8; 32], [u8; 32])>> {
+    let sql = format!(
+        "DELETE FROM step_log WHERE seq IN (
+           SELECT l.seq FROM step_log l WHERE (?1 IS NULL OR l.wallet = ?1) AND {COMPACTABLE})
+         RETURNING wallet, artifact"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![wallet.map(|w| &w[..])], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut out = BTreeSet::new();
+    for r in rows {
+        let (w, a) = r?;
+        out.insert((fixed(w, "step_log.wallet")?, fixed(a, "step_log.artifact")?));
+    }
+    Ok(out.into_iter().collect())
+}
+
 /// Recovery's reading of `step_log` (DEC-154): the markers that stand, one
 /// per (wallet, step, artifact), earliest first. A marker stands unless a
 /// later `NotSent` row of its artifact supersedes it; any `Sent` or
 /// `MaybeSent` row of the artifact is final, so all its markers stand
 /// whatever follows.
 pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     type Key = ([u8; 32], [u8; 32]);
     let mut last_not_sent: HashMap<Key, usize> = HashMap::new();
     let mut sent: HashSet<Key> = HashSet::new();
@@ -515,24 +570,51 @@ impl DispatchJournal {
         step_log(&self.conn())
     }
 
-    /// Erases `wallet`'s rows, markers and `seeded:` mark with
-    /// `secure_delete` on, then truncates the WAL (§6.5). The caller checks
-    /// that the wallet tracks no row any more.
-    pub fn erase_wallet(&self, wallet: &[u8; 32]) -> Result<()> {
+    /// A wallet's removal (§6.5), with `secure_delete` on, then a WAL
+    /// truncation. With `dispatch` (the caller found no possibly sent
+    /// entry) its `dispatch` rows and `seeded:` mark go. Of its `step_log`
+    /// only the compactable artifacts' rows go, the predicate evaluated in
+    /// the same transaction as the delete (DEC-160); the rest is evidence of
+    /// something possibly on the wire and stays. Returns the artifacts whose
+    /// rows were erased.
+    pub fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>> {
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM dispatch WHERE wallet = ?1",
-            params![&wallet[..]],
-        )?;
+        // IMMEDIATE: the predicate and the delete see the rows no append
+        // can slip between (DEC-160).
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if dispatch {
+            tx.execute(
+                "DELETE FROM dispatch WHERE wallet = ?1",
+                params![&wallet[..]],
+            )?;
+            tx.execute("DELETE FROM meta WHERE k = ?1", params![seeded_key(wallet)])?;
+        }
+        let erased = compact(&tx, Some(wallet))?;
+        tx.commit()?;
+        // Best effort: the delete committed, and the caller forgets what it
+        // erased, so no checkpoint error may report it as failed.
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        Ok(erased.into_iter().map(|(_, a)| a).collect())
+    }
+
+    /// The unconditional delete DEC-160 removed, for the engine's `EraseAll`
+    /// mutation test only.
+    #[cfg(feature = "test-mutations")]
+    #[doc(hidden)]
+    pub fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let erased: BTreeSet<[u8; 32]> = step_log(&tx)?
+            .into_iter()
+            .filter(|r| r.wallet == *wallet)
+            .map(|r| r.artifact)
+            .collect();
         tx.execute(
             "DELETE FROM step_log WHERE wallet = ?1",
             params![&wallet[..]],
         )?;
-        tx.execute("DELETE FROM meta WHERE k = ?1", params![seeded_key(wallet)])?;
         tx.commit()?;
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-        Ok(())
+        Ok(erased.into_iter().collect())
     }
 }
 
@@ -573,31 +655,7 @@ fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
 /// wire yet, so an artifact with no standing marker and no final row reads
 /// the same with no rows at all; its rows go.
 fn sweep(conn: &Connection) -> Result<()> {
-    use std::collections::HashSet;
-    let log = step_log(conn)?;
-    let keep: HashSet<([u8; 32], [u8; 32])> = standing(&log)
-        .into_iter()
-        .map(|s| (s.wallet, s.artifact))
-        .chain(log.iter().filter_map(|r| {
-            matches!(
-                r.event,
-                StepEvent::Resolved(Resolution::Sent | Resolution::MaybeSent)
-            )
-            .then_some((r.wallet, r.artifact))
-        }))
-        .collect();
-    let gone: HashSet<([u8; 32], [u8; 32])> = log
-        .iter()
-        .map(|r| (r.wallet, r.artifact))
-        .filter(|k| !keep.contains(k))
-        .collect();
-    for (wallet, artifact) in gone {
-        conn.execute(
-            "DELETE FROM step_log WHERE wallet = ?1 AND artifact = ?2",
-            params![&wallet[..], &artifact[..]],
-        )?;
-    }
-    Ok(())
+    compact(conn, None).map(drop)
 }
 
 fn seeded_key(wallet: &[u8; 32]) -> String {
@@ -844,12 +902,80 @@ mod tests {
             j.insert_step(&w, "s", &T, 1).unwrap();
             j.seed_wallet(&w, &[], 1).unwrap();
         }
-        j.erase_wallet(&W).unwrap();
+        j.resolve(&W, &T, Resolution::NotSent, 2).unwrap();
+        assert_eq!(j.erase_wallet(&W, true).unwrap(), vec![T]);
         let (rows, steps) = j.load().unwrap();
         assert!(rows.iter().all(|r| r.wallet == other) && rows.len() == 1);
         assert!(steps.iter().all(|s| s.wallet == other) && steps.len() == 1);
         assert!(!j.is_seeded(&W).unwrap());
         assert!(j.is_seeded(&other).unwrap());
+    }
+
+    /// DEC-160: a removal keeps every artifact with a standing marker or a
+    /// final row, whole, and erases only the rest.
+    #[test]
+    fn erase_keeps_the_evidence_of_anything_possibly_sent() {
+        let j = journal();
+        let (out, settled, seen, maybe, kept) = ([1; 32], [2; 32], [3; 32], [4; 32], [5; 32]);
+        for a in [out, settled, seen, maybe] {
+            j.insert_step(&W, "s", &a, 1).unwrap();
+        }
+        for a in [settled, seen] {
+            j.resolve(&W, &a, Resolution::NotSent, 2).unwrap();
+        }
+        j.resolve(&W, &seen, Resolution::Sent, 3).unwrap();
+        j.resolve(&W, &maybe, Resolution::MaybeSent, 3).unwrap();
+        j.register(&W, &kept, &L1, &P, b"p", 1).unwrap();
+        assert_eq!(j.erase_wallet(&W, false).unwrap(), vec![settled]);
+        let log = j.step_log().unwrap();
+        assert!(log.iter().all(|r| r.artifact != settled));
+        assert_eq!(log.len(), 6, "out, seen and maybe keep every row");
+        let stands: Vec<[u8; 32]> = markers(&j).into_iter().map(|(_, a, _)| a).collect();
+        assert_eq!(stands, vec![out, seen, maybe]);
+        assert_eq!(j.load().unwrap().0.len(), 1, "no dispatch erase asked");
+        assert!(j.erase_wallet(&W, false).unwrap().is_empty(), "idempotent");
+    }
+
+    /// The SQL predicate (`COMPACTABLE`, used by the sweep and the removal)
+    /// and the Rust one (`compactable`, over `standing`) agree on random
+    /// logs, including orders the write API would not produce.
+    #[test]
+    fn the_sql_and_rust_compaction_predicates_agree() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..300 {
+            let j = journal();
+            let rows = next(12);
+            for _ in 0..rows {
+                let (w, a) = ([next(2) as u8; 32], [next(3) as u8; 32]);
+                let kind = next(4) as i64;
+                let step = (kind == 0).then(|| format!("s{}", next(2)));
+                j.conn()
+                    .execute(
+                        "INSERT INTO step_log (wallet, artifact, kind, step_id, at) VALUES (?1, ?2, ?3, ?4, 0)",
+                        params![&w[..], &a[..], kind, step],
+                    )
+                    .unwrap();
+            }
+            let log = j.step_log().unwrap();
+            let mut want: Vec<_> = compactable(&log).into_iter().collect();
+            want.sort();
+            let mut got = compact(&j.conn(), None).unwrap();
+            got.sort();
+            assert_eq!(got, want, "{log:?}");
+            let left = j.step_log().unwrap();
+            assert_eq!(
+                standing(&left),
+                standing(&log),
+                "compaction keeps the reading"
+            );
+            assert!(compactable(&left).is_empty());
+        }
     }
 
     #[test]
