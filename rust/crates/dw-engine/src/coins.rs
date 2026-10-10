@@ -6,6 +6,17 @@
 //! persisted, so the engine keeps "Lock unspent" and dust locks in
 //! `app.sqlite` and applies them when it lists coins and builds candidate
 //! sets for a payment.
+//!
+//! The inputs of the wallet's tracked `Built` and `Broadcast` asset locks
+//! read as reserved (E0-04 §2a.3's F7 mitigation, H6 part 1 in Mode B):
+//! such a lock may already be on the wire, and the catch-up resends it, so
+//! no engine build may spend its inputs, neither by automatic selection nor
+//! by coin control. They are read with the coins, from one wallet state,
+//! so the exclusion holds from the first build of a session, before any
+//! resume ran, and lifts once the row reaches a proof, is consumed or is
+//! untracked. Repair's "Cancel it" self-spend (§6.5) is the one build that
+//! must spend them; it has to lift this exclusion for its own inputs
+//! explicitly.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -176,6 +187,18 @@ fn collect(
     }
 }
 
+/// The inputs of the tracked asset locks that may be sent (`Built`,
+/// `Broadcast`): reserved for them (module doc).
+fn pending_lock_inputs<'a>(
+    locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
+) -> HashSet<OutPoint> {
+    locks
+        .into_iter()
+        .filter(|l| crate::platform::lease::TrackedStatus::from(&l.status).pending())
+        .flat_map(|l| l.transaction.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
 /// Reads every funds account of `info` (key-wallet state only).
 fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
@@ -260,9 +283,12 @@ impl NetworkSession {
         wallet: &PlatformWallet,
         wallet_id: WalletId,
     ) -> Result<CoinSnapshot, EngineError> {
-        let mut snapshot = {
+        let (mut snapshot, lock_inputs) = {
             let state = wallet.state().await;
-            read_coins(&state.core_wallet)
+            (
+                read_coins(&state.core_wallet),
+                pending_lock_inputs(state.tracked_asset_locks.values()),
+            )
         };
         let id = wallet_id.to_string();
         let dust_candidates: Vec<(u64, String, u32)> = snapshot
@@ -299,7 +325,8 @@ impl NetworkSession {
         let reserved = self.spends.snapshot(&wallet_id);
         for coin in &mut snapshot.coins {
             coin.user_locked = locked.contains(&lock_key(&coin.utxo.outpoint));
-            coin.reserved = reserved.contains(&coin.utxo.outpoint);
+            coin.reserved =
+                reserved.contains(&coin.utxo.outpoint) || lock_inputs.contains(&coin.utxo.outpoint);
         }
         Ok(snapshot)
     }

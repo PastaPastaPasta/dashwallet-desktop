@@ -154,6 +154,65 @@ impl Fixture {
             .unwrap();
     }
 
+    /// Tracks asset lock `seed` spending `inputs` with `status` (`None`
+    /// untracks it). key-wallet's coins stay unspent, as for a lock the
+    /// wallet never saw sent.
+    fn track_lock(
+        &self,
+        seed: u8,
+        inputs: &[OutPoint],
+        status: Option<platform_wallet::AssetLockStatus>,
+    ) -> Txid {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        let txid = Txid::from_byte_array([seed; 32]);
+        let out_point = OutPoint::new(txid, 0);
+        let input = inputs
+            .iter()
+            .map(|o| dashcore::TxIn {
+                previous_output: *o,
+                ..Default::default()
+            })
+            .collect();
+        self.engine
+            .block_on(async move {
+                session
+                    .on_runtime(async move {
+                        let wallet = inner.wallet(&id).await?;
+                        let mut state = wallet.state_mut().await;
+                        let Some(status) = status else {
+                            state.tracked_asset_locks.remove(&out_point);
+                            return Ok(());
+                        };
+                        state.tracked_asset_locks.insert(
+                            out_point,
+                            platform_wallet::TrackedAssetLock {
+                                out_point,
+                                transaction: Transaction {
+                                    version: 3,
+                                    lock_time: 0,
+                                    input,
+                                    output: Vec::new(),
+                                    special_transaction_payload: None,
+                                },
+                                account_index: 0,
+                                funding_type:
+                                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                                identity_index: 0,
+                                amount: COIN,
+                                status,
+                                proof: None,
+                            },
+                        );
+                        Ok(())
+                    })
+                    .await
+            })
+            .unwrap();
+        txid
+    }
+
     /// A fresh receive address of the wallet.
     fn own_address(&self) -> String {
         let session = Arc::clone(&self.session);
@@ -483,6 +542,120 @@ fn locked_coins_are_skipped_and_reported() {
         .engine
         .block_on(f.session.lock_outpoints(f.wallet, vec![unknown]));
     assert!(matches!(r, Err(EngineError::OutpointNotFound(_))), "{r:?}");
+}
+
+/// E0-04 §2a.3's F7 mitigation (H6 part 1 in Mode B): the inputs of a
+/// tracked `Built` or `Broadcast` asset lock are reserved, for automatic
+/// selection, coin control, `max_spendable` and the coin list alike, until
+/// the lock reaches a proof, is consumed or is untracked. §12 item 9's
+/// "SPV slow to start" shape: SPV never starts here, so no resume pass ran,
+/// and the exclusion already holds.
+#[test]
+fn tracked_asset_lock_inputs_are_not_selectable() {
+    use platform_wallet::AssetLockStatus as S;
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN / 2);
+    let lock = f.track_lock(50, &[a], Some(S::Built));
+    // No pass ran: SPV never started, and a trigger does not start one.
+    f.session.leases.request_resume(Some(f.wallet));
+    assert!(!f.session.leases.pass_running(f.wallet));
+    assert!(!f.session.leases.resumed(f.wallet, lock));
+
+    let max = |source: CoinSource| {
+        f.engine
+            .block_on(f.session.max_spendable(
+                f.wallet,
+                source,
+                FeeMode::Recommended { target_blocks: 6 },
+            ))
+            .unwrap()
+    };
+    let excluded = |status: &str| {
+        let coins = f
+            .engine
+            .block_on(f.session.utxos(
+                f.wallet,
+                CoinFilter {
+                    include_locked: true,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let coin = coins.iter().find(|c| c.outpoint == a).unwrap();
+        assert!(coin.reserved && !coin.spendable, "{status}: {coin:?}");
+        assert!(!coin.user_locked);
+        assert_eq!(max(CoinSource::Any), COIN / 2, "{status}");
+        // Never picked automatically, even when it alone would do.
+        let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+        let p = f
+            .engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+            .unwrap();
+        assert_eq!(
+            p.summary()
+                .inputs
+                .iter()
+                .map(|i| i.outpoint)
+                .collect::<Vec<_>>(),
+            vec![b],
+            "{status}"
+        );
+        f.engine.block_on(draft.abandon(p)).unwrap();
+        let big = f.draft(vec![pay(FOREIGN, COIN * 3 / 4)]);
+        assert_eq!(
+            send_failure(f.engine.block_on(big.estimate())),
+            SendFailure::AmountExceedsBalance {
+                available: COIN / 2
+            },
+            "{status}"
+        );
+        // Refused when chosen by hand.
+        draft.set_source(CoinSource::Outpoints(vec![a])).unwrap();
+        assert_eq!(
+            send_failure(f.engine.block_on(draft.estimate())),
+            SendFailure::OutpointUnavailable(a),
+            "{status}"
+        );
+        assert_eq!(
+            send_failure(f.engine.block_on(draft.prepare(f.spend_grant(COIN)))),
+            SendFailure::OutpointUnavailable(a),
+            "{status}"
+        );
+    };
+    excluded("Built");
+    f.track_lock(50, &[a], Some(S::Broadcast));
+    excluded("Broadcast");
+
+    let selectable = |status: &str| {
+        let coins = f
+            .engine
+            .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
+            .unwrap();
+        let coin = coins.iter().find(|c| c.outpoint == a).unwrap();
+        assert!(!coin.reserved && coin.spendable, "{status}: {coin:?}");
+        assert_eq!(max(CoinSource::Outpoints(vec![a])), COIN, "{status}");
+        let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+        draft.set_source(CoinSource::Outpoints(vec![a])).unwrap();
+        let p = f
+            .engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+            .unwrap();
+        assert_eq!(p.summary().inputs[0].outpoint, a, "{status}");
+        f.engine.block_on(draft.abandon(p)).unwrap();
+    };
+    f.track_lock(50, &[a], Some(S::InstantSendLocked));
+    selectable("InstantSendLocked");
+    f.track_lock(50, &[a], Some(S::ChainLocked));
+    selectable("ChainLocked");
+    f.track_lock(50, &[a], Some(S::RecoveredFromChain));
+    selectable("RecoveredFromChain");
+    f.track_lock(50, &[a], Some(S::Consumed));
+    selectable("Consumed");
+    f.track_lock(50, &[a], Some(S::Built));
+    excluded("Built again");
+    f.track_lock(50, &[a], None);
+    selectable("untracked");
 }
 
 #[test]

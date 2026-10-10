@@ -544,6 +544,12 @@ impl LeaseTable {
         })
     }
 
+    /// Whether tracked row `txid` of `wallet` was resumed this session.
+    #[cfg(test)]
+    pub(crate) fn resumed(&self, wallet: WalletId, txid: Txid) -> bool {
+        self.with_j(|i, _| i.mode_b.resumed.contains(&(wallet, txid)))
+    }
+
     /// The catch-up's resume pass (H6 part 2) resumed tracked row `txid`
     /// this session: it no longer blocks the wallet's funding calls.
     pub fn note_resumed(&self, wallet: WalletId, txid: Txid) {
