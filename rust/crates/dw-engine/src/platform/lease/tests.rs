@@ -7,15 +7,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
     CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendRow, StepEvent,
     StepLogRow, StepRow, StoredFundingKey,
 };
+use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
 use tokio::time::Instant;
 
 use super::fence::JournalBackend;
 use super::lock::Scope;
+use super::mode_b::index_trusted;
 use super::table::{Issued, LeaseState, LeaseTable};
 use super::*;
 use crate::platform::flows::{
@@ -27,6 +31,53 @@ pub(super) const W: WalletId = WalletId([1; 32]);
 pub(super) const W2: WalletId = WalletId([2; 32]);
 /// The permit lifetime H of the default config.
 pub(super) const H: Duration = Duration::from_secs(10);
+/// A funding step of identity index 7 (E0-04 §2a.3).
+pub(super) const REG: &str = "registration/7/funding";
+/// A call step's marker that stands on disk.
+pub(super) const DURABLE: CallStepStatus = CallStepStatus::Marked { durable: true };
+
+/// A quote of `amount` against the Credits budget.
+pub(super) fn credits(amount: u64) -> Option<CallQuote> {
+    Some(CallQuote {
+        purpose: BudgetPurpose::Credits,
+        amount,
+    })
+}
+
+/// A funding call's quote (§2a.3): `amount` and its worst-case fee.
+pub(super) fn quote(amount: u64, fee_bound_worst: u64) -> Option<CallQuote> {
+    Some(
+        FundingQuote {
+            amount,
+            fee_bound_worst,
+        }
+        .into(),
+    )
+}
+
+pub(super) fn txid(n: u8) -> Txid {
+    Txid::from_byte_array([n; 32])
+}
+
+/// The registration funding key of `identity_index`, account 0.
+pub(super) fn key(identity_index: u32) -> FundingKey {
+    FundingKey {
+        funding_type: AssetLockFundingType::IdentityRegistration,
+        identity_index,
+        account: 0,
+    }
+}
+
+/// A tracked row `n` of the registration of `identity_index`.
+pub(super) fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedRow {
+    TrackedRow {
+        txid: txid(n),
+        key: key(identity_index),
+        status,
+        inputs: vec![OutPoint::new(txid(100 + n), 0)],
+        trusted: index_trusted(&key(identity_index), status),
+    }
+}
 
 /// Records every event the table emits.
 #[derive(Default)]
@@ -511,6 +562,18 @@ impl FakeJournal {
             ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
             ..Default::default()
         })
+    }
+
+    /// A kill now: loads what a reopen would (§6.5) into `t`, with this
+    /// file as `t`'s journal.
+    pub(super) fn load_into(self: &Arc<Self>, t: &LeaseTable) {
+        let (rows, steps) = self.load();
+        t.load_journal_with(
+            Some(self.clone() as Arc<dyn JournalBackend>),
+            rows,
+            steps,
+            self.load_calls(),
+        );
     }
 
     /// What a reopen would load (§6.5).

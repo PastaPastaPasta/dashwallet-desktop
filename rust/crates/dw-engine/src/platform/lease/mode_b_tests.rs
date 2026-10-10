@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dashcore::hashes::Hash;
-use dashcore::{OutPoint, Txid};
+use dashcore::OutPoint;
 use platform_wallet::AssetLockFundingType;
 
 use super::fence::JournalBackend;
 use super::mode_b::{Snapshot, TrackedLocks, derive_funding, index_trusted};
-use super::tests::{FakeJournal, Recorder, W, W2, begin, table, with_journal};
+use super::tests::{
+    DURABLE, FakeJournal, REG, Recorder, W, W2, begin, key, quote, row, table, txid, until,
+    with_journal,
+};
 use super::*;
 use crate::WalletId;
 use crate::platform::PlatformError;
@@ -23,45 +25,12 @@ use CallStepStatus as S;
 use DispatchState::{MaybeSent, NotSent, Sent, WillBeSent};
 use TrackedStatus as R;
 
-const REG: &str = "registration/7/funding";
 const TOPUP: &str = "topup/i/funding";
-
-fn key(identity_index: u32) -> FundingKey {
-    FundingKey {
-        funding_type: AssetLockFundingType::IdentityRegistration,
-        identity_index,
-        account: 0,
-    }
-}
 
 fn funding(step: &str, identity_index: u32) -> CallStep {
     CallStep::Funding {
         step: step.into(),
         key: key(identity_index),
-    }
-}
-
-fn quote(amount: u64, fee_bound_worst: u64) -> Option<CallQuote> {
-    Some(
-        FundingQuote {
-            amount,
-            fee_bound_worst,
-        }
-        .into(),
-    )
-}
-
-fn txid(n: u8) -> Txid {
-    Txid::from_byte_array([n; 32])
-}
-
-fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedRow {
-    TrackedRow {
-        txid: txid(n),
-        key: key(identity_index),
-        status,
-        inputs: vec![OutPoint::new(txid(100 + n), 0)],
-        trusted: index_trusted(&key(identity_index), status),
     }
 }
 
@@ -112,6 +81,41 @@ impl TrackedLocks for FakeTracked {
     }
 }
 
+/// A source whose row read waits for `release`, to hold a refresh in
+/// flight; `entered` is notified once the read began.
+struct Gated {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    rows: Vec<TrackedRow>,
+}
+
+impl Gated {
+    fn new(rows: Vec<TrackedRow>) -> Arc<Self> {
+        Arc::new(Self {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            rows,
+        })
+    }
+}
+
+#[async_trait]
+impl TrackedLocks for Gated {
+    async fn rows(&self, _: WalletId) -> Option<Vec<TrackedRow>> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Some(self.rows.clone())
+    }
+
+    async fn drafts(&self, _: WalletId) -> Option<Vec<DraftKey>> {
+        Some(Vec::new())
+    }
+
+    async fn chain_locked(&self, _: WalletId, _: &[u8; 32]) -> bool {
+        false
+    }
+}
+
 /// A table with a journal and the fake source, its wallets' rows read.
 async fn setup() -> (
     Arc<LeaseTable>,
@@ -133,26 +137,10 @@ async fn setup() -> (
 async fn reload(j: &FakeJournal, src: &Arc<FakeTracked>) -> (Arc<LeaseTable>, Arc<Recorder>) {
     let snap = j.snapshot();
     let (t, rec) = table();
-    let (rows, steps) = snap.load();
-    t.load_journal_with(
-        Some(snap.clone() as Arc<dyn JournalBackend>),
-        rows,
-        steps,
-        snap.load_calls(),
-    );
+    snap.load_into(&t);
     t.install_tracked(src.clone());
     assert!(t.refresh_funding(W).await);
     (t, rec)
-}
-
-async fn until(mut f: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !f() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the condition never held");
 }
 
 fn funds_committed(l: &Lease) -> bool {
@@ -183,7 +171,7 @@ async fn maybe_sent(l: &Lease, step: &str, index: u32) {
 
 #[test]
 fn row_1_a_chain_locked_self_spend_reads_not_sent() {
-    let marked = S::Marked { durable: true };
+    let marked = DURABLE;
     assert_eq!(
         derive_funding(marked, Some(&[]), true, false),
         Some(NotSent)
@@ -224,7 +212,7 @@ fn row_2_a_row_with_a_proof_reads_sent_with_or_without_a_marker() {
         R::Consumed,
         R::RecoveredFromChain,
     ] {
-        for step in [S::None, S::Marked { durable: true }, S::NotSent] {
+        for step in [S::None, DURABLE, S::NotSent] {
             assert_eq!(
                 derive_funding(step, Some(&[status]), false, false),
                 Some(Sent),
@@ -242,12 +230,7 @@ fn row_2_a_row_with_a_proof_reads_sent_with_or_without_a_marker() {
 #[test]
 fn row_3_a_built_or_broadcast_row_reads_will_be_sent_with_or_without_a_marker() {
     for status in [R::Built, R::Broadcast] {
-        for step in [
-            S::None,
-            S::Marked { durable: false },
-            S::Marked { durable: true },
-            S::NotSent,
-        ] {
+        for step in [S::None, S::Marked { durable: false }, DURABLE, S::NotSent] {
             assert_eq!(
                 derive_funding(step, Some(&[status]), false, false),
                 Some(WillBeSent),
@@ -284,7 +267,7 @@ fn row_6_a_marker_with_no_row_and_no_resolution_reads_maybe_sent() {
 fn a_call_that_returned_ok_reads_sent_and_unknown_rows_never_read_none_or_not_sent() {
     assert_eq!(derive_funding(S::Sent, Some(&[]), false, false), Some(Sent));
     assert_eq!(derive_funding(S::Sent, None, false, false), Some(Sent));
-    for step in [S::None, S::NotSent, S::Marked { durable: true }] {
+    for step in [S::None, S::NotSent, DURABLE] {
         assert_eq!(
             derive_funding(step, None, false, false),
             Some(MaybeSent),
@@ -1020,13 +1003,7 @@ async fn a_status_reported_before_the_first_snapshot_is_the_baseline() {
     // The next process, its rows not read yet.
     let snap = j.snapshot();
     let (t2, rec2) = table();
-    let (rows, steps) = snap.load();
-    t2.load_journal_with(
-        Some(snap.clone() as Arc<dyn JournalBackend>),
-        rows,
-        steps,
-        snap.load_calls(),
-    );
+    snap.load_into(&t2);
     t2.install_tracked(src.clone());
     assert_eq!(t2.funding_status(W, REG), Some(MaybeSent), "reported");
     src.set_rows(
@@ -1074,30 +1051,9 @@ async fn a_wallet_awaits_a_self_spend_lock_until_its_snapshot_sees_it() {
 /// removed wallet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refresh_overtaken_by_the_wallets_removal_is_dropped() {
-    struct Gated {
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-    }
-    #[async_trait]
-    impl TrackedLocks for Gated {
-        async fn rows(&self, _: WalletId) -> Option<Vec<TrackedRow>> {
-            self.entered.notify_one();
-            self.release.notified().await;
-            Some(vec![row(1, 7, R::Built)])
-        }
-        async fn drafts(&self, _: WalletId) -> Option<Vec<DraftKey>> {
-            Some(Vec::new())
-        }
-        async fn chain_locked(&self, _: WalletId, _: &[u8; 32]) -> bool {
-            false
-        }
-    }
     let (t, _) = table();
     let _j = with_journal(&t);
-    let src = Arc::new(Gated {
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Notify::new(),
-    });
+    let src = Gated::new(vec![row(1, 7, R::Built)]);
     t.install_tracked(src.clone());
     let refresh = tokio::spawn({
         let t = Arc::clone(&t);
@@ -1114,30 +1070,9 @@ async fn a_refresh_overtaken_by_the_wallets_removal_is_dropped() {
 /// drops no other wallet's refresh in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn another_wallets_removal_keeps_a_refresh_in_flight() {
-    struct Gated {
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-    }
-    #[async_trait]
-    impl TrackedLocks for Gated {
-        async fn rows(&self, _: WalletId) -> Option<Vec<TrackedRow>> {
-            self.entered.notify_one();
-            self.release.notified().await;
-            Some(Vec::new())
-        }
-        async fn drafts(&self, _: WalletId) -> Option<Vec<DraftKey>> {
-            Some(Vec::new())
-        }
-        async fn chain_locked(&self, _: WalletId, _: &[u8; 32]) -> bool {
-            false
-        }
-    }
     let (t, _) = table();
     let _j = with_journal(&t);
-    let src = Arc::new(Gated {
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Notify::new(),
-    });
+    let src = Gated::new(Vec::new());
     t.install_tracked(src.clone());
     let refresh = tokio::spawn({
         let t = Arc::clone(&t);

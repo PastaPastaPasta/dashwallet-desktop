@@ -10,40 +10,20 @@ use std::time::Duration;
 use async_trait::async_trait;
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
-use dashcore::hashes::Hash;
-use dashcore::{OutPoint, Txid};
-use platform_wallet::AssetLockFundingType;
+use dashcore::Txid;
 use tokio::sync::Semaphore;
 
 use super::lock::Scope;
 use super::mode_b::{TrackedLocks, funding_gate};
 use super::resume::{Resumed, Resumer};
-use super::tests::{FakeJournal, Recorder, W, W2, begin, status, table, with_journal};
+use super::tests::{
+    FakeJournal, REG, Recorder, W, W2, begin, row, status, table, txid, until, with_journal,
+};
 use super::*;
 use crate::platform::flows::RevokeCause;
 use crate::{DashNetwork, WalletId};
 
 use TrackedStatus as R;
-
-const REG: &str = "registration/7/funding";
-
-fn txid(n: u8) -> Txid {
-    Txid::from_byte_array([n; 32])
-}
-
-fn row(n: u8, status: TrackedStatus) -> TrackedRow {
-    TrackedRow {
-        txid: txid(n),
-        key: FundingKey {
-            funding_type: AssetLockFundingType::IdentityRegistration,
-            identity_index: u32::from(n),
-            account: 0,
-        },
-        status,
-        inputs: vec![OutPoint::new(txid(100 + n), 0)],
-        trusted: true,
-    }
-}
 
 /// The fake library: tracked rows per loaded wallet, and a resume whose
 /// outcome and timing the test controls.
@@ -206,16 +186,6 @@ async fn setup() -> (Arc<LeaseTable>, Arc<Fake>, Arc<FakeJournal>) {
     (t, f, j)
 }
 
-async fn until(mut f: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !f() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the condition never held");
-}
-
 /// Lets spawned work run, for checks that something did not happen.
 async fn settle() {
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -243,13 +213,13 @@ async fn resumes_tracked_rows_once_spv_started() {
     f.set_rows(
         W,
         vec![
-            row(1, R::Built),
-            row(2, R::Broadcast),
-            row(3, R::ChainLocked),
-            row(5, R::Consumed),
+            row(1, 1, R::Built),
+            row(2, 2, R::Broadcast),
+            row(3, 3, R::ChainLocked),
+            row(5, 5, R::Consumed),
         ],
     );
-    f.set_rows(W2, vec![row(4, R::Built)]);
+    f.set_rows(W2, vec![row(4, 4, R::Built)]);
     assert!(t.refresh_funding(W).await);
     assert!(t.refresh_funding(W2).await);
     assert_eq!(gate(&t, W), row_block(1));
@@ -280,7 +250,7 @@ async fn resumes_tracked_rows_once_spv_started() {
 async fn a_pass_with_no_rows_is_harmless() {
     let (t, f, _j) = setup().await;
     f.set_rows(W, Vec::new());
-    f.set_rows(W2, vec![row(4, R::Built)]);
+    f.set_rows(W2, vec![row(4, 4, R::Built)]);
     f.unloaded.lock().unwrap().insert(W2);
     t.spv_started();
     until(|| f.reads(W) >= 1).await;
@@ -297,7 +267,7 @@ async fn a_pass_with_no_rows_is_harmless() {
 #[tokio::test]
 async fn a_panicking_pass_does_not_block_later_passes() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     f.panic_rows.store(true, Ordering::SeqCst);
     t.spv_started();
     t.request_resume(Some(W));
@@ -311,7 +281,7 @@ async fn a_panicking_pass_does_not_block_later_passes() {
 #[tokio::test]
 async fn no_pass_while_spv_is_stopped() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     t.spv_started();
     until(|| f.calls_of(W, 1) == 1).await;
     idle(&t, &[W]).await;
@@ -330,7 +300,7 @@ async fn no_pass_while_spv_is_stopped() {
 #[tokio::test]
 async fn peers_zero_to_some_reruns_the_pass() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     let hub = crate::events::SessionHub::new(DashNetwork::Regtest, Arc::new(Recorder::default()));
     hub.attach_leases(&t);
     t.spv_started();
@@ -363,7 +333,7 @@ async fn peers_zero_to_some_reruns_the_pass() {
 #[tokio::test]
 async fn triggers_during_a_pass_coalesce_into_one_more() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     f.hold.store(true, Ordering::SeqCst);
     t.spv_started();
     until(|| f.calls_of(W, 1) == 1).await;
@@ -374,7 +344,7 @@ async fn triggers_during_a_pass_coalesce_into_one_more() {
     settle().await;
     assert_eq!(f.calls_of(W, 1), 1, "no second pass while one runs");
     // A row that appeared meanwhile is resumed by the one more pass.
-    f.set_rows(W, vec![row(1, R::Built), row(2, R::Broadcast)]);
+    f.set_rows(W, vec![row(1, 1, R::Built), row(2, 2, R::Broadcast)]);
     f.open();
     until(|| f.calls_of(W, 2) == 1).await;
     idle(&t, &[W]).await;
@@ -393,7 +363,11 @@ async fn a_failed_resume_keeps_the_row_blocking_until_a_later_pass() {
     let (t, f, _j) = setup().await;
     f.set_rows(
         W,
-        vec![row(1, R::Built), row(2, R::Broadcast), row(3, R::Built)],
+        vec![
+            row(1, 1, R::Built),
+            row(2, 2, R::Broadcast),
+            row(3, 3, R::Built),
+        ],
     );
     assert!(t.refresh_funding(W).await);
     f.set_outcome(2, Some(Resumed::NotRun));
@@ -425,7 +399,7 @@ async fn a_failed_resume_keeps_the_row_blocking_until_a_later_pass() {
 #[tokio::test]
 async fn the_pass_stops_at_close() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     assert!(t.refresh_funding(W).await);
     f.hold.store(true, Ordering::SeqCst);
     t.spv_started();
@@ -451,7 +425,7 @@ async fn the_pass_stops_at_close() {
 #[tokio::test]
 async fn a_reopened_wallet_is_resumed_again() {
     let (t, f, _j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     assert!(t.refresh_funding(W).await);
     t.spv_started();
     until(|| f.calls_of(W, 1) == 1).await;
@@ -481,7 +455,7 @@ async fn a_reopened_wallet_is_resumed_again() {
 #[tokio::test]
 async fn journal_recovery_reruns_the_pass() {
     let (t, f, j) = setup().await;
-    f.set_rows(W, vec![row(1, R::Built)]);
+    f.set_rows(W, vec![row(1, 1, R::Built)]);
     t.spv_started();
     until(|| f.calls_of(W, 1) == 1).await;
     idle(&t, &[W]).await;

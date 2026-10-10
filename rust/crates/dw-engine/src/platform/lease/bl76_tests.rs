@@ -14,10 +14,10 @@ use key_wallet::managed_account::transaction_record::{TransactionDirection, Tran
 use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
 use platform_wallet::events::WalletEvent;
 
-use super::tests::{Recorder, W, W2, begin, core, draft, first, table, with_journal};
+use super::tests::{Recorder, W, W2, begin, core, credits, draft, first, table, with_journal};
 use super::*;
 use crate::events::SessionHub;
-use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchState, RevokeCause};
+use crate::platform::flows::{DispatchResolution, DispatchState, RevokeCause};
 use crate::{DashNetwork, WalletId};
 
 /// Every `DispatchResolved` as (wallet, artifact, resolution).
@@ -130,13 +130,6 @@ async fn a_lock_report_of_a_held_tombstone_counts_as_a_read() {
         resolved(&rec),
         vec![ev(W2, a, NotSent), ev(W, a, Sent), ev(W2, a, Sent)]
     );
-}
-
-fn credits(amount: u64) -> Option<CallQuote> {
-    Some(CallQuote {
-        purpose: BudgetPurpose::Credits,
-        amount,
-    })
 }
 
 /// A resumable step's call that returned Ok holds the proved execution:

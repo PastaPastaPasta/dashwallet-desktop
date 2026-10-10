@@ -5,16 +5,9 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use super::table::LeaseState;
-use super::tests::{H, W, begin, status, table};
+use super::tests::{H, W, begin, credits, status, table};
 use super::*;
 use crate::platform::flows::{BudgetPurpose, RevokeCause};
-
-fn credits(amount: u64) -> Option<CallQuote> {
-    Some(CallQuote {
-        purpose: BudgetPurpose::Credits,
-        amount,
-    })
-}
 
 fn flow(report: &LockReport, lease: &Lease) -> FlowReport {
     report
@@ -247,23 +240,15 @@ use dw_appdb::dispatch::{Resolution, StepEvent};
 use platform_wallet::AssetLockFundingType;
 
 use super::fence::{JournalBackend, Mark};
-use super::tests::{FakeJournal, W2, with_journal};
+use super::tests::{DURABLE, FakeJournal, W2, key, quote, until, with_journal};
 
 const SUBMIT: &str = "withdrawal/w/submit";
 const FUNDING: &str = "registration/d/funding";
 
-fn funding_key() -> FundingKey {
-    FundingKey {
-        funding_type: AssetLockFundingType::IdentityRegistration,
-        identity_index: 3,
-        account: 0,
-    }
-}
-
 fn funding_step(step: &str) -> CallStep {
     CallStep::Funding {
         step: step.into(),
-        key: funding_key(),
+        key: key(3),
     }
 }
 
@@ -274,17 +259,6 @@ fn resumable(step: &str) -> CallStep {
 /// Everything the lease's budgets were charged.
 fn spent(l: &Lease) -> u64 {
     l.view().unwrap().budgets.iter().map(|b| b.spent).sum()
-}
-
-/// A funding call's quote (§2a.3): `amount`, no worst-case fee.
-fn fund(amount: u64) -> Option<CallQuote> {
-    Some(
-        FundingQuote {
-            amount,
-            fee_bound_worst: 0,
-        }
-        .into(),
-    )
 }
 
 /// The table has read W's and W2's tracked rows: none (§2a.3's gate).
@@ -319,32 +293,16 @@ const SENT: StepEvent = StepEvent::Resolved(Resolution::Sent);
 fn reload(j: &FakeJournal) -> (Arc<LeaseTable>, Arc<FakeJournal>) {
     let snap = j.snapshot();
     let (t, _) = table();
-    let (rows, steps) = snap.load();
-    t.load_journal_with(
-        Some(snap.clone() as Arc<dyn JournalBackend>),
-        rows,
-        steps,
-        snap.load_calls(),
-    );
+    snap.load_into(&t);
     rows_read(&t);
     (t, snap)
-}
-
-async fn until(mut f: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !f() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the condition never held");
 }
 
 /// A call that fails having released no signature: Cancelled unless an
 /// earlier marker of its step exists, MaybeSent then (§2a.3).
 async fn fail_unsigned(l: &Lease, step: CallStep) -> FlowOutcome {
     let quote = match step {
-        CallStep::Funding { .. } => fund(10),
+        CallStep::Funding { .. } => quote(10, 0),
         CallStep::Resumable(_) => credits(10),
     };
     l.call_permit_step("call", quote, step)
@@ -385,10 +343,7 @@ async fn a_call_steps_marker_is_durable_before_its_permit_returns() {
     assert!(!j.stands(&W, &id, SUBMIT));
     let permit = pending.await.unwrap().unwrap();
     assert!(j.stands(&W, &id, SUBMIT), "durable before the call starts");
-    assert_eq!(
-        step_status(&t, W, SUBMIT),
-        CallStepStatus::Marked { durable: true }
-    );
+    assert_eq!(step_status(&t, W, SUBMIT), DURABLE);
     j.stall_ms.store(0, Ordering::SeqCst);
     assert_eq!(permit.finish(true), FlowOutcome::Sent);
     assert_eq!(step_status(&t, W, SUBMIT), CallStepStatus::Sent);
@@ -431,10 +386,7 @@ async fn cancelled_supersedes_the_marker_and_maybe_sent_keeps_it() {
     p.signatures().note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(spent(&l), 10, "kept");
-    assert_eq!(
-        step_status(&t, W, SUBMIT),
-        CallStepStatus::Marked { durable: true }
-    );
+    assert_eq!(step_status(&t, W, SUBMIT), DURABLE);
     // Its earlier marker makes the next unsigned failure MaybeSent too, and
     // the marker is not written again.
     assert_eq!(
@@ -469,7 +421,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     // funding key stand; a later call of the step is prior-marked, so a
     // failure that released nothing reads MaybeSent, not Cancelled.
     let p = l
-        .call_permit_step("funding", fund(10), funding_step(FUNDING))
+        .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
     let kills_running = reload(&j);
@@ -478,13 +430,13 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     let kills_returned = reload(&j);
     for (t2, _) in [kills_running, kills_returned] {
         let info = t2.call_step(W, FUNDING);
-        assert_eq!(info.status, CallStepStatus::Marked { durable: true });
-        assert_eq!(info.funding, Some(funding_key()));
+        assert_eq!(info.status, DURABLE);
+        assert_eq!(info.funding, Some(key(3)));
         let l2 = begin(&t2, W, 1000, 1000, 0).await.unwrap();
         // A standing funding marker refuses a second funding call of its
         // step (§2a.5, commit 3's gate): no second lock is built.
         assert_eq!(
-            l2.call_permit_step("funding", fund(10), funding_step(FUNDING))
+            l2.call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
                 .await
                 .unwrap_err(),
             LeaseError::FundingBlocked(FundingBlock::Step(Some(
@@ -492,10 +444,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
             )))
         );
         assert_eq!(spent(&l2), 0, "refused before the charge");
-        assert_eq!(
-            t2.call_step(W, FUNDING).status,
-            CallStepStatus::Marked { durable: true }
-        );
+        assert_eq!(t2.call_step(W, FUNDING).status, DURABLE);
     }
 
     // After the resolution: Sent, through the DEC-163 bundle with the
@@ -509,26 +458,23 @@ async fn the_kill_matrix_of_a_funding_call_step() {
         vec![(
             id.0,
             vec![FUNDING.to_owned()],
-            vec![(FUNDING.to_owned(), funding_key().stored())]
+            vec![(FUNDING.to_owned(), key(3).stored())]
         )]
     );
     let (t2, _) = reload(&j);
     let info = t2.call_step(W, FUNDING);
     assert_eq!(info.status, CallStepStatus::Sent);
-    assert_eq!(info.funding, Some(funding_key()));
+    assert_eq!(info.funding, Some(key(3)));
 
     // After a definite Cancelled's resolution: superseded, so the next
     // process reads no marker, and its call is a fresh one.
     const TOPUP: &str = "topup/i/funding";
     let p = l
-        .call_permit_step("topup", fund(10), funding_step(TOPUP))
+        .call_permit_step("topup", quote(10, 0), funding_step(TOPUP))
         .await
         .unwrap();
     let (t2, _) = reload(&j);
-    assert_eq!(
-        t2.call_step(W, TOPUP).status,
-        CallStepStatus::Marked { durable: true }
-    );
+    assert_eq!(t2.call_step(W, TOPUP).status, DURABLE);
     assert_eq!(p.finish(false), FlowOutcome::Cancelled);
     let (t2, j2) = reload(&j);
     assert_eq!(t2.call_step(W, TOPUP).status, CallStepStatus::None);
@@ -560,7 +506,7 @@ async fn a_failed_marker_write_refuses_the_call_and_reads_maybe_sent_until_not_s
     j.fail_step.store(true, Ordering::SeqCst);
     j.fail_resolve.store(true, Ordering::SeqCst);
     assert_eq!(
-        l.call_permit_step("funding", fund(10), funding_step(FUNDING))
+        l.call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
             .await
             .unwrap_err(),
         LeaseError::JournalUnavailable
@@ -647,10 +593,7 @@ async fn a_concurrent_call_of_the_step_keeps_its_marker() {
     assert_eq!(b.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(a.finish(false), FlowOutcome::Cancelled, "its own outcome");
     assert_eq!(events(&j, W, SUBMIT), vec![marked(SUBMIT)], "no NotSent");
-    assert_eq!(
-        step_status(&t, W, SUBMIT),
-        CallStepStatus::Marked { durable: true }
-    );
+    assert_eq!(step_status(&t, W, SUBMIT), DURABLE);
     // Another wallet's identical step id is another artifact.
     let other = begin(&t, W2, 0, 1000, 0).await.unwrap();
     assert_eq!(
@@ -763,7 +706,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
         step: FUNDING.into(),
         key: FundingKey {
             identity_index: 4,
-            ..funding_key()
+            ..key(3)
         },
     };
     // Superseded: the key goes with the marker, and another key is a
@@ -774,7 +717,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
     );
     assert_eq!(t.call_step(W, FUNDING).funding, None);
     let p = l
-        .call_permit_step("funding", fund(10), other.clone())
+        .call_permit_step("funding", quote(10, 0), other.clone())
         .await
         .unwrap();
     p.signatures().note_released();
@@ -783,7 +726,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
     // The marker stands under `other`'s key.
     for step in [funding_step(FUNDING), resumable(FUNDING)] {
         assert_eq!(
-            l.call_permit_step("funding", fund(10), step)
+            l.call_permit_step("funding", quote(10, 0), step)
                 .await
                 .unwrap_err(),
             LeaseError::StepKeyMismatch
@@ -800,7 +743,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
     // Under its own key, the step's next funding call is refused too: its
     // funding may have been sent (commit 3's gate).
     assert_eq!(
-        l.call_permit_step("funding", fund(10), other)
+        l.call_permit_step("funding", quote(10, 0), other)
             .await
             .unwrap_err(),
         LeaseError::FundingBlocked(FundingBlock::Step(Some(
@@ -820,7 +763,7 @@ async fn self_spends_load_with_their_funding_marker() {
     let id = ArtifactId::of_step(&W, FUNDING);
     assert!(!j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32]).unwrap());
     let p = l
-        .call_permit_step("funding", fund(10), funding_step(FUNDING))
+        .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
     p.signatures().note_released();
@@ -828,8 +771,8 @@ async fn self_spends_load_with_their_funding_marker() {
     assert!(j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32]).unwrap());
     let (t2, _) = reload(&j);
     let info = t2.call_step(W, FUNDING);
-    assert_eq!(info.status, CallStepStatus::Marked { durable: true });
-    assert_eq!(info.funding, Some(funding_key()));
+    assert_eq!(info.status, DURABLE);
+    assert_eq!(info.funding, Some(key(3)));
     assert_eq!(info.self_spends, vec![[7; 32]]);
 }
 
