@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
 use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message, Secp256k1, SecretKey, ecdsa};
+use dashcore::secp256k1::{Message, SecretKey, ecdsa};
 use dashcore::sighash::SighashCache;
 use dashcore::{Network, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_coinjoin::bls::testing::OperatorKey;
@@ -40,9 +40,8 @@ struct TestWallet {
 
 impl TestWallet {
     fn new(n: u8) -> Self {
-        let secp = Secp256k1::new();
-        let key = SecretKey::from_slice(&[0x11; 32]).unwrap();
-        let pk = PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secp, &key));
+        let key = SecretKey::from_secret_bytes([0x11; 32]).unwrap();
+        let pk = PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&key));
         let script = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
         let coins = (0..n)
             .map(|i| MixCoin {
@@ -64,7 +63,7 @@ impl TestWallet {
     }
 
     fn pubkey(&self) -> dashcore::secp256k1::PublicKey {
-        dashcore::secp256k1::PublicKey::from_secret_key(&Secp256k1::new(), &self.key)
+        dashcore::secp256k1::PublicKey::from_secret_key(&self.key)
     }
 }
 
@@ -127,7 +126,6 @@ impl MixingWallet for TestWallet {
         tx: &Transaction,
         inputs: &[(usize, ScriptBuf)],
     ) -> Result<Vec<TxIn>, WalletError> {
-        let secp = Secp256k1::new();
         let cache = SighashCache::new(tx);
         inputs
             .iter()
@@ -135,7 +133,7 @@ impl MixingWallet for TestWallet {
                 let h = cache
                     .legacy_signature_hash(*i, script, MIXING_SIGHASH)
                     .map_err(|e| WalletError(e.to_string()))?;
-                let sig = secp.sign_ecdsa(&Message::from_digest(h.to_byte_array()), &self.key);
+                let sig = ecdsa::sign(Message::from_digest(h.to_byte_array()), &self.key);
                 let mut der = sig.serialize_der().to_vec();
                 der.push(MIXING_SIGHASH as u8);
                 let mut script_sig = vec![der.len() as u8];
@@ -313,7 +311,6 @@ async fn test_qt_045_a_full_session_signs_with_anyonecanpay_and_succeeds() {
         let signed = decode_signed_inputs(&dss.payload).unwrap();
         assert_eq!(signed.len(), entry.inputs.len());
         // Every signature verifies over the ANYONECANPAY|ALL sighash.
-        let secp = Secp256k1::new();
         let cache = SighashCache::new(&tx);
         for input in &signed {
             let idx = tx
@@ -330,9 +327,9 @@ async fn test_qt_045_a_full_session_signs_with_anyonecanpay_and_succeeds() {
             let h = cache
                 .legacy_signature_hash(idx, &script, MIXING_SIGHASH)
                 .unwrap();
-            secp.verify_ecdsa(
-                &Message::from_digest(h.to_byte_array()),
+            ecdsa::verify(
                 &ecdsa::Signature::from_der(der).unwrap(),
+                Message::from_digest(h.to_byte_array()),
                 &pk,
             )
             .unwrap();
