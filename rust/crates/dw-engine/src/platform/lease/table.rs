@@ -47,7 +47,7 @@ impl LeaseState {
         !matches!(self, Self::Revoked(_) | Self::Ended)
     }
 
-    fn refusal(self, purpose: BudgetPurpose) -> LeaseError {
+    pub(crate) fn refusal(self, purpose: BudgetPurpose) -> LeaseError {
         match self {
             Self::Parked => LeaseError::Parked(purpose),
             Self::Revoked(cause) => LeaseError::Revoked(cause),
@@ -107,11 +107,13 @@ pub(crate) struct Entry {
     pub(crate) permits: u32,
     /// Library calls of the flow running now (Mode B's call permits).
     pub(crate) calls: u32,
+    /// The flow's finished library calls, in order (§2a.3, §8.4).
+    pub(crate) calls_done: Vec<super::call::CallRecord>,
     pub(crate) ended_at: Option<Instant>,
 }
 
 impl Entry {
-    fn budget_mut(&mut self, purpose: BudgetPurpose) -> Option<&mut Budget> {
+    pub(crate) fn budget_mut(&mut self, purpose: BudgetPurpose) -> Option<&mut Budget> {
         match purpose {
             BudgetPurpose::Funding => Some(&mut self.funding),
             BudgetPurpose::Credits => Some(&mut self.credits),
@@ -214,6 +216,9 @@ pub(crate) struct Inner {
     pub(crate) leases: HashMap<LeaseId, Entry>,
     pub(crate) background: HashMap<WalletId, Background>,
     pub(crate) fence: FenceState,
+    /// Mode B's call permits in flight, by id (§2a.3).
+    pub(crate) calls: HashMap<u64, super::call::CallRun>,
+    pub(crate) next_call: u64,
     #[cfg(test)]
     pub(crate) log: Vec<super::stress_tests::LogEvent>,
     #[cfg(test)]
@@ -300,6 +305,8 @@ impl LeaseTable {
                 leases: HashMap::new(),
                 background: HashMap::new(),
                 fence: FenceState::default(),
+                calls: HashMap::new(),
+                next_call: 0,
                 #[cfg(test)]
                 log: Vec::new(),
                 #[cfg(test)]
@@ -476,6 +483,7 @@ impl LeaseTable {
                 history: Vec::new(),
                 permits: 0,
                 calls: 0,
+                calls_done: Vec::new(),
                 ended_at: None,
             };
             if !fresh {
@@ -940,18 +948,6 @@ impl Lease {
         });
     }
 
-    /// Mode B's call permit counter (selects C2); P2b takes it per call.
-    pub fn call_running(&self) -> CallGuard {
-        self.table.with_j(|i, fx| {
-            if let Some(e) = i.leases.get_mut(&self.id) {
-                e.calls += 1;
-                e.last_use = Instant::now();
-                fx.changed(self.id);
-            }
-        });
-        CallGuard(self.clone())
-    }
-
     pub fn view(&self) -> Option<LeaseView> {
         let now = Instant::now();
         let inner = self.table.lock_j();
@@ -1031,20 +1027,5 @@ impl Lease {
             table.spawn_key_timer(self.id);
         }
         Ok(())
-    }
-}
-
-/// While held, the lease counts a running library call (`call_running`).
-pub struct CallGuard(Lease);
-
-impl Drop for CallGuard {
-    fn drop(&mut self) {
-        let id = self.0.id;
-        self.0.table.with_j(|i, fx| {
-            if let Some(e) = i.leases.get_mut(&id) {
-                e.calls = e.calls.saturating_sub(1);
-                fx.changed(id);
-            }
-        });
     }
 }

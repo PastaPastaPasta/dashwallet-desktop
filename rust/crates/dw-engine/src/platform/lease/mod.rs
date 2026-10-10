@@ -5,6 +5,7 @@
 //!   and artifacts happens in one critical section of its mutex J, a leaf
 //!   that is never held across an await, I/O or a library lock (H1).
 //! - [`budget`]: a purpose's budget with authority generations (§4.2).
+//! - [`call`]: Mode B's call permits around library write calls (§2a.3).
 //! - [`fence`]: `register`, `admit`, `abandon` and the attempt guards; the
 //!   in-memory journal, the row-less set and its tombstones;
 //!   `dispatch_status` (§5.4, §5.5, §16.6).
@@ -18,11 +19,14 @@
 //! API: P2b and P4 install it, DP1-02 uses it.
 
 pub(crate) mod budget;
+pub(crate) mod call;
 pub(crate) mod fence;
 pub(crate) mod lock;
 pub(crate) mod session;
 pub(crate) mod table;
 
+#[cfg(test)]
+mod call_tests;
 #[cfg(test)]
 mod session_tests;
 #[cfg(test)]
@@ -37,6 +41,7 @@ use dw_vault::VaultStatus;
 use super::errors::PlatformError;
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 
+pub use call::{CallPermit, CallQuote, SignatureCount};
 pub use fence::{
     AdmitRequest, ArtifactKind, AttemptGuard, DispatchPermit, NonceSlot, NonceSpace, Outcome,
     Settlement, Verdict,

@@ -608,7 +608,7 @@ async fn the_reaper_ends_idle_vault_key_leases_and_forgets_them_later() {
     let idle = LeaseConfig::default().idle;
     let a = begin(&t, W, 0, 1, 0).await.unwrap();
     let busy = begin(&t, W, 0, 1, 0).await.unwrap();
-    let call = busy.call_running();
+    let call = busy.call_permit("call", None).unwrap();
     tokio::time::advance(idle).await;
     t.reap();
     assert_eq!(a.state(), Some(LeaseState::Ended));

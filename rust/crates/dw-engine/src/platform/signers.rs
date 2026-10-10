@@ -29,6 +29,8 @@
 //! that must not use such a result ("Lock to cancel") fences at its own
 //! commit point under an E0-04 lease, not here.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::ProtocolError;
@@ -48,6 +50,7 @@ use platform_wallet::{
 use zeroize::Zeroizing;
 
 use super::keys_policy::key_path;
+use super::lease::SignatureCount;
 use crate::EngineError;
 
 fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineError> {
@@ -75,6 +78,8 @@ fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineE
 pub struct VaultIdentitySigner {
     signer: VaultSigner,
     identity_indices: Vec<u32>,
+    /// Mode B: the call permit's count of released signatures (§2a.3).
+    count: Option<Arc<SignatureCount>>,
 }
 
 impl VaultIdentitySigner {
@@ -88,7 +93,14 @@ impl VaultIdentitySigner {
         Ok(Self {
             signer,
             identity_indices: identity_indices.into_iter().collect(),
+            count: None,
         })
+    }
+
+    /// Reports each released signature, and a `Locked` refusal, to `count`.
+    pub(crate) fn counting(mut self, count: Arc<SignatureCount>) -> Self {
+        self.count = Some(count);
+        self
     }
 
     /// The slot `keys_policy` derives the key at.
@@ -124,10 +136,20 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 .signer
                 .sign_identity(&path, key.data().as_slice(), data)
             {
-                Ok(signature) => return Ok(signature.to_vec().into()),
+                Ok(signature) => {
+                    if let Some(count) = &self.count {
+                        count.note_released();
+                    }
+                    return Ok(signature.to_vec().into());
+                }
                 // Not this identity's key: try the next identity.
                 Err(SignerError::KeyMismatch(_)) => continue,
-                Err(e) => return Err(ProtocolError::ExternalSignerError(e.to_string())),
+                Err(e) => {
+                    if let (SignerError::Locked, Some(count)) = (&e, &self.count) {
+                        count.note_locked();
+                    }
+                    return Err(ProtocolError::ExternalSignerError(e.to_string()));
+                }
             }
         }
         Err(ProtocolError::ExternalSignerError(format!(
