@@ -1,6 +1,6 @@
 # Vendored code in dw-psbt
 
-`src/psbt/` is the PSBT container from rust-dashcore's `key_wallet::psbt`,
+`src/psbt/` is the PSBT container from rust-dashcore's `key-wallet` crate (its `psbt` module),
 copied so dw-psbt no longer depends on a module that rust-dashcore #1041
 deleted (platform #5307 pins a rust-dashcore without it).
 
@@ -53,11 +53,11 @@ deleted (platform #5307 pins a rust-dashcore without it).
 
 ## Checks while the old module still exists
 
-`src/old_vs_vendored.rs` compares this code against `key_wallet::psbt` at the
+`src/old_vs_vendored.rs` compares this code against key-wallet's `psbt` module at the
 current pin over the dashd vectors, a PSBT with every kept field set, every
 truncation and every single-byte flip of those. **Delete it, with its `mod`
 line in `lib.rs`, at the pin move (E0-10c).** After that nothing in the
-workspace refers to `key_wallet::psbt`.
+workspace refers to key-wallet's `psbt` module.
 
 ## Updating
 

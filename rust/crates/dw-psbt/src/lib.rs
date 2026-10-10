@@ -440,3 +440,7 @@ pub fn p2pkh_hash(script: &ScriptBuf) -> Option<PubkeyHash> {
 
 #[cfg(test)]
 mod tests;
+
+// DELETE AT THE PIN MOVE (E0-10c): key-wallet's psbt module goes away.
+#[cfg(test)]
+mod old_vs_vendored;
