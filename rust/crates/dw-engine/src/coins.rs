@@ -56,7 +56,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashcore::{Address, OutPoint, Txid};
-use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind};
+use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind, LockReason};
 use key_wallet::Utxo;
 use key_wallet::bip32::ChildNumber;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
@@ -107,7 +107,10 @@ pub(crate) struct WalletCoin {
     /// The funding transaction spent none of the wallet's coins (or, when
     /// key-wallet no longer has the record, the coin is not change).
     pub foreign_incoming: bool,
+    /// Locked by the user or by dust protection (`dust_locked` says which).
     pub user_locked: bool,
+    /// The lock is dust protection's (QT-075), not the user's.
+    pub dust_locked: bool,
     pub reserved: bool,
     /// Reserved only as the input of a tracked `Built` or `Broadcast`
     /// asset lock (module doc), not by a payment of the engine.
@@ -151,19 +154,60 @@ pub(crate) struct CoinSnapshot {
     pub coins: Vec<WalletCoin>,
 }
 
+/// Why a funding-account coin holds a library funding build back (E0-04
+/// §2a.6): the pinned asset-lock builder takes no exclusion set, so it
+/// would select the coin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CoinHold {
+    /// An input of a pending payment of the engine: it clears when the
+    /// payment settles or is released.
+    Reserved,
+    /// "Lock unspent" by the user.
+    UserLock,
+    /// Dust protection's lock. Spending the coin would link its address to
+    /// the wallet's others (the lock's purpose), so it is not exempted; the
+    /// UI can offer "release this dust coin".
+    DustLock,
+}
+
+/// One coin that holds a funding build back, for the refusal to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeldCoin {
+    pub outpoint: OutPoint,
+    pub value: u64,
+    pub hold: CoinHold,
+}
+
 impl CoinSnapshot {
     /// The coins of the funding accounts (BIP44, BIP32, DashPay receiving)
-    /// the user locked or a pending payment of the engine reserves: what
-    /// the library's asset-lock builder does not see. DP1-02's funding
-    /// refuses while any stands, checked under the fence its call permit
-    /// then holds (module doc). A tracked lock's input (`lock_input`) is
+    /// the user or dust protection locked, or a pending payment of the
+    /// engine reserves: what the library's asset-lock builder does not see.
+    /// DP1-02's funding refuses while any stands, naming each with its
+    /// hold, checked under the fence its call permit then holds (module
+    /// doc). A coin both reserved and locked reads `Reserved`: releasing
+    /// its lock would not free it. A tracked lock's input (`lock_input`) is
     /// not among them: the library reserves those itself.
     #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
-    pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = OutPoint> + '_ {
+    pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
             .iter()
-            .filter(|c| c.send_account && (c.user_locked || (c.reserved && !c.lock_input)))
-            .map(|c| c.utxo.outpoint)
+            .filter(|c| c.send_account)
+            .filter_map(|c| {
+                let hold = if c.reserved && !c.lock_input {
+                    CoinHold::Reserved
+                } else if c.dust_locked {
+                    CoinHold::DustLock
+                } else if c.user_locked {
+                    CoinHold::UserLock
+                } else {
+                    return None;
+                };
+                Some(HeldCoin {
+                    outpoint: c.utxo.outpoint,
+                    value: c.utxo.value(),
+                    hold,
+                })
+            })
     }
 }
 
@@ -333,6 +377,7 @@ fn collect(
                 r.direction == TransactionDirection::Incoming
             }),
             user_locked: false,
+            dust_locked: false,
             reserved: false,
             lock_input: false,
         });
@@ -511,7 +556,7 @@ impl NetworkSession {
                 (c.utxo.value(), txid, vout)
             })
             .collect();
-        let locked: HashSet<(String, u32)> = self
+        let locked: HashMap<(String, u32), LockReason> = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
@@ -527,7 +572,7 @@ impl NetworkSession {
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
-                    .map(|row| (row.txid, row.vout))
+                    .map(|row| ((row.txid, row.vout), row.reason))
                     .collect())
             })
             .await?;
@@ -536,7 +581,9 @@ impl NetworkSession {
         let reserved = self.spends.snapshot(&wallet_id);
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
-            coin.user_locked = locked.contains(&lock_key(&o));
+            let lock = locked.get(&lock_key(&o));
+            coin.user_locked = lock.is_some();
+            coin.dust_locked = lock == Some(&LockReason::Dust);
             let spend_reserved = reserved.contains(&o);
             let lock_reserved = lock_inputs.contains(&o);
             coin.lock_input = !spend_reserved && lock_reserved;
@@ -778,6 +825,101 @@ mod tests {
         let receive = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/7").unwrap();
         assert!(is_internal_path(&change));
         assert!(!is_internal_path(&receive));
+    }
+
+    fn coin(seed: u8, send_account: bool) -> WalletCoin {
+        use dashcore::hashes::Hash;
+        let address = Address::new(
+            dashcore::Network::Regtest,
+            dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(
+                [seed; 20],
+            )),
+        );
+        let utxo = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+            dashcore::TxOut {
+                value: 1_000 * u64::from(seed),
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        WalletCoin {
+            utxo,
+            send_account,
+            coinjoin_account: !send_account,
+            is_change: false,
+            block_time: None,
+            chain_locked: false,
+            foreign_incoming: false,
+            user_locked: false,
+            dust_locked: false,
+            reserved: false,
+            lock_input: false,
+        }
+    }
+
+    /// E0-04 §2a.6: the funding refusal names every held coin with its
+    /// hold, a dust lock apart from a user lock; a tracked lock's input,
+    /// a free coin and a CoinJoin coin hold nothing back.
+    #[test]
+    fn held_funding_coins_name_their_hold() {
+        let user = WalletCoin {
+            user_locked: true,
+            ..coin(1, true)
+        };
+        let dust = WalletCoin {
+            user_locked: true,
+            dust_locked: true,
+            ..coin(2, true)
+        };
+        let paying = WalletCoin {
+            reserved: true,
+            ..coin(3, true)
+        };
+        let paying_and_locked = WalletCoin {
+            reserved: true,
+            user_locked: true,
+            dust_locked: true,
+            ..coin(4, true)
+        };
+        let lock_input = WalletCoin {
+            reserved: true,
+            lock_input: true,
+            ..coin(5, true)
+        };
+        let coinjoin = WalletCoin {
+            user_locked: true,
+            ..coin(6, false)
+        };
+        let snapshot = CoinSnapshot {
+            height: 200,
+            coins: vec![
+                user.clone(),
+                dust.clone(),
+                paying.clone(),
+                paying_and_locked.clone(),
+                lock_input,
+                coin(7, true),
+                coinjoin,
+            ],
+        };
+        let held: Vec<HeldCoin> = snapshot.held_funding_coins().collect();
+        let expect = |c: &WalletCoin, hold| HeldCoin {
+            outpoint: c.utxo.outpoint,
+            value: c.utxo.value(),
+            hold,
+        };
+        assert_eq!(
+            held,
+            [
+                expect(&user, CoinHold::UserLock),
+                expect(&dust, CoinHold::DustLock),
+                expect(&paying, CoinHold::Reserved),
+                expect(&paying_and_locked, CoinHold::Reserved),
+            ]
+        );
     }
 
     #[test]

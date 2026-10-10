@@ -604,12 +604,16 @@ call permit when its task lands.
     DP1-02's policy check; a host that holds one stalls the wallet's "Lock unspent", coin list and payments until it
     drops it.
   - `NetworkSession::fenced_coins(&self, fence: &CoinFence) -> Result<CoinSnapshot, EngineError>` reads the coins under
-    it; `CoinSnapshot::held_funding_coins()` lists the funding accounts' coins the user locked or an engine payment
-    reserves (`user_locked || (reserved && !lock_input)`): DP1-02's policy check refuses while any stands. It
-    includes dust locks (dust protection locks small coins as the user's): a dust payment to a funding account, under
-    the threshold, blocks registration until the user releases it. DP1-02 decides whether to exempt dust locks (or
-    reserve the held coins in key-wallet instead of refusing). Dust that arrives during the call is not locked until
-    the next coin read, so the library may spend it: dust protection's usual window.
+    it; `CoinSnapshot::held_funding_coins()` yields a `HeldCoin { outpoint, value, hold }` for each funding-account
+    coin an engine payment reserves (`CoinHold::Reserved`), the user locked (`UserLock`) or dust protection locked
+    (`DustLock`); a coin both reserved and locked reads `Reserved`. DP1-02's policy check refuses while any stands,
+    and its refusal names each coin with its hold, so the UI can offer "release this dust coin". Dust locks stay
+    counted (manager ruling): the pinned builder takes no exclusion set, so exempting one would let it spend the
+    coin and link its address, which the lock exists to prevent. **Residual:** a dust payment into a funding account
+    blocks registration until released; lifted when the library accepts an exclusion set (the upstream ask: the
+    platform-wallet asset-lock builder takes excluded outpoints; then the fence passes the held set and the refusal
+    goes away). Dust that arrives during the call is not locked until the next coin read, so the library may spend
+    it: dust protection's usual window.
   - `funding_call_permit(lease, label, amount, step, key, fence: CoinFence)` takes the fence that check ran under
     and moves it into the permit's call. **Release rule:** at the first of (a) the changeset tap storing a tracked
     row of the wallet under the permit's funding key, of any status, that is not foreign to its step, once the call

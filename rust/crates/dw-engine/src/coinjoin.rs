@@ -2667,6 +2667,7 @@ mod tests {
                 chain_locked: false,
                 foreign_incoming: true,
                 user_locked: false,
+                dust_locked: false,
                 reserved: false,
                 lock_input: false,
             },

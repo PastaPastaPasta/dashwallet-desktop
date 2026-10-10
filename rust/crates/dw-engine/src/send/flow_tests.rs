@@ -1565,4 +1565,24 @@ fn dust_locks_are_applied_only_under_the_fence() {
     let coins = f.engine.block_on(listing).unwrap().unwrap();
     assert!(coins.iter().any(|c| c.outpoint == dust && c.user_locked));
     assert_eq!(locked(), vec![dust]);
+
+    // The funding policy check names each held coin: the dust lock apart
+    // from a user's lock (E0-04 §2a.6).
+    let mine = f.credit(2, 50_000);
+    f.engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![mine]))
+        .unwrap();
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let snapshot = f.engine.block_on(f.session.fenced_coins(&fence)).unwrap();
+    let mut held: Vec<_> = snapshot
+        .held_funding_coins()
+        .map(|h| (h.outpoint, h.hold))
+        .collect();
+    held.sort();
+    let mut expect = vec![
+        (dust, crate::coins::CoinHold::DustLock),
+        (mine, crate::coins::CoinHold::UserLock),
+    ];
+    expect.sort();
+    assert_eq!(held, expect);
 }
