@@ -564,6 +564,75 @@ Mode B has no registered journal entries, so it derives every status from three 
     engine never answers `NotSent` for it. In its own process the row-less entry keeps the transition's identity,
     nonce space and nonce, and H16's evidence settles it.
 
+### 2a.6 Mode B as built (P2b)
+
+P2b implements §2a.3 and §2a.5 in dw-engine (`platform/lease/`: `call.rs`, `mode_b.rs`, `resume.rs`, `repair.rs`).
+**Mode B mechanism closed in P2b; items 7 and 9 end to end at DP1-02.** P2b closes §2a.4 items 1–8 against the
+fake library (item 7's cases as engine tests). The end-to-end halves of items 7 and 9 move to DP1-02 and the credit
+tasks: the testnet registration, a top-up's and a withdrawal's `broadcast_unknown`, and step 2's ChainLock-height
+retries. At the pin, `register_name` is the one live library write; the others are still stubs, and each takes its
+call permit when its task lands.
+
+**What DP1-02 builds on.**
+- `CallPermit::funding_signer()` (a `CountingFundingSigner`) and `CallPermit::identity_signer(indices)`: every
+  released signature and a `Locked` refusal count into the permit. Both are issued with the budget at 0, since the
+  permit's J step charged the quote.
+- `NetworkSession::funding_call_permit(lease, label, amount, step, key)` (`Lease::call_permit_step` with
+  `CallStep::Funding{step, key}`): the funding gate, then the marker made durable, then the permit, charged
+  `amount + fee_bound_worst`.
+- `dispatch_status` and `funds_committed` for `registration/<draft>/funding` and `topup/<id>/funding`, from the
+  tracked rows matched by the marker's key and the draft's own: `AppDb::registration_identity_indices`, keyed
+  (`IdentityRegistration`, the draft's identity index, account 0).
+- The funding gate refuses a funding build while any tracked `Built`/`Broadcast` row of the wallet, DP1-02's
+  included, has not been resumed by the catch-up's pass (`LeaseError::FundingBlocked(Row)`, `will_be_sent`), and
+  while the wallet's rows are unknown (`RowsUnknown`, `unavailable`). DP1-02 needs no gate of its own.
+- `register_name` under a lease: `NameAuthority`, `DashPay::register_name_for_flow`, `Lease::available`.
+- `WalletCoin::lock_input` tells a tracked lock's input (reserved for it) from a pending payment's input.
+
+**Decisions taken in P2b** (the manager's rulings D1–D5 on its plan, and the implementation's):
+- D2: `register_name` takes a lease id or a raw grant; a raw grant is checked without consuming it, then redeemed
+  into a one-shot `NameRegistration` lease that ends with the call. The pending label is the write's durable marker
+  (DP1-03), so it takes a plain call permit, not a step marker.
+- D3: `dispatch.sqlite` schema 3 adds the append-only `funding_marker` and `self_spend` tables. The DEC-160
+  predicate counts a funding marker as a marker, and the DEC-163 `Sent` bundle includes it.
+- D4: the self-spend row is appended before the broadcast; no `NotSent` row is written. The step derives `NotSent`
+  once the wallet holds the self-spend ChainLocked.
+- D5: the fee bound is snapshotted outside J and compared inside J (below for the re-check).
+- Rows unknown fail closed. A standing marker blocks re-funding its step. A step ignores rows its key matched before
+  its marker (an earlier funding's). A ChainLocked self-spend reads `NotSent` over a `Built`/`Broadcast` row.
+- The catch-up's pass (H6 part 2) runs after SPV starts, on every peers 0 → >0, after a journal write succeeds
+  following a failed one, and when a wallet is opened; a row stops blocking once its library attempt returned,
+  whatever the result. A stop disarms the passes; a closed wallet's rows block again until its reopen's pass.
+- Repair's self-spend spends every spendable coin of the funding accounts, the tracked locks' inputs exempt from
+  their reservation on this path only, to a fresh receive address. It is refused while any spend of the funding
+  accounts' coins is not ChainLocked, and unless it takes an input of every tracked `Built`/`Broadcast` row of the
+  step.
+- BL-76 (H12): the session hub feeds `note_seen` an InstantSend lock (also a transaction first seen through its
+  lock), a block holding the transaction and a ChainLock over it; never a mempool sighting.
+
+**Residuals** (each fails closed unless marked):
+- D5's re-check in coin selection is unreachable at the pin (the library selects inside the call): a coin received
+  between the snapshot and the selection can leave the bound short by up to 149 duffs per such coin. (The bound
+  counts at most 500 inputs, the most a lock spends at the pin, so the cap itself loses nothing.)
+- After a restart the per-step set of earlier rows is gone, so an older row under the same key counts again for a
+  marked step.
+- At the pin, `reconstruction.rs` rebuilds every recovered registration lock at identity index 0, so a
+  `RecoveredFromChain` row matches the draft at index 0 only. DP1-05's adoption must re-key it (the DP1-02 rule:
+  adopt an identity only by the lock's outpoint).
+- The self-spend's `NotSent` rests on the library tracking a lock (`Built`, persisted) before broadcasting it, so a
+  ChainLocked lock always has a row, which reads `Sent`. A wallet restored where the journal's marker survives but
+  the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked
+  records, so history cannot show it). **DP1-05 owns this:** until its chain scan has run for the wallet, Repair's
+  self-spend must be refused there. Not fail closed.
+- A self-spend over very many coins can fail as too large or with an absurd fee; key-wallet holding a just-built
+  lock's inputs in the same process is untested.
+- A journal error at a call step hides a `Locked`/`Revoked` refusal (both refuse the call); the permit's wait for a
+  `Committing` marker has no deadline of its own; a dropped permit leaves its step `MaybeSent`; the call steps have
+  no engine test over a real SQLite journal.
+- A resumable step that resolves `NotSent` emits no event (as before P2b). While a held tombstone of §5.5 is being
+  watched, every J step re-checks it, at a cost linear in the entries.
+- `sign_psbt` does not check reserved coins (outside `TxDraft`).
+
 ## 3. Grants (dw-vault)
 
 ### 3.1 `PlatformOp{max_duffs, max_credits}`
@@ -2438,6 +2507,7 @@ and for a state transition.
 - **DP1-02** builds against P2a's API and the fake library at once, and closes against P2b (Mode B) or P4 (Mode A).
 - **Order of work.** P2b also serves as Mode A's interim, so it lands whatever pasta decides; P4 then replaces call
   permits with per-artifact admission site by site.
+- **P2b's closure.** Mode B mechanism closed in P2b; items 7 and 9 end to end at DP1-02 (§2a.6).
 
 ## 14. Open questions
 
