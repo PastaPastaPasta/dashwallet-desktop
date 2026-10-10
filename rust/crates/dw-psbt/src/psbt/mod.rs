@@ -97,3 +97,53 @@ impl PartiallySignedTransaction {
         tx
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use dashcore::blockdata::script::ScriptBuf;
+    use dashcore::blockdata::transaction::txout::TxOut;
+    use dashcore::blockdata::witness::Witness;
+    use dashcore::{OutPoint, TxIn};
+
+    use super::*;
+
+    /// Dash has no taproot: a taproot pair is kept in `unknown` and written
+    /// back unchanged (upstream parsed these into `tap_*` fields).
+    #[test]
+    fn taproot_pairs_are_carried_as_unknown() {
+        let tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: 0xffff_ffff,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: 0,
+                script_pubkey: ScriptBuf::new(),
+            }],
+            special_transaction_payload: None,
+        };
+        let mut psbt = PartiallySignedTransaction::from_unsigned_tx(tx).unwrap();
+        // PSBT_IN_TAP_KEY_SIG and PSBT_OUT_TAP_INTERNAL_KEY.
+        let tap_in = raw::Key {
+            type_value: 0x13,
+            key: vec![],
+        };
+        let tap_out = raw::Key {
+            type_value: 0x05,
+            key: vec![],
+        };
+        psbt.inputs[0].unknown.insert(tap_in.clone(), vec![7; 64]);
+        psbt.outputs[0].unknown.insert(tap_out.clone(), vec![8; 32]);
+
+        let bytes = psbt.serialize();
+        let back = PartiallySignedTransaction::deserialize(&bytes).unwrap();
+        assert_eq!(back, psbt);
+        assert_eq!(back.serialize(), bytes);
+        assert_eq!(back.inputs[0].unknown[&tap_in], vec![7; 64]);
+        assert_eq!(back.outputs[0].unknown[&tap_out], vec![8; 32]);
+    }
+}
