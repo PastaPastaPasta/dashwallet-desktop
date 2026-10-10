@@ -156,6 +156,11 @@ pub enum RegistrationError {
     Recoverable { draft: String },
     #[error("the identity already has a username")]
     AlreadyHasUsername,
+    /// The row was written by a newer build: its funding or profile
+    /// encoding, or its phase, is one this build does not know. The flow
+    /// fails, not retryable, and can be discarded.
+    #[error("the registration was written by a newer version")]
+    Unsupported,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -172,6 +177,7 @@ impl RegistrationError {
             Self::IslockTimeout => "registration.islock_timeout",
             Self::Recoverable { .. } => "registration.recoverable",
             Self::AlreadyHasUsername => "registration.already_has_username",
+            Self::Unsupported => "registration.unsupported",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),

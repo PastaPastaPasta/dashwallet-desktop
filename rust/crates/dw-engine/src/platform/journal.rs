@@ -177,6 +177,9 @@ pub(crate) struct Classified {
     /// for the provenance check before the persister takes them (§2a.6,
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
+    /// Registration locks of account 0 written (DP1-02's funding key):
+    /// outpoint and identity index.
+    registration_locks: Vec<(OutPoint, u32)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -274,6 +277,16 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             let built = matches!(e.status, platform_wallet::AssetLockStatus::Built);
             (e.transaction.clone(), built)
         }));
+        c.registration_locks.extend(
+            locks
+                .asset_locks
+                .values()
+                .filter(|e| {
+                    e.funding_type == platform_wallet::AssetLockFundingType::IdentityRegistration
+                        && e.account_index == 0
+                })
+                .map(|e| (e.out_point, e.identity_index)),
+        );
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -350,6 +363,10 @@ pub(crate) struct ChangesetTap {
     /// so does a Core changeset of a wallet awaiting a self-spend's
     /// ChainLock.
     locks_changed: OnceLock<Weak<LeaseTable>>,
+    /// Told when a registration reached `FundingSent` here (DP1-02: the
+    /// automatic backup of §3.4 Restore rule 4). Set once the session
+    /// exists.
+    pub(crate) on_funded: OnceLock<Box<dyn Fn(WalletId, i64) + Send + Sync>>,
 }
 
 impl ChangesetTap {
@@ -359,6 +376,7 @@ impl ChangesetTap {
             appdb,
             catch_up_before: Mutex::new(HashMap::new()),
             locks_changed: OnceLock::new(),
+            on_funded: OnceLock::new(),
         }
     }
 
@@ -502,6 +520,27 @@ impl ChangesetTap {
         let wallet = id.to_string();
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
+        // Before the library broadcasts a registration's lock, its
+        // outpoint goes to the flow's row (§3.4 Restore rule 3).
+        for (outpoint, index) in std::mem::take(&mut c.registration_locks) {
+            match super::registration_flow::note_lock_tracked(
+                &self.appdb,
+                &wallet,
+                outpoint,
+                index,
+                now,
+            ) {
+                Ok(Some(draft)) => {
+                    if let Some(funded) = self.on_funded.get() {
+                        funded(id, draft);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not record a registration's lock")
+                }
+            }
+        }
         if !c.locks.is_empty()
             && let Some(table) = self.table()
         {

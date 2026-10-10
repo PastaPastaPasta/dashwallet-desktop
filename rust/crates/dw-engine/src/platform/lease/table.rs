@@ -874,8 +874,9 @@ impl Lease {
 
     /// What the purpose's current generation still allows: the check a
     /// caller makes before the call that charges it (a name's credit cap
-    /// before its pending label is written). Refused like a signer while
-    /// the lease does not sign.
+    /// before its pending label is written; DP1-02's funding cap until its
+    /// funding takes a call permit). Refused like a signer while the lease
+    /// does not sign.
     pub fn available(&self, purpose: BudgetPurpose) -> Result<u64, LeaseError> {
         self.with_entry(purpose, |e| {
             e.budget_mut(purpose)

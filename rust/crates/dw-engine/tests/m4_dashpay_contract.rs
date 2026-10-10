@@ -61,6 +61,14 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.resolve_user",
     "DashPay.my_user_link",
     "DashPay.verify_scanned",
+    // DP1-02: registration.
+    "DashPay.registration_quote",
+    "DashPay.start_registration",
+    "DashPay.registrations",
+    "DashPay.resume_registration",
+    "DashPay.discard_registration",
+    "DashPay.finish_asset_locks",
+    "DashPay.prepare_faucet_lock",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -87,8 +95,9 @@ const FACADE: &[&str] = &[
 /// network seam and session tests (DP1-03), the changeset tap and trust
 /// records (E0-06), the lease table and dispatch fence (E0-04) and the
 /// quorum provider and its re-fetch (E0-10b), the contacts read model, its
-/// usernames and its tests (DP2-01), and user search, links and scans
-/// with their tests (DP2-03).
+/// usernames and its tests (DP2-01), user search, links and scans with
+/// their tests (DP2-03), and the registration state machine, its row
+/// encodings and tests (DP1-02).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
@@ -105,6 +114,9 @@ const NOT_FACADE: &[&str] = &[
     "recovery_tests.rs",
     "reverify.rs",
     "names_tests.rs",
+    "registration_flow.rs",
+    "registration_rows.rs",
+    "registration_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "signers.rs",
@@ -810,6 +822,7 @@ fn error_codes_match_the_contract() {
             RegistrationError::IslockTimeout,
             RegistrationError::Recoverable { draft: s() },
             RegistrationError::AlreadyHasUsername,
+            RegistrationError::Unsupported,
         ],
         RegistrationError::code,
     );
@@ -1116,20 +1129,22 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.discover_identities(s()).await.unwrap_err().code(),
             "wallet_not_found"
         );
+        // DP1-02's: the same, and the faucet is off outside developer
+        // builds.
+        assert_eq!(
+            dp.registrations().await.unwrap_err().code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
+            dp.prepare_faucet_lock(s()).await.unwrap_err().code(),
+            "platform.feature_off"
+        );
 
         c.stub(dp.status());
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
         c.stub(dp.identity_detail(s()).await);
         c.stub(dp.refresh_balance(s()).await);
-
-        c.stub(dp.registration_quote(request()).await);
-        c.stub(dp.start_registration(request(), s()).await);
-        c.stub(dp.registrations().await);
-        c.stub(dp.resume_registration(s(), None).await);
-        c.stub(dp.discard_registration(s()).await);
-        c.stub(dp.finish_asset_locks(s()).await);
-        c.stub(dp.prepare_faucet_lock(s()).await);
 
         c.stub(dp.contest_status(s(), s()).await);
         // DP2-03's calls are implemented: an unknown wallet is refused.

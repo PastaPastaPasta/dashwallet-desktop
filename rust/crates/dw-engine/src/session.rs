@@ -476,6 +476,15 @@ impl NetworkSession {
         for id in manager.list_wallet_ids_blocking() {
             session.leases.request_refresh(WalletId(id));
         }
+        if let Ok(live) = session.live() {
+            let weak = Arc::downgrade(&session);
+            let funded = move |wallet, draft| {
+                if let Some(session) = weak.upgrade() {
+                    crate::platform::registration_flow::backup_once(&session, wallet, draft);
+                }
+            };
+            let _ = live.tap.on_funded.set(Box::new(funded));
+        }
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
         {
@@ -697,6 +706,8 @@ impl NetworkSession {
         // E0-04 §8.5: revoke, drain and abort the flows before the gate,
         // which waits for the flows' operation guards.
         self.close_leases().await;
+        // Registration flows waiting keyless for a proof hold no lease.
+        self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;

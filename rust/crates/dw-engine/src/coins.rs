@@ -442,7 +442,7 @@ fn funding_accounts(
 }
 
 /// Reads every funds account of `info` (key-wallet state only).
-fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
+pub(crate) fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
     for a in funding_accounts(accounts) {

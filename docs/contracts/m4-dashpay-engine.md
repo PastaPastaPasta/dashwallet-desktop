@@ -212,6 +212,51 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
+**Done (DP1-02, Contract-Version 9).** What the bodies decided where the rows leave room:
+
+- **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
+  wallet locks, raised when the credits below need more. The fee is E0-04's `fee_bound_worst` over every spendable
+  coin of the funding sources (n × 149 + 300 bytes at 1 duff/byte), a true upper bound on the library's selection.
+  `grant.max_credits` is IdentityCreate (bounded at 300 000 000 credits until DP1-06's cost table) plus
+  `register_name`'s grant for the label and the temporary label, plus 300 000 000 with an `initial_profile`.
+  `start_registration` checks the lease's Funding budget and the balance against lock + fee before it writes a row
+  (`platform.grant_exceeded`, `registration.funding_insufficient`), and the funding step checks again.
+- **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
+  signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
+  spends nothing.
+- **In progress.** `registration.in_progress` while another row is neither `Done` nor failed for good; a failed row
+  counts while it is retryable or its funds are committed. A row this build cannot run fails at once, not retryable,
+  and stops counting: a `funding`, `initial_profile` or `phase` it does not know is the new code
+  `registration.unsupported`, and an `Invitation` row is `invitation.invalid` (until DP5-02 the invitation-claim path
+  does not exist; `start_registration` refuses `Invitation` funding with `platform.not_implemented`).
+- **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
+  uncontested (`invalid_argument`). An `initial_profile` naming an avatar candidate is `invalid_argument` until
+  DP4-02's `prepare_avatar`.
+- **Funding failures (H12).** platform-wallet tracks the lock (`Built`, stored through the changeset tap, which writes
+  the outpoint to the row: §3.4 Restore rule 3) before the broadcaster sees it, and untracks it only on a definitive
+  rejection. So after a failed funding call a tracked row for the draft's funding key means committed (the row
+  moves on to it), and none means nothing reached the wire: the row goes back to `KeysPrepared`, retryable, with the
+  library's code. A row that says funded with no tracked row behind it (a power loss before the library's store)
+  reads `MaybeSent`: `platform.broadcast_unknown`, not retryable; `resume_registration` refuses it until the lock is
+  tracked again (positive evidence, after which the flow adopts it), and discard refuses it.
+- **`resume_registration`** with a grant uses it whatever `waiting` says, so the flow does not stop at its next
+  signing step; without one the flow runs its keyless steps (the sync hold, the proof wait) and parks at the first
+  that signs. A flow that runs already takes the grant through `rebind_lease`. A row failed for good is
+  `invalid_argument`.
+- **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed and that no row
+  holds (into the `KeysPrepared` row at its index, else a new row with label `""`, which skips the name step), then
+  runs each funded row once under the grant, without waiting for a proof. `resumed` counts the rows it ran.
+- **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
+  `platform.feature_off{feature: "faucet"}`.
+- **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, `Sync` before
+  funding while the hold lasts, `ChainLock` for a lock without a proof, otherwise `Unlock` or `Authorize` by the vault's
+  state. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
+- **`contest_ends_at`** stays `None` until DP1-04's vote poll.
+- **Waiting on E0-04.P2b (Mode B):** the call permits that charge the Funding budget (the cap is checked before the
+  call meanwhile), the funding and step markers, released-signature counting, `DispatchResolved` for a flow's steps,
+  and the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
+  `resume_registration` or "Finish transfers".
+
 ### 2.3 Names
 
 | Call | Kind | Semantics | Errors |
@@ -573,6 +618,7 @@ pub enum RegistrationError {
     IslockTimeout,
     Recoverable { draft: String },
     AlreadyHasUsername,
+    Unsupported,
     Name(NameError),
     Invitation(InvitationError),
     Platform(PlatformError),
@@ -1275,7 +1321,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 |---|---|
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
