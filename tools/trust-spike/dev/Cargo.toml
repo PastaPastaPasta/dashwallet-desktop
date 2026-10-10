@@ -1,0 +1,23 @@
+# E0-10a trust spike, part 2: the dash-spv probe at rust-dashcore dev
+# (c19973abb0ce1a548b2768a4b4fd850b94f3e866, which contains #1072 and #1075). No platform crates:
+# the tuples come from the pin's capture log. Standalone workspace.
+[package]
+name = "trust-spike-dev"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "c19973abb0ce1a548b2768a4b4fd850b94f3e866" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "c19973abb0ce1a548b2768a4b4fd850b94f3e866" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "c19973abb0ce1a548b2768a4b4fd850b94f3e866" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "c19973abb0ce1a548b2768a4b4fd850b94f3e866" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+serde_json = "1"
+hex = "0.4"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

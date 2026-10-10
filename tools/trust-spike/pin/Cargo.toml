@@ -1,0 +1,28 @@
+# E0-10a trust spike, part 1: proof capture and the dash-spv probe at the pin.
+# Same platform and rust-dashcore revisions as rust/Cargo.toml (Cargo.lock seeded
+# from rust/Cargo.lock). Standalone workspace: not a member of rust/.
+[package]
+name = "trust-spike-pin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dpp = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "bc41f1bc233dec4607d387101c1d9c2f111019b2" }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+serde_json = "1"
+hex = "0.4"
+rand = "0.8"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
