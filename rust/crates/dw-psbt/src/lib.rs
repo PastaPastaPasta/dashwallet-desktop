@@ -335,7 +335,7 @@ pub async fn sign<S: Signer>(
         // made it change outputs after signing, past the grant's cap.
         let hash_ty = EcdsaSighashType::All;
         if let Some(t) = psbt.inputs[index].sighash_type
-            && t.ecdsa_hash_ty().ok() != Some(hash_ty)
+            && t.ecdsa_hash_ty() != Some(hash_ty)
         {
             return Err(PsbtError::Signing {
                 index,

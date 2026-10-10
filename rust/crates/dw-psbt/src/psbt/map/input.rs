@@ -19,7 +19,7 @@ use dashcore::blockdata::witness::Witness;
 use dashcore::crypto::ecdsa;
 use dashcore::crypto::key::PublicKey;
 use dashcore::secp256k1;
-use dashcore::sighash::{self, EcdsaSighashType, NonStandardSighashType, TapSighashType};
+use dashcore::sighash::EcdsaSighashType;
 use key_wallet::bip32::KeySource;
 use std::collections::{BTreeMap, btree_map};
 
@@ -98,10 +98,8 @@ pub struct Input {
     pub unknown: BTreeMap<raw::Key, Vec<u8>>,
 }
 
-/// A Signature hash type for the corresponding input. As of taproot upgrade, the signature hash
-/// type can be either [`EcdsaSighashType`] or [`TapSighashType`] but it is not possible to know
-/// directly which signature hash type the user is dealing with. Therefore, the user is responsible
-/// for converting to/from [`PsbtSighashType`] from/to the desired signature hash type they need.
+/// A Signature hash type for the corresponding input: the raw `u32` of the PSBT's sighash field,
+/// which may or may not be a standard ECDSA sighash type.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PsbtSighashType {
     pub(in crate::psbt) inner: u32,
@@ -109,42 +107,38 @@ pub struct PsbtSighashType {
 
 impl fmt::Display for PsbtSighashType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.taproot_hash_ty() {
-            Err(_) => write!(f, "{:#x}", self.inner),
-            Ok(taproot_hash_ty) => fmt::Display::fmt(&taproot_hash_ty, f),
-        }
+        // Upstream prints the taproot names for 0x00-0x03 and 0x81-0x83 and hex for the rest.
+        let name = match self.inner {
+            0x00 => "SIGHASH_DEFAULT",
+            0x01 => "SIGHASH_ALL",
+            0x02 => "SIGHASH_NONE",
+            0x03 => "SIGHASH_SINGLE",
+            0x81 => "SIGHASH_ALL|SIGHASH_ANYONECANPAY",
+            0x82 => "SIGHASH_NONE|SIGHASH_ANYONECANPAY",
+            0x83 => "SIGHASH_SINGLE|SIGHASH_ANYONECANPAY",
+            _ => return write!(f, "{:#x}", self.inner),
+        };
+        f.write_str(name)
     }
 }
 
 impl From<EcdsaSighashType> for PsbtSighashType {
     fn from(ecdsa_hash_ty: EcdsaSighashType) -> Self {
         PsbtSighashType {
-            inner: ecdsa_hash_ty as u32,
+            inner: ecdsa_hash_ty.to_u32(),
         }
     }
 }
 
 impl PsbtSighashType {
-    /// Returns the [`EcdsaSighashType`] if the [`PsbtSighashType`] can be
-    /// converted to one.
-    pub fn ecdsa_hash_ty(self) -> Result<EcdsaSighashType, NonStandardSighashType> {
-        EcdsaSighashType::from_standard(self.inner)
-    }
-
-    /// Returns the [`TapSighashType`] if the [`PsbtSighashType`] can be
-    /// converted to one.
-    pub fn taproot_hash_ty(self) -> Result<TapSighashType, sighash::Error> {
-        if self.inner > 0xffu32 {
-            Err(sighash::Error::InvalidSighashType(self.inner))
-        } else {
-            TapSighashType::from_consensus_u8(self.inner as u8)
-        }
+    /// Returns the [`EcdsaSighashType`] if the [`PsbtSighashType`] is one of the standard ones.
+    pub fn ecdsa_hash_ty(self) -> Option<EcdsaSighashType> {
+        EcdsaSighashType::from_standard(self.inner).ok()
     }
 
     /// Creates a [`PsbtSighashType`] from a raw `u32`.
     ///
-    /// Allows construction of a non-standard or non-valid sighash flag
-    /// ([`EcdsaSighashType`], [`TapSighashType`] respectively).
+    /// Allows construction of a non-standard sighash flag.
     pub fn from_u32(n: u32) -> PsbtSighashType {
         PsbtSighashType { inner: n }
     }
@@ -158,18 +152,6 @@ impl PsbtSighashType {
 }
 
 impl Input {
-    /// Obtains the [`EcdsaSighashType`] for this input if one is specified. If no sighash type is
-    /// specified, returns [`EcdsaSighashType::All`].
-    ///
-    /// # Errors
-    ///
-    /// If the `sighash_type` field is set to a non-standard ECDSA sighash value.
-    pub fn ecdsa_hash_ty(&self) -> Result<EcdsaSighashType, NonStandardSighashType> {
-        self.sighash_type
-            .map(|sighash_type| sighash_type.ecdsa_hash_ty())
-            .unwrap_or(Ok(EcdsaSighashType::All))
-    }
-
     pub(super) fn insert_pair(&mut self, pair: raw::Pair) -> Result<(), Error> {
         let raw::Pair {
             key: raw_key,
@@ -396,7 +378,7 @@ mod test {
             EcdsaSighashType::SinglePlusAnyoneCanPay,
         ] {
             let sighash = PsbtSighashType::from(*ecdsa);
-            assert_eq!(sighash.ecdsa_hash_ty().unwrap(), *ecdsa);
+            assert_eq!(sighash.ecdsa_hash_ty(), Some(*ecdsa));
             assert_eq!(PsbtSighashType::from_u32(sighash.to_u32()), sighash);
         }
     }
@@ -406,10 +388,6 @@ mod test {
         let nonstd = 0xdddddddd;
         let sighash = PsbtSighashType { inner: nonstd };
         assert_eq!(format!("{}", sighash), "0xdddddddd");
-        assert_eq!(sighash.ecdsa_hash_ty(), Err(NonStandardSighashType(nonstd)));
-        assert_eq!(
-            sighash.taproot_hash_ty(),
-            Err(sighash::Error::InvalidSighashType(nonstd))
-        );
+        assert_eq!(sighash.ecdsa_hash_ty(), None);
     }
 }

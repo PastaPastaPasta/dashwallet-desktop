@@ -12,7 +12,7 @@
 use core::convert::TryFrom;
 use core::fmt;
 
-use super::serialize::{self, Deserialize, Serialize};
+use super::serialize::{self, Serialize};
 use crate::psbt::Error;
 use dashcore::consensus::encode::{
     self, Decodable, Encodable, MAX_VEC_SIZE, ReadExt, VarInt, WriteExt, deserialize, serialize,
@@ -121,13 +121,6 @@ impl Serialize for Pair {
         // <value> := <valuelen> <valuedata>
         self.value.consensus_encode(&mut buf).unwrap();
         buf
-    }
-}
-
-impl Deserialize for Pair {
-    fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        let mut decoder = bytes;
-        Pair::decode(&mut decoder)
     }
 }
 
