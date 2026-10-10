@@ -154,15 +154,15 @@ impl TrackedRow {
 }
 
 /// A draft's own funding key (§2a.5, review Opus r3 F-2), from
-/// `app.sqlite`. It names no account: DP1-02's draft does not store one, so
-/// a row of any account with the draft's type and identity index matches
-/// (more matches only fail closed).
+/// `app.sqlite`: the draft's type and identity index, at the account
+/// DP1-02 funds every registration from (0; its draft stores none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DraftKey {
     /// The draft's funding step, `registration/<draft>/funding`.
     pub step: String,
     pub funding_type: AssetLockFundingType,
     pub identity_index: u32,
+    pub account: u32,
 }
 
 impl DraftKey {
@@ -173,11 +173,14 @@ impl DraftKey {
             step: format!("registration/{draft}/funding"),
             funding_type: AssetLockFundingType::IdentityRegistration,
             identity_index,
+            account: 0,
         }
     }
 
     fn matches(&self, key: &FundingKey) -> bool {
-        self.funding_type == key.funding_type && self.identity_index == key.identity_index
+        self.funding_type == key.funding_type
+            && self.identity_index == key.identity_index
+            && self.account == key.account
     }
 }
 

@@ -295,10 +295,13 @@ async fn funding_status_derives_each_row_from_the_rows_the_marker_and_the_drafts
     assert_eq!(t.funding_status(W, REG), Some(Sent));
     // Another wallet's rows say nothing of W's steps.
     assert_eq!(t.funding_status(W2, REG), None);
-    // The draft's own key finds a row with no marker (a lost journal), of
-    // any account.
+    // The draft's own key finds a row with no marker (a lost journal), at
+    // account 0 only (DP1-02's).
     const LOST: &str = "registration/9/funding";
     src.set_drafts(W, vec![DraftKey::registration(9, 4)]);
+    src.set_rows(W, vec![row(2, 4, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, LOST), Some(WillBeSent));
     src.set_rows(
         W,
         vec![TrackedRow {
@@ -310,7 +313,7 @@ async fn funding_status_derives_each_row_from_the_rows_the_marker_and_the_drafts
         }],
     );
     t.refresh_funding(W).await;
-    assert_eq!(t.funding_status(W, LOST), Some(WillBeSent));
+    assert_eq!(t.funding_status(W, LOST), None);
     // A row of another funding type does not match the draft.
     src.set_rows(
         W,

@@ -43,15 +43,16 @@ use dpp::system_data_contracts::SystemDataContract;
 use dpp::version::PlatformVersion;
 use dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dpp::voting::vote_polls::contested_document_resource_vote_poll::required_vote_resolution_fund_to_join;
-use dw_vault::{GrantKind, GrantPurpose, SignerScope};
+use dw_vault::{GrantKind, GrantPurpose};
 use platform_wallet::{DpnsNameInfo, ManagedIdentity, PlatformWallet, WalletPersister};
 use serde::{Deserialize, Serialize};
 
 use super::contacts::Relation;
 use super::dashpay::{DashPay, stub};
 use super::errors::{IdentityError, NameError, PlatformError};
-use super::flows::{BudgetPurpose, GrantRequest};
+use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity::KeyPurpose;
+use super::lease::{CallQuote, Lease};
 use super::recovery::{MAIN_NAME_PREF, owned_names, row_owned};
 use super::signers::VaultIdentitySigner;
 use crate::session::Manager;
@@ -760,30 +761,57 @@ impl OwnNames {
     }
 }
 
-/// Refuses a grant that is not this wallet's `PlatformOp` or whose credit
-/// cap is below `needed` (`platform.grant_exceeded`; a zero-credit grant
-/// too), without consuming it: a refused registration leaves the grant for
-/// the next try.
+/// What pays for a name (E0-04 D2): the facade's `grant`, a vault grant
+/// id or a lease id, or a flow's own lease (DP1-02's registration).
+pub(crate) enum NameAuthority {
+    Grant(String),
+    Lease(Lease),
+}
+
+impl NameAuthority {
+    /// The facade's `grant`: this wallet's lease when it names one (an
+    /// unknown lease or another wallet's is `grant_invalid`), else a vault
+    /// grant id.
+    fn of(session: &NetworkSession, wallet_id: WalletId, grant: String) -> Result<Self, NameError> {
+        match session.lease_for(&wallet_id, &grant) {
+            Some(lease) => Ok(Self::Lease(lease.map_err(PlatformError::from)?)),
+            None => Ok(Self::Grant(grant)),
+        }
+    }
+}
+
+/// Refuses an authority that is not this wallet's `PlatformOp` (or a lease
+/// with Credits) or whose credit cap is below `needed`
+/// (`platform.grant_exceeded`; a zero-credit grant too), without consuming
+/// it: a refused registration leaves the grant for the next try.
 async fn check_credit_cap(
     session: &NetworkSession,
     wallet_id: WalletId,
-    grant: &str,
+    authority: &NameAuthority,
     needed: u64,
 ) -> Result<(), NameError> {
-    let vault = session.vault.clone();
-    let grant = grant.to_string();
-    let purpose = tokio::task::spawn_blocking(move || {
-        vault.grant_purpose(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))
-    })
-    .await
-    .map_err(|e| engine(e.into()))?
-    .map_err(PlatformError::from)?;
-    let GrantPurpose::PlatformOp {
-        max_credits: remaining,
-        ..
-    } = purpose
-    else {
-        return Err(PlatformError::GrantInvalid.into());
+    let remaining = match authority {
+        NameAuthority::Grant(grant) => {
+            let vault = session.vault.clone();
+            let grant = grant.clone();
+            let purpose = tokio::task::spawn_blocking(move || {
+                vault.grant_purpose(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))
+            })
+            .await
+            .map_err(|e| engine(e.into()))?
+            .map_err(PlatformError::from)?;
+            let GrantPurpose::PlatformOp {
+                max_credits: remaining,
+                ..
+            } = purpose
+            else {
+                return Err(PlatformError::GrantInvalid.into());
+            };
+            remaining
+        }
+        NameAuthority::Lease(lease) => lease
+            .available(BudgetPurpose::Credits)
+            .map_err(PlatformError::from)?,
     };
     if needed > remaining {
         return Err(PlatformError::GrantExceeded {
@@ -796,30 +824,23 @@ async fn check_credit_cap(
     Ok(())
 }
 
-/// A `PlatformIdentity` signer for the identity at `index`, from a
-/// `PlatformOp` grant [`check_credit_cap`] has passed. The hold, if any,
-/// must outlive the signer's use (dw-vault `platform_signer_held`).
-async fn identity_signer(
-    session: &NetworkSession,
+/// The lease the write runs under (E0-04 §2a.3): the authority's own, or a
+/// one-shot lease redeemed from a grant [`check_credit_cap`] has passed,
+/// which ends when the returned owning handle drops after the call. Either
+/// way the write holds a call permit, so a lock's drain waits for it, and
+/// the lease holds the key its signer uses.
+async fn call_lease(
+    session: &Arc<NetworkSession>,
     wallet_id: WalletId,
-    grant: String,
-    index: u32,
-) -> Result<(VaultIdentitySigner, Option<dw_vault::KeyHold>), NameError> {
-    let vault = session.vault.clone();
-    let (signer, hold) = tokio::task::spawn_blocking(move || {
-        let mut token = vault.redeem_grant(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))?;
-        let hold = vault.hold_key(std::slice::from_mut(&mut token))?;
-        let scope = SignerScope::PlatformIdentity;
-        let signer = match &hold {
-            Some(hold) => vault.platform_signer_held(&wallet_id.0, hold, &token, scope)?,
-            None => vault.platform_signer(&wallet_id.0, &token, scope)?,
-        };
-        Ok::<_, PlatformError>((signer, hold))
-    })
-    .await
-    .map_err(|e| engine(e.into()))??;
-    let signer = VaultIdentitySigner::new(signer, [index]).map_err(engine)?;
-    Ok((signer, hold))
+    authority: NameAuthority,
+) -> Result<Lease, NameError> {
+    match authority {
+        NameAuthority::Lease(lease) => Ok(lease),
+        NameAuthority::Grant(grant) => Ok(session
+            .begin_lease(wallet_id, FlowKind::NameRegistration, &[grant])
+            .await
+            .map_err(PlatformError::from)?),
+    }
 }
 
 /// One identity's locks.
@@ -986,17 +1007,41 @@ impl DashPay {
                 check,
                 ours: false,
             };
-            Self::register(&net, &session, &wallet, ask, grant).await
+            let authority = NameAuthority::of(&session, wallet_id, grant)?;
+            Self::register(&net, &session, &wallet, ask, authority).await
         })
         .await
     }
 
+    /// `register_name` under a lease the caller holds (DP1-02's
+    /// registration flow), on the runtime the caller already runs on.
+    pub async fn register_name_for_flow(
+        session: &Arc<NetworkSession>,
+        wallet_id: WalletId,
+        identity: Identifier,
+        label: &str,
+        lease: Lease,
+    ) -> Result<NameOutcome, NameError> {
+        let check = valid_label(label)?;
+        let manager = session.manager().map_err(engine)?;
+        let wallet = platform_wallet(&manager, wallet_id).await?;
+        let net = SdkNet(manager.sdk_arc());
+        let ask = Registration {
+            wallet_id,
+            identity,
+            label: label.to_owned(),
+            check,
+            ours: false,
+        };
+        Self::register(&net, session, &wallet, ask, NameAuthority::Lease(lease)).await
+    }
+
     async fn register(
         net: &impl NameNet,
-        session: &NetworkSession,
+        session: &Arc<NetworkSession>,
         wallet: &PlatformWallet,
         mut ask: Registration,
-        grant: String,
+        authority: NameAuthority,
     ) -> Result<NameOutcome, NameError> {
         let locks = identity_locks(ask.wallet_id, ask.identity);
         let _serial = locks.serial.lock().await;
@@ -1035,7 +1080,7 @@ impl DashPay {
             }
             .into());
         }
-        check_credit_cap(session, ask.wallet_id, &grant, cost.total).await?;
+        check_credit_cap(session, ask.wallet_id, &authority, cost.total).await?;
 
         // Before the grant is redeemed: a failure here spends nothing.
         {
@@ -1043,12 +1088,26 @@ impl DashPay {
             Self::update_pending(session, &ask, true).await?;
         }
         ask.ours = true;
-        let (signer, hold) = identity_signer(session, ask.wallet_id, grant, index).await?;
+        // The pending label is the write's durable marker: whatever the
+        // call's outcome, the next registration or read asks Platform.
+        let lease = call_lease(session, ask.wallet_id, authority).await?;
+        let quote = CallQuote {
+            purpose: BudgetPurpose::Credits,
+            amount: cost.total,
+        };
+        let permit = lease
+            .call_permit("register_name", Some(quote))
+            .map_err(PlatformError::from)?;
+        let signer = permit
+            .identity_signer(&[index])
+            .map_err(PlatformError::from)?;
         // The fund priced above caps what the contest may take.
         let written = net
             .submit(wallet, ask.identity, &ask.label, cost.fund, &signer)
             .await;
-        drop((signer, hold));
+        drop(signer);
+        permit.finish(written.is_ok());
+        drop(lease);
         let outcome = match written {
             Ok(()) if ask.check.contested => NameOutcome::ContestStarted {
                 ends_at: net.contest_end(&ask.check.normalized).await,

@@ -837,17 +837,42 @@ impl Lease {
         })
     }
 
+    /// What the purpose's current generation still allows: the check a
+    /// caller makes before the call that charges it (a name's credit cap
+    /// before its pending label is written). Refused like a signer while
+    /// the lease does not sign.
+    pub fn available(&self, purpose: BudgetPurpose) -> Result<u64, LeaseError> {
+        self.with_entry(purpose, |e| {
+            e.budget_mut(purpose)
+                .map(|b| b.available())
+                .ok_or(LeaseError::NeedsGrant(purpose))
+        })
+    }
+
     /// Identity-key signer for the identities at `identity_indices`
     /// (`PlatformIdentity`); refused once the Credits budget is 0.
     pub fn identity_signer(
         &self,
         identity_indices: &[u32],
     ) -> Result<VaultIdentitySigner, LeaseError> {
-        let signer = self.signer(
-            BudgetPurpose::Credits,
-            |s| s.identity.as_ref(),
-            |e| e.credits.available() > 0,
-        )?;
+        self.scoped_identity_signer(identity_indices, |e| e.credits.available() > 0)
+    }
+
+    /// The identity signer a call's permit hands out: the permit's J step
+    /// already charged the call's quote, so the budget may be at 0.
+    pub(crate) fn call_identity_signer(
+        &self,
+        identity_indices: &[u32],
+    ) -> Result<VaultIdentitySigner, LeaseError> {
+        self.scoped_identity_signer(identity_indices, |e| e.credits.granted())
+    }
+
+    fn scoped_identity_signer(
+        &self,
+        identity_indices: &[u32],
+        budget: impl FnOnce(&Entry) -> bool,
+    ) -> Result<VaultIdentitySigner, LeaseError> {
+        let signer = self.signer(BudgetPurpose::Credits, |s| s.identity.as_ref(), budget)?;
         VaultIdentitySigner::new(signer, identity_indices.iter().copied())
             .map_err(|_| LeaseError::Vault("identity signer scope"))
     }

@@ -516,14 +516,16 @@ impl CallPermit {
         &self.lease
     }
 
-    /// The lease's identity signer, counting into this permit.
+    /// The lease's identity signer, counting into this permit. Issued while
+    /// the lease signs, even with the Credits budget at 0: the permit's J
+    /// step charged the call's quote already.
     pub fn identity_signer(
         &self,
         identity_indices: &[u32],
     ) -> Result<VaultIdentitySigner, LeaseError> {
         Ok(self
             .lease
-            .identity_signer(identity_indices)?
+            .call_identity_signer(identity_indices)?
             .counting(self.signatures()))
     }
 
