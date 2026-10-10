@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
 use crate::crypter::{self, MasterKeyRecord};
@@ -180,7 +180,7 @@ pub(crate) fn der_secret(der: &[u8]) -> Option<Zeroizing<[u8; 32]>> {
     let os = b.take(oslen)?;
     let mut out = Zeroizing::new([0u8; 32]);
     out[32 - oslen..].copy_from_slice(os);
-    SecretKey::from_slice(&out[..]).ok()?;
+    SecretKey::from_secret_bytes(*out).ok()?;
     Some(out)
 }
 
@@ -405,8 +405,8 @@ impl SqliteWallet {
 }
 
 fn pubkey_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
-    let sk = SecretKey::from_slice(secret).ok()?;
-    Some(PublicKey::from_secret_key(&Secp256k1::signing_only(), &sk).serialize())
+    let sk = SecretKey::from_secret_bytes(*secret).ok()?;
+    Some(PublicKey::from_secret_key(&sk).serialize())
 }
 
 /// `file://` URI of `path` for SQLite (review L5): the absolute,

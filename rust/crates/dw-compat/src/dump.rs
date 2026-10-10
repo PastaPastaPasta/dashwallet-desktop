@@ -482,8 +482,7 @@ pub fn hd_section_from_seed(
     network: Network,
 ) -> Result<HdSection, key_wallet::bip32::Error> {
     let master = key_wallet::ExtendedPrivKey::new_master(network, seed)?;
-    let secp = dashcore::secp256k1::Secp256k1::signing_only();
-    let xpub = key_wallet::ExtendedPubKey::from_priv(&secp, &master);
+    let xpub = key_wallet::ExtendedPubKey::from_priv(&master);
     let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
     Ok(HdSection {
         mnemonic: Zeroizing::new(mnemonic.to_owned()),

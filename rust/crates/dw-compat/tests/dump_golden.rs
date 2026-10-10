@@ -3,7 +3,7 @@
 //! other RPCs) what each file must contain.
 
 use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use dw_compat::bip39core;
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole, ScriptEntry};
 use dw_uri::Network;
@@ -26,8 +26,7 @@ fn read(file: &str) -> String {
 }
 
 fn p2pkh_of(secret: &keyio::Secret) -> [u8; 20] {
-    let secp = Secp256k1::signing_only();
-    let pk = PublicKey::from_secret_key(&secp, &SecretKey::from_byte_array(&secret.key).unwrap());
+    let pk = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(*secret.key).unwrap());
     let ser = if secret.compressed {
         pk.serialize().to_vec()
     } else {
