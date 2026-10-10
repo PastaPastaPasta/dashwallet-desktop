@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::secp256k1::Secp256k1;
 use dw_appdb::BookPurpose;
 use dw_compat::descriptor::{ImportRequest, PkhDescriptor, import_descriptors_json};
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole};
@@ -351,7 +350,7 @@ impl Drop for MasterKey {
 
 fn master_pubkey(seed: &[u8; 64]) -> Option<[u8; 33]> {
     let master = MasterKey::new(dashcore::Network::Mainnet, seed).ok()?;
-    Some(master.private_key.public_key(&Secp256k1::new()).serialize())
+    Some(master.private_key.public_key().serialize())
 }
 
 /// The lookahead of a Core import: Core's 1000 (QT-105) or more when the
@@ -505,7 +504,7 @@ impl NetworkSession {
         let expected = ExtendedPrivKey::from_str(&hd.xprv)
             .map_err(|e| CompatFailure::Corrupt(format!("extended private masterkey: {e}")))?
             .private_key
-            .public_key(&Secp256k1::new())
+            .public_key()
             .serialize();
         if let (Some(seed), Some(_)) = (&seed, &phrase)
             && master_pubkey(seed) != Some(expected)
@@ -699,9 +698,7 @@ impl NetworkSession {
                         Zeroizing::new(pass.as_bytes().to_vec()),
                     )),
                     seed: None,
-                    master_pubkey: Some(
-                        master.private_key.public_key(&Secp256k1::new()).serialize(),
-                    ),
+                    master_pubkey: Some(master.private_key.public_key().serialize()),
                     used_per_chain: listed.next_index,
                     labels: Vec::new(),
                 }
@@ -912,18 +909,17 @@ fn dump_of(
     network: dashcore::Network,
     warnings: &mut Vec<ExportWarning>,
 ) -> Result<DumpFile, EngineError> {
-    let secp = Secp256k1::new();
     let mut keys = Vec::with_capacity(addresses.len());
     let (mut external, mut internal) = (0u32, 0u32);
     for a in addresses {
         let path = DerivationPath::from_str(&a.derivation_path)
             .map_err(|e| EngineError::Internal(format!("path {}: {e}", a.derivation_path)))?;
         let mut child = master
-            .derive_priv(&secp, &path)
+            .derive_priv(&path)
             .map_err(|e| EngineError::Internal(format!("derive {path}: {e}")))?;
         let wif = keyio::encode_secret(
             &keyio::Secret {
-                key: Zeroizing::new(child.private_key.secret_bytes()),
+                key: Zeroizing::new(child.private_key.to_secret_bytes()),
                 compressed: true,
             },
             network,
@@ -1043,9 +1039,9 @@ mod tests {
     #[test]
     fn master_key_guard_erases_the_private_key() {
         let mut m = MasterKey::new(dashcore::Network::Testnet, &[7; 64]).unwrap();
-        let before = m.private_key.secret_bytes();
+        let before = m.private_key.to_secret_bytes();
         m.erase();
-        assert_ne!(m.private_key.secret_bytes(), before);
+        assert_ne!(m.private_key.to_secret_bytes(), before);
     }
 
     #[test]

@@ -345,10 +345,7 @@ impl NetworkSession {
                 // Kept for PSBT derivation records (watch-only use, no key needed).
                 let fingerprint =
                     key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
-                        .map(|m| {
-                            m.fingerprint(&dashcore::secp256k1::Secp256k1::signing_only())
-                                .to_string()
-                        })
+                        .map(|m| m.fingerprint().to_string())
                         .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
                 Ok(Stored {
                     wallet_id: WalletId(id),

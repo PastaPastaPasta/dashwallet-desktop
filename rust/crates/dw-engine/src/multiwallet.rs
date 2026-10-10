@@ -547,11 +547,10 @@ mod tests {
 
     /// The public key at `path` of a fixed test seed, on testnet.
     fn tpub_at(path: &str) -> String {
-        let secp = dashcore::secp256k1::Secp256k1::new();
         let master = ExtendedPrivKey::new_master(dashcore::Network::Testnet, &[7u8; 64]).unwrap();
         let path = DerivationPath::from_str(path).unwrap();
-        let xprv = master.derive_priv(&secp, &path).unwrap();
-        ExtendedPubKey::from_priv(&secp, &xprv).to_string()
+        let xprv = master.derive_priv(&path).unwrap();
+        ExtendedPubKey::from_priv(&xprv).to_string()
     }
 
     #[test]
