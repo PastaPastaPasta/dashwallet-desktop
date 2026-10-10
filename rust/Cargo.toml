@@ -74,6 +74,19 @@ hex = "0.4"
 zeroize = "1"
 tempfile = "3"
 
+# ---- dash-spv fix (dashpay/rust-dashcore#1150) on platform's rust-dashcore pin (DEC-09) ----
+# PastaPastaPasta/rust-dashcore-dashpay fix/spv-first-quorum-after-start-on-1149@d3d50520a
+# = 8fe0a381 + the #1150 commits. Keyed by URL, so it also replaces platform's own
+# rust-dashcore dependencies. Drop it when platform re-pins to a rust-dashcore with #1150.
+[patch."https://github.com/dashpay/rust-dashcore"]
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+dash-network = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+dash-network-seeds = { git = "https://github.com/PastaPastaPasta/rust-dashcore-dashpay", rev = "d3d50520a26f465a43851362fdcb12e0776ade14" }
+
 [profile.dev]
 debug = "line-tables-only"
 
