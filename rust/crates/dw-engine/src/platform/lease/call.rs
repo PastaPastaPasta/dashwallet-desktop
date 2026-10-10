@@ -331,10 +331,7 @@ pub struct CallPermit {
     /// An earlier marker of the call's step exists (§2a.3).
     prior_marker: bool,
     /// The call step whose marker it holds ([`Lease::call_permit_step`]).
-    step: Option<String>,
-    /// The step is a funding step: its end refreshes the wallet's tracked
-    /// rows (§2a.5).
-    funding: bool,
+    step: Option<CallStep>,
     /// Handed back to the caller: the library call may have started.
     started: bool,
     deadline: Instant,
@@ -342,16 +339,19 @@ pub struct CallPermit {
 }
 
 /// A permit's J step: the call's id, its charge and its deadline.
-type Took = (u64, Option<(BudgetPurpose, Charge)>, Instant);
+struct Took {
+    id: u64,
+    charge: Option<(BudgetPurpose, Charge)>,
+    deadline: Instant,
+}
 
-/// What a call step's J step decided.
-type Taken = (
-    u64,
-    Option<(BudgetPurpose, Charge)>,
-    Instant,
-    bool,
-    Option<tokio::task::JoinHandle<bool>>,
-);
+/// What a call step's J step decided: the permit's [`Took`], whether an
+/// earlier marker of the step exists, and the marker's write to await.
+struct Taken {
+    took: Took,
+    prior: bool,
+    write: Option<tokio::task::JoinHandle<bool>>,
+}
 
 impl std::fmt::Debug for CallPermit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -371,19 +371,10 @@ impl Lease {
         label: impl Into<String>,
         quote: Option<CallQuote>,
     ) -> Result<CallPermit, LeaseError> {
-        self.call_permit_with(label.into(), quote, false)
-    }
-
-    pub(crate) fn call_permit_with(
-        &self,
-        label: String,
-        quote: Option<CallQuote>,
-        prior_marker: bool,
-    ) -> Result<CallPermit, LeaseError> {
-        let (id, charge, deadline) = self
+        let took = self
             .table
-            .with_j(|i, fx| self.take_call(i, fx, label, quote))?;
-        Ok(self.permit(id, charge, deadline, prior_marker, None))
+            .with_j(|i, fx| self.take_call(i, fx, label.into(), quote))?;
+        Ok(self.permit(took, false, None))
     }
 
     /// Takes a call permit for a funding call or a resumable step's call
@@ -433,9 +424,9 @@ impl Lease {
         let table = &self.table;
         let key = (self.wallet, step.id().to_owned());
         let mut retry = true;
-        let (id, charge, deadline, prior, write) = loop {
+        let Taken { took, prior, write } = loop {
             let backend = table.journal.get();
-            let taken = table.with_j(|i, fx| -> Result<Result<Taken, CallGate>, LeaseError> {
+            let attempt = table.with_j(|i, fx| -> Result<Result<Taken, CallGate>, LeaseError> {
                 if let Some(gate) = table.call_step_gate(i, &key, backend.is_some(), retry)? {
                     return Ok(Err(gate));
                 }
@@ -446,9 +437,9 @@ impl Lease {
                     self.check_funding(i, quote, step.id())?;
                 }
                 let backend = backend.expect("checked by the gate");
-                let (id, charge, deadline) = self.take_call(i, fx, label.clone(), quote)?;
+                let took = self.take_call(i, fx, label.clone(), quote)?;
                 if let Some(fence) = fence.take() {
-                    match (step.funding(), i.calls.get_mut(&id)) {
+                    match (step.funding(), i.calls.get_mut(&took.id)) {
                         (Some(key), Some(run)) => {
                             run.fence = Some(FundingFence {
                                 step: step.id().to_owned(),
@@ -465,17 +456,11 @@ impl Lease {
                 if let Some(fkey) = step.funding() {
                     super::mode_b::note_marked(i, self.wallet, step.id(), fkey);
                     // `funds_committed` from this J step on (§16.5).
-                    if let Some(e) = i.leases.get_mut(&self.id)
-                        && !e.funding_steps.iter().any(|s| s == step.id())
-                    {
-                        e.funding_steps.push(step.id().to_owned());
-                    }
-                    fx.changed(self.id);
-                    super::mode_b::rederive(table, i, fx, self.wallet);
+                    self.bind_funding_step_in(i, fx, step.id());
                 }
-                Ok(Ok((id, charge, deadline, prior, write)))
+                Ok(Ok(Taken { took, prior, write }))
             })?;
-            match taken {
+            match attempt {
                 Ok(taken) => break taken,
                 Err(CallGate::Wait) => {
                     table
@@ -488,12 +473,10 @@ impl Lease {
                 }
             }
         };
-        let mut permit = self.permit(id, charge, deadline, prior, Some(key.1));
-        permit.signatures = signatures;
-        permit.funding = step.funding().is_some();
         // Before the write returns the permit is not handed out: dropped
         // here, it ends as a call that never started.
-        permit.started = false;
+        let mut permit = self.permit(took, prior, Some(step));
+        permit.signatures = signatures;
         #[cfg(test)]
         if table.inspect(|i| i.mutation) == Some(Mutation::CallBeforeMarker) {
             // The mutation: the call may start before its marker is durable.
@@ -603,28 +586,26 @@ impl Lease {
             },
         );
         fx.notify();
-        Ok((i.next_call, charge, deadline))
+        Ok(Took {
+            id: i.next_call,
+            charge,
+            deadline,
+        })
     }
 
-    fn permit(
-        &self,
-        id: u64,
-        charge: Option<(BudgetPurpose, Charge)>,
-        deadline: Instant,
-        prior_marker: bool,
-        step: Option<String>,
-    ) -> CallPermit {
+    /// The permit of `took`. A call step's permit is not handed out before
+    /// its marker's write returned: it starts unstarted.
+    fn permit(&self, took: Took, prior_marker: bool, step: Option<CallStep>) -> CallPermit {
         CallPermit {
             table: Arc::clone(&self.table),
             lease: self.clone(),
-            id,
-            charge,
+            id: took.id,
+            charge: took.charge,
             signatures: Arc::default(),
             prior_marker,
+            started: step.is_none(),
             step,
-            funding: false,
-            started: true,
-            deadline,
+            deadline: took.deadline,
             done: false,
         }
     }
@@ -682,6 +663,12 @@ impl CallPermit {
         self.end(ok)
     }
 
+    /// The call's step is a funding step: its end refreshes the wallet's
+    /// tracked rows (§2a.5).
+    fn funding(&self) -> bool {
+        self.step.as_ref().is_some_and(|s| s.funding().is_some())
+    }
+
     fn end(&mut self, ok: bool) -> FlowOutcome {
         // Closed before it is read: a signer used after this signs nothing
         // (`SignatureCount`).
@@ -698,6 +685,7 @@ impl CallPermit {
         let (id, lease, wallet) = (self.id, self.lease.id, self.lease.wallet);
         let charge = self.charge.take();
         let step = self.step.clone();
+        let funding = self.funding();
         // Read outside J (H1).
         let backend = step.as_ref().and_then(|_| self.table.journal.get());
         let table = Arc::clone(&self.table);
@@ -727,19 +715,19 @@ impl CallPermit {
                 fx.changed(lease);
             }
             fx.notify();
-            let resolve = step.as_deref().is_some_and(|s| {
-                table.call_step_end(i, fx, backend, wallet, (s, self.funding), outcome)
-            });
+            let resolve = step
+                .as_ref()
+                .is_some_and(|s| table.call_step_end(i, fx, backend, wallet, s, outcome));
             if step.is_some() {
                 // The call's end: `Sent` on Ok (§2a.5).
                 super::mode_b::rederive(&table, i, fx, wallet);
             }
             resolve
         });
-        if resolve && let Some(step) = &self.step {
-            table.resolve_call_not_sent(wallet, step);
+        if resolve && let Some(step) = &step {
+            table.resolve_call_not_sent(wallet, step.id());
         }
-        if self.funding {
+        if funding {
             // The call may have left a tracked row.
             table.request_refresh(wallet);
         }

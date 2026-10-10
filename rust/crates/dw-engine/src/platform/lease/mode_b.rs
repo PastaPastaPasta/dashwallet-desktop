@@ -112,10 +112,8 @@ use super::resume::{Resumed, Resumer};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, Lease, LeaseError};
 use crate::platform::errors::PlatformError;
-use crate::platform::flows::{
-    DispatchResolution, DispatchResolved, DispatchState, is_funding_step,
-};
-use crate::{CoinFence, EngineEvent, NetworkSession, WalletId};
+use crate::platform::flows::{DispatchResolution, DispatchState, is_funding_step};
+use crate::{CoinFence, NetworkSession, WalletId};
 
 /// A tracked row's status (platform-wallet `AssetLockStatus`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,14 +667,7 @@ pub(super) fn rederive(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, wallet: 
             _ => None,
         };
         if let (Some(_), Some(resolution)) = (before, resolution) {
-            fx.emit(EngineEvent::DispatchResolved {
-                network: t.network.clone(),
-                resolved: DispatchResolved {
-                    wallet_id: wallet.to_string(),
-                    artifact: step.clone(),
-                    resolution,
-                },
-            });
+            fx.emit(t.resolved_event(&wallet, &step, resolution));
         }
         moved.push(step);
     }
@@ -779,10 +770,9 @@ impl LeaseTable {
         })
     }
 
-    /// Whether Repair may resolve funding `step` with a self-spend now
-    /// ([`stuck_funding`]).
-    /// Returns the step's tracked `Built` and `Broadcast` rows
-    /// ([`pending_step_rows`]).
+    /// The tracked `Built` and `Broadcast` rows of funding `step`
+    /// ([`pending_step_rows`]) when Repair may resolve it with a self-spend
+    /// now, else the refusal ([`stuck_funding`]).
     pub(crate) fn check_stuck_funding(
         &self,
         wallet: WalletId,

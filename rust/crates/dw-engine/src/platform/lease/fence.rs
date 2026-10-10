@@ -230,6 +230,13 @@ pub(crate) enum Mark {
     Ambiguous,
 }
 
+impl Mark {
+    /// Its write is running.
+    fn is_committing(self) -> bool {
+        matches!(self, Self::Committing { .. })
+    }
+}
+
 /// A Mode B call step's calls under its marker (§2a.3).
 #[derive(Debug, Default)]
 struct CallStepRun {
@@ -335,6 +342,35 @@ fn note_write(i: &mut Inner, fx: &mut Effects, ok: bool) {
     } else if std::mem::take(&mut i.fence.write_failed) {
         fx.resume();
     }
+}
+
+/// A journal write's end, in its J step: one write fewer in flight, and
+/// its outcome ([`note_write`]).
+fn end_write(i: &mut Inner, fx: &mut Effects, ok: bool) {
+    i.fence.writes -= 1;
+    note_write(i, fx, ok);
+}
+
+/// A journal write, a panic in it taken as its failure.
+fn guarded<T>(write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(write))
+        .unwrap_or_else(|_| Err("the journal write panicked".into()))
+}
+
+/// Appends the `NotSent` row of `id` (inline on a blocking thread; outside
+/// J). `false` when there is no journal or the write failed or panicked,
+/// which `what` names in the log.
+fn write_not_sent(
+    backend: Option<&Arc<dyn JournalBackend>>,
+    wallet: &WalletId,
+    id: &ArtifactId,
+    what: &str,
+) -> bool {
+    backend.is_some_and(|backend| {
+        guarded(|| blocking(|| backend.resolve(&wallet.0, &id.0, Resolution::NotSent)))
+            .inspect_err(|e| tracing::warn!(artifact = %id, error = %e, "{what} failed"))
+            .is_ok()
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -787,7 +823,7 @@ impl FenceState {
         self.evidence.get(&(*wallet, *id)).copied()
     }
 
-    #[cfg(test)]
+    /// `step`'s marker of `id` in memory.
     pub(crate) fn mark(&self, wallet: &WalletId, step: &str, id: &ArtifactId) -> Option<Mark> {
         self.steps
             .get(&(*wallet, step.to_owned()))
@@ -807,11 +843,7 @@ impl FenceState {
         if self.sent.contains(&id) {
             return CallStepStatus::Sent;
         }
-        match self
-            .steps
-            .get(&(*wallet, step.to_owned()))
-            .and_then(|m| m.get(&id))
-        {
+        match self.mark(wallet, step, &id) {
             Some(Mark::Durable) => CallStepStatus::Marked { durable: true },
             Some(_) => CallStepStatus::Marked { durable: false },
             None if self.superseded.contains_key(&(*wallet, id)) => CallStepStatus::NotSent,
@@ -861,10 +893,8 @@ impl FenceState {
 
     /// Whether the step's own marker stands in memory (any mark).
     fn call_marked(&self, wallet: &WalletId, step: &str) -> bool {
-        let id = ArtifactId::of_step(wallet, step);
-        self.steps
-            .get(&(*wallet, step.to_owned()))
-            .is_some_and(|m| m.contains_key(&id))
+        self.mark(wallet, step, &ArtifactId::of_step(wallet, step))
+            .is_some()
     }
 
     /// The funding keys a write of `id`'s `steps` carries: those of its
@@ -884,19 +914,17 @@ impl FenceState {
             .collect()
     }
 
-    /// A durable `NotSent` row superseded `id`'s markers of `wallet`: they
-    /// leave `steps` for the stash a later `Sent` row restores them from,
-    /// each as its own write left it.
     /// Whether a call of `step` would carry another funding key (or none)
     /// than the marker of the step that exists: the journal keeps the
     /// key first recorded under a marker (§2a.3).
     pub(super) fn call_key_differs(&self, wallet: WalletId, step: &CallStep) -> bool {
         let key = (wallet, step.id().to_owned());
-        let id = ArtifactId::of_step(&wallet, step.id());
-        let marked = self.steps.get(&key).is_some_and(|m| m.contains_key(&id));
-        marked && self.funding.get(&key).copied() != step.funding()
+        self.call_marked(&wallet, step.id()) && self.funding.get(&key).copied() != step.funding()
     }
 
+    /// A durable `NotSent` row superseded `id`'s markers of `wallet`: they
+    /// leave `steps` for the stash a later `Sent` row restores them from,
+    /// each as its own write left it.
     fn supersede(&mut self, wallet: WalletId, id: ArtifactId) {
         let mut gone = Vec::new();
         for ((w, s), m) in self.steps.iter_mut() {
@@ -944,6 +972,26 @@ impl FenceState {
     }
 }
 
+impl LeaseTable {
+    /// The `DispatchResolved` event of `wallet`'s `artifact` (a txid, a
+    /// state-transition hash or a funding step id).
+    pub(super) fn resolved_event(
+        &self,
+        wallet: &WalletId,
+        artifact: impl ToString,
+        resolution: DispatchResolution,
+    ) -> EngineEvent {
+        EngineEvent::DispatchResolved {
+            network: self.network.clone(),
+            resolved: DispatchResolved {
+                wallet_id: wallet.to_string(),
+                artifact: artifact.to_string(),
+                resolution,
+            },
+        }
+    }
+}
+
 /// Emits `DispatchResolved` for `id`.
 fn resolved(
     t: &LeaseTable,
@@ -952,14 +1000,7 @@ fn resolved(
     id: &ArtifactId,
     r: DispatchResolution,
 ) {
-    fx.emit(EngineEvent::DispatchResolved {
-        network: t.network.clone(),
-        resolved: DispatchResolved {
-            wallet_id: wallet.to_string(),
-            artifact: id.to_string(),
-            resolution: r,
-        },
-    });
+    fx.emit(t.resolved_event(wallet, id, r));
 }
 
 /// A row-less map key: the wallet and the artifact (review O-1).
@@ -1073,17 +1114,7 @@ fn resolved_once(
     id: &ArtifactId,
     r: DispatchResolution,
 ) {
-    let event = EngineEvent::DispatchResolved {
-        network: t.network.clone(),
-        resolved: DispatchResolved {
-            wallet_id: wallet.to_string(),
-            artifact: id.to_string(),
-            resolution: r,
-        },
-    };
-    if !fx.emitted(&event) {
-        fx.emit(event);
-    }
+    fx.emit_once(t.resolved_event(wallet, id, r));
 }
 
 /// The row-less artifact `id` settles definitely unsent: refund, tombstone
@@ -1312,10 +1343,7 @@ fn call_settles_after_write(
     id: ArtifactId,
 ) -> bool {
     let key = (wallet, step.to_owned());
-    let writing = matches!(
-        f.steps.get(&key).and_then(|m| m.get(&id)),
-        Some(Mark::Committing { .. })
-    );
+    let writing = f.mark(&wallet, step, &id).is_some_and(Mark::is_committing);
     match f.call_steps.get_mut(&key) {
         Some(run) if run.after_write && !writing && run.running == 0 && !run.possibly_out => {
             run.after_write = false;
@@ -1693,10 +1721,8 @@ impl LeaseTable {
             .spawn_blocking(move || {
                 // Its J step below always runs, even after a panicking
                 // write: a removal's erase waits for it (`erase_wallet_rows`).
-                let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    backend.register(&wallet.0, &txid.0, &lease, &process, &payload)
-                }))
-                .unwrap_or_else(|_| Err("the journal write panicked".into()));
+                let written =
+                    guarded(|| backend.register(&wallet.0, &txid.0, &lease, &process, &payload));
                 table.with_j(|i, fx| {
                     note_write(i, fx, written.is_ok());
                     let key = (wallet, txid);
@@ -2062,9 +2088,8 @@ impl LeaseTable {
             }))
             .unwrap_or(false);
             let (settling, call) = table.with_j(|i, fx| {
-                i.fence.writes -= 1;
                 fx.notify();
-                note_write(i, fx, ok);
+                end_write(i, fx, ok);
                 // A `Sent` row an earlier write failed is retried once the
                 // journal takes a write again (review r2 M2).
                 if ok && i.fence.journal == JournalState::Ready {
@@ -2698,22 +2723,12 @@ impl LeaseTable {
         if !resolving {
             return false;
         }
-        let written = write
-            && backend.as_ref().is_some_and(|backend| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                blocking(|| backend.resolve(&wallet.0, &id.0, Resolution::NotSent))
-            }))
-            .unwrap_or_else(|_| Err("the journal write panicked".into()))
-            .inspect_err(
-                |e| tracing::warn!(artifact = %id, error = %e, "resolving a step marker failed"),
-            )
-            .is_ok()
-            });
+        let written =
+            write && write_not_sent(backend.as_ref(), &wallet, &id, "resolving a step marker");
         self.with_j(|i, fx| {
             fx.notify();
             if write {
-                i.fence.writes -= 1;
-                note_write(i, fx, written);
+                end_write(i, fx, written);
             }
             let key = row_key(i, wallet, id);
             if keep_sent(i, key) {
@@ -2789,7 +2804,7 @@ impl LeaseTable {
     ) -> (bool, Option<tokio::task::JoinHandle<bool>>) {
         let id = ArtifactId::of_step(&wallet, step.id());
         let key = (wallet, step.id().to_owned());
-        let mark = i.fence.steps.get(&key).and_then(|m| m.get(&id)).copied();
+        let mark = i.fence.mark(&wallet, step.id(), &id);
         let prior = mark.is_some();
         // A new marker records the call's key; under an existing one the
         // key is the same (refused otherwise, `call_key_differs`).
@@ -2830,32 +2845,25 @@ impl LeaseTable {
         fx: &mut Effects,
         backend: Option<Arc<dyn JournalBackend>>,
         wallet: WalletId,
-        (step, funding): (&str, bool),
+        step: &CallStep,
         outcome: FlowOutcome,
     ) -> bool {
-        let id = ArtifactId::of_step(&wallet, step);
-        let key = (wallet, step.to_owned());
+        let id = ArtifactId::of_step(&wallet, step.id());
+        let key = (wallet, step.id().to_owned());
         if outcome == FlowOutcome::Sent {
             // A resumable step's call that returned Ok holds the proved
             // execution (H12, BL-76): `Sent`, announced under the step's
             // id, as the facade reads it. A funding step's status is
             // derived, and `rederive` announces it.
-            if i.fence.sent.insert(id) && !funding {
-                fx.emit(EngineEvent::DispatchResolved {
-                    network: self.network.clone(),
-                    resolved: DispatchResolved {
-                        wallet_id: wallet.to_string(),
-                        artifact: step.to_owned(),
-                        resolution: DispatchResolution::Sent,
-                    },
-                });
+            if i.fence.sent.insert(id) && step.funding().is_none() {
+                fx.emit(self.resolved_event(&wallet, step.id(), DispatchResolution::Sent));
             }
             self.begin_sent_row(i, backend, wallet, id);
         }
-        let writing = matches!(
-            i.fence.steps.get(&key).and_then(|m| m.get(&id)),
-            Some(Mark::Committing { .. })
-        );
+        let writing = i
+            .fence
+            .mark(&wallet, step.id(), &id)
+            .is_some_and(Mark::is_committing);
         let Some(run) = i.fence.call_steps.get_mut(&key) else {
             return false;
         };
@@ -2909,21 +2917,16 @@ impl LeaseTable {
             return false;
         }
         let written = write
-            && backend.as_ref().is_some_and(|backend| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    blocking(|| backend.resolve(&wallet.0, &id.0, Resolution::NotSent))
-                }))
-                .unwrap_or_else(|_| Err("the journal write panicked".into()))
-                .inspect_err(
-                    |e| tracing::warn!(step, error = %e, "resolving a call step's marker failed"),
-                )
-                .is_ok()
-            });
+            && write_not_sent(
+                backend.as_ref(),
+                &wallet,
+                &id,
+                "resolving a call step's marker",
+            );
         self.with_j(|i, fx| {
             fx.notify();
             if write {
-                i.fence.writes -= 1;
-                note_write(i, fx, written);
+                end_write(i, fx, written);
             }
             let Some(run) = i.fence.call_steps.get_mut(&key) else {
                 return false;
@@ -2987,16 +2990,14 @@ impl LeaseTable {
         self.rt
             .spawn_blocking(move || {
                 let id = ArtifactId::of_step(&wallet, &step);
-                let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    backend.insert_self_spend(&wallet.0, &step, &id.0, &txid)
-                }))
-                .unwrap_or_else(|_| Err("the journal write panicked".into()))
-                .inspect_err(|e| tracing::warn!(step, error = %e, "recording a self-spend failed"))
-                .ok();
+                let written = guarded(|| backend.insert_self_spend(&wallet.0, &step, &id.0, &txid))
+                    .inspect_err(
+                        |e| tracing::warn!(step, error = %e, "recording a self-spend failed"),
+                    )
+                    .ok();
                 table.with_j(|i, fx| {
                     fx.notify();
-                    i.fence.writes -= 1;
-                    note_write(i, fx, written.is_some());
+                    end_write(i, fx, written.is_some());
                     match written {
                         None => Err(R::JournalUnavailable),
                         Some(false) => Err(R::NoMarker),
@@ -3237,9 +3238,8 @@ impl LeaseTable {
                 tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed");
             }
             table.with_j(|i, fx| {
-                i.fence.writes -= 1;
                 fx.notify();
-                note_write(i, fx, erased.is_ok());
+                end_write(i, fx, erased.is_ok());
                 if let Ok(erased) = erased {
                     let forget = || forget_erased(i, wallet, dispatch, erased);
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(forget));

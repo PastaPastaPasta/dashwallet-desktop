@@ -264,9 +264,11 @@ impl Effects {
         self.events.push(e);
     }
 
-    /// Whether this J step already emits `e`.
-    pub(crate) fn emitted(&self, e: &EngineEvent) -> bool {
-        self.events.contains(e)
+    /// [`Self::emit`], unless this J step already emits `e`.
+    pub(crate) fn emit_once(&mut self, e: EngineEvent) {
+        if !self.events.contains(&e) {
+            self.events.push(e);
+        }
     }
 
     /// The lease's view changed: `LeaseChanged` after J.
@@ -910,15 +912,21 @@ impl Lease {
     /// row matching the draft's own key with no marker sets it.
     pub fn bind_funding_step(&self, step: impl Into<String>) {
         let step = step.into();
-        self.table.with_j(|i, fx| {
-            if let Some(e) = i.leases.get_mut(&self.id) {
-                if !e.funding_steps.contains(&step) {
-                    e.funding_steps.push(step);
-                }
-                fx.changed(self.id);
+        self.table
+            .with_j(|i, fx| self.bind_funding_step_in(i, fx, &step));
+    }
+
+    /// [`Self::bind_funding_step`]'s J step, which a funding call's permit
+    /// takes as well: the lease's `funding_steps` gain `step` and the
+    /// wallet's funding statuses are derived again.
+    pub(super) fn bind_funding_step_in(&self, i: &mut Inner, fx: &mut Effects, step: &str) {
+        if let Some(e) = i.leases.get_mut(&self.id) {
+            if !e.funding_steps.iter().any(|s| s == step) {
+                e.funding_steps.push(step.to_owned());
             }
-            super::mode_b::rederive(&self.table, i, fx, self.wallet);
-        });
+            fx.changed(self.id);
+        }
+        super::mode_b::rederive(&self.table, i, fx, self.wallet);
     }
 
     /// The flow's DashPay crypto (`DashPayCrypto`); never hands off.
