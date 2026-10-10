@@ -6,7 +6,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow};
+use dw_appdb::dispatch::{
+    CallRows, DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow,
+};
 use dw_vault::{GrantKind, GrantPurpose, SignerScope, Vault, VaultError, VaultStatus};
 use zeroize::Zeroizing;
 
@@ -385,12 +387,19 @@ impl NetworkSession {
     }
 }
 
-/// Opens and loads `dispatch.sqlite` (§6.2, §6.5). `None`: the journal is
-/// unavailable (unopenable, or a newer schema); the fence then refuses
-/// leased Firsts and registrations.
-pub(crate) async fn open_journal(
-    data_dir: &Path,
-) -> Option<(Arc<dyn JournalBackend>, Vec<DispatchRow>, Vec<StepRow>)> {
+/// What the open loads: the journal and its rows.
+pub(crate) type LoadedJournal = (
+    Arc<dyn JournalBackend>,
+    Vec<DispatchRow>,
+    Vec<StepRow>,
+    CallRows,
+);
+
+/// Opens and loads `dispatch.sqlite` (§6.2, §6.5), Mode B's standing rows
+/// included. `None`: the journal is unavailable (unopenable, or a newer
+/// schema); the fence then refuses leased Firsts, registrations and call
+/// steps.
+pub(crate) async fn open_journal(data_dir: &Path) -> Option<LoadedJournal> {
     if let Err(e) = crate::fsutil::create_owned_file(data_dir, Path::new(DISPATCH_DB_FILE)) {
         tracing::warn!(error = %e, "could not create the dispatch journal");
         return None;
@@ -405,13 +414,17 @@ pub(crate) async fn open_journal(
             }
         };
         let (rows, steps) = journal.load()?;
-        Ok::<_, dw_appdb::AppDbError>(Some((journal, rows, steps)))
+        let calls = journal.load_calls()?;
+        Ok::<_, dw_appdb::AppDbError>(Some((journal, rows, steps, calls)))
     })
     .await;
     match opened {
-        Ok(Ok(Some((journal, rows, steps)))) => {
-            Some((Arc::new(journal) as Arc<dyn JournalBackend>, rows, steps))
-        }
+        Ok(Ok(Some((journal, rows, steps, calls)))) => Some((
+            Arc::new(journal) as Arc<dyn JournalBackend>,
+            rows,
+            steps,
+            calls,
+        )),
         Ok(Ok(None)) => None,
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");

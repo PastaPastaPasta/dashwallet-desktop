@@ -41,10 +41,10 @@ use dw_vault::VaultStatus;
 use super::errors::PlatformError;
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 
-pub use call::{CallPermit, CallQuote, SignatureCount};
+pub use call::{CallPermit, CallQuote, CallStep, FundingKey, SignatureCount};
 pub use fence::{
-    AdmitRequest, ArtifactKind, AttemptGuard, DispatchPermit, NonceSlot, NonceSpace, Outcome,
-    Settlement, Verdict,
+    AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,
+    NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
 };
 pub use table::{Lease, LeaseTable};
 
@@ -85,6 +85,19 @@ impl ArtifactId {
         let mut bytes = [0u8; 32];
         hex::decode_to_slice(s, &mut bytes).ok()?;
         Some(Self(bytes))
+    }
+
+    /// The synthetic artifact of a Mode B call step (§2a.3): a library
+    /// call cannot be named by what it will produce, so its marker names
+    /// the step. SHA-256 over a domain tag, the wallet and the step id; the
+    /// wallet keeps two wallets' identical step ids apart (review O-1).
+    pub fn of_step(wallet: &crate::WalletId, step: &str) -> Self {
+        use dashcore::hashes::{Hash, HashEngine, sha256};
+        let mut engine = sha256::Hash::engine();
+        engine.input(b"dw-e0-04/call-step/v1");
+        engine.input(&wallet.0);
+        engine.input(step.as_bytes());
+        Self(sha256::Hash::from_engine(engine).to_byte_array())
     }
 }
 
@@ -234,6 +247,15 @@ pub enum LeaseError {
     /// The vault refused for a reason the codes above do not cover.
     #[error("vault: {0}")]
     Vault(&'static str),
+    /// A Mode B call step's marker could not be made durable: the journal
+    /// is unavailable or its write failed, so the call did not start
+    /// (§2a.3, §6.4): `storage`.
+    #[error("the dispatch journal is unavailable")]
+    JournalUnavailable,
+    /// A Mode B call step whose marker stands under another funding key (or
+    /// none): the call is refused before it is charged (§2a.3): `internal`.
+    #[error("the call step's marker carries another funding key")]
+    StepKeyMismatch,
 }
 
 impl From<LeaseError> for PlatformError {
@@ -257,6 +279,12 @@ impl From<LeaseError> for PlatformError {
             LeaseError::Invalid => PlatformError::GrantInvalid,
             LeaseError::Vault(detail) => PlatformError::Internal {
                 detail: detail.into(),
+            },
+            LeaseError::JournalUnavailable => PlatformError::Storage {
+                detail: e.to_string(),
+            },
+            LeaseError::StepKeyMismatch => PlatformError::Internal {
+                detail: e.to_string(),
             },
         }
     }
@@ -307,5 +335,23 @@ mod id_tests {
         let a = ArtifactId::from_txid(&txid);
         assert_eq!(a.to_string(), txid.to_string(), "display order");
         assert_eq!(ArtifactId::parse(&a.to_string()), Some(a));
+    }
+
+    /// SHA-256(b"dw-e0-04/call-step/v1" || [0; 32] || b"s").
+    const PINNED_STEP_ARTIFACT: &str =
+        "06459b77c1e082b93056a656c9c21b0c4601912bd720b357832292c09106237f";
+
+    #[test]
+    fn a_call_steps_artifact_is_per_wallet_and_per_step() {
+        let (w1, w2) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
+        let a = ArtifactId::of_step(&w1, "topup/x/funding");
+        assert_eq!(a, ArtifactId::of_step(&w1, "topup/x/funding"), "stable");
+        assert_ne!(a, ArtifactId::of_step(&w2, "topup/x/funding"));
+        assert_ne!(a, ArtifactId::of_step(&w1, "topup/y/funding"));
+        // Pinned: the journal outlives builds.
+        assert_eq!(
+            ArtifactId::of_step(&crate::WalletId([0; 32]), "s").to_string(),
+            PINNED_STEP_ARTIFACT
+        );
     }
 }

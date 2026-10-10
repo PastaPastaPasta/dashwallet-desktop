@@ -445,8 +445,16 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
         });
         match journal {
-            Some((backend, rows, steps)) => session.leases.load_journal(Some(backend), rows, steps),
-            None => session.leases.load_journal(None, Vec::new(), Vec::new()),
+            Some((backend, rows, steps, calls)) => {
+                session
+                    .leases
+                    .load_journal_with(Some(backend), rows, steps, calls)
+            }
+            None => {
+                session
+                    .leases
+                    .load_journal_with(None, Vec::new(), Vec::new(), Default::default())
+            }
         }
         session.leases.start_reaper();
         if let Err(e) =

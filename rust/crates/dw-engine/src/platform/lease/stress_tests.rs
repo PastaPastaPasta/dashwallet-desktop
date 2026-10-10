@@ -183,6 +183,10 @@ pub(crate) enum Mutation {
     /// attempt. The stress draws artifacts per wallet; the `o1` regression
     /// catches it.
     ArtifactKeyed,
+    /// §2a.3 (P2b): a call step's permit is handed back before its marker
+    /// is durable, so the library call may start unmarked. The stress runs
+    /// no Mode B calls; `call_tests`' marker-first regression catches it.
+    CallBeforeMarker,
 }
 
 impl Mutation {
@@ -208,6 +212,7 @@ impl Mutation {
             Self::SplitBundle,
             Self::ForgetNewer,
             Self::ArtifactKeyed,
+            Self::CallBeforeMarker,
         ]
         .into_iter()
         .find(|m| format!("{m:?}") == name)

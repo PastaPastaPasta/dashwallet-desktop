@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dw_appdb::dispatch::{
-    DiskState, DispatchRow, Registered, Resolution, StepEvent, StepLogRow, StepRow,
+    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendRow, StepEvent,
+    StepLogRow, StepRow, StoredFundingKey,
 };
 use tokio::runtime::Handle;
 use tokio::time::Instant;
@@ -215,6 +216,10 @@ fn budget(lease: &Lease, purpose: BudgetPurpose) -> Option<(u64, u64)> {
 /// A row: (wallet, txid) → (origin lease, 0 unsent / 1 dispatching).
 type Rows = HashMap<([u8; 32], [u8; 32]), (LeaseId, u8)>;
 
+/// A `Sent` bundle a [`FakeJournal`] was asked for: (artifact, steps,
+/// funding keys).
+pub(super) type Bundle = ([u8; 32], Vec<String>, Vec<(String, StoredFundingKey)>);
+
 /// A journal with injected faults (§12 "Journal").
 #[derive(Default)]
 pub(super) struct FakeJournal {
@@ -235,8 +240,16 @@ pub(super) struct FakeJournal {
     /// Real-time stall of every write (row, `Dispatching`, step), in ms.
     pub(super) stall_ms: AtomicU64,
     rows: Mutex<Rows>,
-    /// `step_log`, append-only (DEC-154).
+    /// `step_log`, append-only (DEC-154). Locked before `funding` and
+    /// `self_spends`, like one transaction.
     log: Mutex<Vec<StepLogRow>>,
+    /// The next `seq`; never reused, like AUTOINCREMENT.
+    next_seq: AtomicU64,
+    /// `funding_marker` and `self_spend` (schema 3).
+    funding: Mutex<Vec<FundingRow>>,
+    self_spends: Mutex<Vec<SelfSpendRow>>,
+    /// Every `Sent` bundle asked for.
+    pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
     ever_marked: Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>,
 }
@@ -296,17 +309,65 @@ impl JournalBackend for FakeJournal {
         Ok(())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.stall();
+        if self.fail_step.load(Ordering::SeqCst) {
+            return Err("injected step failure".into());
+        }
+        let mut log = self.log.lock().unwrap();
+        self.append_marker(&mut log, wallet, artifact, step);
+        self.append_funding(&log, wallet, artifact, step, key);
+        Ok(())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+    ) -> Result<bool, String> {
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut spends = self.self_spends.lock().unwrap();
+        if !spends.iter().any(|s| s.marker == marker && s.txid == *txid) {
+            spends.push(SelfSpendRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                txid: *txid,
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
     fn resolve_sent(
         &self,
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
-        self.resolve_rows(wallet, artifact, Resolution::Sent, steps)
+        self.bundles
+            .lock()
+            .unwrap()
+            .push((*artifact, steps.to_vec(), funding.to_vec()));
+        self.resolve_rows(wallet, artifact, Resolution::Sent, steps, funding)
     }
 
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
-        self.resolve_rows(wallet, artifact, r, &[])
+        self.resolve_rows(wallet, artifact, r, &[], &[])
     }
 
     fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
@@ -315,13 +376,13 @@ impl JournalBackend for FakeJournal {
         }
         // DEC-160's predicate, under the log's lock like a transaction.
         let mut log = self.log.lock().unwrap();
-        let gone: Vec<[u8; 32]> = dw_appdb::dispatch::compactable(&log)
-            .into_iter()
-            .filter(|(w, _)| w == wallet)
-            .map(|(_, a)| a)
-            .collect();
-        log.retain(|r| r.wallet != *wallet || !gone.contains(&r.artifact));
-        Ok(gone)
+        let gone = dw_appdb::dispatch::compact_in_memory(
+            &mut log,
+            &mut self.funding.lock().unwrap(),
+            &mut self.self_spends.lock().unwrap(),
+            Some(wallet),
+        );
+        Ok(gone.into_iter().map(|(_, a)| a).collect())
     }
 
     fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
@@ -333,13 +394,102 @@ impl JournalBackend for FakeJournal {
             .map(|r| r.artifact)
             .collect();
         log.retain(|r| r.wallet != *wallet);
+        self.funding.lock().unwrap().retain(|r| r.wallet != *wallet);
+        self.self_spends
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
         Ok(gone.into_iter().collect())
     }
+}
+
+/// The `seq` of `step`'s latest marker of `artifact`, if it stands.
+fn latest_standing(
+    log: &[StepLogRow],
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    step: &str,
+) -> Option<u64> {
+    let stands = dw_appdb::dispatch::standing(log)
+        .iter()
+        .any(|s| s.wallet == *wallet && s.artifact == *artifact && s.step_id == step);
+    log.iter()
+        .rev()
+        .find(|r| {
+            r.wallet == *wallet
+                && r.artifact == *artifact
+                && matches!(&r.event, StepEvent::Marked(s) if s == step)
+        })
+        .map(|r| r.seq)
+        .filter(|_| stands)
 }
 
 impl FakeJournal {
     fn stall(&self) {
         std::thread::sleep(Duration::from_millis(self.stall_ms.load(Ordering::SeqCst)));
+    }
+
+    fn seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// A funding step's key with the step's standing marker that has none.
+    fn append_funding(
+        &self,
+        log: &[StepLogRow],
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        step: &str,
+        key: &StoredFundingKey,
+    ) {
+        let Some(seq) = latest_standing(log, wallet, artifact, step) else {
+            return;
+        };
+        let mut funding = self.funding.lock().unwrap();
+        if !funding.iter().any(|f| f.seq == seq) {
+            funding.push(FundingRow {
+                seq,
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                key: *key,
+                at: 0,
+            });
+        }
+    }
+
+    /// What a reopen would load of Mode B's rows (§2a.3).
+    pub(super) fn load_calls(&self) -> CallRows {
+        let log = self.log.lock().unwrap();
+        dw_appdb::dispatch::standing_calls(
+            &log,
+            &self.funding.lock().unwrap(),
+            &self.self_spends.lock().unwrap(),
+        )
+    }
+
+    /// Every `funding_marker` row.
+    pub(super) fn funding_rows(&self) -> Vec<FundingRow> {
+        self.funding.lock().unwrap().clone()
+    }
+
+    /// `step_log` as it is now.
+    pub(super) fn log(&self) -> Vec<StepLogRow> {
+        self.log.lock().unwrap().clone()
+    }
+
+    /// An independent copy of the file as it is now: a kill here, and the
+    /// next process's journal.
+    pub(super) fn snapshot(&self) -> Arc<FakeJournal> {
+        Arc::new(FakeJournal {
+            rows: Mutex::new(self.rows.lock().unwrap().clone()),
+            log: Mutex::new(self.log()),
+            next_seq: AtomicU64::new(self.next_seq.load(Ordering::SeqCst)),
+            funding: Mutex::new(self.funding_rows()),
+            self_spends: Mutex::new(self.self_spends.lock().unwrap().clone()),
+            ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
+            ..Default::default()
+        })
     }
 
     /// What a reopen would load (§6.5).
@@ -376,6 +526,7 @@ impl FakeJournal {
         artifact: &[u8; 32],
         r: Resolution,
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.stall();
         let not_sent = r == Resolution::NotSent;
@@ -394,8 +545,12 @@ impl FakeJournal {
         let mut log = self.log.lock().unwrap();
         for step in steps {
             self.append_marker(&mut log, wallet, artifact, step);
+            if let Some((_, key)) = funding.iter().find(|(s, _)| s == step) {
+                self.append_funding(&log, wallet, artifact, step, key);
+            }
         }
         log.push(StepLogRow {
+            seq: self.seq(),
             wallet: *wallet,
             artifact: *artifact,
             event: StepEvent::Resolved(r),
@@ -429,6 +584,7 @@ impl FakeJournal {
                 .unwrap()
                 .insert((*wallet, *artifact));
             log.push(StepLogRow {
+                seq: self.seq(),
                 wallet: *wallet,
                 artifact: *artifact,
                 event: StepEvent::Marked(step.to_owned()),
@@ -1944,6 +2100,30 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         self.db
             .resolve(wallet, artifact, r, 0)
@@ -1955,9 +2135,10 @@ impl JournalBackend for GatedJournal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -2572,6 +2753,30 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         if r == Resolution::NotSent {
             self.resolving.store(true, Ordering::SeqCst);
@@ -2584,7 +2789,7 @@ impl JournalBackend for R2Journal {
             }
             return Ok(());
         }
-        self.resolve_sent(wallet, artifact, &[])
+        self.resolve_sent(wallet, artifact, &[], &[])
     }
 
     fn resolve_sent(
@@ -2592,6 +2797,7 @@ impl JournalBackend for R2Journal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         let n = self.sent_writes.fetch_add(1, Ordering::SeqCst);
         self.sending.store(true, Ordering::SeqCst);
@@ -2600,7 +2806,7 @@ impl JournalBackend for R2Journal {
         }
         self.wait(true);
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -3051,9 +3257,33 @@ impl JournalBackend for R3Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         if r != Resolution::NotSent {
-            return self.resolve_sent(wallet, artifact, &[]);
+            return self.resolve_sent(wallet, artifact, &[], &[]);
         }
         self.not_sending.store(true, Ordering::SeqCst);
         self.wait(NOT_SENT);
@@ -3067,11 +3297,12 @@ impl JournalBackend for R3Journal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.sending.store(true, Ordering::SeqCst);
         self.wait(SENT);
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 
