@@ -6,9 +6,9 @@
 //! hash, false)` (coinjoin.cpp:49-57, 77-86): the message is the 32-byte
 //! signature hash. The list serializes an operator key in the basic form
 //! for v2+ entries and the legacy form for v1 entries, so both forms are
-//! tried.
+//! tried, each re-encoded in the basic form the signature is read in.
 
-use dashcore::blsful::{Bls12381G2Impl, Pairing, PublicKey, SerializationFormat, Signature};
+use dashcore::bls_sig_utils::{BlsPkBytes, BlsScheme, BlsSigBytes};
 
 /// Whether `signature` (96-byte compressed G2) is the basic-scheme
 /// signature of `msg` by `operator_public_key`.
@@ -16,46 +16,43 @@ pub fn verify_basic(operator_public_key: &[u8; 48], signature: &[u8], msg: &[u8;
     let Ok(raw) = <[u8; 96]>::try_from(signature) else {
         return false;
     };
-    let Some(point) = <Bls12381G2Impl as Pairing>::Signature::from_compressed(&raw).into_option()
-    else {
-        return false;
-    };
-    let sig = Signature::<Bls12381G2Impl>::Basic(point);
-    [SerializationFormat::Modern, SerializationFormat::Legacy]
+    let signature = BlsSigBytes::from_bytes(raw);
+    [BlsScheme::Modern, BlsScheme::Legacy]
         .into_iter()
-        .filter_map(|f| {
-            PublicKey::<Bls12381G2Impl>::from_bytes_with_mode(operator_public_key, f).ok()
+        .filter_map(|scheme| {
+            BlsPkBytes::from_bytes(*operator_public_key)
+                .as_scheme(scheme)
+                .reencode(BlsScheme::Modern)
+                .ok()
         })
-        .any(|pk| sig.verify(&pk, msg).is_ok())
+        .any(|key| {
+            key.as_scheme(BlsScheme::Modern)
+                .verify(msg, &signature)
+                .is_ok()
+        })
 }
 
 /// Test helpers: a deterministic operator key that signs like a masternode.
 pub mod testing {
-    use dashcore::blsful::{Bls12381G2Impl, SecretKey, SignatureSchemes};
+    use dash_pkc::bls::{BlsScIetf, BlsSecretKey, BlsSigId};
+    use dashcore::hashes::{Hash, sha256};
 
-    pub struct OperatorKey(SecretKey<Bls12381G2Impl>);
+    pub struct OperatorKey(BlsSecretKey<BlsScIetf>);
 
     impl OperatorKey {
         pub fn from_seed(seed: &[u8]) -> Self {
-            Self(SecretKey::from_hash(seed))
+            let ikm = sha256::Hash::hash(seed).to_byte_array();
+            Self(BlsSecretKey::from_ikm(&ikm).expect("32 bytes of key material"))
         }
 
         /// Basic-form public key, as a v2 list entry carries it.
         pub fn public_key(&self) -> [u8; 48] {
-            let bytes = self.0.public_key().to_bytes();
-            bytes.try_into().expect("48-byte G1 point")
+            self.0.public_key().to_bytes()
         }
 
         /// Basic-scheme signature, 96 bytes.
         pub fn sign(&self, msg: &[u8; 32]) -> Vec<u8> {
-            match self
-                .0
-                .sign(SignatureSchemes::Basic, msg)
-                .expect("signing cannot fail")
-            {
-                dashcore::blsful::Signature::Basic(p) => p.to_compressed().to_vec(),
-                _ => unreachable!("basic scheme requested"),
-            }
+            self.0.sign_with(msg, BlsSigId::Basic).to_bytes().to_vec()
         }
     }
 }
