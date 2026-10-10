@@ -1,5 +1,5 @@
 //! Partially signed transactions as Dash Core and dash-qt use them
-//! (QT-076…079), over key-wallet's BIP174 implementation.
+//! (QT-076…079), over a vendored BIP174 container ([`psbt`]).
 //!
 //! Dash has no segwit, so Dash Core's PSBT (`src/psbt.h`) is BIP174 v0 with
 //! the legacy fields only: inputs carry the full previous transaction
@@ -31,7 +31,9 @@ use dashcore::sighash::{EcdsaSighashType, SighashCache};
 use dashcore::{Address, Network, PubkeyHash, Txid};
 use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, Fingerprint};
-pub use key_wallet::psbt::PartiallySignedTransaction;
+
+pub mod psbt;
+pub use psbt::{PartiallySignedTransaction, PsbtSighashType};
 
 /// Largest PSBT accepted (dash-qt refuses files of 100 MiB or more).
 pub const MAX_PSBT_BYTES: usize = 100 * 1024 * 1024;
@@ -304,8 +306,8 @@ pub fn estimated_size(psbt: &PartiallySignedTransaction) -> usize {
 pub type KeyPaths = BTreeMap<usize, DerivationPath>;
 
 /// Signs every P2PKH input listed in `paths` that is not yet complete, with
-/// `SIGHASH_ALL` (or the input's own sighash type), and returns how many
-/// inputs got a signature. With a low-R signer (the vault's, like Dash
+/// `SIGHASH_ALL` (an input asking for another sighash type is refused), and
+/// returns how many inputs got a signature. With a low-R signer (the vault's, like Dash
 /// Core's `CKey::Sign`) the signatures equal `walletprocesspsbt`'s. Each signature is checked against the input's
 /// script before it is stored.
 pub async fn sign<S: Signer>(
@@ -333,7 +335,7 @@ pub async fn sign<S: Signer>(
         // made it change outputs after signing, past the grant's cap.
         let hash_ty = EcdsaSighashType::All;
         if let Some(t) = psbt.inputs[index].sighash_type
-            && t.ecdsa_hash_ty().ok() != Some(hash_ty)
+            && t.ecdsa_hash_ty() != Some(hash_ty)
         {
             return Err(PsbtError::Signing {
                 index,
@@ -438,3 +440,7 @@ pub fn p2pkh_hash(script: &ScriptBuf) -> Option<PubkeyHash> {
 
 #[cfg(test)]
 mod tests;
+
+// DELETE AT THE PIN MOVE (E0-10c): key-wallet's psbt module goes away.
+#[cfg(test)]
+mod old_vs_vendored;
