@@ -167,11 +167,11 @@ fn platform_node_id_hex(public_key: &[u8; 32]) -> String {
 /// `node_key.json` `priv_key.value`): base64 of the 32-byte seed followed by
 /// the 32-byte public key.
 fn tenderdash_private_key(seed: &[u8; 32]) -> Zeroizing<Vec<u8>> {
-    use dashcore::ed25519_dalek::SigningKey;
-    let key = SigningKey::from_bytes(seed);
+    use dashcore::eddsa::EddsaSecretKey;
+    let key = EddsaSecretKey::from_bytes(seed);
     let mut both = Zeroizing::new([0u8; 64]);
     both[..32].copy_from_slice(seed);
-    both[32..].copy_from_slice(key.verifying_key().as_bytes());
+    both[32..].copy_from_slice(&key.public_key().to_bytes());
     base64_encode(&both[..])
 }
 
