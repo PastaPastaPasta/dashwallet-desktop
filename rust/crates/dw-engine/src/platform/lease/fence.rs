@@ -202,7 +202,6 @@ pub(crate) enum RowlessState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Rowless {
-    wallet: WalletId,
     pub(crate) state: RowlessState,
     kind: ArtifactKind,
     /// The charge the settlement refunds: (lease, purpose, charge).
@@ -211,13 +210,11 @@ pub(crate) struct Rowless {
 
 impl Rowless {
     fn admitted(
-        wallet: WalletId,
         kind: ArtifactKind,
         charge: Option<(LeaseId, BudgetPurpose, Charge)>,
         possibly_out: bool,
     ) -> Self {
         Rowless {
-            wallet,
             state: RowlessState::Admitted {
                 running: 1,
                 possibly_out,
@@ -233,7 +230,6 @@ impl Rowless {
 #[derive(Debug, Clone, Copy)]
 struct SpendCharge {
     lease: LeaseId,
-    wallet: WalletId,
     charge: Charge,
 }
 
@@ -255,7 +251,9 @@ pub(crate) struct FenceState {
     origins: HashMap<(WalletId, ArtifactId), LeaseId>,
     /// Registrations whose write runs; `true` once abandoned meanwhile.
     pub(super) registering: HashMap<(WalletId, ArtifactId), bool>,
-    rowless: HashMap<ArtifactId, Rowless>,
+    /// Row-less artifacts, per wallet (review O-1): the same bytes under
+    /// two wallets are two entries, and `decide` keeps one in flight.
+    rowless: HashMap<(WalletId, ArtifactId), Rowless>,
     steps: HashMap<(WalletId, String), HashMap<ArtifactId, Mark>>,
     /// A marked artifact's `Sent` row (DEC-154): its markers stand on disk
     /// over any `NotSent` row only once it is durable.
@@ -267,8 +265,9 @@ pub(crate) struct FenceState {
     /// Journal writes running (`spawn_write`, a `NotSent` row, a removal's
     /// erase); closing the journal waits for them.
     writes: usize,
-    spend: HashMap<ArtifactId, SpendCharge>,
-    /// Every artifact an attempt finished `Sent` for; only grows.
+    spend: HashMap<(WalletId, ArtifactId), SpendCharge>,
+    /// Every artifact an attempt finished `Sent` for, under any wallet:
+    /// identical bytes are one transaction. Only grows.
     sent: HashSet<ArtifactId>,
     attempts: HashMap<u64, Attempt>,
     next: u64,
@@ -516,7 +515,7 @@ impl FenceState {
             Some(Reg::Unsent { .. } | Reg::Revoked) => return FlowOutcome::Cancelled,
             None => {}
         }
-        match self.rowless.get(id).map(|r| r.state) {
+        match self.rowless.get(&(*wallet, *id)).map(|r| r.state) {
             Some(RowlessState::Revoked | RowlessState::NotSent) => FlowOutcome::Cancelled,
             // Admitted, a step marker, or a commit whose write never
             // resolved: possibly out.
@@ -536,9 +535,9 @@ impl FenceState {
     }
 
     #[cfg(test)]
-    pub(crate) fn resolving(&self, id: &ArtifactId) -> bool {
+    pub(crate) fn resolving(&self, key: &(WalletId, ArtifactId)) -> bool {
         self.rowless
-            .get(id)
+            .get(key)
             .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }))
     }
 
@@ -656,18 +655,32 @@ fn resolved(
     });
 }
 
+/// A row-less map key: the wallet and the artifact (review O-1).
+type RowKey = (WalletId, ArtifactId);
+
+/// `wallet`'s row-less key of `id`. The `ArtifactKeyed` mutation keys by
+/// the artifact alone, as before review O-1.
+fn row_key(i: &Inner, wallet: WalletId, id: ArtifactId) -> RowKey {
+    #[cfg(test)]
+    if i.mutation == Some(Mutation::ArtifactKeyed) {
+        return (WalletId([0; 32]), id);
+    }
+    let _ = i;
+    (wallet, id)
+}
+
 /// The row-less artifact `id` settles definitely unsent: refund, tombstone
 /// (§5.5), `DispatchResolved(NotSent)`.
-fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactId) {
-    let Some(r) = i.fence.rowless.get_mut(id) else {
+fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, key: RowKey) {
+    let Some(r) = i.fence.rowless.get_mut(&key) else {
         return;
     };
     r.state = r.kind.tombstone();
-    let wallet = r.wallet;
     let charge = r.charge.take();
+    let (wallet, id) = key;
     #[cfg(test)]
     i.note(LogEvent::Resolved {
-        artifact: *id,
+        artifact: id,
         refund: charge.map_or(0, |(_, _, c)| c.amount),
     });
     if let Some((lease, purpose, charge)) = charge
@@ -676,8 +689,8 @@ fn settle_unsent(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactI
         e.refund(purpose, charge);
         fx.changed(lease);
     }
-    i.fence.spend.remove(id);
-    resolved(t, fx, &wallet, id, DispatchResolution::NotSent);
+    i.fence.spend.remove(&key);
+    resolved(t, fx, &wallet, &id, DispatchResolution::NotSent);
 }
 
 /// How a deadline-bound hand-off ended ([`LeaseTable::hand_off`]).
@@ -697,7 +710,7 @@ enum Settling {
     Now,
     /// `Resolving`: `LeaseTable::resolve_not_sent` settles it once the
     /// journal holds its `NotSent` row.
-    Durably(WalletId),
+    Durably,
     /// A marker write of it runs: the write's own J step settles it
     /// (`spawn_write`) unless a copy joined meanwhile.
     Blocked,
@@ -706,23 +719,24 @@ enum Settling {
 /// Starts settling the row-less `id` definitely unsent (§5.5). A marked
 /// artifact's resolution must be durable before it is seen (review P2a r1
 /// F2).
-fn start_settle(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactId) -> Settling {
-    let Some(wallet) = i.fence.rowless.get(id).map(|r| r.wallet) else {
+fn start_settle(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, key: RowKey) -> Settling {
+    if !i.fence.rowless.contains_key(&key) {
         return Settling::Now;
-    };
+    }
+    let (wallet, id) = &key;
     #[cfg(test)]
     let in_memory = i.mutation == Some(Mutation::MarkerOutlives);
     #[cfg(not(test))]
     let in_memory = false;
     // The mutation settles in memory, its markers kept in the journal.
-    if in_memory || !i.fence.marked(&wallet, id) {
-        settle_unsent(t, i, fx, id);
+    if in_memory || !i.fence.marked(wallet, id) {
+        settle_unsent(t, i, fx, key);
         return Settling::Now;
     }
-    if matches!(owed(i, &wallet, id, None), Obligation::Pending) {
+    if matches!(owed(i, wallet, id, None), Obligation::Pending) {
         return Settling::Blocked;
     }
-    let Some(r) = i.fence.rowless.get_mut(id) else {
+    let Some(r) = i.fence.rowless.get_mut(&key) else {
         return Settling::Now;
     };
     let slot_taken = matches!(
@@ -736,7 +750,7 @@ fn start_settle(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, id: &ArtifactId
         slot_taken,
         failed: false,
     };
-    Settling::Durably(wallet)
+    Settling::Durably
 }
 
 /// Whether an `Admitted` row-less entry with no attempt running settles:
@@ -749,11 +763,11 @@ fn settles_idle(possibly_out: bool, slot_taken: bool) -> bool {
 /// A `Resolving` entry seen sent meanwhile is possibly out again, its
 /// charge and markers kept: a sent artifact is never refunded, and its
 /// `Sent` row makes the markers stand over any `NotSent` row (DEC-154).
-fn keep_sent(i: &mut Inner, id: &ArtifactId) -> bool {
-    if !i.fence.sent.contains(id) {
+fn keep_sent(i: &mut Inner, key: RowKey) -> bool {
+    if !i.fence.sent.contains(&key.1) {
         return false;
     }
-    if let Some(r) = i.fence.rowless.get_mut(id)
+    if let Some(r) = i.fence.rowless.get_mut(&key)
         && let RowlessState::Resolving { slot_taken, .. } = r.state
     {
         r.state = RowlessState::Admitted {
@@ -782,7 +796,7 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     if dispatch {
         f.entries.retain(|(w, _), _| *w != wallet);
         f.origins.retain(|(w, _), _| *w != wallet);
-        f.spend.retain(|_, s| s.wallet != wallet);
+        f.spend.retain(|(w, _), _| *w != wallet);
     }
     let gone: HashSet<ArtifactId> = erased
         .into_iter()
@@ -790,12 +804,11 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
         .filter(|a| {
             all || !(f.evidence.contains_key(&(wallet, *a))
                 || f.marked(&wallet, a)
-                || f.rowless.get(a).is_some_and(|r| {
-                    r.wallet == wallet
-                        && matches!(
-                            r.state,
-                            RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
-                        )
+                || f.rowless.get(&(wallet, *a)).is_some_and(|r| {
+                    matches!(
+                        r.state,
+                        RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
+                    )
                 }))
         })
         .collect();
@@ -806,7 +819,7 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.steps.retain(|_, m| !m.is_empty());
     f.evidence.retain(|(w, a), _| !forgotten(w, a));
     f.superseded.retain(|(w, a), _| !forgotten(w, a));
-    f.rowless.retain(|a, r| !forgotten(&r.wallet, a));
+    f.rowless.retain(|(w, a), _| !forgotten(w, a));
     #[cfg(test)]
     for artifact in gone {
         i.note(LogEvent::Erased { wallet, artifact });
@@ -926,13 +939,13 @@ async fn all_written(writes: Vec<tokio::task::JoinHandle<bool>>) -> bool {
 /// Inserts `r` for `id`, or joins an entry already admitted. A join adds
 /// an attempt and nothing else: the entry's attempts say whether it may be
 /// out, and an entry made from a marker starts possibly out.
-fn admit_rowless(i: &mut Inner, id: ArtifactId, r: Rowless) {
-    match i.fence.rowless.get_mut(&id).map(|e| &mut e.state) {
+fn admit_rowless(i: &mut Inner, key: RowKey, r: Rowless) {
+    match i.fence.rowless.get_mut(&key).map(|e| &mut e.state) {
         Some(RowlessState::Admitted { running, .. }) => {
             *running += 1;
         }
         _ => {
-            i.fence.rowless.insert(id, r);
+            i.fence.rowless.insert(key, r);
         }
     }
 }
@@ -946,7 +959,7 @@ fn admit_rowless(i: &mut Inner, id: ArtifactId, r: Rowless) {
 /// charge stays spent: a resume sends without charging.
 struct PendingFirst {
     table: Arc<LeaseTable>,
-    artifact: ArtifactId,
+    key: RowKey,
     permit: Option<DispatchPermit>,
     placeholder: bool,
 }
@@ -973,7 +986,7 @@ impl Drop for PendingFirst {
             return;
         }
         self.table.with_j(|i, _| {
-            let Some(r) = i.fence.rowless.get_mut(&self.artifact) else {
+            let Some(r) = i.fence.rowless.get_mut(&self.key) else {
                 return;
             };
             let RowlessState::Admitted {
@@ -986,7 +999,7 @@ impl Drop for PendingFirst {
             };
             *running = running.saturating_sub(1);
             if *running == 0 && !*possibly_out {
-                i.fence.rowless.remove(&self.artifact);
+                i.fence.rowless.remove(&self.key);
             } else {
                 *possibly_out = true;
                 r.charge = None;
@@ -1021,7 +1034,7 @@ impl LeaseTable {
             let charge = i
                 .fence
                 .rowless
-                .get(&artifact)
+                .get(&row_key(i, wallet, artifact))
                 .filter(|_| !registered)
                 .and_then(|r| r.charge)
                 .map_or(0, |(_, _, c)| c.amount);
@@ -1138,7 +1151,9 @@ impl LeaseTable {
             }
             i.fence.journal = JournalState::NotLoaded;
         });
-        self.wait_until(|i| (i.fence.writes == 0).then_some(()))
+        // A `register` write is not counted in `writes`; its `registering`
+        // marker stands until its J step runs (review O-5).
+        self.wait_until(|i| (i.fence.writes == 0 && i.fence.registering.is_empty()).then_some(()))
             .await;
         self.journal.set(None);
     }
@@ -1364,30 +1379,26 @@ impl LeaseTable {
         charge: Charge,
     ) {
         self.with_j(|i, _| {
+            let key = row_key(i, wallet, txid);
             if i.fence
                 .rowless
-                .get(&txid)
-                .is_some_and(|r| r.wallet == wallet && r.state == RowlessState::Revoked)
+                .get(&key)
+                .is_some_and(|r| r.state == RowlessState::Revoked)
             {
-                i.fence.rowless.remove(&txid);
+                i.fence.rowless.remove(&key);
             }
-            i.fence.spend.insert(
-                txid,
-                SpendCharge {
-                    lease,
-                    wallet,
-                    charge,
-                },
-            );
+            i.fence.spend.insert(key, SpendCharge { lease, charge });
         });
     }
 
     /// A prepared `TxDraft` released before its charge was admitted:
-    /// refunds it. An admission moves the charge to the row-less entry,
-    /// whose settlement refunds it.
-    pub(crate) fn unbind_spend(&self, txid: ArtifactId) {
+    /// refunds it, if `lease` still holds the binding. An admission moves
+    /// the charge to the row-less entry, whose settlement refunds it.
+    pub(crate) fn unbind_spend(&self, lease: LeaseId, wallet: WalletId, txid: ArtifactId) {
         self.with_j(|i, fx| {
-            if let Some(s) = i.fence.spend.remove(&txid)
+            let key = row_key(i, wallet, txid);
+            if i.fence.spend.get(&key).is_some_and(|s| s.lease == lease)
+                && let Some(s) = i.fence.spend.remove(&key)
                 && let Some(e) = i.leases.get_mut(&s.lease)
             {
                 e.refund(BudgetPurpose::Spend, s.charge);
@@ -1412,21 +1423,23 @@ impl LeaseTable {
         }
         // A definite resolution the journal refused is retried before any
         // decision about the artifact (review P2a r1 F2).
-        let retry = self.with_j(|i, _| match i.fence.rowless.get_mut(&req.artifact) {
-            Some(r) if r.wallet == req.wallet => match r.state {
-                RowlessState::Resolving {
-                    slot_taken,
-                    failed: true,
-                } => {
-                    r.state = RowlessState::Resolving {
-                        slot_taken,
-                        failed: false,
-                    };
-                    true
-                }
-                _ => false,
-            },
-            _ => false,
+        let key = self.with_j(|i, _| row_key(i, req.wallet, req.artifact));
+        let retry = self.with_j(|i, _| {
+            let Some(r) = i.fence.rowless.get_mut(&key) else {
+                return false;
+            };
+            let RowlessState::Resolving {
+                slot_taken,
+                failed: true,
+            } = r.state
+            else {
+                return false;
+            };
+            r.state = RowlessState::Resolving {
+                slot_taken,
+                failed: false,
+            };
+            true
         });
         if retry {
             let table = Arc::clone(self);
@@ -1456,7 +1469,7 @@ impl LeaseTable {
             } => {
                 let pending = PendingFirst {
                     table: Arc::clone(self),
-                    artifact: req.artifact,
+                    key,
                     permit: Some(permit),
                     placeholder,
                 };
@@ -1480,15 +1493,11 @@ impl LeaseTable {
                         // caller's next admit reads it. A sighting outranks
                         // a settled `NotSent`, as in `decide`; `Resolving`
                         // and `Revoked` still defer.
-                        if i.fence
-                            .rowless
-                            .get(&req.artifact)
-                            .is_some_and(|e| match e.state {
-                                RowlessState::Admitted { .. } => false,
-                                RowlessState::NotSent => !i.fence.sent.contains(&req.artifact),
-                                _ => true,
-                            })
-                        {
+                        if i.fence.rowless.get(&key).is_some_and(|e| match e.state {
+                            RowlessState::Admitted { .. } => false,
+                            RowlessState::NotSent => !i.fence.sent.contains(&req.artifact),
+                            _ => true,
+                        }) {
                             return Verdict::Deferred;
                         }
                         // Another copy may have begun a marker meanwhile:
@@ -1503,7 +1512,7 @@ impl LeaseTable {
                         {
                             return Verdict::Deferred;
                         }
-                        admit_rowless(i, req.artifact, r);
+                        admit_rowless(i, key, r);
                     }
                     Verdict::Resend(self.guard(i, (req.wallet, req.artifact), registered))
                 })
@@ -1615,9 +1624,11 @@ impl LeaseTable {
                 // defers to it (review P2a r1 F2).
                 let idle = matches!(target, Target::Step(_))
                     && !i.fence.sent.contains(&artifact)
-                    && i.fence.rowless.get(&artifact).is_some_and(|r| {
-                        r.wallet == wallet
-                            && matches!(
+                    && i.fence
+                        .rowless
+                        .get(&row_key(i, wallet, artifact))
+                        .is_some_and(|r| {
+                            matches!(
                                 r.state,
                                 RowlessState::Admitted {
                                     running: 0,
@@ -1625,15 +1636,15 @@ impl LeaseTable {
                                     slot_taken,
                                 } if settles_idle(possibly_out, slot_taken)
                             )
-                    });
+                        });
                 if idle {
                     fx.notify();
-                    start_settle(&table, i, fx, &artifact)
+                    start_settle(&table, i, fx, row_key(i, wallet, artifact))
                 } else {
                     Settling::Now
                 }
             });
-            if let Settling::Durably(wallet) = settling {
+            if let Settling::Durably = settling {
                 table.resolve_not_sent(wallet, artifact);
             }
             ok
@@ -1827,13 +1838,28 @@ impl LeaseTable {
             return Step::Done(Verdict::Deferred);
         }
 
-        // Row-less artifacts.
-        let entry = i
-            .fence
-            .rowless
-            .get(&id)
-            .filter(|r| r.wallet == wallet)
-            .map(|r| r.state);
+        // Row-less artifacts. One artifact is one transaction (review O-1):
+        // while another wallet's entry of the same bytes may be in flight
+        // or resolving, a copy for this wallet waits, so neither settles
+        // definitely unsent while the other's attempt may put them out.
+        let rkey = row_key(i, wallet, id);
+        #[cfg(test)]
+        let artifact_keyed = i.mutation == Some(Mutation::ArtifactKeyed);
+        #[cfg(not(test))]
+        let artifact_keyed = false;
+        if !artifact_keyed
+            && i.fence.rowless.iter().any(|((w, a), r)| {
+                *a == id
+                    && *w != wallet
+                    && matches!(
+                        r.state,
+                        RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
+                    )
+            })
+        {
+            return Step::Done(Verdict::Deferred);
+        }
+        let entry = i.fence.rowless.get(&rkey).map(|r| r.state);
         let joins = match entry {
             Some(RowlessState::Revoked) => {
                 return Step::Done(Verdict::Refused {
@@ -1880,7 +1906,7 @@ impl LeaseTable {
             match obligation {
                 Obligation::Pending => return Step::Done(Verdict::Deferred),
                 Obligation::Met => {
-                    admit_rowless(i, id, Rowless::admitted(wallet, req.kind, None, true));
+                    admit_rowless(i, rkey, Rowless::admitted(req.kind, None, true));
                     return Step::Done(Verdict::Resend(self.guard(i, key, false)));
                 }
                 Obligation::Write(steps) => {
@@ -1919,7 +1945,7 @@ impl LeaseTable {
                         writes,
                         then: After::Resend {
                             registered: false,
-                            rowless: Some(Rowless::admitted(wallet, req.kind, None, true)),
+                            rowless: Some(Rowless::admitted(req.kind, None, true)),
                         },
                     };
                 }
@@ -1936,7 +1962,7 @@ impl LeaseTable {
             Some(Origin::Unleased(_)) => {
                 i.fence
                     .rowless
-                    .insert(id, Rowless::admitted(wallet, req.kind, None, false));
+                    .insert(rkey, Rowless::admitted(req.kind, None, false));
                 let guard = self.guard(i, key, false);
                 #[cfg(test)]
                 if let Some(LogEvent::Grant { kind, .. }) = i.log.last_mut() {
@@ -1948,11 +1974,9 @@ impl LeaseTable {
                 let authority = backend.is_some()
                     && FenceState::live(&i.leases, &lease, &wallet)
                     && match req.kind {
-                        ArtifactKind::CoreTx { .. } => i
-                            .fence
-                            .spend
-                            .get(&id)
-                            .is_some_and(|s| s.lease == lease && s.wallet == wallet),
+                        ArtifactKind::CoreTx { .. } => {
+                            i.fence.spend.get(&rkey).is_some_and(|s| s.lease == lease)
+                        }
                         // A zero cost is no authority: Credits must be
                         // granted (§3.1).
                         ArtifactKind::Transition { .. } => {
@@ -1971,7 +1995,7 @@ impl LeaseTable {
                     (true, ArtifactKind::CoreTx { .. }) => Some(
                         i.fence
                             .spend
-                            .remove(&id)
+                            .remove(&rkey)
                             .map(|s| (lease, BudgetPurpose::Spend, s.charge)),
                     ),
                     (false, _) => None,
@@ -1997,7 +2021,7 @@ impl LeaseTable {
                         // another way joins it instead of charging again.
                         i.fence
                             .rowless
-                            .insert(id, Rowless::admitted(wallet, req.kind, charge, false));
+                            .insert(rkey, Rowless::admitted(req.kind, charge, false));
                         let permit = self.permit(i, fx, key, lease, false);
                         Step::Write {
                             writes: vec![self.spawn_write(
@@ -2017,7 +2041,7 @@ impl LeaseTable {
                     _ => {
                         i.fence
                             .rowless
-                            .insert(id, Rowless::admitted(wallet, req.kind, charge, false));
+                            .insert(rkey, Rowless::admitted(req.kind, charge, false));
                         Step::Done(Verdict::First(self.permit(i, fx, key, lease, false)))
                     }
                 }
@@ -2035,17 +2059,17 @@ impl LeaseTable {
         step: Option<&str>,
     ) -> Verdict {
         let id = req.artifact;
-        let first = !i.fence.rowless.contains_key(&id);
+        let key = row_key(i, req.wallet, id);
+        let first = !i.fence.rowless.contains_key(&key);
         i.fence.rowless.insert(
-            id,
+            key,
             Rowless {
-                wallet: req.wallet,
                 state: req.kind.tombstone(),
                 kind: req.kind,
                 charge: None,
             },
         );
-        if let Some(s) = i.fence.spend.remove(&id)
+        if let Some(s) = i.fence.spend.remove(&key)
             && let Some(e) = i.leases.get_mut(&s.lease)
         {
             e.refund(BudgetPurpose::Spend, s.charge);
@@ -2091,7 +2115,8 @@ impl LeaseTable {
                 };
                 return (s, None);
             }
-            let Some(r) = i.fence.rowless.get_mut(&id) else {
+            let key = row_key(i, a.wallet, id);
+            let Some(r) = i.fence.rowless.get_mut(&key) else {
                 return (Settlement::MaybeOut, None);
             };
             let RowlessState::Admitted {
@@ -2115,10 +2140,10 @@ impl LeaseTable {
             if *running > 0 || !settles_idle(*possibly_out, *slot_taken) {
                 return (Settlement::MaybeOut, None);
             }
-            match start_settle(self, i, fx, &id) {
+            match start_settle(self, i, fx, key) {
                 Settling::Now if definite => (Settlement::DefinitelyUnsent, None),
                 Settling::Now | Settling::Blocked => (Settlement::MaybeOut, None),
-                Settling::Durably(wallet) => (Settlement::MaybeOut, Some((wallet, id, definite))),
+                Settling::Durably => (Settlement::MaybeOut, Some((a.wallet, id, definite))),
             }
         });
         match durably {
@@ -2147,10 +2172,11 @@ impl LeaseTable {
         let backend = self.journal.get();
         let (resolving, write) = self.with_j(|i, fx| {
             fx.notify();
-            let go = !keep_sent(i, &id)
+            let key = row_key(i, wallet, id);
+            let go = !keep_sent(i, key)
                 && i.fence
                     .rowless
-                    .get(&id)
+                    .get(&key)
                     .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }));
             // A closed journal takes no write: the resolution fails and the
             // next admit retries it.
@@ -2181,10 +2207,11 @@ impl LeaseTable {
             if write {
                 i.fence.writes -= 1;
             }
-            if keep_sent(i, &id) {
+            let key = row_key(i, wallet, id);
+            if keep_sent(i, key) {
                 return false;
             }
-            let Some(r) = i.fence.rowless.get_mut(&id) else {
+            let Some(r) = i.fence.rowless.get_mut(&key) else {
                 return false;
             };
             let RowlessState::Resolving { slot_taken, .. } = r.state else {
@@ -2232,7 +2259,7 @@ impl LeaseTable {
                     None => stash.push((s, mark)),
                 }
             }
-            settle_unsent(self, i, fx, &id);
+            settle_unsent(self, i, fx, key);
             true
         })
     }
@@ -2271,9 +2298,8 @@ impl LeaseTable {
     ) {
         let backend = self.journal.get();
         let durably = self.with_j(|i, fx| {
-            let signed_here = i.fence.rowless.get(&executed).is_some_and(|r| {
-                r.wallet == wallet
-                    && matches!(r.kind, ArtifactKind::Transition { slot: Some(s), .. } if s == slot)
+            let signed_here = i.fence.rowless.get(&row_key(i, wallet, executed)).is_some_and(|r| {
+                matches!(r.kind, ArtifactKind::Transition { slot: Some(s), .. } if s == slot)
             });
             if !signed_here {
                 return Vec::new();
@@ -2282,23 +2308,24 @@ impl LeaseTable {
                 resolved(self, fx, &wallet, &executed, DispatchResolution::Sent);
             }
             self.begin_sent_row(i, backend, wallet, executed);
-            let others: Vec<ArtifactId> = i
+            let executed_key = row_key(i, wallet, executed);
+            let others: Vec<RowKey> = i
                 .fence
                 .rowless
                 .iter()
-                .filter(|(id, r)| {
-                    **id != executed
-                        && r.wallet == wallet
+                .filter(|((w, id), r)| {
+                    (*w, *id) != executed_key
+                        && *w == executed_key.0
                         && matches!(r.kind, ArtifactKind::Transition { slot: Some(s), .. } if s == slot)
                 })
-                .map(|(id, _)| *id)
+                .map(|(key, _)| *key)
                 .collect();
             let mut durably = Vec::new();
-            for id in others {
-                if i.fence.sent.contains(&id) {
+            for key in others {
+                if i.fence.sent.contains(&key.1) {
                     continue;
                 }
-                let Some(r) = i.fence.rowless.get_mut(&id) else {
+                let Some(r) = i.fence.rowless.get_mut(&key) else {
                     continue;
                 };
                 if let RowlessState::Admitted {
@@ -2309,16 +2336,16 @@ impl LeaseTable {
                 {
                     *slot_taken = true;
                     if *running == 0
-                        && let Settling::Durably(w) = start_settle(self, i, fx, &id)
+                        && let Settling::Durably = start_settle(self, i, fx, key)
                     {
-                        durably.push((w, id));
+                        durably.push(key.1);
                     }
                 }
             }
             durably
         });
-        for (w, id) in durably {
-            self.resolve_not_sent(w, id);
+        for id in durably {
+            self.resolve_not_sent(wallet, id);
         }
     }
 
@@ -2329,11 +2356,7 @@ impl LeaseTable {
         self.with_j(|i, fx| {
             // Another wallet's sighting says nothing of this one's entry
             // (review r2 L2).
-            let known = i
-                .fence
-                .rowless
-                .get(&artifact)
-                .is_some_and(|r| r.wallet == wallet)
+            let known = i.fence.rowless.contains_key(&row_key(i, wallet, artifact))
                 || i.fence.entries.contains_key(&(wallet, artifact));
             if !known {
                 return;
@@ -2370,7 +2393,7 @@ impl LeaseTable {
                 Some(Reg::Revoked) => return Some(DispatchState::NotSent),
                 None => {}
             }
-            if let Some(r) = f.rowless.get(&artifact).filter(|r| r.wallet == wallet) {
+            if let Some(r) = f.rowless.get(&row_key(i, wallet, artifact)) {
                 return Some(match r.state {
                     RowlessState::Admitted { .. } | RowlessState::Resolving { .. } => {
                         DispatchState::MaybeSent
@@ -2525,7 +2548,7 @@ impl LeaseTable {
             return None;
         }
         let live = self.with_j(|i, _| {
-            !i.fence.rowless.contains_key(&req.artifact)
+            !i.fence.rowless.contains_key(&(req.wallet, req.artifact))
                 && FenceState::live(&i.leases, &lease, &req.wallet)
         });
         if !live {
@@ -2534,8 +2557,8 @@ impl LeaseTable {
         tokio::time::sleep(Duration::from_millis(2)).await;
         Some(self.with_j(|i, fx| {
             i.fence.rowless.insert(
-                req.artifact,
-                Rowless::admitted(req.wallet, req.kind, None, false),
+                (req.wallet, req.artifact),
+                Rowless::admitted(req.kind, None, false),
             );
             Verdict::First(self.permit(i, fx, (req.wallet, req.artifact), lease, false))
         }))

@@ -164,11 +164,11 @@ impl Entry {
         }
     }
 
-    /// Whether the idle reaper may end it: a vault-key lease with no call,
-    /// no permit and no running flow task for `idle`.
+    /// Whether the idle reaper may end it: a vault-key lease, or one a lock
+    /// or removal revoked (review O-3), with no call, no permit and no
+    /// running flow task for `idle`.
     fn idle(&self, now: Instant, idle: std::time::Duration) -> bool {
-        !self.own_key
-            && self.state.live()
+        (matches!(self.state, LeaseState::Revoked(_)) || !self.own_key && self.state.live())
             && self.permits == 0
             && self.calls == 0
             && self.tasks.iter().all(AbortHandle::is_finished)
@@ -539,7 +539,7 @@ impl LeaseTable {
         });
     }
 
-    /// Ends every vault-key lease idle for `config.idle`, and forgets ended
+    /// Ends every vault-key or revoked lease idle for `config.idle`, and forgets ended
     /// leases that long after their end (their later use is then
     /// `grant_invalid` rather than `lease_expired`).
     pub(crate) fn reap(&self) {
@@ -928,11 +928,12 @@ impl Lease {
     /// and the reaper leaves the lease alone while it runs.
     pub fn register_task(&self, task: AbortHandle) {
         self.table.with_j(|i, _| match i.leases.get_mut(&self.id) {
-            Some(e) => {
+            // Close's `abort_tasks` already ran (review O-8).
+            Some(e) if !i.closed => {
                 e.tasks.retain(|t| !t.is_finished());
                 e.tasks.push(task);
             }
-            None => task.abort(),
+            _ => task.abort(),
         });
     }
 

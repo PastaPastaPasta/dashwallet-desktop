@@ -780,6 +780,8 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   - Every other vault call runs through `vault_op`, which compares `Vault::epoch()` before and after. A changed epoch
     moves every lease to `NeedsGrant`, drops every `KeyHold` and re-creates the background lease, whatever the lock
     state did (F15).
+  - A `begin` whose issue straddles an unlock sees the epoch change too, so its lease starts `NeedsGrant` and asks
+    for a grant the user just gave. That is fail-safe and accepted (review Opus high O-9).
 - **Rebind never raises authority** (reviews GPT r1 6, GPT r2 9).
   - In one J step, `rebind` checks the wallet, then opens a new generation for each of the lease's purposes. Its
     ceiling is `ceiling_{g+1} = min(available_g, the fresh grants' cap for that purpose)`, summing a mixed set's caps
@@ -1000,8 +1002,10 @@ reaper ends it, so looking a lease up by id and dropping that handle never ends 
 
 An idle reaper ends a vault-key lease after 10 minutes with no call, no permit and **no running flow task**. A
 vault-key registration waiting an hour for a ChainLock makes no call and holds no permit, so it must not be reaped.
-An own-key lease's key already ends at `key_until`. So a host that abandons a sheet does not leak entries. A reaped
-lease's later use is `platform.lease_expired`.
+An own-key lease's key already ends at `key_until`. So a host that abandons a sheet does not leak entries. The
+reaper ends a lease a lock or removal revoked the same way, an idle period after its last use, so its cause stays
+readable until then and a host that never calls `end_flow` does not leak it either (review Opus high O-3); the
+facade drops its owner at the next `begin_flow`. A reaped lease's later use is `platform.lease_expired`.
 
 ### 4.8 Auto lock and the other mobile conventions (reviews Opus 14, Opus r2 5d)
 
@@ -1268,6 +1272,14 @@ admit(req):
     - a user resend (`tx_actions.rs:415`);
     - a registration re-run that signs identical bytes (F10);
     - a second holder of the same bytes running concurrently.
+  - **Per wallet, one transaction** (review Opus high O-1, which reverses P2a's first keying by artifact alone).
+    Entries and `TxDraft` Spend bindings are keyed by (wallet, artifact), so one wallet's admission, refusal or
+    settlement never replaces or refunds another's. The same bytes under two wallets are still one transaction: while
+    one wallet's entry is `Admitted` (running or possibly out) or `Resolving`, a copy for another wallet answers
+    `Deferred`, so neither settles `DefinitelyUnsent` while the other's attempt may put the bytes out. Another
+    wallet's tombstone does not hold a copy back. The set of artifacts seen `Sent` stays keyed by artifact: identical
+    bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a `TxDraft`'s inputs), this is
+    for the producers that follow (`External`, `Rebroadcast`, P2b/P4 hand-offs).
   - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
     set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
     durable marker instead (§7.6). Nor are the tombstones: after a restart `dispatch_status` answers `None`, which
@@ -1321,7 +1333,7 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
 | H10 | A resumable step's First writes its durable step marker before any transport (§7.6). A flow resumed in a later process reads `Refused{step_possibly_dispatched: true}` as MaybeSent, never Cancelled. The marker, not the flow's own phase, is the evidence (GPT 3). |
 | H11 | **Fail closed.** No retry, no discard and no second funding of a step is offered unless `dispatch_status` of its artifact (or, in Mode B, of its funding, §2a.5) is `NotSent`. The one exception is the engine's funding gate (`discard_registration`), which also allows an asset lock's `None`: no entry, no marker and no tracked row (§16.6). The host reads every `None` as unknown, and a state transition's or a `TxDraft` send's `None` never allows a retry (reviews Opus r2 1a, DW-E0-08 r2 N-1). `discard_registration` consults it for the registration's funding; a top-up retry, a payment retry and "Register again" do too. `finish_asset_locks` is **not** gated: it resumes committed locks, which are never `NotSent` (review Opus r2 1a). |
-| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. |
+| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. P2a provides `note_seen` and `note_executed` but no production caller feeds them yet (the wallet's transaction-seen and confirmation paths, proved execution results): that wiring is **BL-76**, owned by P2b/E0-05 (review Opus high O-2). Until then a cut First stays `MaybeSent`, which fails safe. |
 | H13 | Mode B: each library write call runs under a call permit, taken in a J step that checks the lease and charges the call's quoted budget. A funding call or a resumable step first has its marker written, with the `Committing` pattern (§2a.3). The engine's signer adapters count the signatures released per call permit. |
 | H14 | **Every lock request runs its own vault gate** (review GPT r2 8). Each `lock_vault` call (async, the FFI's sync lock, the relock timer, auto lock) runs `vault.lock()` after its own freeze, and returns only after that gate. Concurrent requests share only the drain. An unlock (`NetworkSession::unlock`) waits while any lock gate is pending, so a lock request is always ordered before an unlock issued after its call. The epoch that a lock ends is always one that existed at or after its call. |
 | H15 | Mode B: the statuses of §2a.5 are derived on every `list_tracked_locks` change, at load and at each call's end. Definite resolutions are written with their marker (`FULL`). |
@@ -1663,7 +1675,8 @@ returns, too late to record a hand-off. So:
   (review r2 M2). Only a journal that keeps failing until a crash can lose it; the next process then reads the
   markers as superseded (an accepted residual: DEC-154 (3) asks for the in-memory obligation).
 - **Close** (review r2 L1). Closing the journal gives each owed `Sent` row a last try, stops new writes and waits
-  for the running ones, so none of this session lands after the next session's sweep.
+  for the running ones, `register` writes included (review Opus high O-5), so none of this session lands after the
+  next session's sweep. A flow task registered after close aborted the tasks is aborted at once (O-8).
 - **Wallet removal** (DEC-160, DEC-163). The removal compacts the wallet's log with the sweep's predicate inside
   its delete and forgets only what it erased and nothing newer (the guard of §6.5). An idle step that ended
   possibly sent keeps its standing marker through the removal, and a copy admitted during the erase Resends on
@@ -2234,6 +2247,14 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
   mutations whose races the stress hits too rarely are caught by the regressions: `BundleOwedOnly` (the bundle
   skips markers the engine holds durable, the 92d676b behaviour) by three, Sol's r4 probe among them;
   `SplitBundle` (markers and `Sent` row as separate statements) by two; `ForgetNewer` (no guard) by two.
+- **Opus high review**: Opus's O-1 probe, inverted, is a regression. The same bytes admitted for a second wallet
+  while the first wallet's attempt runs (or after it ended possibly sent) are `Deferred`; each wallet's Spend charge
+  is refunded once, by its own settlement, and another wallet's lease cannot unbind it. `ArtifactKeyed` (row-less
+  state keyed by artifact alone, as before) is caught by it; the stress draws artifacts per wallet. The reaper ends a
+  lock-revoked lease an idle period later and forgets it after another (O-3); closing the journal waits for a running
+  `register` write (O-5); a task registered after close is aborted (O-8). DEC-134 (3)'s engine test makes the
+  vault's deletion fail and checks that the wallet stays listed and usable, its grant is consumed and its flow's
+  lease is revoked.
 
 **[A+B] Row-less attempts and step markers (rev1)**
 - **Concurrent holders** (GPT 1): O's First and R's Resend of the same bytes; O definitely rejected, the lock comes,
@@ -2514,7 +2535,8 @@ the contract's prose differs, E0-08 matches this section; §15 lists the lines.
 - A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A call
   that needs a purpose the lease lacks gets `platform.needs_grant{purpose}`. Another wallet's lease, or an unknown
   id, is `platform.grant_invalid` (N-6).
-- **The idle reaper** ends a vault-key lease after 10 minutes with no call, no permit and no running flow task.
+- **The idle reaper** ends a vault-key lease, or a revoked one, after 10 minutes with no call, no permit and no
+  running flow task.
 - `FlowKind`: `Registration`, `TopUp`, `Withdraw`, `NameRegistration`, `ProfileEdit`, `ContactRequest`, `Accept`,
   `AcceptAndPay`, `PrivateDetails`, `EnableDashPayKeys`. There is no `Discovery`: `IdentityScan` is a grant, not a
   lease (§3.2). `discover_identities` accepts only an `IdentityScan` grant id; a lease id there is

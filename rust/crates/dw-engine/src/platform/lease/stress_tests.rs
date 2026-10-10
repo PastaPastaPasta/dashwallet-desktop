@@ -178,6 +178,11 @@ pub(crate) enum Mutation {
     /// DEC-163 (3): the removal forgets every artifact the delete returned,
     /// newer state too.
     ForgetNewer,
+    /// Review O-1: row-less state keyed by the artifact alone, so a second
+    /// wallet's copy of the same bytes is not held back by the first's
+    /// attempt. The stress draws artifacts per wallet; the `o1` regression
+    /// catches it.
+    ArtifactKeyed,
 }
 
 impl Mutation {
@@ -202,6 +207,7 @@ impl Mutation {
             Self::BundleOwedOnly,
             Self::SplitBundle,
             Self::ForgetNewer,
+            Self::ArtifactKeyed,
         ]
         .into_iter()
         .find(|m| format!("{m:?}") == name)

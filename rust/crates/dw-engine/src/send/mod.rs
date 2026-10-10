@@ -1679,7 +1679,9 @@ impl PreparedTx {
     /// engine's) of a transaction that will not be sent.
     async fn release(&self, session: &NetworkSession) {
         if let Some((lease, artifact)) = &self.lease {
-            lease.table.unbind_spend(*artifact);
+            lease
+                .table
+                .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
         session
             .spends
@@ -1701,7 +1703,9 @@ impl Drop for PreparedTx {
             return;
         }
         if let Some((lease, artifact)) = &self.lease {
-            lease.table.unbind_spend(*artifact);
+            lease
+                .table
+                .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;

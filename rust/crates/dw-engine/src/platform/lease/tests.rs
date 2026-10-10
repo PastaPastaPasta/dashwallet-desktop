@@ -625,6 +625,25 @@ async fn the_reaper_ends_idle_vault_key_leases_and_forgets_them_later() {
     assert!(t.lease(&other.id(), &W2).is_ok());
 }
 
+/// Review O-3: a lease a lock revoked is ended by the reaper once idle
+/// (its cause readable until then), and forgotten an idle period later.
+#[tokio::test(start_paused = true)]
+async fn the_reaper_collects_leases_a_lock_revoked() {
+    let (t, _) = table();
+    let idle = LeaseConfig::default().idle;
+    let a = begin(&t, W, 0, 1, 0).await.unwrap();
+    t.lock(RevokeCause::Lock, status).await;
+    assert_eq!(a.state(), Some(LeaseState::Revoked(RevokeCause::Lock)));
+    t.reap();
+    assert_eq!(a.state(), Some(LeaseState::Revoked(RevokeCause::Lock)));
+    tokio::time::advance(idle).await;
+    t.reap();
+    assert_eq!(a.state(), Some(LeaseState::Ended));
+    tokio::time::advance(idle).await;
+    t.reap();
+    assert_eq!(a.state(), None, "forgotten");
+}
+
 // ---------------------------------------------------------------------------
 // Budgets and rebind (§4.2, §4.3)
 // ---------------------------------------------------------------------------
@@ -700,7 +719,7 @@ async fn spend_charges_bind_to_the_txid_and_refund_on_a_definite_not_sent() {
     // Prepared and abandoned before any admission: refunded.
     draft(&l, art(9), 900);
     assert_eq!(budget(&l, BudgetPurpose::Spend), Some((1_000, 900)));
-    t.unbind_spend(art(9));
+    t.unbind_spend(l.id(), W, art(9));
     assert_eq!(budget(&l, BudgetPurpose::Spend), Some((1_000, 0)));
 
     // Two holders of the same bytes: O's NotSent while R runs is not a
@@ -726,7 +745,7 @@ async fn spend_charges_bind_to_the_txid_and_refund_on_a_definite_not_sent() {
         }
     );
     assert_eq!(t.dispatch_status(W, art(1)), Some(DispatchState::NotSent));
-    t.unbind_spend(art(1));
+    t.unbind_spend(l.id(), W, art(1));
     assert_eq!(
         budget(&l, BudgetPurpose::Spend),
         Some((1_000, 0)),
@@ -751,7 +770,7 @@ async fn spend_charges_bind_to_the_txid_and_refund_on_a_definite_not_sent() {
     draft(&l, art(2), 400);
     let p = first(t.admit(core(&l, art(2))).await);
     assert_eq!(p.finish(Outcome::MaybeSent), Settlement::MaybeOut);
-    t.unbind_spend(art(2));
+    t.unbind_spend(l.id(), W, art(2));
     assert_eq!(
         budget(&l, BudgetPurpose::Spend),
         Some((1_000, 700)),
@@ -760,6 +779,46 @@ async fn spend_charges_bind_to_the_txid_and_refund_on_a_definite_not_sent() {
     let g = resend(t.admit(core(&l, art(2))).await);
     assert_eq!(g.finish(Outcome::Sent), Settlement::Sent);
     assert_eq!(t.dispatch_status(W, art(2)), Some(DispatchState::Sent));
+}
+
+/// Review O-1 (Opus's probe, inverted): the same bytes admitted for a second
+/// wallet while the first wallet's attempt runs wait for it. Neither settles
+/// definitely unsent while the other's attempt may put them out, and each
+/// wallet's Spend charge is refunded once, by its own settlement.
+#[tokio::test(start_paused = true)]
+async fn o1_the_same_bytes_under_two_wallets_never_settle_unsent_while_one_runs() {
+    let (t, _rec) = table();
+    with_journal(&t);
+    let l1 = begin(&t, W, 0, 0, 1_000).await.unwrap();
+    let l2 = begin(&t, W2, 0, 0, 1_000).await.unwrap();
+    draft(&l2, art(5), 500);
+    let p2 = first(t.admit(core(&l2, art(5))).await);
+    draft(&l1, art(5), 400);
+    assert_eq!(t.admit(core(&l1, art(5))).await, Verdict::Deferred);
+    assert_eq!(budget(&l2, BudgetPurpose::Spend), Some((1_000, 500)));
+    assert_eq!(p2.finish(Outcome::NotSent), Settlement::DefinitelyUnsent);
+    assert_eq!(budget(&l2, BudgetPurpose::Spend), Some((1_000, 0)));
+    // W2's tombstone is its own: W's draft of the bytes goes now.
+    let p1 = first(t.admit(core(&l1, art(5))).await);
+    assert_eq!(t.admit(core(&l2, art(5))).await, Verdict::Deferred);
+    assert_eq!(p1.finish(Outcome::NotSent), Settlement::DefinitelyUnsent);
+    assert_eq!(budget(&l1, BudgetPurpose::Spend), Some((1_000, 0)));
+    assert_eq!(budget(&l2, BudgetPurpose::Spend), Some((1_000, 0)));
+    assert_eq!(t.dispatch_status(W, art(5)), Some(DispatchState::NotSent));
+    assert_eq!(t.dispatch_status(W2, art(5)), Some(DispatchState::NotSent));
+
+    // Possibly out under one wallet, the bytes stay held for the other,
+    // and each wallet's binding is its own to release.
+    draft(&l2, art(6), 100);
+    let p = first(t.admit(core(&l2, art(6))).await);
+    assert_eq!(p.finish(Outcome::MaybeSent), Settlement::MaybeOut);
+    draft(&l1, art(6), 200);
+    assert_eq!(t.admit(core(&l1, art(6))).await, Verdict::Deferred);
+    t.unbind_spend(l2.id(), W, art(6));
+    assert_eq!(budget(&l1, BudgetPurpose::Spend), Some((1_000, 200)));
+    t.unbind_spend(l1.id(), W, art(6));
+    assert_eq!(budget(&l1, BudgetPurpose::Spend), Some((1_000, 0)));
+    assert_eq!(budget(&l2, BudgetPurpose::Spend), Some((1_000, 100)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2222,7 +2281,7 @@ async fn r1_f3_the_library_is_not_polled_at_the_deadline() {
 }
 
 fn resolving(t: &LeaseTable, a: ArtifactId) -> bool {
-    t.with_j(|i, _| i.fence.resolving(&a))
+    t.with_j(|i, _| i.fence.resolving(&(W, a)))
 }
 
 /// Review of r1 (fix round): a marker write that returns never settles
@@ -2790,6 +2849,43 @@ async fn r2_l1_closing_the_journal_waits_for_its_writes() {
         j.load().1.iter().any(|r| r.artifact == a.0 && r.sent),
         "the Sent row landed before close returned"
     );
+}
+
+/// Review O-5: closing the journal waits for a running `register` write,
+/// so no `Unsent` row lands after it returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o5_closing_the_journal_waits_for_a_register_write() {
+    let (t, _) = table();
+    let j = with_journal(&t);
+    let l = begin(&t, W, 1_000, 0, 0).await.unwrap();
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let registering = tokio::spawn({
+        let l = l.clone();
+        async move { register(&l, art(1), 100).await }
+    });
+    while !t.with_j(|i, _| i.fence.registering.contains_key(&(W, art(1)))) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    t.close_journal().await;
+    assert!(t.with_j(|i, _| i.fence.registering.is_empty()));
+    assert_eq!(
+        j.rows.lock().unwrap().len(),
+        1,
+        "the row landed before close returned"
+    );
+    registering.await.unwrap().unwrap();
+}
+
+/// Review O-8: a flow task registered after close's `abort_tasks` ran is
+/// aborted at once.
+#[tokio::test(start_paused = true)]
+async fn o8_a_task_registered_after_close_is_aborted() {
+    let (t, _) = table();
+    let l = begin(&t, W, 0, 1, 0).await.unwrap();
+    t.with_j(|i, _| i.closed = true);
+    let task = tokio::spawn(std::future::pending::<()>());
+    l.register_task(task.abort_handle());
+    assert!(task.await.unwrap_err().is_cancelled());
 }
 
 /// Review r2 M2: a `Sent` row left owed with no later write or sighting

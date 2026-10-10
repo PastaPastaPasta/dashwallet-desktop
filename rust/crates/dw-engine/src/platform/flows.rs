@@ -188,7 +188,9 @@ impl NetworkSession {
         self.require_wallet(&wallet_id).map_err(engine)?;
         let id = lease.id_string();
         // The session owns it until `end_flow`; owners of leases that ended
-        // otherwise (reaper, lock) go now.
+        // otherwise go now. A lease a lock revoked keeps its owner, so the
+        // host can still read the cause, until the reaper ends it an idle
+        // period later (review O-3).
         let ended: Vec<super::lease::Lease> = {
             let mut owners = self.flow_leases.lock().unwrap_or_else(|e| e.into_inner());
             let ended = owners

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use dashcore::secp256k1::Secp256k1;
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen};
+use dw_engine::platform::{FlowKind, LeaseStateView, RevokeCause};
 use dw_engine::{
     AddressChain, AddressFilter, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent,
     EventSink, HistoryFilter, HistoryQuery, HistorySort, ImportOptions, NetworkSession, NoticeCode,
@@ -305,8 +306,37 @@ fn remove_wallet_fails_closed_when_the_seed_cannot_be_deleted() {
     // atomic rename (dw-vault `file::write`) makes the deletion fail.
     let obstruction = s.vault().dir().join("vault.dwv.tmp");
     std::fs::create_dir(&obstruction).unwrap();
-    let r = engine.block_on(s.remove_wallet(a, wipe(&s)));
+    // A flow of the wallet running when the removal starts.
+    let op = s
+        .vault()
+        .authorize(
+            GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: 1,
+            },
+            Some(&a.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine
+        .block_on(s.begin_flow(a, FlowKind::ContactRequest, vec![op]))
+        .unwrap();
+    let grant = wipe(&s);
+    let r = engine.block_on(s.remove_wallet(a, grant.clone()));
     assert!(matches!(r, Err(EngineError::Vault(_))), "{r:?}");
+    // The documented cost of failing closed (review Opus high, DEC-134 (3)):
+    // the grant is consumed and the wallet's leases are revoked.
+    assert!(matches!(
+        engine.block_on(s.remove_wallet(a, grant)),
+        Err(EngineError::Vault(_))
+    ));
+    assert_eq!(
+        s.leases().unwrap()[0].state,
+        LeaseStateView::Revoked {
+            cause: RevokeCause::WalletRemoved
+        }
+    );
     // Nothing of the wallet is removed, and it stays usable.
     assert_eq!(
         s.wallet_infos()
