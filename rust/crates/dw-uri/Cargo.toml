@@ -8,9 +8,9 @@ publish.workspace = true
 description = "dash: URI parsing/writing (dash-qt exact and iOS superset), deep-link and address classification"
 
 [dependencies]
-# Same git source and revision that dashpay/platform bc41f1bc23 pins, so the
+# Same git source and revision that dashpay/platform f475f72a11 pins, so the
 # workspace resolves one copy whether or not it declares the dependency.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "40268cc0402a8933ec539f16b2d634c4e25876ad", default-features = false, features = ["secp-recovery"] }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "8fe0a38170059742ff902acc29a696b72490903c", default-features = false, features = ["secp-recovery"] }
 dw-units = { path = "../dw-units" }
 zeroize = "1.8"
 # Module matrices only: the image/svg renderers stay off.
