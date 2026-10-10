@@ -152,6 +152,42 @@ async fn a_failed_call_with_a_released_signature_is_maybe_sent() {
     assert_eq!(flow(&report, &l).outcome, FlowOutcome::MaybeSent);
 }
 
+/// Review M-1: the count closes when the permit ends. A signature asked of
+/// the vault before the end counts, so the call reads `MaybeSent` (the
+/// vault may sign it after the end); one asked after the end is refused
+/// and stays counted (fail closed); one the vault refused counts nothing.
+#[tokio::test(start_paused = true)]
+async fn the_count_closes_at_the_permits_end() {
+    let (t, _) = table();
+    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    let p = l
+        .call_permit("DashPay.register_name", credits(400))
+        .unwrap();
+    let count = p.signatures();
+    // The vault refused one: nothing released, nothing pending.
+    drop(count.begin().expect("open"));
+    let signing = count.begin().expect("open");
+    drop(p);
+    assert_eq!(
+        flow(&t.lock(RevokeCause::Lock, status).await, &l).outcome,
+        FlowOutcome::MaybeSent,
+        "a signature in flight at the end counts"
+    );
+    signing.released();
+    assert_eq!(count.released(), 1);
+    assert!(count.begin().is_none(), "closed: refused");
+
+    // A signature refused by the vault before the end is no signature.
+    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    let p = l
+        .call_permit("DashPay.register_name", credits(400))
+        .unwrap();
+    let count = p.signatures();
+    drop(count.begin().expect("open"));
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled);
+    assert!(count.begin().is_none());
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_dropped_permit_counts_as_a_failed_call() {
     let (t, _) = table();

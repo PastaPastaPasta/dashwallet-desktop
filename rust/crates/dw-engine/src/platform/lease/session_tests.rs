@@ -1288,6 +1288,83 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
     permit(&step, own).unwrap().finish(true);
 }
 
+/// Review M-1: a counting signer kept past its permit (a clone the library
+/// still holds) signs nothing. A signature being signed when the permit
+/// ends counts: the step reads `MaybeSent`, not `NotSent`.
+#[test]
+fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
+    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dpp::identity::signer::Signer as _;
+    use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let dashpay = s.dashpay(f.wallet);
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 5_000)])
+        .unwrap();
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            STEP.into(),
+            FundingKey {
+                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index: 0,
+                account: 0,
+            },
+        ))
+        .unwrap();
+    let kept = permit.funding_signer().unwrap().clone();
+    let identity = permit.identity_signer(&[0]).unwrap().clone();
+    let count = permit.signatures();
+    // The library is inside `sign_ecdsa` when the permit is dropped.
+    let in_flight = count.begin().expect("open");
+    drop(permit);
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap(),
+        Some(DispatchState::MaybeSent),
+        "neither Cancelled nor NotSent"
+    );
+    drop(in_flight);
+    // Used afterwards: refused, nothing signed.
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    assert!(matches!(
+        f.engine.block_on(kept.sign_ecdsa(&path, [1; 32])),
+        Err(dw_vault::SignerError::Locked)
+    ));
+    let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        id: 0,
+        purpose: Purpose::AUTHENTICATION,
+        security_level: SecurityLevel::HIGH,
+        contract_bounds: None,
+        key_type: KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![2; 33].into(),
+        disabled_at: None,
+    });
+    assert!(matches!(
+        f.engine.block_on(identity.sign(&key, b"data")),
+        Err(dpp::ProtocolError::ExternalSignerError(m)) if m == dw_vault::SignerError::Locked.to_string()
+    ));
+    assert_eq!(count.released(), 0);
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap(),
+        Some(DispatchState::MaybeSent)
+    );
+}
+
 /// The library's broadcast for Repair's self-spend: accepts, and records
 /// what it was handed and the step's self-spends at that moment.
 struct SelfSpendSeam {

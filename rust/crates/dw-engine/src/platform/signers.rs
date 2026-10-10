@@ -131,6 +131,19 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 InvalidIdentityPublicKeyTypeError::new(key.key_type()),
             ));
         }
+        // Counted before the vault is asked (E0-04 review M-1): refused
+        // once the call permit ended.
+        let signing = match &self.count {
+            Some(count) => match count.begin() {
+                Some(signing) => Some(signing),
+                None => {
+                    return Err(ProtocolError::ExternalSignerError(
+                        SignerError::Locked.to_string(),
+                    ));
+                }
+            },
+            None => None,
+        };
         for &identity_index in &self.identity_indices {
             let Some(path) = self.slot(identity_index, key) else {
                 continue;
@@ -140,8 +153,8 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 .sign_identity(&path, key.data().as_slice(), data)
             {
                 Ok(signature) => {
-                    if let Some(count) = &self.count {
-                        count.note_released();
+                    if let Some(signing) = signing {
+                        signing.released();
                     }
                     return Ok(signature.to_vec().into());
                 }
@@ -190,7 +203,8 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 /// (E0-04 §2a.3): it delegates every call to the vault signer and reports
 /// each released signature, and any `Locked` refusal, to the call permit's
 /// count. A public key or xpub is no signature: only `sign_ecdsa` counts as
-/// released. Whatever key-wallet's builder requires of a signer
+/// released, counted before the vault is asked, and refused `Locked` once
+/// the permit ended (review M-1, `SignatureCount`). Whatever key-wallet's builder requires of a signer
 /// (`TransactionSigner` is implemented for every `Signer`) comes through
 /// these two traits.
 #[derive(Debug, Clone)]
@@ -225,8 +239,11 @@ impl key_wallet::Signer for CountingFundingSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        let Some(signing) = self.count.begin() else {
+            return Err(SignerError::Locked);
+        };
         let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
-        self.count.note_released();
+        signing.released();
         Ok(signed)
     }
 

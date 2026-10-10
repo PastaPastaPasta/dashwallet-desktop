@@ -162,10 +162,51 @@ impl CallStep {
 
 /// The signatures released during one call permit (§2a.3): host-visible,
 /// and it only grows.
+///
+/// Only the permit's own signers count ([`CallPermit::identity_signer`],
+/// [`CallPermit::funding_signer`]); `Lease::identity_signer` and
+/// `Lease::funding_signer` do not, and no Mode B library call may use them.
+///
+/// **A signer cannot outlive its permit** (review M-1). A counting signer
+/// may be cloned and kept past the permit's end, so the count closes when
+/// the permit ends ([`Self::close`]), and every signature is counted before
+/// the vault is asked for it: the signer first adds it to `signing`, then
+/// reads `closed`, and refuses (`Locked`) when the permit has ended; the
+/// permit's end sets `closed` first, then reads `signing` and `released`
+/// (all `SeqCst`). So either the signer sees `closed` and asks the vault
+/// for nothing, or the end sees the signature, released or still being
+/// signed, and the call reads `MaybeSent`. A signing the vault refused is
+/// taken back out of `signing`: no signature exists, so it never turns a
+/// `Cancelled` into a `MaybeSent`. A refusal after the close leaves its
+/// count standing (the end may have read it: fail closed).
 #[derive(Debug, Default)]
 pub struct SignatureCount {
     released: AtomicU64,
+    /// Signatures asked of the vault and not yet returned.
+    signing: AtomicU64,
     locked: AtomicBool,
+    /// The permit has ended: its signers sign nothing more.
+    closed: AtomicBool,
+}
+
+/// One signature asked of the vault under a [`SignatureCount`] (counted in
+/// `signing`). [`Self::released`] when the vault signed; dropped
+/// otherwise, which takes it back out.
+#[must_use]
+pub(crate) struct Signing<'a>(&'a SignatureCount);
+
+impl Signing<'_> {
+    /// The vault signed: counted released (before it leaves `signing`, so
+    /// a reader of `signing` then `released` never misses it).
+    pub(crate) fn released(self) {
+        self.0.released.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Signing<'_> {
+    fn drop(&mut self) {
+        self.0.signing.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl SignatureCount {
@@ -178,12 +219,35 @@ impl SignatureCount {
         self.locked.load(Ordering::SeqCst)
     }
 
+    /// A released signature, as a counting signer reports one (tests).
+    #[cfg(test)]
     pub(crate) fn note_released(&self) {
         self.released.fetch_add(1, Ordering::SeqCst);
     }
 
     pub(crate) fn note_locked(&self) {
         self.locked.store(true, Ordering::SeqCst);
+    }
+
+    /// A signer is about to ask the vault for one signature: counted
+    /// first, then refused (`None`) when the permit has ended (type doc).
+    pub(crate) fn begin(&self) -> Option<Signing<'_>> {
+        self.signing.fetch_add(1, Ordering::SeqCst);
+        if self.closed.load(Ordering::SeqCst) {
+            // Left counted: the end may have read it (fail closed).
+            return None;
+        }
+        Some(Signing(self))
+    }
+
+    /// The permit's end: no signer signs from here on. Returns the
+    /// signatures that were released or may still be (type doc).
+    pub(crate) fn close(&self) -> u64 {
+        self.closed.store(true, Ordering::SeqCst);
+        // `signing` first: a signing that left it was counted released
+        // before.
+        let signing = self.signing.load(Ordering::SeqCst);
+        signing.saturating_add(self.released.load(Ordering::SeqCst))
     }
 }
 
@@ -518,7 +582,8 @@ impl CallPermit {
 
     /// The lease's identity signer, counting into this permit. Issued while
     /// the lease signs, even with the Credits budget at 0: the permit's J
-    /// step charged the call's quote already.
+    /// step charged the call's quote already. It signs nothing once the
+    /// permit ended, clones included ([`SignatureCount`]).
     pub fn identity_signer(
         &self,
         identity_indices: &[u32],
@@ -531,7 +596,8 @@ impl CallPermit {
 
     /// The lease's funding signer for `create_funded_asset_lock_proof`,
     /// counting into this permit: every released signature and a `Locked`
-    /// refusal, as [`Self::identity_signer`]'s.
+    /// refusal, as [`Self::identity_signer`]'s, and nothing signed once the
+    /// permit ended.
     pub fn funding_signer(&self) -> Result<CountingFundingSigner, LeaseError> {
         Ok(CountingFundingSigner::new(
             self.lease.call_funding_signer()?,
@@ -552,7 +618,9 @@ impl CallPermit {
     }
 
     fn end(&mut self, ok: bool) -> FlowOutcome {
-        let released = self.signatures.released();
+        // Closed before it is read: a signer used after this signs nothing
+        // (`SignatureCount`).
+        let released = self.signatures.close();
         let locked = self.signatures.locked();
         // A call never handed out never started: nothing of it was sent.
         let outcome = if ok {

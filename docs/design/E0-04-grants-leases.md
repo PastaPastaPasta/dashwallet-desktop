@@ -576,7 +576,9 @@ call permit when its task lands.
 **What DP1-02 builds on.**
 - `CallPermit::funding_signer()` (a `CountingFundingSigner`) and `CallPermit::identity_signer(indices)`: every
   released signature and a `Locked` refusal count into the permit. Both are issued with the budget at 0, since the
-  permit's J step charged the quote.
+  permit's J step charged the quote. Only these count (`Lease::identity_signer` does not). A signature is counted
+  before the vault is asked for it, and the count closes at the permit's end: a signer (or a clone of it) used after
+  the end refuses `Locked`, and one in flight at the end makes the call `MaybeSent` (review M-1).
 - `NetworkSession::funding_call_permit(lease, label, amount, step, key)` (`Lease::call_permit_step` with
   `CallStep::Funding{step, key}`): the funding gate, then the marker made durable, then the permit, charged
   `amount + fee_bound_worst`. It refuses (`invalid_argument`, before any charge or marker) a step that is no funding
