@@ -203,8 +203,8 @@ impl VaultSigner {
                 (KeyUse::ContactInfo, &data_path),
             ],
             |op| {
-                let enc_key = op.with_key(&enc_path, KeyUse::ContactInfo, |x| secret_bytes(x))?;
-                let data_key = op.with_key(&data_path, KeyUse::ContactInfo, |x| secret_bytes(x))?;
+                let enc_key = op.with_key(&enc_path, KeyUse::ContactInfo, secret_bytes)?;
+                let data_key = op.with_key(&data_path, KeyUse::ContactInfo, secret_bytes)?;
                 Ok(f(&enc_key, &data_key))
             },
         )
@@ -256,7 +256,7 @@ impl VaultSigner {
         path: &DerivationPath,
     ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
         require(paths::is_auto_accept_key(path, self.network()), path)?;
-        self.with_key(path, KeyUse::Export, |x| secret_bytes(x))
+        self.with_key(path, KeyUse::Export, secret_bytes)
     }
 }
 
