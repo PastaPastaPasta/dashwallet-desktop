@@ -93,7 +93,7 @@ out = {
         "task": "dashwallet-desktop DP1-01",
         "ios": "dashpay/dashwallet-ios 37c0e78a2f557fa35c98c051a4ce40b77be350ee "
                "(DWDashPayIdentityKeys.swift last changed in 6836db798b)",
-        "platform": "dashpay/platform bc41f1bc233dec4607d387101c1d9c2f111019b2",
+        "platform": "PastaPastaPasta/platform ebe37f8a679b1a552483dc7ff12c306291e9a32b",
         "how": "See fixtures/README.md. Every public key and path agrees between "
                "an independent from-scratch Python derivation and the "
                "rs-platform-wallet-ffi entry points SwiftDashSDK calls; keys 0-3 "
