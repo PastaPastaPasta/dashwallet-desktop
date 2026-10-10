@@ -658,6 +658,43 @@ fn tracked_asset_lock_inputs_are_not_selectable() {
     selectable("untracked");
 }
 
+/// DEC-179: a `PreparedTx` releases its own claim on its inputs, never the
+/// coin: a coin another owner (a registration lock, a CoinJoin session)
+/// also holds stays reserved through the abandon and the drop.
+#[test]
+fn a_prepared_tx_releases_only_its_own_claim() {
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let other = SpendOwner::mixing_session();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepare = || {
+        f.engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+            .unwrap()
+    };
+
+    let p = prepare();
+    let mine = SpendOwner::Tx(p.summary().txid.parse().unwrap());
+    assert_eq!(f.session.spends.held_by(&f.wallet, mine), [a].into());
+    f.session.spends.reserve(f.wallet, other, [a]);
+    f.engine.block_on(draft.abandon(Arc::clone(&p))).unwrap();
+    assert!(f.session.spends.held_by(&f.wallet, mine).is_empty());
+    assert_eq!(f.reserved(), vec![a]);
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.estimate())),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    );
+
+    f.session.spends.release(&f.wallet, other);
+    assert!(f.reserved().is_empty());
+    let p = prepare();
+    f.session.spends.reserve(f.wallet, other, [a]);
+    drop(p);
+    assert_eq!(f.reserved(), vec![a]);
+    f.session.spends.release(&f.wallet, other);
+    assert!(f.reserved().is_empty());
+}
+
 #[test]
 fn broadcast_needs_spv_and_drop_releases() {
     let f = fixture(false);

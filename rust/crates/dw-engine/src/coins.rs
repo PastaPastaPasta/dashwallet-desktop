@@ -29,7 +29,8 @@
 //! - an engine build (a `TxDraft`'s prepare, Repair's self-spend, CoinJoin's
 //!   denomination and collateral funding, "Move mixed coins") holds one
 //!   fence from its coin read through its selection, its signing and the
-//!   reservation of its inputs ([`crate::send::PendingSpends`]);
+//!   reservation of its inputs ([`crate::send::PendingSpends`], under the
+//!   build's own [`crate::send::SpendOwner`], DEC-179);
 //! - a library funding call holds the fence its policy check read the coins
 //!   under ([`NetworkSession::fenced_coins`]) inside its call permit, until
 //!   the library has tracked the lock it signed (`Built`, whose inputs then

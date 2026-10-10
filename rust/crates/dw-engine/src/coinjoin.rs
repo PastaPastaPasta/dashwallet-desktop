@@ -65,6 +65,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::coins::{CoinFence, WalletCoin, now_secs};
+use crate::send::SpendOwner;
 use crate::{EngineError, EngineEvent, NetworkSession, WalletId};
 
 /// Why a CoinJoin call failed (`coinjoin.*` codes).
@@ -326,11 +327,12 @@ struct Mixer {
     last_success_height: u32,
     stop: Option<watch::Sender<bool>>,
     task: Option<JoinHandle<()>>,
-    /// Inputs of successful sessions waiting for the final transaction, with
+    /// Inputs of successful sessions waiting for the final transaction, per
+    /// holding session (two sessions may have locked the same coin), with
     /// the time they were added.
-    held: HashMap<OutPoint, u64>,
-    /// Collateral inputs locked for open sessions.
-    collateral_inputs: HashMap<u64, Vec<OutPoint>>,
+    held: HashMap<(OutPoint, SpendOwner), u64>,
+    /// Collateral inputs locked for open sessions, with each session's owner.
+    collateral_inputs: HashMap<u64, (SpendOwner, Vec<OutPoint>)>,
 }
 
 /// Per-session CoinJoin state (one per [`NetworkSession`]).
@@ -1236,7 +1238,7 @@ impl NetworkSession {
 
     /// Stops a wallet's loop and sessions and records why.
     pub(crate) fn halt_mixing(&self, wallet_id: WalletId, reason: StopReason) {
-        let collateral: Vec<OutPoint>;
+        let collateral: Vec<(SpendOwner, Vec<OutPoint>)>;
         {
             let mut mixers = self.coinjoin.mixers();
             let Some(m) = mixers.get_mut(&wallet_id) else {
@@ -1255,11 +1257,13 @@ impl NetworkSession {
             for s in m.sessions.values() {
                 let _ = s.stop.send(true);
             }
-            collateral = m.collateral_inputs.drain().flat_map(|(_, v)| v).collect();
+            collateral = m.collateral_inputs.drain().map(|(_, v)| v).collect();
         }
         // Sessions release their own inputs and outputs as they end; the
         // collateral inputs are released here.
-        self.spends.remove(&wallet_id, collateral);
+        for (owner, inputs) in collateral {
+            self.spends.release_some(&wallet_id, owner, inputs);
+        }
         if !self.coinjoin.any_mixing()
             && let Some(t) = self
                 .coinjoin
@@ -1559,13 +1563,14 @@ impl NetworkSession {
                     .ok_or_else(|| EngineError::Internal("input without a derivation path".into()))
             })
             .collect::<Result<_, _>>()?;
-        let outpoints: Vec<OutPoint> = coins.iter().map(|c| c.coin.utxo.outpoint).collect();
-        self.spends.add(wallet_id, outpoints.iter().copied());
         if let Err(e) = sign_p2pkh_inputs(&signer, &mut tx, &to_sign, SIGHASH_ALL).await {
-            self.spends.remove(&wallet_id, outpoints);
             self.release_coinjoin_addresses(wallet_id, &reserved).await;
             return Err(e);
         }
+        // Reserved under the fence, as the signed transaction's own claim.
+        let owner = SpendOwner::Tx(tx.txid());
+        self.spends
+            .reserve(wallet_id, owner, coins.iter().map(|c| c.coin.utxo.outpoint));
         drop(fence.take());
         match wallet.core().broadcast_transaction(&tx).await {
             Ok(txid) => {
@@ -1583,7 +1588,7 @@ impl NetworkSession {
                 Ok(tx.txid())
             }
             Err(e) => {
-                self.spends.remove(&wallet_id, outpoints);
+                self.spends.release(&wallet_id, owner);
                 self.release_coinjoin_addresses(wallet_id, &reserved).await;
                 Err(CoinJoinFailure::BroadcastRejected(e.to_string()).into())
             }
@@ -1970,6 +1975,7 @@ impl NetworkSession {
     ) {
         let settings = self.coinjoin.settings();
         let (stop, stop_rx) = watch::channel(false);
+        let owner = SpendOwner::mixing_session();
         let key = {
             let mut mixers = self.coinjoin.mixers();
             let Some(m) = mixers.get_mut(&wallet_id).filter(|m| m.mixing) else {
@@ -1992,11 +1998,12 @@ impl NetworkSession {
                     stop,
                 },
             );
-            m.collateral_inputs.insert(key, vec![collateral_input]);
+            m.collateral_inputs
+                .insert(key, (owner, vec![collateral_input]));
             m.status = Some(StatusCode::TryingToConnect);
             key
         };
-        self.spends.add(wallet_id, [collateral_input]);
+        self.spends.reserve(wallet_id, owner, [collateral_input]);
         let params = SessionParams::new(
             self.network.core_network(),
             mn,
@@ -2007,6 +2014,7 @@ impl NetworkSession {
         let adapter = EngineMixingWallet {
             session: Arc::downgrade(self),
             wallet_id,
+            owner,
             reserved: Mutex::new(Vec::new()),
         };
         let weak = Arc::downgrade(self);
@@ -2023,7 +2031,8 @@ impl NetworkSession {
             let Some(this) = weak.upgrade() else { return };
             this.release_coinjoin_addresses(wallet_id, &collateral_addrs)
                 .await;
-            this.spends.remove(&wallet_id, [collateral_input]);
+            this.spends
+                .release_some(&wallet_id, owner, [collateral_input]);
             let height = this
                 .hub
                 .wallet_state(&wallet_id)
@@ -2038,7 +2047,7 @@ impl NetworkSession {
                         SessionOutcome::Success { inputs } => {
                             let now = now_secs();
                             for i in inputs {
-                                m.held.insert(*i, now);
+                                m.held.insert((*i, owner), now);
                             }
                             m.last_success_height = height.max(1);
                             m.status = Some(StatusCode::Masternode(PoolMessage::Success));
@@ -2074,25 +2083,27 @@ impl NetworkSession {
     fn expire_held(&self, wallet_id: WalletId) {
         let now = now_secs();
         let reserved = self.spends.snapshot(&wallet_id);
-        let expired: Vec<OutPoint> = {
+        let expired: Vec<(OutPoint, SpendOwner)> = {
             let mut mixers = self.coinjoin.mixers();
             let Some(m) = mixers.get_mut(&wallet_id) else {
                 return;
             };
             // Gone from the reserved set: the wallet saw them spent.
-            m.held.retain(|o, _| reserved.contains(o));
-            let expired: Vec<OutPoint> = m
+            m.held.retain(|(o, _), _| reserved.contains(o));
+            let expired: Vec<(OutPoint, SpendOwner)> = m
                 .held
                 .iter()
                 .filter(|(_, at)| now.saturating_sub(**at) >= PENDING_OBSERVATION_SECS)
-                .map(|(o, _)| *o)
+                .map(|(held, _)| *held)
                 .collect();
-            for o in &expired {
-                m.held.remove(o);
+            for held in &expired {
+                m.held.remove(held);
             }
             expired
         };
-        self.spends.remove(&wallet_id, expired);
+        for (o, owner) in expired {
+            self.spends.release_some(&wallet_id, owner, [o]);
+        }
     }
 
     // ---- recovery and moving mixed coins ---------------------------------
@@ -2284,7 +2295,7 @@ impl NetworkSession {
                         // Nothing was broadcast: give back every reservation.
                         for (unsent, _) in &signed {
                             this.spends
-                                .remove(&wallet_id, unsent.input.iter().map(|i| i.previous_output));
+                                .release(&wallet_id, SpendOwner::Tx(unsent.txid()));
                         }
                         return Err(e.into());
                     }
@@ -2316,8 +2327,11 @@ impl NetworkSession {
                     sign_failure = Some(e.code().to_string());
                     break;
                 }
-                this.spends
-                    .add(wallet_id, tx.input.iter().map(|i| i.previous_output));
+                this.spends.reserve(
+                    wallet_id,
+                    SpendOwner::Tx(tx.txid()),
+                    tx.input.iter().map(|i| i.previous_output),
+                );
                 signed.push((tx, chunk.amount + chunk.fee));
             }
             drop(fence);
@@ -2333,7 +2347,7 @@ impl NetworkSession {
                         // This chunk and the unsent ones after it.
                         for (unsent, _) in &signed[n..] {
                             this.spends
-                                .remove(&wallet_id, unsent.input.iter().map(|i| i.previous_output));
+                                .release(&wallet_id, SpendOwner::Tx(unsent.txid()));
                         }
                         result.failure_code = Some(
                             if e.to_string().to_lowercase().contains("no peers") {
@@ -2437,6 +2451,8 @@ async fn mixing_loop(
 struct EngineMixingWallet {
     session: Weak<NetworkSession>,
     wallet_id: WalletId,
+    /// The session's claim on the coins it locks (DEC-179).
+    owner: SpendOwner,
     /// Addresses reserved for this session's outputs.
     reserved: Mutex<Vec<Address>>,
 }
@@ -2498,13 +2514,15 @@ impl MixingWallet for EngineMixingWallet {
 
     fn lock_coins(&self, outpoints: &[OutPoint]) {
         if let Ok(s) = self.session() {
-            s.spends.add(self.wallet_id, outpoints.iter().copied());
+            s.spends
+                .reserve(self.wallet_id, self.owner, outpoints.iter().copied());
         }
     }
 
     fn unlock_coins(&self, outpoints: &[OutPoint]) {
         if let Ok(s) = self.session() {
-            s.spends.remove(&self.wallet_id, outpoints.iter().copied());
+            s.spends
+                .release_some(&self.wallet_id, self.owner, outpoints.iter().copied());
         }
     }
 

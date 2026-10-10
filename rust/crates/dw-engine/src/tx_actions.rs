@@ -357,7 +357,12 @@ impl NetworkSession {
                 }
             }
         });
-        self.spends.remove(&wallet, released.iter().copied());
+        // Each abandoned transaction's own claim (DEC-179); a coin another
+        // owner holds stays reserved.
+        for t in &abandoned {
+            self.spends
+                .release(&wallet, crate::send::SpendOwner::Tx(*t));
+        }
 
         // The released coins come back when the filter scan passes their
         // funding blocks again.

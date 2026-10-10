@@ -627,7 +627,7 @@ call permit when its task lands.
     (`coin_snapshot` requires a `&CoinFence`, so dust locks are applied only under it): `utxos`, `max_spendable`,
     `coin_selection_summary`, `TxDraft::estimate` and `create_unsigned`, CoinJoin's status, start, recovery scan,
     sweep plan and session coin reads; and one fence held from the coin read through selection, signing and the
-    reservation (`PendingSpends::add`) by `TxDraft::prepare` (every path: plain, leased, CoinJoin source, Repair's
+    reservation (`PendingSpends::reserve`) by `TxDraft::prepare` (every path: plain, leased, CoinJoin source, Repair's
     self-spend), CoinJoin's automatic pass (denomination and collateral funding spend BIP44 coins; released before
     the funding transaction's broadcast) and "Move mixed coins" (every chunk signed and reserved under it, released
     before the broadcasts; a failed broadcast gives back its chunk's and the later chunks' reservations).
@@ -642,6 +642,23 @@ call permit when its task lands.
     its coins does not stop that session from spending a denomination it already picked; the next session's read
     honours it. Such inputs are the CoinJoin account's own denominations, never BIP44 coins, and a session's
     reservation excludes them from a concurrent "Move mixed coins" plan read after it.
+
+- **Owner-keyed reservations** (DEC-179). `PendingSpends` maps each outpoint to the set of owners that claim it
+  (`SpendOwner`); every reserve names its owner, a release removes only that owner's claim, and a coin stays
+  reserved while any owner holds it. Seen spent, every claim on the coin goes (`retain_unspent`); a wallet's unload
+  drops them all.
+  - `SpendOwner::Tx(txid)`: a transaction the engine signed, reserved under the fence after signing: a `PreparedTx`
+    (`PreparedTx::owner`; accepted, abandoned, dropped while pending or never sent releases it by owner, never by
+    outpoint), a CoinJoin funding transaction, a "Move mixed coins" chunk. Abandoning a transaction from history
+    (`tx_actions`) releases each abandoned txid's claim.
+  - `SpendOwner::Mixing(token)`: one fresh token per mixing session (`SpendOwner::mixing_session()`), for its
+    collateral input and the inputs it locks; a success's inputs stay held under it until the observation timeout.
+  - The API: `reserve(wallet, owner, outpoints)`, `release(wallet, owner)`, `release_some(wallet, owner,
+    outpoints)` (that owner's claims on those coins only), `snapshot(wallet)` (coins any owner holds).
+    DP1-02 adds its registration lock's owner as a new variant.
+  - Held inputs are kept per (outpoint, session), so two sessions that locked the same coin each release their own
+    claim at the observation timeout. Residual (as before DEC-179): that timeout runs only in the mixing loop, so a
+    success's held inputs stay reserved after mixing stops, until seen spent, mixing restarts or the wallet unloads.
 
 **Decisions taken in P2b** (the manager's rulings D1–D5 on its plan, and the implementation's):
 - D2: `register_name` takes a lease id or a raw grant; a raw grant is checked without consuming it, then redeemed

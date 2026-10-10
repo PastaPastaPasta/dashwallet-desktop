@@ -330,63 +330,142 @@ pub struct BroadcastOutcome {
     pub txid: String,
 }
 
-/// Inputs of prepared transactions that are neither accepted by the network
-/// nor released, per wallet and per session (in memory). Coin listings mark
-/// them `reserved` and selection skips them (key-wallet keeps its own
-/// reservations private).
+/// Who holds a spend reservation (DEC-179). Every reserve and release names
+/// its owner; a release removes only that owner's claim, and a coin stays
+/// reserved while any owner holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum SpendOwner {
+    /// A transaction the engine signed: a [`PreparedTx`], a CoinJoin
+    /// funding transaction or a sweep chunk. Abandoning the txid releases
+    /// its claim (`tx_actions`).
+    Tx(dashcore::Txid),
+    /// A CoinJoin mixing session ([`SpendOwner::mixing_session`]): its
+    /// collateral input and the inputs it locks, held after a success until
+    /// the final transaction is seen or the observation timeout passes.
+    Mixing(u64),
+}
+
+static NEXT_MIXING_SESSION: AtomicU64 = AtomicU64::new(1);
+
+impl SpendOwner {
+    /// A fresh token for one mixing session (unique for the process).
+    pub(crate) fn mixing_session() -> Self {
+        Self::Mixing(NEXT_MIXING_SESSION.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Spend reservations the engine holds, per wallet and per session (in
+/// memory): each outpoint with the owners that claim it (DEC-179). Coin
+/// listings mark a claimed coin `reserved` and selection skips it
+/// (key-wallet keeps its own reservations private).
 ///
-/// An entry goes when its transaction is accepted, released (abandoned,
-/// dropped while pending, or never sent), or when the wallet no longer
+/// A claim goes when its owner releases it: a [`PreparedTx`] accepted,
+/// abandoned, dropped while pending or never sent; a CoinJoin session's
+/// end or timeout. Every claim on a coin goes when the wallet no longer
 /// holds the coin unspent: every coin read ([`NetworkSession::coin_snapshot`])
-/// drops entries whose coin the wallet has seen spent, by the transaction
-/// itself (SPV injects a broadcast into the wallet's own mempool view, so
-/// that is immediate) or by a conflicting one. Nothing that merely elapses
+/// drops coins the wallet has seen spent, by the transaction itself (SPV
+/// injects a broadcast into the wallet's own mempool view, so that is
+/// immediate) or by a conflicting one. Nothing that merely elapses
 /// releases the inputs of a transaction whose outcome is unknown, matching
 /// platform-wallet's pending-spend fence: re-selecting them could sign a
 /// second spend of coins the first transaction may still take. A session
 /// close drops them all.
 #[derive(Debug, Default)]
 pub(crate) struct PendingSpends {
-    inner: Mutex<HashMap<WalletId, HashSet<OutPoint>>>,
+    inner: Mutex<HashMap<WalletId, HashMap<OutPoint, HashSet<SpendOwner>>>>,
 }
 
 impl PendingSpends {
-    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<WalletId, HashSet<OutPoint>>> {
+    fn map(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<WalletId, HashMap<OutPoint, HashSet<SpendOwner>>>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The coins any owner holds.
     pub(crate) fn snapshot(&self, wallet: &WalletId) -> HashSet<OutPoint> {
-        self.map().get(wallet).cloned().unwrap_or_default()
+        self.map()
+            .get(wallet)
+            .map(|claims| claims.keys().copied().collect())
+            .unwrap_or_default()
     }
 
-    pub(crate) fn add(&self, wallet: WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
-        self.map().entry(wallet).or_default().extend(outpoints);
+    /// The coins `owner` holds.
+    #[cfg(test)]
+    pub(crate) fn held_by(&self, wallet: &WalletId, owner: SpendOwner) -> HashSet<OutPoint> {
+        self.map()
+            .get(wallet)
+            .map(|claims| {
+                claims
+                    .iter()
+                    .filter(|(_, owners)| owners.contains(&owner))
+                    .map(|(o, _)| *o)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    pub(crate) fn remove(&self, wallet: &WalletId, outpoints: impl IntoIterator<Item = OutPoint>) {
+    pub(crate) fn reserve(
+        &self,
+        wallet: WalletId,
+        owner: SpendOwner,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+    ) {
         let mut map = self.map();
-        if let Some(set) = map.get_mut(wallet) {
-            for o in outpoints {
-                set.remove(&o);
-            }
-            if set.is_empty() {
+        let claims = map.entry(wallet).or_default();
+        for o in outpoints {
+            claims.entry(o).or_default().insert(owner);
+        }
+    }
+
+    /// Removes every claim of `owner`.
+    pub(crate) fn release(&self, wallet: &WalletId, owner: SpendOwner) {
+        self.release_where(wallet, owner, |_| true);
+    }
+
+    /// Removes `owner`'s claims on `outpoints`; other owners keep theirs.
+    pub(crate) fn release_some(
+        &self,
+        wallet: &WalletId,
+        owner: SpendOwner,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+    ) {
+        let outpoints: HashSet<OutPoint> = outpoints.into_iter().collect();
+        self.release_where(wallet, owner, |o| outpoints.contains(o));
+    }
+
+    fn release_where(
+        &self,
+        wallet: &WalletId,
+        owner: SpendOwner,
+        pick: impl Fn(&OutPoint) -> bool,
+    ) {
+        let mut map = self.map();
+        if let Some(claims) = map.get_mut(wallet) {
+            claims.retain(|o, owners| {
+                if pick(o) {
+                    owners.remove(&owner);
+                }
+                !owners.is_empty()
+            });
+            if claims.is_empty() {
                 map.remove(wallet);
             }
         }
     }
 
-    /// Drops entries whose coin is no longer unspent (a broadcast whose
-    /// outcome was unknown has since been seen spent).
     /// Drops every reservation of an unloaded wallet.
     pub(crate) fn forget_wallet(&self, wallet: &WalletId) {
         self.map().remove(wallet);
     }
 
+    /// Drops every claim on a coin that is no longer unspent (a broadcast
+    /// whose outcome was unknown has since been seen spent).
     pub(crate) fn retain_unspent(&self, wallet: &WalletId, unspent: &HashSet<OutPoint>) {
         let mut map = self.map();
-        if let Some(set) = map.get_mut(wallet) {
-            set.retain(|o| unspent.contains(o));
-            if set.is_empty() {
+        if let Some(claims) = map.get_mut(wallet) {
+            claims.retain(|o, _| unspent.contains(o));
+            if claims.is_empty() {
                 map.remove(wallet);
             }
         }
@@ -1056,8 +1135,10 @@ impl TxDraft {
                 external_sent,
                 network,
             );
-            let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-            session.spends.add(wallet_id, inputs.iter().copied());
+            let owner = SpendOwner::Tx(tx.txid());
+            session
+                .spends
+                .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
             drop(fence);
             let artifact = ArtifactId::from_txid(&tx.txid());
             if let Some(charge) = charge {
@@ -1073,7 +1154,7 @@ impl TxDraft {
                     .iter()
                     .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
                     .collect(),
-                inputs,
+                owner,
                 signed: Mutex::new(None),
                 mixed: Some(tx),
                 phase: Mutex::new(Phase::Pending),
@@ -1117,13 +1198,11 @@ impl TxDraft {
             external_sent,
             network,
         );
-        let inputs: Vec<OutPoint> = signed
-            .transaction()
-            .input
-            .iter()
-            .map(|i| i.previous_output)
-            .collect();
-        session.spends.add(wallet_id, inputs.iter().copied());
+        let tx = signed.transaction();
+        let owner = SpendOwner::Tx(tx.txid());
+        session
+            .spends
+            .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
         drop(fence);
         let artifact = ArtifactId::from_txid(&signed.transaction().txid());
         if let Some(charge) = charge {
@@ -1139,7 +1218,7 @@ impl TxDraft {
                 .iter()
                 .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
                 .collect(),
-            inputs,
+            owner,
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
             phase: Mutex::new(Phase::Pending),
@@ -1220,10 +1299,7 @@ impl TxDraft {
         };
         *prepared.phase() = next;
         match next {
-            Phase::Sent => self
-                .session
-                .spends
-                .remove(&self.wallet_id, prepared.inputs.iter().copied()),
+            Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
             Phase::Released => prepared.release(&self.session).await,
@@ -1683,7 +1759,9 @@ pub struct PreparedTx {
     summary: PreparedSummary,
     /// (address, label, message) per recipient, written at broadcast.
     records: Vec<(String, Option<String>, Option<String>)>,
-    inputs: Vec<OutPoint>,
+    /// Its claim on its inputs in the engine's reservations: released by
+    /// this owner only, never by outpoint (DEC-179).
+    owner: SpendOwner,
     signed: Mutex<Option<Arc<SignedCoreTransaction>>>,
     /// A CoinJoin-page payment (QT-051), signed by the engine: no
     /// key-wallet reservation, only the engine's pending spends.
@@ -1732,9 +1810,7 @@ impl PreparedTx {
                 .table
                 .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
-        session
-            .spends
-            .remove(&self.wallet_id, self.inputs.iter().copied());
+        session.spends.release(&self.wallet_id, self.owner);
         let signed = self.signed().take();
         if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
             wallet.core().abandon_transaction(&signed).await;
@@ -1758,9 +1834,8 @@ impl Drop for PreparedTx {
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
-        let inputs = std::mem::take(&mut self.inputs);
         let signed = self.signed().take();
-        session.spends.remove(&wallet_id, inputs.iter().copied());
+        session.spends.release(&wallet_id, self.owner);
         let Some(signed) = signed else { return };
         let rt = session.rt.clone();
         rt.spawn(async move {
@@ -1978,12 +2053,41 @@ mod tests {
         let p = PendingSpends::default();
         let w = WalletId([1; 32]);
         let o = OutPoint::new(dashcore::Txid::from_byte_array([2; 32]), 0);
-        p.add(w, [o]);
+        let owner = SpendOwner::Tx(dashcore::Txid::from_byte_array([3; 32]));
+        p.reserve(w, owner, [o]);
         assert!(p.snapshot(&w).contains(&o));
+        assert!(p.snapshot(&WalletId([9; 32])).is_empty());
         p.retain_unspent(&w, &HashSet::new());
         assert!(p.snapshot(&w).is_empty());
-        p.add(w, [o]);
-        p.remove(&w, [o]);
+        p.reserve(w, owner, [o]);
+        p.release(&w, owner);
+        assert!(p.snapshot(&w).is_empty());
+    }
+
+    /// DEC-179: a release removes only its owner's claim; the coin stays
+    /// reserved while another owner holds it.
+    #[test]
+    fn a_release_frees_only_its_owners_claim() {
+        let p = PendingSpends::default();
+        let w = WalletId([1; 32]);
+        let shared = OutPoint::new(dashcore::Txid::from_byte_array([2; 32]), 0);
+        let own = OutPoint::new(dashcore::Txid::from_byte_array([2; 32]), 1);
+        let tx = SpendOwner::Tx(dashcore::Txid::from_byte_array([3; 32]));
+        let mixing = SpendOwner::mixing_session();
+        assert_ne!(mixing, SpendOwner::mixing_session());
+        p.reserve(w, tx, [shared, own]);
+        p.reserve(w, mixing, [shared]);
+
+        p.release(&w, tx);
+        assert_eq!(p.snapshot(&w), HashSet::from([shared]));
+        assert!(p.held_by(&w, tx).is_empty());
+
+        // Releasing a coin the owner never claimed changes nothing.
+        p.release_some(&w, tx, [shared]);
+        assert_eq!(p.held_by(&w, mixing), HashSet::from([shared]));
+        p.release_some(&w, mixing, [own]);
+        assert_eq!(p.snapshot(&w), HashSet::from([shared]));
+        p.release_some(&w, mixing, [shared]);
         assert!(p.snapshot(&w).is_empty());
     }
 }
