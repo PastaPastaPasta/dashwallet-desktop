@@ -82,7 +82,9 @@ git -C <platform checkout> worktree remove --force /tmp/platform-dp101
 ## `dp1_03_username_vectors.json`
 
 Username rule vectors (roadmap DP1-03, `tests/dp1_03_names.rs`), homographs included. Every expectation is an
-assertion of an upstream test or rule at the pin `bc41f1bc233dec4607d387101c1d9c2f111019b2`, cited per vector:
+assertion of an upstream test or rule at the pin `PastaPastaPasta/platform@ebe37f8a679b1a552483dc7ff12c306291e9a32b`,
+cited per vector. The four cited files are identical at `bc41f1bc23`, where the vectors were written, and at #5307
+`f475f72a11`:
 
 - `dash-platform-queries/src/dpns_usernames.rs` tests (`is_valid_username`, `is_contested_username`,
   `convert_to_homograph_safe_chars`, the functions `check_username` builds on);

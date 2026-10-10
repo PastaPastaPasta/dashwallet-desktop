@@ -1,5 +1,5 @@
 import json, sys
-PIN = "dashpay/platform@bc41f1bc233dec4607d387101c1d9c2f111019b2"
+PIN = "PastaPastaPasta/platform@ebe37f8a679b1a552483dc7ff12c306291e9a32b"
 Q = f"{PIN}:packages/dash-platform-queries/src/dpns_usernames.rs"
 S = f"{PIN}:packages/rs-sdk/tests/dpns_unit_tests.rs"
 F = f"{PIN}:packages/rs-sdk-ffi/src/dpns/helpers.rs (dash_sdk_dpns_get_validation_message)"

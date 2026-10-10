@@ -53,7 +53,7 @@ fn the_vectors_cite_the_pin_and_the_cap() {
     let pin = v["pin"].as_str().unwrap();
     assert_eq!(
         pin,
-        "dashpay/platform@bc41f1bc233dec4607d387101c1d9c2f111019b2"
+        "PastaPastaPasta/platform@ebe37f8a679b1a552483dc7ff12c306291e9a32b"
     );
     assert_eq!(v["max_length"], 23);
     for key in [
