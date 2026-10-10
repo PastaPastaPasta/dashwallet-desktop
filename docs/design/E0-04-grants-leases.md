@@ -1003,8 +1003,8 @@ reaper ends it, so looking a lease up by id and dropping that handle never ends 
 An idle reaper ends a vault-key lease after 10 minutes with no call, no permit and **no running flow task**. A
 vault-key registration waiting an hour for a ChainLock makes no call and holds no permit, so it must not be reaped.
 An own-key lease's key already ends at `key_until`. So a host that abandons a sheet does not leak entries. The
-reaper ends a lease a lock or removal revoked the same way, an idle period after its last use, so its cause stays
-readable until then and a host that never calls `end_flow` does not leak it either (review Opus high O-3); the
+reaper ends a lease a lock or removal revoked the same way, an idle period after the revocation (or a later use),
+so its cause stays readable until then and a host that never calls `end_flow` does not leak it either (review Opus high O-3); the
 facade drops its owner at the next `begin_flow`. A reaped lease's later use is `platform.lease_expired`.
 
 ### 4.8 Auto lock and the other mobile conventions (reviews Opus 14, Opus r2 5d)
@@ -1275,11 +1275,16 @@ admit(req):
   - **Per wallet, one transaction** (review Opus high O-1, which reverses P2a's first keying by artifact alone).
     Entries and `TxDraft` Spend bindings are keyed by (wallet, artifact), so one wallet's admission, refusal or
     settlement never replaces or refunds another's. The same bytes under two wallets are still one transaction: while
-    one wallet's entry is `Admitted` (running or possibly out) or `Resolving`, a copy for another wallet answers
-    `Deferred`, so neither settles `DefinitelyUnsent` while the other's attempt may put the bytes out. Another
-    wallet's tombstone does not hold a copy back. The set of artifacts seen `Sent` stays keyed by artifact: identical
-    bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a `TxDraft`'s inputs), this is
-    for the producers that follow (`External`, `Rebroadcast`, P2b/P4 hand-offs).
+    another wallet may have them out or about to go out (its entry is `Admitted`, running or possibly out, or
+    `Resolving`; or it holds a step marker or a `Sent` row of them, a copy's marker write included), a copy for this
+    wallet answers `Deferred`, in `decide` and again before a resend that waited for its markers. So no entry of this
+    wallet runs alongside the other's attempt and settles `DefinitelyUnsent`. Another wallet's tombstone does not
+    hold a copy back. Meanwhile this wallet's own tombstone reads `MaybeSent` (`dispatch_status`, the lock report),
+    so the host offers no retry on it. The hold can last the session: a possibly-out entry clears only when the
+    bytes are seen (BL-76), and a `Resolving{failed}` one only when its own wallet retries. That fails safe: the
+    deferred send reports `broadcast_unknown` with its inputs pinned. The set of artifacts seen `Sent` stays keyed by
+    artifact: identical bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a
+    `TxDraft`'s inputs), this is for the producers that follow (`External`, `Rebroadcast`, P2b/P4 hand-offs).
   - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
     set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
     durable marker instead (§7.6). Nor are the tombstones: after a restart `dispatch_status` answers `None`, which
@@ -2249,9 +2254,11 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
   `SplitBundle` (markers and `Sent` row as separate statements) by two; `ForgetNewer` (no guard) by two.
 - **Opus high review**: Opus's O-1 probe, inverted, is a regression. The same bytes admitted for a second wallet
   while the first wallet's attempt runs (or after it ended possibly sent) are `Deferred`; each wallet's Spend charge
-  is refunded once, by its own settlement, and another wallet's lease cannot unbind it. `ArtifactKeyed` (row-less
-  state keyed by artifact alone, as before) is caught by it; the stress draws artifacts per wallet. The reaper ends a
-  lock-revoked lease an idle period later and forgets it after another (O-3); closing the journal waits for a running
+  is refunded once, by its own settlement, and another wallet's lease cannot unbind it. Another wallet's standing
+  marker from an earlier process, and a copy's marker write before its resend, hold the bytes back too (validator
+  N-1). `ArtifactKeyed` (row-less state keyed by artifact alone, so a second wallet's copy joins the first's entry)
+  is caught by both; the stress draws artifacts per wallet. The reaper ends a lock-revoked lease an idle period after
+  the revocation, even one untouched long before it, and forgets it after another (O-3); closing the journal waits for a running
   `register` write (O-5); a task registered after close is aborted (O-8). DEC-134 (3)'s engine test makes the
   vault's deletion fail and checks that the wallet stays listed and usable, its grant is consumed and its flow's
   lease is revoked.

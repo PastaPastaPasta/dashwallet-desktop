@@ -516,6 +516,12 @@ impl FenceState {
             None => {}
         }
         match self.rowless.get(&(*wallet, *id)).map(|r| r.state) {
+            // The same bytes may be out under another wallet (review O-1).
+            Some(RowlessState::Revoked | RowlessState::NotSent)
+                if self.held_elsewhere(wallet, id) =>
+            {
+                FlowOutcome::MaybeSent
+            }
             Some(RowlessState::Revoked | RowlessState::NotSent) => FlowOutcome::Cancelled,
             // Admitted, a step marker, or a commit whose write never
             // resolved: possibly out.
@@ -560,6 +566,24 @@ impl FenceState {
             )
             .collect();
         set.into_iter().cloned().collect()
+    }
+
+    /// Whether another wallet may have the bytes `id` out or about to go out
+    /// (review O-1): its row-less entry is `Admitted` or `Resolving`, it
+    /// holds a step marker of them, or their `Sent` row.
+    pub(crate) fn held_elsewhere(&self, wallet: &WalletId, id: &ArtifactId) -> bool {
+        self.rowless.iter().any(|((w, a), r)| {
+            a == id
+                && w != wallet
+                && matches!(
+                    r.state,
+                    RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
+                )
+        }) || self
+            .steps
+            .iter()
+            .any(|((w, _), m)| w != wallet && m.contains_key(id))
+            || self.evidence.keys().any(|(w, a)| a == id && w != wallet)
     }
 
     /// Whether `id` has a step marker of `wallet`, in any step.
@@ -667,6 +691,16 @@ fn row_key(i: &Inner, wallet: WalletId, id: ArtifactId) -> RowKey {
     }
     let _ = i;
     (wallet, id)
+}
+
+/// [`FenceState::held_elsewhere`], which the `ArtifactKeyed` mutation never
+/// consults (one key per artifact has no other wallet's entry).
+fn held_elsewhere(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
+    #[cfg(test)]
+    if i.mutation == Some(Mutation::ArtifactKeyed) {
+        return false;
+    }
+    i.fence.held_elsewhere(wallet, id)
 }
 
 /// The row-less artifact `id` settles definitely unsent: refund, tombstone
@@ -1507,8 +1541,12 @@ impl LeaseTable {
                         let recheck = i.mutation != Some(Mutation::CopyBeforeMarker);
                         #[cfg(not(test))]
                         let recheck = true;
-                        if recheck
-                            && !matches!(owed(i, &req.wallet, &req.artifact, step), Obligation::Met)
+                        if (recheck
+                            && !matches!(
+                                owed(i, &req.wallet, &req.artifact, step),
+                                Obligation::Met
+                            ))
+                            || held_elsewhere(i, &req.wallet, &req.artifact)
                         {
                             return Verdict::Deferred;
                         }
@@ -1839,24 +1877,11 @@ impl LeaseTable {
         }
 
         // Row-less artifacts. One artifact is one transaction (review O-1):
-        // while another wallet's entry of the same bytes may be in flight
-        // or resolving, a copy for this wallet waits, so neither settles
-        // definitely unsent while the other's attempt may put them out.
+        // while another wallet may have the same bytes out or about to go
+        // out, a copy for this wallet waits, so no entry of this wallet runs
+        // alongside it and settles definitely unsent.
         let rkey = row_key(i, wallet, id);
-        #[cfg(test)]
-        let artifact_keyed = i.mutation == Some(Mutation::ArtifactKeyed);
-        #[cfg(not(test))]
-        let artifact_keyed = false;
-        if !artifact_keyed
-            && i.fence.rowless.iter().any(|((w, a), r)| {
-                *a == id
-                    && *w != wallet
-                    && matches!(
-                        r.state,
-                        RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
-                    )
-            })
-        {
+        if held_elsewhere(i, &wallet, &id) {
             return Step::Done(Verdict::Deferred);
         }
         let entry = i.fence.rowless.get(&rkey).map(|r| r.state);
@@ -2396,6 +2421,12 @@ impl LeaseTable {
             if let Some(r) = f.rowless.get(&row_key(i, wallet, artifact)) {
                 return Some(match r.state {
                     RowlessState::Admitted { .. } | RowlessState::Resolving { .. } => {
+                        DispatchState::MaybeSent
+                    }
+                    // The same bytes may be out under another wallet.
+                    RowlessState::Revoked | RowlessState::NotSent
+                        if f.held_elsewhere(&wallet, &artifact) =>
+                    {
                         DispatchState::MaybeSent
                     }
                     RowlessState::Revoked | RowlessState::NotSent => DispatchState::NotSent,

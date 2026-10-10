@@ -136,6 +136,9 @@ impl Entry {
         }
         self.state = LeaseState::Revoked(cause);
         self.disarm(fx);
+        // The reaper's idle period runs from the revocation, so its cause
+        // stays readable that long (review O-3).
+        self.last_use = Instant::now();
         true
     }
 

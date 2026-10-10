@@ -625,6 +625,43 @@ async fn the_reaper_ends_idle_vault_key_leases_and_forgets_them_later() {
     assert!(t.lease(&other.id(), &W2).is_ok());
 }
 
+/// Validator N-1: another wallet's step marker of the same bytes holds a
+/// copy back as its live entry does: one standing from an earlier process
+/// (no row-less entry yet), and one a copy is writing before it resends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o1_another_wallets_marker_holds_the_same_bytes_back() {
+    let (t, _) = table();
+    let j = Arc::new(FakeJournal::default());
+    let a = art(7);
+    let marker = dw_appdb::dispatch::StepRow {
+        wallet: W.0,
+        step_id: "s".into(),
+        artifact: a.0,
+        at: 0,
+        sent: false,
+    };
+    t.load_journal(
+        Some(j.clone() as Arc<dyn JournalBackend>),
+        vec![],
+        vec![marker],
+    );
+    let l1 = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let l2 = begin(&t, W2, 0, 1_000, 0).await.unwrap();
+    assert_eq!(t.admit(transition(&l2, a, 1)).await, Verdict::Deferred);
+    // W's copy for another step writes its own marker, then resends.
+    j.stall_ms.store(300, Ordering::SeqCst);
+    let copy = tokio::spawn({
+        let (t, req) = (Arc::clone(&t), step_copy(&l1, a, "t"));
+        async move { t.admit(req).await }
+    });
+    until(|| committing(&t, "t", a)).await;
+    assert_eq!(t.admit(transition(&l2, a, 1)).await, Verdict::Deferred);
+    let copy = resend(copy.await.unwrap());
+    assert_eq!(t.admit(transition(&l2, a, 1)).await, Verdict::Deferred);
+    copy.finish(Outcome::MaybeSent);
+    assert_eq!(budget(&l2, BudgetPurpose::Credits), Some((1_000, 0)));
+}
+
 /// Review O-3: a lease a lock revoked is ended by the reaper once idle
 /// (its cause readable until then), and forgotten an idle period later.
 #[tokio::test(start_paused = true)]
@@ -632,6 +669,9 @@ async fn the_reaper_collects_leases_a_lock_revoked() {
     let (t, _) = table();
     let idle = LeaseConfig::default().idle;
     let a = begin(&t, W, 0, 1, 0).await.unwrap();
+    // Untouched for longer than the idle period before the lock: the
+    // period still runs from the revocation (validator N-2).
+    tokio::time::advance(idle * 2).await;
     t.lock(RevokeCause::Lock, status).await;
     assert_eq!(a.state(), Some(LeaseState::Revoked(RevokeCause::Lock)));
     t.reap();

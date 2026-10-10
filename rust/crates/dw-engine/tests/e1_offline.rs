@@ -329,7 +329,7 @@ fn remove_wallet_fails_closed_when_the_seed_cannot_be_deleted() {
     // the grant is consumed and the wallet's leases are revoked.
     assert!(matches!(
         engine.block_on(s.remove_wallet(a, grant)),
-        Err(EngineError::Vault(_))
+        Err(EngineError::Vault(dw_vault::VaultError::GrantInvalid))
     ));
     assert_eq!(
         s.leases().unwrap()[0].state,
