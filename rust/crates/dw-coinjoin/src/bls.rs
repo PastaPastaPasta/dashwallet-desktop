@@ -75,4 +75,23 @@ mod tests {
         assert!(!verify_basic(&key.public_key(), &sig[..95], &msg));
         assert!(!verify_basic(&key.public_key(), &[0u8; 96], &msg));
     }
+
+    /// A v1 list entry carries the operator key in the legacy form; the
+    /// signature is still checked in the basic scheme.
+    #[test]
+    fn verifies_with_the_legacy_form_of_the_operator_key() {
+        let key = OperatorKey::from_seed(b"mn-1");
+        let legacy = BlsPkBytes::from_bytes(key.public_key())
+            .as_scheme(BlsScheme::Modern)
+            .reencode(BlsScheme::Legacy)
+            .unwrap()
+            .to_bytes();
+        assert_ne!(legacy, key.public_key());
+        let msg = [5u8; 32];
+        let sig = key.sign(&msg);
+        assert!(verify_basic(&legacy, &sig, &msg));
+        assert!(!verify_basic(&legacy, &sig, &[6u8; 32]));
+        let other = OperatorKey::from_seed(b"mn-2");
+        assert!(!verify_basic(&legacy, &other.sign(&msg), &msg));
+    }
 }
