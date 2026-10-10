@@ -178,8 +178,9 @@ pub(crate) struct Classified {
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
     /// Registration locks of account 0 written (DP1-02's funding key):
-    /// outpoint and identity index.
-    registration_locks: Vec<(OutPoint, u32)>,
+    /// outpoint and identity index, when the index is known
+    /// (`LockInfo::known_index`).
+    registration_locks: Vec<(OutPoint, Option<u32>)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -285,7 +286,13 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                     e.funding_type == platform_wallet::AssetLockFundingType::IdentityRegistration
                         && e.account_index == 0
                 })
-                .map(|e| (e.out_point, e.identity_index)),
+                .map(|e| {
+                    use super::registration_flow::{known_index, lock_status};
+                    (
+                        e.out_point,
+                        known_index(lock_status(&e.status), e.identity_index),
+                    )
+                }),
         );
     }
 

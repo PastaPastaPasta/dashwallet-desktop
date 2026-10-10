@@ -207,7 +207,6 @@ impl CoinSnapshot {
     /// its lock would not free it. A tracked lock's input (`lock_input`) is
     /// not among them: the library reserves those itself. An unresolved
     /// signed lock's input is ([`CoinHold::UnresolvedLock`]).
-    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
     pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
             .iter()
@@ -546,7 +545,6 @@ impl NetworkSession {
     /// `fence`: what DP1-02's funding policy checks
     /// ([`CoinSnapshot::held_funding_coins`]) before it hands the same fence
     /// to [`Self::funding_call_permit`].
-    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
     pub(crate) async fn fenced_coins(
         &self,
         fence: &CoinFence,

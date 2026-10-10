@@ -149,6 +149,12 @@ pub enum RegistrationError {
     InProgress,
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
+    /// The wallet has coins it keeps from automatic selection (locked by
+    /// the user or the dust protection, or reserved by a send), and the
+    /// asset-lock funding cannot be told to skip them: it is refused until
+    /// they are unlocked or the send ends.
+    #[error("the wallet has locked or reserved coins the funding could spend")]
+    CoinsLocked,
     #[error("no InstantSend lock in time")]
     IslockTimeout,
     /// The flow parked and can be resumed with `resume_registration`.
@@ -157,8 +163,9 @@ pub enum RegistrationError {
     #[error("the identity already has a username")]
     AlreadyHasUsername,
     /// The row was written by a newer build: its funding or profile
-    /// encoding, or its phase, is one this build does not know. The flow
-    /// fails, not retryable, and can be discarded.
+    /// encoding, or its phase, is one this build does not know. Read-time
+    /// only: the row is never advanced, funded or discarded here, and stays
+    /// as written for the build that can read it.
     #[error("the registration was written by a newer version")]
     Unsupported,
     #[error(transparent)]
@@ -174,6 +181,7 @@ impl RegistrationError {
         match self {
             Self::InProgress => "registration.in_progress",
             Self::FundingInsufficient { .. } => "registration.funding_insufficient",
+            Self::CoinsLocked => "registration.coins_locked",
             Self::IslockTimeout => "registration.islock_timeout",
             Self::Recoverable { .. } => "registration.recoverable",
             Self::AlreadyHasUsername => "registration.already_has_username",

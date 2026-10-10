@@ -819,6 +819,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
+            RegistrationError::CoinsLocked,
             RegistrationError::IslockTimeout,
             RegistrationError::Recoverable { draft: s() },
             RegistrationError::AlreadyHasUsername,

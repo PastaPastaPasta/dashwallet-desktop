@@ -60,6 +60,9 @@ pub struct RegistrationRow {
     /// The failure code; set exactly when the flow failed.
     pub error: Option<String>,
     pub retryable: bool,
+    /// The generation of the claim that holds the row
+    /// ([`AppDb::claim_registration`]).
+    pub owner: u64,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -106,7 +109,7 @@ pub enum RegistrationUpdate {
 }
 
 const COLUMNS: &str = "id, identity_index, identity, label, temp_label, funding, initial_profile,
-     asset_lock_outpoint, phase, error, retryable, created_at, updated_at";
+     asset_lock_outpoint, phase, error, retryable, owner, created_at, updated_at";
 
 fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
     Ok(RegistrationRow {
@@ -121,8 +124,9 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
         phase: r.get(8)?,
         error: r.get(9)?,
         retryable: r.get::<_, i64>(10)? != 0,
-        created_at: r.get::<_, i64>(11)? as u64,
-        updated_at: r.get::<_, i64>(12)? as u64,
+        owner: r.get::<_, i64>(11)? as u64,
+        created_at: r.get::<_, i64>(12)? as u64,
+        updated_at: r.get::<_, i64>(13)? as u64,
     })
 }
 
@@ -239,12 +243,36 @@ impl AppDb {
             .optional()?)
     }
 
+    /// Takes the row for a new claim: raises its `owner` and returns the new
+    /// generation, which every later write of the claim names. `None` if
+    /// the row is gone.
+    pub fn claim_registration(&self, wallet_id: &str, id: i64) -> Result<Option<u64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "UPDATE dp_registration SET owner = owner + 1
+                 WHERE wallet_id = ?1 AND id = ?2
+                 RETURNING owner",
+                params![wallet_id, id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(|owner| owner as u64))
+    }
+
     /// Applies `change` if the row is still in `phase` with the failure
-    /// state `failed` (compare and set): one transition, one writer.
+    /// state `failed` (compare and set), and still held by `owner`: one
+    /// transition, one writer. `owner: None` is an evidence write (a lock's
+    /// outpoint the library tracked), which no claim's generation gates.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the compare-and-set's expected owner, phase and failure"
+    )]
     pub fn update_registration(
         &self,
         wallet_id: &str,
         id: i64,
+        owner: Option<u64>,
         phase: &str,
         failed: bool,
         change: &RegistrationChange,
@@ -265,7 +293,8 @@ impl AppDb {
                  retryable = CASE WHEN ?8 THEN ?10 ELSE retryable END,
                  initial_profile = CASE WHEN ?11 THEN NULL ELSE initial_profile END,
                  updated_at = ?12
-             WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13",
+             WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13
+                 AND (?15 IS NULL OR owner = ?15)",
             params![
                 wallet_id,
                 id,
@@ -281,6 +310,7 @@ impl AppDb {
                 now as i64,
                 failed,
                 change.clear_outpoint,
+                owner.map(|o| o as i64),
             ],
         );
         match written {
@@ -291,11 +321,23 @@ impl AppDb {
         }
     }
 
-    /// Deletes a flow (a discard). `false` if it was not there.
-    pub fn delete_registration(&self, wallet_id: &str, id: i64) -> Result<bool> {
+    /// Deletes a flow (a discard) held by `owner`, if it is still in
+    /// `phase` with the lock `outpoint` it was judged on: a lock recorded
+    /// since (the tap, "Finish transfers") keeps it. `false` if it was not
+    /// deleted.
+    pub fn delete_registration(
+        &self,
+        wallet_id: &str,
+        id: i64,
+        owner: u64,
+        phase: &str,
+        outpoint: Option<&str>,
+    ) -> Result<bool> {
         Ok(self.conn().execute(
-            "DELETE FROM dp_registration WHERE wallet_id = ?1 AND id = ?2",
-            params![wallet_id, id],
+            "DELETE FROM dp_registration
+             WHERE wallet_id = ?1 AND id = ?2 AND owner = ?3 AND phase = ?4
+                 AND asset_lock_outpoint IS ?5",
+            params![wallet_id, id, owner as i64, phase, outpoint],
         )? == 1)
     }
 }
@@ -366,7 +408,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, a, "draft", false, &lower, 2)
+            db.update_registration(W, a, None, "draft", false, &lower, 2)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
@@ -375,14 +417,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, b, "draft", false, &upper, 2)
+            db.update_registration(W, b, None, "draft", false, &upper, 2)
                 .unwrap(),
             RegistrationUpdate::LockTaken
         );
         // Another wallet may hold the same text.
         let c = db.insert_registration("bb", &draft("carol"), 1).unwrap();
         assert_eq!(
-            db.update_registration("bb", c, "draft", false, &lower, 2)
+            db.update_registration("bb", c, None, "draft", false, &lower, 2)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
@@ -402,13 +444,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, id, "draft", false, &to_keys, 2)
+            db.update_registration(W, id, None, "draft", false, &to_keys, 2)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
         // A second writer from the same phase loses.
         assert_eq!(
-            db.update_registration(W, id, "draft", false, &to_keys, 3)
+            db.update_registration(W, id, None, "draft", false, &to_keys, 3)
                 .unwrap(),
             RegistrationUpdate::Stale
         );
@@ -417,7 +459,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, id, "keys_prepared", false, &fail, 4)
+            db.update_registration(W, id, None, "keys_prepared", false, &fail, 4)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
@@ -440,7 +482,7 @@ mod tests {
         );
         // Not failed any more? Then the unfailed CAS misses.
         assert_eq!(
-            db.update_registration(W, id, "keys_prepared", false, &to_keys, 5)
+            db.update_registration(W, id, None, "keys_prepared", false, &to_keys, 5)
                 .unwrap(),
             RegistrationUpdate::Stale
         );
@@ -449,16 +491,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, id, "keys_prepared", true, &resume, 6)
+            db.update_registration(W, id, None, "keys_prepared", true, &resume, 6)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
         let row = db.registration_row(W, id).unwrap().unwrap();
         assert_eq!((row.error, row.retryable), (None, false));
-        assert!(db.delete_registration(W, id).unwrap());
-        assert!(!db.delete_registration(W, id).unwrap());
+        assert!(
+            db.delete_registration(W, id, 0, "keys_prepared", None)
+                .unwrap()
+        );
+        assert!(
+            !db.delete_registration(W, id, 0, "keys_prepared", None)
+                .unwrap()
+        );
         assert_eq!(
-            db.update_registration(W, id, "keys_prepared", false, &to_keys, 7)
+            db.update_registration(W, id, None, "keys_prepared", false, &to_keys, 7)
                 .unwrap(),
             RegistrationUpdate::Stale
         );
@@ -474,7 +522,7 @@ mod tests {
             outpoint: Some(lock.clone()),
             ..Default::default()
         };
-        db.update_registration(W, id, "draft", false, &funded, 2)
+        db.update_registration(W, id, None, "draft", false, &funded, 2)
             .unwrap();
         let rejected = RegistrationChange {
             phase: Some("keys_prepared".into()),
@@ -483,7 +531,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            db.update_registration(W, id, "funding_sent", false, &rejected, 3)
+            db.update_registration(W, id, None, "funding_sent", false, &rejected, 3)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
@@ -495,7 +543,7 @@ mod tests {
         // The lock is free for another flow again.
         let other = db.insert_registration(W, &draft("bob"), 4).unwrap();
         assert_eq!(
-            db.update_registration(W, other, "draft", false, &funded, 5)
+            db.update_registration(W, other, None, "draft", false, &funded, 5)
                 .unwrap(),
             RegistrationUpdate::Applied
         );
@@ -510,7 +558,7 @@ mod tests {
             outpoint: Some(outpoint(1)),
             ..Default::default()
         };
-        db.update_registration(W, id, "draft", false, &held, 2)
+        db.update_registration(W, id, None, "draft", false, &held, 2)
             .unwrap();
         let adopted = NewRegistration {
             label: String::new(),
@@ -536,5 +584,53 @@ mod tests {
             (other, false)
         );
         assert_eq!(db.registration_rows(W).unwrap().len(), 2);
+    }
+
+    /// DEC-171: a claim raises the row's owner; a write or delete of an
+    /// earlier claim changes nothing, an evidence write (no owner) still
+    /// applies, and a delete judged on a lock-less row keeps a row that got
+    /// its lock since.
+    #[test]
+    fn only_the_latest_claim_writes() {
+        let db = AppDb::open_in_memory().unwrap();
+        let id = db.insert_registration(W, &draft("alice"), 1).unwrap();
+        assert_eq!(db.registration_row(W, id).unwrap().unwrap().owner, 0);
+        let old = db.claim_registration(W, id).unwrap().unwrap();
+        let new = db.claim_registration(W, id).unwrap().unwrap();
+        assert!(new > old);
+        let to_keys = RegistrationChange {
+            phase: Some("keys_prepared".into()),
+            identity_index: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            db.update_registration(W, id, Some(old), "draft", false, &to_keys, 2)
+                .unwrap(),
+            RegistrationUpdate::Stale
+        );
+        assert!(!db.delete_registration(W, id, old, "draft", None).unwrap());
+        assert_eq!(
+            db.update_registration(W, id, Some(new), "draft", false, &to_keys, 2)
+                .unwrap(),
+            RegistrationUpdate::Applied
+        );
+        let lock = RegistrationChange {
+            outpoint: Some(outpoint(4)),
+            ..Default::default()
+        };
+        assert_eq!(
+            db.update_registration(W, id, None, "keys_prepared", false, &lock, 3)
+                .unwrap(),
+            RegistrationUpdate::Applied
+        );
+        assert!(
+            !db.delete_registration(W, id, new, "keys_prepared", None)
+                .unwrap()
+        );
+        assert!(
+            db.delete_registration(W, id, new, "keys_prepared", Some(outpoint(4).as_str()))
+                .unwrap()
+        );
+        assert_eq!(db.claim_registration(W, id).unwrap(), None);
     }
 }
