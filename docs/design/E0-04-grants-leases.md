@@ -579,7 +579,9 @@ call permit when its task lands.
   permit's J step charged the quote.
 - `NetworkSession::funding_call_permit(lease, label, amount, step, key)` (`Lease::call_permit_step` with
   `CallStep::Funding{step, key}`): the funding gate, then the marker made durable, then the permit, charged
-  `amount + fee_bound_worst`.
+  `amount + fee_bound_worst`. It refuses (`invalid_argument`, before any charge or marker) a step that is no funding
+  step, a `topup/...` step (below), and a `registration/<draft>/funding` step whose `key` is not its draft's own
+  key in `app.sqlite`, or whose draft has none (reviews M-3, M-4).
 - `dispatch_status` and `funds_committed` for `registration/<draft>/funding` and `topup/<id>/funding`, from the
   tracked rows matched by the marker's key and the draft's own: `AppDb::registration_identity_indices`, keyed
   (`IdentityRegistration`, the draft's identity index, account 0).
@@ -636,6 +638,9 @@ call permit when its task lands.
   the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked
   records, so history cannot show it). **DP1-05 owns this:** until its chain scan has run for the wallet, Repair's
   self-spend must be refused there. Not fail closed.
+- A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and
+  every top-up of an identity shares one key. Until the credit task gives top-ups their own key,
+  `funding_call_permit` refuses `topup/...` steps (review M-3); `dispatch_status` still answers them.
 - A self-spend over very many coins can fail as too large or with an absurd fee; key-wallet holding a just-built
   lock's inputs in the same process is untested.
 - A journal error at a call step hides a `Locked`/`Revoked` refusal (both refuse the call); the permit's wait for a

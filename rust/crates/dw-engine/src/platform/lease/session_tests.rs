@@ -263,8 +263,11 @@ impl Fixture {
     }
 
     /// Funding `step` of identity 0 after a call that released a signature
-    /// and failed: `MaybeSent`, its marker standing.
+    /// and failed: `MaybeSent`, its marker standing. `step` is the funding
+    /// step of the wallet's first draft, inserted here at index 0.
     fn stuck(&self, step: &str) {
+        let draft = self.registration_draft(0);
+        assert_eq!(step, format!("registration/{draft}/funding"));
         let l = self
             .lease(FlowKind::Registration, &[self.platform_op(10_000_000, 0)])
             .unwrap();
@@ -284,6 +287,52 @@ impl Fixture {
             .unwrap();
         permit.signatures().note_released();
         assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    }
+
+    /// Inserts a `dp_registration` draft at `identity_index` (DP1-02's
+    /// table) and returns its id: its funding step's own key
+    /// (`IdentityRegistration`, `identity_index`, account 0).
+    fn registration_draft(&self, identity_index: u32) -> i64 {
+        use dw_appdb::{SqlValue, TableRows};
+        let w = self.wallet.to_string();
+        self.engine
+            .block_on(self.session.appdb_op(move |db| {
+                let before = db.registration_identity_indices(&w)?;
+                let text = |t: &str| SqlValue::Text(t.to_owned());
+                db.import_wallet_rows(
+                    &w,
+                    &[TableRows {
+                        table: "dp_registration".into(),
+                        columns: [
+                            "wallet_id",
+                            "identity_index",
+                            "label",
+                            "funding",
+                            "phase",
+                            "created_at",
+                            "updated_at",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                        rows: vec![vec![
+                            text(&w),
+                            SqlValue::Integer(i64::from(identity_index)),
+                            text("alice"),
+                            text("{}"),
+                            text("draft"),
+                            SqlValue::Integer(1),
+                            SqlValue::Integer(1),
+                        ]],
+                    }],
+                )?;
+                let after = db.registration_identity_indices(&w)?;
+                Ok(after
+                    .into_iter()
+                    .find(|d| !before.contains(d))
+                    .expect("inserted")
+                    .0)
+            }))
+            .unwrap()
     }
 
     fn reserved(&self) -> usize {
@@ -1083,6 +1132,7 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
     let f = fixture(false);
     f.credit(1, COIN);
     f.credit(2, COIN);
+    assert_eq!(f.registration_draft(0), 1);
     let s = &f.session;
     let fee = f.engine.block_on(s.fee_bound_worst(f.wallet)).unwrap();
     assert_eq!(fee, crate::fees::asset_lock_fee_bound(2));
@@ -1177,6 +1227,67 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
     ));
 }
 
+/// Reviews M-3, M-4: a funding permit vouches for its step's key, so it
+/// refuses before anything is charged or marked a step that is no funding
+/// step, a top-up step (no own key yet), a registration step whose draft
+/// has no known key, and a key that is not the draft's own.
+#[test]
+fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
+    use platform_wallet::AssetLockFundingType as T;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.registration_draft(4);
+    let step = format!("registration/{draft}/funding");
+    let s = &f.session;
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    let key = |funding_type, identity_index, account| FundingKey {
+        funding_type,
+        identity_index,
+        account,
+    };
+    let permit = |step: &str, key: FundingKey| {
+        f.engine.block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            step.into(),
+            key,
+        ))
+    };
+    let refused = |step: &str, key: FundingKey, detail: &str| match permit(step, key) {
+        Err(PlatformError::InvalidArgument { detail: d }) => {
+            assert!(d.contains(detail), "{step}: {d}")
+        }
+        other => panic!("{step}: {other:?}"),
+    };
+    let own = key(T::IdentityRegistration, 4, 0);
+    refused("withdrawal/1/submit", own, "is not a funding step");
+    refused("registration/1/2/funding", own, "is not a funding step");
+    refused(
+        "topup/i/funding",
+        key(T::IdentityTopUp, 4, 0),
+        "a top-up step has no own funding key yet",
+    );
+    refused("registration/999/funding", own, "has no funding key");
+    for wrong in [
+        key(T::IdentityRegistration, 5, 0),
+        key(T::IdentityRegistration, 4, 1),
+        key(T::IdentityInvitation, 4, 0),
+    ] {
+        refused(&step, wrong, "is not the funding key");
+    }
+    let view = l.view().unwrap();
+    assert!(!view.call_running && !view.funds_committed);
+    assert!(view.budgets.iter().all(|b| b.spent == 0), "nothing charged");
+    for step in [step.as_str(), "topup/i/funding", "registration/999/funding"] {
+        assert_eq!(s.leases.call_step(f.wallet, step).funding, None, "{step}");
+    }
+    // The draft's own key: the permit.
+    permit(&step, own).unwrap().finish(true);
+}
+
 /// The library's broadcast for Repair's self-spend: accepts, and records
 /// what it was handed and the step's self-spends at that moment.
 struct SelfSpendSeam {
@@ -1224,6 +1335,7 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
     let f = fixture(false);
     let a = f.credit(1, COIN);
     let b = f.credit(2, COIN / 2);
+    assert_eq!(f.registration_draft(0), 1);
     let s = &f.session;
     let dashpay = s.dashpay(f.wallet);
     let status = || {

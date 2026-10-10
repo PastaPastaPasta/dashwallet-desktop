@@ -99,7 +99,9 @@ use super::resume::{Resumed, Resumer};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, Lease, LeaseError};
 use crate::platform::errors::PlatformError;
-use crate::platform::flows::{DispatchResolution, DispatchResolved, DispatchState};
+use crate::platform::flows::{
+    DispatchResolution, DispatchResolved, DispatchState, is_funding_step,
+};
 use crate::{EngineEvent, NetworkSession, WalletId};
 
 /// A tracked row's status (platform-wallet `AssetLockStatus`).
@@ -736,6 +738,19 @@ impl LeaseTable {
         })
     }
 
+    /// The own key of `step`'s draft in `wallet`'s snapshot, if any.
+    pub(crate) fn draft_key(&self, wallet: WalletId, step: &str) -> Option<DraftKey> {
+        self.with_j(|i, _| {
+            i.mode_b
+                .snapshots
+                .get(&wallet)?
+                .drafts
+                .iter()
+                .find(|d| d.step == step)
+                .cloned()
+        })
+    }
+
     /// Whether `wallet`'s tracked rows were read this session.
     pub(crate) fn has_tracked_snapshot(&self, wallet: WalletId) -> bool {
         self.with_j(|i, _| i.mode_b.snapshots.contains_key(&wallet))
@@ -917,6 +932,14 @@ impl NetworkSession {
     /// (`MaybeSent`), `will_be_sent` (`WillBeSent`), or `invalid_argument`
     /// (a funded step, or a marker a self-spend resolved: a new funding
     /// needs a new draft).
+    ///
+    /// Refused `invalid_argument` before anything is charged or marked
+    /// (review M-3, M-4): a step that is no funding step; a top-up step,
+    /// which has no funding key of its own after a lost journal until the
+    /// credit task gives it one (E0-04 §2a.6); and a registration step
+    /// whose `key` is not its draft's own (`DraftKey`, from `app.sqlite`),
+    /// or whose draft has no known key: a row under another key would be
+    /// found by neither the marker nor the draft.
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -925,10 +948,22 @@ impl NetworkSession {
         step: String,
         key: FundingKey,
     ) -> Result<CallPermit, PlatformError> {
+        let refuse = |detail: String| Err(PlatformError::InvalidArgument { detail });
+        if !is_funding_step(&step) {
+            return refuse(format!("{step} is not a funding step"));
+        }
+        if step.starts_with("topup/") {
+            return refuse("a top-up step has no own funding key yet (E0-04 §2a.6)".into());
+        }
         let wallet = lease.wallet();
         let fee_bound_worst = self.fee_bound_worst(wallet).await?;
         if !self.leases.refresh_funding(wallet).await {
             return Err(LeaseError::FundingBlocked(FundingBlock::RowsUnknown).into());
+        }
+        match self.leases.draft_key(wallet, &step) {
+            Some(d) if d.matches(&key) => {}
+            Some(_) => return refuse(format!("{key:?} is not the funding key of {step}'s draft")),
+            None => return refuse(format!("{step}'s draft has no funding key")),
         }
         let quote = FundingQuote {
             amount,
