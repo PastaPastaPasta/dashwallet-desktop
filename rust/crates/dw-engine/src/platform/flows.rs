@@ -292,21 +292,51 @@ impl DashPay {
     /// `None`: the engine has no entry. The host reads it as unknown, never
     /// as a reason to retry; only the engine's funding gates read an asset
     /// lock's `None`, with the tracked-row check (E0-04 §16.6).
+    ///
+    /// A funding step id (`registration/<draft>/funding`,
+    /// `topup/<id>/funding`) reads Mode B's derived status (§2a.5); the
+    /// wallet's tracked rows are read first if this session has not read
+    /// them yet. Any other step id reads its marker (§7.6): a standing
+    /// marker is `MaybeSent`.
     pub async fn dispatch_status(
         &self,
         artifact: String,
     ) -> Result<Option<DispatchState>, PlatformError> {
+        let table = self.session.lease_table();
+        let wallet = self.wallet_id();
         match ArtifactId::parse(&artifact) {
-            Some(id) => Ok(self
-                .session
-                .lease_table()
-                .dispatch_status(self.wallet_id(), id)),
-            // A funding step id (`registration/<draft>/funding`): Mode B's
-            // derived status (P2b); unknown until then.
-            None if artifact.contains('/') => Ok(None),
+            Some(id) => Ok(table.dispatch_status(wallet, id)),
+            None if is_funding_step(&artifact) => {
+                if !table.has_tracked_snapshot(wallet) {
+                    table.refresh_funding(wallet).await;
+                }
+                Ok(table.funding_status(wallet, &artifact))
+            }
+            None if artifact.contains('/') => {
+                Ok(step_state(table.call_step(wallet, &artifact).status))
+            }
             None => Err(PlatformError::InvalidArgument {
                 detail: "not a txid, transition hash or step id".into(),
             }),
         }
+    }
+}
+
+/// A Mode B funding step id (§2a.3): `registration/<draft>/funding` or
+/// `topup/<id>/funding`.
+pub(crate) fn is_funding_step(step: &str) -> bool {
+    (step.starts_with("registration/") || step.starts_with("topup/"))
+        && step.ends_with("/funding")
+        && step.matches('/').count() == 2
+}
+
+/// A resumable step's `dispatch_status` from its marker (§7.6, §16.6).
+fn step_state(status: super::lease::CallStepStatus) -> Option<DispatchState> {
+    use super::lease::CallStepStatus as S;
+    match status {
+        S::None => None,
+        S::Marked { .. } => Some(DispatchState::MaybeSent),
+        S::NotSent => Some(DispatchState::NotSent),
+        S::Sent => Some(DispatchState::Sent),
     }
 }

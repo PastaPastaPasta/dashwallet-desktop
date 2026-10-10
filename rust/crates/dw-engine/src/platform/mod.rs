@@ -87,7 +87,7 @@ pub use registration::{
     RegistrationPhase, RegistrationQuote, RegistrationRequest, RegistrationStatus,
     RegistrationWait,
 };
-pub use signers::{VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
+pub use signers::{CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
 pub use startup::{
     DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
     SyncLoopStatus, SyncPassReport,

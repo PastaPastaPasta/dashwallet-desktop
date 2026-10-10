@@ -457,6 +457,20 @@ impl NetworkSession {
             }
         }
         session.leases.start_reaper();
+        // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
+        // the tap's hook on tracked-row changes, and a first read of every
+        // loaded wallet's rows.
+        session
+            .leases
+            .install_tracked(Arc::new(crate::platform::lease::mode_b::SessionTracked {
+                session: Arc::downgrade(&session),
+            }));
+        if let Ok(live) = session.live() {
+            live.tap.watch_locks(&session.leases);
+        }
+        for id in manager.list_wallet_ids_blocking() {
+            session.leases.request_refresh(WalletId(id));
+        }
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
         {

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use dw_vault::{KeyHold, VaultSigner};
 use tokio::runtime::Handle;
@@ -109,6 +109,10 @@ pub(crate) struct Entry {
     pub(crate) calls: u32,
     /// The flow's finished library calls, in order (§2a.3, §8.4).
     pub(crate) calls_done: Vec<super::call::CallRecord>,
+    /// The funding steps the flow took a funding call's permit for, or was
+    /// bound to ([`Lease::bind_funding_step`]): its Mode B
+    /// `funds_committed` reads them (§16.5).
+    pub(crate) funding_steps: Vec<String>,
     pub(crate) ended_at: Option<Instant>,
 }
 
@@ -219,6 +223,8 @@ pub(crate) struct Inner {
     /// Mode B's call permits in flight, by id (§2a.3).
     pub(crate) calls: HashMap<u64, super::call::CallRun>,
     pub(crate) next_call: u64,
+    /// Mode B's tracked rows and derived funding statuses (§2a.5).
+    pub(crate) mode_b: super::mode_b::ModeB,
     #[cfg(test)]
     pub(crate) log: Vec<super::stress_tests::LogEvent>,
     #[cfg(test)]
@@ -279,6 +285,10 @@ pub struct LeaseTable {
     /// This process's journal nonce (diagnostics, §6.2).
     pub(crate) process: [u8; 16],
     pub(crate) journal: super::fence::JournalSlot,
+    /// Mode B's evidence source (§2a.5); the session installs it.
+    pub(crate) tracked: OnceLock<Arc<dyn super::mode_b::TrackedLocks>>,
+    /// Serializes Mode B's snapshot refreshes.
+    pub(crate) refresh: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -307,6 +317,7 @@ impl LeaseTable {
                 fence: FenceState::default(),
                 calls: HashMap::new(),
                 next_call: 0,
+                mode_b: Default::default(),
                 #[cfg(test)]
                 log: Vec::new(),
                 #[cfg(test)]
@@ -319,6 +330,8 @@ impl LeaseTable {
             rt,
             process: rand::random(),
             journal: Default::default(),
+            tracked: OnceLock::new(),
+            refresh: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -484,6 +497,7 @@ impl LeaseTable {
                 permits: 0,
                 calls: 0,
                 calls_done: Vec::new(),
+                funding_steps: Vec::new(),
                 ended_at: None,
             };
             if !fresh {
@@ -705,7 +719,7 @@ fn view_of(inner: &Inner, id: &LeaseId, now: Instant) -> Option<LeaseView> {
             .as_ref()
             .and(e.key_until)
             .map(|u| u.saturating_duration_since(now).as_secs()),
-        funds_committed: inner.fence.funds_committed(e),
+        funds_committed: inner.fence.funds_committed(e) || super::mode_b::funds_committed(inner, e),
         budgets,
         in_flight: e.permits,
         call_running: e.calls > 0,
@@ -828,6 +842,33 @@ impl Lease {
             |s| s.funding.as_ref(),
             |e| e.funding.available() > 0,
         )
+    }
+
+    /// The funding signer a funding call's permit hands out: the permit's
+    /// J step already charged the call's quote, so the budget may be at 0.
+    pub(crate) fn call_funding_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Funding,
+            |s| s.funding.as_ref(),
+            |e| e.funding.granted(),
+        )
+    }
+
+    /// Binds the flow to a funding step it did not take a permit for, e.g.
+    /// a resumed registration's `registration/<draft>/funding`: its
+    /// `funds_committed` then reads the step's status (§16.5), so a tracked
+    /// row matching the draft's own key with no marker sets it.
+    pub fn bind_funding_step(&self, step: impl Into<String>) {
+        let step = step.into();
+        self.table.with_j(|i, fx| {
+            if let Some(e) = i.leases.get_mut(&self.id) {
+                if !e.funding_steps.contains(&step) {
+                    e.funding_steps.push(step);
+                }
+                fx.changed(self.id);
+            }
+            super::mode_b::rederive(&self.table, i, fx, self.wallet);
+        });
     }
 
     /// The flow's DashPay crypto (`DashPayCrypto`); never hands off.

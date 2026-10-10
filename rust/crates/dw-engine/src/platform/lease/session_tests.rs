@@ -933,3 +933,113 @@ fn r1_f7_a_real_lock_dropped_unlocked_and_locked_again_during_its_drain() {
         unlock.await.unwrap().unwrap();
     });
 }
+
+/// E0-04 §2a.3 on a real session: a Mode B funding call's permit is quoted
+/// `amount + fee_bound_worst` from the wallet's coins, reads the wallet's
+/// tracked rows first, and hands out a funding signer that counts what it
+/// releases and a `Locked` refusal; the facade's `dispatch_status` answers
+/// the funding step id from the derivation (§2a.5) and a resumable step id
+/// from its marker.
+#[test]
+fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
+    use key_wallet::Signer as _;
+    use platform_wallet::AssetLockFundingType;
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.credit(2, COIN);
+    let s = &f.session;
+    let fee = f.engine.block_on(s.fee_bound_worst(f.wallet)).unwrap();
+    assert_eq!(fee, crate::fees::asset_lock_fee_bound(2));
+    let dashpay = s.dashpay(f.wallet);
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap(),
+        None,
+        "never registered: no marker, no row, no draft"
+    );
+    let grant = f.platform_op(1_000_000, 0);
+    let l = f.lease(FlowKind::Registration, &[grant]).unwrap();
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::IdentityRegistration,
+        identity_index: 0,
+        account: 0,
+    };
+    let too_much = f.engine.block_on(s.funding_call_permit(
+        &l,
+        "create_funded_asset_lock_proof",
+        1_000_000 - fee + 1,
+        STEP.into(),
+        key,
+    ));
+    assert_eq!(
+        too_much.unwrap_err(),
+        PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Funding,
+            needed: 1_000_001,
+            remaining: 1_000_000,
+        }
+    );
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            500_000,
+            STEP.into(),
+            key,
+        ))
+        .unwrap();
+    let view = l.view().unwrap();
+    assert!(view.funds_committed && view.call_running);
+    assert_eq!(view.budgets[0].spent, 500_000 + fee, "the sum is charged");
+
+    let signer = permit.funding_signer().unwrap();
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    f.engine.block_on(signer.public_key(&path)).unwrap();
+    assert_eq!(
+        permit.signatures().released(),
+        0,
+        "a public key is no signature"
+    );
+    f.engine
+        .block_on(signer.sign_ecdsa(&path, [1; 32]))
+        .unwrap();
+    assert_eq!(permit.signatures().released(), 1);
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap(),
+        Some(DispatchState::MaybeSent)
+    );
+    // The vault's own lock ends the signer's epoch.
+    s.vault().lock();
+    assert!(matches!(
+        f.engine.block_on(signer.sign_ecdsa(&path, [2; 32])),
+        Err(dw_vault::SignerError::Locked)
+    ));
+    assert!(permit.signatures().locked());
+    assert_eq!(permit.signatures().released(), 1);
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status(STEP.into()))
+            .unwrap(),
+        Some(DispatchState::MaybeSent)
+    );
+    // A resumable step id reads its marker: none here.
+    assert_eq!(
+        f.engine
+            .block_on(dashpay.dispatch_status("withdrawal/w/submit".into()))
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        f.engine
+            .block_on(dashpay.dispatch_status("not a step".into())),
+        Err(PlatformError::InvalidArgument { .. })
+    ));
+}

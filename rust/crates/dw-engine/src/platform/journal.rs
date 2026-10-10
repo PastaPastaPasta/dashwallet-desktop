@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
@@ -42,6 +42,7 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
+use super::lease::LeaseTable;
 use super::notifications::EventKind;
 use super::runtime::guard;
 use crate::events::{SessionHub, unix_now};
@@ -314,6 +315,11 @@ pub(crate) struct ChangesetTap {
     appdb: Arc<AppDb>,
     /// [`CATCH_UP_BEFORE_KEY`] per wallet, UNIX seconds, once known.
     catch_up_before: Mutex<HashMap<WalletId, u64>>,
+    /// The lease table Mode B's statuses are derived in (E0-04 §2a.5, H15):
+    /// every `asset_locks` changeset requests a refresh of its wallet, and
+    /// so does a Core changeset of a wallet awaiting a self-spend's
+    /// ChainLock.
+    locks_changed: OnceLock<Weak<LeaseTable>>,
 }
 
 impl ChangesetTap {
@@ -322,6 +328,24 @@ impl ChangesetTap {
             hub,
             appdb,
             catch_up_before: Mutex::new(HashMap::new()),
+            locks_changed: OnceLock::new(),
+        }
+    }
+
+    /// Has every tracked asset-lock change of a wallet refresh `table`'s
+    /// Mode B snapshot of it (once).
+    pub(crate) fn watch_locks(&self, table: &Arc<LeaseTable>) {
+        let _ = self.locks_changed.set(Arc::downgrade(table));
+    }
+
+    /// A Core changeset of `id` was stored: it may carry the ChainLock of
+    /// one of Repair's self-spends (§2a.5 row 1), so a wallet awaiting one
+    /// is refreshed. Spawned: this runs inside the library's store call.
+    pub(crate) fn core_changed(&self, id: WalletId) {
+        if let Some(table) = self.locks_changed.get().and_then(Weak::upgrade)
+            && table.awaits_self_spend_lock(id)
+        {
+            table.request_refresh(id);
         }
     }
 
@@ -418,6 +442,12 @@ impl ChangesetTap {
         let wallet = id.to_string();
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
+        if !c.locks.is_empty()
+            && let Some(table) = self.locks_changed.get().and_then(Weak::upgrade)
+        {
+            // Spawned: this runs inside the library's store call.
+            table.request_refresh(id);
+        }
         for outpoint in &c.locks {
             let draft = self
                 .appdb

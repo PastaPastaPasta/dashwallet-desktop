@@ -99,7 +99,11 @@ impl PlatformWalletPersistence for WalletStore {
     ) -> Result<(), PersistenceError> {
         // Classified before the persister takes it, recorded once it has.
         let classified = classify(&changeset);
+        let core = changeset.core.is_some();
         self.inner.store(wallet_id, changeset)?;
+        if core {
+            self.tap.core_changed(WalletId(wallet_id));
+        }
         if let Some(classified) = classified {
             self.tap
                 .record(WalletId(wallet_id), classified, self.inner.as_ref());

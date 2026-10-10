@@ -207,6 +207,37 @@ fn parse_threshold(value: Option<String>) -> Result<Option<u64>, AppDbError> {
         .transpose()
 }
 
+/// Whether the wallet holds `txid` as ChainLocked in any of its funds
+/// accounts: its record's context, or the finalized txid key-wallet keeps
+/// once it drops a ChainLocked record (as [`collect`] reads a coin's).
+pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
+    let accounts = &info.accounts;
+    let locked = |a: &ManagedCoreFundsAccount| {
+        a.transactions()
+            .get(txid)
+            .is_some_and(|r| r.context.is_chain_locked())
+            || a.transaction_is_finalized(txid)
+    };
+    accounts.standard_bip44_accounts.values().any(locked)
+        || accounts.standard_bip32_accounts.values().any(locked)
+        || accounts.dashpay_receival_accounts.values().any(locked)
+        || accounts.coinjoin_accounts.values().any(locked)
+}
+
+/// How many unspent outputs the asset-lock builder may fund from: every coin
+/// of the accounts platform-wallet's `ASSET_LOCK_FUNDING_SOURCES` pools
+/// (BIP44, BIP32, DashPay receiving), whatever its maturity, locks or
+/// reservations, which the library does not all see (E0-04 §2a.3's
+/// `fee_bound_worst` counts a superset, so its bound stays an upper one).
+pub(crate) async fn funding_coin_count(wallet: &PlatformWallet) -> usize {
+    let state = wallet.state().await;
+    read_coins(&state.core_wallet)
+        .coins
+        .iter()
+        .filter(|c| c.send_account)
+        .count()
+}
+
 impl NetworkSession {
     /// Runs a dw-appdb call on the blocking pool.
     pub(crate) async fn appdb_op<T, F>(&self, f: F) -> Result<T, EngineError>

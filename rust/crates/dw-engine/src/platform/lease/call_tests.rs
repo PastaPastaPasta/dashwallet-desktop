@@ -235,8 +235,27 @@ fn resumable(step: &str) -> CallStep {
     CallStep::Resumable(step.into())
 }
 
+/// Everything the lease's budgets were charged.
 fn spent(l: &Lease) -> u64 {
-    l.view().unwrap().budgets[0].spent
+    l.view().unwrap().budgets.iter().map(|b| b.spent).sum()
+}
+
+/// A funding call's quote (§2a.3): `amount`, no worst-case fee.
+fn fund(amount: u64) -> Option<CallQuote> {
+    Some(
+        FundingQuote {
+            amount,
+            fee_bound_worst: 0,
+        }
+        .into(),
+    )
+}
+
+/// The table has read W's and W2's tracked rows: none (§2a.3's gate).
+fn rows_read(t: &LeaseTable) {
+    for w in [W, W2] {
+        t.commit_snapshot(w, Default::default());
+    }
 }
 
 fn step_status(t: &LeaseTable, wallet: crate::WalletId, step: &str) -> CallStepStatus {
@@ -271,6 +290,7 @@ fn reload(j: &FakeJournal) -> (Arc<LeaseTable>, Arc<FakeJournal>) {
         steps,
         snap.load_calls(),
     );
+    rows_read(&t);
     (t, snap)
 }
 
@@ -287,7 +307,11 @@ async fn until(mut f: impl FnMut() -> bool) {
 /// A call that fails having released no signature: Cancelled unless an
 /// earlier marker of its step exists, MaybeSent then (§2a.3).
 async fn fail_unsigned(l: &Lease, step: CallStep) -> FlowOutcome {
-    l.call_permit_step("call", credits(10), step)
+    let quote = match step {
+        CallStep::Funding { .. } => fund(10),
+        CallStep::Resumable(_) => credits(10),
+    };
+    l.call_permit_step("call", quote, step)
         .await
         .unwrap()
         .finish(false)
@@ -392,13 +416,14 @@ async fn cancelled_supersedes_the_marker_and_maybe_sent_keeps_it() {
 async fn the_kill_matrix_of_a_funding_call_step() {
     let (t, _) = table();
     let j = with_journal(&t);
-    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    rows_read(&t);
+    let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
 
     // Killed before the marker write: nothing on disk, the step never
     // started, and the next process's call of it is a fresh one.
     let (t2, _) = reload(&j);
     assert_eq!(step_status(&t2, W, FUNDING), CallStepStatus::None);
-    let l2 = begin(&t2, W, 0, 1000, 0).await.unwrap();
+    let l2 = begin(&t2, W, 1000, 1000, 0).await.unwrap();
     assert_eq!(
         fail_unsigned(&l2, funding_step(FUNDING)).await,
         FlowOutcome::Cancelled
@@ -408,7 +433,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     // funding key stand; a later call of the step is prior-marked, so a
     // failure that released nothing reads MaybeSent, not Cancelled.
     let p = l
-        .call_permit_step("funding", credits(10), funding_step(FUNDING))
+        .call_permit_step("funding", fund(10), funding_step(FUNDING))
         .await
         .unwrap();
     let kills_running = reload(&j);
@@ -419,12 +444,18 @@ async fn the_kill_matrix_of_a_funding_call_step() {
         let info = t2.call_step(W, FUNDING);
         assert_eq!(info.status, CallStepStatus::Marked { durable: true });
         assert_eq!(info.funding, Some(funding_key()));
-        let l2 = begin(&t2, W, 0, 1000, 0).await.unwrap();
+        let l2 = begin(&t2, W, 1000, 1000, 0).await.unwrap();
+        // A standing funding marker refuses a second funding call of its
+        // step (§2a.5, commit 3's gate): no second lock is built.
         assert_eq!(
-            fail_unsigned(&l2, funding_step(FUNDING)).await,
-            FlowOutcome::MaybeSent
+            l2.call_permit_step("funding", fund(10), funding_step(FUNDING))
+                .await
+                .unwrap_err(),
+            LeaseError::FundingBlocked(FundingBlock::Step(Some(
+                crate::platform::flows::DispatchState::MaybeSent
+            )))
         );
-        assert_eq!(spent(&l2), 10, "a possible send keeps its charge");
+        assert_eq!(spent(&l2), 0, "refused before the charge");
         assert_eq!(
             t2.call_step(W, FUNDING).status,
             CallStepStatus::Marked { durable: true }
@@ -454,7 +485,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     // process reads no marker, and its call is a fresh one.
     const TOPUP: &str = "topup/i/funding";
     let p = l
-        .call_permit_step("topup", credits(10), funding_step(TOPUP))
+        .call_permit_step("topup", fund(10), funding_step(TOPUP))
         .await
         .unwrap();
     let (t2, _) = reload(&j);
@@ -466,7 +497,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     let (t2, j2) = reload(&j);
     assert_eq!(t2.call_step(W, TOPUP).status, CallStepStatus::None);
     assert_eq!(t2.call_step(W, TOPUP).funding, None);
-    let l2 = begin(&t2, W, 0, 1000, 0).await.unwrap();
+    let l2 = begin(&t2, W, 1000, 1000, 0).await.unwrap();
     assert_eq!(
         fail_unsigned(&l2, funding_step(TOPUP)).await,
         FlowOutcome::Cancelled
@@ -488,11 +519,12 @@ async fn the_kill_matrix_of_a_funding_call_step() {
 async fn a_failed_marker_write_refuses_the_call_and_reads_maybe_sent_until_not_sent_lands() {
     let (t, _) = table();
     let j = with_journal(&t);
-    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    rows_read(&t);
+    let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
     j.fail_step.store(true, Ordering::SeqCst);
     j.fail_resolve.store(true, Ordering::SeqCst);
     assert_eq!(
-        l.call_permit_step("funding", credits(10), funding_step(FUNDING))
+        l.call_permit_step("funding", fund(10), funding_step(FUNDING))
             .await
             .unwrap_err(),
         LeaseError::JournalUnavailable
@@ -689,7 +721,8 @@ async fn a_lock_during_the_marker_write_refuses_the_call() {
 async fn a_call_step_under_another_funding_key_is_refused() {
     let (t, _) = table();
     let j = with_journal(&t);
-    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    rows_read(&t);
+    let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
     let other = CallStep::Funding {
         step: FUNDING.into(),
         key: FundingKey {
@@ -705,7 +738,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
     );
     assert_eq!(t.call_step(W, FUNDING).funding, None);
     let p = l
-        .call_permit_step("funding", credits(10), other.clone())
+        .call_permit_step("funding", fund(10), other.clone())
         .await
         .unwrap();
     p.signatures().note_released();
@@ -714,7 +747,7 @@ async fn a_call_step_under_another_funding_key_is_refused() {
     // The marker stands under `other`'s key.
     for step in [funding_step(FUNDING), resumable(FUNDING)] {
         assert_eq!(
-            l.call_permit_step("funding", credits(10), step)
+            l.call_permit_step("funding", fund(10), step)
                 .await
                 .unwrap_err(),
             LeaseError::StepKeyMismatch
@@ -728,10 +761,15 @@ async fn a_call_step_under_another_funding_key_is_refused() {
         crate::platform::errors::PlatformError::from(LeaseError::StepKeyMismatch).code(),
         "internal"
     );
+    // Under its own key, the step's next funding call is refused too: its
+    // funding may have been sent (commit 3's gate).
     assert_eq!(
-        fail_unsigned(&l, other).await,
-        FlowOutcome::MaybeSent,
-        "its own key is the step's next call"
+        l.call_permit_step("funding", fund(10), other)
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(
+            crate::platform::flows::DispatchState::MaybeSent
+        )))
     );
 }
 
@@ -741,11 +779,12 @@ async fn a_call_step_under_another_funding_key_is_refused() {
 async fn self_spends_load_with_their_funding_marker() {
     let (t, _) = table();
     let j = with_journal(&t);
-    let l = begin(&t, W, 0, 1000, 0).await.unwrap();
+    rows_read(&t);
+    let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
     let id = ArtifactId::of_step(&W, FUNDING);
     assert!(!j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32]).unwrap());
     let p = l
-        .call_permit_step("funding", credits(10), funding_step(FUNDING))
+        .call_permit_step("funding", fund(10), funding_step(FUNDING))
         .await
         .unwrap();
     p.signatures().note_released();

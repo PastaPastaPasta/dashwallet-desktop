@@ -26,6 +26,24 @@
 //! writes its definite resolution: Ok a `Sent` row (the DEC-163 bundle),
 //! a definite Cancelled a `NotSent` row, and MaybeSent nothing, so the
 //! marker stands.
+//!
+//! **Funding calls** (§2a.3 "Funding cap", "No funding build over a
+//! possibly-sent row"): a [`CallStep::Funding`] permit is charged a
+//! [`FundingQuote`], `amount + fee_bound_worst`, against the Funding budget,
+//! and passes the gate of [`super::mode_b`] first. Its signer is
+//! [`CallPermit::funding_signer`], which counts like the identity signer.
+//!
+//! Mode B residual (D5, design Q8): the cap is not re-checked against the
+//! call's own coin selection. key-wallet signs input by input inside
+//! `build_asset_lock_with_signer`, with no transaction-level hook before
+//! the first signature where the engine could read the selected inputs and
+//! the fee, so the exact debit is checked only in Mode A (at `register`).
+//! `fee_bound_worst` is an upper bound instead: the fee of spending every
+//! coin of the funding accounts, at most key-wallet's 500 inputs (it
+//! refuses a larger selection). It counts the coins when the permit is
+//! taken: a coin received before the build that the selection then picks
+//! is not in it, so below 500 coins the bound can fall short by that
+//! coin's input (149 duffs each).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,12 +54,13 @@ use tokio::time::Instant;
 
 use super::budget::Charge;
 use super::fence::CallGate;
+use super::mode_b::funding_gate;
 #[cfg(test)]
 use super::stress_tests::Mutation;
 use super::table::{Effects, Inner, Lease, LeaseTable};
 use super::{FlowOutcome, LeaseError, LeaseId};
 use crate::platform::flows::BudgetPurpose;
-use crate::platform::signers::VaultIdentitySigner;
+use crate::platform::signers::{CountingFundingSigner, VaultIdentitySigner};
 
 /// A funding step's key (§2a.3, §2a.5): what platform-wallet's tracked
 /// asset-lock rows carry (`TrackedAssetLock`'s `funding_type`,
@@ -175,6 +194,26 @@ pub struct CallQuote {
     pub amount: u64,
 }
 
+/// A funding call's quote (§2a.3, §16.2): the amount locked and the
+/// wallet's `fee_bound_worst` ([`crate::NetworkSession::fee_bound_worst`]).
+/// The permit refuses when their sum exceeds the Funding budget's
+/// available amount, and charges the sum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FundingQuote {
+    pub amount: u64,
+    pub fee_bound_worst: u64,
+}
+
+impl From<FundingQuote> for CallQuote {
+    fn from(q: FundingQuote) -> Self {
+        Self {
+            purpose: BudgetPurpose::Funding,
+            // An overflowing sum exceeds every budget.
+            amount: q.amount.saturating_add(q.fee_bound_worst),
+        }
+    }
+}
+
 /// A call running under a permit (in J).
 #[derive(Debug)]
 pub(crate) struct CallRun {
@@ -202,6 +241,9 @@ pub struct CallPermit {
     prior_marker: bool,
     /// The call step whose marker it holds ([`Lease::call_permit_step`]).
     step: Option<String>,
+    /// The step is a funding step: its end refreshes the wallet's tracked
+    /// rows (§2a.5).
+    funding: bool,
     /// Handed back to the caller: the library call may have started.
     started: bool,
     deadline: Instant,
@@ -287,9 +329,23 @@ impl Lease {
                 if i.fence.call_key_differs(self.wallet, &step) {
                     return Err(LeaseError::StepKeyMismatch);
                 }
+                if step.funding().is_some() {
+                    self.check_funding(i, quote, step.id())?;
+                }
                 let backend = backend.expect("checked by the gate");
                 let (id, charge, deadline) = self.take_call(i, fx, label.clone(), quote)?;
                 let (prior, write) = table.call_step_mark(i, backend, self.wallet, &step);
+                if let Some(fkey) = step.funding() {
+                    super::mode_b::note_marked(i, self.wallet, step.id(), fkey);
+                    // `funds_committed` from this J step on (§16.5).
+                    if let Some(e) = i.leases.get_mut(&self.id)
+                        && !e.funding_steps.iter().any(|s| s == step.id())
+                    {
+                        e.funding_steps.push(step.id().to_owned());
+                    }
+                    fx.changed(self.id);
+                    super::mode_b::rederive(table, i, fx, self.wallet);
+                }
                 Ok(Ok((id, charge, deadline, prior, write)))
             })?;
             match taken {
@@ -306,6 +362,7 @@ impl Lease {
             }
         };
         let mut permit = self.permit(id, charge, deadline, prior, Some(key.1));
+        permit.funding = step.funding().is_some();
         // Before the write returns the permit is not handed out: dropped
         // here, it ends as a call that never started.
         permit.started = false;
@@ -337,6 +394,27 @@ impl Lease {
                 permit.end(false);
                 Err(e)
             }
+        }
+    }
+
+    /// A funding call's checks (§2a.3), before its charge: the lease signs,
+    /// the quote is a Funding quote ([`FundingQuote`]), and the Mode B gate
+    /// passes. The budget check itself is the charge's.
+    fn check_funding(
+        &self,
+        i: &Inner,
+        quote: Option<CallQuote>,
+        step: &str,
+    ) -> Result<(), LeaseError> {
+        if let Some(refused) = self.refusal(i, BudgetPurpose::Funding) {
+            return Err(refused);
+        }
+        if quote.map(|q| q.purpose) != Some(BudgetPurpose::Funding) {
+            return Err(LeaseError::NeedsGrant(BudgetPurpose::Funding));
+        }
+        match funding_gate(i, self.wallet, step) {
+            Some(block) => Err(LeaseError::FundingBlocked(block)),
+            None => Ok(()),
         }
     }
 
@@ -415,6 +493,7 @@ impl Lease {
             signatures: Arc::default(),
             prior_marker,
             step,
+            funding: false,
             started: true,
             deadline,
             done: false,
@@ -446,6 +525,16 @@ impl CallPermit {
             .lease
             .identity_signer(identity_indices)?
             .counting(self.signatures()))
+    }
+
+    /// The lease's funding signer for `create_funded_asset_lock_proof`,
+    /// counting into this permit: every released signature and a `Locked`
+    /// refusal, as [`Self::identity_signer`]'s.
+    pub fn funding_signer(&self) -> Result<CountingFundingSigner, LeaseError> {
+        Ok(CountingFundingSigner::new(
+            self.lease.call_funding_signer()?,
+            self.signatures(),
+        ))
     }
 
     /// Ends the call: `ok` when the library returned Ok. Returns the call's
@@ -499,11 +588,21 @@ impl CallPermit {
                 fx.changed(lease);
             }
             fx.notify();
-            step.as_deref()
-                .is_some_and(|s| table.call_step_end(i, backend, wallet, s, outcome))
+            let resolve = step
+                .as_deref()
+                .is_some_and(|s| table.call_step_end(i, backend, wallet, s, outcome));
+            if step.is_some() {
+                // The call's end: `Sent` on Ok (§2a.5).
+                super::mode_b::rederive(&table, i, fx, wallet);
+            }
+            resolve
         });
         if resolve && let Some(step) = &self.step {
             table.resolve_call_not_sent(wallet, step);
+        }
+        if self.funding {
+            // The call may have left a tracked row.
+            table.request_refresh(wallet);
         }
         outcome
     }

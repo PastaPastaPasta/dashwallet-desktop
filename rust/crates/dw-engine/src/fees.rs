@@ -148,6 +148,41 @@ pub(crate) fn summarize(
     s
 }
 
+/// The asset-lock builder's fee rate at the pin, duffs per kB:
+/// platform-wallet `asset_lock::manager::DEFAULT_FEE_PER_KB` (not exported),
+/// which `build_asset_lock_transaction_fenced` passes to key-wallet.
+const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
+/// A P2PKH input at its largest: the outpoint (36), the script's length
+/// (1), a 72-byte DER signature with its hash type and push (74), a
+/// compressed key with its push (34), the sequence (4).
+const MAX_INPUT_BYTES: u64 = 149;
+/// An asset lock without its inputs, bounded generously: it is at most
+/// 103 bytes (version and type 4, the input count's varint at its widest 9,
+/// the output count 1, the burn output 12, a change output 34, the lock
+/// time 4, and the payload with its length, 39, for one credit output).
+const ASSET_LOCK_BASE_BYTES: u64 = 200;
+/// key-wallet's `MAX_STANDARD_TX_INPUTS`: its builder refuses a selection
+/// of more inputs, so no asset lock spends more.
+const MAX_LOCK_INPUTS: usize = 500;
+
+/// E0-04 §2a.3's `fee_bound_worst` for a wallet whose funding accounts hold
+/// `inputs` unspent outputs: the fee of an asset lock spending every one of
+/// them at the builder's rate, plus a change remainder at the dust
+/// threshold, which the builder pays as fee instead of an output. A true
+/// upper bound on the fee of any asset lock the library can build from
+/// those coins: coin selection picks a subset, every input is at most
+/// [`MAX_INPUT_BYTES`], and the fee is the size's at the fixed rate plus
+/// at most one dust remainder.
+pub(crate) fn asset_lock_fee_bound(inputs: usize) -> u64 {
+    let bytes = (inputs.min(MAX_LOCK_INPUTS) as u64)
+        .saturating_mul(MAX_INPUT_BYTES)
+        .saturating_add(ASSET_LOCK_BASE_BYTES);
+    ASSET_LOCK_FEE_PER_KB
+        .saturating_mul(bytes)
+        .div_ceil(1000)
+        .saturating_add(dust_threshold(CHANGE_SCRIPT_LEN))
+}
+
 impl NetworkSession {
     /// The coin-control summary for `outpoints` paying `pay_amounts` at
     /// `fee` (QT-072/074). Selected coins that are no longer unspent coins of
@@ -248,6 +283,20 @@ mod tests {
         assert_eq!(s.change, 0);
         assert_eq!(s.fee, 500_020);
         assert!(s.change_to_fee);
+    }
+
+    #[test]
+    fn the_asset_lock_fee_bound_covers_every_input_at_its_largest() {
+        // No coins: the base and a dust remainder.
+        assert_eq!(asset_lock_fee_bound(0), 200 + 546);
+        // 10 inputs: 1690 bytes at 1000 duff/kB, plus the dust remainder.
+        assert_eq!(asset_lock_fee_bound(10), 1_690 + 546);
+        // Above what key-wallet's estimate charges for the same inputs
+        // (148 bytes each).
+        assert!(asset_lock_fee_bound(500) > 500 * 148);
+        // No lock spends more than 500 inputs.
+        assert_eq!(asset_lock_fee_bound(usize::MAX), asset_lock_fee_bound(500));
+        assert_eq!(asset_lock_fee_bound(500), 74_700 + 546);
     }
 
     #[test]

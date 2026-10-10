@@ -53,6 +53,18 @@ impl Recorder {
             .collect()
     }
 
+    pub(super) fn leases_changed(&self) -> Vec<crate::platform::flows::LeaseView> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::LeaseChanged { lease, .. } => Some(lease.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn notices(&self) -> Vec<NoticeCode> {
         self.0
             .lock()

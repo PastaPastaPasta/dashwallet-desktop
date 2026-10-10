@@ -6,6 +6,8 @@
 //!   that is never held across an await, I/O or a library lock (H1).
 //! - [`budget`]: a purpose's budget with authority generations (§4.2).
 //! - [`call`]: Mode B's call permits around library write calls (§2a.3).
+//! - [`mode_b`]: Mode B's derived funding statuses and its funding gate
+//!   (§2a.5, H15).
 //! - [`fence`]: `register`, `admit`, `abandon` and the attempt guards; the
 //!   in-memory journal, the row-less set and its tombstones;
 //!   `dispatch_status` (§5.4, §5.5, §16.6).
@@ -22,11 +24,14 @@ pub(crate) mod budget;
 pub(crate) mod call;
 pub(crate) mod fence;
 pub(crate) mod lock;
+pub(crate) mod mode_b;
 pub(crate) mod session;
 pub(crate) mod table;
 
 #[cfg(test)]
 mod call_tests;
+#[cfg(test)]
+mod mode_b_tests;
 #[cfg(test)]
 mod session_tests;
 #[cfg(test)]
@@ -41,11 +46,12 @@ use dw_vault::VaultStatus;
 use super::errors::PlatformError;
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 
-pub use call::{CallPermit, CallQuote, CallStep, FundingKey, SignatureCount};
+pub use call::{CallPermit, CallQuote, CallStep, FundingKey, FundingQuote, SignatureCount};
 pub use fence::{
     AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,
     NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
 };
+pub use mode_b::{DraftKey, FundingBlock, TrackedRow, TrackedStatus};
 pub use table::{Lease, LeaseTable};
 
 /// A lease's id: 128 bits from the OS RNG, in memory only (H5, I7).
@@ -256,6 +262,12 @@ pub enum LeaseError {
     /// none): the call is refused before it is charged (§2a.3): `internal`.
     #[error("the call step's marker carries another funding key")]
     StepKeyMismatch,
+    /// A Mode B funding call that must not start (§2a.3): the wallet's
+    /// tracked rows are unknown, a tracked `Built`/`Broadcast` row is not
+    /// resumed yet, or the step's own funding committed. Refused before the
+    /// charge.
+    #[error("funding blocked: {0:?}")]
+    FundingBlocked(mode_b::FundingBlock),
 }
 
 impl From<LeaseError> for PlatformError {
@@ -285,6 +297,22 @@ impl From<LeaseError> for PlatformError {
             },
             LeaseError::StepKeyMismatch => PlatformError::Internal {
                 detail: e.to_string(),
+            },
+            // §16.4 has no code of its own for these; the closest:
+            // the rows are read on demand, so unknown rows are transient;
+            // a pending row is the lock the catch-up will send
+            // (`will_be_sent{txid}`); a committed step is not fundable
+            // again (`invalid_argument`, as `discard_registration`'s refusal,
+            // §16.6). `funding_call_permit` names the step instead where its
+            // status has a code (`broadcast_unknown`, `will_be_sent`).
+            LeaseError::FundingBlocked(block) => match block {
+                mode_b::FundingBlock::RowsUnknown => PlatformError::Unavailable,
+                mode_b::FundingBlock::Row(txid) => PlatformError::WillBeSent {
+                    artifact: txid.to_string(),
+                },
+                mode_b::FundingBlock::Step(_) => PlatformError::InvalidArgument {
+                    detail: "the funding step has committed; a new funding needs a new step".into(),
+                },
             },
         }
     }

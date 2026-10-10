@@ -774,13 +774,31 @@ impl FenceState {
         }
     }
 
-    fn call_step_info(&self, wallet: &WalletId, step: &str) -> CallStepInfo {
+    pub(super) fn call_step_info(&self, wallet: &WalletId, step: &str) -> CallStepInfo {
         let key = (*wallet, step.to_owned());
         CallStepInfo {
             status: self.call_step_status(wallet, step),
             funding: self.funding.get(&key).copied(),
             self_spends: self.self_spends.get(&key).cloned().unwrap_or_default(),
         }
+    }
+
+    /// The wallet's funding steps with a standing marker (§2a.5).
+    pub(super) fn funding_steps_of(&self, wallet: &WalletId) -> Vec<String> {
+        self.funding
+            .keys()
+            .filter(|(w, _)| w == wallet)
+            .map(|(_, s)| s.clone())
+            .collect()
+    }
+
+    /// Repair's self-spends standing against the wallet's funding markers.
+    pub(super) fn self_spends_of(&self, wallet: &WalletId) -> Vec<[u8; 32]> {
+        self.self_spends
+            .iter()
+            .filter(|((w, _), _)| w == wallet)
+            .flat_map(|(_, txids)| txids.iter().copied())
+            .collect()
     }
 
     /// Whether a `NotSent` row of the call step is being written.
@@ -1053,6 +1071,9 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.evidence.retain(|(w, a), _| !forgotten(w, a));
     f.superseded.retain(|(w, a), _| !forgotten(w, a));
     f.rowless.retain(|(w, a), _| !forgotten(w, a));
+    // The removed wallet's tracked rows and derived statuses (§2a.5).
+    i.mode_b.forget(&wallet);
+    let f = &mut i.fence;
     f.funding
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.self_spends
@@ -2733,6 +2754,8 @@ impl LeaseTable {
             }
             i.fence.call_steps.remove(&key);
             i.fence.supersede(wallet, id);
+            // A definite resolution (§2a.5): the funding may read NotSent.
+            super::mode_b::rederive(self, i, fx, wallet);
             true
         })
     }

@@ -117,6 +117,32 @@ impl AppDb {
             .optional()?)
     }
 
+    /// Each of the wallet's registration drafts with its identity index:
+    /// `(id, identity_index)`, by id (E0-04 §2a.5: the draft's own funding
+    /// key, kept here so a deleted or rolled-back dispatch journal still
+    /// finds its tracked asset-lock row). Drafts without an index yet are
+    /// left out: they never funded.
+    pub fn registration_identity_indices(&self, wallet_id: &str) -> Result<Vec<(i64, u32)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, identity_index FROM dp_registration
+             WHERE wallet_id = ?1 AND identity_index IS NOT NULL ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![wallet_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, index) = row?;
+            // The CHECK keeps it non-negative; an index past u32 is no
+            // DIP-13 index, so no tracked row can carry it.
+            if let Ok(index) = u32::try_from(index) {
+                out.push((id, index));
+            }
+        }
+        Ok(out)
+    }
+
     /// Starts or updates the watch of one of the identity's contested labels.
     pub fn watch_contest(
         &self,
@@ -237,6 +263,27 @@ mod tests {
         assert!(id.is_some());
         assert_eq!(db.registration_for_lock(W, "ab:0").unwrap(), None);
         assert_eq!(db.registration_for_lock("bb", "ab:1").unwrap(), None);
+
+        assert!(db.registration_identity_indices(W).unwrap().is_empty());
+        for (index, label) in [("7", "bob"), ("NULL", "carol"), ("2", "dave")] {
+            db.conn()
+                .execute(
+                    &format!(
+                        "INSERT INTO dp_registration
+                             (wallet_id, identity_index, label, funding, phase, created_at, updated_at)
+                         VALUES (?1, {index}, '{label}', '{{}}', 'draft', 1, 1)"
+                    ),
+                    [W],
+                )
+                .unwrap();
+        }
+        let first = id.unwrap();
+        assert_eq!(
+            db.registration_identity_indices(W).unwrap(),
+            vec![(first + 1, 7), (first + 3, 2)],
+            "drafts with an index, by id"
+        );
+        assert!(db.registration_identity_indices("bb").unwrap().is_empty());
 
         db.watch_contest(W, "me", "alice", 100).unwrap();
         db.watch_contest(W, "me", "alice", 200).unwrap();

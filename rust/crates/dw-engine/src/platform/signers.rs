@@ -6,7 +6,10 @@
 //! - [`VaultContactCrypto`]: platform-wallet `ContactCryptoProvider` for the
 //!   DIP-15 contact crypto, scope `DashPayCrypto` (never signs);
 //! - [`VaultScanKey`]: platform-wallet `ScanKeyResolver` for the identity
-//!   scan of `start_wallet_subsystems`.
+//!   scan of `start_wallet_subsystems`;
+//! - [`CountingFundingSigner`]: key-wallet `Signer` + `ExtendedPubKeySigner`
+//!   for `create_funded_asset_lock_proof`, scope `PlatformFunding`, counting
+//!   into a Mode B call permit (E0-04 §2a.3).
 //!
 //! Counterparts at platform `bc321362b9`, which these mirror call for call:
 //! `rs-platform-wallet-ffi/src/dashpay.rs` `ResolverContactCryptoProvider`
@@ -32,7 +35,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
 use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -41,8 +44,8 @@ use dpp::identity::{IdentityPublicKey, KeyType};
 use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
-use key_wallet::ExtendedPubKeySigner;
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+use key_wallet::{ExtendedPubKeySigner, SignerMethod};
 use platform_wallet::manager::startup::ScanKeyError;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
@@ -180,6 +183,65 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                         .unwrap_or(false)
                 })
             })
+    }
+}
+
+/// The lease's `PlatformFunding` signer during one Mode B funding call
+/// (E0-04 §2a.3): it delegates every call to the vault signer and reports
+/// each released signature, and any `Locked` refusal, to the call permit's
+/// count. A public key or xpub is no signature: only `sign_ecdsa` counts as
+/// released. Whatever key-wallet's builder requires of a signer
+/// (`TransactionSigner` is implemented for every `Signer`) comes through
+/// these two traits.
+#[derive(Debug, Clone)]
+pub struct CountingFundingSigner {
+    signer: VaultSigner,
+    count: Arc<SignatureCount>,
+}
+
+impl CountingFundingSigner {
+    pub(crate) fn new(signer: VaultSigner, count: Arc<SignatureCount>) -> Self {
+        Self { signer, count }
+    }
+
+    fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
+        if let Err(SignerError::Locked) = &r {
+            self.count.note_locked();
+        }
+        r
+    }
+}
+
+#[async_trait]
+impl key_wallet::Signer for CountingFundingSigner {
+    type Error = SignerError;
+
+    fn supported_methods(&self) -> &[SignerMethod] {
+        self.signer.supported_methods()
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
+        self.count.note_released();
+        Ok(signed)
+    }
+
+    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+        self.note(self.signer.public_key(path).await)
+    }
+}
+
+#[async_trait]
+impl ExtendedPubKeySigner for CountingFundingSigner {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
+        self.note(self.signer.extended_public_key(path).await)
     }
 }
 
