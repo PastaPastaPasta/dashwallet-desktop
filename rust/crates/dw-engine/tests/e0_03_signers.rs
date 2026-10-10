@@ -16,7 +16,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
@@ -132,8 +132,7 @@ async fn contact_crypto_matches_the_library_vectors() {
     let doc = vectors();
     let k = &doc["constants"];
     let peer = PublicKey::from_secret_key(
-        &Secp256k1::new(),
-        &SecretKey::from_slice(&bytes(&k["peer_secret"])).unwrap(),
+        &SecretKey::from_secret_bytes(array(&k["peer_secret"])).unwrap(),
     );
     let contact_id: [u8; 32] = array(&k["contact_id"]);
     let private_data = bytes(&k["private_data"]);
@@ -215,7 +214,7 @@ async fn contact_crypto_matches_the_library_vectors() {
             .await
             .unwrap();
         assert_eq!(
-            exported.secret_bytes().to_vec(),
+            exported.to_secret_bytes().to_vec(),
             bytes(&aa["secret"]),
             "{name}"
         );
@@ -349,10 +348,9 @@ async fn scan_key_resolves_the_master_the_identity_keys_derive_from() {
         );
         let resolve = scan.resolver();
         let master = resolve().unwrap();
-        let secp = Secp256k1::new();
         for key in case["identity_keys"].as_array().unwrap() {
-            let derived = master.derive_priv(&secp, &path(&key["path"])).unwrap();
-            let public = PublicKey::from_secret_key(&secp, &derived.private_key);
+            let derived = master.derive_priv(&path(&key["path"])).unwrap();
+            let public = PublicKey::from_secret_key(&derived.private_key);
             assert_eq!(public.serialize().to_vec(), bytes(&key["public_key"]));
         }
         // Locked: retryable, not terminal.

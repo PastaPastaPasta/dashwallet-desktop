@@ -9,7 +9,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     AddressChain, AddressFilter, BackupFailure, BookPurpose, CompatFailure, CoreExportFormat,
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
@@ -412,14 +411,13 @@ fn test_qt_109_exports_for_dash_qt_read_back() {
     assert_eq!(hd.mnemonic.as_str(), PHRASE);
     assert_eq!(hd.mnemonic_passphrase.as_str(), "TREZOR");
     // Every key line's WIF is the key of its address and path.
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::from_str(&hd.xprv).unwrap();
     for k in dump.keys.iter().take(5) {
         let path = DerivationPath::from_str(k.hdkeypath.as_deref().unwrap()).unwrap();
-        let child = master.derive_priv(&secp, &path).unwrap();
+        let child = master.derive_priv(&path).unwrap();
         let secret = k.secret(dashcore::Network::Regtest).unwrap();
-        assert_eq!(&secret.key[..], &child.private_key.secret_bytes()[..]);
-        let pk = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+        assert_eq!(&secret.key[..], &child.private_key.to_secret_bytes()[..]);
+        let pk = dashcore::PublicKey::new(child.private_key.public_key());
         assert_eq!(
             dashcore::Address::p2pkh(&pk, dashcore::Network::Regtest).to_string(),
             k.address

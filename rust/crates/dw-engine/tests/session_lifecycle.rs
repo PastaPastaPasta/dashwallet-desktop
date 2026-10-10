@@ -5,7 +5,6 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use dashcore::secp256k1::Secp256k1;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
     NetworkSession, SessionOptions, WalletId,
@@ -99,12 +98,11 @@ fn import(
 /// The regtest P2PKH address at `m/44'/1'/0'/0/0` of `phrase`.
 fn first_receive_address(phrase: &str) -> String {
     let secret = dw_vault::mnemonic::derive_secret(phrase.as_bytes(), b"", false).unwrap();
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
     let child = master
-        .derive_priv(&secp, &DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+        .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
         .unwrap();
-    let pubkey = dashcore::PublicKey::new(child.private_key.public_key(&secp));
+    let pubkey = dashcore::PublicKey::new(child.private_key.public_key());
     dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string()
 }
 
