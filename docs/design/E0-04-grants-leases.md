@@ -616,9 +616,21 @@ call permit when its task lands.
   counts at most 500 inputs, the most a lock spends at the pin, so the cap itself loses nothing.)
 - After a restart the per-step set of earlier rows is gone, so an older row under the same key counts again for a
   marked step.
-- At the pin, `reconstruction.rs` rebuilds every recovered registration lock at identity index 0, so a
-  `RecoveredFromChain` row matches the draft at index 0 only. DP1-05's adoption must re-key it (the DP1-02 rule:
-  adopt an identity only by the lock's outpoint).
+- At the pin, `reconstruction.rs` re-adds a lock whose row the wallet lost (a sweep's
+  `remove_tracked_asset_locks_for_swept`, a restore) from the chain, as `RecoveredFromChain`, `InstantSendLocked` or
+  `Broadcast`, and `funding_family` gives every singleton family (registration, unbound top-up, invitation, both
+  address top-ups) identity index 0; a bound top-up keeps its exact index. So a row's index is trusted only when the
+  row is `Built`, its index is non-zero, or it is an `IdentityTopUp` row (review H-1). The engine re-keys an
+  untrusted registration row by the identity its outpoint created (`ChainAssetLockProof::new(0, outpoint)
+  .create_identifier()`, the DP1-02 rule) when that identity is one of the wallet's managed identities; a row that
+  stays untrusted is *unattributed*. While an unattributed row of a step's funding type stands that the step does not
+  match by key, the step's ChainLocked self-spend reads `MaybeSent`, not `NotSent`, and Repair refuses it
+  (`UnattributedLock`, `invalid_argument`): liveness, fail closed, until DP1-05's adoption attributes the row (or the
+  identity it created is registered). The step's matching rows read as before.
+- The funding gate does not consult unattributed rows: blocking on them would block every registration of a
+  restored wallet holding an unused recovered lock. So a draft at index k ≠ 0 whose marker is gone (a deleted
+  journal) and whose row came back at index 0 reads `None` and may fund again until DP1-05 adopts the lock. Not fail
+  closed.
 - The self-spend's `NotSent` rests on the library tracking a lock (`Built`, persisted) before broadcasting it, so a
   ChainLocked lock always has a row, which reads `Sent`. A wallet restored where the journal's marker survives but
   the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked

@@ -60,6 +60,20 @@
 //! drops its funding key with its marker, so later rows match it only by
 //! the draft's key.
 //!
+//! **Unattributed rows** (review H-1). The pin's reconstruction re-adds a
+//! lost row at identity index 0 for every singleton funding family
+//! ([`index_trusted`]), so such a row may be the lock of a step at any
+//! index. The real source re-keys a registration row by the identity its
+//! outpoint created when that identity is one of the wallet's
+//! ([`attributed_row`]); a row whose index stays untrusted is
+//! *unattributed*. A step it does not match by key (the marker's or the
+//! draft's) still reads its matching rows as before, but while an
+//! unattributed row of the step's funding type stands, the self-spend's
+//! row (§2a.5 row 1) does not apply: the row may be the step's lock, on
+//! the chain whatever the self-spend did. The step reads `MaybeSent`, and
+//! Repair refuses it ([`StuckFundingRefusal::UnattributedLock`]). Fail
+//! closed: such a step waits for the row's attribution.
+//!
 //! **The funding gate** (§2a.3, in the J step that would take a funding
 //! call's permit): the wallet's rows must be known; the step must have no
 //! standing marker and read `None` or `NotSent` (retry only on `NotSent`,
@@ -74,6 +88,9 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use dashcore::{OutPoint, Txid};
+use dpp::identity::accessors::IdentityGettersV0;
+use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dpp::prelude::Identifier;
 use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 
 use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
@@ -135,22 +152,72 @@ pub struct TrackedRow {
     pub status: TrackedStatus,
     /// The lock transaction's inputs.
     pub inputs: Vec<OutPoint>,
+    /// The key's identity index names the identity the lock funds
+    /// ([`index_trusted`], [`attributed_row`]). A row that is not is
+    /// *unattributed*: it may be the lock of any step of its funding type
+    /// (the module doc's "Unattributed rows").
+    pub trusted: bool,
 }
 
 impl TrackedRow {
     pub fn of(lock: &TrackedAssetLock) -> Self {
+        let key = FundingKey::of_tracked(lock);
+        let status = TrackedStatus::from(&lock.status);
         Self {
             txid: lock.out_point.txid,
-            key: FundingKey::of_tracked(lock),
-            status: TrackedStatus::from(&lock.status),
+            key,
+            status,
             inputs: lock
                 .transaction
                 .input
                 .iter()
                 .map(|i| i.previous_output)
                 .collect(),
+            trusted: index_trusted(&key, status),
         }
     }
+}
+
+/// Whether a tracked row's identity index can be trusted as it stands
+/// (review H-1). At the pin, `reconstruction.rs` re-adds a row the wallet
+/// lost (a sweep's `remove_tracked_asset_locks_for_swept`, a restore) from
+/// the chain, with status `RecoveredFromChain`, `InstantSendLocked` or
+/// `Broadcast`, and `funding_family` gives every singleton family
+/// (registration, unbound top-up, invitation, both address top-ups)
+/// identity index 0: the funding account does not encode it. A bound
+/// top-up's account is the identity's registration index, so its index is
+/// exact. Trusted, then: a `Built` row (only the live pipeline builds), a
+/// non-zero index, or an `IdentityTopUp` row.
+pub(crate) fn index_trusted(key: &FundingKey, status: TrackedStatus) -> bool {
+    status == TrackedStatus::Built
+        || key.identity_index != 0
+        || key.funding_type == AssetLockFundingType::IdentityTopUp
+}
+
+/// The identity an asset lock of `out_point` creates: Platform's id for a
+/// proof of it (rs-dpp `create_identifier`, the same for both proof kinds;
+/// DP1-02's derivation).
+pub(crate) fn identity_for(out_point: OutPoint) -> Identifier {
+    ChainAssetLockProof::new(0, out_point.into()).create_identifier()
+}
+
+/// `lock`'s row, re-keyed by the identity it created (review H-1): an
+/// untrusted registration row whose outpoint's identity
+/// ([`identity_for`]) is one of the wallet's (`identities`: their ids and
+/// identity indices) takes that identity's index, and is trusted.
+pub(crate) fn attributed_row(
+    lock: &TrackedAssetLock,
+    identities: &HashMap<Identifier, u32>,
+) -> TrackedRow {
+    let mut row = TrackedRow::of(lock);
+    if !row.trusted
+        && row.key.funding_type == AssetLockFundingType::IdentityRegistration
+        && let Some(&index) = identities.get(&identity_for(lock.out_point))
+    {
+        row.key.identity_index = index;
+        row.trusted = true;
+    }
+    row
 }
 
 /// A draft's own funding key (§2a.5, review Opus r3 F-2), from
@@ -269,7 +336,10 @@ pub enum FundingBlock {
 ///   marker's key or the draft's own); `None` when the wallet's rows are
 ///   unknown, which never reads `None` or `NotSent`;
 /// - `self_spend_locked`: one of Repair's self-spends answering the step's
-///   marker is ChainLocked.
+///   marker is ChainLocked;
+/// - `unattributed`: an unattributed row of the step's funding type that
+///   does not match the step by key stands (module doc): the self-spend's
+///   row then reads `MaybeSent`, not `NotSent`.
 ///
 /// A call that returned Ok (`status` `Sent`) and a row with a proof come
 /// first: the lock reached a proof, so a ChainLocked self-spend cannot have
@@ -283,6 +353,7 @@ pub(crate) fn derive_funding(
     status: CallStepStatus,
     rows: Option<&[TrackedStatus]>,
     self_spend_locked: bool,
+    unattributed: bool,
 ) -> Option<DispatchState> {
     if status == CallStepStatus::Sent || rows.is_some_and(|r| r.iter().any(|s| s.proved())) {
         return Some(DispatchState::Sent);
@@ -291,7 +362,13 @@ pub(crate) fn derive_funding(
         return Some(DispatchState::MaybeSent);
     };
     if self_spend_locked {
-        return Some(DispatchState::NotSent);
+        // An unattributed row may be the step's lock, which the self-spend
+        // need not have conflicted with.
+        return Some(if unattributed {
+            DispatchState::MaybeSent
+        } else {
+            DispatchState::NotSent
+        });
     }
     if rows.iter().any(|s| s.pending()) {
         return Some(DispatchState::WillBeSent);
@@ -318,6 +395,28 @@ fn matches_step(
         || (info.funding.as_ref() == Some(&r.key) && !foreign.is_some_and(|f| f.contains(&r.txid)))
 }
 
+/// The first unattributed row (module doc) that may be `step`'s lock: of
+/// the step's funding type (any type when the step has neither a marker
+/// key nor a draft), and not matching the step by key, whether or not it
+/// preceded the marker.
+fn unattributed_row<'a>(
+    s: &'a Snapshot,
+    step: &str,
+    info: &CallStepInfo,
+) -> Option<&'a TrackedRow> {
+    let draft = s.drafts.iter().find(|d| d.step == step);
+    let step_type = info
+        .funding
+        .map(|k| k.funding_type)
+        .or(draft.map(|d| d.funding_type));
+    s.rows.iter().find(|r| {
+        !r.trusted
+            && step_type.is_none_or(|t| t == r.key.funding_type)
+            && info.funding.as_ref() != Some(&r.key)
+            && !draft.is_some_and(|d| d.matches(&r.key))
+    })
+}
+
 /// `step`'s funding status now (J).
 pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<DispatchState> {
     let info = i.fence.call_step_info(&wallet, step);
@@ -331,7 +430,8 @@ pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<
             .collect()
     });
     let locked = snap.is_some_and(|s| info.self_spends.iter().any(|t| s.locked_spends.contains(t)));
-    derive_funding(info.status, rows.as_deref(), locked)
+    let unattributed = locked && snap.is_some_and(|s| unattributed_row(s, step, &info).is_some());
+    derive_funding(info.status, rows.as_deref(), locked, unattributed)
 }
 
 /// §16.5's Mode B `funds_committed` of a lease: one of its funding steps
@@ -397,6 +497,12 @@ pub enum StuckFundingRefusal {
     /// self-spend can take, so the self-spend would not conflict with it.
     #[error("tracked asset lock {0} spends no coin the self-spend can take")]
     LockInputsSpent(Txid),
+    /// A tracked lock of the step's funding type whose identity index is
+    /// not known (the module doc's "Unattributed rows") may be the step's
+    /// own, already on the chain: a ChainLocked self-spend would prove
+    /// nothing. Repair waits until the row is attributed.
+    #[error("tracked asset lock {0} may be this funding's: its identity is not known yet")]
+    UnattributedLock(Txid),
 }
 
 /// The tracked `Built` and `Broadcast` rows of funding `step` (J): their
@@ -420,8 +526,8 @@ pub(super) fn pending_step_rows(
 
 /// Whether Repair may resolve funding `step` with a self-spend now (J):
 /// the wallet's rows are known, the step reads `MaybeSent` or
-/// `WillBeSent` (a proof-less tracked row), its marker stands, and no call
-/// runs under it.
+/// `WillBeSent` (a proof-less tracked row), its marker stands, no call
+/// runs under it, and no unattributed row may be its lock.
 pub(super) fn stuck_funding(
     i: &Inner,
     wallet: WalletId,
@@ -442,6 +548,15 @@ pub(super) fn stuck_funding(
     }
     if i.fence.call_busy(&(wallet, step.to_owned())) {
         return Err(StuckFundingRefusal::CallRunning);
+    }
+    let info = i.fence.call_step_info(&wallet, step);
+    if let Some(r) = i
+        .mode_b
+        .snapshots
+        .get(&wallet)
+        .and_then(|s| unattributed_row(s, step, &info))
+    {
+        return Err(StuckFundingRefusal::UnattributedLock(r.txid));
     }
     Ok(())
 }
@@ -676,10 +791,16 @@ impl TrackedLocks for SessionTracked {
         // funded step. Here that is unknown: the snapshot stays.
         let wm = w.wallet_manager().read().await;
         let info = wm.get_wallet_info(&w.wallet_id())?;
+        // The wallet's own identities (never observed contacts), by id.
+        let identities: HashMap<Identifier, u32> = info
+            .identity_manager
+            .wallet_managed_identities(&w.wallet_id())
+            .filter_map(|m| Some((m.identity.id(), m.identity_index?)))
+            .collect();
         Some(
             info.tracked_asset_locks
                 .values()
-                .map(TrackedRow::of)
+                .map(|lock| attributed_row(lock, &identities))
                 .collect(),
         )
     }

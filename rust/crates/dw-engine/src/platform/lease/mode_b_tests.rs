@@ -12,7 +12,7 @@ use dashcore::{OutPoint, Txid};
 use platform_wallet::AssetLockFundingType;
 
 use super::fence::JournalBackend;
-use super::mode_b::{Snapshot, TrackedLocks, derive_funding};
+use super::mode_b::{Snapshot, TrackedLocks, derive_funding, index_trusted};
 use super::tests::{FakeJournal, Recorder, W, W2, begin, table, with_journal};
 use super::*;
 use crate::WalletId;
@@ -61,6 +61,7 @@ fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedRow {
         key: key(identity_index),
         status,
         inputs: vec![OutPoint::new(txid(100 + n), 0)],
+        trusted: index_trusted(&key(identity_index), status),
     }
 }
 
@@ -183,19 +184,34 @@ async fn maybe_sent(l: &Lease, step: &str, index: u32) {
 #[test]
 fn row_1_a_chain_locked_self_spend_reads_not_sent() {
     let marked = S::Marked { durable: true };
-    assert_eq!(derive_funding(marked, Some(&[]), true), Some(NotSent));
+    assert_eq!(
+        derive_funding(marked, Some(&[]), true, false),
+        Some(NotSent)
+    );
     // Repair spends the inputs of every Built and Broadcast row too.
     assert_eq!(
-        derive_funding(marked, Some(&[R::Built]), true),
+        derive_funding(marked, Some(&[R::Built]), true, false),
         Some(NotSent)
     );
     assert_eq!(
-        derive_funding(marked, Some(&[R::Broadcast]), true),
+        derive_funding(marked, Some(&[R::Broadcast]), true, false),
         Some(NotSent)
     );
     // A lock that reached a proof was not conflicted by it.
     assert_eq!(
-        derive_funding(marked, Some(&[R::ChainLocked]), true),
+        derive_funding(marked, Some(&[R::ChainLocked]), true, false),
+        Some(Sent)
+    );
+    // An unattributed row may be the step's lock (review H-1).
+    for rows in [&[][..], &[R::Built], &[R::Broadcast]] {
+        assert_eq!(
+            derive_funding(marked, Some(rows), true, true),
+            Some(MaybeSent),
+            "{rows:?}"
+        );
+    }
+    assert_eq!(
+        derive_funding(marked, Some(&[R::ChainLocked]), true, true),
         Some(Sent)
     );
 }
@@ -210,14 +226,14 @@ fn row_2_a_row_with_a_proof_reads_sent_with_or_without_a_marker() {
     ] {
         for step in [S::None, S::Marked { durable: true }, S::NotSent] {
             assert_eq!(
-                derive_funding(step, Some(&[status]), false),
+                derive_funding(step, Some(&[status]), false, false),
                 Some(Sent),
                 "{status:?} {step:?}"
             );
         }
         // A proof beats a pending row of the same key.
         assert_eq!(
-            derive_funding(S::None, Some(&[R::Built, status]), false),
+            derive_funding(S::None, Some(&[R::Built, status]), false, false),
             Some(Sent)
         );
     }
@@ -233,7 +249,7 @@ fn row_3_a_built_or_broadcast_row_reads_will_be_sent_with_or_without_a_marker() 
             S::NotSent,
         ] {
             assert_eq!(
-                derive_funding(step, Some(&[status]), false),
+                derive_funding(step, Some(&[status]), false, false),
                 Some(WillBeSent),
                 "{status:?} {step:?}"
             );
@@ -243,19 +259,22 @@ fn row_3_a_built_or_broadcast_row_reads_will_be_sent_with_or_without_a_marker() 
 
 #[test]
 fn row_4_no_row_and_a_definite_resolution_reads_not_sent() {
-    assert_eq!(derive_funding(S::NotSent, Some(&[]), false), Some(NotSent));
+    assert_eq!(
+        derive_funding(S::NotSent, Some(&[]), false, false),
+        Some(NotSent)
+    );
 }
 
 #[test]
 fn row_5_no_marker_and_no_row_reads_none() {
-    assert_eq!(derive_funding(S::None, Some(&[]), false), None);
+    assert_eq!(derive_funding(S::None, Some(&[]), false, false), None);
 }
 
 #[test]
 fn row_6_a_marker_with_no_row_and_no_resolution_reads_maybe_sent() {
     for durable in [false, true] {
         assert_eq!(
-            derive_funding(S::Marked { durable }, Some(&[]), false),
+            derive_funding(S::Marked { durable }, Some(&[]), false, false),
             Some(MaybeSent)
         );
     }
@@ -263,11 +282,11 @@ fn row_6_a_marker_with_no_row_and_no_resolution_reads_maybe_sent() {
 
 #[test]
 fn a_call_that_returned_ok_reads_sent_and_unknown_rows_never_read_none_or_not_sent() {
-    assert_eq!(derive_funding(S::Sent, Some(&[]), false), Some(Sent));
-    assert_eq!(derive_funding(S::Sent, None, false), Some(Sent));
+    assert_eq!(derive_funding(S::Sent, Some(&[]), false, false), Some(Sent));
+    assert_eq!(derive_funding(S::Sent, None, false, false), Some(Sent));
     for step in [S::None, S::NotSent, S::Marked { durable: true }] {
         assert_eq!(
-            derive_funding(step, None, false),
+            derive_funding(step, None, false, false),
             Some(MaybeSent),
             "{step:?}"
         );
@@ -977,6 +996,208 @@ async fn a_refresh_overtaken_by_the_wallets_removal_is_dropped() {
     src.release.notify_one();
     assert!(!refresh.await.unwrap());
     assert!(!t.has_tracked_snapshot(W));
+}
+
+// --- Unattributed rows (review H-1) ----------------------------------------
+
+/// A tracked lock at the pin for the tests below.
+fn tracked_lock(
+    out_point: OutPoint,
+    identity_index: u32,
+    status: platform_wallet::AssetLockStatus,
+) -> platform_wallet::TrackedAssetLock {
+    platform_wallet::TrackedAssetLock {
+        out_point,
+        transaction: dashcore::Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(txid(200), 0),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        },
+        account_index: 0,
+        funding_type: AssetLockFundingType::IdentityRegistration,
+        identity_index,
+        amount: 1_000,
+        status,
+        proof: None,
+    }
+}
+
+/// Which rows' identity index is trusted as it stands: the pin's
+/// reconstruction gives every singleton family index 0 and a bound
+/// top-up its exact index, and only the live pipeline builds.
+#[test]
+fn a_rows_identity_index_is_trusted_when_built_non_zero_or_a_bound_top_up() {
+    use AssetLockFundingType as T;
+    let at = |funding_type, identity_index| FundingKey {
+        funding_type,
+        identity_index,
+        account: 0,
+    };
+    for t in [
+        T::IdentityRegistration,
+        T::IdentityTopUpNotBound,
+        T::IdentityInvitation,
+        T::AssetLockAddressTopUp,
+        T::AssetLockShieldedAddressTopUp,
+    ] {
+        assert!(index_trusted(&at(t, 0), R::Built), "{t:?}");
+        assert!(index_trusted(&at(t, 3), R::RecoveredFromChain), "{t:?}");
+        for status in [
+            R::Broadcast,
+            R::InstantSendLocked,
+            R::ChainLocked,
+            R::Consumed,
+            R::RecoveredFromChain,
+        ] {
+            assert!(!index_trusted(&at(t, 0), status), "{t:?} {status:?}");
+        }
+    }
+    assert!(index_trusted(
+        &at(T::IdentityTopUp, 0),
+        R::RecoveredFromChain
+    ));
+}
+
+/// The real source re-keys an untrusted registration row by the identity
+/// its outpoint created, when that identity is one of the wallet's.
+#[test]
+fn an_untrusted_registration_row_is_re_keyed_by_the_identity_it_created() {
+    use super::mode_b::{attributed_row, identity_for};
+    use platform_wallet::AssetLockStatus as A;
+    let out_point = OutPoint::new(txid(1), 1);
+    let lock = tracked_lock(out_point, 0, A::RecoveredFromChain);
+    let mine = HashMap::from([(identity_for(out_point), 3)]);
+    let r = attributed_row(&lock, &mine);
+    assert_eq!((r.key, r.trusted), (key(3), true));
+    // Another outpoint's identity (vout 0 of the same transaction): left
+    // as it is, unattributed.
+    let other = HashMap::from([(identity_for(OutPoint::new(txid(1), 0)), 3)]);
+    let r = attributed_row(&lock, &other);
+    assert_eq!((r.key, r.trusted), (key(0), false));
+    // A trusted row keeps its key, whatever identity it created.
+    let built = tracked_lock(out_point, 0, A::Built);
+    let r = attributed_row(&built, &mine);
+    assert_eq!((r.key, r.trusted), (key(0), true));
+    // Another funding type is not re-keyed by a registration's identity.
+    let mut invitation = tracked_lock(out_point, 0, A::RecoveredFromChain);
+    invitation.funding_type = AssetLockFundingType::IdentityInvitation;
+    assert!(!attributed_row(&invitation, &mine).trusted);
+}
+
+/// The pin re-adds a registration lock that lost its row at identity
+/// index 0. For a step at another index, that row is unattributed: the
+/// step keeps reading `MaybeSent` (a ChainLocked self-spend proves nothing
+/// over it) and Repair refuses. A step at index 0 still matches it by key,
+/// and a row re-keyed by its identity reads for that identity's step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
+    use StuckFundingRefusal as F;
+    const AT3: &str = "registration/3/funding";
+    const AT0: &str = "registration/4/funding";
+    let (t, rec, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, AT3, 3).await;
+    maybe_sent(&l, AT0, 0).await;
+    // A self-spend of each step, recorded before any row came back.
+    t.record_self_spend(W, AT3, [0xa3; 32]).await.unwrap();
+    t.record_self_spend(W, AT0, [0xa0; 32]).await.unwrap();
+
+    // T1 of the step at index 3 went out, lost its row and was re-added
+    // from the chain at index 0.
+    let lost = row(1, 0, R::RecoveredFromChain);
+    assert!(!lost.trusted);
+    src.set_rows(W, vec![lost.clone()]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    assert_eq!(
+        t.record_self_spend(W, AT3, [0xb3; 32]).await,
+        Err(F::UnattributedLock(txid(1)))
+    );
+    src.locked.lock().unwrap().insert([0xa3; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(
+        t.funding_status(W, AT3),
+        Some(MaybeSent),
+        "a ChainLocked self-spend does not read NotSent"
+    );
+    // The step at index 0 matches the row by key: Sent.
+    assert_eq!(t.funding_status(W, AT0), Some(Sent));
+
+    // A pre-finality reconstruction (Broadcast) is unattributed too.
+    src.set_rows(W, vec![row(1, 0, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    // At index 0 it matches by key: the ChainLocked self-spend conflicts
+    // with it as before.
+    src.locked.lock().unwrap().insert([0xa0; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT0), Some(NotSent));
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+
+    // The same row, re-keyed by the identity at index 3 it created: the
+    // step at index 3 reads Sent, and the one at index 0 no longer sees it.
+    src.set_rows(
+        W,
+        vec![TrackedRow {
+            key: key(3),
+            trusted: true,
+            ..lost
+        }],
+    );
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(Sent));
+    assert_eq!(t.funding_status(W, AT0), Some(NotSent));
+    let at3: Vec<_> = rec
+        .resolved()
+        .into_iter()
+        .filter(|(s, _)| s == AT3)
+        .collect();
+    assert_eq!(
+        at3,
+        vec![(AT3.to_owned(), DispatchResolution::Sent)],
+        "the step at index 3 never read NotSent"
+    );
+}
+
+/// A `Built` row is the live pipeline's own build, whatever its index: it
+/// leaves another index's ChainLocked self-spend reading `NotSent`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_built_row_at_index_0_is_attributed() {
+    const AT3: &str = "registration/3/funding";
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, AT3, 3).await;
+    t.record_self_spend(W, AT3, [0xa3; 32]).await.unwrap();
+    src.set_rows(W, vec![row(1, 0, R::Built)]);
+    src.locked.lock().unwrap().insert([0xa3; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(NotSent));
+}
+
+/// An unattributed row of another funding type says nothing of a step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unattributed_row_of_another_funding_type_does_not_block() {
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, REG, 7).await;
+    t.record_self_spend(W, REG, [0xa7; 32]).await.unwrap();
+    let invitation = TrackedRow {
+        key: FundingKey {
+            funding_type: AssetLockFundingType::IdentityInvitation,
+            ..key(0)
+        },
+        ..row(1, 0, R::RecoveredFromChain)
+    };
+    assert!(!invitation.trusted);
+    src.set_rows(W, vec![invitation]);
+    src.locked.lock().unwrap().insert([0xa7; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
 }
 
 // --- Repair's self-spend (§6.5, §2a.5 row 1; commit 7) --------------------

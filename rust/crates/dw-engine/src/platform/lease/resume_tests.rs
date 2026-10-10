@@ -41,6 +41,7 @@ fn row(n: u8, status: TrackedStatus) -> TrackedRow {
         },
         status,
         inputs: vec![OutPoint::new(txid(100 + n), 0)],
+        trusted: true,
     }
 }
 

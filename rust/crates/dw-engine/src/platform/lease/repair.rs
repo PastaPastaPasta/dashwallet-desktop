@@ -41,9 +41,13 @@
 //! the funding accounts that spends the wallet's coins is not ChainLocked
 //! (an earlier self-spend, a payment, or the lost lock itself, which the
 //! wallet may have seen): it waits for that ChainLock, or the user
-//! abandons the transaction, whose coins come back to the next repair. And
-//! it is refused unless it spends an input of every tracked `Built` and
-//! `Broadcast` row of the step, so it conflicts with each.
+//! abandons the transaction, whose coins come back to the next repair. It
+//! is refused unless it spends an input of every tracked `Built` and
+//! `Broadcast` row of the step, so it conflicts with each. And it is
+//! refused while an unattributed row of the step's funding type stands (a
+//! lock re-added from the chain at an identity index that may not be its
+//! own, `mode_b`'s "Unattributed rows"): that lock may be the step's, on
+//! the chain whatever the self-spend does.
 //!
 //! The facade call under Tools ▸ Repair is DP1-02's (m4 contract,
 //! "Tools ▸ Repair ... gets a facade call; engine-internal until then").
@@ -77,9 +81,10 @@ impl NetworkSession {
     ///
     /// Refused (`invalid_argument`) unless the step reads `MaybeSent` or
     /// `WillBeSent` now with its marker standing and no call running under
-    /// it, while a spend of the wallet's coins awaits its ChainLock, and
-    /// when the self-spend would miss every input of one of the step's
-    /// tracked rows (module doc, "When"); `storage` when the journal cannot
+    /// it, while a spend of the wallet's coins awaits its ChainLock or an
+    /// unattributed row may be the step's lock, and when the self-spend
+    /// would miss every input of one of the step's tracked rows (module
+    /// doc, "When"); `storage` when the journal cannot
     /// record the self-spend. The
     /// draft's own errors are `TxDraft`'s. On success the self-spend is
     /// recorded and broadcast; the step keeps reading `MaybeSent` (or
