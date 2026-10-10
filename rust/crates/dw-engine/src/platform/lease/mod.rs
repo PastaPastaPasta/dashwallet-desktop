@@ -25,6 +25,7 @@ pub(crate) mod call;
 pub(crate) mod fence;
 pub(crate) mod lock;
 pub(crate) mod mode_b;
+pub(crate) mod resume;
 pub(crate) mod session;
 pub(crate) mod table;
 
@@ -32,6 +33,8 @@ pub(crate) mod table;
 mod call_tests;
 #[cfg(test)]
 mod mode_b_tests;
+#[cfg(test)]
+mod resume_tests;
 #[cfg(test)]
 mod session_tests;
 #[cfg(test)]

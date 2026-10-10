@@ -207,6 +207,8 @@ impl LeaseTable {
                     t.abort();
                 }
             }
+            // The catch-up's resume passes (H6 part 2).
+            i.mode_b.passes.abort_all();
         });
     }
 }

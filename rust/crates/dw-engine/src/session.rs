@@ -459,12 +459,14 @@ impl NetworkSession {
         session.leases.start_reaper();
         // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
         // the tap's hook on tracked-row changes, and a first read of every
-        // loaded wallet's rows.
-        session
-            .leases
-            .install_tracked(Arc::new(crate::platform::lease::mode_b::SessionTracked {
-                session: Arc::downgrade(&session),
-            }));
+        // loaded wallet's rows. The same source resumes tracked rows for
+        // the catch-up (H6 part 2), which SPV's start and its peers drive.
+        let tracked = Arc::new(crate::platform::lease::mode_b::SessionTracked {
+            session: Arc::downgrade(&session),
+        });
+        session.leases.install_tracked(tracked.clone());
+        session.leases.install_resumer(tracked);
+        session.hub.watch_peers(&session.leases);
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }
@@ -662,10 +664,13 @@ impl NetworkSession {
             network: self.network.clone(),
             running: true,
         });
+        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
+        self.leases.spv_started();
         Ok(())
     }
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
+        self.leases.spv_stopped();
         let stopped = manager.spv().stop().await;
         self.hub.set_spv_running(false);
         self.sink.emit(EngineEvent::SpvStateChanged {

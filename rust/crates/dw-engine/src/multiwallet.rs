@@ -283,6 +283,7 @@ impl NetworkSession {
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
             this.platform.forget(&id);
+            this.leases.wallet_closed(id);
             this.sink.emit(EngineEvent::WalletLoadChanged {
                 network: this.network.clone(),
                 wallet_id: id,
@@ -323,6 +324,8 @@ impl NetworkSession {
                 loaded: true,
             });
             this.platform.signal(PlatformSignal::WalletAdded(id));
+            // E0-04 §8.6: H6 runs again for the reopened wallet.
+            this.leases.wallet_opened(id);
             Ok(())
         })
         .await

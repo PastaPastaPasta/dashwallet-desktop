@@ -305,6 +305,11 @@ impl SyncTracker {
         }
     }
 
+    /// The connected peers.
+    pub(crate) fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
     /// Best stored header height, if dash-spv reported one.
     pub(crate) fn tip_height(&self) -> Option<u32> {
         self.readings.headers.map(|h| h.current).filter(|h| *h > 0)

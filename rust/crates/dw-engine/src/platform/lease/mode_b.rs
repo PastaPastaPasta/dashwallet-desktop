@@ -78,6 +78,7 @@ use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 
 use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
 use super::fence::{CallStepInfo, CallStepStatus};
+use super::resume::{Resumed, Resumer};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, Lease, LeaseError};
 use crate::platform::errors::PlatformError;
@@ -121,7 +122,7 @@ impl TrackedStatus {
 
     /// Signed, and resent by the catch-up and the deferred resume (§2a.5
     /// row 3); its inputs may still be selectable (F7).
-    fn pending(self) -> bool {
+    pub(crate) fn pending(self) -> bool {
         matches!(self, Self::Built | Self::Broadcast)
     }
 }
@@ -218,6 +219,8 @@ pub(crate) struct ModeB {
     foreign: HashMap<(WalletId, String), HashSet<Txid>>,
     /// Bumped by every wallet removal: a refresh read before it is dropped.
     epoch: u64,
+    /// The catch-up's resume passes (H6 part 2).
+    pub(super) passes: super::resume::Passes,
 }
 
 impl ModeB {
@@ -227,7 +230,20 @@ impl ModeB {
         self.derived.retain(|(w, _), _| w != wallet);
         self.resumed.retain(|(w, _)| w != wallet);
         self.foreign.retain(|(w, _), _| w != wallet);
+        self.passes.end(wallet);
         self.epoch += 1;
+    }
+
+    /// Tracked row `txid` of `wallet` was resumed this session.
+    pub(super) fn note_resumed(&mut self, wallet: WalletId, txid: Txid) {
+        self.resumed.insert((wallet, txid));
+    }
+
+    /// A closed wallet (§8.6): its pass ends and its rows count as not
+    /// resumed, until the pass that runs when it is opened again.
+    pub(super) fn wallet_closed(&mut self, wallet: &WalletId) {
+        self.resumed.retain(|(w, _)| w != wallet);
+        self.passes.end(wallet);
     }
 }
 
@@ -532,7 +548,7 @@ impl LeaseTable {
     /// this session: it no longer blocks the wallet's funding calls.
     pub fn note_resumed(&self, wallet: WalletId, txid: Txid) {
         self.with_j(|i, fx| {
-            i.mode_b.resumed.insert((wallet, txid));
+            i.mode_b.note_resumed(wallet, txid);
             fx.notify();
         });
     }
@@ -592,6 +608,63 @@ impl TrackedLocks for SessionTracked {
         let wm = w.wallet_manager().read().await;
         wm.get_wallet_info(&w.wallet_id())
             .is_some_and(|info| crate::coins::tx_chain_locked(&info.core_wallet, &txid))
+    }
+}
+
+#[async_trait]
+impl Resumer for SessionTracked {
+    async fn wallets(&self) -> Vec<WalletId> {
+        let Some(session) = self.session.upgrade() else {
+            return Vec::new();
+        };
+        let Ok(manager) = session.manager() else {
+            return Vec::new();
+        };
+        manager
+            .wallet_ids()
+            .await
+            .into_iter()
+            .map(WalletId)
+            .collect()
+    }
+
+    async fn resume(&self, wallet: WalletId, txid: Txid) -> Resumed {
+        use platform_wallet::PlatformWalletError as E;
+        // The session is not kept across the library call: only its wallet.
+        let w = {
+            let Some(session) = self.session.upgrade() else {
+                return Resumed::NotRun;
+            };
+            match session.wallet(&wallet).await {
+                Ok(w) => w,
+                Err(_) => return Resumed::NotRun,
+            }
+        };
+        let out_point = {
+            let wm = w.wallet_manager().read().await;
+            let Some(info) = wm.get_wallet_info(&w.wallet_id()) else {
+                return Resumed::NotRun;
+            };
+            info.tracked_asset_locks
+                .keys()
+                .find(|op| op.txid == txid)
+                .copied()
+        };
+        // No longer tracked: nothing to resume, and nothing to wait for.
+        let Some(out_point) = out_point else {
+            return Resumed::Ran;
+        };
+        match w.asset_locks().resume_asset_lock(&out_point, None).await {
+            Ok(_) => Resumed::Ran,
+            Err(E::WalletNotFound(_)) => Resumed::NotRun,
+            Err(E::AssetLockNotTracked(_)) => Resumed::Ran,
+            Err(e) => {
+                // The attempt ran (pin semantics); the row stays tracked and
+                // the next pass resumes it again.
+                tracing::info!(wallet_id = %wallet, %txid, error = %e, "the catch-up's resume of a tracked asset lock did not settle it");
+                Resumed::Ran
+            }
+        }
     }
 }
 

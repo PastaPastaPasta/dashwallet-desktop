@@ -252,6 +252,7 @@ pub(crate) struct Effects {
     drops: Vec<Box<dyn Send>>,
     changed: BTreeSet<LeaseId>,
     notify: bool,
+    resume: bool,
 }
 
 impl Effects {
@@ -272,6 +273,12 @@ impl Effects {
     pub(crate) fn notify(&mut self) {
         self.notify = true;
     }
+
+    /// Run the catch-up's resume pass for every loaded wallet (H6 part 2):
+    /// the journal recovered from a write failure (§6.4).
+    pub(crate) fn resume(&mut self) {
+        self.resume = true;
+    }
 }
 
 pub struct LeaseTable {
@@ -289,6 +296,10 @@ pub struct LeaseTable {
     pub(crate) tracked: OnceLock<Arc<dyn super::mode_b::TrackedLocks>>,
     /// Serializes Mode B's snapshot refreshes.
     pub(crate) refresh: tokio::sync::Mutex<()>,
+    /// The catch-up's resume path (H6 part 2); the session installs it.
+    pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
+    /// The table itself, for work a J step's effects start.
+    me: Weak<LeaseTable>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -305,7 +316,7 @@ impl LeaseTable {
         config: LeaseConfig,
         epoch: u64,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             j: Mutex::new(Inner {
                 lock_gen: 0,
                 wallet_gen: HashMap::new(),
@@ -332,6 +343,8 @@ impl LeaseTable {
             journal: Default::default(),
             tracked: OnceLock::new(),
             refresh: tokio::sync::Mutex::new(()),
+            resumer: OnceLock::new(),
+            me: me.clone(),
         })
     }
 
@@ -365,6 +378,11 @@ impl LeaseTable {
         }
         if fx.notify {
             self.changed.notify_waiters();
+        }
+        if fx.resume
+            && let Some(me) = self.me.upgrade()
+        {
+            me.request_resume(None);
         }
         r
     }

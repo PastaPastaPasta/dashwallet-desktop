@@ -311,6 +311,9 @@ pub(crate) struct SessionHub {
     pub announced: Mutex<HashMap<Txid, u64>>,
     /// The quorum provider, told when the masternode phase is done.
     pub trust: OnceLock<Arc<crate::platform::trust::TrustProvider>>,
+    /// The lease table whose catch-up runs on each SPV peers 0 → >0
+    /// transition (E0-04 H6 part 2).
+    peers_up: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
 }
 
 impl SessionHub {
@@ -327,7 +330,13 @@ impl SessionHub {
             chainlock: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
+            peers_up: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Runs `leases`' resume pass on every SPV peers 0 → >0 transition.
+    pub(crate) fn watch_peers(&self, leases: &Arc<crate::platform::lease::LeaseTable>) {
+        let _ = self.peers_up.set(Arc::downgrade(leases));
     }
 
     pub(crate) fn note_announced(&self, txid: Txid) {
@@ -632,8 +641,17 @@ impl EventHandler for SessionHub {
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if self.tracker().on_network_event(event) {
+        let (changed, up) = {
+            let mut tracker = self.tracker();
+            let before = tracker.peer_count();
+            let changed = tracker.on_network_event(event);
+            (changed, before == 0 && tracker.peer_count() > 0)
+        };
+        if changed {
             self.pump.mark_sync();
+        }
+        if up && let Some(leases) = self.peers_up.get().and_then(std::sync::Weak::upgrade) {
+            leases.request_resume(None);
         }
     }
 

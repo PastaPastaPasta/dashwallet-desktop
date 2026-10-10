@@ -328,6 +328,16 @@ struct SpendCharge {
     charge: Charge,
 }
 
+/// A journal write's outcome, in its J step (§6.4): the first write that
+/// succeeds after one failed runs H6's resume pass again (review Opus 11).
+fn note_write(i: &mut Inner, fx: &mut Effects, ok: bool) {
+    if !ok {
+        i.fence.write_failed = true;
+    } else if std::mem::take(&mut i.fence.write_failed) {
+        fx.resume();
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Attempt {
     wallet: WalletId,
@@ -341,6 +351,9 @@ struct Attempt {
 #[derive(Default)]
 pub(crate) struct FenceState {
     pub(crate) journal: JournalState,
+    /// The last journal write failed (§6.4): the next one that succeeds
+    /// runs H6's resume pass again.
+    write_failed: bool,
     entries: HashMap<(WalletId, ArtifactId), Reg>,
     /// The lease that registered each entry of this process.
     origins: HashMap<(WalletId, ArtifactId), LeaseId>,
@@ -1532,6 +1545,7 @@ impl LeaseTable {
                 }))
                 .unwrap_or_else(|_| Err("the journal write panicked".into()));
                 table.with_j(|i, fx| {
+                    note_write(i, fx, written.is_ok());
                     let key = (wallet, txid);
                     let abandoned = i.fence.registering.remove(&key).unwrap_or(false);
                     #[cfg(test)]
@@ -1897,6 +1911,7 @@ impl LeaseTable {
             let (settling, call) = table.with_j(|i, fx| {
                 i.fence.writes -= 1;
                 fx.notify();
+                note_write(i, fx, ok);
                 // A `Sent` row an earlier write failed is retried once the
                 // journal takes a write again (review r2 M2).
                 if ok && i.fence.journal == JournalState::Ready {
@@ -2545,6 +2560,7 @@ impl LeaseTable {
             fx.notify();
             if write {
                 i.fence.writes -= 1;
+                note_write(i, fx, written);
             }
             let key = row_key(i, wallet, id);
             if keep_sent(i, key) {
@@ -2740,6 +2756,7 @@ impl LeaseTable {
             fx.notify();
             if write {
                 i.fence.writes -= 1;
+                note_write(i, fx, written);
             }
             let Some(run) = i.fence.call_steps.get_mut(&key) else {
                 return false;
@@ -2966,6 +2983,7 @@ impl LeaseTable {
             table.with_j(|i, fx| {
                 i.fence.writes -= 1;
                 fx.notify();
+                note_write(i, fx, erased.is_ok());
                 if let Ok(erased) = erased {
                     let forget = || forget_erased(i, wallet, dispatch, erased);
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(forget));
