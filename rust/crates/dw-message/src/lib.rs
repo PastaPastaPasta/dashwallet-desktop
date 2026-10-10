@@ -14,7 +14,7 @@
 
 use dashcore::Network;
 use dashcore::hashes::{Hash, HashEngine, hash160, sha256d};
-use dashcore::secp256k1::{self, Message, Secp256k1, SecretKey, ecdsa};
+use dashcore::secp256k1::{self, Message, SecretKey, ecdsa};
 use dw_uri::keyio::{self, Destination, Secret};
 use std::fmt;
 
@@ -70,12 +70,14 @@ impl std::error::Error for SignError {}
 /// `MessageSign`: base64 of the 65-byte compact signature. Signing is
 /// deterministic (RFC 6979, no extra entropy), as in Core's `SignCompact`.
 pub fn sign_message(secret: &Secret, message: &[u8]) -> Result<String, SignError> {
-    let sk = SecretKey::from_byte_array(&secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
-    let secp = Secp256k1::signing_only();
-    let sig = secp.sign_ecdsa_recoverable(&Message::from_digest(message_hash(message)), &sk);
+    let sk = SecretKey::from_secret_bytes(*secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
+    let sig = ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
+        Message::from_digest(message_hash(message)),
+        &sk,
+    );
     let (recid, rs) = sig.serialize_compact();
     let mut out = [0u8; COMPACT_SIGNATURE_SIZE];
-    out[0] = 27 + i32::from(recid) as u8 + if secret.compressed { 4 } else { 0 };
+    out[0] = 27 + recid.to_u8() + if secret.compressed { 4 } else { 0 };
     out[1..].copy_from_slice(&rs);
     Ok(encode_base64(&out))
 }
@@ -183,9 +185,8 @@ pub fn recover_pubkey(sig: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     let recid = ecdsa::RecoveryId::try_from(h & 3).ok()?;
     let compressed = h & 4 != 0;
     let rsig = ecdsa::RecoverableSignature::from_compact(&sig[1..], recid).ok()?;
-    let secp = Secp256k1::verification_only();
-    let pk: secp256k1::PublicKey = secp
-        .recover_ecdsa(&Message::from_digest(message_hash(message)), &rsig)
+    let pk: secp256k1::PublicKey = rsig
+        .recover_ecdsa(Message::from_digest(message_hash(message)))
         .ok()?;
     Some(if compressed {
         pk.serialize().to_vec()
