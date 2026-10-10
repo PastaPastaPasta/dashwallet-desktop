@@ -186,14 +186,25 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 
     /// dpp's preflight. Each identity index costs one vault operation (seed
     /// decrypt and derivation); a locked vault or any other signer error
-    /// answers `false`, and the `sign` that follows reports the error.
+    /// answers `false`, and the `sign` that follows reports the error. A
+    /// `Locked` refusal is reported to the call permit's count here too
+    /// (review L-3): dpp may stop at the preflight, with no `sign`.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
             && self.identity_indices.iter().any(|&i| {
                 self.slot(i, key).is_some_and(|path| {
-                    self.signer
+                    match self
+                        .signer
                         .identity_key_matches(&path, key.data().as_slice())
-                        .unwrap_or(false)
+                    {
+                        Ok(matches) => matches,
+                        Err(e) => {
+                            if let (SignerError::Locked, Some(count)) = (&e, &self.count) {
+                                count.note_locked();
+                            }
+                            false
+                        }
+                    }
                 })
             })
     }

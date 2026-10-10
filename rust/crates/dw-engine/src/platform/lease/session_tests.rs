@@ -1365,6 +1365,59 @@ fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
     );
 }
 
+/// Review L-3: dpp's preflight (`can_sign_with`) that meets a locked vault
+/// reports `Locked` to the call permit, as `sign` does.
+#[test]
+fn mode_b_a_locked_preflight_counts_as_locked() {
+    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dpp::identity::signer::Signer as _;
+    use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+
+    let f = fixture(false);
+    let s = &f.session;
+    let l = f
+        .lease(FlowKind::ProfileEdit, &[f.platform_op(0, 5_000)])
+        .unwrap();
+    let permit = l
+        .call_permit(
+            "DashPay.update_profile",
+            Some(CallQuote {
+                purpose: BudgetPurpose::Credits,
+                amount: 100,
+            }),
+        )
+        .unwrap();
+    let signer = permit.identity_signer(&[0]).unwrap();
+    let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        id: 0,
+        purpose: Purpose::AUTHENTICATION,
+        security_level: SecurityLevel::HIGH,
+        contract_bounds: None,
+        key_type: KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![2; 33].into(),
+        disabled_at: None,
+    });
+    // Not the wallet's key: false, and no Locked.
+    assert!(!signer.can_sign_with(&key));
+    assert!(!permit.signatures().locked());
+    s.vault().lock();
+    assert!(!signer.can_sign_with(&key));
+    assert!(permit.signatures().locked());
+    assert_eq!(permit.finish(false), FlowOutcome::Cancelled);
+}
+
+/// Review L-4: a wallet created, imported or restored gets the refresh
+/// and resume pass `load_wallet` gives a reopened one: its funding
+/// statuses are read with no `dispatch_status` call.
+#[test]
+fn mode_b_an_imported_wallet_gets_its_tracked_rows_read() {
+    let f = fixture(false);
+    f.eventually("the imported wallet's rows read", || {
+        f.session.leases.has_tracked_snapshot(f.wallet)
+    });
+}
+
 /// The library's broadcast for Repair's self-spend: accepts, and records
 /// what it was handed and the step's self-spends at that moment.
 struct SelfSpendSeam {

@@ -598,6 +598,8 @@ impl NetworkSession {
         for &(id, _) in &done {
             self.platform
                 .signal_at(committed, PlatformSignal::WalletAdded(id));
+            // E0-04 §8.6 (review L-4): as `load_wallet`.
+            self.leases.wallet_opened(id);
             self.schedule_automatic_backup(id);
         }
         Ok(done.into_iter().map(|(id, _)| id).collect())

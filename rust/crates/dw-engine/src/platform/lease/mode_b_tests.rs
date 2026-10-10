@@ -998,6 +998,46 @@ async fn a_refresh_overtaken_by_the_wallets_removal_is_dropped() {
     assert!(!t.has_tracked_snapshot(W));
 }
 
+/// Review L-5: the removal epoch is per wallet, so one wallet's removal
+/// drops no other wallet's refresh in flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_wallets_removal_keeps_a_refresh_in_flight() {
+    struct Gated {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl TrackedLocks for Gated {
+        async fn rows(&self, _: WalletId) -> Option<Vec<TrackedRow>> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Some(Vec::new())
+        }
+        async fn drafts(&self, _: WalletId) -> Option<Vec<DraftKey>> {
+            Some(Vec::new())
+        }
+        async fn chain_locked(&self, _: WalletId, _: &[u8; 32]) -> bool {
+            false
+        }
+    }
+    let (t, _) = table();
+    let _j = with_journal(&t);
+    let src = Arc::new(Gated {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    t.install_tracked(src.clone());
+    let refresh = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.refresh_funding(W2).await }
+    });
+    src.entered.notified().await;
+    t.with_j(|i, _| i.mode_b.forget(&W));
+    src.release.notify_one();
+    assert!(refresh.await.unwrap());
+    assert!(t.has_tracked_snapshot(W2));
+}
+
 // --- Unattributed rows (review H-1) ----------------------------------------
 
 /// A tracked lock at the pin for the tests below.

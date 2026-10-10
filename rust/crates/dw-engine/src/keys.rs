@@ -375,6 +375,8 @@ impl NetworkSession {
                 });
                 if auto_backup == AutoBackup::Schedule {
                     this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
+                    // E0-04 §8.6 (review L-4): as `load_wallet`.
+                    this.leases.wallet_opened(wallet_id);
                     this.schedule_automatic_backup(wallet_id);
                 }
                 return Ok(wallet_id);
@@ -433,6 +435,9 @@ impl NetworkSession {
             });
             if auto_backup == AutoBackup::Schedule {
                 this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
+                // E0-04 §8.6 (review L-4): its funding statuses read and
+                // its tracked rows resumed, as `load_wallet` does.
+                this.leases.wallet_opened(wallet_id);
                 this.schedule_automatic_backup(wallet_id);
             }
             Ok(wallet_id)

@@ -31,7 +31,7 @@
 //!   call step's `NotSent` row lands.
 //!
 //! Refreshes are serialized (one async mutex per table), so a slower read
-//! never overwrites a newer snapshot, and a read that a wallet's removal
+//! never overwrites a newer snapshot, and a read that its wallet's removal
 //! overtook is dropped. The last derived status of each funding step is
 //! cached; a move to `Sent` or `NotSent` from an earlier derivation emits
 //! `EngineEvent::DispatchResolved` (after J, through the table's effects).
@@ -289,8 +289,11 @@ pub(crate) struct ModeB {
     /// Per marked step, the rows its marker's key matched when it was
     /// marked in this process: earlier fundings', never its own.
     foreign: HashMap<(WalletId, String), HashSet<Txid>>,
-    /// Bumped by every wallet removal: a refresh read before it is dropped.
-    epoch: u64,
+    /// Per wallet, bumped by its removal: a refresh of it read before is
+    /// dropped. Per wallet (review L-5), so one wallet's removal drops no
+    /// other wallet's refresh; kept after the removal, so a read of the
+    /// removed wallet still finds its epoch moved.
+    epochs: HashMap<WalletId, u64>,
     /// The catch-up's resume passes (H6 part 2).
     pub(super) passes: super::resume::Passes,
 }
@@ -303,7 +306,12 @@ impl ModeB {
         self.resumed.retain(|(w, _)| w != wallet);
         self.foreign.retain(|(w, _), _| w != wallet);
         self.passes.end(wallet);
-        self.epoch += 1;
+        *self.epochs.entry(*wallet).or_default() += 1;
+    }
+
+    /// `wallet`'s removal epoch.
+    fn epoch(&self, wallet: &WalletId) -> u64 {
+        self.epochs.get(wallet).copied().unwrap_or_default()
     }
 
     /// Tracked row `txid` of `wallet` was resumed this session.
@@ -662,7 +670,7 @@ impl LeaseTable {
             return false;
         };
         let _serial = self.refresh.lock().await;
-        let epoch = self.with_j(|i, _| i.mode_b.epoch);
+        let epoch = self.with_j(|i, _| i.mode_b.epoch(&wallet));
         let Some(rows) = source.rows(wallet).await else {
             return false;
         };
@@ -694,11 +702,11 @@ impl LeaseTable {
         self.commit_read(wallet, snapshot, None);
     }
 
-    /// Stores `wallet`'s snapshot and re-derives (J), unless a wallet was
+    /// Stores `wallet`'s snapshot and re-derives (J), unless `wallet` was
     /// removed since `epoch` (the read may be of the removed wallet).
     fn commit_read(&self, wallet: WalletId, snapshot: Snapshot, epoch: Option<u64>) -> bool {
         self.with_j(|i, fx| {
-            if epoch.is_some_and(|e| e != i.mode_b.epoch) {
+            if epoch.is_some_and(|e| e != i.mode_b.epoch(&wallet)) {
                 return false;
             }
             i.mode_b.snapshots.insert(wallet, snapshot);
