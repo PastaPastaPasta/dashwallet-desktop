@@ -1,5 +1,5 @@
 //! Partially signed transactions as Dash Core and dash-qt use them
-//! (QT-076…079), over key-wallet's BIP174 implementation.
+//! (QT-076…079), over a vendored BIP174 container ([`psbt`]).
 //!
 //! Dash has no segwit, so Dash Core's PSBT (`src/psbt.h`) is BIP174 v0 with
 //! the legacy fields only: inputs carry the full previous transaction
@@ -31,7 +31,9 @@ use dashcore::sighash::{EcdsaSighashType, SighashCache};
 use dashcore::{Address, Network, PubkeyHash, Txid};
 use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, Fingerprint};
-pub use key_wallet::psbt::PartiallySignedTransaction;
+
+pub mod psbt;
+pub use psbt::{PartiallySignedTransaction, PsbtSighashType};
 
 /// Largest PSBT accepted (dash-qt refuses files of 100 MiB or more).
 pub const MAX_PSBT_BYTES: usize = 100 * 1024 * 1024;

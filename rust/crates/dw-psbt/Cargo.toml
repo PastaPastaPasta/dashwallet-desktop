@@ -1,6 +1,6 @@
 [package]
 name = "dw-psbt"
-description = "PSBT for dashwallet-desktop: Dash Core's BIP174 subset over key-wallet's psbt (QT-076..079)"
+description = "PSBT for dashwallet-desktop: Dash Core's BIP174 subset over a vendored PSBT container (QT-076..079)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
