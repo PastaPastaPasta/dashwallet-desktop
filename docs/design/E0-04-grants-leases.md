@@ -1423,13 +1423,22 @@ of Mode B (§2a.5).
     already stands is not appended again.
   - Resolution: an appended `NotSent`, `Sent` or `MaybeSent` row (§7.6). A `NotSent` row is not repeated while it
     is the artifact's latest row; a `Sent` row is written once.
+  - **The Sent bundle** (DEC-163, review P2a r4 R4-F1). Every `Sent` write of a marked artifact (P2a writes no
+    `MaybeSent`) is
+    one backend call, `resolve_sent`: in one `IMMEDIATE` transaction it appends each marker of the artifact's
+    complete current set (those the engine holds durable included; the marker statement skips one that stands)
+    and then the final row. No `Sent` row is ever written by itself for a marked artifact.
   - No statement sets `state` to 0, and no statement updates a `step_log` row.
   - **Compaction** (DEC-160, review P2a r3 R3-F1). There is one predicate: an artifact's `step_log` rows may be
     deleted only if it has no standing marker and no `Sent` or `MaybeSent` row (terminal: settled `NotSent`, and
-    no copy can resend on them). Two statements apply it, each as SQL inside its own `DELETE … RETURNING` in one
-    `IMMEDIATE` transaction: the sweep at open, over every wallet, and the wiping `remove_wallet` of §6.5, over one
-    wallet. Nothing checks it in memory first, so a marker or resolution append is serialized with the delete:
-    either it lands first and the predicate keeps the artifact, or the delete runs first and it is a new row.
+    no copy can resend on them). Two statements apply it, each as SQL inside its own `DELETE … RETURNING`. The
+    wiping `remove_wallet` of §6.5, over one wallet, runs it in its own `IMMEDIATE` transaction. The sweep, over
+    every wallet, runs inside the open's transaction (SQLite's default, deferred, the one that also checks and
+    migrates the schema), before the journal is handed to the engine, so no write of this session can race it
+    (review P2a r4 R4-N1). Nothing checks the predicate in memory first, so an append is serialized with the
+    delete: either it lands first and the predicate keeps the artifact, or the delete runs first and it is a new
+    row. Because a `Sent` row lands only in one transaction with its markers (the bundle above), either order
+    leaves the markers and the `Sent` row together.
     `dispatch` rows are deleted only by `remove_wallet`, under its own entry check (§6.5). So an entry outlives its
     row, which is why an asset lock's `None` means "never registered" (§16.6).
 
@@ -1501,21 +1510,26 @@ of Mode B (§2a.5).
     removal: they are evidence of something possibly on the wire, which the chain shows anyway. The engine forgets
     only the artifacts the delete returned; the standing steps, the evidence and the possibly-out row-less state of
     the rest stay, in memory as on disk.
-  - **The erase window.** From the start of the removal's erase to its end, the wallet is `erasing`: its row-less
-    copies answer `Deferred`, a sighting of one of its artifacts records its `Sent` row as owed instead of beginning
-    it, and a `NotSent` write waits as `Resolving{failed}` for its next retry. Before the delete, the window begins
-    every owed `Sent` row of the wallet and waits for every running journal write of it, so the predicate reads a
-    log no write of this session is still changing. Without it, a sighting's `Sent` row running over a settled
-    `NotSent` could land after the delete took the markers under it, leaving a `Sent` row with no marker.
-  - A sighting during the window leaves its `Sent` row owed. If the delete then takes the artifact's rows (its
-    marker and `NotSent`), the engine does not forget it: it appends its markers and then its `Sent` row again, in
-    one write, so the row never lands without them, and copies owe them as usual. A retried `Sent` row carries the
-    artifact's owed markers the same way. An owed row of a kept artifact is begun when the window closes.
-  - The blocking delete owns the window and applies its own outcome, so a removal dropped meanwhile neither
-    reopens the wallet early nor skips the forgetting, and closing the journal waits for it. The WAL checkpoint
-    after the commit is best effort. An erase that still reports an error counts as possibly committed, like any
-    failed write: every durable mark of the wallet becomes `Ambiguous`, so it is written again before a copy
-    relies on it.
+  - **No erase window for evidence** (DEC-163, review P2a r4 R4-F1). The delete needs no pause around it: every
+    `Sent` row is the bundle of §6.2, so whichever of the delete and the bundle commits first, the log ends with the
+    markers and the `Sent` row together. Sightings, `NotSent` writes and row-less copies run during the delete as
+    at any other time. An erase that commits and then reports an error changes nothing either: a later sighting's
+    bundle rewrites the whole marker set, durable ones included, so the reopened log stands before any copy
+    repairs it.
+  - **What the removal keeps** (memory and lifecycle only). The removal barrier, and the join of in-flight
+    `register` calls (DEC-134). The blocking delete is counted as a journal write, so closing the journal waits
+    for it, and it applies its own outcome under J, so a removal dropped meanwhile still forgets what was deleted.
+    The WAL checkpoint after the commit is best effort.
+  - **The forgetting guard.** The engine forgets an artifact the delete returned only if nothing of it is newer
+    than the delete: no `Sent` evidence (pending, owed or durable), no step marker in memory, and no row-less
+    state that is `Admitted` or `Resolving`. Any of those may mean a write or a decision began after the delete read
+    the log, and its state stays. A failed delete forgets nothing.
+  - **Why copies do not defer during the delete.** A row-less copy resends only on marks memory holds durable,
+    and those stand on disk unless a `NotSent` row superseded them; the predicate keeps every artifact with a
+    standing marker. So the artifacts the delete returns are settled `NotSent` ones, which a copy cannot resend
+    on, or `Resolving` ones (a `NotSent` write running, or failed and possibly committed), whose copies defer
+    anyway. A copy's marker write, appended after the delete read the log,
+    is a new row the guard then protects in memory.
   - A wallet removed while it still tracks a possibly-sent lock keeps those entries until the lock is consumed, and
     the removal says so.
   - If PWS's auto-backup is later restored, its rows meet no entry: kept, not sent, with a `Notice` (safe).
@@ -1636,23 +1650,24 @@ returns, too late to record a hand-off. So:
   definitely unsent, but a write is `Committing`) proceeds when that write returns, whether it landed or not.
 - **Sent evidence.** An artifact seen sent (a sighting, or an executed result) is never settled or refunded. At its
   first sighting the fence begins a `Sent` row for every marked artifact, in the sighting's J step, and holds the
-  evidence `Committing` until it lands. Every copy owes it like a marker: it defers while the row is `Committing`,
+  evidence `Committing` until it lands. The row is the bundle of §6.2 (DEC-163): the J step gathers the artifact's
+  whole marker set, and one transaction outside J appends those markers and the `Sent` row. Every copy owes it like a marker: it defers while the row is `Committing`,
   and writes it first when an earlier write failed. A sighting during a `NotSent` write does not undo the write; the
   `Sent` row that follows wins over it, so no marker is deleted or restored. On disk the `Sent` row makes every
   marker of the artifact that was written stand again; in memory the markers the `NotSent` row superseded come back
   at the sighting, each as its own write left it (review r2 H1): one whose write returned ok is durable, any other
-  is `Ambiguous`, so a copy of its step writes it before transport (a no-op if it had landed). Copies are gated by
-  the `Sent` row meanwhile. A `NotSent` row after a `Sent` row changes nothing.
-- **A `Sent` row that failed** (lost, landed and then an error, or panicked) stays owed: a copy writes it first,
+  is `Ambiguous`. The sighting's bundle writes each of them with the `Sent` row (a no-op for one that had landed),
+  and once it lands they are durable. Copies are gated by the `Sent` row meanwhile. A `NotSent` row after a `Sent` row changes nothing.
+- **A `Sent` row that failed** (lost, landed and then an error, or panicked) stays owed: a copy writes its bundle first,
   and without any copy it is begun again by the next sighting or the next journal write of the wallet that lands
   (review r2 M2). Only a journal that keeps failing until a crash can lose it; the next process then reads the
   markers as superseded (an accepted residual: DEC-154 (3) asks for the in-memory obligation).
 - **Close** (review r2 L1). Closing the journal gives each owed `Sent` row a last try, stops new writes and waits
   for the running ones, so none of this session lands after the next session's sweep.
-- **Wallet removal** (DEC-160, review P2a r3 R3-F1). The removal compacts the wallet's log with the sweep's
-  predicate inside its delete, behind the erase window of §6.5, and forgets only what it erased. An idle step that
-  ended possibly sent keeps its standing marker through the removal, and a copy admitted during the erase defers,
-  then Resends on that marker.
+- **Wallet removal** (DEC-160, DEC-163). The removal compacts the wallet's log with the sweep's predicate inside
+  its delete and forgets only what it erased and nothing newer (the guard of §6.5). An idle step that ended
+  possibly sent keeps its standing marker through the removal, and a copy admitted during the erase Resends on
+  that marker.
 - **Reading, in a later process:**
   - identical bytes find their marker: a Resend;
   - different bytes for the same step, under a revoked lease, get `Refused{step_possibly_dispatched: true}`, which
@@ -2200,19 +2215,25 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
   which markers were ever written, and flags a copy on superseded markers (I11); after the checker, a step copy of
   a row-less artifact is checked against the fake journal's own `standing()` at each transport. The run sights
   artifacts during and after their settlement. The `SkipEvidence`, `FailedUncommitted` and `NoSentRow` mutations
-  are each caught by the stress; `StashDurable` (H1) is caught by its regression.
-- **Wallet removal** (DEC-160, review P2a r3 R3-F1), against the file-backed journal with a held erase: Sol's two
-  probes are regressions. An idle possibly-out step keeps its log rows and its standing marker through removal and
-  a reopen; a copy admitted while the erase runs defers, then Resends with its marker standing at the transport and
-  after a reopen. A sighting's `Sent` row running over a settled `NotSent` is joined before the delete, so the
-  marker still stands under it on reopen. A sighting during the erase gets the artifact's marker and `Sent` row
-  appended again; an erase that commits and then reports an error leaves the copy writing its marker before its
-  transport. `dw-appdb` checks that the removal returns and erases exactly the
+  are each caught by the stress.
+- **Wallet removal** (DEC-160, DEC-163), against the file-backed journal with a held erase: Sol's r3 and r4 probes
+  are regressions. An idle possibly-out step keeps its log rows and its standing marker through removal and a
+  reopen; a copy admitted while the erase runs Resends with its marker standing at the transport and after a
+  reopen. A sighting's bundle held across the erase lands its marker again with the `Sent` row, and the engine
+  keeps its state. A bundle overtaken by its own `NotSent` row and then the erase still lands its marker. After an
+  erase that commits and then reports an error, a sighting's bundle alone makes the step stand: the journal is
+  reopened before any copy, and identical bytes Resend while different ones are refused with
+  `step_possibly_dispatched`. Closing the journal waits for an erase whose removal was dropped. `dw-appdb` checks
+  that the bundle never lands without its markers over every interleaving of a `NotSent` row, the erase and the
+  bundle, and that splitting it into statements can. `dw-appdb` also checks that the removal returns and erases exactly the
   predicate's set, and compares the SQL predicate with the Rust one over 300 random logs. The stress removes the
   flows' own wallet as well as the second one while row-less step copies run; the checker flags an erased artifact
   whose marker it still reads durable or whose `Sent` row was durable before the erase began (I11); the disk oracle checks each step copy's marker against the fake
-  journal, and at the end that no `Sent` row lies on disk with the markers it had erased. `EraseAll` (the unconditional delete) is caught by the stress and by four of the regressions, both of Sol's
-  probes among them; `NoEraseWindow`, whose race the stress hits too rarely, by two of them.
+  journal, and at the end that no `Sent` row lies on disk with the markers it had erased. `EraseAll` (the
+  unconditional delete) is caught by the stress and by five of the regressions, Sol's probes among them. Three
+  mutations whose races the stress hits too rarely are caught by the regressions: `BundleOwedOnly` (the bundle
+  skips markers the engine holds durable, the 92d676b behaviour) by three, Sol's r4 probe among them;
+  `SplitBundle` (markers and `Sent` row as separate statements) by two; `ForgetNewer` (no guard) by two.
 
 **[A+B] Row-less attempts and step markers (rev1)**
 - **Concurrent holders** (GPT 1): O's First and R's Resend of the same bytes; O definitely rejected, the lock comes,

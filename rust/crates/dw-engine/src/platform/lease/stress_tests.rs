@@ -165,18 +165,19 @@ pub(crate) enum Mutation {
     FailedUncommitted,
     /// Sol r2 R2-F1: a sighting trusts memory and appends no `Sent` row.
     NoSentRow,
-    /// Review r2 H1: a superseded marker comes back durable whatever its
-    /// write did. Its trace (a failed own-step write, a settlement, a
-    /// sighting, a copy of that step) is too rare for the stress; the
-    /// `r2_h1` regression catches it.
-    StashDurable,
     /// Sol r3 R3-F1: a removal deletes all of the wallet's `step_log` rows,
     /// as before DEC-160.
     EraseAll,
-    /// DEC-160: the removal's erase neither excludes the wallet's copies
-    /// nor joins its running writes. A `Sent` row racing the delete is too
-    /// rare for the stress; the `r3_f1` regressions catch it.
-    NoEraseWindow,
+    /// Sol r4 R4-F1: a `Sent` row carries only the markers memory holds
+    /// owed, not those it believes durable (DEC-163).
+    BundleOwedOnly,
+    /// DEC-163: the `Sent` bundle as separate statements. Its interleaving
+    /// with a `NotSent` row and the erase is too rare for the stress; the
+    /// `r4` regression catches it.
+    SplitBundle,
+    /// DEC-163 (3): the removal forgets every artifact the delete returned,
+    /// newer state too.
+    ForgetNewer,
 }
 
 impl Mutation {
@@ -197,9 +198,10 @@ impl Mutation {
             Self::SkipEvidence,
             Self::FailedUncommitted,
             Self::NoSentRow,
-            Self::StashDurable,
             Self::EraseAll,
-            Self::NoEraseWindow,
+            Self::BundleOwedOnly,
+            Self::SplitBundle,
+            Self::ForgetNewer,
         ]
         .into_iter()
         .find(|m| format!("{m:?}") == name)

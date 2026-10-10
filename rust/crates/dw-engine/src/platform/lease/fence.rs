@@ -11,7 +11,7 @@
 //! and Mode B's call permits (P2b) call the same `register`, `admit`,
 //! `abandon`, `proof_wait_started` and `chainlock_fallback`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,8 +42,17 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     fn insert_step(&self, wallet: &[u8; 32], step: &str, artifact: &[u8; 32])
     -> Result<(), String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
-    /// its markers so far, `Sent` makes them stand for good.
+    /// its markers so far. The engine writes `Sent` only through
+    /// `resolve_sent`.
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String>;
+    /// A marked artifact's `Sent` row with its marker set, in one
+    /// transaction (DEC-163).
+    fn resolve_sent(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        steps: &[String],
+    ) -> Result<(), String>;
     /// A wallet's removal (DEC-160): `dispatch` rows only with `dispatch`,
     /// and the compactable artifacts' `step_log` rows, the predicate
     /// evaluated inside the delete. Returns the artifacts it erased.
@@ -97,6 +106,16 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
             crate::events::unix_now(),
         )
         .map_err(|e| e.to_string())
+    }
+
+    fn resolve_sent(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        steps: &[String],
+    ) -> Result<(), String> {
+        self.resolve_sent(wallet, artifact, steps, crate::events::unix_now())
+            .map_err(|e| e.to_string())
     }
 
     fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
@@ -245,13 +264,9 @@ pub(crate) struct FenceState {
     /// what was known of their own write; a `Sent` row brings them back as
     /// they were, so one never durable is written again.
     superseded: HashMap<(WalletId, ArtifactId), Vec<(String, Mark)>>,
-    /// Journal writes running per wallet (`spawn_write`, a `NotSent` row);
-    /// closing the journal and a removal's erase wait for them.
-    writes: HashMap<WalletId, usize>,
-    /// Wallets whose removal is compacting their journal rows (DEC-160),
-    /// with how many removals do: their row-less copies defer and begin no
-    /// journal write meanwhile.
-    erasing: HashMap<WalletId, usize>,
+    /// Journal writes running (`spawn_write`, a `NotSent` row, a removal's
+    /// erase); closing the journal waits for them.
+    writes: usize,
     spend: HashMap<ArtifactId, SpendCharge>,
     /// Every artifact an attempt finished `Sent` for; only grows.
     sent: HashSet<ArtifactId>,
@@ -520,7 +535,6 @@ impl FenceState {
         self.attempts.contains_key(&id)
     }
 
-    /// Whether `id` has a step marker of `wallet`, in any step.
     #[cfg(test)]
     pub(crate) fn resolving(&self, id: &ArtifactId) -> bool {
         self.rowless
@@ -528,70 +542,32 @@ impl FenceState {
             .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }))
     }
 
-    /// Every durable mark of `wallet` becomes `Ambiguous`, so it is written
-    /// again before a copy relies on it: a journal write that failed may
-    /// have deleted its row.
-    fn doubt_wallet(&mut self, wallet: &WalletId) {
-        let marks = self
+    /// The artifact's current marker set (DEC-163): every step marked in
+    /// memory, superseded or not, whatever its write did. A `Sent` row is
+    /// written with all of them, since a `NotSent` row or a removal's
+    /// compaction may have taken any.
+    fn marker_set(&self, wallet: &WalletId, id: &ArtifactId) -> Vec<String> {
+        let set: BTreeSet<&String> = self
             .steps
-            .iter_mut()
-            .filter(|((w, _), _)| w == wallet)
-            .flat_map(|(_, m)| m.values_mut())
-            .chain(
-                self.evidence
-                    .iter_mut()
-                    .filter(|((w, _), _)| w == wallet)
-                    .map(|(_, m)| m),
-            )
+            .iter()
+            .filter(|((w, _), m)| w == wallet && m.contains_key(id))
+            .map(|((_, s), _)| s)
             .chain(
                 self.superseded
-                    .iter_mut()
-                    .filter(|((w, _), _)| w == wallet)
-                    .flat_map(|(_, v)| v.iter_mut().map(|(_, m)| m)),
-            );
-        for m in marks {
-            if *m == Mark::Durable {
-                *m = Mark::Ambiguous;
-            }
-        }
+                    .get(&(*wallet, *id))
+                    .into_iter()
+                    .flatten()
+                    .map(|(s, _)| s),
+            )
+            .collect();
+        set.into_iter().cloned().collect()
     }
 
-    /// Marks `Committing` for `owner` every step mark of the artifact that
-    /// `pick` selects, and returns their steps.
-    fn claim_steps(
-        &mut self,
-        wallet: WalletId,
-        artifact: ArtifactId,
-        owner: u64,
-        pick: impl Fn(&Mark) -> bool,
-    ) -> Vec<String> {
-        let mut steps = Vec::new();
-        for ((w, s), m) in self.steps.iter_mut() {
-            if let Some(mark) = m.get_mut(&artifact).filter(|m| *w == wallet && pick(m)) {
-                *mark = Mark::Committing { owner };
-                steps.push(s.clone());
-            }
-        }
-        steps
-    }
-
+    /// Whether `id` has a step marker of `wallet`, in any step.
     fn marked(&self, wallet: &WalletId, id: &ArtifactId) -> bool {
         self.steps
             .iter()
             .any(|((w, _), m)| w == wallet && m.contains_key(id))
-    }
-
-    fn write_began(&mut self, wallet: WalletId) {
-        *self.writes.entry(wallet).or_default() += 1;
-    }
-
-    fn write_ended(&mut self, wallet: WalletId) {
-        if let Some(n) = self.writes.get_mut(&wallet) {
-            *n -= 1;
-            if *n == 0 {
-                self.writes.remove(&wallet);
-            }
-        }
     }
 
     /// H10 for one copy of `id` (review P2a r1 F1): every marker of the
@@ -610,7 +586,7 @@ impl FenceState {
         match self.evidence.get(&(*wallet, *id)) {
             _ if !evidence => {}
             Some(Mark::Committing { .. }) => return Obligation::Pending,
-            Some(Mark::Ambiguous) => write.push(Target::Sent(Vec::new())),
+            Some(Mark::Ambiguous) => write.push(Target::Sent(self.marker_set(wallet, id))),
             Some(Mark::Durable) | None => {}
         }
         for ((w, s), m) in &self.steps {
@@ -789,58 +765,64 @@ fn keep_sent(i: &mut Inner, id: &ArtifactId) -> bool {
     true
 }
 
-/// A removal's erase window over one wallet (DEC-160): opened before the
-/// erase, and closed once its outcome is applied however the removal ends
-/// (the blocking delete owns it), waking the deferred copies and beginning
-/// the `Sent` rows left owed.
-struct EraseWindow {
-    table: Arc<LeaseTable>,
-    wallet: WalletId,
-    open: bool,
-}
-
-impl EraseWindow {
-    fn open(table: &Arc<LeaseTable>, wallet: WalletId, open: bool) -> Self {
-        table.with_j(|i, _| {
-            if open {
-                *i.fence.erasing.entry(wallet).or_default() += 1;
-            }
-            #[cfg(test)]
-            i.note(LogEvent::Erase {
-                wallet,
-                done: false,
-            });
-        });
-        Self {
-            table: Arc::clone(table),
-            wallet,
-            open,
-        }
+/// Applies a removal's erase in memory (DEC-160, DEC-163): the wallet's
+/// entries when its `dispatch` rows went, and each artifact whose
+/// `step_log` rows went, but only while nothing newer may be known of it.
+/// One with a `Sent` row begun or owed, a marker in `steps`, or an attempt
+/// or `NotSent` write in flight (or failed) may have changed after the
+/// delete read it, so it stays; what is forgotten is a settled artifact's
+/// superseded marks and its tombstone. Under J, in the J step the delete's
+/// result arrives in.
+fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u8; 32]>) {
+    #[cfg(test)]
+    let all = i.mutation == Some(Mutation::ForgetNewer);
+    #[cfg(not(test))]
+    let all = false;
+    let f = &mut i.fence;
+    if dispatch {
+        f.entries.retain(|(w, _), _| *w != wallet);
+        f.origins.retain(|(w, _), _| *w != wallet);
+        f.spend.retain(|_, s| s.wallet != wallet);
+    }
+    let gone: HashSet<ArtifactId> = erased
+        .into_iter()
+        .map(ArtifactId)
+        .filter(|a| {
+            all || !(f.evidence.contains_key(&(wallet, *a))
+                || f.marked(&wallet, a)
+                || f.rowless.get(a).is_some_and(|r| {
+                    r.wallet == wallet
+                        && matches!(
+                            r.state,
+                            RowlessState::Admitted { .. } | RowlessState::Resolving { .. }
+                        )
+                }))
+        })
+        .collect();
+    let forgotten = |w: &WalletId, a: &ArtifactId| *w == wallet && gone.contains(a);
+    for ((w, _), m) in f.steps.iter_mut() {
+        m.retain(|a, _| !forgotten(w, a));
+    }
+    f.steps.retain(|_, m| !m.is_empty());
+    f.evidence.retain(|(w, a), _| !forgotten(w, a));
+    f.superseded.retain(|(w, a), _| !forgotten(w, a));
+    f.rowless.retain(|a, r| !forgotten(&r.wallet, a));
+    #[cfg(test)]
+    for artifact in gone {
+        i.note(LogEvent::Erased { wallet, artifact });
     }
 }
 
-impl Drop for EraseWindow {
-    fn drop(&mut self) {
-        let (table, wallet) = (&self.table, self.wallet);
-        let backend = table.journal.get();
-        table.with_j(|i, fx| {
-            if self.open
-                && let Some(n) = i.fence.erasing.get_mut(&wallet)
-            {
-                *n -= 1;
-                if *n == 0 {
-                    i.fence.erasing.remove(&wallet);
-                }
-            }
-            fx.notify();
-            if !i.fence.erasing.contains_key(&wallet)
-                && let Some(backend) = backend.filter(|_| i.fence.journal == JournalState::Ready)
-            {
-                table.retry_owed_sent(i, &backend, Some(wallet));
-            }
-            #[cfg(test)]
-            i.note(LogEvent::Erase { wallet, done: true });
-        });
+/// The bundle mutations (DEC-163): `BundleOwedOnly` drops the markers it
+/// believes durable; `SplitBundle` writes them as separate statements.
+#[cfg(test)]
+fn mutate_bundle(i: &Inner, wallet: WalletId, artifact: ArtifactId, target: Target) -> Target {
+    match target {
+        Target::Sent(mut steps) if i.mutation == Some(Mutation::BundleOwedOnly) => {
+            steps.retain(|s| i.fence.mark(&wallet, s, &artifact) != Some(Mark::Durable));
+            Target::Sent(steps)
+        }
+        target => target,
     }
 }
 
@@ -902,9 +884,9 @@ enum Target {
     Record,
     /// A step's write-ahead marker.
     Step(String),
-    /// The artifact's `Sent` row (DEC-154), appended after the listed
-    /// markers in the same write: markers whose rows may be gone (an
-    /// erase, DEC-160), so the row never lands without them.
+    /// The artifact's `Sent` row (DEC-154) with its complete current
+    /// marker set, in one SQLite transaction (DEC-163), so the row never
+    /// lands without them.
     Sent(Vec<String>),
 }
 
@@ -1156,7 +1138,7 @@ impl LeaseTable {
             }
             i.fence.journal = JournalState::NotLoaded;
         });
-        self.wait_until(|i| i.fence.writes.is_empty().then_some(()))
+        self.wait_until(|i| (i.fence.writes == 0).then_some(()))
             .await;
         self.journal.set(None);
     }
@@ -1542,29 +1524,32 @@ impl LeaseTable {
         target: Target,
         owner: u64,
     ) -> tokio::task::JoinHandle<bool> {
-        i.fence.write_began(wallet);
+        i.fence.writes += 1;
+        #[cfg(test)]
+        let split = i.mutation == Some(Mutation::SplitBundle);
+        #[cfg(test)]
+        let target = mutate_bundle(i, wallet, artifact, target);
         let table = Arc::clone(self);
         self.rt.spawn_blocking(move || {
             let (w, a) = (&wallet.0, &artifact.0);
             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &target {
                 Target::Record => matches!(backend.mark_dispatching(w, a), Ok(true)),
                 Target::Step(s) => backend.insert_step(w, s, a).is_ok(),
-                Target::Sent(steps) => {
+                #[cfg(test)]
+                Target::Sent(steps) if split => {
+                    // The mutation: the bundle as separate statements.
                     steps.iter().all(|s| backend.insert_step(w, s, a).is_ok())
                         && backend.resolve(w, a, Resolution::Sent).is_ok()
                 }
+                Target::Sent(steps) => backend.resolve_sent(w, a, steps).is_ok(),
             }))
             .unwrap_or(false);
             let settling = table.with_j(|i, fx| {
-                i.fence.write_ended(wallet);
+                i.fence.writes -= 1;
                 fx.notify();
                 // A `Sent` row an earlier write failed is retried once the
-                // journal takes a write again (review r2 M2); a removal's
-                // erase gives it its own last try.
-                if ok
-                    && i.fence.journal == JournalState::Ready
-                    && !i.fence.erasing.contains_key(&wallet)
-                {
+                // journal takes a write again (review r2 M2).
+                if ok && i.fence.journal == JournalState::Ready {
                     table.retry_owed_sent(i, &backend, Some(wallet));
                 }
                 let mark = match &target {
@@ -1588,26 +1573,6 @@ impl LeaseTable {
                 {
                     *m = if ok { Mark::Durable } else { Mark::Ambiguous };
                 }
-                if let Target::Sent(steps) = &target {
-                    for s in steps {
-                        if let Some(m) = i
-                            .fence
-                            .steps
-                            .get_mut(&(wallet, s.clone()))
-                            .and_then(|m| m.get_mut(&artifact))
-                            && *m == (Mark::Committing { owner })
-                        {
-                            *m = if ok { Mark::Durable } else { Mark::Ambiguous };
-                        }
-                        #[cfg(test)]
-                        if ok {
-                            i.note(LogEvent::Durable {
-                                artifact,
-                                step: Some(s.clone()),
-                            });
-                        }
-                    }
-                }
                 #[cfg(test)]
                 if ok {
                     i.note(match &target {
@@ -1621,6 +1586,25 @@ impl LeaseTable {
                         },
                         Target::Sent(_) => LogEvent::Evidence { artifact },
                     });
+                }
+                // A bundle wrote its markers with its row (DEC-163).
+                if ok && let Target::Sent(steps) = &target {
+                    for s in steps {
+                        if let Some(m) = i
+                            .fence
+                            .steps
+                            .get_mut(&(wallet, s.clone()))
+                            .and_then(|m| m.get_mut(&artifact))
+                            .filter(|m| **m == Mark::Ambiguous)
+                        {
+                            *m = Mark::Durable;
+                        }
+                        #[cfg(test)]
+                        i.note(LogEvent::Durable {
+                            artifact,
+                            step: Some(s.clone()),
+                        });
+                    }
                 }
                 if let Some(lease) = i.fence.origins.get(&(wallet, artifact)) {
                     fx.changed(*lease);
@@ -1668,27 +1652,30 @@ impl LeaseTable {
             .fence
             .evidence
             .iter()
-            .filter(|((w, _), m)| {
-                wallet.map_or(!i.fence.erasing.contains_key(w), |x| x == *w)
-                    && **m == Mark::Ambiguous
-            })
+            .filter(|((w, _), m)| wallet.is_none_or(|x| x == *w) && **m == Mark::Ambiguous)
             .map(|(k, _)| *k)
             .collect();
         for (w, a) in owed {
-            i.fence.next += 1;
-            let owner = i.fence.next;
-            i.fence.evidence.insert((w, a), Mark::Committing { owner });
-            // Markers left owed with it (an erased artifact's) go first.
-            let steps = i.fence.claim_steps(w, a, owner, |m| *m == Mark::Ambiguous);
-            #[cfg(test)]
-            for step in &steps {
-                i.note(LogEvent::Marking {
-                    artifact: a,
-                    step: step.clone(),
-                });
-            }
-            drop(self.spawn_write(i, Arc::clone(backend), w, a, Target::Sent(steps), owner));
+            self.begin_sent_bundle(i, Arc::clone(backend), w, a);
         }
+    }
+
+    /// Begins the artifact's `Sent` row with its whole marker set, as one
+    /// write (DEC-163). Under J.
+    fn begin_sent_bundle(
+        self: &Arc<Self>,
+        i: &mut Inner,
+        backend: Arc<dyn JournalBackend>,
+        wallet: WalletId,
+        artifact: ArtifactId,
+    ) {
+        i.fence.next += 1;
+        let owner = i.fence.next;
+        i.fence
+            .evidence
+            .insert((wallet, artifact), Mark::Committing { owner });
+        let steps = i.fence.marker_set(&wallet, &artifact);
+        drop(self.spawn_write(i, backend, wallet, artifact, Target::Sent(steps), owner));
     }
 
     /// DEC-154: a marked artifact seen sent gets its `Sent` row, which makes
@@ -1705,19 +1692,10 @@ impl LeaseTable {
         artifact: ArtifactId,
     ) {
         let key = (wallet, artifact);
-        let Some(backend) = backend else {
+        let Some(backend) = backend.filter(|_| i.fence.journal == JournalState::Ready) else {
             return;
         };
-        if i.fence.journal != JournalState::Ready {
-            return;
-        }
         for (s, mark) in i.fence.superseded.remove(&key).unwrap_or_default() {
-            #[cfg(test)]
-            let mark = if i.mutation == Some(Mutation::StashDurable) {
-                Mark::Durable
-            } else {
-                mark
-            };
             i.fence
                 .steps
                 .entry((wallet, s))
@@ -1734,29 +1712,13 @@ impl LeaseTable {
         {
             return;
         }
-        if i.fence.erasing.contains_key(&wallet) {
-            // No journal write during a removal's erase: the row is owed,
-            // as if its write had failed (DEC-160).
-            i.fence.evidence.insert(key, Mark::Ambiguous);
-            return;
-        }
         #[cfg(test)]
         if i.mutation == Some(Mutation::NoSentRow) {
             // The mutation: memory alone says the markers stand.
             i.fence.evidence.insert(key, Mark::Durable);
             return;
         }
-        i.fence.next += 1;
-        let owner = i.fence.next;
-        i.fence.evidence.insert(key, Mark::Committing { owner });
-        drop(self.spawn_write(
-            i,
-            backend,
-            wallet,
-            artifact,
-            Target::Sent(Vec::new()),
-            owner,
-        ));
+        self.begin_sent_bundle(i, backend, wallet, artifact);
     }
 
     fn decide(
@@ -1865,12 +1827,7 @@ impl LeaseTable {
             return Step::Done(Verdict::Deferred);
         }
 
-        // Row-less artifacts. A removal compacting the wallet's journal
-        // rows is let finish first, so nothing it erases is read or written
-        // meanwhile (DEC-160).
-        if i.fence.erasing.contains_key(&wallet) {
-            return Step::Done(Verdict::Deferred);
-        }
+        // Row-less artifacts.
         let entry = i
             .fence
             .rowless
@@ -2195,13 +2152,11 @@ impl LeaseTable {
                     .rowless
                     .get(&id)
                     .is_some_and(|r| matches!(r.state, RowlessState::Resolving { .. }));
-            // A closed journal, or a removal's erase, takes no write: the
-            // resolution fails and the next admit retries it.
-            let write = go
-                && i.fence.journal == JournalState::Ready
-                && !i.fence.erasing.contains_key(&wallet);
+            // A closed journal takes no write: the resolution fails and the
+            // next admit retries it.
+            let write = go && i.fence.journal == JournalState::Ready;
             if write {
-                i.fence.write_began(wallet);
+                i.fence.writes += 1;
                 #[cfg(test)]
                 i.note(LogEvent::Superseding { artifact: id });
             }
@@ -2224,7 +2179,7 @@ impl LeaseTable {
         self.with_j(|i, fx| {
             fx.notify();
             if write {
-                i.fence.write_ended(wallet);
+                i.fence.writes -= 1;
             }
             if keep_sent(i, &id) {
                 return false;
@@ -2436,33 +2391,13 @@ impl LeaseTable {
     /// only what DEC-160's predicate finds compactable, inside the delete.
     /// Runs under the removal's barrier, which refuses new registrations,
     /// and first waits for the running ones to land (DEC-134): no `Unsent`
-    /// row of the wallet is written after the erase.
+    /// row of the wallet is written after the erase. Other journal writes
+    /// run on: a `Sent` row carries its markers (DEC-163), so either order
+    /// against the delete keeps them.
     pub(crate) async fn erase_wallet_rows(self: &Arc<Self>, wallet: WalletId) {
         self.wait_until(|i| (!i.fence.registering.keys().any(|(w, _)| *w == wallet)).then_some(()))
             .await;
-        let backend = self.journal.get();
-        #[cfg(test)]
-        let window = self.inspect(|i| i.mutation) != Some(Mutation::NoEraseWindow);
-        #[cfg(not(test))]
-        let window = true;
-        // DEC-160: the wallet's row-less copies defer and begin no journal
-        // write until the erase is done; each owed `Sent` row gets a last
-        // try first, and the writes running are joined, so the predicate
-        // reads every row they meant to write.
-        let window = EraseWindow::open(self, wallet, window);
-        if window.open {
-            self.with_j(|i, _| {
-                if let Some(backend) = backend
-                    .as_ref()
-                    .filter(|_| i.fence.journal == JournalState::Ready)
-                {
-                    self.retry_owed_sent(i, backend, Some(wallet));
-                }
-            });
-            self.wait_until(|i| (!i.fence.writes.contains_key(&wallet)).then_some(()))
-                .await;
-        }
-        let Some(backend) = backend else {
+        let Some(backend) = self.journal.get() else {
             return;
         };
         let dispatch = !self.wallet_dispatch_possibly_sent(&wallet);
@@ -2471,10 +2406,16 @@ impl LeaseTable {
         }
         #[cfg(test)]
         let all = self.inspect(|i| i.mutation) == Some(Mutation::EraseAll);
-        // The delete owns the window and applies its own outcome, so a
-        // removal dropped meanwhile neither reopens the wallet early nor
-        // skips the forgetting; closing the journal waits for it.
-        self.with_j(|i, _| i.fence.write_began(wallet));
+        // The delete applies its own outcome, so a removal dropped meanwhile
+        // does not skip it; closing the journal waits for it.
+        self.with_j(|i, _| {
+            i.fence.writes += 1;
+            #[cfg(test)]
+            i.note(LogEvent::Erase {
+                wallet,
+                done: false,
+            });
+        });
         let table = Arc::clone(self);
         let erase = self.rt.spawn_blocking(move || {
             let erased = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2486,17 +2427,21 @@ impl LeaseTable {
                 backend.erase_wallet(&wallet.0, dispatch)
             }))
             .unwrap_or_else(|_| Err("the erase panicked".into()));
-            let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                table.apply_erase(&backend, wallet, dispatch, erased)
-            }));
-            if applied.is_err() {
-                tracing::error!(wallet_id = %wallet, "applying a wallet's erase panicked");
+            // A failed erase may have committed; memory keeps everything,
+            // and a `Sent` row still carries every marker it knows.
+            if let Err(e) = &erased {
+                tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed");
             }
             table.with_j(|i, fx| {
-                i.fence.write_ended(wallet);
+                i.fence.writes -= 1;
                 fx.notify();
+                if let Ok(erased) = erased {
+                    let forget = || forget_erased(i, wallet, dispatch, erased);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(forget));
+                }
+                #[cfg(test)]
+                i.note(LogEvent::Erase { wallet, done: true });
             });
-            drop(window);
         });
         let _ = erase.await;
     }
@@ -2513,92 +2458,6 @@ impl LeaseTable {
                     )
             })
         })
-    }
-
-    /// Applies a removal's erase in memory (DEC-160). It forgets what the
-    /// delete erased: the wallet's entries when its `dispatch` rows went, and
-    /// the row-less state of the artifacts whose `step_log` rows went;
-    /// possibly-out row-less state, standing steps and evidence stay. An
-    /// erased artifact seen sent meanwhile (its `Sent` row owed) is not
-    /// forgotten: its markers and its `Sent` row are appended again. One
-    /// whose `Sent` row was durable cannot have been erased; it is forgotten
-    /// like the rest, so the stress checker sees it. A
-    /// failed erase may have committed, like any failed write: every mark
-    /// of the wallet is written again before a copy relies on it.
-    fn apply_erase(
-        self: &Arc<Self>,
-        backend: &Arc<dyn JournalBackend>,
-        wallet: WalletId,
-        dispatch: bool,
-        erased: Result<Vec<[u8; 32]>, String>,
-    ) {
-        let erased = match erased {
-            Ok(erased) => erased,
-            Err(e) => {
-                tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed");
-                return self.with_j(|i, _| i.fence.doubt_wallet(&wallet));
-            }
-        };
-        let gone: HashSet<ArtifactId> = erased.into_iter().map(ArtifactId).collect();
-        self.with_j(|i, _| {
-            if dispatch {
-                i.fence.entries.retain(|(w, _), _| *w != wallet);
-                i.fence.origins.retain(|(w, _), _| *w != wallet);
-                i.fence.spend.retain(|_, s| s.wallet != wallet);
-            }
-            let (seen, gone): (Vec<ArtifactId>, Vec<ArtifactId>) = gone
-                .into_iter()
-                .partition(|a| i.fence.evidence.get(&(wallet, *a)) == Some(&Mark::Ambiguous));
-            let erased = |w: &WalletId, a: &ArtifactId| *w == wallet && gone.contains(a);
-            for ((w, _), m) in i.fence.steps.iter_mut() {
-                m.retain(|a, _| !erased(w, a));
-            }
-            i.fence.steps.retain(|_, m| !m.is_empty());
-            i.fence.evidence.retain(|(w, a), _| !erased(w, a));
-            i.fence.superseded.retain(|(w, a), _| !erased(w, a));
-            i.fence.rowless.retain(|a, r| !erased(&r.wallet, a));
-            #[cfg(test)]
-            for &artifact in &gone {
-                i.note(LogEvent::Erased { wallet, artifact });
-            }
-            for artifact in seen {
-                self.rewrite_erased(i, backend, wallet, artifact);
-            }
-        });
-    }
-
-    /// Appends again the markers and then the `Sent` row of an artifact seen
-    /// sent whose rows a removal's erase took (DEC-160), in one write; its
-    /// copies owe them, and a failed write leaves them owed together.
-    /// Under J, after the delete.
-    fn rewrite_erased(
-        self: &Arc<Self>,
-        i: &mut Inner,
-        backend: &Arc<dyn JournalBackend>,
-        wallet: WalletId,
-        artifact: ArtifactId,
-    ) {
-        i.fence.next += 1;
-        let owner = i.fence.next;
-        i.fence
-            .evidence
-            .insert((wallet, artifact), Mark::Committing { owner });
-        let steps = i.fence.claim_steps(wallet, artifact, owner, |_| true);
-        #[cfg(test)]
-        for step in &steps {
-            i.note(LogEvent::Marking {
-                artifact,
-                step: step.clone(),
-            });
-        }
-        drop(self.spawn_write(
-            i,
-            Arc::clone(backend),
-            wallet,
-            artifact,
-            Target::Sent(steps),
-            owner,
-        ));
     }
 
     /// L5 (review P2a r1 F3): a hand-off bounded by a First's permit

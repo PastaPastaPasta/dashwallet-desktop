@@ -201,6 +201,55 @@ pub fn compactable(log: &[StepLogRow]) -> HashSet<([u8; 32], [u8; 32])> {
         .collect()
 }
 
+/// A step's marker, appended unless one of the same step already stands.
+const APPEND_MARKER: &str = "
+INSERT INTO step_log (wallet, artifact, kind, step_id, at)
+SELECT ?1, ?2, 0, ?3, ?4 WHERE NOT EXISTS (
+  SELECT 1 FROM step_log m WHERE m.wallet = ?1 AND m.artifact = ?2
+    AND m.kind = 0 AND m.step_id = ?3
+    AND (EXISTS (SELECT 1 FROM step_log f WHERE f.wallet = ?1
+           AND f.artifact = ?2 AND f.kind IN (2, 3))
+         OR m.seq > (SELECT coalesce(max(n.seq), 0) FROM step_log n
+           WHERE n.wallet = ?1 AND n.artifact = ?2 AND n.kind = 1)))";
+
+/// A resolution of kind ?3: a `NotSent` row unless it is already the
+/// artifact's latest, a final row once.
+const APPEND_RESOLUTION: &str = "
+INSERT INTO step_log (wallet, artifact, kind, step_id, at)
+SELECT ?1, ?2, ?3, NULL, ?4 WHERE CASE WHEN ?3 = 1
+  THEN coalesce((SELECT kind FROM step_log WHERE wallet = ?1 AND artifact = ?2
+                 ORDER BY seq DESC LIMIT 1), -1) <> 1
+  ELSE NOT EXISTS (SELECT 1 FROM step_log
+                   WHERE wallet = ?1 AND artifact = ?2 AND kind = ?3) END";
+
+fn append_marker(
+    c: &Connection,
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    step_id: &str,
+    now: u64,
+) -> Result<()> {
+    c.execute(
+        APPEND_MARKER,
+        params![&wallet[..], &artifact[..], step_id, now as i64],
+    )?;
+    Ok(())
+}
+
+fn append_resolution(
+    c: &Connection,
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    r: Resolution,
+    now: u64,
+) -> Result<()> {
+    c.execute(
+        APPEND_RESOLUTION,
+        params![&wallet[..], &artifact[..], r.kind(), now as i64],
+    )?;
+    Ok(())
+}
+
 /// DEC-160's predicate over `step_log l`, in SQL: [`compactable`].
 const COMPACTABLE: &str = "
   NOT EXISTS (SELECT 1 FROM step_log f
@@ -455,24 +504,14 @@ impl DispatchJournal {
         artifact: &[u8; 32],
         now: u64,
     ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO step_log (wallet, artifact, kind, step_id, at)
-             SELECT ?1, ?2, 0, ?3, ?4 WHERE NOT EXISTS (
-               SELECT 1 FROM step_log m WHERE m.wallet = ?1 AND m.artifact = ?2
-                 AND m.kind = 0 AND m.step_id = ?3
-                 AND (EXISTS (SELECT 1 FROM step_log f WHERE f.wallet = ?1
-                        AND f.artifact = ?2 AND f.kind IN (2, 3))
-                      OR m.seq > (SELECT coalesce(max(n.seq), 0) FROM step_log n
-                        WHERE n.wallet = ?1 AND n.artifact = ?2 AND n.kind = 1)))",
-            params![&wallet[..], &artifact[..], step_id, now as i64],
-        )?;
-        Ok(())
+        append_marker(&self.conn(), wallet, artifact, step_id, now)
     }
 
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
     /// markers so far: the engine refunds and reports it only after this
     /// returned (review P2a r1 F2). `Sent` is written once; a repeated
-    /// `NotSent` with nothing in between is not written again.
+    /// `NotSent` with nothing in between is not written again. The engine
+    /// writes a marked artifact's `Sent` row with [`Self::resolve_sent`].
     pub fn resolve(
         &self,
         wallet: &[u8; 32],
@@ -480,15 +519,27 @@ impl DispatchJournal {
         resolution: Resolution,
         now: u64,
     ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO step_log (wallet, artifact, kind, step_id, at)
-             SELECT ?1, ?2, ?3, NULL, ?4 WHERE CASE WHEN ?3 = 1
-               THEN coalesce((SELECT kind FROM step_log WHERE wallet = ?1 AND artifact = ?2
-                              ORDER BY seq DESC LIMIT 1), -1) <> 1
-               ELSE NOT EXISTS (SELECT 1 FROM step_log
-                                WHERE wallet = ?1 AND artifact = ?2 AND kind = ?3) END",
-            params![&wallet[..], &artifact[..], resolution.kind(), now as i64],
-        )?;
+        append_resolution(&self.conn(), wallet, artifact, resolution, now)
+    }
+
+    /// A marked artifact's `Sent` row with its complete marker set (DEC-163):
+    /// each of `steps` appended unless it stands, then the row, in one
+    /// transaction. Whatever order it takes against a `NotSent` row or a
+    /// removal's compaction, the row never stands on disk without them.
+    pub fn resolve_sent(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        steps: &[String],
+        now: u64,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for step_id in steps {
+            append_marker(&tx, wallet, artifact, step_id, now)?;
+        }
+        append_resolution(&tx, wallet, artifact, Resolution::Sent, now)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -808,6 +859,58 @@ mod tests {
         j.resolve(&W, &u, Resolution::MaybeSent, 7).unwrap();
         j.resolve(&W, &u, Resolution::NotSent, 8).unwrap();
         assert!(markers(&j).contains(&("s".into(), u, false)));
+    }
+
+    /// DEC-163: a `Sent` row written with its marker set in one transaction
+    /// never stands bare, in any order against a `NotSent` row and the
+    /// removal's compaction; written as separate statements, one order
+    /// leaves it bare (Sol r4's control).
+    #[test]
+    fn a_sent_bundle_never_lands_without_its_markers() {
+        #[derive(Clone, Copy, Debug)]
+        enum Op {
+            NotSent,
+            Erase,
+            Bundle,
+            Marker,
+            Sent,
+        }
+        fn orders(ops: &[Op]) -> Vec<Vec<Op>> {
+            if ops.len() <= 1 {
+                return vec![ops.to_vec()];
+            }
+            (0..ops.len())
+                .flat_map(|i| {
+                    let mut rest = ops.to_vec();
+                    let op = rest.remove(i);
+                    orders(&rest).into_iter().map(move |mut o| {
+                        o.insert(0, op);
+                        o
+                    })
+                })
+                .collect()
+        }
+        let bare = |ops: &[Op]| {
+            orders(ops)
+                .into_iter()
+                .filter(|order| {
+                    let j = journal();
+                    j.insert_step(&W, "s", &T, 1).unwrap();
+                    for op in order {
+                        match op {
+                            Op::NotSent => j.resolve(&W, &T, Resolution::NotSent, 2).unwrap(),
+                            Op::Erase => drop(j.erase_wallet(&W, false).unwrap()),
+                            Op::Bundle => j.resolve_sent(&W, &T, &["s".into()], 3).unwrap(),
+                            Op::Marker => j.insert_step(&W, "s", &T, 3).unwrap(),
+                            Op::Sent => j.resolve(&W, &T, Resolution::Sent, 3).unwrap(),
+                        }
+                    }
+                    markers(&j) != vec![("s".into(), T, true)]
+                })
+                .count()
+        };
+        assert_eq!(bare(&[Op::NotSent, Op::Erase, Op::Bundle]), 0);
+        assert!(bare(&[Op::NotSent, Op::Erase, Op::Marker, Op::Sent]) > 0);
     }
 
     #[test]
