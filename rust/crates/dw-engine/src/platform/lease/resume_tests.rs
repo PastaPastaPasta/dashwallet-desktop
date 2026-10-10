@@ -331,7 +331,7 @@ async fn peers_zero_to_some_reruns_the_pass() {
     let (t, f, _j) = setup().await;
     f.set_rows(W, vec![row(1, R::Built)]);
     let hub = crate::events::SessionHub::new(DashNetwork::Regtest, Arc::new(Recorder::default()));
-    hub.watch_peers(&t);
+    hub.attach_leases(&t);
     t.spv_started();
     until(|| f.calls_of(W, 1) == 1).await;
     idle(&t, &[W]).await;

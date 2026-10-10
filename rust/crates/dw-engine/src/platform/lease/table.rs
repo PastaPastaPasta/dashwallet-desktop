@@ -264,6 +264,11 @@ impl Effects {
         self.events.push(e);
     }
 
+    /// Whether this J step already emits `e`.
+    pub(crate) fn emitted(&self, e: &EngineEvent) -> bool {
+        self.events.contains(e)
+    }
+
     /// The lease's view changed: `LeaseChanged` after J.
     pub(crate) fn changed(&mut self, id: LeaseId) {
         self.changed.insert(id);
@@ -358,6 +363,8 @@ impl LeaseTable {
         let (r, views) = {
             let mut inner = self.lock_j();
             let r = f(&mut inner, &mut fx);
+            // What this step changed for another wallet (BL-76).
+            super::fence::sweep_cross_wallet(self, &mut inner, &mut fx);
             let now = Instant::now();
             let views: Vec<LeaseView> = fx
                 .changed

@@ -39,6 +39,10 @@ impl EventSink for Recorder {
 }
 
 impl Recorder {
+    pub(super) fn events(&self) -> Vec<EngineEvent> {
+        self.0.lock().unwrap().clone()
+    }
+
     pub(super) fn resolved(&self) -> Vec<(String, DispatchResolution)> {
         self.0
             .lock()
@@ -1796,7 +1800,7 @@ async fn a_parked_lease_rebinds_under_a_fresh_grant() {
 }
 
 /// Waits (real time, at most 5 s) until `f` holds.
-async fn until(mut f: impl FnMut() -> bool) {
+pub(super) async fn until(mut f: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while !f() {
             tokio::time::sleep(Duration::from_millis(1)).await;

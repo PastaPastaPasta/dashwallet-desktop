@@ -382,9 +382,42 @@ pub(crate) struct FenceState {
     spend: HashMap<(WalletId, ArtifactId), SpendCharge>,
     /// Every artifact an attempt finished `Sent` for, under any wallet:
     /// identical bytes are one transaction. Only grows.
-    sent: HashSet<ArtifactId>,
+    sent: SentSet,
     attempts: HashMap<u64, Attempt>,
     next: u64,
+    /// Tombstones whose `MaybeSent` (another wallet holds the same bytes)
+    /// a host read: [`sweep_cross_wallet`] announces each when the hold
+    /// ends (BL-76).
+    held: HashSet<RowKey>,
+}
+
+/// The artifacts seen `Sent` (only grows), with the ones added since the
+/// last [`sweep_cross_wallet`].
+#[derive(Default)]
+struct SentSet {
+    set: HashSet<ArtifactId>,
+    fresh: Vec<ArtifactId>,
+}
+
+impl SentSet {
+    fn contains(&self, id: &ArtifactId) -> bool {
+        self.set.contains(id)
+    }
+
+    /// Adds `id`; `true` when it is new, which the sweep announces to
+    /// every wallet that holds a key of it.
+    fn insert(&mut self, id: ArtifactId) -> bool {
+        let new = self.set.insert(id);
+        if new {
+            self.fresh.push(id);
+        }
+        new
+    }
+
+    /// Adds `id` as the journal's load found it: nothing to announce.
+    fn load(&mut self, id: ArtifactId) {
+        self.set.insert(id);
+    }
 }
 
 /// What kind of artifact a hand-off carries.
@@ -899,6 +932,11 @@ impl FenceState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn hold_read(&self, wallet: &WalletId, id: &ArtifactId) -> bool {
+        self.held.contains(&(*wallet, *id))
+    }
+
     fn live(inner_leases: &HashMap<LeaseId, Entry>, lease: &LeaseId, wallet: &WalletId) -> bool {
         inner_leases
             .get(lease)
@@ -946,6 +984,106 @@ fn held_elsewhere(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
         return false;
     }
     i.fence.held_elsewhere(wallet, id)
+}
+
+/// BL-76, §5.5 "Per wallet, one transaction": announces what another
+/// wallet's change resolved for this one, at the end of every J step.
+/// - An artifact newly seen `Sent` (`sent` is keyed by artifact): every
+///   wallet with an entry of it reads `Sent` now, and gets
+///   `DispatchResolved(Sent)` unless this J step already emits it (the
+///   sighting's own wallet does).
+/// - A tombstone whose `MaybeSent` a host read while another wallet held
+///   the same bytes ([`FenceState::note_hold_read`]): once no other wallet
+///   holds them, it reads `NotSent` again, and its wallet gets
+///   `DispatchResolved(NotSent)`. A host that never read the `MaybeSent`
+///   still holds the tombstone's own `NotSent`, which stays true.
+pub(super) fn sweep_cross_wallet(t: &LeaseTable, i: &mut Inner, fx: &mut Effects) {
+    if i.fence.sent.fresh.is_empty() && i.fence.held.is_empty() {
+        return;
+    }
+    let fresh = std::mem::take(&mut i.fence.sent.fresh);
+    if !fresh.is_empty() {
+        let f = &i.fence;
+        let fresh: HashSet<ArtifactId> = fresh.into_iter().collect();
+        // A call step's own synthetic artifact announces under the step's
+        // id (`call_step_end`, `rederive`), not here.
+        let marked = f.steps.iter().flat_map(|((w, s), m)| {
+            let own = ArtifactId::of_step(w, s);
+            m.keys().filter(move |a| **a != own).map(move |a| (*w, *a))
+        });
+        let keys: BTreeSet<RowKey> = f
+            .rowless
+            .keys()
+            .chain(f.entries.keys())
+            .copied()
+            .chain(marked)
+            .filter(|(_, a)| fresh.contains(a))
+            .collect();
+        for (wallet, id) in keys {
+            resolved_once(t, fx, &wallet, &id, DispatchResolution::Sent);
+        }
+        i.fence.held.retain(|(_, a)| !fresh.contains(a));
+    }
+    let ended: Vec<RowKey> = i
+        .fence
+        .held
+        .iter()
+        .filter(|(w, a)| !tombstone_held(i, w, a))
+        .copied()
+        .collect();
+    for (wallet, id) in ended {
+        i.fence.held.remove(&(wallet, id));
+        // A key forgotten, or admitted again by its own wallet, has no
+        // hold to end.
+        if is_tombstone(i, &wallet, &id) && !i.fence.sent.contains(&id) {
+            resolved_once(t, fx, &wallet, &id, DispatchResolution::NotSent);
+        }
+    }
+}
+
+/// Whether `wallet`'s entry of `id` is a row-less tombstone (as
+/// `dispatch_status` reads it: no registered entry first).
+fn is_tombstone(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
+    !i.fence.entries.contains_key(&(*wallet, *id))
+        && i.fence
+            .rowless
+            .get(&row_key(i, *wallet, *id))
+            .is_some_and(|r| matches!(r.state, RowlessState::Revoked | RowlessState::NotSent))
+}
+
+/// Whether `wallet`'s tombstone of `id` reads `MaybeSent` because another
+/// wallet holds the same bytes (§5.5).
+fn tombstone_held(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
+    !i.fence.sent.contains(id) && is_tombstone(i, wallet, id) && held_elsewhere(i, wallet, id)
+}
+
+/// A host reads `wallet`'s status of `id` now: a held tombstone's
+/// `MaybeSent` is announced again when the hold ends (BL-76).
+pub(crate) fn note_hold_read(i: &mut Inner, wallet: &WalletId, id: &ArtifactId) {
+    if tombstone_held(i, wallet, id) {
+        i.fence.held.insert((*wallet, *id));
+    }
+}
+
+/// [`resolved`], unless this J step already emits the same event.
+fn resolved_once(
+    t: &LeaseTable,
+    fx: &mut Effects,
+    wallet: &WalletId,
+    id: &ArtifactId,
+    r: DispatchResolution,
+) {
+    let event = EngineEvent::DispatchResolved {
+        network: t.network.clone(),
+        resolved: DispatchResolved {
+            wallet_id: wallet.to_string(),
+            artifact: id.to_string(),
+            resolution: r,
+        },
+    };
+    if !fx.emitted(&event) {
+        fx.emit(event);
+    }
 }
 
 /// The row-less artifact `id` settles definitely unsent: refund, tombstone
@@ -1466,7 +1604,7 @@ impl LeaseTable {
             }
             for s in steps {
                 if s.sent {
-                    i.fence.sent.insert(ArtifactId(s.artifact));
+                    i.fence.sent.load(ArtifactId(s.artifact));
                     i.fence
                         .evidence
                         .insert((WalletId(s.wallet), ArtifactId(s.artifact)), Mark::Durable);
@@ -2689,15 +2827,29 @@ impl LeaseTable {
     pub(super) fn call_step_end(
         self: &Arc<Self>,
         i: &mut Inner,
+        fx: &mut Effects,
         backend: Option<Arc<dyn JournalBackend>>,
         wallet: WalletId,
-        step: &str,
+        (step, funding): (&str, bool),
         outcome: FlowOutcome,
     ) -> bool {
         let id = ArtifactId::of_step(&wallet, step);
         let key = (wallet, step.to_owned());
         if outcome == FlowOutcome::Sent {
-            i.fence.sent.insert(id);
+            // A resumable step's call that returned Ok holds the proved
+            // execution (H12, BL-76): `Sent`, announced under the step's
+            // id, as the facade reads it. A funding step's status is
+            // derived, and `rederive` announces it.
+            if i.fence.sent.insert(id) && !funding {
+                fx.emit(EngineEvent::DispatchResolved {
+                    network: self.network.clone(),
+                    resolved: DispatchResolved {
+                        wallet_id: wallet.to_string(),
+                        artifact: step.to_owned(),
+                        resolution: DispatchResolution::Sent,
+                    },
+                });
+            }
             self.begin_sent_row(i, backend, wallet, id);
         }
         let writing = matches!(
@@ -2953,23 +3105,41 @@ impl LeaseTable {
         }
     }
 
-    /// The wallet saw the transaction (a Resend accepted, or it confirmed):
-    /// `Sent` (§4.6).
+    /// The wallet holds positive network evidence that the transaction is
+    /// out (BL-76, §4.6): an InstantSend lock, a block that holds it, or a
+    /// ChainLock over that block (`SessionHub`): `Sent`.
     pub fn note_seen(self: &Arc<Self>, wallet: WalletId, artifact: ArtifactId) {
+        self.note_seen_all(wallet, [artifact]);
+    }
+
+    /// [`Self::note_seen`] of every artifact in one J step (a block's or a
+    /// ChainLock's transactions).
+    pub fn note_seen_all(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        artifacts: impl IntoIterator<Item = ArtifactId>,
+    ) {
         let backend = self.journal.get();
         self.with_j(|i, fx| {
-            // Another wallet's sighting says nothing of this one's entry
-            // (review r2 L2).
-            let known = i.fence.rowless.contains_key(&row_key(i, wallet, artifact))
-                || i.fence.entries.contains_key(&(wallet, artifact));
-            if !known {
-                return;
+            for artifact in artifacts {
+                // Another wallet's sighting says nothing of this one's
+                // entry (review r2 L2). A step marker alone is one: after a
+                // restart a marked artifact has no row-less entry.
+                let known = i.fence.rowless.contains_key(&row_key(i, wallet, artifact))
+                    || i.fence.entries.contains_key(&(wallet, artifact))
+                    || i.fence
+                        .steps
+                        .iter()
+                        .any(|((w, _), m)| *w == wallet && m.contains_key(&artifact));
+                if !known {
+                    continue;
+                }
+                if i.fence.sent.insert(artifact) {
+                    resolved(self, fx, &wallet, &artifact, DispatchResolution::Sent);
+                }
+                // Begins the row, or again after a failed write.
+                self.begin_sent_row(i, backend.clone(), wallet, artifact);
             }
-            if i.fence.sent.insert(artifact) {
-                resolved(self, fx, &wallet, &artifact, DispatchResolution::Sent);
-            }
-            // Begins the row, or again after a failed write.
-            self.begin_sent_row(i, backend, wallet, artifact);
         });
     }
 
@@ -2977,6 +3147,7 @@ impl LeaseTable {
     /// rows of the table are Mode A's (P4) and Mode B's (P2b).
     pub fn dispatch_status(&self, wallet: WalletId, artifact: ArtifactId) -> Option<DispatchState> {
         self.with_j(|i, _| {
+            note_hold_read(i, &wallet, &artifact);
             let f = &i.fence;
             if f.sent.contains(&artifact) {
                 return Some(DispatchState::Sent);

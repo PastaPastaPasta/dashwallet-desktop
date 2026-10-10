@@ -32,6 +32,8 @@ pub(crate) mod session;
 pub(crate) mod table;
 
 #[cfg(test)]
+mod bl76_tests;
+#[cfg(test)]
 mod call_tests;
 #[cfg(test)]
 mod mode_b_tests;

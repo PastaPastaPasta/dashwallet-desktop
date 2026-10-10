@@ -15,7 +15,7 @@ use dw_vault::VaultStatus;
 use tokio::time::Instant;
 
 use super::table::LeaseTable;
-use super::{FlowOutcome, FlowReport, LeaseId, LockPhase, LockReport, lease_string};
+use super::{ArtifactId, FlowOutcome, FlowReport, LeaseId, LockPhase, LockReport, lease_string};
 use crate::platform::flows::RevokeCause;
 use crate::{EngineEvent, WalletId};
 
@@ -324,6 +324,16 @@ impl Freeze {
         self.gate_done();
         self.release_drain();
         let flows = self.table.with_j(|i, _| {
+            // The report reads each artifact's outcome (BL-76).
+            let read: Vec<(WalletId, ArtifactId)> = self
+                .leases
+                .iter()
+                .filter_map(|id| i.leases.get(id))
+                .flat_map(|e| e.history.iter().map(|a| (e.wallet, *a)))
+                .collect();
+            for (wallet, a) in read {
+                super::fence::note_hold_read(i, &wallet, &a);
+            }
             self.leases
                 .iter()
                 .filter_map(|id| {

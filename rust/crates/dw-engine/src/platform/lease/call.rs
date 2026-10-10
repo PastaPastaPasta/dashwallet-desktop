@@ -590,9 +590,9 @@ impl CallPermit {
                 fx.changed(lease);
             }
             fx.notify();
-            let resolve = step
-                .as_deref()
-                .is_some_and(|s| table.call_step_end(i, backend, wallet, s, outcome));
+            let resolve = step.as_deref().is_some_and(|s| {
+                table.call_step_end(i, fx, backend, wallet, (s, self.funding), outcome)
+            });
             if step.is_some() {
                 // The call's end: `Sent` on Ok (§2a.5).
                 super::mode_b::rederive(&table, i, fx, wallet);
