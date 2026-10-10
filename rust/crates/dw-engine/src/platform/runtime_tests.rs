@@ -528,7 +528,7 @@ fn a_lock_after_the_keys_were_built_leaves_the_identity_unsettled() {
         wait_until("the keys", Duration::from_secs(5), || {
             pause.reached.load(std::sync::atomic::Ordering::SeqCst)
         });
-        s.lock_vault().unwrap();
+        s.lock_vault_sync().unwrap();
         pause.release.notify_one();
         wait_until("the outcome", Duration::from_secs(5), || {
             startup(&s, &id) != StartupStatus::Starting
@@ -771,7 +771,7 @@ fn a_successful_restore_is_brought_up_once() {
     let second = Arc::new(TestPause::default());
     *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&second));
     // Locking ends the pass early, and signals nothing.
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     first.release.notify_one();
     // Queued after every signal of the restore: once it is recorded, they
     // were all handled.
@@ -816,7 +816,7 @@ fn signals_during_a_bring_up_make_one_follow_up() {
             .signal(super::runtime::PlatformSignal::WalletAdded(a));
     }
     // Locking ends each pass early, and signals nothing.
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     let second = pause(&s);
     first.release.notify_one();
     wait_until("the follow-up", Duration::from_secs(10), || {

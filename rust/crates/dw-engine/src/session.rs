@@ -193,6 +193,13 @@ pub struct NetworkSession {
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
     /// The bring-up, the Platform sync loops and their status (E0-05).
     pub(crate) platform: crate::platform::runtime::PlatformRuntime,
+    /// Leases, the lock coordinator and the dispatch fence (E0-04).
+    pub(crate) leases: Arc<crate::platform::lease::LeaseTable>,
+    /// The owning handles of the facade's leases, from `begin_flow` until
+    /// `end_flow` (E0-04 §4.1): the string id the host holds owns nothing.
+    pub(crate) flow_leases: Mutex<
+        std::collections::HashMap<crate::platform::lease::LeaseId, crate::platform::lease::Lease>,
+    >,
 }
 
 impl NetworkSession {
@@ -369,6 +376,14 @@ impl NetworkSession {
         }
 
         let lock_state = vault.lock_state();
+        let journal = crate::platform::lease::session::open_journal(&data_dir).await;
+        let leases = crate::platform::lease::LeaseTable::new(
+            network.clone(),
+            Arc::clone(&sink),
+            Handle::current(),
+            Default::default(),
+            vault.epoch(),
+        );
         let session = Arc::new(Self {
             network,
             data_dir,
@@ -396,7 +411,14 @@ impl NetworkSession {
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             platform: crate::platform::runtime::PlatformRuntime::new(lock_state, !opts.no_platform),
+            leases,
+            flow_leases: Mutex::default(),
         });
+        match journal {
+            Some((backend, rows, steps)) => session.leases.load_journal(Some(backend), rows, steps),
+            None => session.leases.load_journal(None, Vec::new(), Vec::new()),
+        }
+        session.leases.start_reaper();
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
         {
@@ -414,6 +436,7 @@ impl NetworkSession {
         for id in manager.list_wallet_ids_blocking() {
             session.schedule_automatic_backup(WalletId(id));
         }
+        session.spawn_ensure_background();
         Ok(session)
     }
 
@@ -610,6 +633,9 @@ impl NetworkSession {
         // key work is waited for (bounded). The loops drain once, sealed, in
         // the manager's shutdown below (m1-engine §3.2 interpretations).
         self.platform.deactivate(true).await;
+        // E0-04 §8.5: revoke, drain and abort the flows before the gate,
+        // which waits for the flows' operation guards.
+        self.close_leases().await;
         let _closing = self.gate.close().await;
         self.platform.deactivate(true).await;
         let keys_idle = self.platform.key_work_idle().await;
@@ -670,6 +696,8 @@ impl NetworkSession {
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        // Per network, so the last to close (§8.5).
+        self.leases.close_journal().await;
         self.sink.emit(EngineEvent::SessionClosed {
             network: self.network.clone(),
         });

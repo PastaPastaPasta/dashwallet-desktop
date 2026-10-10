@@ -360,6 +360,34 @@ fn encrypt_adds_slot_p_and_deletes_slot_o() {
     restarted.seed_derivation(&wallet(1)).unwrap();
 }
 
+/// DEC-134's split: the check changes nothing, and an apply after slot P
+/// changed meanwhile is refused without counting an attempt.
+#[test]
+fn a_checked_passphrase_change_applies_only_to_the_slot_it_checked() {
+    let fx = Fixture::new();
+    let v = locked_vault(&fx);
+    let checked = v.check_passphrase_change(PASS, OTHER).unwrap();
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    v.lock();
+    v.apply_passphrase_change(checked).unwrap();
+    v.unlock(OTHER, UnlockScope::Full).unwrap();
+
+    let stale = v.check_passphrase_change(OTHER, b"third").unwrap();
+    v.change_passphrase(OTHER, PASS).unwrap();
+    assert!(matches!(
+        v.apply_passphrase_change(stale),
+        Err(VaultError::WrongPassphrase {
+            failed_attempts: 0,
+            ..
+        })
+    ));
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(matches!(
+        v.check_passphrase_change(b"wrong", OTHER),
+        Err(VaultError::WrongPassphrase { .. })
+    ));
+}
+
 #[test]
 fn change_passphrase_keeps_records_and_lock_state() {
     let fx = Fixture::new();

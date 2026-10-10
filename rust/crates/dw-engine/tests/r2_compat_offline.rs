@@ -256,7 +256,7 @@ fn test_qt_106_import_wallet_dat() {
     );
 
     // A locked vault cannot take the seed.
-    s.lock_vault().unwrap();
+    s.lock_vault_sync().unwrap();
     let locked =
         e.block_on(s.import_wallet_dat(testdata("compat/walletdat/desc_plain.dat"), None, opts()));
     assert!(
@@ -556,7 +556,7 @@ fn test_qt_110_backup_restores_into_another_vault() {
         other => panic!("{other:?}"),
     }
     let locked = {
-        s.lock_vault().unwrap();
+        s.lock_vault_sync().unwrap();
         e.block_on(s.backup_wallet(id, dir.path().join("locked.dwbackup"), None))
     };
     assert!(matches!(

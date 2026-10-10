@@ -536,7 +536,7 @@ fn broadcast_needs_spv_and_drop_releases() {
 fn locked_vault_and_validation_errors() {
     let f = fixture(true);
     f.credit(1, COIN);
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     assert_eq!(
         send_failure(f.engine.block_on(draft.prepare("g".into()))),
@@ -592,7 +592,7 @@ fn locked_vault_and_validation_errors() {
 fn passphrase_grant_signs_on_a_locked_vault_and_is_bound_to_its_wallet() {
     let f = fixture(true);
     f.credit(1, COIN);
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let vault = f.session.vault();
     let spend = GrantPurpose::Spend {
         max_duffs: 10_000_000 + FEE_ROOM,
@@ -1157,7 +1157,7 @@ fn psbt_quick_unlock_grant_is_capped_by_the_outflow() {
         )
         .unwrap();
     let key = vault.enroll_quick_unlock(&change_grant.id).unwrap();
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let limit = dw_vault::DEFAULT_QUICK_UNLOCK_SPEND_LIMIT;
     assert_eq!(limit, COIN / 2);
     let quick = || {
@@ -1201,7 +1201,7 @@ fn test_IOS_016_send_quick_unlock_limit_includes_the_fee() {
         )
         .unwrap();
     let key = vault.enroll_quick_unlock(&change_grant.id).unwrap();
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let limit = dw_vault::DEFAULT_QUICK_UNLOCK_SPEND_LIMIT;
     let quick = || {
         vault

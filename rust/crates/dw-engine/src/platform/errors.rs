@@ -62,8 +62,8 @@ pub enum PlatformError {
     /// The lease the call named was revoked.
     #[error("lease revoked: {cause:?}")]
     LeaseRevoked { cause: RevokeCause },
-    /// The lease the call named has ended: `end_flow`, the idle reaper, or
-    /// its own key's expiry.
+    /// The lease the call named has ended: `end_flow` or the idle reaper.
+    /// (Its own key's expiry parks it: `NeedsGrant`.)
     #[error("lease expired")]
     LeaseExpired,
     #[error("feature off: {feature}")]

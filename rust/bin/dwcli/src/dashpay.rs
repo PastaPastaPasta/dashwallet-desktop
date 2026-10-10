@@ -1764,7 +1764,7 @@ mod tests {
         "invite",
     ];
 
-    /// The rows whose calls have real bodies (DP1-05, DP1-03), with the
+    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1777,6 +1777,11 @@ mod tests {
         ("name check alice", ALICE),
         ("name availability alice", NO_PLATFORM),
         ("name register --identity I bob", NO_PLATFORM),
+        ("dashpay leases", r#"{"ok":true,"result":[]}"#),
+        (
+            "dashpay dispatch-status ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a txid, transition hash or step id","params":{"detail":"not a txid, transition hash or step id"}}}"#,
+        ),
     ];
 
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
@@ -1863,13 +1868,13 @@ mod tests {
         ("contact show --identity I C", "DashPay.contact"),
         ("contact pending-setup", "DashPay.pending_setup_count"),
         ("contact eligibility --identity I C", "DashPay.eligibility"),
-        ("contact request --identity I C", "DashPay.grant_request"),
+        ("contact request --identity I C", "DashPay.send_request"),
         (
             "contact request --identity I --scanned",
             "DashPay.verify_scanned",
         ),
         ("contact scan", "DashPay.verify_scanned"),
-        ("contact accept --identity I C", "DashPay.grant_request"),
+        ("contact accept --identity I C", "DashPay.accept_request"),
         ("contact ignore --identity I C", "DashPay.ignore"),
         ("contact unignore --identity I C", "DashPay.unignore"),
         (
@@ -1878,9 +1883,12 @@ mod tests {
         ),
         (
             "contact details --identity I C --publish",
-            "DashPay.grant_request",
+            "DashPay.set_private_details",
         ),
-        ("contact enable-keys --identity I", "DashPay.grant_request"),
+        (
+            "contact enable-keys --identity I",
+            "DashPay.enable_dashpay_keys",
+        ),
         ("contact link --identity I", "DashPay.my_user_link"),
         ("contact lock --identity I C", "DashPay.payment_lock"),
         (
@@ -1905,7 +1913,7 @@ mod tests {
         ),
         (
             "profile set --identity I --display-name Al",
-            "DashPay.grant_request",
+            "DashPay.update_profile",
         ),
         (
             "profile set --identity I --avatar-url https://x/a.png",
@@ -2277,7 +2285,7 @@ mod tests {
         engine
             .block_on(session.vault_op(move |v| v.create(Some(&create[..]))))
             .unwrap();
-        session.lock_vault().unwrap();
+        session.lock_vault_sync().unwrap();
         sink.armed.store(true, Ordering::SeqCst);
         let result = assert_abandoned(
             engine,

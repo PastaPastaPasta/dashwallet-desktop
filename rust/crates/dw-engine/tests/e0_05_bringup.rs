@@ -393,7 +393,7 @@ fn stop_spv_cancels_the_bring_up() {
 fn a_locked_vault_defers_the_bring_up_to_the_unlock() {
     let f = Fixture::new(true);
     let id = f.create_wallet();
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let (_, called) = f.start_spv();
     let started = f
         .rec
@@ -438,7 +438,7 @@ fn a_lock_drops_a_running_bring_up() {
     // Still running with its keys: without them it would have ended at once.
     assert_eq!(f.startup(&id), StartupStatus::Starting);
     let locked = Instant::now();
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     let started = f
         .rec
         .spv_started_at(Duration::from_secs(5))
@@ -616,7 +616,7 @@ fn held_key_read() -> (Fixture, Arc<BarrierStore>, WalletId) {
     let f = Fixture::with_store(false, Arc::clone(&store) as Arc<dyn OsSecretStore>);
     f.engine.block_on(f.session.set_backup_policy(0)).unwrap();
     let id = f.create_wallet();
-    f.session.lock_vault().unwrap();
+    f.session.lock_vault_sync().unwrap();
     store.hold.store(true, Ordering::SeqCst);
     (f, store, id)
 }

@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use dw_engine::platform::RevokeCause;
 use dw_vault::Credential;
 use zeroize::Zeroizing;
 
@@ -473,6 +474,16 @@ impl Vault {
     {
         Ok(self.session.vault_op(f).await?)
     }
+
+    /// Runs `f` as a revoking vault call (E0-04 §8.1): every lease is
+    /// revoked and drained around it, in its own vault gate.
+    pub(crate) async fn revoking_op<T, F>(&self, cause: RevokeCause, f: F) -> Result<T, VaultError>
+    where
+        F: FnOnce(&dw_vault::Vault) -> Result<T, dw_vault::VaultError> + Send + 'static,
+        T: Send + 'static,
+    {
+        Ok(self.session.revoking_vault_op(cause, f).await?)
+    }
 }
 
 #[uniffi::export]
@@ -502,9 +513,11 @@ impl Vault {
         grant_id: String,
     ) -> Result<VaultStatus, VaultError> {
         let new_passphrase = Zeroizing::new(new_passphrase);
-        self.op(move |v| v.encrypt(&new_passphrase, &grant_id))
-            .await
-            .map(Into::into)
+        self.revoking_op(RevokeCause::Lock, move |v| {
+            v.encrypt(&new_passphrase, &grant_id)
+        })
+        .await
+        .map(Into::into)
     }
 
     /// Unwraps the data key. Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`.
@@ -521,7 +534,7 @@ impl Vault {
 
     /// Drops the data key from memory and revokes every grant. Idempotent.
     pub fn lock(&self) -> Result<VaultStatus, VaultError> {
-        Ok(self.session.lock_vault()?.into())
+        Ok(self.session.lock_vault_sync()?.into())
     }
 
     /// Re-wraps the data key under a new passphrase; the seed is unchanged
@@ -531,11 +544,15 @@ impl Vault {
         old_passphrase: Vec<u8>,
         new_passphrase: Vec<u8>,
     ) -> Result<VaultStatus, VaultError> {
-        let old_passphrase = Zeroizing::new(old_passphrase);
-        let new_passphrase = Zeroizing::new(new_passphrase);
-        self.op(move |v| v.change_passphrase(&old_passphrase, &new_passphrase))
-            .await
-            .map(Into::into)
+        // DEC-134: a wrong old passphrase revokes nothing.
+        Ok(self
+            .session
+            .change_passphrase(
+                Zeroizing::new(old_passphrase),
+                Zeroizing::new(new_passphrase),
+            )
+            .await?
+            .into())
     }
 
     /// Checks `credential` and issues a single-use grant for `purpose`.

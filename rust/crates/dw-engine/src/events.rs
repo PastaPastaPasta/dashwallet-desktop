@@ -113,6 +113,37 @@ pub enum EngineEvent {
         wallet_id: WalletId,
         change: PlatformChange,
     },
+    /// E0-04 §16.7, engine-side until E0-13: a lease's view changed.
+    LeaseChanged {
+        network: DashNetwork,
+        lease: crate::platform::LeaseView,
+    },
+    /// E0-04 §16.7, engine-side until E0-13: a lock's drain is running, or
+    /// it is done with its report.
+    LockProgress {
+        network: DashNetwork,
+        phase: crate::platform::LockPhase,
+    },
+    /// E0-04 §16.7, engine-side until E0-13: a provisional outcome settled.
+    DispatchResolved {
+        network: DashNetwork,
+        resolved: crate::platform::DispatchResolved,
+    },
+}
+
+impl EngineEvent {
+    /// Variants the frozen bindings do not carry yet (E0-04 §13): dw-ffi
+    /// drops them until E0-13 forwards them.
+    pub fn engine_side(&self) -> bool {
+        match self {
+            Self::Platform { .. }
+            | Self::LeaseChanged { .. }
+            | Self::LockProgress { .. }
+            | Self::DispatchResolved { .. } => true,
+            Self::Notice { code, .. } => code.engine_side(),
+            _ => false,
+        }
+    }
 }
 
 /// The domain of an [`EngineEvent::Platform`] signal (DASHPAY §3.5).
@@ -152,15 +183,37 @@ pub enum NoticeCode {
     /// wallet and the cause. A backup skipped because the data key is not
     /// available is not a failure.
     BackupFailed,
-    /// `remove_wallet` removed the wallet but could not delete its seed from
-    /// the vault (for example the vault was locked meanwhile). The detail
-    /// names the wallet id; the seed stays in the vault, encrypted.
+    /// No longer sent: since E0-04 DEC-134 `remove_wallet` fails closed
+    /// when it cannot delete the seed, and returns that error instead. Kept
+    /// because the frozen bindings carry it.
     WalletSecretNotDeleted,
     /// A wallet's DashPay bring-up ended short of settled (DASHPAY §3.7):
     /// SPV started anyway, and the DIP-15 rescan or a later start finishes
     /// the work. The detail names the wallet and its `StartupStatus`; hosts
     /// read `dashpay_startup`.
     DashPayStartupIncomplete,
+    /// A tracked asset-lock row has no dispatch record (unknown
+    /// provenance): it is kept and not sent (E0-04 §6.5). Engine-side.
+    DispatchRecordMissing,
+    /// A hand-off ran outside any dispatch scope, an engine bug; it was not
+    /// sent (E0-04 §5.4, H7). Engine-side.
+    UnscopedDispatch,
+    /// The dispatch journal cannot be opened or is newer than this build:
+    /// leased hand-offs are refused (E0-04 §6.4). Engine-side.
+    DispatchJournalUnavailable,
+}
+
+impl NoticeCode {
+    /// Codes the frozen bindings do not carry yet (E0-04 §16.8, E0-05).
+    pub fn engine_side(self) -> bool {
+        matches!(
+            self,
+            Self::DashPayStartupIncomplete
+                | Self::DispatchRecordMissing
+                | Self::UnscopedDispatch
+                | Self::DispatchJournalUnavailable
+        )
+    }
 }
 
 /// Receives engine events. Called from engine threads; must not block.

@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::{NameError, PlatformError};
-use crate::{NetworkSession, WalletId};
+use super::lease::{ArtifactId, parse_lease};
+use crate::{EngineError, NetworkSession, WalletId};
 
 /// What a lease is for. It fixes which budgets its grants may fund.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,7 +169,6 @@ pub struct BudgetView {
     pub spent: u64,
 }
 
-#[expect(unused_variables, reason = "stubs until E0-04")]
 impl NetworkSession {
     /// Redeems `grants` into one lease for `flow` and returns its id, which
     /// the calls of its wallet accept as their `grant` for the purposes the
@@ -179,20 +179,84 @@ impl NetworkSession {
         flow: FlowKind,
         grants: Vec<String>,
     ) -> Result<String, PlatformError> {
-        stub("NetworkSession.begin_flow")
+        let _op = self.enter().await.map_err(engine)?;
+        self.require_wallet(&wallet_id).map_err(engine)?;
+        let lease = self.begin_lease(wallet_id, flow, &grants).await?;
+        // A removal or Close Wallet holds its barrier until the wallet is
+        // gone (§8.6), so a lease that waited it out finds no wallet here.
+        // Dropping the owning handle ends it.
+        self.require_wallet(&wallet_id).map_err(engine)?;
+        let id = lease.id_string();
+        // The session owns it until `end_flow`; owners of leases that ended
+        // otherwise go now. A lease a lock revoked keeps its owner, so the
+        // host can still read the cause, until the reaper ends it an idle
+        // period later (review O-3).
+        let ended: Vec<super::lease::Lease> = {
+            let mut owners = self.flow_leases.lock().unwrap_or_else(|e| e.into_inner());
+            let ended = owners
+                .extract_if(|_, l| {
+                    l.view()
+                        .is_none_or(|v| matches!(v.state, LeaseStateView::Ended))
+                })
+                .map(|(_, l)| l)
+                .collect();
+            owners.insert(lease.id(), lease);
+            ended
+        };
+        drop(ended);
+        Ok(id)
     }
 
-    /// Releases a lease. Idempotent.
+    /// Releases a lease: drops the session's owning handle, which ends it.
+    /// Idempotent.
     pub fn end_flow(&self, lease: String) -> Result<(), PlatformError> {
-        stub("NetworkSession.end_flow")
+        let id = parse_lease(&lease).ok_or(PlatformError::GrantInvalid)?;
+        let owner = self
+            .flow_leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        drop(owner);
+        self.leases.end(&id);
+        Ok(())
     }
 
     pub fn leases(&self) -> Result<Vec<LeaseView>, PlatformError> {
-        stub("NetworkSession.leases")
+        Ok(self.leases.views())
     }
 }
 
-#[expect(unused_variables, reason = "stubs until E0-04")]
+fn engine(e: EngineError) -> PlatformError {
+    match e {
+        EngineError::NetworkNotOpen(_) => PlatformError::NetworkNotOpen,
+        EngineError::WalletNotFound(_) => PlatformError::WalletNotFound,
+        other => PlatformError::Internal {
+            detail: other.to_string(),
+        },
+    }
+}
+
+/// `grant_request`'s credit bounds per action (E0-04 §4.2, Q7; `RegisterName`
+/// is DP1-03's quote), until
+/// DP1-06's cost table replaces them. Derived from the pin's fee schedule
+/// (rs-platform-version `fee/storage/v1.rs`: 27 000 credits per stored byte
+/// plus 400 to process it; `state_transition_min_fees/v1.rs`: 100 000 per
+/// document sub-transition and identity update),
+/// with each document's stored size, its index entries and tree overhead
+/// bounded generously:
+///
+/// | Action | Stored bytes bounded at | Credits |
+/// |---|---|---|
+/// | `SendRequest`, `AcceptRequest` (one `contactRequest`, ≤ 0.5 KB) | 4 KiB | 150 000 000 |
+/// | `UpdateProfile` (`profile`, avatar URL ≤ 2 KiB) | 10 KiB | 300 000 000 |
+/// | `PublishPrivateDetails` (`contactInfo`, ≤ 2.2 KiB) | 10 KiB | 300 000 000 |
+/// | `EnableDashPayKeys` (identity update adding 2 keys) | 3.5 KiB | 100 000 000 |
+///
+/// None of them funds from Core, so `max_duffs` is 0.
+const CONTACT_REQUEST_CREDITS: u64 = 150_000_000;
+const DOCUMENT_10K_CREDITS: u64 = 300_000_000;
+const KEY_UPDATE_CREDITS: u64 = 100_000_000;
+
 impl DashPay {
     /// `RegisterName` is quoted (DP1-03, `register_name_grant`); the other
     /// actions are E0-04's.
@@ -201,17 +265,28 @@ impl DashPay {
         identity: String,
         action: GrantAction,
     ) -> Result<GrantRequest, PlatformError> {
-        match action {
+        if identity.trim().is_empty() {
+            return Err(PlatformError::InvalidArgument {
+                detail: "identity is empty".into(),
+            });
+        }
+        let max_credits = match action {
             GrantAction::RegisterName { label } => {
-                self.register_name_grant(label).await.map_err(|e| match e {
+                return self.register_name_grant(label).await.map_err(|e| match e {
                     NameError::Platform(e) => e,
                     e => PlatformError::InvalidArgument {
                         detail: e.to_string(),
                     },
-                })
+                });
             }
-            _ => stub("DashPay.grant_request"),
-        }
+            GrantAction::SendRequest | GrantAction::AcceptRequest => CONTACT_REQUEST_CREDITS,
+            GrantAction::UpdateProfile | GrantAction::PublishPrivateDetails => DOCUMENT_10K_CREDITS,
+            GrantAction::EnableDashPayKeys => KEY_UPDATE_CREDITS,
+        };
+        Ok(GrantRequest {
+            max_duffs: 0,
+            max_credits,
+        })
     }
 
     /// `None`: the engine has no entry. The host reads it as unknown, never
@@ -221,6 +296,17 @@ impl DashPay {
         &self,
         artifact: String,
     ) -> Result<Option<DispatchState>, PlatformError> {
-        stub("DashPay.dispatch_status")
+        match ArtifactId::parse(&artifact) {
+            Some(id) => Ok(self
+                .session
+                .lease_table()
+                .dispatch_status(self.wallet_id(), id)),
+            // A funding step id (`registration/<draft>/funding`): Mode B's
+            // derived status (P2b); unknown until then.
+            None if artifact.contains('/') => Ok(None),
+            None => Err(PlatformError::InvalidArgument {
+                detail: "not a txid, transition hash or step id".into(),
+            }),
+        }
     }
 }

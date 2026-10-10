@@ -4,6 +4,7 @@
 //! `vault.rs`. Contract: docs/contracts/m2-engine.md §2.9. Every call runs on
 //! the session's dw-vault vault; the rules live there.
 
+use dw_engine::platform::RevokeCause;
 use zeroize::Zeroizing;
 
 use crate::api::common::parse_wallet_id;
@@ -92,7 +93,7 @@ impl Vault {
         self.check_open()?;
         self.session.wallet_info(&id)?;
         let lost = self
-            .op(move |v| {
+            .revoking_op(RevokeCause::Lock, move |v| {
                 v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
             })
             .await?;
@@ -112,8 +113,10 @@ impl Vault {
     pub async fn destroy(&self, credential: VaultCredential) -> Result<VaultStatus, VaultError> {
         let credential = OwnedCredential::from(credential);
         self.check_open()?;
-        self.op(move |v| v.destroy(credential.as_credential()))
-            .await
-            .map(Into::into)
+        self.revoking_op(RevokeCause::Lock, move |v| {
+            v.destroy(credential.as_credential())
+        })
+        .await
+        .map(Into::into)
     }
 }

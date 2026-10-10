@@ -32,7 +32,7 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
   `SDK` = `packages/rs-sdk/src`.
 - rust-dashcore `40268cc0` (`dash-spv`, `key-wallet`).
 
-**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 80 checks).
+**Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 86 checks).
 
 ## Amendment 2: closure round 3
 
@@ -684,8 +684,11 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   If step 3 refuses, the hold and the signers are dropped and the call fails `lease.locked`
   (`platform.cancelled`, §16); the flow asks again.
 - Every token must be for the lease's wallet.
-- A lease is ended by `Lease::end()` (or by dropping the last `Arc`). The table keeps its entry until its last permit
-  has dropped.
+- A lease is ended by `Lease::end()`, or by dropping its last owning handle (review P2a r1 F6). There are two
+  handle kinds. `begin_lease` returns the owning RAII handle; its clones share one owner, and dropping the last of
+  them ends authority exactly as `end()` does. A handle looked up by id (`lease`, `lease_for`) borrows: dropping it
+  never ends the lease. The facade keeps an owner per `begin_flow` lease in the session (§4.7). The idle reaper
+  stays as a backstop. The table keeps its entry until its last permit has dropped.
 - `LeaseId` values are random, so an origin recorded by an earlier process never matches a lease of this one. The
   fence also compares the wallet.
 
@@ -715,7 +718,9 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   - Spend: at `TxDraft::prepare`;
   - Credits: at First admit, under J, together with the permit.
 
-  If a charge does not fit, the operation is refused before anything is committed.
+  If a charge does not fit, the operation is refused before anything is committed. A charge equal to the remaining
+  cap fits. A zero charge still needs its purpose (review P2a r1 F8): a transition with zero credit cost needs a
+  lease carrying `Credits`, and `register` with zero debit one carrying `Funding`, otherwise `needs_grant`.
 - **Refunds:**
   - a `register` whose artifact ends `Revoked` (refused or abandoned) refunds its Funding charge, because it was
     never sent;
@@ -775,6 +780,8 @@ struct LeaseEntry {                      // inside LeaseTable, under J
   - Every other vault call runs through `vault_op`, which compares `Vault::epoch()` before and after. A changed epoch
     moves every lease to `NeedsGrant`, drops every `KeyHold` and re-creates the background lease, whatever the lock
     state did (F15).
+  - A `begin` whose issue straddles an unlock sees the epoch change too, so its lease starts `NeedsGrant` and asks
+    for a grant the user just gave. That is fail-safe and accepted (review Opus high O-9).
 - **Rebind never raises authority** (reviews GPT r1 6, GPT r2 9).
   - In one J step, `rebind` checks the wallet, then opens a new generation for each of the lease's purposes. Its
     ceiling is `ceiling_{g+1} = min(available_g, the fresh grants' cap for that purpose)`, summing a mixed set's caps
@@ -989,13 +996,16 @@ impl Lease {
 
 The facade carries one lease across several calls (review Opus 4). `NetworkSession::begin_flow(wallet, flow,
 grants) -> String` returns a lease id, which every facade call accepts wherever it takes a `grant: String`, and
-`end_flow(id)` ends it. "Accept and pay" takes one prompt (`authorize_set`), opens one flow, and passes its id to
+`end_flow(id)` ends it. The session holds the lease's owning handle from `begin_flow` until `end_flow` or the
+reaper ends it, so looking a lease up by id and dropping that handle never ends it (§4.1). "Accept and pay" takes one prompt (`authorize_set`), opens one flow, and passes its id to
 `accept_request` and then to the payment's `TxDraft.prepare`.
 
 An idle reaper ends a vault-key lease after 10 minutes with no call, no permit and **no running flow task**. A
 vault-key registration waiting an hour for a ChainLock makes no call and holds no permit, so it must not be reaped.
-An own-key lease's key already ends at `key_until`. So a host that abandons a sheet does not leak entries. A reaped
-lease's later use is `platform.lease_expired`.
+An own-key lease's key already ends at `key_until`. So a host that abandons a sheet does not leak entries. The
+reaper ends a lease a lock or removal revoked the same way, an idle period after the revocation (or a later use),
+so its cause stays readable until then and a host that never calls `end_flow` does not leak it either (review Opus high O-3); the
+facade drops its owner at the next `begin_flow`. A reaped lease's later use is `platform.lease_expired`.
 
 ### 4.8 Auto lock and the other mobile conventions (reviews Opus 14, Opus r2 5d)
 
@@ -1024,7 +1034,7 @@ the PR makes `SpvBroadcaster` itself fence-aware (review Opus 6). Its `broadcast
 1. check the transport is ready (client started, peers > 0); if not, `Rejected` before any `admit` (L8);
 2. subscribe to dash-spv's events (no permit);
 3. `fence.admit(…)`, then, for `First`, `DashSpvClient::broadcast_transaction`, the local enqueue of F3, under the
-   permit and `timeout_at(permit.deadline())`;
+   permit and bounded by `permit.deadline()`, checked before each poll of the library;
 4. wait for the acceptance event (no permit).
 
 `client.read()` is held only for step 3, which also stops a pending wait from blocking `stop()` (an E0-05 concern).
@@ -1262,6 +1272,22 @@ admit(req):
     - a user resend (`tx_actions.rs:415`);
     - a registration re-run that signs identical bytes (F10);
     - a second holder of the same bytes running concurrently.
+  - **Per wallet, one transaction** (review Opus high O-1, which reverses P2a's first keying by artifact alone).
+    Entries and `TxDraft` Spend bindings are keyed by (wallet, artifact), so one wallet's admission, refusal or
+    settlement never replaces or refunds another's. The same bytes under two wallets are still one transaction: while
+    another wallet may have them out or about to go out (its entry is `Admitted`, running or possibly out, or
+    `Resolving`; or it holds a step marker or a `Sent` row of them, a copy's marker write included), a copy for this
+    wallet answers `Deferred`, in `decide` and again before a resend that waited for its markers. So no entry of this
+    wallet runs alongside the other's attempt and settles `DefinitelyUnsent`. Another wallet's tombstone does not
+    hold a copy back. Meanwhile this wallet's own tombstone reads `MaybeSent` (`dispatch_status`, the lock report),
+    so the host offers no retry on it. That read carries no `DispatchResolved` for this wallet: an H12 event already
+    sent `NotSent` for the tombstone, and when the other wallet's attempt settles only that wallet gets an event, so
+    a host that cached the `NotSent` must re-read `dispatch_status` before a retry (BL-76; review Opus high
+    validator). The hold can last the session: a possibly-out entry clears only when the
+    bytes are seen (BL-76), and a `Resolving{failed}` one only when its own wallet retries. That fails safe: the
+    deferred send reports `broadcast_unknown` with its inputs pinned. The set of artifacts seen `Sent` stays keyed by
+    artifact: identical bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a
+    `TxDraft`'s inputs), this is for the producers that follow (`External`, `Rebroadcast`, P2b/P4 hand-offs).
   - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
     set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
     durable marker instead (§7.6). Nor are the tombstones: after a restart `dispatch_status` answers `None`, which
@@ -1282,7 +1308,7 @@ admit(req):
 | L2 | Hold no wallet-manager guard and no `build_persist_serial` while it awaits `register` or a registered artifact's `admit`, the calls that do journal I/O. The fence takes neither, so this is not needed to keep the drain deadlock-free. It is needed so that an fsync never stalls every wallet reader. `payment_guard` is explicitly allowed across an `admit`: those sites are row-less, and a non-resumable row-less `admit` does no I/O and takes only J, a leaf. The pin holds it on purpose, to linearize wallet teardown against a payment (review Opus 12). |
 | L3 | Make the row durable before `admit` for a tracked row: propagate the `store` result (no log-and-continue as in `queue_asset_lock_changeset`) and `flush` when `!store_commits_inline()`. |
 | L4 | Call `register` with the recovery payload, including the debit of the inputs it selected, before tracking an asset lock, and abort if it fails. |
-| L5 | `First(p)`: call the transport only if `now < p.deadline()`, under `timeout_at(p.deadline())`; then `finish`. A timeout is MaybeSent. |
+| L5 | `First(p)`: call the transport only if `now < p.deadline()`, bounded by `p.deadline()`; then `finish`. A timeout is MaybeSent. Every wait before the transport (the wallet, the SPV client) is bounded by the deadline too, and the deadline is checked last, immediately before the library is entered: a First past it never dispatches and is definitely unsent (review P2a r1 F3). The bound is checked before each poll of the library, so nothing of it runs at or past the deadline. |
 | L6 | `Refused{cleanup: true}` and `Abandon::Revoked{cleanup: true}`: spawn the cleanup of §5.5 as a library task, overriding resume claims, releasing the reservation owner-guarded and settling the in-broadcast pin released. Then report the definite not-sent error (`DispatchRefused`). `cleanup: false`: drop the claim and report the same error. Derive every release from the `Settlement`, never from the attempt, and never map `Refused` onto a release path without a token (F7). |
 | L7 | `Deferred` and `Abandon::Committed`: keep the row, the reservation and the in-broadcast fence; report the unknown outcome (`TransactionBroadcastUnconfirmed`). |
 | L8 | Run the transport readiness check before `admit`; if it fails, `abandon` (for a tracked row) and report the definite rejection. |
@@ -1315,7 +1341,7 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
 | H10 | A resumable step's First writes its durable step marker before any transport (§7.6). A flow resumed in a later process reads `Refused{step_possibly_dispatched: true}` as MaybeSent, never Cancelled. The marker, not the flow's own phase, is the evidence (GPT 3). |
 | H11 | **Fail closed.** No retry, no discard and no second funding of a step is offered unless `dispatch_status` of its artifact (or, in Mode B, of its funding, §2a.5) is `NotSent`. The one exception is the engine's funding gate (`discard_registration`), which also allows an asset lock's `None`: no entry, no marker and no tracked row (§16.6). The host reads every `None` as unknown, and a state transition's or a `TxDraft` send's `None` never allows a retry (reviews Opus r2 1a, DW-E0-08 r2 N-1). `discard_registration` consults it for the registration's funding; a top-up retry, a payment retry and "Register again" do too. `finish_asset_locks` is **not** gated: it resumes committed locks, which are never `NotSent` (review Opus r2 1a). |
-| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. |
+| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. P2a provides `note_seen` and `note_executed` but no production caller feeds them yet (the wallet's transaction-seen and confirmation paths, proved execution results): that wiring is **BL-76**, owned by P2b/E0-05 (review Opus high O-2). Until then a cut First stays `MaybeSent`, which fails safe. BL-76 also covers the cross-wallet `MaybeSent` of §5.5 ("Per wallet, one transaction"), which emits no event of its own. |
 | H13 | Mode B: each library write call runs under a call permit, taken in a J step that checks the lease and charges the call's quoted budget. A funding call or a resumable step first has its marker written, with the `Committing` pattern (§2a.3). The engine's signer adapters count the signatures released per call permit. |
 | H14 | **Every lock request runs its own vault gate** (review GPT r2 8). Each `lock_vault` call (async, the FFI's sync lock, the relock timer, auto lock) runs `vault.lock()` after its own freeze, and returns only after that gate. Concurrent requests share only the drain. An unlock (`NetworkSession::unlock`) waits while any lock gate is pending, so a lock request is always ordered before an unlock issued after its call. The epoch that a lock ends is always one that existed at or after its call. |
 | H15 | Mode B: the statuses of §2a.5 are derived on every `list_tracked_locks` change, at load and at each call's end. Definite resolutions are written with their marker (`FULL`). |
@@ -1389,24 +1415,52 @@ CREATE TABLE dispatch (                                      -- registered artif
   dispatched_at INTEGER,
   PRIMARY KEY (wallet, txid)
 ) WITHOUT ROWID;
-CREATE TABLE step (                                          -- resumable steps' write-ahead markers, both modes
+CREATE TABLE step_log (                                      -- resumable steps' markers, append-only (DEC-154)
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
   wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
-  step_id   TEXT NOT NULL,                                   -- e.g. "registration/<draft>/identity"
   artifact  BLOB NOT NULL CHECK (length(artifact) = 32),     -- ST hash or txid (Mode A); call id (Mode B)
-  state     INTEGER NOT NULL CHECK (state = 1),              -- written only as "possibly dispatched"
-  at        INTEGER NOT NULL,
-  PRIMARY KEY (wallet, step_id, artifact)
-) WITHOUT ROWID;
+  kind      INTEGER NOT NULL CHECK (kind IN (0, 1, 2, 3)),   -- 0 marker, 1 NotSent, 2 Sent, 3 MaybeSent
+  step_id   TEXT CHECK ((kind = 0) = (step_id IS NOT NULL)), -- e.g. "registration/<draft>/identity"
+  at        INTEGER NOT NULL
+);
+CREATE INDEX step_log_artifact ON step_log (wallet, artifact, seq);
 ```
+
+Schema 2 (DEC-154, review P2a r2 R2-F1). Schema 1 had a `step` table whose rows a definite resolution deleted;
+it holds no resolution, so the migration at open copies every row into `step_log` as a marker, all standing, and
+drops `step`, in one transaction.
+
+**Reading the log.** A marker stands unless a later `NotSent` row of its artifact supersedes it. A `Sent` (or
+`MaybeSent`) row is final evidence: every marker of its artifact stands whatever follows, and no row revokes it.
+Recovery takes the rows in `seq` order. P2a writes no `MaybeSent` row; the kind is reserved for the funding marker
+of Mode B (§2a.5).
 
 - **Statements:**
   - `register`: `INSERT … ON CONFLICT DO NOTHING`, then a read-back. A row with another origin is an error.
   - `Dispatching`: `UPDATE dispatch SET state = 1, dispatched_at = ? WHERE wallet = ? AND txid = ? AND state = 0`,
     or a no-op if the row is already 1.
-  - Step marker: `INSERT … ON CONFLICT DO NOTHING`, `FULL`, before the step's transport (§7.6).
-  - No statement sets `state` to 0. The only delete is the wiping `remove_wallet` of §6.5, which waits until the
-    wallet tracks no row. So an entry outlives its row, which is why an asset lock's `None` means "never
-    registered" (§16.6).
+  - Step marker: an appended kind-0 row, `FULL`, before the step's transport (§7.6). A marker of the same step that
+    already stands is not appended again.
+  - Resolution: an appended `NotSent`, `Sent` or `MaybeSent` row (§7.6). A `NotSent` row is not repeated while it
+    is the artifact's latest row; a `Sent` row is written once.
+  - **The Sent bundle** (DEC-163, review P2a r4 R4-F1). Every `Sent` write of a marked artifact (P2a writes no
+    `MaybeSent`) is
+    one backend call, `resolve_sent`: in one `IMMEDIATE` transaction it appends each marker of the artifact's
+    complete current set (those the engine holds durable included; the marker statement skips one that stands)
+    and then the final row. No `Sent` row is ever written by itself for a marked artifact.
+  - No statement sets `state` to 0, and no statement updates a `step_log` row.
+  - **Compaction** (DEC-160, review P2a r3 R3-F1). There is one predicate: an artifact's `step_log` rows may be
+    deleted only if it has no standing marker and no `Sent` or `MaybeSent` row (terminal: settled `NotSent`, and
+    no copy can resend on them). Two statements apply it, each as SQL inside its own `DELETE … RETURNING`. The
+    wiping `remove_wallet` of §6.5, over one wallet, runs it in its own `IMMEDIATE` transaction. The sweep, over
+    every wallet, runs inside the open's transaction (SQLite's default, deferred, the one that also checks and
+    migrates the schema), before the journal is handed to the engine, so no write of this session can race it
+    (review P2a r4 R4-N1). Nothing checks the predicate in memory first, so an append is serialized with the
+    delete: either it lands first and the predicate keeps the artifact, or the delete runs first and it is a new
+    row. Because a `Sent` row lands only in one transaction with its markers (the bundle above), either order
+    leaves the markers and the `Sent` row together.
+    `dispatch` rows are deleted only by `remove_wallet`, under its own entry check (§6.5). So an entry outlives its
+    row, which is why an asset lock's `None` means "never registered" (§16.6).
 
 ### 6.3 States
 
@@ -1470,7 +1524,32 @@ CREATE TABLE step (                                          -- resumable steps'
 - **Wallet removal** (review Opus 10, F18).
   - dw's `remove_wallet` secure-erases the wallet's rows in `wallet.sqlite`.
   - Once the wallet has no tracked row left, a `remove_wallet` with its `Wipe` grant also deletes the wallet's
-    `dispatch` and `step` rows and its `seeded:` mark, with `secure_delete=ON` and a WAL checkpoint (TRUNCATE).
+    `dispatch` rows and its `seeded:` mark, and the `step_log` rows that the compaction predicate (§6.2, DEC-160)
+    selects, in one transaction with `secure_delete=ON`, then a WAL checkpoint (TRUNCATE).
+  - Its `step_log` rows that the predicate keeps (a standing marker, or a `Sent`/`MaybeSent` row) survive the
+    removal: they are evidence of something possibly on the wire, which the chain shows anyway. The engine forgets
+    only the artifacts the delete returned; the standing steps, the evidence and the possibly-out row-less state of
+    the rest stay, in memory as on disk.
+  - **No erase window for evidence** (DEC-163, review P2a r4 R4-F1). The delete needs no pause around it: every
+    `Sent` row is the bundle of §6.2, so whichever of the delete and the bundle commits first, the log ends with the
+    markers and the `Sent` row together. Sightings, `NotSent` writes and row-less copies run during the delete as
+    at any other time. An erase that commits and then reports an error changes nothing either: a later sighting's
+    bundle rewrites the whole marker set, durable ones included, so the reopened log stands before any copy
+    repairs it.
+  - **What the removal keeps** (memory and lifecycle only). The removal barrier, and the join of in-flight
+    `register` calls (DEC-134). The blocking delete is counted as a journal write, so closing the journal waits
+    for it, and it applies its own outcome under J, so a removal dropped meanwhile still forgets what was deleted.
+    The WAL checkpoint after the commit is best effort.
+  - **The forgetting guard.** The engine forgets an artifact the delete returned only if nothing of it is newer
+    than the delete: no `Sent` evidence (pending, owed or durable), no step marker in memory, and no row-less
+    state that is `Admitted` or `Resolving`. Any of those may mean a write or a decision began after the delete read
+    the log, and its state stays. A failed delete forgets nothing.
+  - **Why copies do not defer during the delete.** A row-less copy resends only on marks memory holds durable,
+    and those stand on disk unless a `NotSent` row superseded them; the predicate keeps every artifact with a
+    standing marker. So the artifacts the delete returns are settled `NotSent` ones, which a copy cannot resend
+    on, or `Resolving` ones (a `NotSent` write running, or failed and possibly committed), whose copies defer
+    anyway. A copy's marker write, appended after the delete read the log,
+    is a new row the guard then protects in memory.
   - A wallet removed while it still tracks a possibly-sent lock keeps those entries until the lock is consumed, and
     the removal says so.
   - If PWS's auto-backup is later restored, its rows meet no entry: kept, not sent, with a `Notice` (safe).
@@ -1523,7 +1602,7 @@ CREATE TABLE step (                                          -- resumable steps'
 | 5. `admit`: `Committing`, permit, charge (under J) | as 3 | as 3 |
 | 6. `Dispatching` write in progress | entry 0 or 1 | 0 → refused (transport never called, I1); 1 → Resend |
 | 7. write done | entry 1, row | inputs reserved again (L12), then Resend (MaybeSent) |
-| 8. transport call (enqueue) under `timeout_at(deadline)` | as 7 | as 7; the bytes may already be out |
+| 8. transport call (enqueue), bounded by the deadline | as 7 | as 7; the bytes may already be out |
 | 9. transport returns or times out; `finish` | as 7 | as 7 |
 | 10. status `Built → Broadcast` (`store`) | entry 1, row `Broadcast` | as 7, through the Broadcast arm (a Resend) |
 | 11. proof wait (no permit), IS window (§4.4) | — | platform-wallet's tracking; DP1-02 resumes its flow |
@@ -1574,6 +1653,42 @@ returns, too late to record a hand-off. So:
 - **Writing.** In Mode A, the step's First takes `Committing` for `(step, artifact hash)` in its J step, and spawns
   the marker's durable write (`FULL`). Its transport starts only after the write returned. In Mode B the engine
   writes the marker under the call permit, before it calls the library.
+- **Every copy** (review P2a r1 F1). The durable marker is the precondition of transport for every copy of the
+  transition, joined or not, whatever its scope. A copy waits (`Deferred`) while any marker of the artifact is
+  `Committing`; a missing marker of its own step, or an `Ambiguous` one, is written first, and the copy is handed
+  off only after every marker of the artifact is durable. The check is repeated after the copy's own write
+  returns: a marker another copy began meanwhile is owed too.
+- **Definite resolution** (review P2a r1 F2; DEC-154 after r2 R2-F1). The journal is append-only (§6.2). A
+  definite not-sent outcome (refunded, or definitely unsent) appends a `NotSent` row of the artifact, before the
+  refund and the `NotSent` tombstone. It supersedes the artifact's earlier markers: a later Lock, reload or resume
+  finds none standing, so the step needs a fresh, charged First, whose marker is a new row. The row is begun in the
+  J step that decides the resolution and written outside J. While it is written, and after the journal refuses it,
+  the artifact is `Resolving`: it stays charged and possibly out (`MaybeOut`), and no copy resends on its old
+  marker. **A write that fails or panics counts as possibly committed** (it may have landed and then errored):
+  each later admit retries it first and defers meanwhile; once it lands, the artifact is refunded and `NotSent`,
+  and a fresh First may follow. A settlement that waits on another copy's marker write (every attempt ended
+  definitely unsent, but a write is `Committing`) proceeds when that write returns, whether it landed or not.
+- **Sent evidence.** An artifact seen sent (a sighting, or an executed result) is never settled or refunded. At its
+  first sighting the fence begins a `Sent` row for every marked artifact, in the sighting's J step, and holds the
+  evidence `Committing` until it lands. The row is the bundle of §6.2 (DEC-163): the J step gathers the artifact's
+  whole marker set, and one transaction outside J appends those markers and the `Sent` row. Every copy owes it like a marker: it defers while the row is `Committing`,
+  and writes it first when an earlier write failed. A sighting during a `NotSent` write does not undo the write; the
+  `Sent` row that follows wins over it, so no marker is deleted or restored. On disk the `Sent` row makes every
+  marker of the artifact that was written stand again; in memory the markers the `NotSent` row superseded come back
+  at the sighting, each as its own write left it (review r2 H1): one whose write returned ok is durable, any other
+  is `Ambiguous`. The sighting's bundle writes each of them with the `Sent` row (a no-op for one that had landed),
+  and once it lands they are durable. Copies are gated by the `Sent` row meanwhile. A `NotSent` row after a `Sent` row changes nothing.
+- **A `Sent` row that failed** (lost, landed and then an error, or panicked) stays owed: a copy writes its bundle first,
+  and without any copy it is begun again by the next sighting or the next journal write of the wallet that lands
+  (review r2 M2). Only a journal that keeps failing until a crash can lose it; the next process then reads the
+  markers as superseded (an accepted residual: DEC-154 (3) asks for the in-memory obligation).
+- **Close** (review r2 L1). Closing the journal gives each owed `Sent` row a last try, stops new writes and waits
+  for the running ones, `register` writes included (review Opus high O-5), so none of this session lands after the
+  next session's sweep. A flow task registered after close aborted the tasks is aborted at once (O-8).
+- **Wallet removal** (DEC-160, DEC-163). The removal compacts the wallet's log with the sweep's predicate inside
+  its delete and forgets only what it erased and nothing newer (the guard of §6.5). An idle step that ended
+  possibly sent keeps its standing marker through the removal, and a copy admitted during the erase Resends on
+  that marker.
 - **Reading, in a later process:**
   - identical bytes find their marker: a Resend;
   - different bytes for the same step, under a revoked lease, get `Refused{step_possibly_dispatched: true}`, which
@@ -1587,6 +1702,9 @@ returns, too late to record a hand-off. So:
 | marker write in progress | marker or nothing | as the row above, or as the row below |
 | after the marker, before or after the broadcast | marker | identical bytes: Resend; otherwise MaybeSent |
 | after the response, before the phase write | marker | as above; the flow's re-query then finds the identity |
+| `NotSent` write in progress | marker, or marker and `NotSent` | `Resolving` in the old process; the next reads either |
+| after a definite not-sent resolution | marker superseded by `NotSent` | a fresh First, charged again |
+| after a sighting's `Sent` row | marker and `Sent`, whatever `NotSent` rows sit between | identical bytes: Resend; otherwise MaybeSent |
 
 ## 8. Lock, close and other revocations
 
@@ -1830,7 +1948,7 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
 
 ### 10.1 What it models, and its limits
 
-`docs/design/checks/e0_04_design_model.py` (75 checks):
+`docs/design/checks/e0_04_design_model.py` (86 checks):
 - **Part 1** explores every interleaving of these actors:
   - O, the original flow, which may be dropped between track and admit, and may repeat its hand-off;
   - R, a resume of the same row, or in the row-less scenarios a second holder of the same bytes; after a crash, R
@@ -1869,6 +1987,16 @@ method that freezes first: `lock_vault`, `close`, and new `change_passphrase`, `
   - the row-less tombstone, the asset-lock reading of `None` in both modes, and the nonce evidence for `NotSent`.
 
   It also checks that rev2 never strands a definitely-unsent funding.
+- **Part 6** is the step-marker journal (DEC-154, review P2a r2 R2-F1): one marked artifact whose First ended
+  definitely unsent, its `NotSent` write, a sighting that may overtake it, one copy and a crash; every journal
+  write lands, is lost, or lands and then errors. In two of its three starts a second step's marker was begun
+  before the settlement and its write failed (lost, or landed then an error), and the copy is of that step
+  (review r2 H1). The oracle reads the log as recovery does, where a `Sent` row makes only written markers stand:
+  a copy's transport needs its step's marker standing on disk, and after a crash the copy's marker must stand if
+  it went out, and the first marker if the process held the evidence durable. rev1's delete-and-restore fails
+  both. So do five rejected rules: a copy that skips the `Sent` row, a failed `NotSent` write taken as
+  uncommitted, a sighting kept only in memory, "latest row wins" letting `NotSent` revoke `Sent`, and superseded
+  markers brought back durable whatever their write did. DEC-154 passes.
 
 **The oracle** (review GPT 8). Every definite verdict (`Cancelled`, `Failed`, `NotSent`) is judged against the
 immutable send history, the attempts still running and the journal, never against the bookkeeping under test. The
@@ -2091,7 +2219,52 @@ abortable rendezvous from E0-03 `a79b3a9`. Each group is marked **[A+B]** (both 
 - **The synchronous FFI lock:** it returns after the gate; `LockProgress::Done` carries the report.
 - **The facade lease handle** (Opus 4): "Accept and pay" through `begin_flow` across `accept_request` and `prepare`,
   with the Spend part used after a 90 s accept; the idle reaper ends an abandoned vault-key lease.
+- **Lease ownership** (review P2a r1 F6): dropping the sole owning handle ends the lease, and a new First under it
+  is refused; a handle looked up by id and dropped leaves the lease `Active` while its owner lives; a `begin_flow`
+  lease stays `Active` with no host handle until `end_flow`.
 - **QuickUnlock for `PlatformOp`:** within and just above the limits, and with a stale passphrase.
+- **Marker log** (DEC-154, review P2a r2 R2-F1), against a file-backed `dispatch.sqlite` with gated writes: a copy
+  defers while a sighting's `Sent` row is held (Sol's blocked restore); a lost `Sent` row is written by the copy
+  before its transport (failed restore); a `NotSent` row that lands and then errors, overtaken by the sighting,
+  loses nothing and the evidence survives a reopen (delete committed then error); the reopened journal reads
+  `Sent`, Resends identical bytes and refuses others with `step_possibly_dispatched`. A failed `NotSent` write
+  against the fake journal keeps the artifact `Resolving{failed}` and copies defer until a retry lands. Review r2:
+  a superseded marker whose write failed comes back `Ambiguous` and the copy of its step writes it (H1); a failed
+  `Sent` row (lost, landed then an error, panicked) is begun again with no copy (M2); another wallet's sighting is
+  not this one's (L2); closing the journal waits for a running `Sent` write (L1). `dw-appdb` checks supersession,
+  finality of `Sent`, the sweep and the v1 migration. The stress checker logs supersession and evidence, carries
+  which markers were ever written, and flags a copy on superseded markers (I11); after the checker, a step copy of
+  a row-less artifact is checked against the fake journal's own `standing()` at each transport. The run sights
+  artifacts during and after their settlement. The `SkipEvidence`, `FailedUncommitted` and `NoSentRow` mutations
+  are each caught by the stress.
+- **Wallet removal** (DEC-160, DEC-163), against the file-backed journal with a held erase: Sol's r3 and r4 probes
+  are regressions. An idle possibly-out step keeps its log rows and its standing marker through removal and a
+  reopen; a copy admitted while the erase runs Resends with its marker standing at the transport and after a
+  reopen. A sighting's bundle held across the erase lands its marker again with the `Sent` row, and the engine
+  keeps its state. A bundle overtaken by its own `NotSent` row and then the erase still lands its marker. After an
+  erase that commits and then reports an error, a sighting's bundle alone makes the step stand: the journal is
+  reopened before any copy, and identical bytes Resend while different ones are refused with
+  `step_possibly_dispatched`. Closing the journal waits for an erase whose removal was dropped. `dw-appdb` checks
+  that the bundle never lands without its markers over every interleaving of a `NotSent` row, the erase and the
+  bundle, and that splitting it into statements can. `dw-appdb` also checks that the removal returns and erases exactly the
+  predicate's set, and compares the SQL predicate with the Rust one over 300 random logs. The stress removes the
+  flows' own wallet as well as the second one while row-less step copies run; the checker flags an erased artifact
+  whose marker it still reads durable or whose `Sent` row was durable before the erase began (I11); the disk oracle checks each step copy's marker against the fake
+  journal, and at the end that no `Sent` row lies on disk with the markers it had erased. `EraseAll` (the
+  unconditional delete) is caught by the stress and by five of the regressions, Sol's probes among them. Three
+  mutations whose races the stress hits too rarely are caught by the regressions: `BundleOwedOnly` (the bundle
+  skips markers the engine holds durable, the 92d676b behaviour) by three, Sol's r4 probe among them;
+  `SplitBundle` (markers and `Sent` row as separate statements) by two; `ForgetNewer` (no guard) by two.
+- **Opus high review**: Opus's O-1 probe, inverted, is a regression. The same bytes admitted for a second wallet
+  while the first wallet's attempt runs (or after it ended possibly sent) are `Deferred`; each wallet's Spend charge
+  is refunded once, by its own settlement, and another wallet's lease cannot unbind it. Another wallet's standing
+  marker from an earlier process, and a copy's marker write before its resend, hold the bytes back too (validator
+  N-1). `ArtifactKeyed` (row-less state keyed by artifact alone, so a second wallet's copy joins the first's entry)
+  is caught by both; the stress draws artifacts per wallet. The reaper ends a lock-revoked lease an idle period after
+  the revocation, even one untouched long before it, and forgets it after another (O-3); closing the journal waits for a running
+  `register` write (O-5); a task registered after close is aborted (O-8). DEC-134 (3)'s engine test makes the
+  vault's deletion fail and checks that the wallet stays listed and usable, its grant is consumed and its flow's
+  lease is revoked.
 
 **[A+B] Row-less attempts and step markers (rev1)**
 - **Concurrent holders** (GPT 1): O's First and R's Resend of the same bytes; O definitely rejected, the lock comes,
@@ -2368,11 +2541,12 @@ the contract's prose differs, E0-08 matches this section; §15 lists the lines.
 
 - `NetworkSession.begin_flow(wallet_id, flow: FlowKind, grants: Vec<String>) -> Result<String, PlatformError>`
   returns a lease id. `NetworkSession.end_flow(lease: String) -> Result<(), PlatformError>` is synchronous and
-  idempotent.
+  idempotent. The session owns the lease from `begin_flow` until `end_flow` or the reaper (§4.1, §4.7).
 - A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A call
   that needs a purpose the lease lacks gets `platform.needs_grant{purpose}`. Another wallet's lease, or an unknown
   id, is `platform.grant_invalid` (N-6).
-- **The idle reaper** ends a vault-key lease after 10 minutes with no call, no permit and no running flow task.
+- **The idle reaper** ends a vault-key lease, or a revoked one, after 10 minutes with no call, no permit and no
+  running flow task.
 - `FlowKind`: `Registration`, `TopUp`, `Withdraw`, `NameRegistration`, `ProfileEdit`, `ContactRequest`, `Accept`,
   `AcceptAndPay`, `PrivateDetails`, `EnableDashPayKeys`. There is no `Discovery`: `IdentityScan` is a grant, not a
   lease (§3.2). `discover_identities` accepts only an `IdentityScan` grant id; a lease id there is

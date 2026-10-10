@@ -77,6 +77,12 @@ copy (GPT r2 10, 11), including the copy after an auto lock (C5, GPT r3
 F2); a retry offered after a restart (Opus r2 1a); the row-less tombstone and
 the asset-lock reading of None, in both modes (DW-E0-08 r2 N-1, Opus r3 F-2);
 and the nonce evidence for NotSent (Opus r3 F-1).
+
+Part 6 is the step-marker journal (DEC-154, Sol r2 R2-F1): one marked
+artifact's NotSent resolution, a sighting that overtakes it, a copy and a
+crash, every journal write ok, lost, or committed and then failed. rev1's
+delete-and-restore and four rejected rules fail it; the append-only log with
+a final Sent row passes.
 """
 
 from __future__ import annotations
@@ -2272,12 +2278,210 @@ def part5() -> bool:
     return ok
 
 
+# Part 6: the step-marker journal (DEC-154, Sol r2 R2-F1).
+
+
+@dataclass(frozen=True)
+class J6:
+    """One marked artifact after its step First ended definitely unsent: its
+    NotSent resolution, a sighting (Sent) that may overtake it, one copy, a
+    crash. `log` is what the journal committed, in order. With `t` set, a
+    second step's marker T was begun by a copy before the settlement and its
+    write failed (lost, or landed and then an error: `Ambiguous` either
+    way), and the copy is of that step (review r2 H1)."""
+
+    log: tuple = ("M",)  # M, T markers; N NotSent, S Sent; D delete, R restore (rev1)
+    t: str = "none"  # none | lost | landed
+    res: str = "todo"  # todo | writing | failed | settled | kept (seen sent meanwhile)
+    seen: bool = False
+    ev: str = "none"  # the Sent row: none | writing | failed | done
+    restore: str = "none"  # rev1 only: none | pending | done
+    copy: str = "idle"  # idle | writing (its Sent row) | out
+    faults: int = 2
+    bad: Optional[str] = None
+
+
+def j6_standing(log: tuple, rule: str, m: str = "M") -> bool:
+    """Recovery: does marker `m` stand?"""
+    if rule == "rev1":  # delete and restore
+        last_m = max((n for n, e in enumerate(log) if e in (m, "R")), default=-1)
+        last_d = max((n for n, e in enumerate(log) if e == "D"), default=-1)
+        return last_m > last_d
+    last_n = max((n for n, e in enumerate(log) if e == "N"), default=-1)
+    last_m = max((n for n, e in enumerate(log) if e == m), default=-1)
+    if last_m < 0:
+        return False  # a Sent row makes only written markers stand
+    if rule == "latest-wins":
+        last_s = max((n for n, e in enumerate(log) if e == "S"), default=-1)
+        return last_m > last_n or last_s > last_n
+    return "S" in log or last_m > last_n
+
+
+def j6_steps(s: J6, rule: str) -> Iterator[tuple]:
+    from dataclasses import replace as rp
+
+    if s.bad:
+        return
+    outcomes = [("ok", True, True)]
+    if s.faults:
+        outcomes += [("lost", False, False), ("committed, then an error", True, False)]
+    # The resolution: begun in J unless the artifact was seen sent.
+    if s.res == "todo" and not s.seen:
+        yield "settle: the NotSent write begins", rp(s, res="writing")
+    if s.res == "writing":
+        for lab, lands, ok in outcomes:
+            log = s.log + (("D" if rule == "rev1" else "N"),) if lands else s.log
+            n = rp(s, log=log, faults=s.faults - (not ok))
+            if s.seen:
+                # Sent overtook it: the entry is possibly out again.
+                restore = "pending" if rule == "rev1" and ok else s.restore
+                yield f"NotSent write {lab}; seen sent meanwhile", rp(n, res="kept", restore=restore)
+            elif ok:
+                yield f"NotSent write {lab}: settled", rp(n, res="settled")
+            elif rule == "failed-uncommitted":
+                yield f"NotSent write {lab}: taken as not committed", rp(n, res="kept")
+            else:
+                yield f"NotSent write {lab}: Resolving(failed)", rp(n, res="failed")
+    if s.res == "failed":
+        yield "a copy retries the resolution", rp(s, res="writing" if not s.seen else "kept")
+    # A sighting, at any time.
+    if not s.seen:
+        n = rp(s, seen=True)
+        if rule not in ("rev1", "no-sent-row"):
+            n = rp(n, ev="writing")
+        elif rule == "no-sent-row":
+            n = rp(n, ev="done")
+        yield "the artifact is seen sent", n
+    if s.ev == "writing" and s.copy != "writing":
+        for lab, lands, ok in outcomes:
+            n = rp(s, log=s.log + ("S",) if lands else s.log, faults=s.faults - (not ok))
+            yield f"Sent row {lab}", rp(n, ev="done" if ok else "failed")
+    if s.restore == "pending":
+        yield "rev1 restore lands", rp(s, log=s.log + ("R",), restore="done")
+        if s.faults:
+            yield "rev1 restore fails (logged)", rp(s, restore="done", faults=s.faults - 1)
+    # The copy (a Resend of the same bytes, of step M, or of T).
+    step = "M" if s.t == "none" else "T"
+    if s.copy == "idle" and s.res in ("kept", "settled"):  # Resolving: copies wait
+        settled = s.res == "settled" and not s.seen
+        if settled:
+            # A fresh First: its marker is appended before it transports.
+            n = rp(s, log=s.log + (step,), copy="out")
+            yield "copy: a fresh First, marker then transport", n
+        else:
+            ev = s.ev if rule != "skip-evidence" else "done"
+            if ev == "writing":
+                pass  # it waits
+            elif ev == "failed":
+                yield "copy writes the Sent row first", rp(s, copy="writing")
+            else:
+                log = s.log
+                # T comes back `Ambiguous` and is written first; rev1 and
+                # `stash-durable` bring it back durable.
+                if step == "T" and rule not in ("rev1", "stash-durable"):
+                    if s.faults:
+                        yield "copy's T write fails: it defers", rp(s, faults=s.faults - 1)
+                    log = log + ("T",)
+                n = rp(s, log=log, copy="out")
+                if not j6_standing(log, rule, step):
+                    n = rp(n, bad="a copy transported with no standing marker on disk")
+                yield "copy: Resend", n
+    if s.copy == "writing":
+        for lab, lands, ok in outcomes:
+            n = rp(s, log=s.log + ("S",) if lands else s.log, faults=s.faults - (not ok))
+            yield f"copy's Sent row {lab}", rp(n, ev="done" if ok else "failed", copy="idle")
+    # A crash, at any point: recovery reads the log. The copy's step marker
+    # must stand once it is out, and M once the process holds its evidence
+    # durable (the Sent row landed; rev1's restore ran). Between a sighting and its row no write
+    # can help, and a refused row stays owed: copies write it first.
+    durable = s.ev == "done" or s.restore == "done"
+    lost = (s.copy == "out" and not j6_standing(s.log, rule, step)) or (
+        durable and not j6_standing(s.log, rule)
+    )
+    if lost:
+        yield "crash", rp(s, bad="the step's evidence is lost after a crash")
+
+
+def j6_findings(rule: str) -> dict:
+    inits = [J6(), J6(t="lost"), J6(log=("M", "T"), t="landed")]
+    seen = {i: [f"t={i.t}"] for i in inits}
+    frontier = list(inits)
+    found = {}
+    while frontier:
+        nxt = []
+        for st in frontier:
+            if st.bad:
+                found.setdefault(st.bad, seen[st])
+                continue
+            for lab, n in j6_steps(st, rule):
+                if n not in seen:
+                    seen[n] = seen[st] + [lab]
+                    nxt.append(n)
+        frontier = nxt
+    return found
+
+
+def part6() -> bool:
+    ok = True
+
+    def check(cond: bool, msg: str) -> None:
+        nonlocal ok
+        print(("PASS " if cond else "FAIL ") + msg)
+        ok = ok and cond
+
+    print("Part 6: the step-marker journal (DEC-154)")
+    rules = (
+        "rev1",
+        "skip-evidence",
+        "failed-uncommitted",
+        "no-sent-row",
+        "latest-wins",
+        "stash-durable",
+        "dec154",
+    )
+    f = {r: j6_findings(r) for r in rules}
+    for r in rules[:-1]:
+        for v, tr in sorted(f[r].items()):
+            print(f"       {r}: {v}: {' -> '.join(tr)}")
+    check(
+        bool(f["rev1"]) and not f["dec154"],
+        "Sol r2 R2-F1: rev1's delete-then-restore lets a copy out with no marker on disk and "
+        "loses the evidence after a crash; DEC-154's append-only log with a Sent row has "
+        "neither, whatever the NotSent and Sent writes do (lost, or committed then an error)",
+    )
+    check(
+        "a copy transported with no standing marker on disk" in f["skip-evidence"],
+        "a copy that does not wait for the Sent row transports with the markers superseded",
+    )
+    check(
+        "a copy transported with no standing marker on disk" in f["failed-uncommitted"],
+        "DEC-154 (3): a failed NotSent write taken as not committed lets a copy out on "
+        "superseded markers",
+    )
+    check(
+        "the step's evidence is lost after a crash" in f["no-sent-row"],
+        "a sighting that only updates memory loses the evidence over a NotSent row",
+    )
+    check(
+        "the step's evidence is lost after a crash" in f["latest-wins"],
+        "DEC-154 (2): recovery reading the latest row literally lets a later NotSent row "
+        "revoke a Sent row; Sent is final",
+    )
+    check(
+        "a copy transported with no standing marker on disk" in f["stash-durable"],
+        "review r2 H1: a superseded marker whose write never returned ok, brought back "
+        "durable by the Sent row, lets a copy of its step out with the marker never on disk",
+    )
+    return ok
+
+
 def main() -> int:
     ok = part1()
     ok = part2() and ok
     ok = part3() and ok
     ok = part4() and ok
     ok = part5() and ok
+    ok = part6() and ok
     print("ok" if ok else "FAILED")
     return 0 if ok else 1
 

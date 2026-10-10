@@ -19,6 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 use rusqlite::{Connection, OptionalExtension, params};
 
 mod dashpay_journal;
+pub mod dispatch;
 mod provenance;
 mod rows;
 pub use dashpay_journal::{JournalEntry, JournalRow};
