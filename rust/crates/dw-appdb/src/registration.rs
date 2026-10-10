@@ -334,7 +334,7 @@ mod tests {
         for bad in [
             "T:0".to_string(),
             "t:0".to_string(),
-            format!("{TXID}"),
+            TXID.to_string(),
             format!("{TXID}:"),
             format!("{TXID}:01"),
             format!("{TXID}:+1"),
