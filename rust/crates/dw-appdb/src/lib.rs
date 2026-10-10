@@ -21,8 +21,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 mod dashpay_journal;
 pub mod dispatch;
 mod provenance;
+mod registration;
 mod rows;
 pub use dashpay_journal::{JournalEntry, JournalRow};
+pub use registration::{
+    LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow, RegistrationUpdate,
+};
 pub use rows::{SqlValue, TableRows};
 
 mod embedded {
