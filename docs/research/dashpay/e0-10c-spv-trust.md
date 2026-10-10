@@ -9,31 +9,35 @@ Follows [E0-10a](trust-spike.md), whose §6 items 3 and 4 this closes. Item 5, c
 | platform #5307 (v5.1 move, open) | `f475f72a11`, base v5.1-dev |
 | rust-dashcore that #5307 pins | `8fe0a381` (head of rust-dashcore #1149, open) = `dev` `c19973ab` + 5 serde commits |
 | rust-dashcore `dev` for the fix | `0eaf0284c` |
-| fix, on `dev` (rust-dashcore) | branch `fix/spv-first-quorum-after-start`: `4c142bafc`, `9564a6b56`, `962654cbc` |
-| fix, on `8fe0a381` | branch `fix/spv-first-quorum-after-start-on-1149`: `de7e1e04f`, `d3c9ad562`, `67770b9fc` (cherry-picks) |
-| platform fork branch | `dw/e0-10c-v5.1-spv-trust` on `f475f72a11`: `ad601d1d8b` (#4978), `ebe37f8a67` (status lookup) |
+| fix, on `dev` (rust-dashcore) | dashpay/rust-dashcore#1150, branch `fix/spv-first-quorum-after-start`: `4c142bafc`, `9564a6b56`, `962654cbc`, `3e60a819d` |
+| fix, on `8fe0a381` | branch `fix/spv-first-quorum-after-start-on-1149`: `de7e1e04f`, `d3c9ad562`, `67770b9fc`, `d3d50520a` (cherry-picks) |
+| status lookup, upstream | dashpay/platform#5366, stacked on #5307: `738f83395d` |
+| platform fork branch | `dw/e0-10c-v5.1-spv-trust` on `f475f72a11`: `ad601d1d8b` (#4978), `ebe37f8a67` (#5366) |
 
-None of these is pushed. The desktop pins below are the target once pasta approves the pushes.
+All are pushed: the rust-dashcore branches to `PastaPastaPasta/rust-dashcore-dashpay`, the platform branches to
+`PastaPastaPasta/platform`. The desktop pins the platform fork branch and patches rust-dashcore to the `8fe0a381`
+backport (§5).
 
 ---
 
 ## 0. Summary
 
 - **The pin move costs 14 mechanical commits** (36 files, +158/−212 outside `Cargo.lock` and the workspace manifest),
-  mostly the secp256k1 0.33 port, **plus a decision on PSBT**: rust-dashcore #1041 removed `key_wallet::psbt`, which
-  `dw-psbt` is built on (§1).
+  mostly the secp256k1 0.33 port, **plus PSBT**: rust-dashcore #1041 removed `key_wallet::psbt`, which `dw-psbt` is
+  built on; E0-10d vendors the container (§1).
 - **DEC-18 picks:** #5307 already contains #4623, #4997, #4764, #5206, #5294 and #5305. Of the fixes the desktop gets
   from v5.0-dev today, only #4978 is missing; it cherry-picks cleanly onto #5307 (§2).
 - **The first quorum after the start is fixed.** Root cause: a tip update never fetched the work-block list a new quorum
   needs; only the QRInfo path did, once per rotation cycle. A tip update now fetches it, and the quorum is `Verified` in
   the first list that carries it. Regtest: fails before, passes after. Testnet and mainnet, fix vs `dev` side by side:
   every Platform quorum that entered after the start was `Verified` on arrival with the fix (4/4 testnet, 3/3 mainnet,
-  3/3 for a second testnet client on the final head); on `dev` the first one on each network stayed
+  3/3 for a second testnet client on `962654cbc`, before the request cap); on `dev` the first one on each network stayed
   `Skipped(MissedList)` until the run ended, 3.3 h and 2.7 h later (§3.4).
 - **The status-carrying lookup** is one additive method on platform-wallet's `SpvRuntime`,
   `get_quorum_public_key_with_status`, returning the key and dash-spv's `LLMQEntryVerificationStatus` (§4).
 - **What the desktop graph needs for E0-10b to require `Verified`:** the fork pin (#5307 + #4978 + the status lookup)
-  and the dash-spv fix, which #5307's rust-dashcore pin does not carry (§5).
+  and the dash-spv fix, which #5307's rust-dashcore pin does not carry. This branch has both (§5); it merges after
+  E0-10d.
 
 ---
 
@@ -56,9 +60,13 @@ for every pin, which resolves the `zeroize` / `bitcoin_hashes` conflicts a plain
 
 dw-ffi, dw-appdb, dw-console, dw-desktop, dw-fs, dw-p2p, dw-units and dwcli needed no change.
 
-Checked against the fork pin (`ebe37f8a67`, used through a local `file://` URL, not committed) with a type-only PSBT
-stand-in: `cargo check` and `cargo clippy -D warnings` pass on the whole workspace. `cargo test --workspace`: every
-failure is either a PSBT test hitting the stand-in (8 in dw-psbt, 3 in dw-engine `send::flow_tests`, 2 in dw-ffi) or
+The gate at the committed pins (platform fork `ebe37f8a67`, rust-dashcore patched to `d3d50520a`), with the
+uncommitted type-only PSBT stand-in: `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`
+pass; `cargo test --workspace`: 839 passed, 13 failed, 4 ignored, and all 13 failures are PSBT tests hitting the
+stand-in (8 in dw-psbt, 3 in dw-engine `send::flow_tests`, 2 in dw-ffi).
+
+Earlier, against the fork pin through a local `file://` URL and without the dash-spv patch, every `cargo test` failure
+was either a PSBT test hitting the stand-in (8 in dw-psbt, 3 in dw-engine `send::flow_tests`, 2 in dw-ffi) or
 one of 4 wall-clock tests in dwcli (`dashpay_r3`, `dashpay_r5`, 10–60 s bounds) that failed at load average 250.
 The wall-clock failures are load, not the move: `dashpay_r3` passes run serially, and desktop main's own binary misses
 the same 10 s bound in `dashpay_r5` at that load (19.1 s and 10.9 s). Totals: 834 passed, 17 failed (13 stand-in, 4
@@ -80,20 +88,17 @@ all in `dw-psbt`. Options:
 2. move `dw-psbt` to another PSBT implementation;
 3. drop PSBT from 1.0.
 
-Default: option 1, as its own task before the pin move merges; the manager decides. The measurement used an
-uncommitted type-only stand-in.
+Decided: option 1, as its own task, E0-10d, from desktop main. This branch rebases onto it once it merges. Until then
+the measurements here use an uncommitted type-only stand-in.
 
 ### 1.3 Before this branch merges
 
-The branch pins the plain #5307 head, an open PR's head that a force-push can drop, and that head lacks #4978 (§2).
-Merging waits for:
+Done: the re-pin to the fork branch (§5) and the vector re-check. DP1-01: the FFI harness at `ebe37f8a67` and the
+independent Python derivation agree on all 86 keys, and the rebuilt fixture equals the `bc41f1bc23` one apart from its
+platform field (`identity_derive_and_persist.rs` changed only for the secp256k1 0.33 API). DP1-03: the four cited
+upstream files are identical at `bc41f1bc23`, `f475f72a11` and `ebe37f8a67`, so only the pin string changed.
 
-- the re-pin to the fork branch (§5 step 1), once pasta approves the push;
-- the PSBT decision (§1.2);
-- the fixtures and vectors that name `bc41f1bc23` as the desktop's pin (`dw-engine/tests/fixtures/README.md`, the
-  DP1-01 and DP1-03 vectors and their generators, `keys_policy.rs`, and the string `dp1_03_names.rs` asserts). Upstream
-  identity key derivation and `identity_public_key` changed between the pins (4 files), so those vectors' rules need a
-  re-check at the new pin, not only a new revision string. They pass at the fork pin today.
+Merging waits for E0-10d (§1.2): rebase onto it, then the gate without the stand-in.
 
 The port review found the signing paths equivalent: low-R signing, recoverable signatures, the compact-signature
 header and the digests are unchanged. One behaviour change in BLS: the dash-pkc legacy decoder masks two flag bits in
@@ -119,7 +124,7 @@ until the v5.1 move; #5307 contains both, so they drop out.
 | #4623, #4997, #4764 | — (v5.1-dev only) | yes | — |
 | #5206, #5294, #5305 | yes | yes | — |
 | #4978 (keep the chosen DPNS name across wallet sync) | yes | **no** | cherry-pick `ad601d1d8b`, clean |
-| status lookup (§4) | — | — | `ebe37f8a67`, once its upstream PR is public |
+| status lookup (§4), #5366 | — | — | cherry-pick `ebe37f8a67` (= `738f83395d`) |
 
 The other 17 v5.0-dev commits #5307 lacks are PV14 consensus rules, docs and CI; the desktop does not need them.
 Without #4978, `dw-engine`'s `names_tests` stop compiling (`DpnsFetch` does not exist at #5307). Against the fork pin,
@@ -144,11 +149,13 @@ batched catch-up that jumps several blocks leaves the same gap.
 
 When a tip update (a diff whose base is the newest list) applies, dash-spv now asks for the work-block lists of the
 quorums that diff adds, and the update completes once they are applied. The quorum is re-verified in the same pass and
-is `Verified` in the first list the client publishes with it. Each new quorum is asked for once. A work-block list
-that fails does not hold back the tip update; a tip update that fails still publishes nothing.
+is `Verified` in the first list the client publishes with it. Requests are capped per tip update, and the lists they
+bring are kept only until their quorums are validated. A work-block list that fails does not hold back the tip update;
+a tip update that fails still publishes nothing.
 
 Code: `dash-spv/src/sync/masternodes/sync_manager.rs` (MnListDiff handler) and `dash-spv/src/sml_engine.rs`
-(`missing_work_block_list_requests_for`). It cherry-picks unchanged onto `8fe0a381`.
+(`missing_work_block_list_requests_for`, `drop_requested_work_lists_once_validated`). It cherry-picks unchanged onto
+`8fe0a381`.
 
 ### 3.3 Tests
 
@@ -158,15 +165,17 @@ Code: `dash-spv/src/sync/masternodes/sync_manager.rs` (MnListDiff handler) and `
 - dashd regtest (`dashd_masternode::test_quorum_mined_after_start_is_verified_on_arrival`): starts the client 4 blocks
   before a DKG cycle, mines the cycle, and records the quorum's status in every list the client publishes, at the
   moment it publishes it. On `dev`: `[(443, Skipped(MissedList(424)))]` (synced at 428). With the fix: passes.
-- Suites on the final head: dash-spv lib 624/624; `dashd_masternode` 11/11. `dashd_sync` and dash-spv-ffi `dashd_sync`
+- Unit (`sml_engine.rs`): the cap per update and per mining window, and when a fetched list is dropped.
+- Suites on the final head (`3e60a819d`): dash-spv lib 628/628; `dashd_masternode` 11/11 (10 in the full run, where
+  dashd's own DKG timed out at load 240 for the regression test, which then passed alone); clippy clean. `dashd_sync` and dash-spv-ffi `dashd_sync`
   had 2–3 timeouts each at load 100–170 on 32 vCPU; both run with masternode sync off, so the change is not on their
-  path. The `8fe0a381` backport: masternode unit tests 31/31, `dashd_masternode` 11/11 (regression test included).
+  path. The `8fe0a381` backport (`d3d50520a`): dash-spv lib 628/628, `dashd_masternode` 11/11 the same way, clippy clean.
 
 ### 3.4 Testnet and mainnet
 
 E0-10a's dash-spv probe (`tools/trust-spike/`, the `spv` mode fed by the pin's `capture` tuples), read-only, started
 side by side at 12:33 UTC on 2026-10-10 for 3.5 h: `dev` `0eaf0284c` ("ctl") and `dev` + the fix's first commit
-`4c142bafc` ("fix") on both networks. A third testnet client on the final head `962654cbc` ("fin") started at 13:12 and
+`4c142bafc` ("fix") on both networks. A third testnet client on `962654cbc` ("fin", before the request cap) started at 13:12 and
 ran to the same end. Data: `/work/scratch/e0-10c/probe/run1/` (agentbox, not tracked).
 
 Platform quorums that entered the newest list after each client's initial sync:
@@ -221,30 +230,30 @@ Test (`spv::runtime::tests::should_return_the_quorum_status_with_its_key`): seed
 is not its own reverse, and that neither lookup returns an `Invalid` entry. Removing the byte-order reversal fails it.
 platform-wallet `spv::runtime`: 31/31; clippy clean.
 
-DEC-18 allows the fork to carry this only as a cherry-pick of a public upstream PR, so the order is: the manager
-approves the PR text, the PR opens against v5.1-dev stacked on #5307 (its test needs #5307's rust-dashcore), then the
-fork carries the commit.
+DEC-18 allows the fork to carry this only as a cherry-pick of a public upstream PR: it is dashpay/platform#5366,
+based on #5307's branch (its test needs #5307's rust-dashcore), and the fork carries the same commit.
 
 ---
 
 ## 5. Route to the desktop
 
-1. Push `dw/e0-10c-v5.1-spv-trust` to `PastaPastaPasta/platform` (after approval and the item-4 PR) and pin every
-   platform crate to `ebe37f8a67` on the fork. This brings #1094, #1073 and #1102 (DEC-168 (1)), #4978 and the status
-   lookup.
-2. The dash-spv fix is not in `8fe0a381`. Until it merges upstream and platform re-pins, the desktop graph needs a
-   `[patch."https://github.com/dashpay/rust-dashcore"]` to the `8fe0a381`-based branch (`67770b9fc`) on pasta's
-   rust-dashcore fork. Publishing it is a manager decision (ROADMAP E0-10c, DEC-09).
-3. The PSBT decision and the vector re-check (§1.2, §1.3) gate the pin move merging.
+1. Done: every platform crate pins `ebe37f8a67` on `PastaPastaPasta/platform`. This brings #1094, #1073 and #1102
+   (DEC-168 (1)), #4978 and the status lookup (#5366). Move back to upstream once #5307 and #5366 are on v5.1-dev
+   and #4978 reaches it.
+2. Done: the dash-spv fix is not in `8fe0a381`, so the workspace carries a
+   `[patch."https://github.com/dashpay/rust-dashcore"]` to the backport `d3d50520a` on
+   `PastaPastaPasta/rust-dashcore-dashpay` (DEC-09). It patches seven crates, and all twelve rust-dashcore packages
+   in the lock then come from the fork, one copy each. Drop it when platform re-pins to a rust-dashcore with #1150.
+3. Merging waits for E0-10d (§1.3).
 4. E0-10b's `trust.rs` then requires `status == Verified`. Enforcement (DP3-04 / H-09 full mode) still waits for #1117.
 
 ## 6. Open questions (defaults in force)
 
 | Question | Default |
 |---|---|
-| PSBT after #1041 | vendor the container into `dw-psbt`, without the module's signing paths; separate task (§1.2) |
-| Desktop graph gets the dash-spv fix how? | `[patch]` to the `8fe0a381` backport on pasta's fork after approval; drop it when platform re-pins past the upstream merge |
-| Upstream PRs | rust-dashcore fix against `dev`; platform status lookup against v5.1-dev, stacked on #5307; both await the manager's approval of their text |
+| PSBT after #1041 | decided: vendor the container into `dw-psbt`, without the module's signing paths, as E0-10d (§1.2) |
+| Desktop graph gets the dash-spv fix how? | decided: `[patch]` to the `8fe0a381` backport on pasta's fork (§5); drop it when platform re-pins past #1150 |
+| Upstream PRs | open: rust-dashcore#1150 against `dev`; platform#5366 stacked on #5307 |
 | #5307 or #1149 change before merge | re-run §1 and re-cherry-pick; the fix and the status lookup touch neither PR's files |
 
 ## 7. Limits
@@ -252,4 +261,4 @@ fork carries the commit.
 - The testnet probes ran `dev` `0eaf0284c` with and without the fix, not `8fe0a381`. The commits between them (#1144 and
   #1149's serde changes) do not touch masternode sync.
 - One start per probe: each run covers the first quorum after one start, not a distribution.
-- Desktop tests with the pin move ran with a type-only PSBT stand-in.
+- Desktop tests with the pin move ran with a type-only PSBT stand-in, until E0-10d lands.
