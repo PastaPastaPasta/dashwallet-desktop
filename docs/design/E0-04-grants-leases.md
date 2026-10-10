@@ -546,7 +546,7 @@ Mode B has no registered journal entries, so it derives every status from three 
 | a matching row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain` | `Sent` |
 | a matching row is `Built` or `Broadcast`, with or without a marker | `WillBeSent` (the catch-up and the deferred resume resend it) |
 | no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send (Mode B at the pin: the first only, §2a.6) | `NotSent` |
-| no marker and no matching row: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6) |
+| no marker and no matching row: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6); `MaybeSent` for a registration while an unattributed row may be its lock (§2a.6) |
 | anything else: a marker, no row, no definite resolution | `MaybeSent`, possibly indefinitely |
 
 - **Definite resolutions are written with the marker** (`FULL`), so they survive a restart.
@@ -638,10 +638,16 @@ call permit when its task lands.
   identity it created is registered). The step's matching rows read as before. The engine cannot tell such a row
   from the wallet's own index-0 registration lock once that lock has left `Built`: while it is in flight, or if it
   is abandoned unused, it blocks every other registration draft's Repair the same way.
-- The funding gate does not consult unattributed rows: blocking on them would block every registration of a
-  restored wallet holding an unused recovered lock. So a draft at index k ≠ 0 whose marker is gone (a deleted
-  journal) and whose row came back at index 0 reads `None` and may fund again until DP1-05 adopts the lock. Not fail
-  closed.
+- A registration funding step with no standing marker of its own (none, or one its `NotSent` row superseded) reads
+  `MaybeSent`, not `None` or `NotSent`, while the wallet holds an unattributed `IdentityRegistration` row of the
+  step's account that the step does not match by key (the manager's ruling on the open gap of 1de1714, fail
+  closed). So a draft at index k ≠ 0 whose marker a lost or rolled-back journal dropped, and whose lock came back at
+  index 0, is refused a second funding (`FundingBlock::Step`, `broadcast_unknown` from `funding_call_permit`). Such
+  a row is never attributed to another draft's standing marker instead: a rolled-back journal can keep draft 0's
+  marker and lose draft k's. **Liveness cost:** every new registration draft of the account (any index but 0) waits
+  until the unattributed lock is adopted (Finish registration / DP1-05), which re-keys the row by its identity; a
+  restored wallet holding an unused recovered lock registers nothing else until then. A draft at index 0 matches
+  the row by key and reads by its status (`Sent`, or `WillBeSent` for a `Broadcast` reconstruction).
 - The self-spend's `NotSent` rests on the library tracking a lock (`Built`, persisted) before broadcasting it, so a
   ChainLocked lock always has a row, which reads `Sent`. A wallet restored where the journal's marker survives but
   the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked
@@ -668,8 +674,9 @@ call permit when its task lands.
 - A step's derived status can move again after it resolved: a later funding under the same draft key (or an
   attribution that re-keys a row) may make a row match it, so a step that read `NotSent` can read `Sent` (and emit
   `DispatchResolved` again) (review L-2). Fail closed: the move is towards "sent".
-- An unattributed row read after a step's self-spend `NotSent` was announced moves the step back to `MaybeSent`
-  with no `DispatchResolved` (only `LeaseChanged`): the retraction has no event of its own. Fail closed for the
+- An unattributed row read after a step's self-spend `NotSent` (or a markerless registration step's definite
+  `NotSent`) was announced moves the step back to `MaybeSent` with no `DispatchResolved` (only `LeaseChanged`): the
+  retraction has no event of its own. Fail closed for the
   engine's gates; a host that acted on the `NotSent` (a new draft) is not told.
 
 ## 3. Grants (dw-vault)

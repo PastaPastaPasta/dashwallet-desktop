@@ -1243,6 +1243,138 @@ async fn an_unattributed_row_of_another_funding_type_does_not_block() {
     assert_eq!(t.funding_status(W, REG), Some(NotSent));
 }
 
+/// The pure derivation: with an unattributed row that may be its lock, a
+/// step with no standing marker reads `MaybeSent` instead of `None` or
+/// `NotSent`; its matching rows still read as before.
+#[test]
+fn an_unattributed_row_makes_a_markerless_step_read_maybe_sent() {
+    for step in [S::None, S::NotSent] {
+        assert_eq!(
+            derive_funding(step, Some(&[]), false, true),
+            Some(MaybeSent),
+            "{step:?}"
+        );
+        assert_eq!(
+            derive_funding(step, Some(&[R::RecoveredFromChain]), false, true),
+            Some(Sent)
+        );
+        assert_eq!(
+            derive_funding(step, Some(&[R::Broadcast]), false, true),
+            Some(WillBeSent)
+        );
+    }
+}
+
+/// A lost or rolled-back journal: draft 3's funding call ran, its marker
+/// is gone, and its lock came back from the chain at identity index 0
+/// (unattributed). The markerless step reads `MaybeSent`, so the gate
+/// refuses a second funding, until the row is re-keyed by the identity it
+/// created (index 3): then it reads `Sent`. A step at index 0 matches the
+/// row by key and reads by its status; a markerless draft with no
+/// unattributed row reads `None`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_markerless_registration_step_reads_maybe_sent_over_an_unattributed_row() {
+    const AT3: &str = "registration/3/funding";
+    const AT0: &str = "registration/4/funding";
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    src.set_drafts(
+        W,
+        vec![DraftKey::registration(3, 3), DraftKey::registration(4, 0)],
+    );
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), None, "no unattributed row");
+    assert_eq!(t.funding_status(W, AT0), None);
+
+    let lost = row(1, 0, R::RecoveredFromChain);
+    assert!(!lost.trusted);
+    src.set_rows(W, vec![lost.clone()]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    let spent = funding_spent(&l);
+    assert_eq!(
+        l.call_permit_step("funding", quote(10, 0), funding(AT3, 3))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(MaybeSent))),
+        "no second funding"
+    );
+    assert_eq!(funding_spent(&l), spent, "no charge");
+    // The step at index 0 matches the row by key: by its status.
+    assert_eq!(t.funding_status(W, AT0), Some(Sent));
+    src.set_rows(W, vec![row(1, 0, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT0), Some(WillBeSent));
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+
+    // An unattributed row of another account is no lock of the draft
+    // (DP1-02 funds every registration from account 0).
+    src.set_rows(
+        W,
+        vec![TrackedRow {
+            key: FundingKey {
+                account: 1,
+                ..key(0)
+            },
+            ..row(1, 0, R::RecoveredFromChain)
+        }],
+    );
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), None);
+
+    // Re-keyed by the managed identity at index 3 it created.
+    src.set_rows(
+        W,
+        vec![TrackedRow {
+            key: key(3),
+            trusted: true,
+            ..lost
+        }],
+    );
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(Sent));
+    assert_eq!(t.funding_status(W, AT0), None);
+}
+
+/// A rolled-back journal kept draft 0's marker and lost draft 3's: the
+/// unattributed row is not attributed to draft 0's marker alone, so the
+/// markerless step at index 3 still reads `MaybeSent`. A step whose
+/// definite `NotSent` stands reads `MaybeSent` too while such a row may be
+/// the lock of a later call of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unattributed_row_is_not_given_to_another_drafts_marker() {
+    const AT3: &str = "registration/3/funding";
+    const AT0: &str = "registration/4/funding";
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    src.set_drafts(
+        W,
+        vec![DraftKey::registration(3, 3), DraftKey::registration(4, 0)],
+    );
+    t.refresh_funding(W).await;
+    maybe_sent(&l, AT0, 0).await;
+    // A definite NotSent of draft 3 (a Lock before its first signature).
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(AT3, 3))
+        .await
+        .unwrap();
+    p.signatures().note_locked();
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled);
+    until(|| t.funding_status(W, AT3) == Some(NotSent)).await;
+
+    src.set_rows(W, vec![row(1, 0, R::RecoveredFromChain)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT0), Some(Sent));
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    assert_eq!(
+        l.call_permit_step("funding", quote(10, 0), funding(AT3, 3))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(MaybeSent)))
+    );
+}
+
 // --- Repair's self-spend (§6.5, §2a.5 row 1; commit 7) --------------------
 
 /// Repair records its self-spend against the step's standing marker in the

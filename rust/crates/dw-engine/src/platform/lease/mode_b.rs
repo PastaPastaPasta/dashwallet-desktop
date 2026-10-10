@@ -74,11 +74,24 @@
 //! Repair refuses it ([`StuckFundingRefusal::UnattributedLock`]). Fail
 //! closed: such a step waits for the row's attribution.
 //!
+//! A registration step with no standing marker of its own (none, or one a
+//! `NotSent` row superseded) reads `MaybeSent`, not `None` or `NotSent`,
+//! while an unattributed `IdentityRegistration` row of its account stands
+//! that it does not match by key ([`markerless_unattributed_row`]): after a
+//! lost or rolled-back journal, that row may be the lock of the step's own
+//! call, whose marker is gone. So the funding gate refuses a second funding
+//! of it ([`FundingBlock::Step`]). Such a row is never attributed to another
+//! step's standing marker instead: a rolled-back journal can keep one
+//! draft's marker and lose another's. Liveness: a new registration waits
+//! until the row is attributed (the identity it created is adopted, which
+//! re-keys it).
+//!
 //! **The funding gate** (§2a.3, in the J step that would take a funding
 //! call's permit): the wallet's rows must be known; the step must have no
 //! standing marker and read `None` or `NotSent` (retry only on `NotSent`,
 //! §16.6, so a possibly-sent funding blocks a second build of its step:
-//! the withheld-T1 trace); and no tracked `Built` or `Broadcast` row of the
+//! the withheld-T1 trace, and a markerless registration step while an
+//! unattributed row may be its lock); and no tracked `Built` or `Broadcast` row of the
 //! wallet may stand that the catch-up has not resumed this session
 //! ([`LeaseTable::note_resumed`]), or the library's coin selection could
 //! pick its inputs (F7).
@@ -347,9 +360,9 @@ pub enum FundingBlock {
 ///   unknown, which never reads `None` or `NotSent`;
 /// - `self_spend_locked`: one of Repair's self-spends answering the step's
 ///   marker is ChainLocked;
-/// - `unattributed`: an unattributed row of the step's funding type that
-///   does not match the step by key stands (module doc): the self-spend's
-///   row then reads `MaybeSent`, not `NotSent`.
+/// - `unattributed`: an unattributed row that may be the step's lock
+///   stands (module doc): the self-spend's row, a definite resolution and
+///   "never started" then read `MaybeSent`, not `NotSent` or `None`.
 ///
 /// A call that returned Ok (`status` `Sent`) and a row with a proof come
 /// first: the lock reached a proof, so a ChainLocked self-spend cannot have
@@ -384,6 +397,11 @@ pub(crate) fn derive_funding(
         return Some(DispatchState::WillBeSent);
     }
     match status {
+        // An unattributed row may be the lock of a call whose marker a lost
+        // or rolled-back journal dropped.
+        CallStepStatus::NotSent | CallStepStatus::None if unattributed => {
+            Some(DispatchState::MaybeSent)
+        }
         // A definite resolution, written with the marker.
         CallStepStatus::NotSent => Some(DispatchState::NotSent),
         // The call never started: no lock was ever registered (§16.6).
@@ -427,6 +445,33 @@ fn unattributed_row<'a>(
     })
 }
 
+/// The first unattributed registration row (module doc) that may be the
+/// lock of registration `step` while no marker of the step stands (none,
+/// or one a `NotSent` row superseded): of the step's account (any account
+/// when its draft is unknown), and matching the step by neither the
+/// marker's key nor the draft's. Never matched against another step's
+/// marker: a rolled-back journal can keep one draft's marker and lose
+/// another's.
+fn markerless_unattributed_row<'a>(
+    s: &'a Snapshot,
+    step: &str,
+    info: &CallStepInfo,
+) -> Option<&'a TrackedRow> {
+    if !step.starts_with("registration/")
+        || !matches!(info.status, CallStepStatus::None | CallStepStatus::NotSent)
+    {
+        return None;
+    }
+    let draft = s.drafts.iter().find(|d| d.step == step);
+    s.rows.iter().find(|r| {
+        !r.trusted
+            && r.key.funding_type == AssetLockFundingType::IdentityRegistration
+            && draft.is_none_or(|d| d.account == r.key.account)
+            && info.funding.as_ref() != Some(&r.key)
+            && !draft.is_some_and(|d| d.matches(&r.key))
+    })
+}
+
 /// `step`'s funding status now (J).
 pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<DispatchState> {
     let info = i.fence.call_step_info(&wallet, step);
@@ -440,7 +485,10 @@ pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<
             .collect()
     });
     let locked = snap.is_some_and(|s| info.self_spends.iter().any(|t| s.locked_spends.contains(t)));
-    let unattributed = locked && snap.is_some_and(|s| unattributed_row(s, step, &info).is_some());
+    let unattributed = snap.is_some_and(|s| {
+        (locked && unattributed_row(s, step, &info).is_some())
+            || markerless_unattributed_row(s, step, &info).is_some()
+    });
     derive_funding(info.status, rows.as_deref(), locked, unattributed)
 }
 
