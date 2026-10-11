@@ -80,7 +80,6 @@ fn exit_on_signal<R: Runtime>(app: tauri::AppHandle<R>) {
     let _ = app;
 }
 
-/// Entry point of the `dash-wallet` binary.
 /// Without a DRM render node (a VM, a CI runner, remote X) WebKitGTK's DMA-BUF
 /// renderer falls back to software buffers that cost about a second before the
 /// first paint; the shared-memory renderer does not (G-02: first paint 0.9–1.8 s
@@ -103,6 +102,7 @@ pub fn webkit_renderer_without_gpu() {
     }
 }
 
+/// Entry point of the `dash-wallet` binary.
 pub fn run() {
     let started = Instant::now();
     let launch = match launch::parse(std::env::args().skip(1)) {

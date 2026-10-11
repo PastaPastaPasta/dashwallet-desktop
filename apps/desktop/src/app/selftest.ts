@@ -133,8 +133,12 @@ function stats(samples: number[]): Stats {
   return { n: s.length, p50: q(0.5), p95: q(0.95), max: round(s[s.length - 1]) };
 }
 
-async function time(n: number, f: () => Promise<unknown>): Promise<Stats> {
+async function warmUp(f: () => Promise<unknown>) {
   for (let i = 0; i < 20; i++) await f();
+}
+
+async function time(n: number, f: () => Promise<unknown>): Promise<Stats> {
+  await warmUp(f);
   const samples: number[] = [];
   for (let i = 0; i < n; i++) {
     const t = performance.now();
@@ -147,18 +151,16 @@ async function time(n: number, f: () => Promise<unknown>): Promise<Stats> {
 /** Like `time`, for calls that report the engine's share in µs: the round trip, the engine and
  * the remainder (IPC + serialisation), each as its own distribution over the same samples. */
 async function timeSplit(n: number, f: () => Promise<{ engineMicros: number }>) {
-  for (let i = 0; i < 20; i++) await f();
+  await warmUp(f);
   const roundTrip: number[] = [];
   const engine: number[] = [];
-  const ipc: number[] = [];
   for (let i = 0; i < n; i++) {
     const t = performance.now();
     const { engineMicros } = await f();
-    const ms = performance.now() - t;
-    roundTrip.push(ms);
+    roundTrip.push(performance.now() - t);
     engine.push(engineMicros / 1000);
-    ipc.push(ms - engineMicros / 1000);
   }
+  const ipc = roundTrip.map((ms, i) => ms - engine[i]);
   return { roundTrip: stats(roundTrip), engine: stats(engine), ipc: stats(ipc) };
 }
 

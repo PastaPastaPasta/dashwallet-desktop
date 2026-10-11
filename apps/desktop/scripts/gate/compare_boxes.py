@@ -60,12 +60,16 @@ def main():
             worst = max(worst, delta)
             if delta > args.tolerance:
                 entry = {"screen": key[0], "id": key[1], "delta": round(delta, 2), base_name: a, name: b}
-                (runs_over if key[1].split("#")[0] in text_runs else over).append(entry)
+                if key[1].split("#")[0] in text_runs:
+                    runs_over.append(entry)
+                else:
+                    over.append(entry)
         missing = set(base) - set(d)
         extra = set(d) - set(base)
         # A container that exists in one engine only is a layout difference too.
-        ok &= not over and not missing and not extra
-        ok_all &= not over and not runs_over and not missing and not extra
+        containers_ok = not over and not missing and not extra
+        ok &= containers_ok
+        ok_all &= containers_ok and not runs_over
         summary["engines"][name] = {
             "maxDelta": round(worst, 2),
             "overTolerance": len(over),

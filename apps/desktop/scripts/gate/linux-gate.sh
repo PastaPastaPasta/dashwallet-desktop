@@ -90,8 +90,8 @@ cpu_ms_tree() {
   tck=$(getconf CLK_TCK)
   for p in $(tree_pids "$1"); do
     # Fields 14 and 15 of /proc/PID/stat, counted after the parenthesised command name.
-    t=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null | awk '{print $12 + $13}') || continue
-    total=$((total + ${t:-0}))
+    t=$(awk '{sub(/.*\) /, ""); print $12 + $13}' "/proc/$p/stat" 2>/dev/null) || continue
+    total=$((total + t))
   done
   echo $((total * 1000 / tck))
 }

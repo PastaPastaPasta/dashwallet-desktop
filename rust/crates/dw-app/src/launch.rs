@@ -129,7 +129,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 let v = value("--window-size")?;
                 let size = v
                     .split_once('x')
-                    .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                    .and_then(|(w, h)| w.parse().ok().zip(h.parse().ok()))
                     .filter(|&(w, h)| w > 0 && h > 0);
                 opts.window_size =
                     Some(size.ok_or_else(|| format!("--window-size: expected WxH, got {v:?}"))?);

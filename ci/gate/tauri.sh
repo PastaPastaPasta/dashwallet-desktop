@@ -36,7 +36,8 @@ APP=$REPO/rust/target/release/$exe
 FIXTURE=(--fixture --network testnet)
 # Self-tests run at one viewport on every OS (U3c compares boxes); it fits the runners' 1024x768
 # desktops and stays above the 980 px layout breakpoint. Playwright: DW_VIEWPORT=1000x620.
-SIZE=(--window-size "${GATE_WINDOW_SIZE:-1000x620}")
+export GATE_WINDOW_SIZE=${GATE_WINDOW_SIZE:-1000x620}
+SIZE=(--window-size "$GATE_WINDOW_SIZE")
 # Screenshot pause per self-test screen (ms): long enough for a capture on a slow runner.
 PAUSE_MS=${PAUSE_MS:-2500}
 
@@ -113,29 +114,24 @@ PASSPHRASE_FILE=$REPO/ci/gate/fixtures/regtest40k-passphrase.txt
 ENGINE=(--datadir "$WALLET" --network regtest --no-platform --dapi https://127.0.0.1:1443)
 du -sh "$WALLET" | tee "$OUT/wallet-size.txt"
 
-# The window of PID as an image (macOS by CGWindowID; Linux by X window name).
+# The window of PID as an image, by CGWindowID (macOS only: Linux and Windows capture in their own
+# harnesses).
 window_id_tool=$TMP/macos-window-id
 shot() { # PID FILE
-  case $GATE_OS in
-    macos)
-      local w
-      w=$("$window_id_tool" "$1" || true)
-      if [[ -n "$w" ]]; then screencapture -x -o -l "$w" "$2"; else screencapture -x "$2"; fi
-      ;;
-    linux) import -window "$(xdotool search --onlyvisible --name 'Dash Wallet' | head -1)" "$2" ;;
-  esac
+  local w
+  w=$("$window_id_tool" "$1" || true)
+  if [[ -n "$w" ]]; then screencapture -x -o -l "$w" "$2"; else screencapture -x "$2"; fi
 }
 
-# --selftest with a capture of each screen while it pauses (Windows captures in tauri-windows.ps1).
+# --selftest with a capture of each screen while it pauses (macOS).
 selftest_with_shots() { # REPORT LOG ARGS...
-  local report=$1 log=$2 seen=0 count screen pid
+  local report=$1 log=$2 seen=0 count screen pid deadline=$(($(date +%s) + 900))
   shift 2
   "$APP" "$@" "${SIZE[@]}" --selftest "$report" --selftest-pause "$PAUSE_MS" >"$log" 2>&1 &
   pid=$!
-  local deadline=$(($(date +%s) + 900))
   # macOS ships bash 3.2: no mapfile, and empty arrays trip `set -u`, so read the log line by line.
   while kill -0 "$pid" 2>/dev/null && (($(date +%s) < deadline)); do
-    count=$({ grep -o 'selftest-screen [a-zA-Z/]*' "$log" || true; } | wc -l | tr -d ' ')
+    count=$(grep -c 'selftest-screen [a-zA-Z/]' "$log" || true)
     while ((seen < count)); do
       screen=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | sed -n "$((seen + 1))p" | awk '{print $2}')
       sleep 0.8
@@ -188,7 +184,7 @@ case $GATE_OS in
     echo "== U3: self-test, U2 install and 10-minute run, U4 UIA walk (tauri-windows.ps1)"
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$REPO/ci/gate/tauri-windows.ps1")" \
       -Repo "$(cygpath -w "$REPO")" -OutDir "$(cygpath -w "$OUT")" -App "$(cygpath -w "$APP")" \
-      -Wallet "$(cygpath -w "$WALLET")" -PassphraseFile "$(cygpath -w "$PASSPHRASE_FILE")" -PauseMs "$PAUSE_MS" -WindowSize "${SIZE[1]}" || status=1
+      -Wallet "$(cygpath -w "$WALLET")" -PassphraseFile "$(cygpath -w "$PASSPHRASE_FILE")" -PauseMs "$PAUSE_MS" -WindowSize "$GATE_WINDOW_SIZE" || status=1
     judge_selftest "$OUT/selftest-windows.json" "Tauri --selftest on Windows (fixture)" || status=1
     judge_selftest "$OUT/selftest-windows-engine.json" "Tauri --selftest on Windows (regtest wallet)" || status=1
     ;;

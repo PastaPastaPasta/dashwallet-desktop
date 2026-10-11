@@ -79,7 +79,7 @@ function Wait-Window($Process, [int] $Seconds) {
 
 # Working set and private bytes (MB) of the process and its descendants (msedgewebview2.exe).
 function Tree-Memory([int] $RootId) {
-    $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, WorkingSetSize, PrivatePageCount
+    $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, WorkingSetSize, PrivatePageCount
     $ids = @($RootId); $i = 0
     while ($i -lt $ids.Count) { $ids += @($all | Where-Object { $_.ParentProcessId -eq $ids[$i] } | ForEach-Object { $_.ProcessId }); $i++ }
     $procs = @($all | Where-Object { $ids -contains $_.ProcessId })
