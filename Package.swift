@@ -180,7 +180,11 @@ if !headless {
             dependencies: [
                 "CrossUI", "DashUICross", "WalletDemo", "WalletFeatures", "WalletRuntime", "PlatformServices",
                 "PlatformServicesDesktop", "DesignTokens",
-            ] + crossUI + nativeBackend
+            ] + crossUI + nativeBackend,
+            // Windows gives the main thread 1 MB of stack; SwiftCrossUI's nested view updates
+            // need more and overflowed on the first main-window render (G-03). 8 MB, as on Linux
+            // and macOS.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "/STACK:8388608"], .when(platforms: [.windows]))]
         ),
     ]
 }
