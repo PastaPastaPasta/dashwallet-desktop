@@ -144,6 +144,11 @@ function constructorArgs(text, type) {
 
 function rgbaOf(text) {
   const a = constructorArgs(text, "RGBA");
+  if (a.hex !== undefined) {
+    const m = /^0x([0-9A-Fa-f]{6})$/.exec(a.hex) ?? fail(`not an RGBA hex: ${a.hex}`);
+    const n = parseInt(m[1], 16);
+    return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, a.alpha ?? 1];
+  }
   return [a.red, a.green, a.blue, a.alpha ?? 1];
 }
 
@@ -161,14 +166,20 @@ function roleColor(expr) {
 }
 
 const roleBlocks = swiftBlocks("Roles.swift");
-const opacity = numbers(roleBlocks, "DashOpacity");
-const roles = {};
-for (const stmt of roleBlocks.get("DashColor.Role") ?? fail("no DashColor.Role block")) {
-  const m = /^public static let (\w+) = (.+)$/.exec(stmt);
-  if (!m) continue;
-  if (m[1] === "all") continue; // the list of roles for tests
-  roles[m[1]] = roleColor(m[2]);
+
+/** `public static let name = <colour>` members of a role block, without the `all` list. */
+function roleMembers(block) {
+  const out = {};
+  for (const stmt of roleBlocks.get(block) ?? fail(`no ${block} block`)) {
+    const m = /^public static let (\w+) = (.+)$/.exec(stmt);
+    if (m && m[1] !== "all") out[m[1]] = roleColor(m[2]);
+  }
+  return out;
 }
+
+// The WCAG AA variants (UX-SPEC §2.1a, DEC-36) replace the iOS values: the renderer draws only these.
+const opacity = { ...numbers(roleBlocks, "DashOpacity"), ...numbers(roleBlocks, "DashOpacityAA") };
+const roles = { ...roleMembers("DashColor.Role"), ...roleMembers("DashColor.RoleAA") };
 
 const spacing = numbers(swiftBlocks("Spacing.swift"), "DashSpacing");
 const radius = numbers(swiftBlocks("Radii.swift"), "DashRadius");

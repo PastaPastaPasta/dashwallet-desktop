@@ -15,16 +15,16 @@ export const roles = {
     "dark": "#1D2023"
   },
   "hero": {
-    "light": "#008DE3",
-    "dark": "#008DE4"
+    "light": "#0063B7",
+    "dark": "#0063B7"
   },
   "heroCard": {
     "light": "#FFFFFF",
     "dark": "#FFFFFF"
   },
   "accent": {
-    "light": "#008DE4",
-    "dark": "#008DE4"
+    "light": "#006FC3",
+    "dark": "#006FC3"
   },
   "accentTint": {
     "light": "rgb(0 141 228 / 0.1)",
@@ -43,7 +43,7 @@ export const roles = {
     "dark": "rgb(255 255 255 / 0.8)"
   },
   "textTertiary": {
-    "light": "#75808A",
+    "light": "#68737D",
     "dark": "rgb(255 255 255 / 0.6)"
   },
   "textOnHero": {
@@ -51,8 +51,8 @@ export const roles = {
     "dark": "#FFFFFF"
   },
   "textLink": {
-    "light": "#008DE4",
-    "dark": "#008DE4"
+    "light": "#006FC3",
+    "dark": "#1594EC"
   },
   "separator": {
     "light": "#D5D5D5",
@@ -83,7 +83,7 @@ export const roles = {
     "dark": "rgb(235 56 66 / 0.1)"
   },
   "warning": {
-    "light": "#FA9169",
+    "light": "#B6542C",
     "dark": "#FA9169"
   },
   "warningTint": {
@@ -137,6 +137,10 @@ export const roles = {
   "shadow": {
     "light": "rgb(184 194 204 / 0.1)",
     "dark": "rgb(0 0 0 / 0)"
+  },
+  "networkCapsule": {
+    "light": "#B6542C",
+    "dark": "#B6542C"
   }
 } as const;
 export type Role = keyof typeof roles;
@@ -204,12 +208,12 @@ export const layout = {
   "detailLabelWidth": 160
 } as const;
 export const opacity = {
-  "heroCard": 0.12,
+  "heroCard": 0.08,
   "heroDivider": 0.18,
-  "heroSecondaryText": 0.7,
+  "heroSecondaryText": 0.9,
   "heroHint": 0.5,
   "disabled": 0.4,
-  "networkCapsule": 0.9,
+  "networkCapsule": 1,
   "heroHiddenButton": 0.2
 } as const;
 export const motion = {

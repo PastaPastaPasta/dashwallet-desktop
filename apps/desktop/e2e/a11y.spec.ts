@@ -4,10 +4,8 @@ import { artifactPath, SCREENS, show, THEMES, writeJson } from "./helpers";
 
 // U4: 0 serious or critical axe issues per screen, and every action reachable by keyboard.
 //
-// `color-contrast` is reported separately: the UX-SPEC palette itself (white on Dash blue
-// #008DE4, white on the orange network capsule, textTertiary on white, blue chips) is below
-// WCAG AA for small text, so a faithful rendering cannot pass it. Each failing pair is written
-// to contrast.json with its ratio for the gate record; every other rule must be clean.
+// `color-contrast` included: the renderer draws UX-SPEC §2.1a's WCAG AA variants (DEC-36). Any
+// failing pair is also written to contrast-<theme>-<screen>.json with its ratio for the gate record.
 interface ContrastData {
   fgColor: string;
   bgColor: string;
@@ -22,8 +20,7 @@ for (const theme of THEMES) {
     test(`axe ${screen} ${theme}`, async ({ page }, info) => {
       await show(page, screen, theme);
       const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "best-practice"]).analyze();
-      const bad = result.violations.filter((v) => (v.impact === "serious" || v.impact === "critical") && v.id !== "color-contrast");
-      expect(bad.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
+      const bad = result.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 
       const contrast = result.violations.find((v) => v.id === "color-contrast");
       const pairs = new Map<string, ContrastData & { targets: string[] }>();
@@ -37,6 +34,7 @@ for (const theme of THEMES) {
       }
       writeJson(artifactPath(info, `contrast-${theme}-${screen}.json`), [...pairs.values()]);
       info.annotations.push({ type: "color-contrast", description: `${contrast?.nodes.length ?? 0} nodes, ${pairs.size} colour pairs` });
+      expect(bad.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
     });
   }
 }

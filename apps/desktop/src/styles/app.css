@@ -305,7 +305,7 @@ button {
   display: inline-block;
   padding: 3px var(--dw-space-sm);
   border-radius: var(--dw-radius-capsule);
-  background: color-mix(in srgb, var(--dw-role-warning) calc(var(--dw-opacity-network-capsule) * 100%), transparent);
+  background: color-mix(in srgb, var(--dw-role-network-capsule) calc(var(--dw-opacity-network-capsule) * 100%), transparent);
   color: var(--dw-role-text-on-hero);
   font-size: var(--dw-type-caption2-size);
   font-weight: 700; /* UX-SPEC §2.2: caption2 bold for the capsule */
@@ -367,7 +367,8 @@ button {
 
 .dash-button-plainBlue {
   background: transparent;
-  color: var(--dw-c-button-plain-blue-content);
+  /* Not buttonPlainBlueContent: blue text takes the AA link colour (UX-SPEC §2.1a). */
+  color: var(--dw-role-text-link);
 }
 
 .dash-button-filledWhiteBlue {
@@ -1065,7 +1066,8 @@ button {
 }
 
 .lock-prompt {
-  color: var(--dw-c-white-alpha80);
+  /* iOS draws whiteAlpha80; UX-SPEC §2.1a raises hero secondary text to AA. */
+  color: color-mix(in srgb, var(--dw-role-text-on-hero) calc(var(--dw-opacity-hero-secondary-text) * 100%), transparent);
   font-size: var(--dw-type-subhead-size);
   line-height: var(--dw-type-subhead-line);
   text-align: center;
