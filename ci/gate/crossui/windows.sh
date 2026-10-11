@@ -33,6 +33,23 @@ if [[ "${DWD_CROSS_BACKEND:-}" == gtk ]]; then
   # relative to pcfiledir instead, which pkgconf reads too.
   sed -i 's|C:/gtk-build/gtk/x64/release|${pcfiledir}/../..|g; s/\r$//' "$gtk_prefix"/lib/pkgconfig/*.pc
   export PKG_CONFIG_PATH="$(win "$gtk_prefix/lib/pkgconfig")"
+  # gtk4's whole Requires closure must be free of drive-letter paths (other packages keep theirs).
+  python - "$(win "$gtk_prefix/lib/pkgconfig")" <<'PY'
+import pathlib, re, sys
+pc, todo, seen, bad = pathlib.Path(sys.argv[1]), ["gtk4"], set(), []
+while todo:
+    name = todo.pop()
+    if name in seen or not (pc / f"{name}.pc").exists():
+        continue
+    seen.add(name)
+    for line in (pc / f"{name}.pc").read_text().splitlines():
+        if re.match(r"\w+=.*[A-Za-z]:[/\\]", line):
+            bad.append(f"{name}.pc: {line}")
+        if re.match(r"Requires(\.private)?:", line):
+            todo += re.findall(r"[A-Za-z][\w.+-]*", line.split(":", 1)[1])
+print(f"gtk4 closure: {len(seen)} .pc files")
+sys.exit("drive-letter paths left:\n" + "\n".join(bad) if bad else 0)
+PY
   export PATH="$gtk_prefix/bin:$PATH"
   result "GTK: gvsbuild 2026.8.0, GTK $(pkgconf --modversion gtk4)"
 else

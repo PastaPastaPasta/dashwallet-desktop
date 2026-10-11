@@ -752,9 +752,10 @@ def keyboard_steps(gate, app, frame):
                    not steps["pagesDuringOverviewTabs"], str(steps["pagesDuringOverviewTabs"]))
         missed = [c for c in steps["overviewInteractive"] if c not in steps["overviewTabs"]]
         gate.check("U4", f"keyboard: Tab reaches every Overview control ({len(steps['overviewTabs'])} stops)",
-                   not missed, str(missed[:10]))
+                   bool(steps["overviewInteractive"]) and not missed, str(missed[:10]))
         # Sidebar: focus it, then Down to Transactions (unless Tab already went there).
-        moved = (steps["pagesDuringOverviewTabs"] or [None])[-1] == "transactions"
+        moved = (steps["pagesDuringOverviewTabs"] or [None])[-1] == "transactions" and app.wait(
+            "transactions-paint", 10) is not None
         for _ in range(0 if moved else 40):
             now = focused(frame)
             if now and now[0] == "list item" and now[1] in ("Overview", "Transactions", "Send", "Receive"):

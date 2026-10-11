@@ -90,18 +90,26 @@ if (-not $seen) {
     Shot "$Name.png"
     $process.Refresh()
     Result "${Name}: ok '$Mark' after ${waited}s; working set $([int]($process.WorkingSet64 / 1MB)) MB"
-    # Every DLL the app loaded comes from the archive or from Windows (WinUI's runtime is a
-    # system package under WindowsApps), so a DLL missing from the archive cannot hide on PATH.
+    # A DLL missing from the archive must not load from the toolchain's runtime or GTK's prefix
+    # (FAIL), wherever PATH points. Other modules from outside the archive and Windows (input
+    # methods, overlays, the VC++ runtime in System32 that a clean Windows lacks) are listed.
     $archive = Split-Path -Parent $Exe
     try {
-        $foreign = @($process.Modules | ForEach-Object { $_.FileName } | Where-Object {
+        $modules = @($process.Modules | ForEach-Object { $_.FileName })
+        $dropped = @($modules | Where-Object { $m = $_; $drop | Where-Object { $m.StartsWith("$_\", 'OrdinalIgnoreCase') } })
+        $foreign = @($modules | Where-Object {
                 -not $_.StartsWith($archive, 'OrdinalIgnoreCase') -and
                 -not $_.StartsWith($env:SystemRoot, 'OrdinalIgnoreCase') -and $_ -notmatch '\\WindowsApps\\' })
+        $vcSystem = @($modules | Where-Object {
+                $_.StartsWith($env:SystemRoot, 'OrdinalIgnoreCase') -and (Split-Path -Leaf $_) -match '^(vcruntime140|msvcp140)' })
+        if ($dropped.Count -gt 0) {
+            Result "${Name}: FAIL loaded from a directory dropped from PATH: $($dropped -join ', ')"
+            $status = 1
+        }
+        if ($foreign.Count -gt 0) { Result "${Name}: INFO modules from outside the archive and Windows: $($foreign -join ', ')" }
+        if ($vcSystem.Count -gt 0) { Result "${Name}: WARN the VC++ runtime from Windows, not the archive: $($vcSystem -join ', ')" }
     } catch {
-        $foreign = @("(modules not listed: $($_.Exception.Message))")
-    }
-    if ($foreign.Count -gt 0) {
-        Result "${Name}: FAIL loaded from outside the archive: $($foreign -join ', ')"
+        Result "${Name}: FAIL modules not listed: $($_.Exception.Message)"
         $status = 1
     }
     if ($Walk -and -not $process.HasExited) {
@@ -119,10 +127,20 @@ if (-not $seen) {
                 "{0}`t{1}`t'{2}'`tfocusable={3}" -f $c.ControlType.ProgrammaticName, $c.ClassName, $c.Name, $c.IsKeyboardFocusable
             }
             $lines | Set-Content $walkOut
-            $interactive = @($all | Where-Object { $_.Current.IsKeyboardFocusable -or $_.Current.ControlType.ProgrammaticName -match 'Button|Edit|List|CheckBox|ComboBox|Hyperlink|Tab|MenuItem' })
+            # The window frame's title bar (Minimize, Maximize, Close, the system menu) is named and
+            # interactive on its own: only the app's content counts.
+            $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+            $frame = 'ControlType.TitleBar|ControlType.MenuBar'
+            $content = @($all | Where-Object {
+                    $_.Current.ControlType.ProgrammaticName -notmatch $frame -and
+                    $walker.GetParent($_).Current.ControlType.ProgrammaticName -notmatch $frame })
+            $interactive = @($content | Where-Object { $_.Current.IsKeyboardFocusable -or $_.Current.ControlType.ProgrammaticName -match 'Button|Edit|List|CheckBox|ComboBox|Hyperlink|Tab|MenuItem' })
             $unnamed = @($interactive | Where-Object { -not $_.Current.Name })
-            $verdict = if ($interactive.Count -gt 0 -and $unnamed.Count -eq 0) { 'ok' } else { 'FAIL' }
-            Result "${Name}: UIA walk $verdict $($all.Count) elements, $($interactive.Count) interactive, $($unnamed.Count) unnamed"
+            # A control each screen has: the lock screen's field, the sidebar elsewhere.
+            $expected = if ($Mark -eq 'lock-paint') { 'Passphrase' } else { 'Overview' }
+            $found = @($interactive | Where-Object { $_.Current.Name -eq $expected }).Count -gt 0
+            $verdict = if ($found -and $unnamed.Count -eq 0) { 'ok' } else { 'FAIL' }
+            Result "${Name}: UIA walk $verdict $($all.Count) elements, $($interactive.Count) interactive in the content, $($unnamed.Count) unnamed, '$expected' $(if ($found) { 'found' } else { 'missing' })"
             if ($verdict -eq 'FAIL') { $status = 1 }
         } catch {
             Result "${Name}: UIA walk FAIL $($_.Exception.GetType().Name): $($_.Exception.Message)"
