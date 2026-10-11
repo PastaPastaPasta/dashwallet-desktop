@@ -37,7 +37,12 @@
       },
       "freezePrototype": true,
       "capabilities": [
-        "main"
+        "app",
+        "network",
+        "vault",
+        "wallets",
+        "chain",
+        "history"
       ]
     },
     "withGlobalTauri": false

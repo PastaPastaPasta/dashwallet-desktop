@@ -28,6 +28,12 @@ pub struct LaunchOptions {
     pub sync: bool,
     pub spv_peers: Vec<String>,
     pub dapi_addresses: Vec<String>,
+    /// The trusted quorum service, instead of the network's default.
+    pub quorum_url: Option<String>,
+    /// A PEM CA certificate the SDK trusts for DAPI TLS (E0-02).
+    pub ca_cert_path: Option<PathBuf>,
+    /// The protocol version the SDK starts at (E0-02).
+    pub initial_protocol_version: Option<u32>,
     /// The chain has no Platform (a plain dashd regtest): no DashPay bring-up
     /// or Platform sync when SPV starts (as `dwcli --no-platform`).
     pub no_platform: bool,
@@ -50,6 +56,9 @@ impl Default for LaunchOptions {
             sync: false,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
+            quorum_url: None,
+            ca_cert_path: None,
+            initial_protocol_version: None,
             no_platform: false,
             theme: None,
             window_size: None,
@@ -64,6 +73,9 @@ usage: dash-wallet [options]
   --sync                 start SPV after opening the network
   --spv-peer <ip:port>   connect SPV to this peer only (repeatable)
   --dapi <url>           DAPI endpoint (repeatable)
+  --quorum-url <url>     trusted quorum service
+  --ca-cert <file>       PEM CA certificate to trust for DAPI TLS (a devnet gateway)
+  --protocol-version <n> Platform protocol version to start at
   --no-platform          the chain has no Platform (a plain dashd regtest)
   --fixture              use the built-in sample wallet; no engine
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
@@ -79,19 +91,7 @@ pub enum ParseOutcome {
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
-    let network = match s {
-        "mainnet" => DashNetwork::Mainnet,
-        "testnet" => DashNetwork::Testnet,
-        "regtest" => DashNetwork::Regtest,
-        other => match other.strip_prefix("devnet-") {
-            Some(name) => DashNetwork::Devnet {
-                name: name.to_string(),
-            },
-            None => return Err(format!("unknown network {other:?}")),
-        },
-    };
-    network.validate().map_err(|e| e.to_string())?;
-    Ok(network)
+    crate::dto::parse_network(s).map_err(|e| e.message)
 }
 
 /// Parses the arguments after the program name. Unknown arguments that do
@@ -109,6 +109,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
             "--sync" => opts.sync = true,
             "--spv-peer" => opts.spv_peers.push(value("--spv-peer")?),
             "--dapi" => opts.dapi_addresses.push(value("--dapi")?),
+            "--quorum-url" => opts.quorum_url = Some(value("--quorum-url")?),
+            "--ca-cert" => opts.ca_cert_path = Some(PathBuf::from(value("--ca-cert")?)),
+            "--protocol-version" => {
+                let v = value("--protocol-version")?;
+                opts.initial_protocol_version = Some(
+                    v.parse()
+                        .map_err(|_| format!("--protocol-version: not a number: {v}"))?,
+                );
+            }
             "--no-platform" => opts.no_platform = true,
             "--fixture" => opts.fixture = true,
             "--selftest" => opts.selftest = Some(PathBuf::from(value("--selftest")?)),
@@ -169,6 +178,12 @@ mod tests {
             "127.0.0.1:19899",
             "--dapi",
             "https://127.0.0.1:2443",
+            "--quorum-url",
+            "https://127.0.0.1:22444",
+            "--ca-cert",
+            "/tmp/gw.pem",
+            "--protocol-version",
+            "9",
             "--no-platform",
             "--fixture",
             "--selftest",
@@ -190,6 +205,9 @@ mod tests {
         assert!(o.sync && o.fixture && o.no_platform);
         assert_eq!(o.spv_peers, ["127.0.0.1:19899"]);
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
+        assert_eq!(o.quorum_url.as_deref(), Some("https://127.0.0.1:22444"));
+        assert_eq!(o.ca_cert_path, Some(PathBuf::from("/tmp/gw.pem")));
+        assert_eq!(o.initial_protocol_version, Some(9));
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
         assert_eq!(o.selftest_pause_ms, 1500);
         assert_eq!(o.theme, Some(ThemeName::Dark));
@@ -202,6 +220,7 @@ mod tests {
         assert!(err(&["--network", "moon"]).contains("unknown network"));
         assert!(err(&["--network", "devnet-Paloma"]).contains("devnet"));
         assert!(err(&["--datadir"]).contains("needs a value"));
+        assert!(err(&["--protocol-version", "nine"]).contains("not a number"));
         assert!(err(&["--bogus"]).contains("unknown option"));
         for bad in ["1000", "0x620", "1000x", "ax620"] {
             assert!(

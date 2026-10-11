@@ -9,4 +9,8 @@ export type LaunchInfo = { fixture: boolean, selftest: boolean,
 /**
  * Milliseconds the self-test waits on each screen (0 = no pause).
  */
-selftestPauseMs: number, theme: ThemeName | null, network: NetworkInfo, appVersion: string, engineVersion: string, };
+selftestPauseMs: number, theme: ThemeName | null, 
+/**
+ * The network `open_network` opens when it names none.
+ */
+network: NetworkInfo, appVersion: string, engineVersion: string, };

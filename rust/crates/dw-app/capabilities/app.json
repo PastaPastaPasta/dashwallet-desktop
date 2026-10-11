@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "app",
+  "description": "The binding's own commands: launch facts, start-up marks and the self-test hooks, and event listening. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-launch-info",
+    "allow-startup-mark",
+    "allow-selftest-report",
+    "allow-selftest-checkpoint",
+    "allow-ipc-bench-rows",
+    "allow-history-page-timed"
+  ]
+}
