@@ -23,6 +23,7 @@ use dpp::prelude::Identifier;
 use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use platform_wallet::PlatformWalletInfo;
+use platform_wallet::key_wallet_manager::WalletManager;
 use platform_wallet::wallet::identity::DashPayProfile;
 
 use super::errors::PlatformError;
@@ -299,12 +300,8 @@ impl NetworkSession {
             let live = self.live()?;
             let wm = live.manager.wallet_manager_arc();
             let wm = wm.read().await;
-            let wallets = wm
-                .list_wallets()
-                .into_iter()
-                .filter_map(|id| Some((WalletId(*id), wm.get_wallet_info(id)?)));
             (
-                held_unverified(wallets, &live.provenance),
+                held_unverified(&wm, &live.provenance),
                 live.manager.sdk_arc(),
             )
         };
@@ -329,11 +326,7 @@ impl NetworkSession {
         let wm = live.manager.wallet_manager_arc();
         // Held across the writes: the library cannot change what is recorded.
         let wm = wm.read().await;
-        let wallets = wm
-            .list_wallets()
-            .into_iter()
-            .filter_map(|id| Some((WalletId(*id), wm.get_wallet_info(id)?)));
-        let records = confirmed(&verified, &held_unverified(wallets, &live.provenance));
+        let records = confirmed(&verified, &held_unverified(&wm, &live.provenance));
         let written = records.len();
         let provenance = Arc::clone(&live.provenance);
         tokio::task::spawn_blocking(move || {
@@ -349,15 +342,15 @@ impl NetworkSession {
     }
 }
 
-/// Every entity of `wallets` the read models show as unverified.
-fn held_unverified<'a>(
-    wallets: impl IntoIterator<Item = (WalletId, &'a PlatformWalletInfo)>,
-    provenance: &Provenance,
-) -> Vec<Held> {
+/// Every entity of the wallet manager's wallets the read models show as
+/// unverified.
+fn held_unverified(wm: &WalletManager<PlatformWalletInfo>, provenance: &Provenance) -> Vec<Held> {
     let mut seen = HashSet::new();
     let mut held = Vec::new();
-    for (id, info) in wallets {
-        held.extend(unverified_of(info, &id, provenance, &mut seen));
+    for id in wm.list_wallets() {
+        if let Some(info) = wm.get_wallet_info(id) {
+            held.extend(unverified_of(info, &WalletId(*id), provenance, &mut seen));
+        }
     }
     held
 }

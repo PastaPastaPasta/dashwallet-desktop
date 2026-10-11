@@ -9,7 +9,7 @@
 //! the last change of a burst (reviews H2, M4).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
@@ -310,7 +310,7 @@ pub(crate) struct SessionHub {
     /// resend), UNIX seconds.
     pub announced: Mutex<HashMap<Txid, u64>>,
     /// The quorum provider, told when the masternode phase is done.
-    pub trust: std::sync::OnceLock<Arc<crate::platform::trust::TrustProvider>>,
+    pub trust: OnceLock<Arc<crate::platform::trust::TrustProvider>>,
 }
 
 impl SessionHub {
@@ -326,7 +326,7 @@ impl SessionHub {
             rescan: Mutex::new(None),
             chainlock: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
-            trust: std::sync::OnceLock::new(),
+            trust: OnceLock::new(),
         }
     }
 

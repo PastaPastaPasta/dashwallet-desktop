@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use dash_context_provider::{ContextProvider, ContextProviderError};
@@ -162,6 +162,22 @@ struct Served {
     verified: bool,
 }
 
+impl Served {
+    fn by_spv(key: [u8; 48]) -> Self {
+        Self {
+            key,
+            verified: true,
+        }
+    }
+
+    fn by_service(key: [u8; 48]) -> Self {
+        Self {
+            key,
+            verified: false,
+        }
+    }
+}
+
 type Quorum = (u32, [u8; 32]);
 
 struct Attached {
@@ -183,10 +199,10 @@ pub(crate) struct TrustProvider {
     synced: watch::Sender<bool>,
     unknown_quorum_wait: Duration,
     spv_poll: Duration,
-    cache: std::sync::Mutex<HashMap<Quorum, [u8; 48]>>,
-    failed_closed: std::sync::Mutex<HashMap<Quorum, Instant>>,
+    cache: Mutex<HashMap<Quorum, [u8; 48]>>,
+    failed_closed: Mutex<HashMap<Quorum, Instant>>,
     /// Quorums a mismatch notice was sent for.
-    mismatched: std::sync::Mutex<HashSet<Quorum>>,
+    mismatched: Mutex<HashSet<Quorum>>,
     sink: Arc<dyn EventSink>,
     network: DashNetwork,
 }
@@ -308,15 +324,9 @@ impl TrustProvider {
             (TrustMode::Degraded, SpvAnswer::Verified(key)) => match trusted() {
                 Ok(t) if t != key => Err(self.mismatch(quorum)),
                 // The service is unreachable or agrees: SPV's verified key.
-                _ => Ok(Served {
-                    key,
-                    verified: true,
-                }),
+                _ => Ok(Served::by_spv(key)),
             },
-            (TrustMode::Enforcing, SpvAnswer::Verified(key)) => Ok(Served {
-                key,
-                verified: true,
-            }),
+            (TrustMode::Enforcing, SpvAnswer::Verified(key)) => Ok(Served::by_spv(key)),
             (TrustMode::Enforcing, _) if self.masternodes_synced() => {
                 self.wait_for_verified(attached, quorum, height)
             }
@@ -400,10 +410,7 @@ impl TrustProvider {
             Some(key) => {
                 self.remember(quorum, key);
                 guard(&self.failed_closed).remove(&quorum);
-                Ok(Served {
-                    key,
-                    verified: true,
-                })
+                Ok(Served::by_spv(key))
             }
             None => {
                 guard(&self.failed_closed).insert(quorum, Instant::now());
@@ -430,10 +437,7 @@ impl TrustProvider {
                 "the trusted quorum key is refused: the fallback latch is not durable ({e})"
             ))
         })?;
-        Ok(Served {
-            key,
-            verified: false,
-        })
+        Ok(Served::by_service(key))
     }
 
     /// Rule 4. The notice goes out once per quorum and session.
@@ -518,12 +522,9 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    match Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            Some(tokio::task::block_in_place(|| h.block_on(fut)))
-        }
-        _ => std::thread::scope(|s| {
+    match multi_thread_handle() {
+        Some(h) => Some(tokio::task::block_in_place(|| h.block_on(fut))),
+        None => std::thread::scope(|s| {
             s.spawn(|| {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -540,11 +541,18 @@ where
 
 /// Runs blocking work (app.sqlite) from a tokio worker.
 fn blocking<T>(f: impl FnOnce() -> T) -> T {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    match Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
-        _ => f(),
+    match multi_thread_handle() {
+        Some(_) => tokio::task::block_in_place(f),
+        None => f(),
     }
+}
+
+/// The current runtime, if it is multi-threaded (`block_in_place` panics on
+/// any other flavor).
+fn multi_thread_handle() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .filter(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
 
 /// Handle given to `SdkBuilder::with_context_provider`: quorum keys from the
