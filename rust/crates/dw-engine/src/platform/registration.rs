@@ -460,7 +460,8 @@ async fn evidence<L: RegistrationLib>(
         lib.tracked_locks().await,
         lib.identities().await,
         registration_rows(session, wallet).await?,
-    ))
+    )
+    .with_signed(&session.leases, wallet))
 }
 
 /// The Funding cap `grant` gives, read without redeeming it: a refused
@@ -522,7 +523,8 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     // insert, in the one job of the wallet's actor (DEC-173).
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let rows = registration_rows(session, wallet).await?;
-    let ev = flow::Evidence::new(locks.clone(), identities.clone(), rows);
+    let ev = flow::Evidence::new(locks.clone(), identities.clone(), rows)
+        .with_signed(&session.leases, wallet);
     if any_in_progress(&ev) {
         return Err(RegistrationError::InProgress);
     }
@@ -560,8 +562,10 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     };
     let wallet_text = wallet.to_string();
     let now = crate::events::unix_now();
+    let leases = Arc::clone(&session.leases);
     let draft = flow::rows_op(session, wallet, move |db, _| {
-        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&wallet_text)?);
+        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&wallet_text)?)
+            .with_signed(&leases, wallet);
         if any_in_progress(&ev) {
             return Ok(None);
         }
@@ -714,8 +718,10 @@ async fn clear_failure<L: RegistrationLib>(
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let (w, id, owner) = (wallet.to_string(), claim.draft(), claim.owner());
     let now = crate::events::unix_now();
+    let leases = Arc::clone(&session.leases);
     flow::rows_op(session, wallet, move |db, _| {
-        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&w)?);
+        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&w)?)
+            .with_signed(&leases, wallet);
         let Some(row) = ev.rows().iter().find(|r| r.id == id) else {
             return Ok(Err("unknown draft".into()));
         };
@@ -839,14 +845,14 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     // Judged again on the rows read in the delete's own job (DEC-173).
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let (w, id, owner) = (wallet.to_string(), row.id, claim.owner());
+    let leases = Arc::clone(&session.leases);
     let decided = flow::rows_op(session, wallet, move |db, flows| {
         let rows = db.registration_rows(&w)?;
         let Some(row) = rows.iter().find(|r| r.id == id).cloned() else {
             return Ok(Err("unknown draft"));
         };
-        if let Some(why) =
-            discard_refused(&row, &flow::Evidence::new(locks, identities, rows), false)
-        {
+        let ev = flow::Evidence::new(locks, identities, rows).with_signed(&leases, wallet);
+        if let Some(why) = discard_refused(&row, &ev, false) {
             return Ok(Err(why));
         }
         let outpoint = row.asset_lock_outpoint.as_deref();
@@ -893,8 +899,9 @@ pub(crate) async fn finish<L: RegistrationLib>(
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let held = lib.funding_hold().is_some();
     let now = crate::events::unix_now();
+    let leases = Arc::clone(&session.leases);
     report.still_pending += flow::rows_op(session, wallet, move |db, flows| {
-        flow::import_stranded(db, flows, wallet, locks, identities, held, now)
+        flow::import_stranded(db, flows, &leases, wallet, locks, identities, held, now)
     })
     .await?;
     let ev = evidence(session, wallet, lib).await?;

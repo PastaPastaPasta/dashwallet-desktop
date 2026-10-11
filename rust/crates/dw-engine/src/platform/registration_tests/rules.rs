@@ -10,6 +10,14 @@ struct Hooked {
     fake: Arc<Fake>,
     /// `fund` reports a failure that tracked its lock as `NotSent`.
     fund_not_sent: bool,
+    /// The funded lock gains its InstantSend proof after the call decided
+    /// its error and before the flow reads the locks (Sol r6 R6-01).
+    proof_before_return: bool,
+    /// Another device's registration lock on the seed shows up, rebuilt
+    /// from the mempool, while the call runs (Sol r6 R6-03).
+    foreign_after_fund: bool,
+    /// Platform's profile reads, scripted ahead of the Fake's own.
+    profile_reads: Mutex<std::collections::VecDeque<Result<Option<ProfileRecord>, PlatformError>>>,
     /// Runs before a `tracked_locks` read once it returns `true`, then
     /// never again.
     before_locks: Mutex<Option<Box<dyn FnMut() -> bool + Send>>>,
@@ -20,6 +28,9 @@ impl Hooked {
         Self {
             fake: Arc::clone(fake),
             fund_not_sent: false,
+            proof_before_return: false,
+            foreign_after_fund: false,
+            profile_reads: Mutex::default(),
             before_locks: Mutex::new(None),
         }
     }
@@ -48,8 +59,38 @@ impl RegistrationLib for Hooked {
         self.fake.funding_hold()
     }
 
-    async fn fund(&self, duffs: u64, index: u32, lease: &Lease) -> Result<OutPoint, FundError> {
-        match self.fake.fund(duffs, index, lease).await {
+    async fn funding_permit(
+        &self,
+        lease: &Lease,
+        step: String,
+        key: FundingKey,
+        lock_duffs: u64,
+    ) -> Result<CallPermit, FundError> {
+        self.fake.funding_permit(lease, step, key, lock_duffs).await
+    }
+
+    async fn fund(
+        &self,
+        duffs: u64,
+        index: u32,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let funded = self.fake.fund(duffs, index, permit).await;
+        if self.proof_before_return {
+            let lock = self.fake.w().locks[0].outpoint;
+            self.fake.set_status(lock, LockStatus::InstantSendLocked);
+        }
+        if self.foreign_after_fund {
+            self.fake.w().locks.push(LockInfo {
+                outpoint: OutPoint::new(Txid::from_byte_array([99; 32]), 0),
+                registration: true,
+                identity_index: 0,
+                account: 0,
+                amount: flow::LOCK_DUFFS,
+                status: LockStatus::Broadcast,
+            });
+        }
+        match funded {
             Err(FundError::Failed(e)) if self.fund_not_sent => Err(FundError::NotSent(e)),
             other => other,
         }
@@ -85,7 +126,11 @@ impl RegistrationLib for Hooked {
         &self,
         identity: &str,
     ) -> Result<Option<ProfileRecord>, PlatformError> {
-        self.fake.platform_profile(identity).await
+        let scripted = self.profile_reads.lock().unwrap().pop_front();
+        match scripted {
+            Some(read) => read,
+            None => self.fake.platform_profile(identity).await,
+        }
     }
 
     async fn create_profile(
@@ -145,7 +190,6 @@ fn tap(f: &Fixture, outpoint: OutPoint, index: u32) -> Option<i64> {
         f.wallet,
         outpoint,
         Some(index),
-        false,
     )
     .unwrap()
 }
@@ -440,7 +484,6 @@ fn a_discard_refuses_a_row_funded_after_its_first_look() {
                 wallet,
                 outpoint,
                 Some(1),
-                false,
             );
             assert_eq!(moved.unwrap(), Some(draft));
             *lock.lock().unwrap() = Some(outpoint);
@@ -469,4 +512,251 @@ fn a_discard_refuses_a_row_funded_after_its_first_look() {
         (Phase::FundingSent, Some(lock))
     );
     assert!(f.status(&fake, draft).funds_committed);
+}
+
+/// One run of `draft` through `lib`, as "Finish transfers" runs it (no
+/// waits).
+fn run_once(f: &Fixture, lib: &impl RegistrationLib, draft: i64) -> Result<(), PlatformError> {
+    let lease = f.lease();
+    f.engine.block_on(async {
+        let claim = f
+            .session
+            .platform
+            .registrations
+            .claim(&f.session, (f.wallet, draft))
+            .await?
+            .expect("the flow is free");
+        Driver::new(&f.session, lib, &claim, Some(lease), false)
+            .run()
+            .await
+    })
+}
+
+/// Sol r6 R6-01: the call's own lock gains its proof between the call's
+/// error and the flow's read, at index 0 (where a proved lock's index says
+/// nothing), and its outpoint never reached the row. With P2b's signed
+/// record the row takes it after the call; without one (the record's
+/// write failed, then a restart) the row fails `broadcast_unknown` and
+/// "Finish transfers" settles that row with the lock, never a new row
+/// beside it. Either way the registration ends, and the wallet is free.
+#[test]
+fn review_r6_own_lock_proof_race_must_not_wedge() {
+    for unsigned in [false, true] {
+        let f = fixture(false);
+        let fake = f.fake();
+        fake.w().fund_script = Some(FundScript::IsTimeout);
+        fake.w().skip_tap = true;
+        fake.w().skip_signed = unsigned;
+        let lib = Hooked {
+            proof_before_return: true,
+            ..Hooked::new(&fake)
+        };
+        let draft = f.insert(core_row(PLAIN));
+        run_once(&f, &lib, draft).unwrap();
+        let lock = fake.w().locks[0].outpoint;
+        let after_call = f.row(draft);
+        match unsigned {
+            false => assert_eq!(flow::outpoint_of(&after_call), Some(lock)),
+            true => assert_eq!(
+                (flow::outpoint_of(&after_call), after_call.error.as_deref()),
+                (None, Some("platform.broadcast_unknown"))
+            ),
+        }
+        let report = f
+            .engine
+            .block_on(registration::finish(
+                &f.session,
+                f.wallet,
+                &lib,
+                f.grant(COIN, 10 * COIN * 1000, Credential::None),
+            ))
+            .unwrap();
+        let original = f.row(draft);
+        assert_eq!(f.rows().len(), 1, "Finish made a second row: {report:?}");
+        assert_eq!(
+            flow::outpoint_of(&original),
+            Some(lock),
+            "unsigned: {unsigned}"
+        );
+        assert_eq!(phase(&original), Phase::Done, "unsigned: {unsigned}");
+        let start = f.engine.block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&fake),
+            request("erin2"),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ));
+        assert!(start.is_ok(), "the wallet stayed blocked: {start:?}");
+        assert_eq!(fake.counts(), (1, 1));
+    }
+}
+
+/// Sol r6 R6-03: another device's registration lock on the seed, rebuilt
+/// from the mempool as `Broadcast` at index 0 with this row's amount, shows
+/// up while the row's funding call runs and is rejected. No call of the row
+/// signed it, so the row does not take it; it waits for "Finish transfers".
+/// The rejected lock was signed, so the row's funding may be out (P2b
+/// review M-2): it fails `broadcast_unknown`, not retryable, rather than
+/// funding again.
+#[test]
+fn review_r6_foreign_broadcast_during_rejected_call_must_wait_for_finish() {
+    let f = fixture(false);
+    let fake = f.fake();
+    fake.w().fund_script = Some(FundScript::Rejected);
+    fake.w().skip_tap = true;
+    fake.w().proof_arrives = false;
+    let lib = Hooked {
+        foreign_after_fund: true,
+        ..Hooked::new(&fake)
+    };
+    let draft = f.insert(core_row(PLAIN));
+    run_once(&f, &lib, draft).unwrap();
+    let row = f.row(draft);
+    assert_eq!(
+        row.asset_lock_outpoint, None,
+        "another device's lock waits for Finish"
+    );
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (Some("platform.broadcast_unknown"), false)
+    );
+    // A resume adopts nothing and funds nothing.
+    let resumed = f.engine.block_on(registration::resume(
+        &f.session,
+        f.wallet,
+        Arc::clone(&fake),
+        &draft.to_string(),
+        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    ));
+    assert!(resumed.is_err());
+    assert_eq!(f.row(draft).asset_lock_outpoint, None);
+    assert_eq!(fake.counts(), (1, 0));
+}
+
+/// Sol r6 R6-03, the rule: a lock rebuilt from the chain as `Broadcast` at
+/// index 0 says nothing of who funded it; without a signed record of the
+/// row's funding call it is not the row's.
+#[test]
+fn review_r6_reconstructed_broadcast_during_failed_call_is_not_own() {
+    let f = fixture(false);
+    let draft = f.insert(prepared_row(0));
+    let row = f.row(draft);
+    let lock = LockInfo {
+        outpoint: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+        registration: true,
+        identity_index: 0,
+        account: 0,
+        amount: flow::LOCK_DUFFS,
+        status: LockStatus::Broadcast,
+    };
+    let ev = flow::Evidence::new(vec![lock], vec![], vec![row.clone()]);
+    assert!(ev.lock_of(&row).is_none());
+    assert!(ev.signed_lock(&row).is_none());
+}
+
+/// Sol r6 R6-02: the SDK's `ExecutionNotProved` (a proof of the affected
+/// state, not of the transition's execution) and `IdentityNonceNotFound`
+/// (a lagging node) map to `internal`, which says nothing of a refusal: a
+/// profile put that fails so waits, it never settles the row.
+#[test]
+fn review_r6_real_sdk_proof_and_nonce_errors_must_not_settle() {
+    for sdk_error in [
+        dash_sdk::Error::ExecutionNotProved("affected state only".into()),
+        dash_sdk::Error::IdentityNonceNotFound("node has not indexed this identity yet".into()),
+    ] {
+        let kind = format!("{sdk_error:?}");
+        let mapped = PlatformError::from(sdk_error);
+        let f = fixture(false);
+        let fake = f.fake();
+        fake.w().profile_error = Some(mapped.clone());
+        let draft = f.insert(core_row(PLAIN));
+        f.drive(&fake, draft, Some(f.lease()), false);
+        let row = f.row(draft);
+        assert_ne!(phase(&row), Phase::Done, "{kind} ({mapped:?}) settled");
+        assert_eq!(row.profile_error, None, "{kind}");
+    }
+}
+
+/// Sol r6 R6-02: platform-wallet flattens every SDK error of
+/// `register_dpns_name` into `InvalidIdentityData` (a timeout after the
+/// preorder too), and DP1-03 returns it when its reconciliation lookup is
+/// inconclusive: the name step waits, it never settles.
+#[test]
+fn review_r6_flattened_name_network_error_must_not_settle() {
+    let f = fixture(false);
+    let fake = f.fake();
+    let error = platform_wallet::PlatformWalletError::InvalidIdentityData(
+        "Failed to register DPNS name 'alice2': SDK operation timeout 1 secs reached: domain"
+            .into(),
+    );
+    fake.w().name_error = Some(NameError::Platform(PlatformError::from(error)));
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&fake, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(phase(&row), Phase::NameRequested);
+    assert_eq!(row.name_error, None);
+}
+
+/// Sol r6 R6-04: after a refused put, a recheck that fails decides nothing:
+/// proof, trust and network failures wait, a storage error ends the run, a
+/// closed session stops it, and none settles the row.
+#[test]
+fn review_r6_refused_profile_recheck_must_preserve_errors() {
+    for error in [
+        PlatformError::ProofInvalid,
+        PlatformError::TrustMismatch,
+        PlatformError::Unavailable,
+        PlatformError::Storage {
+            detail: "read store".into(),
+        },
+        PlatformError::NetworkNotOpen,
+    ] {
+        let f = fixture(false);
+        let fake = f.fake();
+        fake.w().profile_error = Some(PlatformError::InvalidArgument {
+            detail: "refused put".into(),
+        });
+        let lib = Hooked::new(&fake);
+        lib.profile_reads
+            .lock()
+            .unwrap()
+            .extend([Ok(None), Err(error.clone())]);
+        let draft = f.insert(core_row(PLAIN));
+        let run = run_once(&f, &lib, draft);
+        let row = f.row(draft);
+        assert_ne!(phase(&row), Phase::Done, "{error:?}");
+        assert_eq!(row.profile_error, None, "{error:?}");
+        if matches!(error, PlatformError::Storage { .. }) {
+            assert_eq!(run, Err(error));
+        }
+    }
+}
+
+/// Sol r6 R6-04: two reads that say "no profile" (authentic, but older than
+/// the put that landed) and a put refused as a duplicate: the step waits
+/// for a read that reconciles it, which publishes the profile, unsettled.
+#[test]
+fn review_r6_stale_absence_must_not_settle_duplicate_profile() {
+    let f = fixture(false);
+    let fake = f.fake();
+    let lock = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let id = flow::b58(&flow::identity_for(lock));
+    fake.w().profiles.insert(
+        id,
+        ProfileRecord {
+            display_name: Some("Alice".into()),
+            ..Default::default()
+        },
+    );
+    let lib = Hooked::new(&fake);
+    lib.profile_reads
+        .lock()
+        .unwrap()
+        .extend([Ok(None), Ok(None)]);
+    let draft = f.insert(core_row(PLAIN));
+    run_once(&f, &lib, draft).unwrap();
+    assert_ne!(phase(&f.row(draft)), Phase::Done);
+    run_once(&f, &lib, draft).unwrap();
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.profile_error), (Phase::Done, None));
 }

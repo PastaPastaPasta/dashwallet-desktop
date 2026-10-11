@@ -236,8 +236,8 @@ decided where the rows leave room:
   they are free again once spent or untracked (positively not sent, rejected later, swept), with no reservation of the
   engine's to clean up. Reservations are owner-keyed (DEC-179): a coin is reserved while any payment or CoinJoin
   session claims it, and a lock's untracking releases none of those claims. With dust protection on, a dust coin it
-  locked blocks registration until the user unlocks it. Phase B: the funding call permit (`funding_call_permit`) takes
-  the fence into the call.
+  locked blocks registration until the user unlocks it. The funding call permit (`funding_call_permit`) takes the
+  fence into the call.
 - **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
@@ -256,42 +256,48 @@ decided where the rows leave room:
 - **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
   uncontested (`invalid_argument`). An `initial_profile` naming an avatar candidate is `invalid_argument` until
   DP4-02's `prepare_avatar`.
-- **Funding failures (H12).** platform-wallet tracks the lock (`Built`, stored through the changeset tap, which writes
-  the outpoint to the row: §3.4 Restore rule 3) before the broadcaster sees it, and untracks it only on a definitive
-  rejection. So after a failed funding call a tracked row for the draft's funding key means committed (the row
-  moves on to it). With none, the error's class decides: a definite rejection (`TransactionBroadcast`) or a failure
-  before the lock was built (coin selection, the builder) is `NotSent`, and the row goes back to `KeysPrepared`,
-  retryable, with the library's code. Any other failure with no tracked row (a lock the library untracked as swept,
-  the wallet closing under the call) is `MaybeSent`: a row whose outpoint the tap wrote stays funded and waits for the
-  `ChainLock`; one without fails `platform.broadcast_unknown`, not retryable. Both count as in progress and refuse
-  discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap hands the
-  lock to it (the row resumes at `FundingSent`, no second row). After a call that got as far as building, the flow
-  takes its own lock even where the tap's write did not land: the registration lock tracked now that was not before
-  the call, still on its way (`Built` or `Broadcast`; one rebuilt from the chain meanwhile is another device's), at
-  the row's index, for its amount, that no row holds and no row this build cannot read may own (the fence and the
-  in-progress gate let no other funding of this engine run meanwhile), at index 0 too, where a `Broadcast` lock's
-  index alone says nothing. The row's record of it, and the tap's, are retried; one that still fails ends the run with
-  `storage`, the row unfailed at `KeysPrepared` and its index. It reads committed (the lock "Finish transfers" would
-  give it, below), so it counts as in progress and refuses discard, and funds nothing again. The flow keeps that
-  lock's outpoint in memory, first seen in its own call's window, so its next run in this process takes it; after a
-  restart only "Finish transfers" gives it (Phase B adopts by P2b's durable signed-txid marker). A definite rejection
-  after the tap scheduled the automatic backup re-arms the once-only backup, so the retry that funds schedules
-  another.
+- **Funding failures (H12).** The funding call runs under P2b's funding call permit (E0-04 §2a.5, §2a.6): the
+  step's marker is durable before the library starts, and the library signs with the permit's funding signer, which
+  records the sighash of every signature. When the library stores the lock it built (`Built`, through the changeset
+  tap, which writes the outpoint to the row: §3.4 Restore rule 3), before the broadcaster sees it, the engine checks
+  each input against those sighashes and journals the lock's txid and inputs as the funding step's `signed_lock`
+  before the persister takes it. That record is exact provenance: durable across a restart, whatever the lock's
+  status, index or amount says, and never matched by another device's lock on the seed. After the call a tracked lock
+  that is the row's (its outpoint's, its signed lock, or an unheld lock whose known index is the row's and that no
+  other row's call signed) means committed (the row moves on to it). With none, the step's status decides: a refusal
+  before the call (the permit's, or the coin check's) funds nothing and fails with its code; a failure before the
+  library released a signature is `NotSent`, and the row goes back to `KeysPrepared`, retryable, with the library's
+  code. Anything after a signature is `MaybeSent`, a rejected broadcast included (the pin cannot tell a rejection
+  that may yet be relayed: E0-04 review M-2), and so is any other failure with no tracked row (a lock the library
+  untracked as swept, the wallet closing under the call): a row whose outpoint the tap wrote stays funded and waits
+  for the `ChainLock`; one without fails `platform.broadcast_unknown`, not retryable. Both count as in progress and
+  refuse discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap
+  hands the lock to it (the row resumes at `FundingSent`, no second row), or "Finish transfers" settles it (below).
+  The row's record of its signed lock, and the tap's, are retried; one that still fails ends the run with `storage`,
+  the row unfailed at `KeysPrepared` and its index. It reads committed, so it counts as in progress, refuses discard
+  and funds nothing again; its next run, in this process or after a restart, takes the lock by its signed record. A
+  lock no funding call of the row signed, whose index is lost, is the row's only by "Finish transfers".
 - **Settled after the identity.** Once the identity exists the flow cannot fail for good: its funds are spent. A name
-  step that Platform refuses for good (`name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, or a
-  refusal a retry would meet again: a budget, credits, an invalid argument, a rejected transition) records the code
-  in `name_failure` and the flow goes on to the profile; a profile step refused so records it in `profile_failure`;
-  either way the row ends `Done`, and counts as in progress no longer. Claiming a name for the identity is the names
-  flow's (`register_name`), publishing the profile `update_profile`'s. An outcome that may yet land
-  (`broadcast_unknown`, `will_be_sent`), a proof or trust failure and the network wait at `Network` (both steps read
-  Platform before they write, so the retry finds what landed); a closed session stops the run and a `storage` error
-  ends it, the row as it was; parks stay the step's own. A row an earlier build failed for good after its identity is
+  step settles only on a refusal positively identified as one a retry would meet again, from an explicit list:
+  `name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, `name.unavailable_for_invite`, and for either
+  step `platform.grant_exceeded`, `platform.insufficient_credits`, `platform.invalid_argument`,
+  `platform.seed_mismatch`, `platform.feature_off`, `platform.not_implemented` and `identity.keys_missing`. The name
+  step records the code in `name_failure` and the flow goes on to the profile; the profile step records it in
+  `profile_failure`; either way the row ends `Done`, and counts as in progress no longer. Claiming a name for the
+  identity is the names flow's (`register_name`), publishing the profile `update_profile`'s. Anything else waits at
+  `Network`: an outcome that may yet land (`broadcast_unknown`, `will_be_sent`), a proof or trust failure, the network,
+  `internal` (the SDK's `ExecutionNotProved` and `IdentityNonceNotFound` map there) and any error the library
+  flattened (platform-wallet's DPNS registration error, with DP1-03's reconciliation lookup inconclusive). Both steps
+  read Platform before they write, so the retry finds what landed. A closed session stops the run and a `storage`
+  error ends it, the row as it was; parks stay the step's own. A row an earlier build failed for good after its identity is
   settled too: it counts as in progress no longer and may be discarded (a row this build cannot read never is). The
   profile step reads Platform's profile first, as Platform keeps one profile document per identity: one that says
   what the row's does (the fields the row leaves out are not compared) counts as published, a different one is
   revised under `update_profile`'s rules (the fields the row sets replace), and without one the profile is created.
-  A refused put is checked against Platform once more, so a put that landed meanwhile counts as published. A step
-  killed after the put therefore resumes to the same profile.
+  A refused put is checked against Platform once more, so a put that landed meanwhile counts as published; a recheck
+  that fails decides nothing and follows the read's rules (a trust or proof failure and the network wait at
+  `Network`, `storage` ends the run, a closed session stops it), never settling the row. A step killed after the put
+  therefore resumes to the same profile.
 - **Indexes.** A flow takes its identity index after the sync hold, one past every index the wallet's identities,
   tracked registration locks and rows use, chosen from the rows read in the write's own job of the wallet's
   registration actor, so no two flows take one index. The hold (Restore rule 1)
@@ -306,11 +312,14 @@ decided where the rows leave room:
   another row holds, sends a flow that is not yet funded to a new index; so does another row at the index that is
   funded or older. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
   registration lock no row holds whose index is unknown) stops the flow before funding, waiting at `ChainLock`.
-  "Finish transfers" settles a lock: it gives the lock to the oldest such row it can fund. A row's own run never
-  adopts such a lock, whatever its index and amount (it may be another device's on the seed: ownership needs exact
-  provenance, the call window above). While a funding call of the wallet runs, Finish gives away no lock on its way
-  (`Built`, `Broadcast`) whose index is lost, which may be that call's own, and counts it in `still_pending`. A row
-  Finish would give a lock reads `MaybeSent` until it does, so it is committed and discard refuses it. An identity
+  A lock a row's funding call signed is that row's (its `signed_lock`, above), whatever its index. "Finish transfers"
+  settles any other: it gives the lock to the oldest row it can fund that waits for one, a row whose funding call
+  ended `platform.broadcast_unknown` included, which takes the lock and resumes at `FundingSent` rather than a new
+  row being made beside it. A row's own run never adopts such a lock, whatever its index and amount (it may be
+  another device's on the seed: ownership needs exact provenance). While a funding call of the wallet runs, Finish
+  gives that call's row nothing, and gives away no lock on its way (`Built`, `Broadcast`) whose index is lost, which
+  may be that call's own, and counts it in `still_pending`. A row Finish would give a lock reads `MaybeSent` until it
+  does, so it is committed and discard refuses it. An identity
   with no lock to prove it is never adopted; the row waits until it is discarded (`register_name` then names the
   identity).
 - **Waits.** A running flow waits for the sync, for the network (backing off to 60 s), for its proof and for a lock
@@ -341,9 +350,10 @@ decided where the rows leave room:
   starts again). It never waits for a run. A funding call's outcome is written before the call counts as ended. The
   row is deleted only under the claim and while its phase and outpoint are the ones the decision read.
 - **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed, that no row
-  holds and whose identity the wallet does not have: into the `KeysPrepared` row at its index when the index is known
-  (live or failed with nothing committed), a lock whose index is unknown into the oldest `KeysPrepared` row without a
-  lock whose amount it covers (not one whose funding call runs), else a new row with label `""` at a fresh index,
+  holds and whose identity the wallet does not have: a lock a row's funding call signed into that row, else into the
+  `KeysPrepared` row at its index when the index is known (live or failed with nothing committed), a lock whose index
+  is unknown into the oldest `KeysPrepared` row without a lock whose amount it covers (one whose funding call ended
+  `platform.broadcast_unknown` included; not one whose funding call runs), else a new row with label `""` at a fresh index,
   which skips the name step. A lock stays where it is while a row this build cannot read may own it (DEC-173 (2)):
   one with no outpoint or identity, past `Draft` as far as it reads, at the lock's index, or anywhere once the lock's
   index is unknown. Such a lock counts as that row's possible funding; one whose index is unknown also counts in
@@ -358,9 +368,10 @@ decided where the rows leave room:
   funding while the hold lasts, `ChainLock` for a lock without a proof, otherwise `Unlock` or `Authorize` by the vault's
   state. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
 - **`contest_ends_at`** stays `None` until DP1-04's vote poll.
-- **Waiting on E0-04.P2b (Mode B):** the call permits that charge the Funding budget (the cap is checked before the
-  call meanwhile), the funding and step markers, released-signature counting, `DispatchResolved` for a flow's steps,
-  and the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
+- **On E0-04.P2b (Mode B):** the funding step runs under P2b's funding call permit, which charges the Funding budget
+  (the cap is also checked before the call), writes the funding marker, counts released signatures and records the
+  signed lock (above). Still waiting on P2b: the identity step's marker, `DispatchResolved` for a flow's steps, and
+  the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
   `resume_registration` or "Finish transfers". The Funding cap holds per lock: a host lease passed by id that funds a
   second registration is charged by P2b's permits, not here. `register_name` accepts a vault grant or a lease id
   (§1); the flow's name step runs under its own lease through `register_name_for_flow`.

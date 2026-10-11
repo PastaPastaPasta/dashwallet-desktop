@@ -178,9 +178,8 @@ pub(crate) struct Classified {
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
     /// Registration locks of account 0 written (DP1-02's funding key):
-    /// outpoint, identity index when known (`LockInfo::known_index`), and
-    /// whether it is tracked as `Built`.
-    registration_locks: Vec<(OutPoint, Option<u32>, bool)>,
+    /// outpoint, and identity index when known (`LockInfo::known_index`).
+    registration_locks: Vec<(OutPoint, Option<u32>)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -287,10 +286,9 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                         && e.account_index == 0
                 })
                 .map(|e| {
-                    use super::registration_flow::{LockStatus, known_index, lock_status};
-                    let status = lock_status(&e.status);
-                    let built = status == LockStatus::Built;
-                    (e.out_point, known_index(status, e.identity_index), built)
+                    use super::registration_flow::{known_index, lock_status};
+                    let index = known_index(lock_status(&e.status), e.identity_index);
+                    (e.out_point, index)
                 }),
         );
     }
@@ -535,14 +533,13 @@ impl ChangesetTap {
         let locks = std::mem::take(&mut c.registration_locks);
         match self.registrations.get() {
             Some(flows) => {
-                for (outpoint, index, built) in locks {
+                for (outpoint, index) in locks {
                     let tracked = super::registration_flow::lock_tracked(
                         flows,
                         &self.appdb,
                         id,
                         outpoint,
                         index,
-                        built,
                     );
                     match tracked {
                         Ok(Some(draft)) => {
