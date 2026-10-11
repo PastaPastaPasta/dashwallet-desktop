@@ -19,6 +19,10 @@ import SwiftCrossUI
 import WalletFeatures
 import WalletRuntime
 
+#if os(Windows)
+    import WinSDK
+#endif
+
 #if os(Linux)
     import CGtk
     import Gtk
@@ -47,9 +51,18 @@ enum GateProbe {
 
     /// The process's CPU time (all threads), in seconds.
     nonisolated static func cpu() -> Double {
-        var time = timespec()
-        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time)
-        return Double(time.tv_sec) + Double(time.tv_nsec) / 1e9
+        #if os(Windows)
+            var creation = FILETIME(), exit = FILETIME(), kernel = FILETIME(), user = FILETIME()
+            guard GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user) else { return 0 }
+            func seconds(_ t: FILETIME) -> Double {  // 100 ns ticks
+                Double(UInt64(t.dwHighDateTime) << 32 | UInt64(t.dwLowDateTime)) / 1e7
+            }
+            return seconds(kernel) + seconds(user)
+        #else
+            var time = timespec()
+            clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time)
+            return Double(time.tv_sec) + Double(time.tv_nsec) / 1e9
+        #endif
     }
 
     /// Writes the mark with the process's CPU time when it is written (`cpu=`).
