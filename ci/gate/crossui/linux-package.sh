@@ -6,9 +6,7 @@
 #
 #   ci/gate/crossui/linux-package.sh OUT_DIR
 #
-# OUT_DIR gets dash-wallet-linux-x86_64.tar.gz (one top directory, dash-wallet/, holding the binary
-# and SwiftPM's resource bundles next to it, where Bundle.module looks) and build.json (timings,
-# sizes, the binary's shared-library needs).
+# OUT_DIR gets the tarball and build.json from linux-pack.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -44,33 +42,6 @@ docker run --rm \
     swift build --scratch-path /swiftpm/.build -c release --static-swift-stdlib --product dash-wallet
     t2=$(date +%s)
     bin_dir=$(swift build --scratch-path /swiftpm/.build -c release --show-bin-path)
-    pkg=/tmp/pkg/dash-wallet
-    rm -rf /tmp/pkg && mkdir -p "$pkg"
-    cp "$bin_dir/dash-wallet" "$pkg/"
-    strip "$pkg/dash-wallet"
-    # The app ID GTK registers on D-Bus. SwiftCrossUI reads it from the Swift Bundler metadata
-    # trailer (the JSON, its length as a big-endian UInt64, "SBUNMETA") at the end of the
-    # executable; without one it is com.example.SwiftCrossUIApp, which a Flatpak may not own.
-    meta="{\"appIdentifier\":\"org.dash.wallet.desktop.CrossUI\",\"appVersion\":\"0.1.0\"}"
-    printf "%s" "$meta" >>"$pkg/dash-wallet"
-    perl -e "print pack(q(Q>), shift), q(SBUNMETA)" "${#meta}" >>"$pkg/dash-wallet"
-    for bundle in "$bin_dir"/*.resources; do cp -R "$bundle" "$pkg/"; done
-    tar -C /tmp/pkg -czf /out/dash-wallet-linux-x86_64.tar.gz dash-wallet
-    needs=$(objdump -p "$pkg/dash-wallet" | awk "/NEEDED/ {print \$2}" | paste -sd, -)
-    swift_libs=$(ldd "$pkg/dash-wallet" | grep -c -i swift || true)
-    cat >/out/build.json <<JSON
-{
-  "coreReleaseSeconds": $((t1 - t0)),
-  "swiftReleaseSeconds": $((t2 - t1)),
-  "binaryBytes": $(stat -c %s "$pkg/dash-wallet"),
-  "tarballBytes": $(stat -c %s /out/dash-wallet-linux-x86_64.tar.gz),
-  "resourceBundles": "$(cd "$pkg" && ls -d -- *.resources | paste -sd, -)",
-  "needed": "$needs",
-  "swiftLibrariesInLdd": $swift_libs,
-  "swift": "$(swift --version 2>&1 | head -1)",
-  "gtk": "$(pkg-config --modversion gtk4)"
-}
-JSON
+    CORE_SECONDS=$((t1 - t0)) SWIFT_SECONDS=$((t2 - t1)) ci/gate/crossui/linux-pack.sh "$bin_dir" /out
     chown -R "$HOST_UID:$HOST_GID" /out
-    cat /out/build.json
   '

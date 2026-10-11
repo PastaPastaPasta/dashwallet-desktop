@@ -19,7 +19,8 @@ case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
   rust) packages=("${webkit[@]}") ;;
   # Ubuntu 24.04 calls the WebDriver package webkit2gtk-driver (26.04: webkitgtk-webdriver).
   tauri) packages=("${webkit[@]}" "${gui[@]}" xdotool imagemagick webkit2gtk-driver) ;;
-  swiftcrossui) packages=(libgtk-4-dev "${gui[@]}" gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core) ;;
+  swiftcrossui) packages=(libgtk-4-dev "${gui[@]}" gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core
+    xdotool imagemagick) ;;
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
 

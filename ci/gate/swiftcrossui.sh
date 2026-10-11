@@ -12,8 +12,8 @@
 # Both open the gate's regtest wallet, the fixture G-02 measures Tauri on: dw-engine's datadir
 # ci/gate/fixtures/regtest40k-dw.tar.gz (made by ci/gate/make-regtest-fixture.sh), whose vault
 # passphrase is ci/gate/fixtures/regtest40k-passphrase.txt.
-#
-# Linux U1, U3, U4, U5 and U7 run on agentbox (ci/gate/crossui/linux-gate.sh), not here.
+#   linux:   U1, U3, U4, U5 and U7: release tarball, linux-gate.sh on Xvfb (the quiet runner's
+#            numbers; agentbox runs the same harness, ci/gate/crossui/linux-gate.sh)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -49,5 +49,6 @@ tar -C "$GATE_WALLET" -xzf "$ROOT/ci/gate/fixtures/regtest40k-dw.tar.gz"
 case "$GATE_OS" in
   macos) exec bash "$ROOT/ci/gate/crossui/macos.sh" ;;
   windows) exec bash "$ROOT/ci/gate/crossui/windows.sh" ;;
-  *) echo "swiftcrossui.sh: the Linux measurements run on agentbox (ci/gate/crossui/linux-gate.sh)" >&2; exit 2 ;;
+  linux) exec bash "$ROOT/ci/gate/crossui/linux.sh" ;;
+  *) echo "swiftcrossui.sh: unknown GATE_OS $GATE_OS" >&2; exit 2 ;;
 esac
