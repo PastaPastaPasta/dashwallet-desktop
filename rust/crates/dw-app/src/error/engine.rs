@@ -1,7 +1,7 @@
 //! The M1–M3 engine errors (m1–m3 contracts): `EngineError`'s own codes and
-//! the vault's. The nested failure domains (`send.*`, `labels.*`, …) keep
-//! the strings dw-ffi gives them, so the frozen Swift shells and this
-//! binding name each failure the same.
+//! the vault's. The nested failure domains (`send.*`, `labels.*`, …) map in
+//! `nested.rs`, with the strings dw-ffi gives them, so the frozen Swift
+//! shells and this binding name each failure the same.
 
 use dw_engine::EngineError;
 use dw_vault::VaultError;
@@ -178,21 +178,127 @@ impl From<EngineError> for AppError {
             E::AddressNoKey(_) => (EngineCode::AddressNoKey.into(), None),
             E::AddressNotMine(_) => (EngineCode::AddressNotMine.into(), None),
             E::Internal(_) => (EngineCode::Internal.into(), None),
-            E::OutpointNotFound(_) => (EngineCode::OutpointNotFound.into(), None),
-            // TODO(E0-13 errors): the nested domains below get their own codes.
-            E::Signer(_)
-            | E::Send(_)
-            | E::Labels(_)
-            | E::Compat(_)
-            | E::Backup(_)
-            | E::Psbt(_)
-            | E::CoinJoin(_)
-            | E::Masternode(_) => (EngineCode::Internal.into(), None),
+            E::OutpointNotFound(o) => (
+                EngineCode::OutpointNotFound.into(),
+                Some(ErrorData::Outpoint {
+                    txid: o.txid.to_string(),
+                    vout: o.vout,
+                }),
+            ),
+            E::Signer(f) => return f.into(),
+            E::Send(f) => return f.into(),
+            E::Labels(f) => return f.into(),
+            E::Compat(f) => return f.into(),
+            E::Backup(f) => return f.into(),
+            E::Psbt(f) => return f.into(),
+            E::CoinJoin(f) => return f.into(),
+            E::Masternode(f) => return f.into(),
         };
         AppError {
             code,
             message,
             data,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dw_engine::{
+        BackupFailure, CoinJoinFailure, CompatFailure, LabelsFailure, MasternodeFailure,
+        PsbtFailure, SendFailure, TxActionRefusal,
+    };
+    use dw_vault::SignerError;
+
+    use super::*;
+
+    /// Every `EngineError` variant maps to the code string its `code()`
+    /// names; a nested domain (`vault`, `signer`, `send`, …) maps to a code
+    /// inside that domain's namespace.
+    #[test]
+    fn engine_error_codes_match_the_engine() {
+        use EngineError as E;
+        let s = || String::from("x");
+        let own = [
+            E::InvalidConfig(s()),
+            E::InvalidArgument(s()),
+            E::NetworkNotOpen(s()),
+            E::StorageInUse(s()),
+            E::Storage(s()),
+            E::WalletNotFound(s()),
+            E::InvalidMnemonic(s()),
+            E::WalletAlreadyExists(s()),
+            E::Wallet(s()),
+            E::Sdk(s()),
+            E::InsufficientCredits {
+                identity_id: s(),
+                needed: 2,
+                available: 1,
+            },
+            E::Spv(s()),
+            E::Io(s()),
+            E::NotImplemented(s()),
+            E::SpvNotRunning,
+            E::SpvRunning,
+            E::RescanInProgress,
+            E::InvalidXpub(s()),
+            E::TxActionRefused(TxActionRefusal::Confirmed),
+            E::NoPeers,
+            E::HeightOutOfRange(7),
+            E::InvalidQuery(s()),
+            E::StaleCursor,
+            E::TxNotFound(s()),
+            E::GapLimit,
+            E::RequestNotFound(3),
+            E::NameRejected(s()),
+            E::InvalidAddress(s()),
+            E::AddressNoKey(s()),
+            E::AddressNotMine(s()),
+            E::Internal(s()),
+            E::OutpointNotFound(dashcore::OutPoint::null()),
+        ];
+        // Every code of `EngineCode` is one of these (the one-to-one check).
+        let mut seen: Vec<&str> = Vec::new();
+        for e in own {
+            let expected = e.code();
+            assert_eq!(AppError::from(e).code_str(), expected);
+            seen.push(expected);
+        }
+        for code in EngineCode::ALL {
+            assert!(
+                seen.contains(&code.as_str()),
+                "{} has no EngineError variant",
+                code.as_str()
+            );
+        }
+
+        let nested = [
+            E::Vault(VaultError::NoVault),
+            E::Signer(SignerError::Locked),
+            E::Send(SendFailure::NoRecipients),
+            E::Labels(LabelsFailure::OwnAddress),
+            E::Compat(CompatFailure::NoHdChain),
+            E::Backup(BackupFailure::VaultLocked),
+            E::Psbt(PsbtFailure::NotComplete),
+            E::CoinJoin(CoinJoinFailure::Disabled),
+            E::Masternode(MasternodeFailure::WatchOnly),
+        ];
+        for e in nested {
+            let domain = e.code();
+            let code = AppError::from(e).code_str();
+            assert!(
+                code.starts_with(&format!("{domain}.")),
+                "{code} is outside the `{domain}` namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn an_outpoint_rides_in_data() {
+        let e = AppError::from(EngineError::OutpointNotFound(dashcore::OutPoint::null()));
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({ "kind": "outpoint", "txid": "0".repeat(64), "vout": u32::MAX })
+        );
     }
 }

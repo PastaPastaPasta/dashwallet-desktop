@@ -15,6 +15,7 @@
 //! `match`, so a new engine variant fails to compile until it has a code.
 
 mod engine;
+mod nested;
 mod platform;
 
 use serde::Serialize;
@@ -25,6 +26,10 @@ use crate::dto::platform::{
 };
 
 pub use engine::{EngineCode, VaultCode};
+pub use nested::{
+    BackupCode, CoinJoinCode, CompatCode, LabelsCode, MasternodeCode, PsbtCode, SendCode,
+    SignerCode,
+};
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
     RegistrationCode,
@@ -49,6 +54,14 @@ pub enum ErrorCode {
     App(AppCode),
     Engine(EngineCode),
     Vault(VaultCode),
+    Signer(SignerCode),
+    Send(SendCode),
+    Labels(LabelsCode),
+    Compat(CompatCode),
+    Backup(BackupCode),
+    Psbt(PsbtCode),
+    CoinJoin(CoinJoinCode),
+    Masternode(MasternodeCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
     Registration(RegistrationCode),
@@ -110,6 +123,14 @@ impl ErrorCode {
             ErrorCode::App(c) => c.as_str(),
             ErrorCode::Engine(c) => c.as_str(),
             ErrorCode::Vault(c) => c.as_str(),
+            ErrorCode::Signer(c) => c.as_str(),
+            ErrorCode::Send(c) => c.as_str(),
+            ErrorCode::Labels(c) => c.as_str(),
+            ErrorCode::Compat(c) => c.as_str(),
+            ErrorCode::Backup(c) => c.as_str(),
+            ErrorCode::Psbt(c) => c.as_str(),
+            ErrorCode::CoinJoin(c) => c.as_str(),
+            ErrorCode::Masternode(c) => c.as_str(),
             ErrorCode::Platform(c) => c.as_str(),
             ErrorCode::Identity(c) => c.as_str(),
             ErrorCode::Registration(c) => c.as_str(),
@@ -133,7 +154,8 @@ impl ErrorCode {
 pub enum ErrorData {
     /// `vault.wrong_passphrase`, `vault.throttled`: when to allow the next try.
     RetryAfter { secs: u64 },
-    /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`, …).
+    /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
+    /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
     /// A credit shortfall (`platform.insufficient_credits`, `insufficient_credits`).
     Credits {
@@ -144,9 +166,11 @@ pub enum ErrorData {
         #[serde(with = "crate::dto::credits")]
         available: u64,
     },
-    /// `credits.below_minimum`, `vault.quick_unlock_limit_exceeded`: a limit in duffs.
+    /// `credits.below_minimum`, `vault.quick_unlock_limit_exceeded`,
+    /// `psbt.grant_exceeded` (the grant's cap), `coinjoin.insufficient_funds`
+    /// (the mixing minimum): a limit in duffs.
     Limit { duffs: u64 },
-    /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`.
+    /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },
     /// `send.grant_exceeded`: the payment's outflow against the grant's cap, in duffs.
     SpendCap { max_duffs: u64, outflow: u64 },
@@ -183,12 +207,22 @@ pub enum ErrorData {
     Feature { feature: String },
     /// `platform.not_implemented`, `not_implemented`: the call that is not.
     Call { call: String },
-    /// `send.broadcast_rejected`, `send.broadcast_unknown`: the peer's or library's reason.
+    /// `send.broadcast_rejected`, `send.broadcast_unknown` and their `psbt.*` and
+    /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason.
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },
-    /// `request_not_found`, `height_out_of_range`: the number named.
+    /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
+    /// `psbt.too_large` (bytes): the number named.
     Number { value: u64 },
+    /// `send.outpoint_unavailable`, `outpoint_not_found`: the output (txid hex and index).
+    Outpoint { txid: String, vout: u32 },
+    /// `backup.already_exists`: the wallet (lower-case hex id) the backup would duplicate.
+    Wallet { wallet_id: String },
+    /// `compat.network_mismatch`: the keys are mainnet keys, or else test-network keys.
+    KeysNetwork { mainnet: bool },
+    /// `psbt.fee_rate_too_high`: the offending fee rate in duffs per kB.
+    FeeRate { duffs_per_kb: u64 },
 }
 
 /// Why `abandon_transaction` or `resend_transaction` refused (QT-105).
@@ -259,6 +293,14 @@ into_code!(
     App(AppCode),
     Engine(EngineCode),
     Vault(VaultCode),
+    Signer(SignerCode),
+    Send(SendCode),
+    Labels(LabelsCode),
+    Compat(CompatCode),
+    Backup(BackupCode),
+    Psbt(PsbtCode),
+    CoinJoin(CoinJoinCode),
+    Masternode(MasternodeCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
     Registration(RegistrationCode),
