@@ -483,7 +483,7 @@ struct CenteredMessage: View {
     let text: String
     let busy: Bool
     /// Shows a "Try Again" button that runs this.
-    var retry: (() -> Void)? = nil
+    var retry: (@MainActor @Sendable () -> Void)? = nil
 
     var body: some View {
         VStack(spacing: Int(DashSpacing.m)) {
