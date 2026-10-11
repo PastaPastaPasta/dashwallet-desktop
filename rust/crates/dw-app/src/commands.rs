@@ -207,14 +207,16 @@ fn history_query(request: HistoryRequest) -> HistoryQuery {
 }
 
 /// `history_page` with the engine's share of the time (U5): the renderer
-/// subtracts `engine_micros` from its round trip to get the IPC and
-/// serialisation cost of a real page, apart from the engine's query cost.
+/// subtracts `engine_micros` from its round trip to get the UI side's cost
+/// (dispatch, DTO mapping, serialisation, IPC) of a real page, apart from the
+/// engine's query cost. Self-test runs only.
 #[tauri::command]
 pub async fn history_page_timed(
     state: State<'_, AppState>,
     wallet_id: String,
     request: HistoryRequest,
 ) -> Result<TimedHistoryRows, AppError> {
+    state.selftest_path()?;
     let id = parse_wallet_id(&wallet_id)?;
     let session = state.session().await?;
     let started = Instant::now();

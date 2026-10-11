@@ -84,20 +84,22 @@ fn exit_on_signal<R: Runtime>(app: tauri::AppHandle<R>) {
 /// renderer falls back to software buffers that cost about a second before the
 /// first paint; the shared-memory renderer does not (G-02: first paint 0.9–1.8 s
 /// instead of 2.4–3.0 s on agentbox). Machines with a GPU keep the default, and
-/// a value the user set is kept.
+/// a value the user set is kept. A render node the user cannot open counts as
+/// one (the check is for the device, not for access to it).
 ///
-/// Call it first in `main`, before any other thread exists: it sets an
-/// environment variable, which WebKitGTK reads when it creates the web view.
+/// # Safety
+///
+/// It sets an environment variable (which WebKitGTK reads when it creates the
+/// web view), so no other thread may exist: call it first in `main`.
 #[cfg(target_os = "linux")]
-pub fn webkit_renderer_without_gpu() {
+pub unsafe fn webkit_renderer_without_gpu() {
     const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
     let render_node = std::fs::read_dir("/dev/dri").is_ok_and(|dir| {
         dir.flatten()
             .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
     });
     if !render_node && std::env::var_os(VAR).is_none() {
-        // SAFETY: `main` calls this before any other thread starts, so nothing
-        // reads the environment concurrently.
+        // SAFETY: the caller guarantees that no other thread exists.
         unsafe { std::env::set_var(VAR, "1") };
     }
 }
@@ -186,6 +188,9 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
                 }
                 if let Some((width, height)) = window_size {
                     window.set_size(tauri::LogicalSize::new(width, height))?;
+                    // Centred for the configured size; a smaller desktop would
+                    // otherwise leave the resized window partly off-screen.
+                    window.center()?;
                 }
             }
             exit_on_signal(handle.clone());
