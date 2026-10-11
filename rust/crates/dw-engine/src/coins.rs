@@ -17,7 +17,10 @@
 //! untracked. Repair's "Resolve stuck funding" self-spend (§6.5, §2a.5) is
 //! the one build that must spend them: its draft names exactly those
 //! inputs as exempt ([`WalletCoin::self_spend_selectable`]); every other
-//! build still refuses them.
+//! build still refuses them. The inputs of a lock a funding call signed
+//! whose step is unresolved read the same way once its row is gone
+//! ([`WalletCoin::unresolved_lock`], review Opus O-2): the library no
+//! longer reserves them, and Repair's self-spend must take one of each.
 //!
 //! **The coin fence** (E0-04 §2a.6, DP1-02 Sol r2 R2-04). One async mutex
 //! per wallet ([`CoinFence`], [`NetworkSession::coin_fence`]) orders every
@@ -114,8 +117,13 @@ pub(crate) struct WalletCoin {
     pub dust_locked: bool,
     pub reserved: bool,
     /// Reserved only as the input of a tracked `Built` or `Broadcast`
-    /// asset lock (module doc), not by a payment of the engine.
+    /// asset lock, or of an unresolved signed one (module doc), not by a
+    /// payment of the engine.
     pub lock_input: bool,
+    /// An input of an asset lock a funding call signed, whose funding step
+    /// reads neither `Sent` nor `NotSent`, and of no tracked pending lock:
+    /// nothing reserves it in the library (review Opus O-2).
+    pub unresolved_lock: bool,
 }
 
 impl WalletCoin {
@@ -169,6 +177,11 @@ pub(crate) enum CoinHold {
     /// the wallet's others (the lock's purpose), so it is not exempted; the
     /// UI can offer "release this dust coin".
     DustLock,
+    /// An input of an asset lock a funding call signed whose step is not
+    /// resolved, its row gone (review Opus O-2): spent by another lock, it
+    /// would leave Repair no input of it to take. It clears once Repair's
+    /// self-spend resolves the step, or its lock is proved.
+    UnresolvedLock,
 }
 
 /// One coin that holds a funding build back, for the refusal to name.
@@ -187,7 +200,8 @@ impl CoinSnapshot {
     /// hold, checked under the fence its call permit then holds (module
     /// doc). A coin both reserved and locked reads `Reserved`: releasing
     /// its lock would not free it. A tracked lock's input (`lock_input`) is
-    /// not among them: the library reserves those itself.
+    /// not among them: the library reserves those itself. An unresolved
+    /// signed lock's input is ([`CoinHold::UnresolvedLock`]).
     #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
     pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
@@ -196,6 +210,8 @@ impl CoinSnapshot {
             .filter_map(|c| {
                 let hold = if c.reserved && !c.lock_input {
                     CoinHold::Reserved
+                } else if c.unresolved_lock {
+                    CoinHold::UnresolvedLock
                 } else if c.dust_locked {
                     CoinHold::DustLock
                 } else if c.user_locked {
@@ -381,6 +397,7 @@ fn collect(
             dust_locked: false,
             reserved: false,
             lock_input: false,
+            unresolved_lock: false,
         });
     }
 }
@@ -580,6 +597,7 @@ impl NetworkSession {
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
+        let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
@@ -587,8 +605,9 @@ impl NetworkSession {
             coin.dust_locked = lock == Some(&LockReason::Dust);
             let spend_reserved = reserved.contains(&o);
             let lock_reserved = lock_inputs.contains(&o);
-            coin.lock_input = !spend_reserved && lock_reserved;
-            coin.reserved = spend_reserved || lock_reserved;
+            coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
+            coin.lock_input = !spend_reserved && (lock_reserved || coin.unresolved_lock);
+            coin.reserved = spend_reserved || lock_reserved || coin.unresolved_lock;
         }
         Ok(snapshot)
     }
@@ -858,12 +877,14 @@ mod tests {
             dust_locked: false,
             reserved: false,
             lock_input: false,
+            unresolved_lock: false,
         }
     }
 
     /// E0-04 §2a.6: the funding refusal names every held coin with its
-    /// hold, a dust lock apart from a user lock; a tracked lock's input,
-    /// a free coin and a CoinJoin coin hold nothing back.
+    /// hold, a dust lock apart from a user lock, and an unresolved signed
+    /// lock's input (review Opus O-2); a tracked lock's input, a free coin
+    /// and a CoinJoin coin hold nothing back.
     #[test]
     fn held_funding_coins_name_their_hold() {
         let user = WalletCoin {
@@ -894,6 +915,12 @@ mod tests {
             user_locked: true,
             ..coin(6, false)
         };
+        let unresolved = WalletCoin {
+            reserved: true,
+            lock_input: true,
+            unresolved_lock: true,
+            ..coin(8, true)
+        };
         let snapshot = CoinSnapshot {
             height: 200,
             coins: vec![
@@ -904,6 +931,7 @@ mod tests {
                 lock_input,
                 coin(7, true),
                 coinjoin,
+                unresolved.clone(),
             ],
         };
         let held: Vec<HeldCoin> = snapshot.held_funding_coins().collect();
@@ -919,6 +947,7 @@ mod tests {
                 expect(&dust, CoinHold::DustLock),
                 expect(&paying, CoinHold::Reserved),
                 expect(&paying_and_locked, CoinHold::Reserved),
+                expect(&unresolved, CoinHold::UnresolvedLock),
             ]
         );
     }

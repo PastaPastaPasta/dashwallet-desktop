@@ -323,6 +323,10 @@ impl From<LeaseError> for PlatformError {
                 mode_b::FundingBlock::Step(_) => PlatformError::InvalidArgument {
                     detail: "the funding step has committed; a new funding needs a new step".into(),
                 },
+                mode_b::FundingBlock::StepCancelled => PlatformError::InvalidArgument {
+                    detail: "Repair cancelled the funding step; a new funding needs a new step"
+                        .into(),
+                },
             },
         }
     }

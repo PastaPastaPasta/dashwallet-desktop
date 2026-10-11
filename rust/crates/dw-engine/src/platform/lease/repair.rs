@@ -68,10 +68,7 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 impl From<StuckFundingRefusal> for EngineError {
     fn from(r: StuckFundingRefusal) -> Self {
-        match r {
-            StuckFundingRefusal::JournalUnavailable => EngineError::Storage(r.to_string()),
-            _ => EngineError::InvalidArgument(r.to_string()),
-        }
+        EngineError::StuckFunding(r)
     }
 }
 
@@ -82,14 +79,15 @@ impl NetworkSession {
     /// or a lease with a Spend budget, as for [`TxDraft::prepare`]: the
     /// self-spend's outflow is its fee.
     ///
-    /// Refused (`invalid_argument`) unless the step reads `MaybeSent` or
-    /// `WillBeSent` now with its marker standing and no call running under
-    /// it, while a spend of the wallet's coins awaits its ChainLock or an
-    /// unattributed row may be the step's lock, and when the self-spend
-    /// would miss every input of one of the step's tracked rows (module
-    /// doc, "When"); `storage` when the journal cannot
-    /// record the self-spend. The
-    /// draft's own errors are `TxDraft`'s. On success the self-spend is
+    /// Refused (`stuck_funding`, the [`StuckFundingRefusal`] itself) unless
+    /// the step reads `MaybeSent` or `WillBeSent` now with its marker
+    /// standing and no call running under it, while a spend of the wallet's
+    /// coins awaits its ChainLock or an unattributed row may be the step's
+    /// lock, when the self-spend would miss every input of one of the
+    /// step's locks (module doc, "When"), and when the journal cannot
+    /// record the self-spend ([`StuckFundingRefusal::retry_later`] tells
+    /// the passing refusals from the lasting ones). The draft's own errors
+    /// are `TxDraft`'s. On success the self-spend is
     /// recorded and broadcast; the step keeps reading `MaybeSent` (or
     /// `WillBeSent`) until the wallet sees the self-spend ChainLocked.
     pub async fn resolve_stuck_funding(

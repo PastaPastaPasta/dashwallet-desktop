@@ -7,14 +7,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dashcore::OutPoint;
+use dashcore::{OutPoint, Txid};
 use platform_wallet::AssetLockFundingType;
 
 use super::fence::JournalBackend;
-use super::mode_b::{Snapshot, TrackedLocks, derive_funding, index_trusted};
+use super::mode_b::{
+    FundingStepView, FundingStepsUnavailable, Snapshot, TrackedLocks, derive_funding, index_trusted,
+};
 use super::tests::{
-    DURABLE, FakeJournal, REG, Recorder, W, W2, begin, key, quote, row, sign_lock, table, txid,
-    until, with_journal,
+    DURABLE, FakeJournal, REG, Recorder, W, W2, begin, key, quote, row, sign_lock, sign_lost_lock,
+    table, txid, until, with_journal,
 };
 use super::*;
 use crate::WalletId;
@@ -121,6 +123,17 @@ fn spent(info: &CallStepInfo) -> Vec<[u8; 32]> {
     info.self_spends.iter().map(|s| s.txid).collect()
 }
 
+/// A conflict for a self-spend row a test downgrades to a schema before 5,
+/// which drops it: before then no self-spend recorded one (review Opus O-8a).
+const LEGACY_CONFLICT: dw_appdb::dispatch::SelfSpendConflict =
+    dw_appdb::dispatch::SelfSpendConflict {
+        lock: [0; 32],
+        input: dw_appdb::dispatch::StoredOutPoint {
+            txid: [0; 32],
+            vout: 0,
+        },
+    };
+
 /// A table with a journal and the fake source, its wallets' rows read.
 async fn setup() -> (
     Arc<LeaseTable>,
@@ -183,15 +196,29 @@ fn funding_spent(l: &Lease) -> u64 {
         .map_or(0, |b| b.spent)
 }
 
-/// A funding call of `step` that released a signature and failed: the
-/// marker stands, MaybeSent.
-async fn maybe_sent(l: &Lease, step: &str, index: u32) {
+/// A funding call of `step` that signed a lock, recorded it and failed,
+/// the lock's row gone ([`sign_lost_lock`]): the marker stands, MaybeSent.
+async fn maybe_sent(t: &LeaseTable, l: &Lease, step: &str, index: u32) -> Txid {
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(step, index))
+        .await
+        .unwrap();
+    let lock = sign_lost_lock(t, &p, W);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    lock
+}
+
+/// A funding call of `step` under a build before schema 6 (OD-02): it
+/// released a signature and failed, recording no lock. `j` keeps its marker
+/// unflagged, so a reload reads the step `MaybeSent`, no lock known.
+async fn legacy_maybe_sent(l: &Lease, j: &FakeJournal, step: &str, index: u32) {
     let p = l
         .call_permit_step("funding", quote(10, 0), funding(step, index))
         .await
         .unwrap();
     p.signatures().note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    j.unflag_markers();
 }
 
 // --- §2a.5's table, row by row (the pure derivation) ----------------------
@@ -314,7 +341,7 @@ async fn funding_status_derives_each_row_from_the_rows_the_marker_and_the_drafts
     // No marker, no row, no draft: never registered.
     assert_eq!(t.funding_status(W, REG), None);
     // A marker, no row, no resolution.
-    maybe_sent(&l, REG, 7).await;
+    maybe_sent(&t, &l, REG, 7).await;
     assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
     // A row under the marker's key: Built, then IS-locked.
     src.set_rows(W, vec![row(1, 7, R::Built)]);
@@ -377,7 +404,7 @@ async fn a_row_matching_several_drafts_counts_for_each() {
     // resumed the Built row, so it no longer blocks funding). Row 1
     // preceded the marker, so it is not the top-up's; row 2 came after.
     t.note_resumed(W, txid(1));
-    maybe_sent(&l, TOPUP, 5).await;
+    maybe_sent(&t, &l, TOPUP, 5).await;
     src.set_rows(W, vec![row(1, 5, R::Built), row(2, 5, R::Consumed)]);
     t.refresh_funding(W).await;
     for step in ["registration/1/funding", "registration/2/funding", TOPUP] {
@@ -395,7 +422,7 @@ async fn dispatch_resolved_fires_on_moves_to_sent_and_not_sent_only() {
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
 
     // A row transition: MaybeSent → WillBeSent (silent) → Sent.
-    maybe_sent(&l, REG, 7).await;
+    maybe_sent(&t, &l, REG, 7).await;
     src.set_rows(W, vec![row(1, 7, R::Broadcast)]);
     t.refresh_funding(W).await;
     assert!(rec.resolved().is_empty(), "WillBeSent is no resolution");
@@ -411,7 +438,7 @@ async fn dispatch_resolved_fires_on_moves_to_sent_and_not_sent_only() {
 
     // DP1-05's adoption: a lost lock found on the chain.
     const ADOPTED: &str = "registration/8/funding";
-    maybe_sent(&l, ADOPTED, 8).await;
+    maybe_sent(&t, &l, ADOPTED, 8).await;
     src.set_rows(
         W,
         vec![row(1, 7, R::ChainLocked), row(2, 8, R::RecoveredFromChain)],
@@ -494,7 +521,7 @@ async fn funds_committed_holds_from_the_permit_until_not_sent() {
 
     // A possible send keeps it (the Lock above parked that lease).
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 8).await;
+    maybe_sent(&t, &l, TOPUP, 8).await;
     assert!(funds_committed(&l));
 }
 
@@ -652,7 +679,7 @@ async fn a_built_or_broadcast_row_blocks_funding_until_it_is_resumed() {
 async fn a_possibly_sent_funding_step_refuses_a_second_funding_call() {
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, REG, 7).await;
+    maybe_sent(&t, &l, REG, 7).await;
     let spent = funding_spent(&l);
     let refused = l
         .call_permit_step("funding", quote(10, 0), funding(REG, 7))
@@ -694,8 +721,9 @@ async fn a_possibly_sent_funding_step_refuses_a_second_funding_call() {
 /// - a second funding call of the same step is refused by the gate.
 ///
 /// So no T2 is built. Only Repair's self-spend, once ChainLocked, resolves
-/// it (`NotSent`), and then only under a new step; with no lock of the
-/// step known, Repair refuses it (reviews R1-01, P2b r4 R4-01).
+/// it (`NotSent`), and then only under a new step and only by taking an
+/// input of T1, whose signed record is durable before the library stores
+/// or sends it (§2a.7; reviews R1-01, P2b r4 R4-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     let (t, _, j, src) = setup().await;
@@ -706,8 +734,9 @@ async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
         .call_permit_step("funding", quote(10, 0), funding(REG, 7))
         .await
         .unwrap();
-    p.signatures().note_released();
-    // Power loss: the marker is durable, the row was never persisted.
+    let t1 = sign_lost_lock(&t, &p, W);
+    // Power loss: the marker and T1's record are durable, the row was
+    // never persisted.
     let (t2, _) = reload(&j, &src).await;
     drop(p);
     let status = t2.funding_status(W, REG);
@@ -728,8 +757,8 @@ async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     assert_eq!(t2.funding_status(W, REG), Some(MaybeSent));
     assert_eq!(
         t2.record_self_spend(W, REG, [1; 32], &[]).await,
-        Err(StuckFundingRefusal::NoKnownLock),
-        "no lock of the step is known"
+        Err(StuckFundingRefusal::MissesSignedLock(t1)),
+        "Repair takes an input of T1"
     );
 }
 
@@ -800,13 +829,13 @@ async fn an_unsent_or_never_started_funding_allows_funding_again() {
         vec![(ORPHAN.to_owned(), DispatchResolution::NotSent)]
     );
     let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
-    // The marker still stands, answered by the self-spend: its step is not
-    // funded again (a call under it could not be told from the orphan).
+    // Repair resolved it: its step is not funded again (a call under it
+    // could not be told from the orphan; E0-04 H12, DP1-02 C5).
     assert_eq!(
         l2.call_permit_step("funding", quote(10, 0), funding(ORPHAN, 3))
             .await
             .unwrap_err(),
-        LeaseError::FundingBlocked(FundingBlock::Step(Some(NotSent)))
+        LeaseError::FundingBlocked(FundingBlock::StepCancelled)
     );
     // "Register again" under a new draft: allowed.
     l2.call_permit_step(
@@ -888,7 +917,7 @@ async fn a_later_funding_under_the_same_key_does_not_read_an_earlier_ones_row() 
         .await
         .unwrap();
     assert_eq!(t.funding_status(W, B), Some(MaybeSent));
-    p.signatures().note_released();
+    sign_lost_lock(&t, &p, W);
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, B), Some(MaybeSent));
@@ -907,7 +936,7 @@ async fn a_later_funding_under_the_same_key_does_not_read_an_earlier_ones_row() 
     // A third, possibly sent, then a restart: the earlier rows count again
     // (the residual), which reads Sent, never None or NotSent.
     const C: &str = "topup/c/funding";
-    maybe_sent(&l, C, 5).await;
+    maybe_sent(&t, &l, C, 5).await;
     assert_eq!(t.funding_status(W, C), Some(MaybeSent));
     let (t2, _) = reload(&j, &src).await;
     assert_eq!(t2.funding_status(W, C), Some(Sent));
@@ -1032,8 +1061,8 @@ async fn a_status_reported_before_the_first_snapshot_is_the_baseline() {
     const ADOPTED: &str = "registration/8/funding";
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, REG, 7).await;
-    maybe_sent(&l, ADOPTED, 8).await;
+    maybe_sent(&t, &l, REG, 7).await;
+    maybe_sent(&t, &l, ADOPTED, 8).await;
 
     // The next process, its rows not read yet.
     let snap = j.snapshot();
@@ -1213,17 +1242,19 @@ fn an_untrusted_registration_row_is_re_keyed_by_the_identity_it_created() {
 }
 
 /// The pin re-adds a registration lock that lost its row at identity
-/// index 0. For a step at another index, that row is unattributed: the
-/// step keeps reading `MaybeSent` (a ChainLocked self-spend proves nothing
-/// over it) and Repair refuses. A step at index 0 still matches it by key,
-/// and a row re-keyed by its identity reads for that identity's step. Each
-/// step's call signed a lock whose row is lost (`own3`, `own0`).
+/// index 0. For an unflagged step (§2a.7) at another index, that row is
+/// unattributed: the step keeps reading `MaybeSent` (a ChainLocked
+/// self-spend proves nothing over it) and Repair refuses. A flagged step's
+/// self-spend resolves it all the same (DP1-02 C4). A step at index 0
+/// still matches it by key, and a row re-keyed by its identity reads for
+/// that identity's step. Each step's call signed a lock whose row is lost
+/// (`own3`, `own0`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     use StuckFundingRefusal as F;
     const AT3: &str = "registration/3/funding";
     const AT0: &str = "registration/4/funding";
-    let (t, rec, _, src) = setup().await;
+    let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let (own3, own0) = (row(5, 3, R::Built), row(6, 0, R::Built));
     signed_maybe_sent(&t, &l, AT3, 3, &own3).await;
@@ -1235,6 +1266,10 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     t.record_self_spend(W, AT0, [0xa0; 32], &own0.inputs)
         .await
         .unwrap();
+    // The same journal written before schema 6 (OD-02): its markers'
+    // calls may have sent a lock no record names.
+    let legacy = j.snapshot();
+    legacy.unflag_markers();
 
     // A lock that went out, lost its row and was re-added from the chain
     // at index 0: it may be any registration's.
@@ -1242,6 +1277,17 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     assert!(!lost.trusted);
     src.set_rows(W, vec![lost.clone()]);
     t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    // A flagged step: the one lock its call signed is recorded, so the row
+    // is not its lock, and the ChainLocked self-spend resolves it (DP1-02
+    // C4).
+    src.locked.lock().unwrap().insert([0xa3; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT3), Some(NotSent));
+    src.locked.lock().unwrap().clear();
+
+    // Unflagged, the row may be its lock.
+    let (t, rec) = reload(&legacy, &src).await;
     assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
     assert_eq!(
         t.record_self_spend(W, AT3, [0xb3; 32], &[]).await,
@@ -1275,6 +1321,7 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
         vec![TrackedRow {
             key: key(3),
             trusted: true,
+            sighashes: None,
             ..lost
         }],
     );
@@ -1294,11 +1341,10 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
         "the step at index 3 never read NotSent"
     );
     // The index-0 row's `Sent` was never journaled (untrusted, not AT0's
-    // signed lock), so it gives way to the self-spend's evidence.
-    assert_eq!(
-        of(AT0),
-        vec![DispatchResolution::Sent, DispatchResolution::NotSent]
-    );
+    // signed lock), so it gives way to the self-spend's evidence. (It was
+    // the step's first reading after the reload: a baseline, announced by
+    // no event.)
+    assert_eq!(of(AT0), vec![DispatchResolution::NotSent]);
 }
 
 /// A `Built` row is the live pipeline's own build, whatever its index: it
@@ -1428,6 +1474,7 @@ async fn a_markerless_registration_step_reads_maybe_sent_over_an_unattributed_ro
         vec![TrackedRow {
             key: key(3),
             trusted: true,
+            sighashes: None,
             ..lost
         }],
     );
@@ -1452,7 +1499,7 @@ async fn an_unattributed_row_is_not_given_to_another_drafts_marker() {
         vec![DraftKey::registration(3, 3), DraftKey::registration(4, 0)],
     );
     t.refresh_funding(W).await;
-    maybe_sent(&l, AT0, 0).await;
+    maybe_sent(&t, &l, AT0, 0).await;
     // A definite NotSent of draft 3 (a Lock before its first signature).
     let p = l
         .call_permit_step("funding", quote(10, 0), funding(AT3, 3))
@@ -1475,6 +1522,24 @@ async fn an_unattributed_row_is_not_given_to_another_drafts_marker() {
     );
 }
 
+/// With no lock of the step known (a marker of a build before schema 6,
+/// OD-02), Repair refuses it, whatever a scan of the chain finds (reviews
+/// R1-01, P2b r4 R4-01). In the process that marked it, the marker is
+/// flagged: with no signed record, nothing was sent (§2a.7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repair_refuses_a_legacy_step_with_no_known_lock() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    legacy_maybe_sent(&l, &j, TOPUP, 11).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(NotSent));
+    let (t, _) = reload(&j, &src).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
+    assert_eq!(
+        t.record_self_spend(W, TOPUP, [0xed; 32], &[]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
 // --- Repair's self-spend (§6.5, §2a.5 row 1; commit 7) --------------------
 
 /// Repair records its self-spend against the step's standing marker in the
@@ -1487,15 +1552,6 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
     use dw_appdb::dispatch::{Resolution, StepEvent};
     let (t, rec, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    // With no lock of the step known, Repair refuses it, whatever a scan of
-    // the chain finds (reviews R1-01, P2b r4 R4-01).
-    const BLIND: &str = "topup/k/funding";
-    maybe_sent(&l, BLIND, 11).await;
-    assert_eq!(
-        t.record_self_spend(W, BLIND, [0xed; 32], &[]).await,
-        Err(StuckFundingRefusal::NoKnownLock)
-    );
-
     let lock = row(3, 9, R::Built);
     signed_maybe_sent(&t, &l, TOPUP, 9, &lock).await;
     let id = ArtifactId::of_step(&W, TOPUP);
@@ -1697,7 +1753,7 @@ async fn a_proved_funding_is_journaled_sent_and_outlives_its_row() {
     use StuckFundingRefusal as F;
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 9).await;
+    maybe_sent(&t, &l, TOPUP, 9).await;
     src.set_rows(W, vec![row(1, 9, R::ChainLocked)]);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
@@ -1796,7 +1852,8 @@ async fn an_index_0_registrations_own_lock_is_journaled_sent() {
 async fn an_unattributed_index_0_row_is_not_the_steps_own() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, REG, 0).await;
+    legacy_maybe_sent(&l, &j, REG, 0).await;
+    let (t, _) = reload(&j, &src).await;
     src.set_rows(W, vec![row(1, 0, R::Broadcast)]);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, REG), Some(WillBeSent));
@@ -1832,8 +1889,8 @@ async fn a_row_two_calls_could_have_signed_is_neither_steps_own() {
         .call_permit_step("funding", quote(10, 0), funding(B, 0))
         .await
         .unwrap();
-    pa.signatures().note_released();
-    pb.signatures().note_released();
+    sign_lost_lock(&t, &pa, W);
+    sign_lost_lock(&t, &pb, W);
     t.note_tracked(W, &[(txid(1), key(0))]);
     assert_eq!(pa.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(pb.finish(false), FlowOutcome::MaybeSent);
@@ -1874,14 +1931,15 @@ async fn a_sent_call_without_its_row_is_journaled_once_proved() {
 /// `Sent` in memory and its row stays owed, so the journal's close writes
 /// it, even after the row is gone. A kill before that: the reopened
 /// process derives the step from its row again and writes it; with the row
-/// gone too, it reads `MaybeSent` and Repair refuses (no lock known).
+/// gone too, it reads `MaybeSent` and Repair must take the lost lock's
+/// input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_proved_fundings_failed_sent_write_stays_owed() {
     use StuckFundingRefusal as F;
     for panics in [false, true] {
         let (t, _, j, src) = setup().await;
         let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-        maybe_sent(&l, TOPUP, 9).await;
+        let lost = maybe_sent(&t, &l, TOPUP, 9).await;
         let id = ArtifactId::of_step(&W, TOPUP);
         let fault = if panics { &j.panic_sent } else { &j.fail_sent };
         fault.store(true, Ordering::SeqCst);
@@ -1911,7 +1969,7 @@ async fn a_proved_fundings_failed_sent_write_stays_owed() {
         assert_eq!(t2.funding_status(W, TOPUP), Some(MaybeSent));
         assert_eq!(
             t2.record_self_spend(W, TOPUP, [1; 32], &[]).await,
-            Err(F::NoKnownLock)
+            Err(F::MissesSignedLock(lost))
         );
         // With the row read again, the reopened process writes it.
         src.set_rows(W, proved);
@@ -1950,7 +2008,7 @@ async fn a_lock_reports_a_resumed_flows_funding_by_its_status() {
     ] {
         let (t, _, j, src) = setup().await;
         let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-        maybe_sent(&l, TOPUP, 9).await;
+        maybe_sent(&t, &l, TOPUP, 9).await;
         src.set_rows(W, rows);
         let (t2, _) = reload(&j, &src).await;
         let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
@@ -1995,7 +2053,7 @@ async fn a_lock_reports_a_resumed_flows_funding_by_its_status() {
 async fn a_failed_funding_call_proved_later_is_reported_sent() {
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 9).await;
+    maybe_sent(&t, &l, TOPUP, 9).await;
     src.set_rows(W, vec![row(1, 9, R::ChainLocked)]);
     t.refresh_funding(W).await;
     let report = t.lock(RevokeCause::Lock, super::tests::status).await;
@@ -2022,8 +2080,8 @@ async fn a_lock_reports_a_cancelled_call_whose_not_sent_row_is_owed() {
     until(|| t.with_j(|i, _| !i.fence.call_resolving(&step))).await;
     assert_eq!(
         t.funding_status(W, TOPUP),
-        Some(MaybeSent),
-        "the marker stands"
+        Some(NotSent),
+        "the marker stands, with no signed record (§2a.7)"
     );
     let report = t.lock(RevokeCause::Lock, super::tests::status).await;
     let flow = only_flow(&report);
@@ -2123,12 +2181,14 @@ async fn review_r2_unrelated_conflict_must_not_resolve_current_not_sent() {
 
 /// Sol r2's probe: an index-0 lock no call was seen to sign, first proved
 /// after a restart, is not journaled; with its row lost the step reads
-/// `MaybeSent` and Repair refuses.
+/// `MaybeSent` and Repair refuses. Since schema 6 a call's lock has a
+/// durable record before it can be sent (§2a.7), so this needs a marker
+/// from before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn review_r2_index_zero_first_proved_after_restart_fails_closed_on_row_loss() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, REG, 0).await;
+    legacy_maybe_sent(&l, &j, REG, 0).await;
     let (reopened, _) = reload(&j, &src).await;
     src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
     reopened.refresh_funding(W).await;
@@ -2209,67 +2269,108 @@ async fn a_signed_locks_inputs_outlive_its_row() {
     );
 }
 
-/// A signed lock's write that failed is retried by the call's next store of
-/// it, and written once (§2a.6).
+/// `f` stops the process (§2a.7: `fail_closed` panics in
+/// tests); the reason it gives.
+fn fails_closed(f: impl FnOnce()) -> String {
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("fails closed");
+    let why = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(why.starts_with("fail closed: "), "{why}");
+    why
+}
+
+/// A signed lock's failing append is retried before the store returns,
+/// and written once (§2a.7). One that keeps failing stops the process
+/// inside the store, before the library's send; the restarted process
+/// reads the step `NotSent`: its marker is flagged, and no lock of it was
+/// recorded or sent (PA-2; review DP1-02 r8 R8-01, whose lost record let
+/// a possibly sent funding read unfunded).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_signed_locks_failed_write_is_retried_by_the_next_store() {
+async fn a_signed_locks_failing_write_is_retried_then_stops_the_process() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let p = l
         .call_permit_step("funding", quote(10, 0), funding(REG, 0))
         .await
         .unwrap();
-    let durable = || {
+    let durable = |t: &LeaseTable| {
         t.with_j(|i, _| {
             (i.fence.signed_locks(&W, REG).iter())
                 .map(|l| l.durable)
                 .collect::<Vec<_>>()
         })
     };
-    j.fail_signed_lock.store(true, Ordering::SeqCst);
+    j.fail_signed_lock.store(2, Ordering::SeqCst);
     let own = row(1, 0, R::Built);
     sign_lock(&t, &p, W, &own);
-    assert_eq!(durable(), vec![false]);
-    assert!(j.signed_lock_rows().is_empty());
-    j.fail_signed_lock.store(false, Ordering::SeqCst);
+    assert_eq!(durable(&t), vec![true]);
     sign_lock(&t, &p, W, &own);
-    sign_lock(&t, &p, W, &own);
-    assert_eq!(durable(), vec![true]);
     assert_eq!(j.signed_lock_rows().len(), 1);
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     let (reopened, _) = reload(&j, &src).await;
-    assert_eq!(
-        reopened.check_stuck_funding(W, REG).unwrap(),
-        vec![(own.txid, own.inputs)]
-    );
-}
+    assert_eq!(reopened.signed_lock_txids(W, REG), vec![own.txid]);
+    assert_eq!(reopened.funding_status(W, REG), Some(MaybeSent));
 
-/// Every lock one call signed is the step's, durably, and Repair's
-/// self-spend must take an input of each (§2a.6).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn each_lock_a_call_signed_is_recorded() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let p = l
         .call_permit_step("funding", quote(10, 0), funding(REG, 0))
         .await
         .unwrap();
-    let (first, second) = (row(1, 0, R::Built), row(2, 0, R::Built));
+    j.fail_signed_lock.store(u64::MAX, Ordering::SeqCst);
+    let why = fails_closed(|| sign_lock(&t, &p, W, &own));
+    assert!(why.contains("keeps failing"), "{why}");
+    // Until the process stops, the pending record keeps the step from
+    // reading `NotSent`.
+    assert_eq!(durable(&t), vec![false]);
+    assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
+    let killed = j.snapshot();
+    drop(p);
+    assert!(killed.signed_lock_rows().is_empty());
+    let (restarted, _) = reload(&killed, &src).await;
+    assert!(restarted.call_step(W, REG).durable_record);
+    assert!(restarted.signed_lock_txids(W, REG).is_empty());
+    assert_eq!(restarted.funding_status(W, REG), Some(NotSent));
+}
+
+/// One lock per call (O-1): once a lock the call signed is recorded, the
+/// call signs no other sighash; the lock's own again (an identical retry)
+/// it does. So Repair's self-spend need take an input of the recorded
+/// lock only (Opus review O-1's probe: a second lock under one permit,
+/// its record lost, let a self-spend of the first read the step
+/// `NotSent`). The real signer is `session_tests`'
+/// `mode_b_a_funding_signer_signs_one_lock_per_call`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_signs_no_second_lock_once_its_lock_is_recorded() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    let first = row(1, 0, R::Built);
+    let second_sighash = [2; 32];
+    assert!(
+        p.signatures().admits(second_sighash),
+        "nothing recorded yet"
+    );
     sign_lock(&t, &p, W, &first);
-    sign_lock(&t, &p, W, &second);
+    assert!(!p.signatures().closed());
+    assert!(!p.signatures().admits(second_sighash), "a second lock");
+    assert!(p.signatures().admits([1; 32]), "the first lock's again");
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
-    assert_eq!(j.signed_lock_rows().len(), 2);
+    assert_eq!(j.signed_lock_rows().len(), 1);
     let (reopened, _) = reload(&j, &src).await;
     assert_eq!(
         reopened.check_stuck_funding(W, REG).unwrap(),
-        vec![(first.txid, first.inputs), (second.txid, second.inputs)]
+        vec![(first.txid, first.inputs)]
     );
 }
 
-/// A lock signed while the journal is closed is the step's in this process
-/// only: Repair conflicts with it, nothing is written.
+/// A lock signed while the journal is not ready cannot be recorded
+/// durably: the process stops before the library's send, and nothing is
+/// written (§2a.7).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_lock_signed_while_the_journal_is_closed_is_kept_in_memory() {
+async fn a_lock_signed_while_the_journal_is_closed_stops_the_process() {
     let (t, _, j, _) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let p = l
@@ -2277,27 +2378,16 @@ async fn a_lock_signed_while_the_journal_is_closed_is_kept_in_memory() {
         .await
         .unwrap();
     t.close_journal().await;
-    let own = row(1, 0, R::Built);
-    sign_lock(&t, &p, W, &own);
+    let why = fails_closed(|| sign_lock(&t, &p, W, &row(1, 0, R::Built)));
+    assert!(why.contains("not ready"), "{why}");
     assert!(j.signed_lock_rows().is_empty());
-    let durable = t.with_j(|i, _| {
-        (i.fence.signed_locks(&W, REG).iter())
-            .map(|l| l.durable)
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(durable, vec![false]);
-    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
-    assert_eq!(
-        t.check_stuck_funding(W, REG).unwrap(),
-        vec![(own.txid, own.inputs)]
-    );
 }
 
-/// The step's marker no longer stands on disk when its signed lock is
-/// written: nothing is written, and the lock is known in this process
-/// only.
+/// The step's marker no longer stands when its signed lock is recorded
+/// (in memory, or on disk at the append): the process stops, nothing is
+/// written (§2a.7).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_signed_lock_whose_marker_no_longer_stands_is_not_written() {
+async fn a_signed_lock_whose_marker_no_longer_stands_stops_the_process() {
     let (t, _, j, _) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let p = l
@@ -2305,49 +2395,18 @@ async fn a_signed_lock_whose_marker_no_longer_stands_is_not_written() {
         .await
         .unwrap();
     j.signed_lock_unmarked.store(true, Ordering::SeqCst);
-    let own = row(1, 0, R::Built);
-    sign_lock(&t, &p, W, &own);
+    let why = fails_closed(|| sign_lock(&t, &p, W, &row(1, 0, R::Built)));
+    assert!(why.contains("no longer stands on disk"), "{why}");
     assert!(j.signed_lock_rows().is_empty());
-    let durable = t.with_j(|i, _| {
-        (i.fence.signed_locks(&W, REG).iter())
-            .map(|l| l.durable)
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(durable, vec![false]);
-    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
 }
 
-/// The signed lock's write fails: it is the step's own in this process
-/// (Repair conflicts with it), and after a restart no lock of the step is
-/// known (fail closed).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_signed_lock_the_journal_lost_is_known_in_its_process_only() {
-    let (t, _, j, src) = setup().await;
-    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    let p = l
-        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
-        .await
-        .unwrap();
-    j.fail_signed_lock.store(true, Ordering::SeqCst);
-    let own = row(1, 0, R::Built);
-    sign_lock(&t, &p, W, &own);
-    j.fail_signed_lock.store(false, Ordering::SeqCst);
-    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
-    assert!(j.signed_lock_rows().is_empty());
-    assert_eq!(
-        t.check_stuck_funding(W, REG).unwrap(),
-        vec![(own.txid, own.inputs)]
-    );
-    let (reopened, _) = reload(&j, &src).await;
-    assert_eq!(
-        reopened.check_stuck_funding(W, REG).err(),
-        Some(StuckFundingRefusal::NoKnownLock)
-    );
-}
-
-/// Only a lock whose every input signs a sighash the running call signed is
-/// its own: one input short, another call's, or one stored after the call
-/// ended is not.
+/// Only a lock whose every input signs a sighash a running call signed is
+/// its own (§2a.6). One that may carry a call's signature without being
+/// provably its own stops the process before its send (§2a.7): one with
+/// only some of a call's signatures, a `Built` one whose signatures cannot
+/// be read while a call that released one runs, and one of a call that
+/// ended reaching the store unrecorded. Another call's lock, another
+/// wallet's, or an unreadable one not `Built` is not the call's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
     let (t, _, _, _) = setup().await;
@@ -2363,10 +2422,11 @@ async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
     pa.signatures().note_signed([1; 32]);
     pa.signatures().note_signed([3; 32]);
     pb.signatures().note_signed([2; 32]);
-    let lock = |n: u8, sighashes: Option<Vec<[u8; 32]>>| StoredLock {
+    let lock = |n: u8, sighashes: Option<Vec<[u8; 32]>>, built: bool| StoredLock {
         txid: txid(n),
         inputs: vec![OutPoint::new(txid(100 + n), 0), OutPoint::new(txid(200), 0)],
         sighashes,
+        built,
     };
     let signed = |step: &str| {
         t.with_j(|i, _| {
@@ -2375,23 +2435,27 @@ async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
                 .collect::<Vec<_>>()
         })
     };
-    t.record_signed_locks(
-        W,
-        &[
-            lock(3, Some(vec![[1; 32], [9; 32]])),
-            lock(4, Some(vec![[1; 32], [2; 32]])),
-            lock(5, None),
-            lock(6, Some(Vec::new())),
-            lock(7, Some(vec![[1; 32], [3; 32]])),
-        ],
-    );
+    let record = |l: StoredLock| t.record_signed_locks(W, &[l]);
+    for (partial, n) in [(vec![[1; 32], [9; 32]], 3), (vec![[1; 32], [2; 32]], 4)] {
+        let why = fails_closed(|| record(lock(n, Some(partial), true)));
+        assert!(why.contains("only some"), "{why}");
+    }
+    let why = fails_closed(|| record(lock(5, None, true)));
+    assert!(why.contains("unverifiable built"), "{why}");
+    record(lock(5, None, false));
+    record(lock(6, Some(Vec::new()), true));
+    record(lock(7, Some(vec![[1; 32], [3; 32]]), true));
     assert_eq!(signed(REG), vec![txid(7)]);
     assert!(signed(TOPUP).is_empty());
-    t.record_signed_locks(W2, &[lock(8, Some(vec![[1; 32]]))]);
+    t.record_signed_locks(W2, &[lock(8, Some(vec![[1; 32]]), true)]);
     assert_eq!(signed(REG), vec![txid(7)], "another wallet's lock");
     assert_eq!(pa.finish(false), FlowOutcome::MaybeSent);
-    t.record_signed_locks(W, &[lock(9, Some(vec![[1; 32]]))]);
-    assert_eq!(signed(REG), vec![txid(7)], "after the call ended");
+    // The ended call's recorded lock stored again; then a lock with its
+    // signature that was never recorded.
+    record(lock(7, Some(vec![[1; 32], [3; 32]]), false));
+    let why = fails_closed(|| record(lock(9, Some(vec![[1; 32]]), true)));
+    assert!(why.contains("ended funding call"), "{why}");
+    assert_eq!(signed(REG), vec![txid(7)]);
     assert_eq!(pb.finish(false), FlowOutcome::MaybeSent);
 }
 
@@ -2503,14 +2567,17 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
             .unwrap();
         // The old engine admitted this using unrelated B's heuristic
         // ownership.
-        j.insert_self_spend(&W.0, REG, &artifact.0, &[9; 32], &[], 3)
+        j.insert_self_spend(&W.0, REG, &artifact.0, &[9; 32], &[LEGACY_CONFLICT], 3)
             .unwrap();
         drop(j);
-        // Back to schema 3's layout: no provenance, no `signed_lock`.
+        // Back to schema 3's layout: no provenance, no `signed_lock`, no
+        // `durable_record`.
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
             "ALTER TABLE self_spend DROP COLUMN conflicts;
              ALTER TABLE self_spend DROP COLUMN provenance;
+             ALTER TABLE funding_marker DROP COLUMN durable_record;
+             DROP TABLE funding_tombstone;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2546,11 +2613,12 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
     assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
 }
 
-/// On a fresh schema 5 journal, a ChainLocked self-spend reads the step
-/// `NotSent` only while its record names an input of every signed lock of
-/// the step (review P2b r3 R3-01): one recorded with no conflicts or
-/// naming another lock or input shows nothing; the step reads
-/// `MaybeSent`.
+/// On a fresh journal, a ChainLocked self-spend reads the step `NotSent`
+/// only while its record names an input of every signed lock of the step
+/// (review P2b r3 R3-01): one naming another lock or input shows nothing;
+/// the step reads `MaybeSent`. One with no conflicts is refused by the
+/// journal (review Opus O-8a; the engine's guard against such a row is
+/// `an_empty_recorded_self_spend_without_a_signed_lock_never_reads_not_sent`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_without_its_conflict_evidence_never_reads_not_sent() {
     use dashcore::hashes::Hash as _;
@@ -2573,8 +2641,11 @@ async fn a_self_spend_without_its_conflict_evidence_never_reads_not_sent() {
         j.insert_signed_lock(&W.0, REG, &artifact.0, &lock, &[input], 3)
             .unwrap()
     );
-    let spends: [(u8, Vec<SelfSpendConflict>); 3] = [
-        (0xa1, Vec::new()),
+    assert!(
+        j.insert_self_spend(&W.0, REG, &artifact.0, &[0xa1; 32], &[], 4)
+            .is_err()
+    );
+    let spends: [(u8, Vec<SelfSpendConflict>); 2] = [
         (
             0xa2,
             vec![SelfSpendConflict {
@@ -2624,8 +2695,7 @@ async fn a_self_spend_without_its_conflict_evidence_never_reads_not_sent() {
 /// Repair records the input its self-spend takes of each signed lock of
 /// the step (review P2b r3 R3-01), and refuses a self-spend that misses
 /// one; the record survives a restart, so the ChainLocked self-spend reads
-/// the step `NotSent` there too, with the lock no longer known (its write
-/// failed).
+/// the step `NotSent` there too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_records_the_input_it_takes_of_each_signed_lock() {
     use StuckFundingRefusal as F;
@@ -2635,10 +2705,8 @@ async fn a_self_spend_records_the_input_it_takes_of_each_signed_lock() {
         .call_permit_step("funding", quote(10, 0), funding(REG, 0))
         .await
         .unwrap();
-    j.fail_signed_lock.store(true, Ordering::SeqCst);
     let own = row(1, 0, R::Built);
     sign_lock(&t, &p, W, &own);
-    j.fail_signed_lock.store(false, Ordering::SeqCst);
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     src.set_rows(W, vec![own.clone()]);
     t.refresh_funding(W).await;
@@ -2697,13 +2765,12 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
         },
     };
     let id = ArtifactId::of_step(&W, REG);
-    for (n, conflicts) in [(0xa1, vec![covers(&a)]), (0xa2, Vec::new())] {
-        assert!(
-            j.insert_self_spend(&W.0, REG, &id.0, &[n; 32], &conflicts)
-                .unwrap()
-        );
-        src.locked.lock().unwrap().insert([n; 32]);
-    }
+    assert!(
+        j.insert_self_spend(&W.0, REG, &id.0, &[0xa1; 32], &[covers(&a)])
+            .unwrap()
+    );
+    j.push_empty_self_spend(W, REG, [0xa2; 32]);
+    src.locked.lock().unwrap().extend([[0xa1; 32], [0xa2; 32]]);
     let (t, _) = reload(&j, &src).await;
     assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
     src.set_rows(W, vec![a.clone()]);
@@ -2776,14 +2843,17 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
         };
         j.insert_funding_step(&W.0, REG, &id.0, &key(0).stored(), 2)
             .unwrap();
-        j.insert_self_spend(&W.0, REG, &id.0, &s_id, &[], 3)
+        j.insert_self_spend(&W.0, REG, &id.0, &s_id, &[LEGACY_CONFLICT], 3)
             .unwrap();
         drop(j);
-        // Back to schema 3's layout: no provenance, no `signed_lock`.
+        // Back to schema 3's layout: no provenance, no `signed_lock`, no
+        // `durable_record`.
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
             "ALTER TABLE self_spend DROP COLUMN conflicts;
              ALTER TABLE self_spend DROP COLUMN provenance;
+             ALTER TABLE funding_marker DROP COLUMN durable_record;
+             DROP TABLE funding_tombstone;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2843,14 +2913,16 @@ async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
         };
         j.insert_signed_lock(&W.0, REG, &id.0, &own.txid.to_byte_array(), &[input], 3)
             .unwrap();
-        j.insert_self_spend(&W.0, REG, &id.0, &[0xa1; 32], &[], 4)
+        j.insert_self_spend(&W.0, REG, &id.0, &[0xa1; 32], &[LEGACY_CONFLICT], 4)
             .unwrap();
         drop(j);
-        // Back to schema 4's layout: no provenance.
+        // Back to schema 4's layout: no provenance, no `durable_record`.
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
             "ALTER TABLE self_spend DROP COLUMN conflicts;
              ALTER TABLE self_spend DROP COLUMN provenance;
+             ALTER TABLE funding_marker DROP COLUMN durable_record;
+             DROP TABLE funding_tombstone;
              UPDATE meta SET v = 4 WHERE k = 'schema'",
         )
         .unwrap();
@@ -2899,4 +2971,324 @@ async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
     );
     assert_eq!(spends[1].txid, [0xa2; 32]);
     assert!(matches!(&spends[1].provenance, SelfSpendProvenance::Conflicts(c) if c.len() == 1));
+}
+
+// --- Repair's resolution and DP1-02's view (ownership rev2 §9, §13.1) -----
+
+/// What [`LeaseTable::registration_funding_steps`] shows of `draft`.
+fn step_view(t: &LeaseTable, draft: i64) -> FundingStepView {
+    (t.registration_funding_steps(W).unwrap().into_iter())
+        .find(|v| v.draft == draft)
+        .unwrap()
+}
+
+/// Repair's resolution of a flagged step is durable (DP1-02 PA-3, review
+/// OD-06): its tombstone outlives the self-spend's ChainLock in the
+/// snapshot, the wallet's erase and a restart. The step reads `NotSent`
+/// over any row, its own key's included (C4); its signed lock is dead in
+/// the PA-1 view; no call of it starts again (`StepCancelled`, E0-04 H12).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repaired_step_stays_resolved_across_its_erase_and_a_restart() {
+    const AT3: &str = "registration/3/funding";
+    let (t, rec, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let (lock, own3) = (row(5, 7, R::Built), row(6, 3, R::Built));
+    signed_maybe_sent(&t, &l, REG, 7, &lock).await;
+    signed_maybe_sent(&t, &l, AT3, 3, &own3).await;
+    signed_maybe_sent(&t, &l, TOPUP, 9, &row(8, 9, R::Built)).await;
+    let view = |draft, key, signed| FundingStepView {
+        draft,
+        key,
+        status: Some(MaybeSent),
+        signed,
+        dead: Vec::new(),
+        durable_record: true,
+        recording: false,
+    };
+    assert_eq!(
+        t.registration_funding_steps(W).unwrap(),
+        vec![
+            view(3, key(3), vec![own3.txid]),
+            view(7, key(7), vec![lock.txid])
+        ],
+        "by draft; the top-up is no registration"
+    );
+
+    t.record_self_spend(W, REG, [0xee; 32], &lock.inputs)
+        .await
+        .unwrap();
+    t.refresh_funding(W).await;
+    assert!(j.tombstone_rows().is_empty(), "not ChainLocked yet");
+    src.locked.lock().unwrap().insert([0xee; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    until(|| j.tombstone_rows().len() == 1).await;
+    let stone = &j.tombstone_rows()[0];
+    assert_eq!(
+        (stone.step_id.as_str(), stone.self_spend),
+        (REG, [0xee; 32])
+    );
+    assert_eq!(
+        rec.resolved(),
+        vec![(REG.to_owned(), DispatchResolution::NotSent)],
+        "announced once"
+    );
+    let v = step_view(&t, 7);
+    assert_eq!(
+        (v.status, v.signed, v.dead, v.durable_record),
+        (Some(NotSent), vec![], vec![lock.txid], true)
+    );
+    assert_eq!(
+        l.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::StepCancelled)
+    );
+    assert_eq!(
+        t.record_self_spend(W, REG, [0xef; 32], &lock.inputs).await,
+        Err(StuckFundingRefusal::NotStuck(Some(NotSent)))
+    );
+
+    // The wallet's rows erased (§8.6): its marker stands, so its tombstone
+    // does too.
+    t.erase_wallet_rows(W).await;
+    assert_eq!(j.tombstone_rows().len(), 1);
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+
+    // A restart whose snapshot no longer shows the ChainLock, with an
+    // unattributed row and a pending one under the step's own key: no row
+    // is its lock (C4), and the resolution is never retracted.
+    src.locked.lock().unwrap().clear();
+    src.set_rows(
+        W,
+        vec![row(1, 0, R::RecoveredFromChain), row(2, 7, R::Broadcast)],
+    );
+    let (t2, rec2) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, REG), Some(NotSent));
+    assert_eq!(t2.funding_status(W, AT3), Some(MaybeSent));
+    let v = step_view(&t2, 7);
+    assert_eq!(
+        (v.status, v.signed, v.dead),
+        (Some(NotSent), vec![], vec![lock.txid])
+    );
+    assert_eq!(step_view(&t2, 3).signed, vec![own3.txid]);
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    assert_eq!(
+        l2.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::StepCancelled)
+    );
+    t2.refresh_funding(W).await;
+    assert!(
+        !rec2.resolved().iter().any(|(s, _)| s == REG),
+        "nothing moves it: {:?}",
+        rec2.resolved()
+    );
+    assert_eq!(j.snapshot().tombstone_rows().len(), 1);
+}
+
+/// A tombstone whose write fails stays owed: the step reads `NotSent` and
+/// refuses its call meanwhile, though a later snapshot no longer shows the
+/// ChainLock (a ChainLock is final), and the next refresh writes it (PA-3,
+/// review P2b r5 validator).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_tombstone_write_stays_owed() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let lock = row(5, 7, R::Built);
+    signed_maybe_sent(&t, &l, REG, 7, &lock).await;
+    t.record_self_spend(W, REG, [0xee; 32], &lock.inputs)
+        .await
+        .unwrap();
+    j.fail_tombstone.store(true, Ordering::SeqCst);
+    src.locked.lock().unwrap().insert([0xee; 32]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    until(|| t.with_j(|i, _| i.fence.tombstoning.is_empty())).await;
+    assert!(j.tombstone_rows().is_empty());
+    src.locked.lock().unwrap().clear();
+    t.refresh_funding(W).await;
+    until(|| t.with_j(|i, _| i.fence.tombstoning.is_empty())).await;
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    assert!(j.tombstone_rows().is_empty());
+    assert_eq!(
+        l.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::StepCancelled)
+    );
+    j.fail_tombstone.store(false, Ordering::SeqCst);
+    t.refresh_funding(W).await;
+    until(|| j.tombstone_rows().len() == 1).await;
+}
+
+/// A kill in the middle of a call that signed nothing (DP1-02 C5; Opus
+/// crash probe F1 window (a)): the flagged marker reads `NotSent`, as its
+/// row would, and still refuses a call of the step. Repair has nothing to
+/// resolve.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_mid_call_that_signed_nothing_reads_not_sent_and_refuses_the_step() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap();
+    assert_eq!(t.funding_status(W, REG), Some(MaybeSent), "its call runs");
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, REG), Some(NotSent));
+    let v = step_view(&t2, 7);
+    assert_eq!(
+        (v.status, v.signed, v.dead, v.durable_record),
+        (Some(NotSent), vec![], vec![], true)
+    );
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    l2.bind_funding_step(REG);
+    assert!(!funds_committed(&l2));
+    assert_eq!(
+        l2.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(NotSent)))
+    );
+    assert_eq!(
+        t2.record_self_spend(W, REG, [1; 32], &lock_inputs()).await,
+        Err(StuckFundingRefusal::NotStuck(Some(NotSent)))
+    );
+    std::mem::forget(p); // the dead process never ends it
+}
+
+fn lock_inputs() -> Vec<OutPoint> {
+    vec![OutPoint::new(txid(101), 0)]
+}
+
+/// A journal not read at start (unopenable, a newer schema) shows no
+/// marker, which says nothing (review Opus O-3; its crash probe
+/// `opus_crash_journal_unavailable_after_restart_reads_a_marked_step`): a
+/// marked step reads `MaybeSent`, so a lease bound to it has committed
+/// funds; the PA-1 view refuses rather than list nothing; no call starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_journal_not_read_reads_a_marked_step_maybe_sent() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    signed_maybe_sent(&t, &l, REG, 7, &row(1, 7, R::Built)).await;
+    assert!(!j.signed_lock_rows().is_empty());
+    let (t2, rec2) = table();
+    t2.load_journal_with(None, Vec::new(), Vec::new(), Default::default());
+    t2.install_tracked(src.clone());
+    assert!(t2.refresh_funding(W).await);
+    assert_eq!(t2.funding_status(W, REG), Some(MaybeSent));
+    assert_eq!(
+        t2.registration_funding_steps(W),
+        Err(FundingStepsUnavailable)
+    );
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    l2.bind_funding_step(REG);
+    assert!(funds_committed(&l2));
+    assert!(matches!(
+        l2.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await,
+        Err(LeaseError::JournalUnavailable)
+    ));
+    // A row of its draft's key that proves it still reads `Sent`.
+    src.set_drafts(W, vec![DraftKey::registration(7, 7)]);
+    src.set_rows(W, vec![row(1, 7, R::ChainLocked)]);
+    t2.refresh_funding(W).await;
+    assert_eq!(t2.funding_status(W, REG), Some(Sent));
+    assert!(
+        rec2.resolved()
+            .iter()
+            .all(|(_, r)| *r != DispatchResolution::NotSent)
+    );
+}
+
+/// The empty-record guard of `shows_conflict` (review Opus O-10; the
+/// mutation sub-review's M1): a recorded self-spend showing the conflict
+/// with nothing, under a legacy step no signed lock is known of, never
+/// resolves it, ChainLocked or not. Without the guard, "every signed
+/// lock" is vacuously all of none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_recorded_self_spend_without_a_signed_lock_never_reads_not_sent() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    legacy_maybe_sent(&l, &j, REG, 7).await;
+    assert!(j.signed_lock_rows().is_empty());
+    let id = ArtifactId::of_step(&W, REG);
+    assert!(
+        JournalBackend::insert_self_spend(&*j, &W.0, REG, &id.0, &[0xe1; 32], &[]).is_err(),
+        "the journal refuses one now (O-8a)"
+    );
+    j.push_empty_self_spend(W, REG, [0xe1; 32]);
+    src.locked.lock().unwrap().insert([0xe1; 32]);
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(spent(&t2.call_step(W, REG)), vec![[0xe1; 32]]);
+    assert_eq!(t2.funding_status(W, REG), Some(MaybeSent));
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    assert_eq!(
+        l2.call_permit_step("funding", quote(10, 0), funding(REG, 7))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(MaybeSent)))
+    );
+}
+
+/// Each of Repair's refusals has its own code, and says whether the same
+/// Repair may pass later unaided (review Opus O-5, O-13b).
+#[test]
+fn a_repair_refusal_has_a_code_and_says_whether_it_passes() {
+    use StuckFundingRefusal as F;
+    let all = [
+        (F::RowsUnknown, "rows_unknown", true),
+        (F::NotStuck(Some(Sent)), "not_stuck", false),
+        (F::NoMarker, "no_marker", false),
+        (F::CallRunning, "call_running", true),
+        (F::JournalUnavailable, "journal_unavailable", true),
+        (F::SpendUnsettled(txid(1)), "spend_unsettled", true),
+        (F::LockInputsSpent(txid(1)), "lock_inputs_spent", false),
+        (F::MissesSignedLock(txid(1)), "misses_signed_lock", false),
+        (F::UnattributedLock(txid(1)), "unattributed_lock", false),
+        (F::NoKnownLock, "no_known_lock", false),
+    ];
+    for (r, code, passes) in all {
+        assert_eq!((r.code(), r.retry_later()), (code, passes), "{r:?}");
+    }
+    assert_eq!(
+        F::LockInputsSpent(txid(1)).to_string(),
+        format!(
+            "asset lock {}: every coin it spends is already spent",
+            txid(1)
+        )
+    );
+}
+
+/// A copy of an ended call's lock stored with another txid and not `Built`
+/// (a reconstruction of a malleated copy, whose signatures read the same
+/// sighashes) was sent by someone else: it is not the step's own, and the
+/// process goes on. Stored `Built`, only the builder could have stored it,
+/// before its send: the process stops (§2a.7, review P2b r5 validator).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malleated_copy_of_an_ended_calls_lock_stops_nothing() {
+    let (t, _, _, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let lock = row(5, 7, R::Built);
+    signed_maybe_sent(&t, &l, REG, 7, &lock).await;
+    let copy = StoredLock {
+        txid: txid(9),
+        inputs: lock.inputs.clone(),
+        sighashes: Some(vec![[5; 32]]),
+        built: false,
+    };
+    t.record_signed_locks(W, std::slice::from_ref(&copy));
+    assert_eq!(t.signed_lock_txids(W, REG), vec![lock.txid]);
+    let why = fails_closed(|| {
+        t.record_signed_locks(
+            W,
+            &[StoredLock {
+                built: true,
+                ..copy
+            }],
+        )
+    });
+    assert!(why.contains("ended funding call"), "{why}");
 }

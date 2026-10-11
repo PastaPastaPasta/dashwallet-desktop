@@ -240,7 +240,7 @@ use dw_appdb::dispatch::{Resolution, StepEvent};
 use platform_wallet::AssetLockFundingType;
 
 use super::fence::{JournalBackend, Mark};
-use super::tests::{DURABLE, FakeJournal, W2, key, quote, until, with_journal};
+use super::tests::{DURABLE, FakeJournal, W2, key, quote, row, sign_lock, until, with_journal};
 
 const SUBMIT: &str = "withdrawal/w/submit";
 const FUNDING: &str = "registration/d/funding";
@@ -418,20 +418,28 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     );
 
     // Killed after the marker, while the call runs: the marker and its
-    // funding key stand; a later call of the step is prior-marked, so a
-    // failure that released nothing reads MaybeSent, not Cancelled.
+    // funding key stand. Killed before a lock of the call was recorded
+    // (running, or after a signature whose lock never reached the store),
+    // nothing of it can be out: its marker carries the durable-record
+    // guarantee (§2a.7), so it reads NotSent. Killed once its lock was
+    // recorded, it reads MaybeSent. Either way the marker stands and a
+    // second funding call of the step is refused.
+    use crate::platform::flows::DispatchState as D;
     let p = l
         .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
-    let kills_running = reload(&j);
-    // Killed once the call returned, before its resolution's write.
+    let kills_running = (reload(&j), D::NotSent);
     p.signatures().note_released();
-    let kills_returned = reload(&j);
-    for (t2, _) in [kills_running, kills_returned] {
+    let kills_released = (reload(&j), D::NotSent);
+    sign_lock(&t, &p, W, &row(7, 3, super::mode_b::TrackedStatus::Built));
+    // Killed once the call returned, before its resolution's write.
+    let kills_signed = (reload(&j), D::MaybeSent);
+    for ((t2, _), status) in [kills_running, kills_released, kills_signed] {
         let info = t2.call_step(W, FUNDING);
         assert_eq!(info.status, DURABLE);
         assert_eq!(info.funding, Some(key(3)));
+        assert!(info.durable_record);
         let l2 = begin(&t2, W, 1000, 1000, 0).await.unwrap();
         // A standing funding marker refuses a second funding call of its
         // step (§2a.5, commit 3's gate): no second lock is built.
@@ -439,9 +447,7 @@ async fn the_kill_matrix_of_a_funding_call_step() {
             l2.call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
                 .await
                 .unwrap_err(),
-            LeaseError::FundingBlocked(FundingBlock::Step(Some(
-                crate::platform::flows::DispatchState::MaybeSent
-            )))
+            LeaseError::FundingBlocked(FundingBlock::Step(Some(status)))
         );
         assert_eq!(spent(&l2), 0, "refused before the charge");
         assert_eq!(t2.call_step(W, FUNDING).status, DURABLE);
@@ -720,16 +726,24 @@ async fn a_call_step_under_another_funding_key_is_refused() {
         .call_permit_step("funding", quote(10, 0), other.clone())
         .await
         .unwrap();
-    p.signatures().note_released();
+    sign_lock(&t, &p, W, &row(8, 3, super::mode_b::TrackedStatus::Built));
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     let before = events(&j, W, FUNDING);
-    // The marker stands under `other`'s key.
-    for step in [funding_step(FUNDING), resumable(FUNDING)] {
+    // The marker stands under `other`'s key: a funding call under another
+    // key reads the step's status first (review Opus O-11), a resumable
+    // call the mismatch.
+    let maybe_sent = LeaseError::FundingBlocked(FundingBlock::Step(Some(
+        crate::platform::flows::DispatchState::MaybeSent,
+    )));
+    for (step, refusal) in [
+        (funding_step(FUNDING), maybe_sent),
+        (resumable(FUNDING), LeaseError::StepKeyMismatch),
+    ] {
         assert_eq!(
             l.call_permit_step("funding", quote(10, 0), step)
                 .await
                 .unwrap_err(),
-            LeaseError::StepKeyMismatch
+            refusal
         );
     }
     assert_eq!(spent(&l), 10, "only the MaybeSent call's charge");
@@ -761,8 +775,15 @@ async fn self_spends_load_with_their_funding_marker() {
     rows_read(&t);
     let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
     let id = ArtifactId::of_step(&W, FUNDING);
+    let c = dw_appdb::dispatch::SelfSpendConflict {
+        lock: [8; 32],
+        input: dw_appdb::dispatch::StoredOutPoint {
+            txid: [9; 32],
+            vout: 1,
+        },
+    };
     assert!(
-        !j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[])
+        !j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[c])
             .unwrap()
     );
     let p = l
@@ -772,7 +793,7 @@ async fn self_spends_load_with_their_funding_marker() {
     p.signatures().note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert!(
-        j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[])
+        j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[c])
             .unwrap()
     );
     let (t2, _) = reload(&j);
@@ -783,7 +804,10 @@ async fn self_spends_load_with_their_funding_marker() {
         info.self_spends,
         vec![SelfSpend {
             txid: [7; 32],
-            conflicts: Some(Vec::new()),
+            conflicts: Some(vec![(
+                dashcore::hashes::Hash::from_byte_array([8; 32]),
+                dashcore::OutPoint::new(dashcore::hashes::Hash::from_byte_array([9; 32]), 1)
+            )]),
         }]
     );
 }

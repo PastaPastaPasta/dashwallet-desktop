@@ -331,6 +331,7 @@ impl Fixture {
                         txid: Txid::from_byte_array([seed; 32]),
                         inputs: inputs.to_vec(),
                         sighashes: Some(vec![sighash]),
+                        built: true,
                     }],
                 );
             }
@@ -593,7 +594,7 @@ fn the_synchronous_lock_returns_after_its_gate_and_done_carries_the_report() {
     let view = own.view().unwrap();
     assert!(view.own_key);
     assert!(view.key_expires_in_secs.is_some());
-    own.funding_signer().unwrap();
+    own.uncounted_funding_signer().unwrap();
     // The async lock returns the report.
     let report = f.engine.block_on(f.session.lock_vault()).unwrap();
     assert_eq!(own.state(), Some(LeaseState::Revoked(RevokeCause::Lock)));
@@ -791,11 +792,11 @@ fn the_key_window_parks_at_key_until_and_follows_the_proof_wait() {
         };
         // Without funding: the key drops at key_until and the lease parks.
         let a = begin(grant(&f)).await.unwrap();
-        a.funding_signer().unwrap();
+        a.uncounted_funding_signer().unwrap();
         tokio::time::sleep(ttl + Duration::from_millis(150)).await;
         assert_eq!(a.state(), Some(LeaseState::Parked));
         assert_eq!(
-            a.funding_signer().unwrap_err(),
+            a.uncounted_funding_signer().unwrap_err(),
             LeaseError::Parked(BudgetPurpose::Funding)
         );
         assert!(t.inspect(|i| i.leases[&a.id()].key.is_none()));
@@ -809,7 +810,7 @@ fn the_key_window_parks_at_key_until_and_follows_the_proof_wait() {
         t.proof_wait_started(wallet, art(1), ttl * 3);
         assert_eq!(b.state(), Some(LeaseState::AwaitingProof));
         tokio::time::sleep(ttl + Duration::from_millis(150)).await;
-        b.funding_signer().unwrap();
+        b.uncounted_funding_signer().unwrap();
         tokio::time::sleep(ttl * 2).await;
         assert_eq!(b.state(), Some(LeaseState::Parked));
 
@@ -1258,11 +1259,13 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
     assert!(permit.signatures().locked());
     assert_eq!(permit.signatures().released(), 1);
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    // No lock carrying the signature was stored, so none was recorded and
+    // none sent (§2a.7).
     assert_eq!(
         f.engine
             .block_on(dashpay.dispatch_status(STEP.into()))
             .unwrap(),
-        Some(DispatchState::MaybeSent)
+        Some(DispatchState::NotSent)
     );
     // A resumable step id reads its marker: none here.
     assert_eq!(
@@ -1276,6 +1279,68 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
             .block_on(dashpay.dispatch_status("not a step".into())),
         Err(PlatformError::InvalidArgument { .. })
     ));
+}
+
+/// One lock per call (O-1): once a lock the call signed is recorded, the
+/// permit's funding signer refuses every sighash it has not signed; the
+/// recorded lock's own it signs again (an identical retry).
+#[test]
+fn mode_b_a_funding_signer_signs_one_lock_per_call() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    let permit = f
+        .engine
+        .block_on(s.funding_call_permit(
+            &l,
+            "create_funded_asset_lock_proof",
+            1_000_000,
+            STEP.into(),
+            FundingKey {
+                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index: 0,
+                account: 0,
+            },
+            f.fence(),
+        ))
+        .unwrap();
+    let signer = permit.funding_signer().unwrap();
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    for sighash in [[1; 32], [2; 32]] {
+        f.engine
+            .block_on(signer.sign_ecdsa(&path, sighash))
+            .unwrap();
+    }
+    s.leases.record_signed_locks(
+        f.wallet,
+        &[StoredLock {
+            txid: Txid::from_byte_array([1; 32]),
+            inputs: vec![OutPoint::new(Txid::from_byte_array([7; 32]), 0)],
+            sighashes: Some(vec![[1; 32], [2; 32]]),
+            built: true,
+        }],
+    );
+    assert!(matches!(
+        f.engine.block_on(signer.sign_ecdsa(&path, [3; 32])),
+        Err(dw_vault::SignerError::PathNotAllowed(_))
+    ));
+    f.engine
+        .block_on(signer.sign_ecdsa(&path, [2; 32]))
+        .unwrap();
+    assert_eq!(
+        permit.signatures().released(),
+        3,
+        "the refusal released nothing"
+    );
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
 }
 
 /// Reviews M-3, M-4: a funding permit vouches for its step's key, so it
@@ -1342,7 +1407,9 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
 
 /// Review M-1: a counting signer kept past its permit (a clone the library
 /// still holds) signs nothing. A signature being signed when the permit
-/// ends counts: the step reads `MaybeSent`, not `NotSent`.
+/// ends counts: the call ends `MaybeSent`, not `Cancelled`. The step reads
+/// `NotSent`: no lock of the call was recorded, and one stored now stops
+/// the process before its send (§2a.7).
 #[test]
 fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
     use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -1380,13 +1447,17 @@ fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
     let count = permit.signatures();
     // The library is inside `sign_ecdsa` when the permit is dropped.
     let in_flight = count.begin().expect("open");
-    drop(permit);
+    assert_eq!(
+        permit.finish(false),
+        FlowOutcome::MaybeSent,
+        "not Cancelled"
+    );
     assert_eq!(
         f.engine
             .block_on(dashpay.dispatch_status(STEP.into()))
             .unwrap(),
-        Some(DispatchState::MaybeSent),
-        "neither Cancelled nor NotSent"
+        Some(DispatchState::NotSent),
+        "no lock recorded"
     );
     drop(in_flight);
     // Used afterwards: refused, nothing signed.
@@ -1415,7 +1486,7 @@ fn mode_b_a_signer_that_outlives_its_permit_signs_nothing() {
         f.engine
             .block_on(dashpay.dispatch_status(STEP.into()))
             .unwrap(),
-        Some(DispatchState::MaybeSent)
+        Some(DispatchState::NotSent)
     );
 }
 
@@ -1532,7 +1603,12 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
     };
     let repair_draft = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
     assert!(
-        matches!(repair_draft(), Err(EngineError::InvalidArgument(_))),
+        matches!(
+            repair_draft(),
+            Err(EngineError::StuckFunding(StuckFundingRefusal::NotStuck(
+                None
+            )))
+        ),
         "never started: nothing is stuck"
     );
 
@@ -1557,7 +1633,10 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
         ))
         .unwrap();
     assert!(
-        matches!(repair_draft(), Err(EngineError::InvalidArgument(_))),
+        matches!(
+            repair_draft(),
+            Err(EngineError::StuckFunding(StuckFundingRefusal::CallRunning))
+        ),
         "a call runs under the marker"
     );
     // The call signs its lock, which spends `a` (§2a.6), and fails.
@@ -1568,6 +1647,7 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
             txid: Txid::from_byte_array([51; 32]),
             inputs: vec![a],
             sighashes: Some(vec![[51; 32]]),
+            built: true,
         }],
     );
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
@@ -1677,6 +1757,74 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
     );
 }
 
+/// Review Opus O-2 (its probe
+/// `opus_probe_a_payment_can_take_a_signed_locks_inputs_and_wedge_repair`):
+/// the inputs of a signed lock whose row is gone stay held from payments
+/// while its step reads `MaybeSent`, so Repair's self-spend can still take
+/// them; once it resolves the step, they are free.
+#[test]
+fn mode_b_a_signed_locks_inputs_are_held_until_repair_resolves_its_step() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let _b = f.credit(2, COIN);
+    let s = &f.session;
+    // The step's call signed lock 70 over `a`, and its row is gone.
+    f.stuck_signing(STEP, 70, &[a]);
+    let status = || s.leases.funding_status(f.wallet, STEP);
+    let refresh = || {
+        let (leases, w) = (Arc::clone(&s.leases), f.wallet);
+        let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+        assert!(f.engine.block_on(refreshed).unwrap());
+    };
+    refresh();
+    assert_eq!(status(), Some(DispatchState::MaybeSent));
+    assert_eq!(
+        s.leases.unresolved_lock_inputs(f.wallet),
+        std::collections::HashSet::from([a])
+    );
+    let plain = f.draft(1_000);
+    plain.set_source(CoinSource::Outpoints(vec![a])).unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(plain.estimate())),
+        SendFailure::OutpointUnavailable(a),
+        "no payment takes the signed lock's input"
+    );
+
+    // Repair's self-spend takes it.
+    let draft = f
+        .engine
+        .block_on(s.stuck_funding_draft(f.wallet, STEP))
+        .unwrap();
+    let seam = Arc::new(SelfSpendSeam {
+        session: Arc::clone(s),
+        wallet: f.wallet,
+        step: STEP,
+        seen: Default::default(),
+    });
+    *draft.broadcaster.lock().unwrap() = Some(seam.clone());
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    f.engine
+        .block_on(s.send_self_spend(&draft, STEP, grant))
+        .unwrap();
+    let (tx, _) = seam.seen.lock().unwrap().take().expect("broadcast");
+    assert!(tx.input.iter().any(|i| i.previous_output == a));
+    f.record_tx(
+        tx,
+        key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(
+            key_wallet::transaction_checking::BlockInfo::new(
+                2,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            ),
+        ),
+        true,
+    );
+    refresh();
+    assert_eq!(status(), Some(DispatchState::NotSent));
+    assert!(s.leases.unresolved_lock_inputs(f.wallet).is_empty());
+}
+
 /// E0-04 §6.5 (C9), review of commit 7: the self-spend beats a lost lock
 /// only if no other spend of the wallet's coins is pending and it spends
 /// an input of every tracked row of the step. Repair refuses otherwise.
@@ -1690,7 +1838,7 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
     let s = &f.session;
     let repair = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
     let refused = |r: StuckFundingRefusal| match repair() {
-        Err(EngineError::InvalidArgument(m)) => assert_eq!(m, r.to_string()),
+        Err(EngineError::StuckFunding(got)) => assert_eq!(got, r),
         Err(e) => panic!("{e:?}"),
         Ok(_) => panic!("not refused: {r:?}"),
     };
@@ -1746,7 +1894,7 @@ fn repair_needs_a_lock_the_steps_call_signed() {
     let s = &f.session;
     let repair = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
     let refused = |r: StuckFundingRefusal| match repair() {
-        Err(EngineError::InvalidArgument(m)) => assert_eq!(m, r.to_string()),
+        Err(EngineError::StuckFunding(got)) => assert_eq!(got, r),
         Err(e) => panic!("{e:?}"),
         Ok(_) => panic!("not refused: {r:?}"),
     };
@@ -1773,9 +1921,7 @@ fn repair_refuses_a_trusted_row_no_call_of_the_step_signed() {
     let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
     assert!(f.engine.block_on(refreshed).unwrap());
     match f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP)) {
-        Err(EngineError::InvalidArgument(m)) => {
-            assert_eq!(m, StuckFundingRefusal::NoKnownLock.to_string())
-        }
+        Err(EngineError::StuckFunding(r)) => assert_eq!(r, StuckFundingRefusal::NoKnownLock),
         other => panic!("{other:?}"),
     }
 }
@@ -1813,7 +1959,15 @@ fn an_unrecorded_self_spend_is_released_unsent() {
     let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
     let out = f.engine.block_on(s.send_self_spend(&draft, STEP, grant));
     s.leases.journal.set(real);
-    assert!(matches!(out, Err(EngineError::Storage(_))), "{out:?}");
+    assert!(
+        matches!(
+            out,
+            Err(EngineError::StuckFunding(
+                StuckFundingRefusal::JournalUnavailable
+            ))
+        ),
+        "{out:?}"
+    );
     assert!(seam.seen.lock().unwrap().is_none(), "never broadcast");
     assert_eq!(f.reserved(), 1, "its inputs released: the lock's `a` only");
     assert!(s.leases.call_step(f.wallet, STEP).self_spends.is_empty());
@@ -2121,7 +2275,8 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     assert_eq!(on_disk(), row, "written once");
     // A lock of the call's key that the call did not sign is not the
     // step's: another signer's, or the call's signature copied onto other
-    // outputs (it no longer verifies).
+    // outputs (it no longer verifies; read not `Built`, which would stop
+    // the process: §2a.7).
     let other_key = dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
     let other = dashcore::secp256k1::PublicKey::from_secret_key(&other_key);
     let foreign = signed_lock_tx(b, COIN, &other, |sighash| {
@@ -2132,8 +2287,8 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     });
     let mut copied = own.clone();
     copied.output[0].value = COIN / 2;
-    for tx in [foreign, copied] {
-        stored(lock_changeset_of(tx.txid(), tx, 0, A::Built))
+    for (tx, status) in [(foreign, A::Built), (copied, A::Broadcast)] {
+        stored(lock_changeset_of(tx.txid(), tx, 0, status))
             .expect("the tap does not wait")
             .unwrap();
     }

@@ -2796,6 +2796,7 @@ mod tests {
                 dust_locked: false,
                 reserved: false,
                 lock_input: false,
+                unresolved_lock: false,
             },
             path: Some(path.parse().unwrap()),
             rounds,

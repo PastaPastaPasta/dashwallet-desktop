@@ -111,7 +111,7 @@ use dpp::prelude::Identifier;
 use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 
 use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
-use super::fence::{CallStepInfo, CallStepStatus};
+use super::fence::{CallStepInfo, CallStepStatus, JournalState};
 use super::resume::{Resumed, Resumer};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, FlowOutcome, Lease, LeaseError};
@@ -174,6 +174,11 @@ pub struct TrackedRow {
     /// *unattributed*: it may be the lock of any step of its funding type
     /// (the module doc's "Unattributed rows").
     pub trusted: bool,
+    /// A pending row's verified input sighashes ([`StoredLock`]): the
+    /// resume pass sends no lock a funding call of this process signed
+    /// before its record is durable (§2a.7, [`unrecorded_signer`]).
+    /// `None` for any other row.
+    pub sighashes: Option<Vec<[u8; 32]>>,
 }
 
 impl TrackedRow {
@@ -191,6 +196,10 @@ impl TrackedRow {
                 .map(|i| i.previous_output)
                 .collect(),
             trusted: index_trusted(&key, status),
+            sighashes: status
+                .pending()
+                .then(|| signed_sighashes(&lock.transaction))
+                .flatten(),
         }
     }
 }
@@ -206,14 +215,19 @@ pub(crate) struct StoredLock {
     /// carries no such signature: no call can then be shown to have signed
     /// the lock.
     pub(crate) sighashes: Option<Vec<[u8; 32]>>,
+    /// Its row is `Built`: only the library's builder stores one, before
+    /// its send (§2a.7).
+    pub(crate) built: bool,
 }
 
 impl StoredLock {
+    /// `tx`, its row read as not `Built`.
     pub(crate) fn of(tx: &Transaction) -> Self {
         Self {
             txid: tx.txid(),
             inputs: tx.input.iter().map(|i| i.previous_output).collect(),
             sighashes: signed_sighashes(tx),
+            built: false,
         }
     }
 }
@@ -461,7 +475,48 @@ pub enum FundingBlock {
     /// The step's own funding has committed: a marker stands, or its status
     /// is not `None`/`NotSent`. A new funding needs a new step.
     Step(Option<DispatchState>),
+    /// Repair resolved the step (its tombstone, DP1-02 PA-3): it reads
+    /// `NotSent` for good and is never called again (E0-04 H12). A new
+    /// funding needs a new step.
+    StepCancelled,
 }
+
+/// A registration funding step as DP1-02 reads it
+/// ([`LeaseTable::registration_funding_steps`], PA-1).
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FundingStepView {
+    /// The draft it funds: `registration/<draft>/funding`.
+    pub(crate) draft: i64,
+    /// The funding key its marker carries.
+    pub(crate) key: FundingKey,
+    /// Its status ([`LeaseTable::funding_status`]).
+    pub(crate) status: Option<DispatchState>,
+    /// The locks its call signed that may be on the wire (one at most:
+    /// O-1).
+    pub(crate) signed: Vec<Txid>,
+    /// The locks its call signed that Repair's ChainLocked self-spend made
+    /// unsendable: the step is resolved (its tombstone, PA-3) and never
+    /// called again, so they stay dead.
+    pub(crate) dead: Vec<Txid>,
+    /// Its marker carries the durable-record guarantee (§2a.7, OD-02).
+    pub(crate) durable_record: bool,
+    /// A signed lock's record is being written: the library's store of it
+    /// waits, and its send follows only once the record is durable.
+    pub(crate) recording: bool,
+}
+
+/// The dispatch journal is not read (not loaded, unopenable, a newer
+/// schema): which steps are claimed is unknown.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FundingStepsUnavailable;
 
 /// §2a.5's table for one funding step, first matching row wins:
 /// - `status`: the step's journal state (its marker and resolution);
@@ -486,7 +541,9 @@ pub enum FundingBlock {
 /// otherwise), so once ChainLocked it reads `NotSent` over such a row too.
 /// A row that came after the self-spend cannot be the step's lock either:
 /// the self-spend shows the conflict with every lock the step's one
-/// signing call built ([`SelfSpend`]).
+/// signing call built ([`SelfSpend`]). A flagged step Repair resolved
+/// never gets here: `derive_step` reads it `NotSent` first (DP1-02 C4),
+/// since a proved row of it would be one of its dead locks.
 pub(crate) fn derive_funding(
     status: CallStepStatus,
     rows: Option<&[TrackedStatus]>,
@@ -608,19 +665,108 @@ fn derive_step(
             .map(|r| r.status)
             .collect()
     });
-    // A ChainLocked self-spend counts only once its record shows the
-    // conflict (reviews P2b r3 R3-01, r4 R4-01).
     let signed = i.fence.signed_locks(&wallet, step);
-    let locked = snap.is_some_and(|s| {
-        info.self_spends
-            .iter()
-            .any(|spend| s.locked_spends.contains(&spend.txid) && spend.shows_conflict(signed))
-    });
+    let key = (wallet, step.to_owned());
+    let tombstoned =
+        i.fence.tombstones.contains_key(&key) || i.fence.owed_tombstones.contains_key(&key);
+    let locked = tombstoned || resolving_spend(i, wallet, &info, signed).is_some();
+    // Repair resolved a flagged step (DP1-02 C4, Q13): every lock its one
+    // signing call built was recorded before it could be sent (§2a.7), and
+    // the ChainLocked self-spend takes an input of each, so no row, however
+    // keyed or attributed, is its lock; no call of it runs again
+    // ([`FundingBlock::StepCancelled`]).
+    if locked && info.durable_record && info.status != CallStepStatus::Sent {
+        return Some(DispatchState::NotSent);
+    }
     let unattributed = snap.is_some_and(|s| {
         (locked && unattributed_row(s, step, &info).is_some())
             || markerless_unattributed_row(s, step, &info).is_some()
     });
-    derive_funding(info.status, rows.as_deref(), locked, unattributed)
+    // A flagged marker (§2a.7, review OD-02) no running call holds, under
+    // which no lock was ever signed: every lock a call under it signed was
+    // recorded before anything could send it, so it reads as its `NotSent`
+    // row would. The marker still stands (a call of the step stays vetoed).
+    let status = if matches!(info.status, CallStepStatus::Marked { .. })
+        && info.durable_record
+        && signed.is_empty()
+        && !funding_call_of(i, wallet, step)
+    {
+        CallStepStatus::NotSent
+    } else {
+        info.status
+    };
+    let derived = derive_funding(status, rows.as_deref(), locked, unattributed);
+    // A journal not read (unopenable, a newer schema, not loaded yet) shows
+    // no marker, which says nothing: the step may have been called (review
+    // Opus O-3). Like unknown rows, it never reads `None` or `NotSent`.
+    match derived {
+        None | Some(DispatchState::NotSent) if i.fence.journal != JournalState::Ready => {
+            Some(DispatchState::MaybeSent)
+        }
+        derived => derived,
+    }
+}
+
+/// The ChainLocked self-spend of Repair that resolves funding step `info`
+/// of `wallet` in the wallet's snapshot: its record shows the conflict
+/// with every signed lock of the step (`signed`; reviews P2b r3 R3-01, r4
+/// R4-01).
+pub(super) fn resolving_spend(
+    i: &Inner,
+    wallet: WalletId,
+    info: &CallStepInfo,
+    signed: &[SignedLock],
+) -> Option<[u8; 32]> {
+    let s = i.mode_b.snapshots.get(&wallet)?;
+    (info.self_spends.iter())
+        .find(|spend| s.locked_spends.contains(&spend.txid) && spend.shows_conflict(signed))
+        .map(|spend| spend.txid)
+}
+
+/// Whether Repair resolved funding `step` of `wallet`: durably (its
+/// tombstone), in this process with its tombstone owed, or by a
+/// ChainLocked self-spend the snapshot shows that no derivation has
+/// marked owed yet (J).
+pub(super) fn repaired(i: &Inner, wallet: WalletId, step: &str) -> bool {
+    let key = (wallet, step.to_owned());
+    i.fence.tombstones.contains_key(&key) || i.fence.owed_tombstones.contains_key(&key) || {
+        let info = i.fence.call_step_info(&wallet, step);
+        resolving_spend(i, wallet, &info, i.fence.signed_locks(&wallet, step)).is_some()
+    }
+}
+
+/// Whether a funding call of `step` of `wallet` runs (J).
+fn funding_call_of(i: &Inner, wallet: WalletId, step: &str) -> bool {
+    i.calls.values().any(|r| {
+        r.funding
+            .as_ref()
+            .is_some_and(|f| f.wallet == wallet && f.step == step)
+    })
+}
+
+/// The funding step whose call of this process (running, or ended after
+/// signing) may have signed pending row `row`, while the row has no durable
+/// record of that step (§2a.7, review OD-01): no resume may send it yet.
+/// Only a `Built` row can be unsent and unrecorded (the builder stores it
+/// before its send, and a store the record does not precede stops the
+/// process); one whose signatures do not verify ([`TrackedRow::sighashes`]
+/// `None`) is deferred while any such call of the wallet exists, as the
+/// store refuses it (review P2b r5 validator).
+pub(super) fn unrecorded_signer(i: &Inner, wallet: WalletId, row: &TrackedRow) -> Option<String> {
+    if row.status != TrackedStatus::Built {
+        return None;
+    }
+    let mut calls = (i.calls.values().filter_map(|r| r.funding.as_ref()))
+        .chain(&i.fence.ended_funding)
+        .filter(|f| f.wallet == wallet && f.signatures.released() > 0);
+    match row.sighashes.as_deref() {
+        None => calls.next(),
+        Some(sighashes) => calls.find(|f| {
+            f.signatures.signed_any(sighashes)
+                && !i.fence.recorded_durably(&wallet, &f.step, row.txid)
+        }),
+    }
+    .map(|f| f.step.clone())
 }
 
 /// Whether tracked row `r` of `wallet` is a lock a call of `step` signed
@@ -695,6 +841,9 @@ pub(super) fn funds_committed(i: &Inner, e: &Entry) -> bool {
 
 /// The funding gate (§2a.3), in the J step that would take `step`'s permit.
 pub(super) fn funding_gate(i: &Inner, wallet: WalletId, step: &str) -> Option<FundingBlock> {
+    if repaired(i, wallet, step) {
+        return Some(FundingBlock::StepCancelled);
+    }
     let Some(snap) = i.mode_b.snapshots.get(&wallet) else {
         return Some(FundingBlock::RowsUnknown);
     };
@@ -740,9 +889,11 @@ pub enum StuckFundingRefusal {
     /// abandon it.
     #[error("transaction {0} spends the wallet's coins and is not ChainLocked yet")]
     SpendUnsettled(Txid),
-    /// A tracked `Built` or `Broadcast` lock of the step spends no coin the
-    /// self-spend can take, so the self-spend would not conflict with it.
-    #[error("tracked asset lock {0} spends no coin the self-spend can take")]
+    /// A lock a call of the step signed, or a tracked `Built` or
+    /// `Broadcast` lock of the step, spends no coin the self-spend can
+    /// take, so the self-spend would not conflict with it (review Opus O-5:
+    /// the signed lock's row may be gone).
+    #[error("asset lock {0}: every coin it spends is already spent")]
     LockInputsSpent(Txid),
     /// The self-spend to record spends no input of a lock a call of the step
     /// signed, so it would show nothing about that lock (review P2b r3).
@@ -765,6 +916,40 @@ pub enum StuckFundingRefusal {
     /// step's lock. The step stays as it reads until its lock is found.
     #[error("no asset lock this funding signed is known")]
     NoKnownLock,
+}
+
+impl StuckFundingRefusal {
+    /// A stable code per refusal (review Opus O-5), for DP1-02's Repair
+    /// facade to map to its copy: retry later, unlock a coin, finish the
+    /// other registration, or (`no_known_lock`, `lock_inputs_spent`) "this
+    /// cannot be cancelled; it resolves if its lock appears".
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::RowsUnknown => "rows_unknown",
+            Self::NotStuck(_) => "not_stuck",
+            Self::NoMarker => "no_marker",
+            Self::CallRunning => "call_running",
+            Self::JournalUnavailable => "journal_unavailable",
+            Self::SpendUnsettled(_) => "spend_unsettled",
+            Self::LockInputsSpent(_) => "lock_inputs_spent",
+            Self::MissesSignedLock(_) => "misses_signed_lock",
+            Self::UnattributedLock(_) => "unattributed_lock",
+            Self::NoKnownLock => "no_known_lock",
+        }
+    }
+
+    /// Whether the same Repair may succeed later with nothing done by the
+    /// user (review Opus O-13b): the rows are read, the call ends, the
+    /// spend is ChainLocked, the journal comes back.
+    pub fn retry_later(&self) -> bool {
+        matches!(
+            self,
+            Self::RowsUnknown
+                | Self::CallRunning
+                | Self::SpendUnsettled(_)
+                | Self::JournalUnavailable
+        )
+    }
 }
 
 /// The locks Repair's self-spend of funding `step` must conflict with (J):
@@ -904,6 +1089,19 @@ pub(super) fn rederive(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, wallet: 
     }
     let mut moved = Vec::new();
     for step in steps {
+        let key = (wallet, step.clone());
+        if !i.fence.tombstones.contains_key(&key) {
+            if !i.fence.owed_tombstones.contains_key(&key) {
+                let info = i.fence.call_step_info(&wallet, &step);
+                let signed = i.fence.signed_locks(&wallet, &step);
+                if let Some(spend) = resolving_spend(i, wallet, &info, signed) {
+                    i.fence.owed_tombstones.insert(key.clone(), spend);
+                }
+            }
+            if i.fence.owed_tombstones.contains_key(&key) && !i.fence.tombstoning.contains(&key) {
+                fx.owe_tombstone(wallet);
+            }
+        }
         let now = funding_status(i, wallet, &step);
         if now == Some(DispatchState::Sent)
             && let Some(key) = proving_key(i, wallet, &step)
@@ -925,6 +1123,15 @@ pub(super) fn rederive(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, wallet: 
         }
         moved.push(step);
     }
+    // A call whose step Repair resolved stores nothing that could still
+    // confirm (its locks' inputs are spent ChainLocked, O-1): its signer's
+    // locks stop being checked at the store (review P2b r5 validator).
+    let fence = &mut i.fence;
+    fence.ended_funding.retain(|f| {
+        let key = (f.wallet, f.step.clone());
+        f.wallet != wallet
+            || !(fence.tombstones.contains_key(&key) || fence.owed_tombstones.contains_key(&key))
+    });
     if moved.is_empty() {
         return;
     }
@@ -1118,9 +1325,9 @@ impl LeaseTable {
 
     /// The txids of the asset locks the calls of funding `step` signed
     /// ([`SignedLock`], §2a.6): exactly the step's own locks. One whose
-    /// `signed_lock` write has not landed is known to this process only
-    /// and is gone after a restart; a rejected broadcast leaves its txid
-    /// here.
+    /// `signed_lock` write runs is here already: the library's store waits
+    /// for that write, and the process stops if it fails (§2a.7). A
+    /// rejected broadcast leaves its txid here.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "DP1-02 attributes its rows by it")
@@ -1135,13 +1342,114 @@ impl LeaseTable {
         })
     }
 
-    /// Whether a funding call of `wallet` runs (§2a.6: only its locks are
-    /// checked for provenance).
-    pub(crate) fn funding_call_runs(&self, wallet: WalletId) -> bool {
+    /// The funding step whose call of this process may have signed tracked
+    /// row `row` of `wallet` while its record is not durable yet (§2a.7):
+    /// a caller that resumes a row itself (DP1-02's outpoint calls) must
+    /// not resume it while this is `Some`, as P2b's own pass does not
+    /// ([`unrecorded_signer`]).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02's resume calls gate on it")
+    )]
+    pub(crate) fn unrecorded_signer_of(
+        &self,
+        wallet: WalletId,
+        row: &TrackedRow,
+    ) -> Option<String> {
+        self.with_j(|i, _| unrecorded_signer(i, wallet, row))
+    }
+
+    /// The inputs of the asset locks the calls of `wallet`'s funding steps
+    /// signed ([`SignedLock`]) whose step reads neither `Sent` nor
+    /// `NotSent` (review Opus O-2). A lock whose row is gone (a rejected
+    /// broadcast, a sweep, a restore) is reserved by no one, and a payment,
+    /// CoinJoin pass or another funding that spends one of its inputs
+    /// leaves Repair's self-spend no input of it to take: the step would
+    /// read `MaybeSent` for good. The coin snapshot holds them from every
+    /// build but Repair's until the step resolves. J is a leaf, so this is
+    /// read like the tracked rows' inputs.
+    pub(crate) fn unresolved_lock_inputs(&self, wallet: WalletId) -> HashSet<OutPoint> {
         self.with_j(|i, _| {
-            i.calls
-                .values()
-                .any(|r| r.funding.as_ref().is_some_and(|f| f.wallet == wallet))
+            let mut out = HashSet::new();
+            for step in i.fence.funding_steps_of(&wallet) {
+                if !matches!(
+                    funding_status(i, wallet, &step),
+                    Some(DispatchState::Sent | DispatchState::NotSent)
+                ) {
+                    (i.fence.signed_locks(&wallet, &step).iter())
+                        .for_each(|l| out.extend(l.inputs.iter().copied()));
+                }
+            }
+            out
+        })
+    }
+
+    /// Every registration funding step of `wallet` (`registration/<draft>/
+    /// funding`) with a standing marker, as DP1-02 reads them (PA-1; its
+    /// ownership model §3.1), in one J step, by draft: standing, `Sent`, or
+    /// resolved by Repair with its dead locks. `Err` while the dispatch
+    /// journal is not read, or while a registration step's marker cannot
+    /// be read (a funding type or a draft id this build does not know): an
+    /// empty or partial list would read a claimed step unclaimed (review
+    /// Opus O-3, P2b r5 validator).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02's ownership ledger reads it")
+    )]
+    pub(crate) fn registration_funding_steps(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<FundingStepView>, FundingStepsUnavailable> {
+        self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready
+                || (i.fence.unreadable_funding.iter())
+                    .any(|(w, s)| *w == wallet && s.starts_with("registration/"))
+            {
+                return Err(FundingStepsUnavailable);
+            }
+            let mut out = Vec::new();
+            for step in i.fence.funding_steps_of(&wallet) {
+                let draft = (step.strip_prefix("registration/"))
+                    .and_then(|r| r.strip_suffix("/funding"))
+                    .and_then(|d| d.parse::<i64>().ok());
+                if !step.starts_with("registration/") {
+                    continue;
+                }
+                let info = i.fence.call_step_info(&wallet, &step);
+                let (Some(draft), Some(key)) = (draft, info.funding) else {
+                    return Err(FundingStepsUnavailable);
+                };
+                let locks = i.fence.signed_locks(&wallet, &step);
+                let txids: Vec<Txid> = locks.iter().map(|l| l.txid).collect();
+                let (signed, dead) = if repaired(i, wallet, &step) {
+                    (Vec::new(), txids)
+                } else {
+                    (txids, Vec::new())
+                };
+                out.push(FundingStepView {
+                    draft,
+                    key,
+                    status: funding_status(i, wallet, &step),
+                    signed,
+                    dead,
+                    durable_record: info.durable_record,
+                    recording: locks.iter().any(|l| !l.durable),
+                });
+            }
+            out.sort_by_key(|v| v.draft);
+            Ok(out)
+        })
+    }
+
+    /// Whether a lock `wallet` stores now may carry a funding call's
+    /// signature: one of its funding calls runs, or one that released a
+    /// signature ended in this process (its library call may outlive the
+    /// permit; §2a.7).
+    pub(crate) fn funding_signatures_out(&self, wallet: WalletId) -> bool {
+        self.with_j(|i, _| {
+            (i.calls.values().filter_map(|r| r.funding.as_ref()))
+                .chain(&i.fence.ended_funding)
+                .any(|f| f.wallet == wallet)
         })
     }
 

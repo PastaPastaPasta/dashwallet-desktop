@@ -217,7 +217,9 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 /// each released signature (its sighash kept, §2a.6), and any `Locked` refusal, to the
 /// call permit's count. A public key or xpub is no signature: only `sign_ecdsa` counts as
 /// released, counted before the vault is asked, and refused `Locked` once
-/// the permit ended (review M-1, `SignatureCount`). Whatever key-wallet's builder requires of a signer
+/// the permit ended (review M-1, `SignatureCount`), and refused once a lock
+/// of the call was recorded unless it signed the sighash already (one lock
+/// per call, O-1, `SignatureCount::admits`). Whatever key-wallet's builder requires of a signer
 /// (`TransactionSigner` is implemented for every `Signer`) comes through
 /// these two traits.
 #[derive(Debug, Clone)]
@@ -255,6 +257,11 @@ impl key_wallet::Signer for CountingFundingSigner {
         let Some(signing) = self.count.begin() else {
             return Err(SignerError::Locked);
         };
+        if !self.count.admits(sighash) {
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the call's asset lock is already signed"
+            )));
+        }
         let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
         signing.released_with(sighash);
         Ok(signed)

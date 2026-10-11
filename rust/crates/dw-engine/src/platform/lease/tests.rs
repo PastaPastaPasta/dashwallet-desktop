@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use dashcore::hashes::Hash;
@@ -12,7 +12,7 @@ use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
     CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendConflict,
     SelfSpendProvenance, SelfSpendRow, SignedLockRow, StepEvent, StepLogRow, StepRow,
-    StoredFundingKey, StoredOutPoint,
+    StoredFundingKey, StoredOutPoint, TombstoneRow,
 };
 use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
@@ -77,6 +77,7 @@ pub(super) fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedR
         status,
         inputs: vec![OutPoint::new(txid(100 + n), 0)],
         trusted: index_trusted(&key(identity_index), status),
+        sighashes: None,
     }
 }
 
@@ -93,8 +94,32 @@ pub(super) fn sign_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId, row: &
             txid: row.txid,
             inputs: row.inputs.clone(),
             sighashes: Some(vec![sighash]),
+            built: true,
         }],
     );
+}
+
+/// The call of permit `p` signed a lock and the library's store of it
+/// recorded it (§2a.7), and the lock's row is gone (a rejected broadcast
+/// untracked it, a restart lost it): the step reads `MaybeSent`. Each call
+/// gives a fresh lock (txid byte 0xc0 to 0xfe), its one input unrelated to
+/// any test row's.
+pub(super) fn sign_lost_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId) -> Txid {
+    static NEXT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let n = 0xc0 + NEXT.fetch_add(1, Ordering::SeqCst) % 0x3f;
+    let sighash = [n; 32];
+    p.signatures().note_signed(sighash);
+    let lock = Txid::from_byte_array([n; 32]);
+    t.record_signed_locks(
+        wallet,
+        &[StoredLock {
+            txid: lock,
+            inputs: vec![OutPoint::new(Txid::from_byte_array([!n; 32]), 1)],
+            sighashes: Some(vec![sighash]),
+            built: true,
+        }],
+    );
+    lock
 }
 
 /// Records every event the table emits.
@@ -314,8 +339,12 @@ pub(super) struct FakeJournal {
     pub(super) fail_step: AtomicBool,
     /// A `self_spend` row: lost (nothing written, error).
     pub(super) fail_self_spend: AtomicBool,
-    /// A `signed_lock` row: lost (nothing written, error).
-    pub(super) fail_signed_lock: AtomicBool,
+    /// The next this many `signed_lock` rows: lost (nothing written,
+    /// error).
+    pub(super) fail_signed_lock: AtomicU64,
+    /// The next `signed_lock` append reports it began, then waits to be
+    /// released ([`Self::hold_signed_lock`]).
+    signed_lock_hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
     /// A `signed_lock` row finds its step's marker no longer standing.
     pub(super) signed_lock_unmarked: AtomicBool,
     /// A `NotSent` row: lost (nothing written, error).
@@ -340,6 +369,10 @@ pub(super) struct FakeJournal {
     funding: Mutex<Vec<FundingRow>>,
     self_spends: Mutex<Vec<SelfSpendRow>>,
     signed_locks: Mutex<Vec<SignedLockRow>>,
+    /// `funding_tombstone` (6).
+    tombstones: Mutex<Vec<TombstoneRow>>,
+    /// A `funding_tombstone` row: lost (nothing written, error).
+    pub(super) fail_tombstone: AtomicBool,
     /// Every `Sent` bundle asked for.
     pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
@@ -429,6 +462,9 @@ impl JournalBackend for FakeJournal {
         if self.fail_self_spend.load(Ordering::SeqCst) {
             return Err("injected self-spend failure".into());
         }
+        if conflicts.is_empty() {
+            return Err("self_spend: no conflicts".into());
+        }
         let log = self.log.lock().unwrap();
         let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
             return Ok(false);
@@ -457,7 +493,16 @@ impl JournalBackend for FakeJournal {
         txid: &[u8; 32],
         inputs: &[StoredOutPoint],
     ) -> Result<bool, String> {
-        if self.fail_signed_lock.load(Ordering::SeqCst) {
+        let hold = self.signed_lock_hold.lock().unwrap().take();
+        if let Some((began, release)) = hold {
+            began.send(()).unwrap();
+            let _ = release.recv();
+        }
+        let fail = |n: u64| n.checked_sub(1);
+        if (self.fail_signed_lock)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fail)
+            .is_ok()
+        {
             return Err("injected signed-lock failure".into());
         }
         let log = self.log.lock().unwrap();
@@ -475,6 +520,35 @@ impl JournalBackend for FakeJournal {
                 artifact: *artifact,
                 txid: *txid,
                 inputs: inputs.to_vec(),
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        if self.fail_tombstone.load(Ordering::SeqCst) {
+            return Err("injected tombstone failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut tombstones = self.tombstones.lock().unwrap();
+        if !tombstones.iter().any(|t| t.marker == marker) {
+            tombstones.push(TombstoneRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                self_spend: *self_spend,
                 marker,
                 at: 0,
             });
@@ -510,6 +584,7 @@ impl JournalBackend for FakeJournal {
             funding: &mut self.funding.lock().unwrap(),
             self_spends: &mut self.self_spends.lock().unwrap(),
             signed_locks: &mut self.signed_locks.lock().unwrap(),
+            tombstones: &mut self.tombstones.lock().unwrap(),
         };
         let gone = dw_appdb::dispatch::compact_in_memory(&mut log, side, Some(wallet));
         Ok(gone.into_iter().map(|(_, a)| a).collect())
@@ -530,6 +605,10 @@ impl JournalBackend for FakeJournal {
             .unwrap()
             .retain(|r| r.wallet != *wallet);
         self.signed_locks
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
+        self.tombstones
             .lock()
             .unwrap()
             .retain(|r| r.wallet != *wallet);
@@ -588,8 +667,45 @@ impl FakeJournal {
                 artifact: *artifact,
                 key: *key,
                 at: 0,
+                durable_record: true,
             });
         }
+    }
+
+    /// Holds the next `signed_lock` append: the first receiver hears when
+    /// it began, and it waits until the sender is sent to (or dropped).
+    pub(super) fn hold_signed_lock(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (began, began_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.signed_lock_hold.lock().unwrap() = Some((began, release_rx));
+        (began_rx, release)
+    }
+
+    /// Clears every marker's `durable_record` flag, as in a journal written
+    /// before schema 6 (OD-02).
+    pub(super) fn unflag_markers(&self) {
+        for f in self.funding.lock().unwrap().iter_mut() {
+            f.durable_record = false;
+        }
+    }
+
+    /// A self-spend row of `step`'s standing marker that shows the conflict
+    /// with nothing: what the P2b r3 dev build wrote, and what no journal
+    /// accepts now (review Opus O-8a).
+    pub(super) fn push_empty_self_spend(&self, wallet: WalletId, step: &str, txid: [u8; 32]) {
+        let artifact = ArtifactId::of_step(&wallet, step).0;
+        let marker = latest_standing(&self.log.lock().unwrap(), &wallet.0, &artifact, step)
+            .expect("a standing marker");
+        self.self_spends.lock().unwrap().push(SelfSpendRow {
+            seq: self.seq(),
+            wallet: wallet.0,
+            step_id: step.to_owned(),
+            artifact,
+            txid,
+            marker,
+            provenance: SelfSpendProvenance::Conflicts(Vec::new()),
+            at: 0,
+        });
     }
 
     /// What a reopen would load of Mode B's rows (§2a.3).
@@ -600,12 +716,18 @@ impl FakeJournal {
             &self.funding.lock().unwrap(),
             &self.self_spends.lock().unwrap(),
             &self.signed_locks.lock().unwrap(),
+            &self.tombstones.lock().unwrap(),
         )
     }
 
     /// Every `signed_lock` row.
     pub(super) fn signed_lock_rows(&self) -> Vec<SignedLockRow> {
         self.signed_locks.lock().unwrap().clone()
+    }
+
+    /// Every `funding_tombstone` row.
+    pub(super) fn tombstone_rows(&self) -> Vec<TombstoneRow> {
+        self.tombstones.lock().unwrap().clone()
     }
 
     /// Every `funding_marker` row.
@@ -628,6 +750,7 @@ impl FakeJournal {
             funding: Mutex::new(self.funding_rows()),
             self_spends: Mutex::new(self.self_spends.lock().unwrap().clone()),
             signed_locks: Mutex::new(self.signed_lock_rows()),
+            tombstones: Mutex::new(self.tombstone_rows()),
             ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
             ..Default::default()
         })
@@ -865,7 +988,7 @@ async fn the_state_machine_transition_by_transition() {
         "Parked → NeedsGrant"
     );
     assert_eq!(
-        b.funding_signer().unwrap_err(),
+        b.uncounted_funding_signer().unwrap_err(),
         LeaseError::NeedsGrant(BudgetPurpose::Funding)
     );
     b.rebind(move || Ok(issued(0, 500, 0, 1)), || 1)
@@ -906,7 +1029,7 @@ async fn the_state_machine_transition_by_transition() {
     d.end();
     d.end();
     assert_eq!(d.state(), Some(LeaseState::Ended));
-    assert_eq!(d.funding_signer().unwrap_err(), LeaseError::Ended);
+    assert_eq!(d.uncounted_funding_signer().unwrap_err(), LeaseError::Ended);
     b.end();
     assert_eq!(b.state(), Some(LeaseState::Ended));
 }
@@ -2278,6 +2401,18 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn insert_signed_lock(
         &self,
         wallet: &[u8; 32],
@@ -2945,6 +3080,18 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn insert_signed_lock(
         &self,
         wallet: &[u8; 32],
@@ -3460,6 +3607,18 @@ impl JournalBackend for R3Journal {
     ) -> Result<bool, String> {
         self.db
             .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
             .map_err(|e| e.to_string())
     }
 

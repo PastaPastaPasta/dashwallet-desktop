@@ -255,6 +255,8 @@ pub(crate) struct Effects {
     resume: bool,
     /// Wallets with a `Sent` row owed (review R1-01): begun after J.
     owed_sent: BTreeSet<WalletId>,
+    /// Wallets with a funding step's tombstone owed: begun after J.
+    owed_tombstones: BTreeSet<WalletId>,
 }
 
 impl Effects {
@@ -294,6 +296,12 @@ impl Effects {
     pub(crate) fn owe_sent(&mut self, wallet: WalletId) {
         self.owed_sent.insert(wallet);
     }
+
+    /// Begin `wallet`'s owed tombstones after J
+    /// ([`LeaseTable::write_tombstones`]).
+    pub(crate) fn owe_tombstone(&mut self, wallet: WalletId) {
+        self.owed_tombstones.insert(wallet);
+    }
 }
 
 pub struct LeaseTable {
@@ -314,7 +322,7 @@ pub struct LeaseTable {
     /// The catch-up's resume path (H6 part 2); the session installs it.
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
     /// The table itself, for work a J step's effects start.
-    me: Weak<LeaseTable>,
+    pub(super) me: Weak<LeaseTable>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -405,6 +413,11 @@ impl LeaseTable {
             && let Some(me) = self.me.upgrade()
         {
             me.write_owed_sent(&fx.owed_sent);
+        }
+        if !fx.owed_tombstones.is_empty()
+            && let Some(me) = self.me.upgrade()
+        {
+            me.write_tombstones(&fx.owed_tombstones);
         }
         r
     }
@@ -900,8 +913,18 @@ impl Lease {
     }
 
     /// The asset-lock funding signer (`PlatformFunding`, cap fixed at
-    /// issue; the remaining budget is charged at `register`).
-    pub fn funding_signer(&self) -> Result<VaultSigner, LeaseError> {
+    /// issue; the remaining budget is charged at `register`), counted by no
+    /// call permit (review Opus O-7): for a call that builds no asset lock
+    /// (DP1-02's `FromExistingAssetLock`). A Mode B funding call signs
+    /// through its permit's counting signer only
+    /// ([`CallPermit::funding_signer`](super::CallPermit::funding_signer)):
+    /// one this one signed for would end `Cancelled`, and its step would
+    /// read `NotSent` over a lock that may be on the wire.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02's FromExistingAssetLock registration")
+    )]
+    pub(crate) fn uncounted_funding_signer(&self) -> Result<VaultSigner, LeaseError> {
         self.signer(
             BudgetPurpose::Funding,
             |s| s.funding.as_ref(),

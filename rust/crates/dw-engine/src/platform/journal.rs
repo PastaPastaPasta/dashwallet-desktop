@@ -173,9 +173,10 @@ pub(crate) struct Classified {
     /// keys): a funding call's coin fence is released by its own (E0-04
     /// §2a.6).
     tracked: Vec<(Txid, FundingKey)>,
-    /// The same rows' transactions, for the provenance check before the
-    /// persister takes them (§2a.6).
-    lock_txs: Vec<dashcore::Transaction>,
+    /// The same rows' transactions, each with whether its row is `Built`,
+    /// for the provenance check before the persister takes them (§2a.6,
+    /// §2a.7).
+    lock_txs: Vec<(dashcore::Transaction, bool)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -269,8 +270,10 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             };
             (e.out_point.txid, key)
         }));
-        c.lock_txs
-            .extend(locks.asset_locks.values().map(|e| e.transaction.clone()));
+        c.lock_txs.extend(locks.asset_locks.values().map(|e| {
+            let built = matches!(e.status, platform_wallet::AssetLockStatus::Built);
+            (e.transaction.clone(), built)
+        }));
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -375,14 +378,20 @@ impl ChangesetTap {
     /// own first (§2a.6, [`LeaseTable::record_signed_locks`]). Blocking:
     /// the library's store call waits for it, and broadcasts a `Built`
     /// lock only after. The check (a sighash and a signature verified per
-    /// input) runs only while a funding call of `id` runs: no other lock
-    /// can be a call's.
+    /// input) runs only while a funding call of `id` runs or after one
+    /// that released a signature ended: no other lock can carry a call's
+    /// signature.
     pub(crate) fn note_signed(&self, id: WalletId, c: &Classified) {
         if !c.lock_txs.is_empty()
             && let Some(table) = self.table()
-            && table.funding_call_runs(id)
+            && table.funding_signatures_out(id)
         {
-            let locks: Vec<StoredLock> = c.lock_txs.iter().map(StoredLock::of).collect();
+            let locks: Vec<StoredLock> = (c.lock_txs.iter())
+                .map(|(tx, built)| StoredLock {
+                    built: *built,
+                    ..StoredLock::of(tx)
+                })
+                .collect();
             table.record_signed_locks(id, &locks);
         }
     }

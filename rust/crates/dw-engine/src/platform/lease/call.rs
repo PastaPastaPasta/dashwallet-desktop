@@ -195,6 +195,9 @@ pub struct SignatureCount {
     locked: AtomicBool,
     /// The permit has ended: its signers sign nothing more.
     closed: AtomicBool,
+    /// A lock the call signed was recorded: its funding signer signs no
+    /// other sighash ([`Self::admits`]).
+    recorded: AtomicBool,
 }
 
 /// One signature asked of the vault under a [`SignatureCount`] (counted in
@@ -260,6 +263,13 @@ impl SignatureCount {
         self.note_released();
     }
 
+    /// Whether the call's funding signer released a signature over one of
+    /// `sighashes` (§2a.7): a transaction carrying it may be the call's.
+    pub(crate) fn signed_any(&self, sighashes: &[[u8; 32]]) -> bool {
+        let signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        sighashes.iter().any(|s| signed.contains(s))
+    }
+
     /// Whether the call's funding signer released a signature over every
     /// one of `sighashes`, and there is one (§2a.6). A transaction each of
     /// whose inputs carries a valid signature over its own sighash, every
@@ -273,6 +283,21 @@ impl SignatureCount {
 
     pub(crate) fn note_locked(&self) {
         self.locked.store(true, Ordering::SeqCst);
+    }
+
+    /// A lock the call signed was recorded as its step's (§2a.6, O-1).
+    pub(crate) fn note_recorded(&self) {
+        self.recorded.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the call's funding signer may sign `sighash`: one lock per
+    /// call (O-1). Once a lock the call signed was recorded, which is after
+    /// every input of it was signed and before its send, only a sighash
+    /// the call already signed is (an identical retry): a second lock's
+    /// signatures are refused. The premise that Repair's self-spend need
+    /// take an input of each recorded lock only rests on it.
+    pub(crate) fn admits(&self, sighash: [u8; 32]) -> bool {
+        !self.recorded.load(Ordering::SeqCst) || self.signed_any(&[sighash])
     }
 
     /// A signer's error under this count: a `Locked` refusal is reported
@@ -448,12 +473,20 @@ impl Lease {
     /// stands under another funding key (or none) is refused before the
     /// charge: `StepKeyMismatch`.
     ///
-    /// A funding step's step id and key are not checked here: a Mode B
-    /// funding call takes its permit through
+    /// A funding step's step id and key are not checked here, nor is its
+    /// coin fence taken: a Mode B funding call takes its permit through
     /// [`crate::NetworkSession::funding_call_permit`], which refuses a
     /// step that is no registration funding step, or a key that is not
-    /// its draft's own (reviews M-3, M-4).
-    pub async fn call_permit_step(
+    /// its draft's own (reviews M-3, M-4), and so this is crate-private
+    /// (review Opus O-11).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "DP1-02's resumable steps take their permits by it"
+        )
+    )]
+    pub(crate) async fn call_permit_step(
         &self,
         label: impl Into<String>,
         quote: Option<CallQuote>,
@@ -486,11 +519,14 @@ impl Lease {
                 if let Some(gate) = table.call_step_gate(i, &key, backend.is_some(), retry)? {
                     return Ok(Err(gate));
                 }
-                if i.fence.call_key_differs(self.wallet, &step) {
-                    return Err(LeaseError::StepKeyMismatch);
-                }
+                // The funding gate first: a possibly-sent marker under
+                // another key reads as that step's status, which the host
+                // can act on (review Opus O-11).
                 if step.funding().is_some() {
                     self.check_funding(i, quote, step.id())?;
+                }
+                if i.fence.call_key_differs(self.wallet, &step) {
+                    return Err(LeaseError::StepKeyMismatch);
                 }
                 let backend = backend.expect("checked by the gate");
                 let took = self.take_call(i, fx, label.clone(), quote)?;
@@ -704,7 +740,11 @@ impl CallPermit {
     /// The lease's funding signer for `create_funded_asset_lock_proof`,
     /// counting into this permit: every released signature and a `Locked`
     /// refusal, as [`Self::identity_signer`]'s, and nothing signed once the
-    /// permit ended.
+    /// permit ended. It signs one asset lock: once a lock it signed is
+    /// recorded, it refuses any sighash it did not sign before (review Opus
+    /// O-1), so it is no signer for the identity transition the library
+    /// signs after the lock (`registration.rs`'s one-call path, which Mode B
+    /// does not take): that one needs [`Self::identity_signer`].
     pub fn funding_signer(&self) -> Result<CountingFundingSigner, LeaseError> {
         Ok(CountingFundingSigner::new(
             self.lease.call_funding_signer()?,
@@ -750,12 +790,21 @@ impl CallPermit {
         // Read outside J (H1).
         let backend = step.as_ref().and_then(|_| self.table.journal.get());
         let table = Arc::clone(&self.table);
-        let resolve = table.with_j(|i, fx| {
+        let (resolve, resume) = table.with_j(|i, fx| {
             let mut run = i.calls.remove(&id);
             // Released outside J (J stays a leaf).
             if let Some(f) = run.as_mut().and_then(|r| r.fence.take()) {
                 fx.drop_later(f);
             }
+            // Its signer's locks stay recognised (§2a.7).
+            if released > 0
+                && let Some(f) = run.as_mut().and_then(|r| r.funding.take())
+            {
+                i.fence.ended_funding.push(f);
+            }
+            // A pass deferred a lock of the wallet's call: its record is
+            // durable now, or the process stopped.
+            let resume = funding && i.mode_b.passes.take_deferred(&wallet);
             if let Some(e) = i.leases.get_mut(&lease) {
                 e.calls = e.calls.saturating_sub(1);
                 e.last_use = Instant::now();
@@ -787,7 +836,7 @@ impl CallPermit {
                 // The call's end: `Sent` on Ok (§2a.5).
                 super::mode_b::rederive(&table, i, fx, wallet);
             }
-            resolve
+            (resolve, resume)
         });
         if resolve && let Some(step) = &step {
             table.resolve_call_not_sent(wallet, step.id());
@@ -795,6 +844,9 @@ impl CallPermit {
         if funding {
             // The call may have left a tracked row.
             table.request_refresh(wallet);
+        }
+        if resume {
+            table.request_resume(Some(wallet));
         }
         outcome
     }

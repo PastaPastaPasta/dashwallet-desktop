@@ -484,3 +484,82 @@ async fn journal_recovery_reruns_the_pass() {
     settle().await;
     assert_eq!(f.calls_of(W, 1), 2, "only the first write after a failure");
 }
+
+/// No send before a durable record (§2a.7, review OD-01). The library
+/// tracks a funding call's lock `Built` in memory, then stores it; the
+/// changeset tap records the lock inside that store, before the library's
+/// own send. Here the record's append is held: a pass on another worker
+/// reads the `Built` row and resumes nothing. Once the append lands the
+/// pass runs again and resumes it. A restart at that boundary (the append
+/// never landed, the row was never persisted) reads the step `NotSent`
+/// and resumes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pass_sends_no_lock_before_its_durable_record() {
+    let (t, f, j) = setup().await;
+    f.set_rows(W, Vec::new());
+    assert!(t.refresh_funding(W).await);
+    t.spv_started();
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let step = CallStep::Funding {
+        step: REG.into(),
+        key: super::tests::key(1),
+    };
+    let quote = super::tests::quote(10, 0);
+    let p = l.call_permit_step("funding", quote, step).await.unwrap();
+    let sighash = [1; 32];
+    p.signatures().note_signed(sighash);
+    let built = TrackedRow {
+        sighashes: Some(vec![sighash]),
+        ..row(1, 1, R::Built)
+    };
+    let stored = StoredLock {
+        txid: built.txid,
+        inputs: built.inputs.clone(),
+        sighashes: Some(vec![sighash]),
+        built: true,
+    };
+    let (began, release) = j.hold_signed_lock();
+    // The library's `track_asset_lock`, then its store on another thread.
+    f.set_rows(W, vec![built.clone()]);
+    let store = {
+        let (t, stored) = (t.clone(), stored.clone());
+        tokio::task::spawn_blocking(move || t.record_signed_locks(W, &[stored]))
+    };
+    tokio::task::spawn_blocking(move || began.recv().unwrap())
+        .await
+        .unwrap();
+    let killed = j.snapshot();
+    let reads = f.reads(W);
+    t.request_resume(Some(W));
+    until(|| f.reads(W) > reads).await;
+    idle(&t, &[W]).await;
+    settle().await;
+    assert!(
+        f.calls().is_empty(),
+        "no resume before the record is durable"
+    );
+
+    release.send(()).unwrap();
+    store.await.unwrap();
+    assert_eq!(t.signed_lock_txids(W, REG), vec![built.txid]);
+    until(|| f.calls_of(W, 1) == 1).await;
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+
+    // The restart at the publication boundary.
+    let (restarted, _) = table();
+    killed.load_into(&restarted);
+    let f2 = Arc::new(Fake::new());
+    f2.set_rows(W, Vec::new());
+    restarted.install_tracked(f2.clone());
+    restarted.install_resumer(f2.clone());
+    assert!(restarted.refresh_funding(W).await);
+    restarted.spv_started();
+    until(|| f2.reads(W) >= 1).await;
+    idle(&restarted, &[W]).await;
+    assert!(f2.calls().is_empty());
+    assert!(restarted.signed_lock_txids(W, REG).is_empty());
+    assert_eq!(
+        restarted.funding_status(W, REG),
+        Some(crate::platform::flows::DispatchState::NotSent)
+    );
+}

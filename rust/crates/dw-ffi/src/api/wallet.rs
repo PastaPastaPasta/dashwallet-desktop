@@ -234,6 +234,7 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::Psbt(_)
             | E::CoinJoin(_)
             | E::Masternode(_)
+            | E::StuckFunding(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

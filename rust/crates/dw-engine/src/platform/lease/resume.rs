@@ -31,6 +31,15 @@
 //! write that succeeds after one failed, `Effects::resume`), and for one
 //! wallet when it is opened again ([`LeaseTable::wallet_opened`]).
 //!
+//! **No send before a durable record** (§2a.7, review OD-01). The library
+//! tracks a funding call's lock `Built` before its store reaches the
+//! changeset tap, which records the lock durably; a pass reading the rows
+//! in between would send it unrecorded. So a pass skips a pending row that
+//! carries a signature of a funding call of this process (running, or
+//! ended after signing) while the row has no durable signed record
+//! ([`unrecorded_signer`](super::mode_b::unrecorded_signer)); the record's landing, or the
+//! call's end, runs the wallet's pass again.
+//!
 //! **One pass at a time per wallet.** A trigger while the wallet's pass
 //! runs schedules exactly one more, which starts when it ends (it reads the
 //! rows again). The coordinator lives in J; J is never held across the
@@ -43,7 +52,7 @@
 //! pass that runs when it is opened again. A pass that was ended notes
 //! nothing more.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -91,9 +100,17 @@ pub(crate) struct Passes {
     armed: bool,
     next: u64,
     running: HashMap<WalletId, Pass>,
+    /// Wallets whose pass skipped an unrecorded lock of a funding call
+    /// (§2a.7): the call's end runs their pass again.
+    deferred: HashSet<WalletId>,
 }
 
 impl Passes {
+    /// Whether a pass of `wallet` deferred a lock; forgets it.
+    pub(super) fn take_deferred(&mut self, wallet: &WalletId) -> bool {
+        self.deferred.remove(wallet)
+    }
+
     /// Whether pass `id` of `wallet` is still the wallet's pass.
     pub(super) fn current(&self, wallet: &WalletId, id: u64) -> bool {
         self.running.get(wallet).is_some_and(|p| p.id == id)
@@ -237,6 +254,10 @@ impl LeaseTable {
             {
                 loaded = true;
                 for row in rows.into_iter().filter(|r| r.status.pending()) {
+                    if let Some(step) = self.defer_unrecorded(wallet, &row) {
+                        tracing::info!(wallet_id = %wallet, txid = %row.txid, step, "the catch-up defers a signed asset lock until its record is durable");
+                        continue;
+                    }
                     let resumer = Arc::clone(resumer);
                     resumes
                         .spawn(async move { (row.txid, resumer.resume(wallet, row.txid).await) });
@@ -279,6 +300,22 @@ impl LeaseTable {
                 return;
             }
         }
+    }
+
+    /// The step a funding call of this process signed pending row `row`
+    /// for, while the row has no durable record of it (§2a.7): the pass
+    /// skips it, and the record's landing or the call's end runs the pass
+    /// again.
+    fn defer_unrecorded(
+        &self,
+        wallet: WalletId,
+        row: &super::mode_b::TrackedRow,
+    ) -> Option<String> {
+        self.with_j(|i, _| {
+            let step = super::mode_b::unrecorded_signer(i, wallet, row)?;
+            i.mode_b.passes.deferred.insert(wallet);
+            Some(step)
+        })
     }
 
     /// Pass `id` resumed row `txid`; `false` once the pass was ended.
