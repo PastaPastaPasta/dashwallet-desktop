@@ -1,0 +1,147 @@
+{
+ "uptimeStart": "114.39 134.36 148.65",
+ "u5-history": {
+  "totalMs": {
+   "n": 9,
+   "min": 5332.001,
+   "median": 5899.279,
+   "p95": 8239.251,
+   "max": 8239.251
+  },
+  "ffiMs200": {
+   "n": 9,
+   "min": 253.995,
+   "median": 354.443,
+   "p95": 632.708,
+   "max": 632.708
+  },
+  "ffiMs1": {
+   "n": 9,
+   "min": 301.404,
+   "median": 506.985,
+   "p95": 659.266,
+   "max": 659.266
+  },
+  "cpuMs200": {
+   "n": 9,
+   "min": 5060.133,
+   "median": 5499.006,
+   "p95": 7871.81,
+   "max": 7871.81
+  },
+  "cpuMs1": {
+   "n": 9,
+   "min": 233.643,
+   "median": 381.648,
+   "p95": 420.901,
+   "max": 420.901
+  },
+  "raw": {
+   "totalMs": [
+    5599.435,
+    7767.282,
+    8239.251,
+    5332.001,
+    5616.37,
+    5899.279,
+    5483.272,
+    7827.418,
+    7638.669
+   ],
+   "ffiMs200": [
+    253.995,
+    303.489,
+    481.624,
+    354.068,
+    354.443,
+    632.708,
+    502.102,
+    502.854,
+    351.74
+   ],
+   "ffiMs1": [
+    659.266,
+    506.985,
+    557.154,
+    351.467,
+    553.869,
+    354.152,
+    561.991,
+    301.404,
+    452.074
+   ]
+  },
+  "uptime": "127.53 132.26 145.46"
+ },
+ "uptimeEnd": "100.64 118.60 135.07",
+ "u3-fonts": {
+  "light": [
+   "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf"
+  ],
+  "dark": [
+   "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/work/scratch/g-03/linux-cssexp/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf"
+  ]
+ },
+ "u4-naming": {
+  "light-unlock": {
+   "nodes": 236,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-overview": {
+   "nodes": 1286,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-transactions": {
+   "nodes": 6427,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-detail": {
+   "nodes": 6729,
+   "interactive": 138,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-unlock": {
+   "nodes": 236,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-overview": {
+   "nodes": 1286,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-transactions": {
+   "nodes": 6424,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-detail": {
+   "nodes": 6729,
+   "interactive": 139,
+   "unnamed": 0,
+   "unnamedRoles": []
+  }
+ }
+}

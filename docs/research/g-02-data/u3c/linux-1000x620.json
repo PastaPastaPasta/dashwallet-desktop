@@ -1,0 +1,274 @@
+{
+  "base": "webkitgtk-agentbox",
+  "tolerance": 2.0,
+  "compared": 684,
+  "textRunIds": [
+    "hero-amount",
+    "hero-capsule"
+  ],
+  "engines": {
+    "webkitgtk-ci": {
+      "maxDelta": 8.0,
+      "maxContainerDelta": 1,
+      "overTolerance": 0,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [],
+      "textRuns": [
+        {
+          "screen": "dark/overview",
+          "id": "hero-capsule",
+          "delta": 8.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "webkitgtk-ci": {
+            "id": "hero-capsule",
+            "x": 570.83,
+            "y": 56,
+            "w": 78.33,
+            "h": 19
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-capsule",
+          "delta": 8.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "webkitgtk-ci": {
+            "id": "hero-capsule",
+            "x": 570.83,
+            "y": 56,
+            "w": 78.33,
+            "h": 19
+          }
+        },
+        {
+          "screen": "dark/overview",
+          "id": "hero-amount",
+          "delta": 5.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "webkitgtk-ci": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-amount",
+          "delta": 5.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "webkitgtk-ci": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          }
+        }
+      ],
+      "overPatterns": []
+    },
+    "chromium": {
+      "maxDelta": 7.92,
+      "maxContainerDelta": 1.06,
+      "overTolerance": 0,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [],
+      "textRuns": [
+        {
+          "screen": "dark/overview",
+          "id": "hero-capsule",
+          "delta": 7.92,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "chromium": {
+            "id": "hero-capsule",
+            "x": 570.8,
+            "y": 56,
+            "w": 78.41,
+            "h": 19
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-capsule",
+          "delta": 7.92,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "chromium": {
+            "id": "hero-capsule",
+            "x": 570.8,
+            "y": 56,
+            "w": 78.41,
+            "h": 19
+          }
+        },
+        {
+          "screen": "dark/overview",
+          "id": "hero-amount",
+          "delta": 5.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "chromium": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-amount",
+          "delta": 5.0,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "chromium": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          }
+        }
+      ],
+      "overPatterns": []
+    },
+    "webkit": {
+      "maxDelta": 7.03,
+      "maxContainerDelta": 1.55,
+      "overTolerance": 0,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [],
+      "textRuns": [
+        {
+          "screen": "dark/overview",
+          "id": "hero-capsule",
+          "delta": 7.03,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "webkit": {
+            "id": "hero-capsule",
+            "x": 570.34,
+            "y": 56,
+            "w": 79.3,
+            "h": 19
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-capsule",
+          "delta": 7.03,
+          "webkitgtk-agentbox": {
+            "id": "hero-capsule",
+            "x": 566.83,
+            "y": 56,
+            "w": 86.33,
+            "h": 19
+          },
+          "webkit": {
+            "id": "hero-capsule",
+            "x": 570.34,
+            "y": 56,
+            "w": 79.3,
+            "h": 19
+          }
+        },
+        {
+          "screen": "dark/overview",
+          "id": "hero-amount",
+          "delta": 4.94,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "webkit": {
+            "id": "hero-amount",
+            "x": 536.61,
+            "y": 97,
+            "w": 146.78,
+            "h": 41
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-amount",
+          "delta": 4.94,
+          "webkitgtk-agentbox": {
+            "id": "hero-amount",
+            "x": 534.14,
+            "y": 97,
+            "w": 151.72,
+            "h": 41
+          },
+          "webkit": {
+            "id": "hero-amount",
+            "x": 536.61,
+            "y": 97,
+            "w": 146.78,
+            "h": 41
+          }
+        }
+      ],
+      "overPatterns": []
+    }
+  },
+  "pass": true,
+  "passAllBoxes": false
+}

@@ -1,0 +1,11 @@
+build: core 187 s, swift 207 s (release)
+U7 dmg: 33080684 bytes; app 89380 KB; installed from the dmg
+light-unlock: ok 'lock-paint' after 6.0s; window 31; rss 324096 KB
+light-overview: ok 'overview-paint' after 6.6s; window 39; rss 634720 KB
+light-transactions: ok 'transactions-paint' after 7.2s; window 47; rss 669728 KB
+light-detail: ok 'detail-paint' after 7.3s; window 55; rss 739536 KB
+dark-unlock: ok 'lock-paint' after 4.1s; window 63; rss 313472 KB
+dark-overview: ok 'overview-paint' after 7.8s; window 71; rss 634640 KB
+dark-transactions: ok 'transactions-paint' after 11.0s; window 79; rss 690768 KB
+dark-detail: ok 'detail-paint' after 9.7s; window 87; rss 736448 KB
+U7 launch through LaunchServices: running (pid 43664), window 95

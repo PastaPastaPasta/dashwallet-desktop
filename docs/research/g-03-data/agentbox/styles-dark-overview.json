@@ -1,0 +1,884 @@
+[
+ {
+  "role": "label",
+  "text": "This is a pre-release test build - use at your own risk - do",
+  "extents": [
+   66,
+   45,
+   622,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Overview",
+  "extents": [
+   62,
+   153,
+   69,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Send",
+  "extents": [
+   62,
+   201,
+   37,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Receive",
+  "extents": [
+   62,
+   249,
+   57,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Transactions",
+  "extents": [
+   62,
+   297,
+   91,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "MORE",
+  "extents": [
+   22,
+   350,
+   36,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Address Book",
+  "extents": [
+   54,
+   382,
+   99,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Sign / Verify Message",
+  "extents": [
+   54,
+   420,
+   152,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Tools Window",
+  "extents": [
+   54,
+   458,
+   100,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "PSBT Operations",
+  "extents": [
+   54,
+   496,
+   120,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Wallets",
+  "extents": [
+   54,
+   534,
+   52,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Options",
+  "extents": [
+   54,
+   572,
+   55,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Security",
+  "extents": [
+   54,
+   610,
+   59,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Settings",
+  "extents": [
+   54,
+   648,
+   58,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "About",
+  "extents": [
+   54,
+   686,
+   43,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Lock Wallet",
+  "extents": [
+   24,
+   735,
+   72,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "REGTEST",
+  "extents": [
+   646,
+   84,
+   51,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "700",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "(out of sync)",
+  "extents": [
+   632,
+   111,
+   79,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "206\u2009014.36392896",
+  "extents": [
+   495,
+   136,
+   318,
+   42
+  ],
+  "family-name": "Inter",
+  "size": "34",
+  "weight": "700",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Available",
+  "extents": [
+   387,
+   217,
+   56,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Spendable now",
+  "extents": [
+   387,
+   235,
+   81,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "206\u2009014.36392896",
+  "extents": [
+   619,
+   225,
+   118,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Pending",
+  "extents": [
+   784,
+   204,
+   51,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Awaiting confirmation",
+  "extents": [
+   784,
+   222,
+   57,
+   40
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "0.00000000",
+  "extents": [
+   862,
+   225,
+   79,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Hide balance",
+  "extents": [
+   644,
+   284,
+   76,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Receive",
+  "extents": [
+   457,
+   364,
+   43,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "600",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Send",
+  "extents": [
+   595,
+   364,
+   28,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "600",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Scan QR",
+  "extents": [
+   714,
+   364,
+   46,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "600",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Spend",
+  "extents": [
+   848,
+   364,
+   35,
+   14
+  ],
+  "family-name": "Inter",
+  "size": "11",
+  "weight": "600",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "History",
+  "extents": [
+   291,
+   425,
+   51,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Syncing 75.0%",
+  "extents": [
+   858,
+   426,
+   94,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Filter",
+  "extents": [
+   1007,
+   426,
+   32,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "10 February 2026",
+  "extents": [
+   307,
+   475,
+   110,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Tuesday",
+  "extents": [
+   983,
+   475,
+   52,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   521,
+   39,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   541,
+   49,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   916,
+   523,
+   97,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   985,
+   541,
+   42,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   595,
+   39,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   615,
+   49,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   916,
+   597,
+   97,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   985,
+   615,
+   42,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   669,
+   39,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   689,
+   49,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   916,
+   671,
+   97,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   985,
+   689,
+   42,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   743,
+   39,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   763,
+   49,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   916,
+   745,
+   97,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   985,
+   763,
+   42,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   817,
+   39,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   837,
+   49,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   916,
+   819,
+   97,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   985,
+   837,
+   42,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "See all transactions",
+  "extents": [
+   303,
+   914,
+   122,
+   16
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Connecting to peers\u2026",
+  "extents": [
+   16,
+   784,
+   126,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "HD",
+  "extents": [
+   734,
+   784,
+   18,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Unlocked",
+  "extents": [
+   764,
+   784,
+   55,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "tDASH",
+  "extents": [
+   831,
+   774,
+   41,
+   24
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "0 peers",
+  "extents": [
+   934,
+   784,
+   44,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Sync details",
+  "extents": [
+   1006,
+   784,
+   70,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "File",
+  "extents": [
+   0,
+   0,
+   25,
+   18
+  ],
+  "family-name": "Inter",
+  "size": "14",
+  "weight": "400",
+  "style": "normal"
+ }
+]

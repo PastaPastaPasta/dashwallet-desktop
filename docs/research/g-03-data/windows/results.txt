@@ -1,0 +1,22 @@
+build: core 1625 s, swift 1376 s (release)
+stack reserve: 8388608 bytes
+U7 zip: 95600162 bytes, 35 entries (32 DLLs from /c/Users/runneradmin/AppData/Local/Programs/Swift/Runtimes/6.3.3/usr/bin and the build)
+u2-overview: ok 'overview-paint' after 8.8s; working set 243 MB
+u2-overview: alive after 612s; peak working set 245 MB
+u4-unlock: ok 'lock-paint' after 6.1s; working set 225 MB
+u4-unlock: UIA walk FAIL MethodInvocationException: Exception calling "FindAll" with "2" argument(s): "Catastrophic failure (0x8000FFFF (E_UNEXPECTED))"
+u4-unlock: FAIL the app exited during the UIA walk (0xC0000005)
+u4-overview: ok 'overview-paint' after 7.6s; working set 242 MB
+u4-overview: UIA walk FAIL MethodInvocationException: Exception calling "FindAll" with "2" argument(s): "Catastrophic failure (0x8000FFFF (E_UNEXPECTED))"
+u4-overview: FAIL the app exited during the UIA walk (0xC0000005)
+u4-transactions: ok 'transactions-paint' after 10.2s; working set 335 MB
+u4-transactions: UIA walk FAIL MethodInvocationException: Exception calling "FindAll" with "2" argument(s): "Catastrophic failure (0x8000FFFF (E_UNEXPECTED))"
+u4-transactions: FAIL the app exited during the UIA walk (0xC0000005)
+light-unlock: ok 'lock-paint' after 6.1s; working set 225 MB
+light-overview: ok 'overview-paint' after 7.1s; working set 246 MB
+light-transactions: ok 'transactions-paint' after 9.7s; working set 323 MB
+light-detail: ok 'detail-paint' after 11.7s; working set 332 MB
+dark-unlock: ok 'lock-paint' after 6.1s; working set 222 MB
+dark-overview: ok 'overview-paint' after 7.1s; working set 243 MB
+dark-transactions: ok 'transactions-paint' after 7.6s; working set 336 MB
+dark-detail: ok 'detail-paint' after 11.7s; working set 330 MB

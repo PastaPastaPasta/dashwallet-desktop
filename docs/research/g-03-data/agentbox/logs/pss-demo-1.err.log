@@ -1,0 +1,5 @@
+gate-mark main 395318.247381 cpu=0.052
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 395319.564288 cpu=0.610
+gate-mark overview-paint 395323.359257 cpu=4.285

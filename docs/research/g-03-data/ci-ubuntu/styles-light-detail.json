@@ -1,0 +1,6470 @@
+[
+ {
+  "role": "label",
+  "text": "Sync has not made progress for a while. Try changing peers.",
+  "extents": [
+   66,
+   46,
+   380,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Overview",
+  "extents": [
+   62,
+   154,
+   66,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Send",
+  "extents": [
+   62,
+   202,
+   37,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Receive",
+  "extents": [
+   62,
+   250,
+   57,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Transactions",
+  "extents": [
+   62,
+   298,
+   94,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "MORE",
+  "extents": [
+   22,
+   351,
+   35,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Address Book",
+  "extents": [
+   54,
+   383,
+   98,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Sign / Verify Message",
+  "extents": [
+   54,
+   421,
+   152,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Tools Window",
+  "extents": [
+   54,
+   459,
+   101,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "PSBT Operations",
+  "extents": [
+   54,
+   497,
+   121,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Wallets",
+  "extents": [
+   54,
+   535,
+   52,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Options",
+  "extents": [
+   54,
+   573,
+   55,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Security",
+  "extents": [
+   54,
+   611,
+   60,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Settings",
+  "extents": [
+   54,
+   649,
+   59,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "About",
+  "extents": [
+   54,
+   687,
+   42,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Lock Wallet",
+  "extents": [
+   24,
+   736,
+   70,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Transactions",
+  "extents": [
+   291,
+   101,
+   140,
+   28
+  ],
+  "family-name": "Inter",
+  "size": "22",
+  "weight": "700",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "List",
+  "extents": [
+   305,
+   153,
+   22,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "600",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Table",
+  "extents": [
+   353,
+   153,
+   34,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Export\u2026",
+  "extents": [
+   987,
+   153,
+   52,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Date",
+  "extents": [
+   307,
+   210,
+   28,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "All",
+  "extents": [
+   317,
+   236,
+   15,
+   24
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Type",
+  "extents": [
+   372,
+   210,
+   29,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "All",
+  "extents": [
+   382,
+   236,
+   15,
+   24
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Search",
+  "extents": [
+   307,
+   273,
+   44,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Min amount",
+  "extents": [
+   895,
+   273,
+   73,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "All",
+  "extents": [
+   319,
+   340,
+   15,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Sent",
+  "extents": [
+   364,
+   340,
+   28,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Received",
+  "extents": [
+   422,
+   340,
+   58,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Rewards",
+  "extents": [
+   510,
+   340,
+   53,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Close",
+  "extents": [
+   983,
+   421,
+   36,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   641,
+   512,
+   61,
+   25
+  ],
+  "family-name": "Inter",
+  "size": "20",
+  "weight": "700",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   558,
+   543,
+   197,
+   35
+  ],
+  "family-name": "Inter",
+  "size": "28",
+  "weight": "700",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "10 Feb 2026 at 2:16\u202fAM",
+  "extents": [
+   600,
+   584,
+   143,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Details for 36a86620770ee61e\u2026",
+  "extents": [
+   311,
+   613,
+   233,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "15",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Status",
+  "extents": [
+   323,
+   656,
+   38,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "1/unconfirmed",
+  "extents": [
+   495,
+   656,
+   89,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Date",
+  "extents": [
+   323,
+   679,
+   28,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Feb 10, 2026 at 2:16\u202fAM",
+  "extents": [
+   495,
+   679,
+   147,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Source",
+  "extents": [
+   323,
+   702,
+   44,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Generated",
+  "extents": [
+   495,
+   702,
+   66,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "To",
+  "extents": [
+   323,
+   725,
+   15,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r (own address)",
+  "extents": [
+   495,
+   725,
+   364,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Net amount",
+  "extents": [
+   323,
+   771,
+   72,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008 tDASH",
+  "extents": [
+   495,
+   771,
+   128,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Transaction ID",
+  "extents": [
+   323,
+   794,
+   88,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "36a86620770ee61e3684ac4431f64b01ecbbe66ab0877e8bd443f4d4b80c",
+  "extents": [
+   495,
+   794,
+   512,
+   17
+  ],
+  "family-name": "monospace",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Transaction total size",
+  "extents": [
+   323,
+   817,
+   131,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "272 bytes",
+  "extents": [
+   495,
+   817,
+   61,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Credit",
+  "extents": [
+   323,
+   748,
+   37,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008 tDASH (matures in 100 more blocks)",
+  "extents": [
+   495,
+   748,
+   312,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Label:",
+  "extents": [
+   311,
+   858,
+   37,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Save label",
+  "extents": [
+   957,
+   888,
+   62,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Copy",
+  "extents": [
+   327,
+   927,
+   32,
+   24
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Resend transaction",
+  "extents": [
+   395,
+   931,
+   119,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Abandon transaction",
+  "extents": [
+   891,
+   931,
+   128,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "February 10, 2026",
+  "extents": [
+   307,
+   1001,
+   110,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Tuesday",
+  "extents": [
+   983,
+   1001,
+   52,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1047,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1068,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1049,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1068,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1121,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1142,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1123,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1142,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1195,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1216,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1197,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1216,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1269,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1290,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1271,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1290,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1343,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1364,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1345,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1364,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1417,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1438,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1419,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1438,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1491,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1512,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1493,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1512,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1565,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1586,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1567,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1586,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1639,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1660,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1641,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1660,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1713,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1734,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1715,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1734,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1787,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1808,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1789,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1808,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1861,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1882,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1863,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1882,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   1935,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   1956,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   1937,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   1956,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2009,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2030,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2011,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2030,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2083,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2104,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2085,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2104,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2157,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2178,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2159,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2178,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2231,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2252,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2233,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2252,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2305,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2326,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2307,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2326,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2379,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2400,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2381,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2400,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2453,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2474,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2455,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2474,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2527,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2548,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2529,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2548,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2601,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2622,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2603,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2622,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2675,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2696,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2677,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2696,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2749,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2770,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2751,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2770,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2823,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2844,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2825,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2844,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2897,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2918,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2899,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2918,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   2971,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   2992,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   2973,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   2992,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3045,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3066,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3047,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3066,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3119,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3140,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3121,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3140,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3193,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3214,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3195,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3214,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3267,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3288,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3269,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3288,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3341,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3362,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3343,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3362,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3415,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3436,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3417,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3436,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3489,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3510,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3491,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3510,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3563,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3584,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3565,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3584,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3637,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3658,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3639,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3658,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3711,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3732,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3713,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3732,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3785,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3806,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3787,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3806,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3859,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3880,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3861,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3880,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   3933,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   3954,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   3935,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   3954,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4007,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4028,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4009,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4028,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4081,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4102,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4083,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4102,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4155,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4176,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4157,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4176,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4229,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4250,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4231,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4250,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4303,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4324,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4305,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4324,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4377,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4398,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4379,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4398,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4451,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4472,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4453,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4472,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4525,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4546,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4527,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4546,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4599,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4620,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4601,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4620,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4673,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4694,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4675,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4694,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4747,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4768,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4749,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4768,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4821,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4842,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4823,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4842,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4895,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4916,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4897,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4916,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   4969,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   4990,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   4971,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   4990,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5043,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5064,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5045,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5064,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5117,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5138,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5119,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5138,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5191,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5212,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5193,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5212,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5265,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5286,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5267,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5286,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5339,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5360,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5341,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5360,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5413,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5434,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5415,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5434,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5487,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5508,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5489,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5508,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5561,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5582,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5563,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5582,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5635,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5656,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5637,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5656,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5709,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5730,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5711,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5730,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5783,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5804,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5785,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5804,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5857,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5878,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5859,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5878,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   5931,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   5952,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   5933,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   5952,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6005,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6026,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6007,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6026,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6079,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6100,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6081,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6100,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6153,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6174,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6155,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6174,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6227,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6248,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6229,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6248,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6301,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6322,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6303,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6322,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6375,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6396,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6377,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6396,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6449,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6470,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6451,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6470,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6523,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6544,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6525,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6544,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6597,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6618,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6599,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6618,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6671,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6692,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6673,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6692,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6745,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6766,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6747,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6766,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6819,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6840,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6821,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6840,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6893,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6914,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6895,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6914,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   6967,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   6988,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   6969,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   6988,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7041,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7062,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7043,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7062,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7115,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7136,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7117,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7136,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7189,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7210,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7191,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7210,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7263,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7284,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7265,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7284,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7337,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7358,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7339,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7358,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7411,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7432,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7413,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7432,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7485,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7506,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7487,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7506,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7559,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7580,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7561,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7580,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7633,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7654,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7635,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7654,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7707,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7728,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7709,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7728,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7781,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7802,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7783,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7802,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7855,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7876,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7857,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7876,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   7929,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   7950,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   7931,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   7950,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8003,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8024,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "[+0.00000008]",
+  "extents": [
+   918,
+   8005,
+   95,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Locked",
+  "extents": [
+   986,
+   8024,
+   41,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8077,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8098,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   928,
+   8088,
+   85,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8151,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8172,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   928,
+   8162,
+   85,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8225,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8246,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   928,
+   8236,
+   85,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8299,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8320,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   928,
+   8310,
+   85,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Mined",
+  "extents": [
+   361,
+   8373,
+   39,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "2:16\u202fAM",
+  "extents": [
+   361,
+   8394,
+   48,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "+0.00000008",
+  "extents": [
+   928,
+   8384,
+   85,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "40053 transactions",
+  "extents": [
+   291,
+   8661,
+   119,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Load more",
+  "extents": [
+   973,
+   8661,
+   66,
+   17
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Connecting to peers\u2026",
+  "extents": [
+   16,
+   786,
+   124,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "HD",
+  "extents": [
+   739,
+   786,
+   18,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Unlocked",
+  "extents": [
+   769,
+   786,
+   53,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "tDASH",
+  "extents": [
+   844,
+   781,
+   40,
+   24
+  ],
+  "family-name": "Inter",
+  "size": "13",
+  "weight": "400",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "0 peers",
+  "extents": [
+   936,
+   786,
+   43,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "Sync details",
+  "extents": [
+   1007,
+   786,
+   69,
+   15
+  ],
+  "family-name": "Inter",
+  "size": "12",
+  "weight": "500",
+  "style": "normal"
+ },
+ {
+  "role": "label",
+  "text": "File",
+  "extents": [
+   8,
+   4,
+   26,
+   19
+  ],
+  "family-name": "Inter",
+  "size": "14",
+  "weight": "400",
+  "style": "normal"
+ }
+]

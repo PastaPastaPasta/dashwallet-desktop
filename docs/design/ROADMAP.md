@@ -113,7 +113,7 @@ what dashmate's gateway actually serves:
 | G-01 | **Tauri spike app** (the G-01 + G-02 timebox is 5 agent-days + ≤ 3 for fixes): `apps/desktop` + `rust/crates/dw-app`; Overview, Transactions, transaction detail and unlock; generated tokens; event bridge; fixture backend; `--selftest` | — (it uses the fixture backend until D1's harness gives it a regtest wallet) | M | UI | T0, GL | Y (it is the decision's input) | The DASHPAY §2.1 scope is built on a branch. |
 | G-02 | **Tauri measurements**: U1–U8 on agentbox and the CI runners, with the 10k-transaction regtest wallet | G-01, T-03, D1 | M | UI | GL, GW, GM | Y | Every criterion measured with raw data in a draft `docs/adr/0003-ui-stack.md`. |
 | G-03 | **SwiftCrossUI measurements**: the existing `dash-wallet` with AppKitBackend on `macos-latest`, with WinUIBackend (and GtkBackend if WinUI fails U4) on `windows-latest`, and AT-SPI on Linux; the same U1–U8, with U3 judged against UX-SPEC's Cross column | T-03, D1 | L (4 + ≤ 2 for fixes) | UI / infra | GL, GW, GM | Y | Same ADR, same table, including U3's recorded fidelity gap. |
-| G-04 | **ADR 0003: the manager's decision** (DEC-12) under DASHPAY §2.1's rule | G-02, G-03 | S | manager | — | — | ADR merged with the numbers and the reasons. pasta can revisit it. |
+| G-04 | **ADR 0003: the manager's decision** (DEC-12) under DASHPAY §2.1's rule | G-02, G-03 | S | manager | — | — | ADR merged with the numbers and the reasons. pasta can revisit it. **Decided: Tauri** ([ADR 0003](../adr/0003-ui-stack.md), 2026-10-11, DEC-189). |
 
 ### U — One UI codebase (after G-04; Tauri variant shown)
 
@@ -129,17 +129,17 @@ what dashmate's gateway actually serves:
 | U-06 | CoinJoin card, page and settings | U-03 | M | UI | T0, T1 | N | Mixing starts and stops from the UI. |
 | U-08 | Retire Swift after the `swift-final` tag: the Swift targets, UniFFI generation, `Vendor/swift-cross-ui`, `Apps/macOS`; README update | U-02…U-07, PK-02 | S | UI / infra | CI | N | The repo builds without Swift. On macOS, Touch ID quick unlock stays off until B4 verifies it. |
 
-If **SwiftCrossUI** is chosen, the U track becomes:
+If **SwiftCrossUI** had been chosen, the U track would have become (**not taken**: G-04 chose Tauri):
 
 | ID | Task | Size | Stack-indep |
 |---|---|---|---|
-| UB-0 | Shell and information architecture in CrossUI (DASHPAY §4, R11). It replaces U-01, and the DP tasks' dependencies on U-01 and U-03 point at UB-0 and the existing CrossUI screens. | L | N |
-| UB-1 | Move the MacUI-only behaviours behind `PlatformServicesMac` and ship the Cross app in the macOS bundle | L | N |
-| UB-2 | Windows build and installer of the Cross app with the backend that passed U4 | L | N |
+| UB-0 | Shell and information architecture in CrossUI (DASHPAY §4, R11). It replaces U-01, and the DP tasks' dependencies on U-01 and U-03 point at UB-0 and the existing CrossUI screens. **Not taken (G-04: Tauri).** | L | N |
+| UB-1 | Move the MacUI-only behaviours behind `PlatformServicesMac` and ship the Cross app in the macOS bundle **Not taken (G-04: Tauri).** | L | N |
+| UB-2 | Windows build and installer of the Cross app with the backend that passed U4 **Not taken (G-04: Tauri).** | L | N |
 | U-07 | Extend `WalletDemo` with DashPay fixtures | M | N |
 | U-08 | Delete `MacUI` + `DashUIMac` | S | N |
 
-UB-0, UB-1 and UB-2 take the slots of U-01…U-06 in the waves below.
+UB-0, UB-1 and UB-2 (not taken) would have taken the slots of U-01…U-06 in the waves below.
 
 ### DP1 — Identity and username
 
@@ -363,7 +363,7 @@ The sums use S = 0.5–1, M = 2–3 and L = 4–5 agent-days.
 
 | When | Gate | Owner |
 |---|---|---|
-| start of W3 | **G-04**: UI stack (DASHPAY §2.1 rule) | manager (DEC-12) |
+| start of W3 | **G-04**: UI stack (DASHPAY §2.1 rule). **Decided 2026-10-11: Tauri** (ADR 0003, DEC-189) | manager (DEC-12) |
 | W2 | **E0-10a**: does SPV serve Platform quorums? A pass keeps R7 as written. A fail → the degraded mode for 1.0, and E0-10c from W3. | engine, decided rule (DASHPAY §2.2) |
 | if E0-10a fails | publishing a rust-dashcore backport on pasta's fork for a graph-wide `[patch]` (DEC-09) | manager |
 | before the first push to `PastaPastaPasta/platform` (E0-11, W3) | record the decision to carry platform patches on pasta's fork (DASHPAY §2.3) | manager |

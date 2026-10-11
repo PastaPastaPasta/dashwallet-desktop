@@ -1,0 +1,28 @@
+gate-mark main 2260.040358 cpu=0.015
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 2260.256792 cpu=0.243
+gate-mark lock-paint 2264.014205 cpu=3.659
+gate-mark unlock-requested 2264.014416 cpu=3.659
+
+thread '<unnamed>' (35792) panicked at crates/dw-engine/src/platform/lease/session.rs:348:20:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+(dash-wallet:35770): Gtk-WARNING **: 06:16:10.393: GtkLabel 0x559a155e9c20 (label) reported min width 11 and natural width 8 in measure() with for_size=17; natural size must be >= min size
+gate-mark sync-overlay-paint 2264.699103 cpu=4.249
+gate-mark sync-overlay-hide 2264.699312 cpu=4.249
+gate-mark transactions-paint 2268.335185 rows=100 cpu=8.183
+gate-mark history-render 2272.857571 limit=200 round=0 rows=200 ffiMs=100.599 renderMs=4008.105 totalMs=4108.704 cpuMs=4125.667 cpu=12.715
+gate-mark history-render 2279.766653 limit=200 round=1 rows=200 ffiMs=100.468 renderMs=5586.749 totalMs=5687.217 cpuMs=5712.559 cpu=19.636
+gate-mark history-render 2290.087289 limit=200 round=2 rows=200 ffiMs=100.313 renderMs=7868.943 totalMs=7969.256 cpuMs=8001.788 cpu=29.981
+gate-mark history-render 2304.281097 limit=200 round=3 rows=200 ffiMs=100.297 renderMs=9956.711 totalMs=10057.008 cpuMs=10093.656 cpu=44.206
+gate-mark history-render 2329.930877 limit=200 round=4 rows=200 ffiMs=103.783 renderMs=20409.184 totalMs=20512.967 cpuMs=20570.518 cpu=69.912
+gate-mark history-ffi 2337.825973 limit=1 round=0 ffiMs=150.549 cpuMs=107.033 cpu=77.766
+gate-mark history-ffi 2343.042019 limit=1 round=1 ffiMs=100.329 cpuMs=86.503 cpu=77.871
+gate-mark history-ffi 2348.258245 limit=1 round=2 ffiMs=100.385 cpuMs=87.709 cpu=77.977
+gate-mark history-ffi 2353.473792 limit=1 round=3 ffiMs=100.359 cpuMs=87.325 cpu=78.081
+gate-mark history-ffi 2358.689236 limit=1 round=4 ffiMs=100.383 cpuMs=89.523 cpu=78.186
+gate-mark history-bench-done 2358.689309 cpu=78.186
+dash-wallet: shutting the engine down
+dash-wallet: engine shut down
