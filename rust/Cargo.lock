@@ -2245,6 +2245,7 @@ dependencies = [
  "base64 0.22.1",
  "dashcore",
  "dw-coinjoin",
+ "dw-console",
  "dw-engine",
  "dw-message",
  "dw-psbt",

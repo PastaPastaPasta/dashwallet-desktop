@@ -111,7 +111,9 @@ fn export_with_imports<T: TS + 'static>(cfg: &Config, exports: &mut Exports) -> 
                 return;
             };
             if self.top {
-                self.exports.imports.insert(U::ident(self.cfg), path.clone());
+                self.exports
+                    .imports
+                    .insert(U::ident(self.cfg), path.clone());
             }
             let decl = U::decl(self.cfg);
             let rust = std::any::type_name::<U>();
@@ -119,10 +121,8 @@ fn export_with_imports<T: TS + 'static>(cfg: &Config, exports: &mut Exports) -> 
                 Some((seen, _)) if *seen == decl => return,
                 Some((_, other)) => {
                     if self.result.is_ok() {
-                        self.result = Err(format!(
-                            "{rust} and {other} are both {}",
-                            path.display()
-                        ));
+                        self.result =
+                            Err(format!("{rust} and {other} are both {}", path.display()));
                     }
                     return;
                 }

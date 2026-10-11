@@ -12,6 +12,7 @@
 //! calls that need it. A blanket `From` cannot know the call, so those
 //! refusals keep their `vault.*` codes here.
 
+use dw_console::ConsoleFailure;
 use dw_engine::{
     BackupFailure, CoinJoinFailure, CompatFailure, LabelsFailure, MasternodeFailure, PsbtFailure,
     SendFailure,
@@ -147,6 +148,32 @@ codes! {
     }
 }
 
+codes! {
+    /// A `dash:` URI or QR helper refused its input. (A URI that does not
+    /// parse is data, not an error: `parsePaymentUri` returns the reason.)
+    UriCode {
+        /// The text exceeds a QR code's 255 characters (QT-084); dash-qt
+        /// asks to shorten the label or message.
+        TooLongForQr = "uri.too_long_for_qr",
+    }
+}
+
+codes! {
+    /// `ConsoleFailure`: a console line did not run (dw-ffi's strings).
+    ConsoleCode {
+        /// dash-qt "Error: Invalid command line".
+        ParseError = "console.parse_error",
+        /// A Core RPC error (`data`: its code and message).
+        RpcError = "console.rpc_error",
+        /// The command needs a full node: "Not available in SPV mode."
+        NotAvailable = "console.not_available",
+        /// The command spends, signs or reveals (`data`: the grant to ask for).
+        AuthorizationRequired = "console.authorization_required",
+        /// A wallet command with no wallet selected.
+        WalletRequired = "console.wallet_required",
+    }
+}
+
 type Mapped = (ErrorCode, Option<ErrorData>);
 
 fn build(message: String, (code, data): Mapped) -> AppError {
@@ -169,6 +196,34 @@ impl From<SignerError> for AppError {
             S::NoSecret => (SignerCode::NoSecret.into(), None),
             S::Derivation(_) => (SignerCode::DerivationFailed.into(), None),
             S::Vault(v) => return v.into(),
+        };
+        build(message, mapped)
+    }
+}
+
+impl From<ConsoleFailure> for AppError {
+    fn from(f: ConsoleFailure) -> Self {
+        use ConsoleFailure as F;
+        let message = f.to_string();
+        let mapped: Mapped = match f {
+            F::Parse(_) => (ConsoleCode::ParseError.into(), None),
+            F::Rpc { code, message } => (
+                ConsoleCode::RpcError.into(),
+                Some(ErrorData::Rpc {
+                    rpc_code: code,
+                    rpc_message: message,
+                }),
+            ),
+            F::NotAvailable(_) => (ConsoleCode::NotAvailable.into(), None),
+            F::AuthorizationRequired { purpose, wallet } => (
+                ConsoleCode::AuthorizationRequired.into(),
+                Some(ErrorData::Authorize {
+                    purpose: purpose.into(),
+                    wallet_id: wallet.map(|w| w.to_string()),
+                }),
+            ),
+            F::WalletRequired => (ConsoleCode::WalletRequired.into(), None),
+            F::Engine(e) => return e.into(),
         };
         build(message, mapped)
     }

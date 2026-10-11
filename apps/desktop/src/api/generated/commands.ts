@@ -27,6 +27,8 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 import type { CoinJoinStatus } from "./CoinJoinStatus";
 import type { CoinSelectionSummary } from "./CoinSelectionSummary";
 import type { CoinSource } from "./CoinSource";
+import type { ConsoleCommand } from "./ConsoleCommand";
+import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
@@ -1752,6 +1754,32 @@ export function dashpayAvatar(walletId: string, identity: string, size: AvatarSi
   return invoke<AvatarThumbnail | null>("dashpay_avatar", { walletId, identity, size });
 }
 
+/**
+ * Every console command, sorted by name.
+ */
+export function consoleCommands(): Promise<Array<ConsoleCommand>> {
+  return invoke<Array<ConsoleCommand>>("console_commands");
+}
+
+/**
+ * dash-qt's history redaction: the arguments of a sensitive command
+ * (`walletpassphrase`, `importprivkey`, …) become `(…)`.
+ */
+export function consoleRedact(line: string): Promise<string> {
+  return invoke<string>("console_redact", { line });
+}
+
+/**
+ * Parses and runs one console line (nested calls, `[key]` indexing and
+ * quoting as dash-qt) against `walletId` (`null`: no wallet). `grantId`
+ * answers an earlier `console.authorization_required` (its `data`
+ * names the purpose and wallet) and is spent by the first command that
+ * needs one.
+ */
+export function consoleExecute(walletId: string | null, line: string, grantId?: string | null): Promise<ConsoleOutput> {
+  return invoke<ConsoleOutput>("console_execute", { walletId, line, grantId: grantId ?? null });
+}
+
 /** Each command's arguments, as `invoke` sends them. */
 export type CommandArgs = {
   launch_info: {  };
@@ -1960,6 +1988,9 @@ export type CommandArgs = {
   dashpay_avatar_upload_available: { walletId: string };
   dashpay_upload_avatar: { walletId: string; candidate: string };
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
+  console_commands: {  };
+  console_redact: { line: string };
+  console_execute: { walletId: string | null; line: string; grantId: string | null };
 };
 
 /** Each command's result. */
@@ -2170,6 +2201,9 @@ export type CommandResults = {
   dashpay_avatar_upload_available: boolean;
   dashpay_upload_avatar: string;
   dashpay_avatar: AvatarThumbnail | null;
+  console_commands: Array<ConsoleCommand>;
+  console_redact: string;
+  console_execute: ConsoleOutput;
 };
 
 export type CommandName = keyof CommandResults;
@@ -2382,6 +2416,9 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar_upload_available: "social",
   dashpay_upload_avatar: "social",
   dashpay_avatar: "social",
+  console_commands: "console",
+  console_redact: "console",
+  console_execute: "console",
 };
 
 /** Every error code. */
@@ -2521,6 +2558,12 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",
+  "uri.too_long_for_qr",
+  "console.parse_error",
+  "console.rpc_error",
+  "console.not_available",
+  "console.authorization_required",
+  "console.wallet_required",
   "platform.unavailable",
   "platform.timeout",
   "platform.proof_invalid",

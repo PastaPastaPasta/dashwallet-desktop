@@ -26,6 +26,7 @@ tauri = { version = "2.12", features = [] }
 base64 = "0.22"
 dashcore = { workspace = true }
 dw-coinjoin = { workspace = true }
+dw-console = { workspace = true }
 dw-engine = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }

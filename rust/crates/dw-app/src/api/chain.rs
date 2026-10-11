@@ -1,10 +1,10 @@
 //! Chain and sync: SPV, peers, rescans, node information and the Platform
 //! runtime's start-up and loops.
 //!
-//! `NetworkSession::network_stats` (dw-ffi's "Network" sub-tab) and
-//! `console_execute` wrap `node_info` and the `dw-console` crate, not new
-//! facade methods, so this module leaves them out: the renderer takes the
-//! masternode counts and the best ChainLock from `node_info`.
+//! dw-ffi's `network_stats` (the "Network" sub-tab) only reshapes
+//! `node_info`, so it has no command: the renderer takes the masternode
+//! counts and the best ChainLock from `node_info`. The console is
+//! `api::console`.
 
 use dw_engine::platform::{DashPayStartup, PlatformCadence, StartupStatus, SyncLoop};
 use dw_engine::{
