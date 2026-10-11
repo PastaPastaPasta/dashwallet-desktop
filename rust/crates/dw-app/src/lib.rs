@@ -81,6 +81,28 @@ fn exit_on_signal<R: Runtime>(app: tauri::AppHandle<R>) {
 }
 
 /// Entry point of the `dash-wallet` binary.
+/// Without a DRM render node (a VM, a CI runner, remote X) WebKitGTK's DMA-BUF
+/// renderer falls back to software buffers that cost about a second before the
+/// first paint; the shared-memory renderer does not (G-02: first paint 0.9–1.8 s
+/// instead of 2.4–3.0 s on agentbox). Machines with a GPU keep the default, and
+/// a value the user set is kept.
+///
+/// Call it first in `main`, before any other thread exists: it sets an
+/// environment variable, which WebKitGTK reads when it creates the web view.
+#[cfg(target_os = "linux")]
+pub fn webkit_renderer_without_gpu() {
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    let render_node = std::fs::read_dir("/dev/dri").is_ok_and(|dir| {
+        dir.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+    });
+    if !render_node && std::env::var_os(VAR).is_none() {
+        // SAFETY: `main` calls this before any other thread starts, so nothing
+        // reads the environment concurrently.
+        unsafe { std::env::set_var(VAR, "1") };
+    }
+}
+
 pub fn run() {
     let started = Instant::now();
     let launch = match launch::parse(std::env::args().skip(1)) {
@@ -141,6 +163,7 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
             commands::selftest_report,
             commands::selftest_checkpoint,
             commands::ipc_bench_rows,
+            commands::history_page_timed,
             commands::probe_unlisted,
         ])
         .setup(move |app| {
