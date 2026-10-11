@@ -344,3 +344,18 @@ then picks GtkBackend. Without the variable nothing changes. The app's manifest 
 variable for its own GtkBackend dependency.
 
 Test: the gate's Windows job with `--backend gtk` (`ci/gate/crossui/windows.sh`).
+
+### P15 — GLib's `gulong` and `gsize` on Windows (GtkBackend build)
+
+Rationale: Windows is LLP64, so GLib's `gulong` is `UInt32` there, and the Swift importer maps
+`gsize` to `UInt64` rather than `UInt`. The Gtk wrapper passed Swift `UInt` values straight to
+`g_signal_handler_disconnect`, `g_signal_handler_block`/`unblock` and `g_bytes_new`, which compiles
+only where the types coincide (Linux, LP64). With P14, the GtkBackend build on Windows stopped there.
+
+Change (`Sources/Gtk/GObject.swift`, `Sources/Gtk/MemoryTexture.swift`): the handler IDs are
+converted with `gulong(…)`, as `disconnectSignal` already did with `.init(…)`, and the byte count
+with `gsize(…)`. A handler ID came from a `gulong`, so the conversion is lossless. On Linux both
+conversions are identities.
+
+Test: the gate's Windows job with `--backend gtk` (`ci/gate/crossui/windows.sh`), and the Linux
+build (unchanged behaviour).
