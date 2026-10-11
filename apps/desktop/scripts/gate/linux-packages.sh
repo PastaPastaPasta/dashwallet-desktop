@@ -30,7 +30,7 @@ else
   trap 'kill $XVFB 2>/dev/null || true' EXIT
 fi
 for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
-dbus-update-activation-environment DISPLAY
+dbus-update-activation-environment DISPLAY ${XAUTHORITY:+XAUTHORITY}
 
 # selftest NAME COMMAND...: runs the fixture self-test, prints "true" when its final report arrived.
 selftest() {

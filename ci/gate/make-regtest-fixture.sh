@@ -45,6 +45,8 @@ if ! cli getblockcount >/dev/null 2>&1; then
   "$BIN/dashd" -datadir="$WORK/node" -daemon=0 -server=1 -blockfilterindex=1 -peerblockfilters=1 \
     -wallet=default -listenonion=0 >"$WORK/dashd.out" 2>&1 &
   echo $! >"$WORK/dashd.pid"
+  # A node this script started stops with it.
+  trap 'cli stop >/dev/null 2>&1 || true' EXIT
   for _ in $(seq 300); do cli getblockcount >/dev/null 2>&1 && break; sleep 1; done
 fi
 echo "dashd: height $(cli getblockcount), Core balance $(cli -rpcwallet=default getbalance)"

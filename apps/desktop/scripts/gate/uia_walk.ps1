@@ -59,7 +59,8 @@ function Info($e) {
         enabled   = $c.IsEnabled
         focusable = $c.IsKeyboardFocusable
         password  = $c.IsPassword
-        rect      = "$([int]$r.X),$([int]$r.Y) $([int]$r.Width)x$([int]$r.Height)"
+        # An element with no box reports an empty (infinite) rectangle, which [int] cannot convert.
+        rect      = if ($r.IsEmpty) { 'empty' } else { "$([int]$r.X),$([int]$r.Y) $([int]$r.Width)x$([int]$r.Height)" }
         element   = $e
     }
 }
@@ -73,7 +74,8 @@ function Walk($root) {
     while ($stack.Count -gt 0 -and $out.Count -lt 5000) {
         $pair = $stack.Pop()
         $e = $pair[0]; $depth = $pair[1]
-        try { [void]$out.Add(@($depth, (Info $e))) } catch { continue }
+        # An element that vanished mid-walk is recorded as such; its children are still walked.
+        try { [void]$out.Add(@($depth, (Info $e))) } catch { [void]$out.Add(@($depth, [ordered]@{ type = 'Unreadable'; name = "$($_.Exception.Message)"; id = ''; rect = ''; element = $e })) }
         $kids = New-Object System.Collections.ArrayList
         try {
             $child = $walker.GetFirstChild($e)
@@ -159,7 +161,7 @@ try {
 
         # Rows are buttons named by their content ("Received 1:40 AM Pending +0.20 tDASH"); the time
         # tells them from the hero's amount button.
-        Press { param($i) $i.name -match '\d{1,2}:\d{2} [AP]M' -and $i.name -match 'DASH' } 'first transaction row' | Out-Null
+        Press { param($i) $i.name -match '\d{1,2}:\d{2}\s[AP]M' -and $i.name -match 'DASH' } 'first transaction row' | Out-Null
         # PowerShell's -and and -or bind equally (left to right): keep the parentheses.
         $dialog = Wait-For { param($i) ($i.localized -match 'dialog') -or ($i.type -eq 'Window' -and $i.name -eq 'Transaction details') }
         if (Check 'hard' 'the detail sheet is a dialog' ($null -ne $dialog)) {
@@ -167,7 +169,8 @@ try {
         }
         Start-Sleep -Seconds 1
         Dump 'txDetail'
-        Press { param($i) $i.name -eq 'Close' } 'Close' | Out-Null
+        # The sheet's Close, not the title bar's (AutomationId 'Close'), which would quit the app.
+        Press { param($i) $i.name -eq 'Close' -and $i.id -ne 'Close' } 'Close' | Out-Null
         Start-Sleep -Seconds 1
 
         Press { param($i) $i.name -eq 'Lock wallet' } 'Lock wallet' | Out-Null
@@ -184,7 +187,7 @@ try {
             Check 'soft' 'type the passphrase through UIA ValuePattern' $typed $why | Out-Null
             if (-not $typed) {
                 $field.element.SetFocus()
-                [System.Windows.Forms.SendKeys]::SendWait($Passphrase)
+                [System.Windows.Forms.SendKeys]::SendWait(($Passphrase -replace '([+^%~(){}\[\]])', '{$1}'))
                 Check 'hard' 'type the passphrase with the keyboard (SendKeys)' $true | Out-Null
             }
             Start-Sleep -Milliseconds 500

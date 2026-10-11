@@ -39,7 +39,13 @@ def main():
     args = ap.parse_args()
     text_runs = {t for t in args.text_runs.split(",") if t}
     named = [r.split("=", 1) for r in args.reports]
-    data = {name: boxes(json.load(open(path))) for name, path in named}
+    # utf-8-sig: reports copied through Windows tools may carry a byte-order mark.
+    reports = {name: json.load(open(path, encoding="utf-8-sig")) for name, path in named}
+    # Boxes compare only at one viewport (`--window-size`, DW_VIEWPORT).
+    viewports = {name: (r["viewport"]["width"], r["viewport"]["height"]) for name, r in reports.items()}
+    if len(set(viewports.values())) > 1:
+        sys.exit(f"compare_boxes: the reports' viewports differ: {viewports}")
+    data = {name: boxes(r) for name, r in reports.items()}
     base_name = named[0][0]
     base = data[base_name]
     common = set(base)

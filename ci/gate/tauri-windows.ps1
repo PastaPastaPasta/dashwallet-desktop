@@ -21,7 +21,7 @@ param(
     [int] $RunSeconds = 600
 )
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -61,10 +61,26 @@ function Shot($Process, [string] $File) {
 }
 
 function Start-App([string] $Exe, [string[]] $Arguments, [string] $Name) {
-    $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -PassThru `
+    # Windows PowerShell joins -ArgumentList unquoted: quote arguments with spaces.
+    $quoted = @($Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
+    $p = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru `
         -RedirectStandardOutput (Join-Path $OutDir "$Name.out.log") -RedirectStandardError (Join-Path $OutDir "$Name.log")
-    Write-Host "${Name}: started $Exe $Arguments (pid $($p.Id))"
+    # Windows PowerShell only reports ExitCode for a process whose handle was opened.
+    $null = $p.Handle
+    Write-Host "${Name}: started $Exe $quoted (pid $($p.Id))"
     return $p
+}
+
+# Whether the app's lock screen (a named passphrase field) is showing, through UI Automation.
+function Lock-Screen-Shown([int] $ProcessId) {
+    $AE = [System.Windows.Automation.AutomationElement]
+    $win = $AE::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $ProcessId)))
+    if ($null -eq $win) { return $false }
+    $field = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
+        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'Passphrase')))
+    return $null -ne $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $field)
 }
 
 function Wait-Window($Process, [int] $Seconds) {
@@ -176,6 +192,8 @@ if ($installed) {
     $u2.windowSeconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     Start-Sleep -Seconds 10
     Shot $p (Join-Path $shotDir 'windows-wallet-locked.png')
+    $u2.lockScreenShown = Lock-Screen-Shown $p.Id
+    if (-not $u2.lockScreenShown) { Fail 'U2: the wallet did not open on its lock screen' }
     $p.Refresh()
     [Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
     [Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
@@ -186,6 +204,8 @@ if ($installed) {
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 20
     Shot $p (Join-Path $shotDir 'windows-wallet-overview.png')
+    $u2.unlocked = -not (Lock-Screen-Shown $p.Id)
+    if (-not $u2.unlocked) { Fail 'U2: the passphrase did not unlock the wallet (the lock screen is still up)' }
     while (((Get-Date) - $t0).TotalSeconds -lt $RunSeconds -and -not $p.HasExited) {
         $sample = Tree-Memory $p.Id
         $sample.t = [int]((Get-Date) - $t0).TotalSeconds

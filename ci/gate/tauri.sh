@@ -144,6 +144,7 @@ selftest_with_shots() { # REPORT LOG ARGS...
   wait "$pid" 2>/dev/null || true
 }
 
+# Summarises a self-test report; fails unless it is the final report and no check failed.
 judge_selftest() { # REPORT NAME
   [[ -s "$1" ]] || { echo "::error::$2 wrote no report"; return 1; }
   jq -r --arg n "$2" '
@@ -153,12 +154,20 @@ judge_selftest() { # REPORT NAME
     (.ipc // {} | to_entries[] | "- ipc \(.key): p50 \(.value.p50) ms, p95 \(.value.p95) ms"),
     (.ipcSplit // {} | to_entries[] | "- \(.key) split p95: round trip \(.value.roundTrip.p95), engine \(.value.engine.p95), ipc \(.value.ipc.p95) ms"),
     (.security // {} | to_entries[] | "- security \(.key): \(.value)")' "$1" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  jq -e '.final == true and .checksFailed == 0' "$1" >/dev/null \
+    || { echo "::error::$2: not the final report, or a check failed"; return 1; }
 }
 
 status=0
 case $GATE_OS in
   macos)
     swiftc -O -o "$window_id_tool" "$REPO/ci/github/macos-window-id.swift"
+    # The runner has no trackpad, so macOS draws classic scroll bars that take 15-17 px of layout
+    # width; a Mac with a trackpad (the default) overlays them, as Playwright's engines do. U3c
+    # compares layout, so the gate uses the trackpad default (GATE_MAC_SCROLLBARS=Automatic keeps
+    # the runner's).
+    defaults write -g AppleShowScrollBars -string "${GATE_MAC_SCROLLBARS:-WhenScrolling}"
+    echo "AppleShowScrollBars: $(defaults read -g AppleShowScrollBars)" | tee "$OUT/macos-scrollbars.txt"
     echo "== U3/U8: self-test with screenshots (fixture)"
     selftest_with_shots "$OUT/selftest-macos.json" "$OUT/selftest-macos.log" "${FIXTURE[@]}"
     judge_selftest "$OUT/selftest-macos.json" "Tauri --selftest on macOS (fixture)" || status=1
@@ -190,7 +199,8 @@ case $GATE_OS in
     ;;
   linux)
     echo "== the agentbox harness under Xvfb"
-    PASSPHRASE_FILE=$PASSPHRASE_FILE "$REPO/apps/desktop/scripts/gate/linux-gate.sh" "$OUT/linux" "${ENGINE[@]}" || status=1
+    # The runner is not shared: drop the page cache before the first start (a real cold start).
+    DROP_CACHES=1 PASSPHRASE_FILE=$PASSPHRASE_FILE "$REPO/apps/desktop/scripts/gate/linux-gate.sh" "$OUT/linux" "${ENGINE[@]}" || status=1
     ;;
 esac
 

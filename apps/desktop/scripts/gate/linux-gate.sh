@@ -48,7 +48,7 @@ else
 fi
 for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 # Services D-Bus starts (the xdg-desktop-portal backends) need the display, as in a real session.
-dbus-update-activation-environment DISPLAY
+dbus-update-activation-environment DISPLAY ${XAUTHORITY:+XAUTHORITY}
 /usr/libexec/at-spi-bus-launcher --launch-immediately >/dev/null 2>&1 &
 for _ in $(seq 50); do
   dbus-send --session --print-reply --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress >/dev/null 2>&1 && break
@@ -58,7 +58,12 @@ done
 FIXTURE=(--fixture --network testnet)
 UPTIME_START=$(uptime)
 
-now_ms() { date +%s%3N; }
+# Monotonic ms (CLOCK_BOOTTIME via /proc/uptime, 10 ms steps): the wall clock can step on a busy VM.
+now_ms() {
+  local up
+  read -r up _ </proc/uptime
+  echo $((10#${up/./} * 10))
+}
 
 # PSS (kB) of the process and all its descendants (UI + engine, WebKitWebProcess, WebKitNetworkProcess),
 # as JSON: {"pssKb": total, "processes": {"comm[pid]": kB, ...}}.
@@ -242,3 +247,14 @@ cat >linux-gate.json <<JSON
 JSON
 echo "== wrote $OUT/linux-gate.json"
 cat linux-gate.json
+
+# Exit status: the AT-SPI walk and every self-test report (final, no failed check) must pass.
+selftest_ok() { python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(not (r.get("final") is True and r["checksFailed"] == 0))' "$1" 2>/dev/null; }
+status=0
+((atspi_status == 0)) || { echo "FAIL: the AT-SPI walk exited with $atspi_status"; status=1; }
+reports=(selftest-webkitgtk.json)
+((${#ENGINE_ARGS[@]})) && reports+=(selftest-engine.json)
+for r in "${reports[@]}"; do
+  selftest_ok "$r" || { echo "FAIL: $r is missing, not final, or has failed checks"; status=1; }
+done
+exit $status
