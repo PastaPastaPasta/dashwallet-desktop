@@ -145,7 +145,7 @@ public final class CoinJoinService: CoinJoinControlling, MixedCoinsMoving {
         }
         return MixedCoinsSweepResult(
             txids: r.txids, moved: Amount(r.moved), remaining: Amount(r.remaining),
-            failureCode: r.failureCode.map(ServiceErrorCode.init(rawValue:)))
+            failureCode: r.failureCode.map(ServiceErrorCode.init(rawValue:)), unknownTxid: r.unknownTxid)
     }
 }
 

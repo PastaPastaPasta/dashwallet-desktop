@@ -9084,17 +9084,29 @@ public struct MixedCoinsSweepResult: Equatable, Hashable {
      * Code of the error that stopped the sweep, `None` when complete.
      */
     public let failureCode: String?
+    /**
+     * With `coinjoin.broadcast_unknown`: the txid of the chunk that may be
+     * on the network. Its coins stay reserved until the wallet sees them
+     * spent; the host can look it up.
+     */
+    public let unknownTxid: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(txids: [String], moved: UInt64, remaining: UInt64, 
         /**
          * Code of the error that stopped the sweep, `None` when complete.
-         */failureCode: String?) {
+         */failureCode: String?, 
+        /**
+         * With `coinjoin.broadcast_unknown`: the txid of the chunk that may be
+         * on the network. Its coins stay reserved until the wallet sees them
+         * spent; the host can look it up.
+         */unknownTxid: String?) {
         self.txids = txids
         self.moved = moved
         self.remaining = remaining
         self.failureCode = failureCode
+        self.unknownTxid = unknownTxid
     }
 
     
@@ -9116,7 +9128,8 @@ public struct FfiConverterTypeMixedCoinsSweepResult: FfiConverterRustBuffer {
                 txids: FfiConverterSequenceString.read(from: &buf), 
                 moved: FfiConverterUInt64.read(from: &buf), 
                 remaining: FfiConverterUInt64.read(from: &buf), 
-                failureCode: FfiConverterOptionString.read(from: &buf)
+                failureCode: FfiConverterOptionString.read(from: &buf), 
+                unknownTxid: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -9125,6 +9138,7 @@ public struct FfiConverterTypeMixedCoinsSweepResult: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.moved, into: &buf)
         FfiConverterUInt64.write(value.remaining, into: &buf)
         FfiConverterOptionString.write(value.failureCode, into: &buf)
+        FfiConverterOptionString.write(value.unknownTxid, into: &buf)
     }
 }
 

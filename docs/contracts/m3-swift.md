@@ -72,7 +72,8 @@ The Governance sub-tab of Tools → Information: **Parked — Dash Core scope (b
 
 `ServiceErrorCode.m3EngineCodes` lists every m3-engine.md §4 code; `SettingsAndCodesTests` compares it with the
 table. `ServiceError.parameters` carries `min_duffs`; DashKit fills it (`DashKitError+M3.swift`). A sweep's
-stopping error is `MixedCoinsSweepResult.failureCode`.
+stopping error is `MixedCoinsSweepResult.failureCode`; with `.coinjoinBroadcastUnknown` (a sweep code only, not in
+`m3EngineCodes`), `unknownTxid` names the chunk that may be on the network, and the result text shows it.
 
 ## 3. M3 view models (V1) — public API sketch
 

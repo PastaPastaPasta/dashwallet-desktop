@@ -325,6 +325,10 @@ pub struct MixedCoinsSweepResult {
     pub remaining: u64,
     /// Code of the error that stopped the sweep, `None` when complete.
     pub failure_code: Option<String>,
+    /// With `coinjoin.broadcast_unknown`: the txid of the chunk that may be
+    /// on the network. Its coins stay reserved until the wallet sees them
+    /// spent; the host can look it up.
+    pub unknown_txid: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -739,6 +743,7 @@ impl NetworkSession {
             moved: r.moved,
             remaining: r.remaining,
             failure_code: r.failure_code,
+            unknown_txid: r.unknown_txid,
         })
     }
 }

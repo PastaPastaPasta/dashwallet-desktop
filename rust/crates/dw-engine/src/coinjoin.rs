@@ -232,6 +232,10 @@ pub struct SweepResult {
     pub moved: u64,
     pub remaining: u64,
     pub failure_code: Option<String>,
+    /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
+    /// network (display txid), its coins reserved until the wallet sees
+    /// them spent.
+    pub unknown_txid: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2283,6 +2287,7 @@ impl NetworkSession {
                 moved: 0,
                 remaining: total,
                 failure_code: None,
+                unknown_txid: None,
             };
             // Every chunk is signed and reserved under the fence, then
             // broadcast in order; the first failure stops the sweep.
@@ -2344,13 +2349,10 @@ impl NetworkSession {
                         result.remaining -= value;
                     }
                     Err(e) => {
-                        result.failure_code = Some(settle_sweep_failure(
-                            &this.spends,
-                            wallet_id,
-                            &signed,
-                            n,
-                            &e,
-                        ));
+                        let (code, unknown) =
+                            settle_sweep_failure(&this.spends, wallet_id, &signed, n, &e);
+                        result.failure_code = Some(code);
+                        result.unknown_txid = unknown.map(|t| t.to_string());
                         break;
                     }
                 }
@@ -2376,14 +2378,15 @@ impl NetworkSession {
 /// any other error (`TransactionBroadcastUnconfirmed` among them) may have
 /// put it on the network, so its claim stays until the wallet sees its
 /// coins spent (`coinjoin.broadcast_unknown`), as the funding transaction's
-/// does. The chunks after `n` were never handed off.
+/// does, and its txid is returned for the host to check on (review E0-04
+/// P2b F5). The chunks after `n` were never handed off.
 fn settle_sweep_failure(
     spends: &crate::send::PendingSpends,
     wallet_id: WalletId,
     signed: &[(Transaction, u64)],
     n: usize,
     e: &platform_wallet::PlatformWalletError,
-) -> String {
+) -> (String, Option<dashcore::Txid>) {
     let (unsent, code) = match e {
         platform_wallet::PlatformWalletError::TransactionBroadcast(reason) => (
             n,
@@ -2398,7 +2401,8 @@ fn settle_sweep_failure(
     for (tx, _) in &signed[unsent.min(signed.len())..] {
         spends.release(&wallet_id, SpendOwner::Tx(tx.txid()));
     }
-    code.to_owned()
+    let unknown = (unsent > n).then(|| signed.get(n).map(|(tx, _)| tx.txid()));
+    (code.to_owned(), unknown.flatten())
 }
 
 // ---------------------------------------------------------------------------
@@ -2686,7 +2690,7 @@ mod tests {
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let code = settle_sweep_failure(
+        let (code, unknown) = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2694,6 +2698,7 @@ mod tests {
             &E::TransactionBroadcastUnconfirmed("no verdict".into()),
         );
         assert_eq!(code, "coinjoin.broadcast_unknown");
+        assert_eq!(unknown, Some(signed[1].0.txid()), "the chunk to check on");
         assert_eq!(
             spends.snapshot(&wallet),
             HashSet::from([outpoint(0), outpoint(1)])
@@ -2701,7 +2706,7 @@ mod tests {
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let code = settle_sweep_failure(
+        let (code, unknown) = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2709,11 +2714,12 @@ mod tests {
             &E::TransactionBroadcast("rejected: bad-txns".into()),
         );
         assert_eq!(code, "coinjoin.broadcast_rejected");
+        assert_eq!(unknown, None, "definitely unsent");
         assert_eq!(spends.snapshot(&wallet), HashSet::from([outpoint(0)]));
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let code = settle_sweep_failure(
+        let (code, unknown) = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2721,6 +2727,7 @@ mod tests {
             &E::TransactionBroadcast("No peers connected".into()),
         );
         assert_eq!(code, "coinjoin.no_peers");
+        assert_eq!(unknown, None);
         assert_eq!(
             spends.snapshot(&wallet),
             HashSet::from([outpoint(0), outpoint(1)])

@@ -213,6 +213,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let coinjoinSpvNotRunning = Self(rawValue: "coinjoin.spv_not_running")
     public static let coinjoinNoPeers = Self(rawValue: "coinjoin.no_peers")
     public static let coinjoinBroadcastRejected = Self(rawValue: "coinjoin.broadcast_rejected")
+    /// A sweep's `failureCode` only (no `CoinJoinError` case): the chunk named by `unknownTxid` may be on the network.
+    public static let coinjoinBroadcastUnknown = Self(rawValue: "coinjoin.broadcast_unknown")
     public static let masternodeWatchOnly = Self(rawValue: "masternode.watch_only")
     public static let masternodeVaultLocked = Self(rawValue: "masternode.vault_locked")
     public static let masternodeGrantInvalid = Self(rawValue: "masternode.grant_invalid")
