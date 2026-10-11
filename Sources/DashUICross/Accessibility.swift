@@ -5,13 +5,14 @@
 // Vendor/PATCHES.md). List rows are not controls and fork patch P4 (row
 // names) is not done, so `accessibleRowNames` still reaches the native list
 // through SwiftCrossUI's backend `inspect` hook:
-// - Linux (GtkBackend): GTK_ACCESSIBLE_PROPERTY_LABEL on each row of the
-//   first list box inside the view. AT-SPI reports it as the row's name.
-// - macOS (AppKitBackend, development builds) and Windows: rows keep the
+// - GtkBackend (Linux; Windows with DWD_CROSS_BACKEND=gtk):
+//   GTK_ACCESSIBLE_PROPERTY_LABEL on each row of the first list box inside
+//   the view. AT-SPI reports it as the row's name.
+// - macOS (AppKitBackend, development builds) and WinUIBackend: rows keep the
 //   toolkit's own names.
 import SwiftCrossUI
 
-#if os(Linux)
+#if canImport(GtkBackend)
     import CGtk
     import Gtk
     import GtkBackend
@@ -22,7 +23,7 @@ extension View {
     /// without a name in `names` keep theirs.
     @ViewBuilder
     public func accessibleRowNames(_ names: [String]) -> some View {
-        #if os(Linux)
+        #if canImport(GtkBackend)
             inspect([.onCreate, .afterUpdate]) { widget in
                 GtkAccessibleNames.labelRows(in: widget.widgetPointer, names: names)
             }
@@ -32,7 +33,7 @@ extension View {
     }
 }
 
-#if os(Linux)
+#if canImport(GtkBackend)
     @MainActor
     enum GtkAccessibleNames {
         static func role(of widget: UnsafeMutablePointer<GtkWidget>) -> UInt32 {

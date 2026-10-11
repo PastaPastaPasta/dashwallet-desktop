@@ -23,12 +23,17 @@ let crossUI: [Target.Dependency] = [
     .product(name: "DefaultBackend", package: "swift-cross-ui"),
 ]
 
+// DWD_CROSS_BACKEND=gtk builds the Windows app on GtkBackend instead of WinUIBackend (the UI gate's
+// fallback, G-03; the vendored package reads the same variable, patch P14).
+let gtkPlatforms: [Platform] =
+    ProcessInfo.processInfo.environment["DWD_CROSS_BACKEND"] == "gtk" ? [.linux, .windows] : [.linux]
+
 // The native backend of each OS, for code that reaches the native widgets
 // through SwiftCrossUI's `inspect` hooks (list-row names until fork patch
-// P4, the quit hook, the GTK application name). Windows has none yet.
+// P4, the quit hook, the GTK application name). WinUIBackend has none yet.
 let nativeBackend: [Target.Dependency] = [
-    .product(name: "GtkBackend", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
-    .product(name: "Gtk", package: "swift-cross-ui", condition: .when(platforms: [.linux])),
+    .product(name: "GtkBackend", package: "swift-cross-ui", condition: .when(platforms: gtkPlatforms)),
+    .product(name: "Gtk", package: "swift-cross-ui", condition: .when(platforms: gtkPlatforms)),
     .product(name: "AppKitBackend", package: "swift-cross-ui", condition: .when(platforms: [.macOS])),
 ]
 

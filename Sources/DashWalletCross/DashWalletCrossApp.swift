@@ -15,7 +15,7 @@ import WalletRuntime
 
 #if os(macOS)
     import AppKit
-#elseif os(Linux)
+#elseif canImport(GtkBackend)
     import CGtk
     import Gtk
     import GtkBackend
@@ -39,7 +39,7 @@ struct DashWalletCrossApp: App {
             exit(options.showHelp && options.problems.isEmpty ? 0 : 64)
         }
         self.options = options
-        #if os(Linux)
+        #if canImport(GtkBackend)
             // AT-SPI and desktop shells show this instead of the executable
             // name (ADR 0002, gap A7).
             g_set_application_name(L10n.Navigation.appName)
@@ -115,9 +115,10 @@ enum CrossDemoText {
 
 /// Runs `LiveSession.shutdownBeforeExit()` on the way out:
 /// - macOS (AppKitBackend): on `NSApplication.willTerminateNotification`.
-/// - Linux (GtkBackend): on the GApplication's "shutdown" signal, which
-///   `g_application_run` emits after the main loop ends (the last window
-///   was closed or the application quit), before it returns.
+/// - GtkBackend (Linux; Windows with DWD_CROSS_BACKEND=gtk): on the
+///   GApplication's "shutdown" signal, which `g_application_run` emits
+///   after the main loop ends (the last window was closed or the
+///   application quit), before it returns.
 ///   The window's "destroy" signal is not used: in GTK 4 it is emitted only
 ///   when the window is disposed, and SwiftCrossUI 0.10 keeps a reference to
 ///   every window it created (`GtkBackend.windows`, plus the wrapper's own
@@ -149,7 +150,7 @@ final class QuitHook {
         session.shutdownBeforeExit()
     }
 
-    #if os(Linux)
+    #if canImport(GtkBackend)
         /// Connects `appClosing()` to the "shutdown" signal of the
         /// GtkApplication that owns `window` (once). The hook stays retained
         /// by the connection for the rest of the process.
@@ -331,10 +332,10 @@ extension LiveStartView {
 
 extension View {
     /// Tells `hook` when the GTK application that owns this view's window
-    /// shuts down (Linux only).
+    /// shuts down (GtkBackend only).
     @ViewBuilder
     func hookApplicationShutdown(_ hook: QuitHook) -> some View {
-        #if os(Linux)
+        #if canImport(GtkBackend)
             inspectWindow { window in
                 hook.connectApplicationShutdown(of: window)
             }

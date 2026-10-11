@@ -1,19 +1,20 @@
 // Toolkit-level styling that SwiftCrossUI 0.10 has no modifier for
 // (UX-SPEC §2.2 fonts, §2.8 item 6 accent):
-// - Linux (GtkBackend): registers the bundled Inter files with fontconfig and
-//   makes Inter GTK's default face; installs one CSS provider, built from the
-//   colour tokens, that makes Dash blue the accent of the native widgets
+// - GtkBackend (Linux; Windows built with DWD_CROSS_BACKEND=gtk): registers
+//   the bundled Inter files with fontconfig (Linux only) and makes Inter
+//   GTK's default face; installs one CSS provider, built from the colour
+//   tokens, that makes Dash blue the accent of the native widgets
 //   (switches, check boxes, progress bars, list selection, focus rings, text
 //   selection) whatever the desktop theme's accent is; follows the window's
 //   appearance with `gtk-application-prefer-dark-theme` so native entries
 //   and drop-downs match the dark canvas.
-// - macOS (AppKitBackend development builds) and Windows: nothing; the
+// - macOS (AppKitBackend development builds) and WinUIBackend: nothing; the
 //   system face and controls stay.
 import DesignTokens
 import Foundation
 import SwiftCrossUI
 
-#if os(Linux)
+#if canImport(GtkBackend)
     import CGtk
     import Gtk
     import GtkBackend
@@ -83,7 +84,7 @@ extension View {
     /// elsewhere). Put it on the window's root view.
     @ViewBuilder
     public func toolkitTheme(_ colorScheme: ColorScheme) -> some View {
-        #if os(Linux)
+        #if canImport(GtkBackend)
             let appearance: DashAppearance = colorScheme == .dark ? .dark : .light
             inspect([.onCreate, .afterUpdate]) { _ in
                 DashGtkTheme.apply(appearance)
@@ -103,7 +104,7 @@ extension View {
     /// the toolkit theme can style it (the sidebar's accent selection).
     @ViewBuilder
     public func listCSSClass(_ name: String) -> some View {
-        #if os(Linux)
+        #if canImport(GtkBackend)
             inspect([.onCreate]) { widget in
                 guard
                     let list = GtkAccessibleNames.firstWidget(
@@ -141,7 +142,9 @@ struct ToolkitThemed<Content: View>: View {
             return addDir(nil, path) != 0
         }
     }
+#endif
 
+#if canImport(GtkBackend)
     @MainActor
     enum DashGtkTheme {
         private static var provider: Gtk.CSSProvider?

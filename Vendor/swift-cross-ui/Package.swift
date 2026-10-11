@@ -22,10 +22,14 @@ import PackageDescription
         .target(name: "AppKitBackend", condition: .when(platforms: [.macOS]))
     ]
 #else
-    let defaultBackendDependencies: [Target.Dependency] = [
-        .target(name: "WinUIBackend", condition: .when(platforms: [.windows])),
-        .target(name: "GtkBackend", condition: .when(platforms: [.linux])),
-    ]
+    // dashwallet-desktop patch P14: DWD_CROSS_BACKEND=gtk puts Windows on GtkBackend too.
+    let defaultBackendDependencies: [Target.Dependency] =
+        Context.environment["DWD_CROSS_BACKEND"] == "gtk"
+        ? [.target(name: "GtkBackend", condition: .when(platforms: [.linux, .windows]))]
+        : [
+            .target(name: "WinUIBackend", condition: .when(platforms: [.windows])),
+            .target(name: "GtkBackend", condition: .when(platforms: [.linux])),
+        ]
 #endif
 
 let package = Package(

@@ -331,3 +331,16 @@ unparents the previous child.
 Test: none in the package; it would need a GTK display. Checked by the gate's crashing launch on
 agentbox (`ci/gate/crossui/linux-gate.sh --phases history`): every run died with SIGSEGV before
 the patch and none after it (`docs/research/g-03-data/`).
+
+### P14 — `DWD_CROSS_BACKEND=gtk` builds Windows on GtkBackend (manifest only)
+
+Rationale: the UI gate (G-03) falls back to GtkBackend on Windows when WinUIBackend fails U4
+(WinUIBackend has no accessibility labels, swift-cross-ui#787). Upstream chose the backend with
+`SCUI_DEFAULT_BACKEND`, which this cut-down manifest dropped.
+
+Change (`Package.swift`): with `DWD_CROSS_BACKEND=gtk` in the environment, DefaultBackend depends
+on GtkBackend on Linux and Windows and not on WinUIBackend; DefaultBackend's `canImport` chain
+then picks GtkBackend. Without the variable nothing changes. The app's manifest reads the same
+variable for its own GtkBackend dependency.
+
+Test: the gate's Windows job with `--backend gtk` (`ci/gate/crossui/windows.sh`).
