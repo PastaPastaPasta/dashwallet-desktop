@@ -1497,7 +1497,10 @@ impl crate::send::TestBroadcaster for SelfSpendSeam {
             .session
             .leases
             .call_step(self.wallet, self.step)
-            .self_spends;
+            .self_spends
+            .iter()
+            .map(|s| s.txid)
+            .collect();
         *self.seen.lock().unwrap() = Some((tx.clone(), spends));
         let txid = tx.txid();
         Box::pin(async move { Ok(txid) })
@@ -1640,9 +1643,17 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
 
     // Not ChainLocked: still WillBeSent, the self-spend standing.
     assert_eq!(status(), Some(DispatchState::WillBeSent));
+    let spends = s.leases.call_step(f.wallet, STEP).self_spends;
+    assert_eq!(spends.len(), 1);
+    assert_eq!(spends[0].txid, ArtifactId::from_txid(&txid).0);
     assert_eq!(
-        s.leases.call_step(f.wallet, STEP).self_spends,
-        vec![ArtifactId::from_txid(&txid).0]
+        spends[0].conflicts,
+        Some(vec![(Txid::from_byte_array([51; 32]), a)]),
+        "recorded with the input it takes of the signed lock"
+    );
+    assert!(
+        tx.input.iter().any(|i| i.previous_output == a),
+        "an input of the broadcast transaction"
     );
     // The wallet sees it ChainLocked: the step reads NotSent, once.
     f.record_tx(

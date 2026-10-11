@@ -10,8 +10,9 @@ use std::time::Duration;
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
-    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendRow,
-    SignedLockRow, StepEvent, StepLogRow, StepRow, StoredFundingKey, StoredOutPoint,
+    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendConflict,
+    SelfSpendProvenance, SelfSpendRow, SignedLockRow, StepEvent, StepLogRow, StepRow,
+    StoredFundingKey, StoredOutPoint,
 };
 use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
@@ -423,6 +424,7 @@ impl JournalBackend for FakeJournal {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String> {
         if self.fail_self_spend.load(Ordering::SeqCst) {
             return Err("injected self-spend failure".into());
@@ -440,6 +442,7 @@ impl JournalBackend for FakeJournal {
                 artifact: *artifact,
                 txid: *txid,
                 marker,
+                provenance: SelfSpendProvenance::Conflicts(conflicts.to_vec()),
                 at: 0,
             });
         }
@@ -2268,9 +2271,10 @@ impl JournalBackend for GatedJournal {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String> {
         self.db
-            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -2934,9 +2938,10 @@ impl JournalBackend for R2Journal {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String> {
         self.db
-            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -3451,9 +3456,10 @@ impl JournalBackend for R3Journal {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String> {
         self.db
-            .insert_self_spend(wallet, step, artifact, txid, 0)
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
             .map_err(|e| e.to_string())
     }
 

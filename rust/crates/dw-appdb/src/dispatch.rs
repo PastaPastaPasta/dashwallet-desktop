@@ -28,6 +28,10 @@
 //!   when it was written, before the library broadcasts it. It is
 //!   append-only, stands while that marker does, and goes with the
 //!   artifact's rows like the other two.
+//! - Schema 5 gives each `self_spend` row its provenance: written since,
+//!   it lists the signed locks it was checked to spend an input of (its
+//!   `conflicts`); written before, it is legacy and lists none
+//!   ([`SelfSpendProvenance`], review P2b r3 R3-01).
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -55,9 +59,9 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 
 /// The schema this build reads and writes. Version 1 (a `step` table whose
 /// rows a definite resolution deleted) is migrated at open (DEC-154), and
-/// so are version 2 (no Mode B tables) and 3 (no `signed_lock`); every
-/// migration only adds.
-pub const DISPATCH_SCHEMA: u32 = 4;
+/// so are version 2 (no Mode B tables), 3 (no `signed_lock`) and 4 (no
+/// self-spend provenance); every migration only adds.
+pub const DISPATCH_SCHEMA: u32 = 5;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -160,6 +164,24 @@ CREATE INDEX signed_lock_artifact ON signed_lock (wallet, artifact);
 
 /// Version 3 → 4: `signed_lock` is new and empty.
 const MIGRATE_V3: &str = "UPDATE meta SET v = 4 WHERE k = 'schema';";
+
+/// Version 5 (E0-04 P2b r3, review R3-01): a self-spend's provenance. `0`
+/// is legacy (written before version 5, by an engine that did not check
+/// what it conflicts with); `1` was written with `conflicts`, one 68-byte
+/// entry per signed lock it was checked to spend an input of (the lock's
+/// txid, then that input: txid, vout little-endian; both txids in internal
+/// byte order, like `signed_lock`'s, while `self_spend.txid` is in display
+/// order), none when the wallet's recovery was complete instead. A legacy
+/// row keeps its txid's row: a later record of the same txid adds nothing.
+const SELF_SPEND_PROVENANCE: &str = "
+ALTER TABLE self_spend ADD COLUMN provenance INTEGER NOT NULL DEFAULT 0
+  CHECK (provenance IN (0, 1));
+ALTER TABLE self_spend ADD COLUMN conflicts BLOB NOT NULL DEFAULT x''
+  CHECK (length(conflicts) % 68 = 0);
+";
+
+/// Version 4 → 5: every self-spend already written is legacy.
+const MIGRATE_V4: &str = "UPDATE meta SET v = 5 WHERE k = 'schema';";
 
 /// The Mode B side tables, whose rows go with their artifact's `step_log`
 /// rows ([`compact`]).
@@ -283,7 +305,26 @@ pub struct SelfSpendRow {
     pub txid: [u8; 32],
     /// The `seq` of the marker that stood when it was written.
     pub marker: u64,
+    pub provenance: SelfSpendProvenance,
     pub at: u64,
+}
+
+/// What a self-spend was shown to conflict with when it was recorded
+/// (schema 5, review P2b r3 R3-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelfSpendProvenance {
+    /// Written before schema 5: nothing shows what it conflicts with.
+    Legacy,
+    /// Each signed lock of the step it spends an input of, with that
+    /// input; none when the wallet's recovery was complete instead.
+    Conflicts(Vec<SelfSpendConflict>),
+}
+
+/// A signed lock (`lock`, its txid) a self-spend spends `input` of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SelfSpendConflict {
+    pub lock: [u8; 32],
+    pub input: StoredOutPoint,
 }
 
 /// A transaction input's outpoint, as `signed_lock` stores it.
@@ -696,7 +737,7 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
-                Some(v @ 1..=3) => {
+                Some(v @ 1..=4) => {
                     if v == 1 {
                         tx.execute_batch(STEP_LOG)?;
                         tx.execute_batch(MIGRATE_V1)?;
@@ -705,8 +746,12 @@ impl DispatchJournal {
                         tx.execute_batch(MODE_B)?;
                         tx.execute_batch(MIGRATE_V2)?;
                     }
-                    tx.execute_batch(SIGNED_LOCK)?;
-                    tx.execute_batch(MIGRATE_V3)?;
+                    if v <= 3 {
+                        tx.execute_batch(SIGNED_LOCK)?;
+                        tx.execute_batch(MIGRATE_V3)?;
+                    }
+                    tx.execute_batch(SELF_SPEND_PROVENANCE)?;
+                    tx.execute_batch(MIGRATE_V4)?;
                 }
                 Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -724,6 +769,7 @@ impl DispatchJournal {
             tx.execute_batch(STEP_LOG)?;
             tx.execute_batch(MODE_B)?;
             tx.execute_batch(SIGNED_LOCK)?;
+            tx.execute_batch(SELF_SPEND_PROVENANCE)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -835,9 +881,11 @@ impl DispatchJournal {
 
     /// Repair's self-spend `txid` of the funding marked by `step_id`
     /// (§6.5, §2a.5), recorded against the step's standing marker before
-    /// the spend is broadcast. The engine writes no `NotSent` row for it:
-    /// the step derives `NotSent` from this row once the wallet sees the
-    /// spend ChainLocked.
+    /// the spend is broadcast, with the signed locks it was checked to
+    /// spend an input of (`conflicts`, its provenance). The engine writes
+    /// no `NotSent` row for it: the step derives `NotSent` from this row
+    /// once the wallet sees the spend ChainLocked, if its provenance shows
+    /// the conflict.
     /// `Ok(false)`: no marker of the step stands, so nothing is recorded.
     /// Idempotent.
     pub fn insert_self_spend(
@@ -846,6 +894,7 @@ impl DispatchJournal {
         step_id: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
         now: u64,
     ) -> Result<bool> {
         let mut conn = self.conn();
@@ -854,8 +903,9 @@ impl DispatchJournal {
             return Ok(false);
         };
         tx.execute(
-            "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+            "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at,
+                                     provenance, conflicts)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7
              WHERE NOT EXISTS (SELECT 1 FROM self_spend WHERE marker = ?5 AND txid = ?4)",
             params![
                 &wallet[..],
@@ -863,7 +913,8 @@ impl DispatchJournal {
                 &artifact[..],
                 &txid[..],
                 marker,
-                now as i64
+                now as i64,
+                encode_conflicts(conflicts),
             ],
         )?;
         tx.commit()?;
@@ -1188,22 +1239,36 @@ fn funding_rows(conn: &Connection) -> Result<Vec<FundingRow>> {
 
 fn self_spend_rows(conn: &Connection) -> Result<Vec<SelfSpendRow>> {
     let mut stmt = conn.prepare(
-        "SELECT seq, wallet, step_id, artifact, txid, marker, at FROM self_spend ORDER BY seq",
+        "SELECT seq, wallet, step_id, artifact, txid, marker, at, provenance, conflicts
+         FROM self_spend ORDER BY seq",
     )?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Vec<u8>>(3)?,
-                r.get::<_, Vec<u8>>(4)?,
+                (
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ),
                 r.get::<_, i64>(5)?,
                 r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Vec<u8>>(8)?,
             ))
         })?
         .map(|row| {
-            let (seq, wallet, step_id, artifact, txid, marker, at) = row?;
+            let ((seq, wallet, step_id, artifact, txid), marker, at, provenance, conflicts) = row?;
+            let provenance = match provenance {
+                0 => SelfSpendProvenance::Legacy,
+                1 => SelfSpendProvenance::Conflicts(decode_conflicts(&conflicts)?),
+                other => {
+                    return Err(AppDbError::Corrupt(format!(
+                        "self_spend.provenance {other}"
+                    )));
+                }
+            };
             Ok(SelfSpendRow {
                 seq: seq as u64,
                 wallet: fixed(wallet, "self_spend.wallet")?,
@@ -1211,6 +1276,7 @@ fn self_spend_rows(conn: &Connection) -> Result<Vec<SelfSpendRow>> {
                 artifact: fixed(artifact, "self_spend.artifact")?,
                 txid: fixed(txid, "self_spend.txid")?,
                 marker: marker as u64,
+                provenance,
                 at: at as u64,
             })
         })
@@ -1277,6 +1343,38 @@ fn decode_outpoints(bytes: &[u8]) -> Result<Vec<StoredOutPoint>> {
             vout: u32::from_le_bytes(c[32..].try_into().expect("4 bytes")),
         })
         .collect())
+}
+
+fn encode_conflicts(conflicts: &[SelfSpendConflict]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(conflicts.len() * 68);
+    for c in conflicts {
+        out.extend_from_slice(&c.lock);
+        out.extend_from_slice(&encode_outpoints(&[c.input]));
+    }
+    out
+}
+
+fn decode_conflicts(bytes: &[u8]) -> Result<Vec<SelfSpendConflict>> {
+    let (chunks, rest) = bytes.as_chunks::<68>();
+    if !rest.is_empty() {
+        return Err(AppDbError::Corrupt(format!(
+            "self_spend.conflicts: {} bytes",
+            bytes.len()
+        )));
+    }
+    chunks
+        .iter()
+        .map(|c| {
+            let (txid, vout) = c[32..].split_at(32);
+            Ok(SelfSpendConflict {
+                lock: c[..32].try_into().expect("32 bytes"),
+                input: StoredOutPoint {
+                    txid: txid.try_into().expect("32 bytes"),
+                    vout: u32::from_le_bytes(vout.try_into().expect("4 bytes")),
+                },
+            })
+        })
+        .collect()
 }
 
 /// The sweep at open (DEC-154 (4)): nothing of this process is on the
@@ -1546,7 +1644,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 4, "through versions 2 and 3 to 4");
+        assert_eq!(schema, 5, "through versions 2, 3 and 4 to 5");
         let old: bool = j
             .conn()
             .query_row(
@@ -1573,10 +1671,10 @@ mod tests {
         }
     }
 
-    /// Schemas 3 and 4 only add: a version 2 file keeps every row and
+    /// Schemas 3 to 5 only add: a version 2 file keeps every row and
     /// reading.
     #[test]
-    fn a_version_2_journal_migrates_to_4_keeping_every_row() {
+    fn a_version_2_journal_migrates_to_5_keeping_every_row() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DISPATCH_DB_FILE);
         let conn = Connection::open(&path).unwrap();
@@ -1607,7 +1705,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 4);
+        assert_eq!(schema, 5);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -1620,10 +1718,11 @@ mod tests {
         assert_eq!(j.load_calls().unwrap().funding.len(), 1);
     }
 
-    /// Schema 4 only adds: a version 3 file keeps its Mode B rows, and its
-    /// standing markers take signed locks.
+    /// Schemas 4 and 5 only add: a version 3 file keeps its Mode B rows, its
+    /// self-spends read legacy (review P2b r3 R3-01), and its standing
+    /// markers take signed locks and self-spends with their conflicts.
     #[test]
-    fn a_version_3_journal_migrates_to_4_keeping_every_row() {
+    fn a_version_3_journal_migrates_to_5_keeping_every_row() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DISPATCH_DB_FILE);
         let conn = Connection::open(&path).unwrap();
@@ -1656,10 +1755,11 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 4);
+        assert_eq!(schema, 5);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
+        assert_eq!(rows.self_spends[0].provenance, SelfSpendProvenance::Legacy);
         assert!(rows.signed_locks.is_empty());
         let inputs = [StoredOutPoint {
             txid: [6; 32],
@@ -1670,6 +1770,115 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(j.load_calls().unwrap().signed_locks[0].marker, 1);
+        let conflicts = [SelfSpendConflict {
+            lock: [7; 32],
+            input: inputs[0],
+        }];
+        assert!(
+            j.insert_self_spend(&W, step, &T, &[8; 32], &conflicts, 4)
+                .unwrap()
+        );
+        let spends = j.load_calls().unwrap().self_spends;
+        assert_eq!(spends[0].provenance, SelfSpendProvenance::Legacy);
+        assert_eq!(
+            spends[1].provenance,
+            SelfSpendProvenance::Conflicts(conflicts.to_vec())
+        );
+    }
+
+    /// Schema 5 only adds: a version 4 file keeps every row, and the
+    /// self-spends it holds read legacy, since nothing recorded what they
+    /// conflict with (review P2b r3 R3-01).
+    #[test]
+    fn a_version_4_journal_migrates_to_5_its_self_spends_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_LOG).unwrap();
+        conn.execute_batch(MODE_B).unwrap();
+        conn.execute_batch(SIGNED_LOCK).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 4), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        let step = "registration/d/funding";
+        append_marker(&conn, &W, &T, step, 1).unwrap();
+        append_funding(&conn, &W, &T, step, &KEY, 1).unwrap();
+        conn.execute(
+            "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at)
+             VALUES (?1, ?2, ?3, ?4, 1, 1)",
+            params![&W[..], step, &T[..], &[5u8; 32][..]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO signed_lock (wallet, step_id, artifact, txid, inputs, marker, at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
+            params![&W[..], step, &T[..], &[7u8; 32][..], &[6u8; 36][..]],
+        )
+        .unwrap();
+        drop(conn);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 2).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 5);
+        let rows = j.load_calls().unwrap();
+        assert_eq!(
+            (rows.funding.len(), rows.signed_locks.len()),
+            (1, 1),
+            "every row kept"
+        );
+        assert_eq!(rows.self_spends.len(), 1);
+        assert_eq!(rows.self_spends[0].provenance, SelfSpendProvenance::Legacy);
+    }
+
+    /// A self-spend's conflicts read back as written; one written with none
+    /// (the wallet's recovery complete) is not legacy.
+    #[test]
+    fn a_self_spends_conflicts_round_trip() {
+        let j = journal();
+        let step = "registration/d/funding";
+        j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        let conflicts = [
+            SelfSpendConflict {
+                lock: [7; 32],
+                input: StoredOutPoint {
+                    txid: [6; 32],
+                    vout: 0x0102_0304,
+                },
+            },
+            SelfSpendConflict {
+                lock: [9; 32],
+                input: StoredOutPoint {
+                    txid: [8; 32],
+                    vout: 0,
+                },
+            },
+        ];
+        assert!(
+            j.insert_self_spend(&W, step, &T, &[1; 32], &conflicts, 2)
+                .unwrap()
+        );
+        assert!(j.insert_self_spend(&W, step, &T, &[2; 32], &[], 2).unwrap());
+        let provenance: Vec<_> = j
+            .load_calls()
+            .unwrap()
+            .self_spends
+            .into_iter()
+            .map(|s| s.provenance)
+            .collect();
+        assert_eq!(
+            provenance,
+            vec![
+                SelfSpendProvenance::Conflicts(conflicts.to_vec()),
+                SelfSpendProvenance::Conflicts(Vec::new()),
+            ]
+        );
     }
 
     const KEY: StoredFundingKey = StoredFundingKey {
@@ -1756,12 +1965,12 @@ mod tests {
         let j = journal();
         let step = "registration/d/funding";
         let (tx1, tx2) = ([5; 32], [6; 32]);
-        assert!(!j.insert_self_spend(&W, step, &T, &tx1, 1).unwrap());
+        assert!(!j.insert_self_spend(&W, step, &T, &tx1, &[], 1).unwrap());
         assert!(j.self_spend_rows().unwrap().is_empty(), "no marker");
         j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
-        assert!(j.insert_self_spend(&W, step, &T, &tx1, 3).unwrap());
-        assert!(j.insert_self_spend(&W, step, &T, &tx1, 4).unwrap());
-        assert!(j.insert_self_spend(&W, step, &T, &tx2, 4).unwrap());
+        assert!(j.insert_self_spend(&W, step, &T, &tx1, &[], 3).unwrap());
+        assert!(j.insert_self_spend(&W, step, &T, &tx1, &[], 4).unwrap());
+        assert!(j.insert_self_spend(&W, step, &T, &tx2, &[], 4).unwrap());
         let spends = |j: &DispatchJournal| -> Vec<[u8; 32]> {
             j.load_calls()
                 .unwrap()
@@ -1775,7 +1984,7 @@ mod tests {
         // the marker, and the self-spends with it. A new call's marker does not inherit them.
         j.resolve(&W, &T, Resolution::NotSent, 5).unwrap();
         assert!(spends(&j).is_empty());
-        assert!(!j.insert_self_spend(&W, step, &T, &tx1, 6).unwrap());
+        assert!(!j.insert_self_spend(&W, step, &T, &tx1, &[], 6).unwrap());
         j.insert_funding_step(&W, step, &T, &KEY, 7).unwrap();
         assert!(spends(&j).is_empty());
         assert_eq!(j.self_spend_rows().unwrap().len(), 2, "append-only");
@@ -1872,7 +2081,7 @@ mod tests {
         for a in [kept, gone] {
             j.insert_funding_step(&W, "s/funding", &a, &KEY, 1).unwrap();
             assert!(
-                j.insert_self_spend(&W, "s/funding", &a, &[1; 32], 1)
+                j.insert_self_spend(&W, "s/funding", &a, &[1; 32], &[], 1)
                     .unwrap()
             );
         }

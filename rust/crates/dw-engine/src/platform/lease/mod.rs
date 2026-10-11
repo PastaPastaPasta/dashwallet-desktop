@@ -59,7 +59,9 @@ pub use fence::{
     NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
 };
 pub(crate) use mode_b::StoredLock;
-pub use mode_b::{DraftKey, FundingBlock, StuckFundingRefusal, TrackedRow, TrackedStatus};
+pub use mode_b::{
+    DraftKey, FundingBlock, SelfSpend, StuckFundingRefusal, TrackedRow, TrackedStatus,
+};
 pub use table::{Lease, LeaseTable};
 
 /// A lease's id: 128 bits from the OS RNG, in memory only (H5, I7).

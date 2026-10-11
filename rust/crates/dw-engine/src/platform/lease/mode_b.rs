@@ -270,6 +270,40 @@ pub(crate) struct SignedLock {
     pub(crate) durable: bool,
 }
 
+/// One of Repair's self-spends of a funding step, standing against its
+/// marker (§2a.6, review P2b r3 R3-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfSpend {
+    pub txid: [u8; 32],
+    /// Each signed lock of the step it was checked to spend an input of,
+    /// with that input, when it was recorded; `None` for one recorded
+    /// before the journal kept this (schema 5): a legacy self-spend, which
+    /// an engine that did not require a signed lock may have admitted.
+    pub conflicts: Option<Vec<(Txid, OutPoint)>>,
+}
+
+impl SelfSpend {
+    /// Whether this self-spend, once ChainLocked, shows the step's lock can
+    /// no longer confirm while the wallet's recovery is not complete: its
+    /// record names at least one signed lock, and every signed lock of the
+    /// step (`signed`) with one of that lock's inputs. A legacy self-spend
+    /// never does (review P2b r3 R3-01): the step derives as if it were
+    /// absent. A lock its record names that this process no longer knows (a
+    /// signed lock whose write failed, before a restart) was the step's own
+    /// all the same.
+    fn shows_conflict(&self, signed: &[SignedLock]) -> bool {
+        let Some(conflicts) = self.conflicts.as_deref() else {
+            return false;
+        };
+        !conflicts.is_empty()
+            && signed.iter().all(|l| {
+                conflicts
+                    .iter()
+                    .any(|(lock, input)| *lock == l.txid && l.inputs.contains(input))
+            })
+    }
+}
+
 /// Whether a tracked row's identity index can be trusted as it stands
 /// (review H-1). At the pin, `reconstruction.rs` re-adds a row the wallet
 /// lost (a sweep's `remove_tracked_asset_locks_for_swept`, a restore) from
@@ -445,7 +479,9 @@ pub enum FundingBlock {
 ///   marker's key or the draft's own); `None` when the wallet's rows are
 ///   unknown, which never reads `None` or `NotSent`;
 /// - `self_spend_locked`: one of Repair's self-spends answering the step's
-///   marker is ChainLocked;
+///   marker is ChainLocked and shows the conflict (its record covers every
+///   signed lock of the step, or the wallet's recovery is complete:
+///   [`SelfSpend`], review P2b r3 R3-01);
 /// - `unattributed`: an unattributed row that may be the step's lock
 ///   stands (module doc): the self-spend's row, a definite resolution and
 ///   "never started" then read `MaybeSent`, not `NotSent` or `None`.
@@ -579,7 +615,18 @@ fn derive_step(
             .map(|r| r.status)
             .collect()
     });
-    let locked = snap.is_some_and(|s| info.self_spends.iter().any(|t| s.locked_spends.contains(t)));
+    // A ChainLocked self-spend counts only once it shows the conflict: by
+    // its record, or because the wallet's recovery is complete and no
+    // proof-less row of the step stands (a legacy self-spend need not have
+    // spent its inputs; review P2b r3 R3-01).
+    let signed = i.fence.signed_locks(&wallet, step);
+    let pending = rows.as_ref().is_some_and(|r| r.iter().any(|s| s.pending()));
+    let locked = snap.is_some_and(|s| {
+        info.self_spends.iter().any(|spend| {
+            s.locked_spends.contains(&spend.txid)
+                && (spend.shows_conflict(signed) || (s.recovery_complete && !pending))
+        })
+    });
     let unattributed = snap.is_some_and(|s| {
         (locked && unattributed_row(s, step, &info).is_some())
             || markerless_unattributed_row(s, step, &info).is_some()
@@ -708,6 +755,10 @@ pub enum StuckFundingRefusal {
     /// self-spend can take, so the self-spend would not conflict with it.
     #[error("tracked asset lock {0} spends no coin the self-spend can take")]
     LockInputsSpent(Txid),
+    /// The self-spend to record spends no input of a lock a call of the step
+    /// signed, so it would show nothing about that lock (review P2b r3).
+    #[error("the self-spend spends no input of signed asset lock {0}")]
+    MissesSignedLock(Txid),
     /// A tracked lock of the step's funding type whose identity index is
     /// not known (the module doc's "Unattributed rows") may be the step's
     /// own, already on the chain: a ChainLocked self-spend would prove
@@ -750,6 +801,28 @@ pub(super) fn conflict_locks(
         }
     }
     locks
+}
+
+/// The input a self-spend spending `inputs` takes of each lock a call of
+/// funding `step` signed (J), its record's provenance (§2a.6, review P2b
+/// r3 R3-01); refused when it takes none of one.
+pub(super) fn self_spend_conflicts(
+    i: &Inner,
+    wallet: WalletId,
+    step: &str,
+    inputs: &[OutPoint],
+) -> Result<Vec<(Txid, OutPoint)>, StuckFundingRefusal> {
+    i.fence
+        .signed_locks(&wallet, step)
+        .iter()
+        .map(|l| {
+            l.inputs
+                .iter()
+                .find(|o| inputs.contains(o))
+                .map(|o| (l.txid, *o))
+                .ok_or(StuckFundingRefusal::MissesSignedLock(l.txid))
+        })
+        .collect()
 }
 
 /// Whether Repair may resolve funding `step` with a self-spend now (J):

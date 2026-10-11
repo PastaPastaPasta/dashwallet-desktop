@@ -761,19 +761,31 @@ async fn self_spends_load_with_their_funding_marker() {
     rows_read(&t);
     let l = begin(&t, W, 1000, 1000, 0).await.unwrap();
     let id = ArtifactId::of_step(&W, FUNDING);
-    assert!(!j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32]).unwrap());
+    assert!(
+        !j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[])
+            .unwrap()
+    );
     let p = l
         .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
     p.signatures().note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
-    assert!(j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32]).unwrap());
+    assert!(
+        j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[])
+            .unwrap()
+    );
     let (t2, _) = reload(&j);
     let info = t2.call_step(W, FUNDING);
     assert_eq!(info.status, DURABLE);
     assert_eq!(info.funding, Some(key(3)));
-    assert_eq!(info.self_spends, vec![[7; 32]]);
+    assert_eq!(
+        info.self_spends,
+        vec![SelfSpend {
+            txid: [7; 32],
+            conflicts: Some(Vec::new()),
+        }]
+    );
 }
 
 /// `funding_marker.funding_type`'s codes are stable and cover every type;

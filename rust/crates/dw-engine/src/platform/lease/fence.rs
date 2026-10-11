@@ -27,14 +27,16 @@ use tokio::time::Instant;
 
 use super::budget::Charge;
 use super::call::{CallStep, FundingKey};
-use super::mode_b::{SignedLock, StoredLock};
+use super::mode_b::{SelfSpend, SignedLock, StoredLock};
 #[cfg(test)]
 use super::stress_tests::{GrantKind, LogEvent, Mutation};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin};
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
-use dw_appdb::dispatch::{CallRows, Resolution, StoredFundingKey, StoredOutPoint};
+use dw_appdb::dispatch::{
+    CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
+};
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
 /// with injected faults in tests. Every call is a short blocking write.
@@ -61,7 +63,8 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         key: &StoredFundingKey,
     ) -> Result<(), String>;
     /// Repair's self-spend `txid` of a funding step (§6.5), recorded against
-    /// the step's standing marker; `Ok(false)` when none stands
+    /// the step's standing marker with the signed locks it spends an input
+    /// of (`conflicts`); `Ok(false)` when none stands
     /// ([`LeaseTable::record_self_spend`]).
     fn insert_self_spend(
         &self,
@@ -69,6 +72,7 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String>;
     /// An asset lock `txid` (internal byte order) a call of funding `step`
     /// signed, with its `inputs` (§2a.6), recorded against the step's
@@ -156,9 +160,17 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
     ) -> Result<bool, String> {
-        self.insert_self_spend(wallet, step, artifact, txid, crate::events::unix_now())
-            .map_err(|e| e.to_string())
+        self.insert_self_spend(
+            wallet,
+            step,
+            artifact,
+            txid,
+            conflicts,
+            crate::events::unix_now(),
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn insert_signed_lock(
@@ -312,7 +324,7 @@ pub struct CallStepInfo {
     /// A funding step's key, as its marker carries it.
     pub funding: Option<FundingKey>,
     /// Repair's self-spends standing against the marker.
-    pub self_spends: Vec<[u8; 32]>,
+    pub self_spends: Vec<SelfSpend>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,7 +457,7 @@ pub(crate) struct FenceState {
     /// Mode B (§2a.3): each funding step's key, as its marker carries it.
     funding: HashMap<(WalletId, String), FundingKey>,
     /// Repair's self-spends standing against each funding step's marker.
-    self_spends: HashMap<(WalletId, String), Vec<[u8; 32]>>,
+    self_spends: HashMap<(WalletId, String), Vec<SelfSpend>>,
     /// The asset locks each funding step's calls signed (§2a.6), standing
     /// against its marker: on disk, or only here when the write failed.
     signed_locks: HashMap<(WalletId, String), Vec<SignedLock>>,
@@ -958,7 +970,7 @@ impl FenceState {
         self.self_spends
             .iter()
             .filter(|((w, _), _)| w == wallet)
-            .flat_map(|(_, txids)| txids.iter().copied())
+            .flat_map(|(_, spends)| spends.iter().map(|s| s.txid))
             .collect()
     }
 
@@ -1744,11 +1756,30 @@ impl LeaseTable {
             // In `seq` order: the latest standing key of a step wins.
             i.fence.funding.extend(funding);
             for s in calls.self_spends {
+                let conflicts = match s.provenance {
+                    SelfSpendProvenance::Legacy => None,
+                    SelfSpendProvenance::Conflicts(c) => Some(
+                        c.iter()
+                            .map(|c| {
+                                (
+                                    Txid::from_byte_array(c.lock),
+                                    OutPoint::new(
+                                        Txid::from_byte_array(c.input.txid),
+                                        c.input.vout,
+                                    ),
+                                )
+                            })
+                            .collect(),
+                    ),
+                };
                 i.fence
                     .self_spends
                     .entry((WalletId(s.wallet), s.step_id))
                     .or_default()
-                    .push(s.txid);
+                    .push(SelfSpend {
+                        txid: s.txid,
+                        conflicts,
+                    });
             }
             for l in calls.signed_locks {
                 i.fence
@@ -3083,15 +3114,19 @@ impl LeaseTable {
     }
 
     /// Records Repair's self-spend `txid` (display order) of the stuck
-    /// funding `step` (§6.5, §2a.5), before the self-spend is broadcast:
-    /// one append to the journal's `self_spend` table, against the step's
-    /// standing marker, then the step's in-memory self-spends. Never a
-    /// `NotSent` row: the step reads `NotSent` only once the self-spend is
-    /// ChainLocked ([`super::mode_b::derive_funding`]), and after a restart
-    /// the row and the wallet's ChainLock say so again.
+    /// funding `step` (§6.5, §2a.5), which spends `inputs`, before the
+    /// self-spend is broadcast: one append to the journal's `self_spend`
+    /// table, against the step's standing marker, with the input it spends
+    /// of each lock a call of the step signed (its provenance, review P2b
+    /// r3 R3-01), then the step's in-memory self-spends. Never a `NotSent`
+    /// row: the step reads `NotSent` only once the self-spend is
+    /// ChainLocked and its record shows the conflict
+    /// ([`super::mode_b::derive_funding`], [`SelfSpend`]), and after a
+    /// restart the row and the wallet's ChainLock say so again.
     ///
     /// Refused unless the step is stuck now
-    /// ([`super::mode_b::stuck_funding`]); refused with `NoMarker` when no
+    /// ([`super::mode_b::stuck_funding`]); refused with `MissesSignedLock`
+    /// when `inputs` miss every input of a signed lock; with `NoMarker` when no
     /// marker of the step stands on disk (a `NotSent` row superseded it
     /// meanwhile). A write that fails or panics may have landed: the caller
     /// must then not broadcast, and a row of a self-spend never sent is
@@ -3101,17 +3136,29 @@ impl LeaseTable {
         wallet: WalletId,
         step: &str,
         txid: [u8; 32],
+        inputs: &[OutPoint],
     ) -> Result<(), super::mode_b::StuckFundingRefusal> {
         use super::mode_b::StuckFundingRefusal as R;
         let backend = self.journal.get().ok_or(R::JournalUnavailable)?;
-        self.with_j(|i, _| {
+        let conflicts = self.with_j(|i, _| {
             if i.fence.journal != JournalState::Ready {
                 return Err(R::JournalUnavailable);
             }
             super::mode_b::stuck_funding(i, wallet, step)?;
+            let conflicts = super::mode_b::self_spend_conflicts(i, wallet, step, inputs)?;
             i.fence.writes += 1;
-            Ok(())
+            Ok(conflicts)
         })?;
+        let stored: Vec<SelfSpendConflict> = conflicts
+            .iter()
+            .map(|(lock, input)| SelfSpendConflict {
+                lock: lock.to_byte_array(),
+                input: StoredOutPoint {
+                    txid: input.txid.to_byte_array(),
+                    vout: input.vout,
+                },
+            })
+            .collect();
         // The write and the J step that ends it run on the blocking task,
         // so `writes` comes down even if this future is dropped.
         let table = Arc::clone(self);
@@ -3119,11 +3166,12 @@ impl LeaseTable {
         self.rt
             .spawn_blocking(move || {
                 let id = ArtifactId::of_step(&wallet, &step);
-                let written = guarded(|| backend.insert_self_spend(&wallet.0, &step, &id.0, &txid))
-                    .inspect_err(
-                        |e| tracing::warn!(step, error = %e, "recording a self-spend failed"),
-                    )
-                    .ok();
+                let written =
+                    guarded(|| backend.insert_self_spend(&wallet.0, &step, &id.0, &txid, &stored))
+                        .inspect_err(
+                            |e| tracing::warn!(step, error = %e, "recording a self-spend failed"),
+                        )
+                        .ok();
                 table.with_j(|i, fx| {
                     fx.notify();
                     end_write(i, fx, written.is_some());
@@ -3137,8 +3185,11 @@ impl LeaseTable {
                             if i.fence.call_marked(&wallet, &step) {
                                 let spends = i.fence.self_spends.entry((wallet, step));
                                 let spends = spends.or_default();
-                                if !spends.contains(&txid) {
-                                    spends.push(txid);
+                                if !spends.iter().any(|s| s.txid == txid) {
+                                    spends.push(SelfSpend {
+                                        txid,
+                                        conflicts: Some(conflicts),
+                                    });
                                 }
                             }
                             Ok(())

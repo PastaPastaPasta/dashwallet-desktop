@@ -676,7 +676,10 @@ call permit when its task lands.
   predicate is unchanged: a `funding_marker` row shares its `seq` with its `step_log` marker, which is why compaction
   treats it as a marker. The DEC-163 `Sent` bundle includes it. Schema 4 (P2b r2) adds the append-only
   `signed_lock` table: a lock a funding call signed (txid, input outpoints), against the marker standing when it
-  was written, standing and compacted with it like a `self_spend` row. 3 → 4 only adds.
+  was written, standing and compacted with it like a `self_spend` row. 3 → 4 only adds. Schema 5 (P2b r3) adds a
+  `self_spend` row's provenance: `1` with its `conflicts` (per signed lock of the step, the lock's txid and the
+  input of it the self-spend spends), `0` for every row written before (legacy). 4 → 5 only adds; every existing
+  self-spend reads legacy.
 - D4: the self-spend row is appended before the broadcast; no `NotSent` row is written. The step derives `NotSent`
   once the wallet holds the self-spend ChainLocked.
 - D5: the fee bound is snapshotted outside J and compared inside J (below for the re-check).
@@ -739,6 +742,21 @@ call permit when its task lands.
   (`invalid_argument`): a step whose lock lost its row may have that lock on the chain already, and a tracked row
   that only matches the step's key, trusted index or not, may be another step's lock. So the withheld-T1 trace
   (§2a.4 item 7) stays `MaybeSent` until DP1-05, and so does a step whose marker predates schema 4.
+- **A self-spend carries its provenance** (review P2b r3 R3-01). Repair records, with the self-spend's txid, the
+  input it spends of each signed lock of the step, read from the transaction it will broadcast; one that spends no
+  input of a signed lock is refused `MissesSignedLock` before anything is written. A ChainLocked self-spend reads
+  the step `NotSent` only while its record names an input of every signed lock of the step (at least one): the lock
+  can then no longer confirm, and it is the step's only lock (one lock per call, above). A lock its record names
+  that the process no longer knows (its `signed_lock` write failed) counts all the same: the record shows the call
+  signed it, and the set of signed locks only shrinks, since no call of the step starts while its marker stands
+  (`check_funding`). Without that record a ChainLocked self-spend counts only once the wallet's recovery is complete
+  and no `Built` or `Broadcast` row of the step stands (it need not have spent that row's inputs); should the
+  recovery reset, it stops counting again. A legacy self-spend (written before schema 5, when Repair could admit
+  on a heuristic owner, review P2b r2 R2-01) and one with no conflicts (admitted on a complete recovery) show
+  nothing on their own: the step derives as if they were absent (`MaybeSent`, `WillBeSent` or committed) until
+  the recovery is complete or a `Sent` lands. Their rows stay, and no signed lock is made up for them. No shipped
+  build can hold one: desktop main through 9b70543 is at schema 2, with no `self_spend` table; the table and Repair
+  exist only on the unmerged P2b branch (schemas 3 and 4).
 - **A lock's report of a funding step** (review P2b r1 R1-02). `LockReport` lists each funding step a flow is
   bound to (`Lease::bind_funding_step`) or called, under its public step id, by its status now: `Sent`,
   `WillBeSent`, `MaybeSent`; `NotSent` or never started read `Cancelled`. A funding call's own outcome is not listed

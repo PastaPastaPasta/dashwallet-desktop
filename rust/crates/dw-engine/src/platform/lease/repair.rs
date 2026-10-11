@@ -17,7 +17,10 @@
 //!
 //! **Order.** The draft is prepared (signed, its inputs reserved), then
 //! its txid is recorded against the step's standing marker in the
-//! journal's append-only `self_spend` table
+//! journal's append-only `self_spend` table, with the input the signed
+//! transaction spends of each lock a call of the step signed (its
+//! provenance: without it the ChainLocked self-spend shows nothing, review
+//! P2b r3 R3-01)
 //! ([`LeaseTable::record_self_spend`](super::LeaseTable::record_self_spend)),
 //! and only then broadcast. A record that fails releases the draft unsent.
 //! After a restart the row loads with its marker and the wallet's ChainLock
@@ -178,12 +181,21 @@ impl NetworkSession {
         grant_id: String,
     ) -> Result<BroadcastOutcome, EngineError> {
         let prepared = draft.prepare(grant_id).await?;
-        let Some(txid) = ArtifactId::parse(&prepared.summary().txid) else {
+        // The inputs of the transaction that will be broadcast: its record
+        // names the one it spends of each signed lock (review P2b r3).
+        let signed = prepared
+            .raw()
+            .and_then(|raw| dashcore::consensus::deserialize::<dashcore::Transaction>(&raw).ok());
+        let Some(signed) = signed.filter(|tx| {
+            ArtifactId::parse(&prepared.summary().txid) == Some(ArtifactId::from_txid(&tx.txid()))
+        }) else {
             let _ = draft.abandon(prepared).await;
             return Err(EngineError::Internal(
-                "the self-spend's txid does not parse".into(),
+                "the self-spend's transaction does not parse".into(),
             ));
         };
+        let txid = ArtifactId::from_txid(&signed.txid());
+        let inputs: Vec<OutPoint> = signed.input.iter().map(|i| i.previous_output).collect();
         let this = Arc::clone(self);
         let (wallet_id, owned) = (draft.wallet_id(), step.to_owned());
         let recorded = self
@@ -191,7 +203,7 @@ impl NetworkSession {
                 let _op = this.enter().await?;
                 Ok(this
                     .leases
-                    .record_self_spend(wallet_id, &owned, txid.0)
+                    .record_self_spend(wallet_id, &owned, txid.0, &inputs)
                     .await?)
             })
             .await;
