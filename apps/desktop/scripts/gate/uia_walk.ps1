@@ -87,7 +87,8 @@ function Walk($root) {
             $child = $walker.GetFirstChild($e)
             while ($null -ne $child) { [void]$kids.Add($child); $child = $walker.GetNextSibling($child) }
         } catch { }
-        for ($i = $kids.Count - 1; $i -ge 0; $i--) { $stack.Push(@($kids[$i], $depth + 1, $info.shown)) }
+        # The parentheses matter: ',' binds tighter than '+'.
+        for ($i = $kids.Count - 1; $i -ge 0; $i--) { $stack.Push(@($kids[$i], ($depth + 1), $info.shown)) }
     }
     return , $out
 }
