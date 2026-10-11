@@ -3,16 +3,23 @@
 //!
 //! Semantics (E0-13 D-row "events"):
 //!
-//! - **The engine never waits.** [`TauriSink::emit`] moves the event into a
-//!   channel and returns; it does no mapping, serialising or IPC. A
-//!   forwarder thread maps each event to its DTO and emits it.
-//! - **Order.** One channel, one consumer, one Tauri event name: the renderer
+//! - **The engine never waits.** [`TauriSink::emit`] maps the event to its
+//!   DTO (bounded work: at most [`MAX_TXIDS`] txids), offers it to a bounded
+//!   queue ([`QUEUE`] events) and returns; it does no serialising or IPC. A
+//!   forwarder thread emits each queued event.
+//! - **Order.** One queue, one consumer, one Tauri event name: the renderer
 //!   sees events in the order the engine sent them, across all kinds.
-//! - **No drops, bounded rate.** The channel is unbounded and never drops,
-//!   because some events happen once (`lockProgress` `done`,
-//!   `dispatchResolved`). The rate is bounded upstream: the engine debounces
-//!   `sync`, `balances`, `historyChanged` and `platform` to 4 Hz per domain
-//!   and `coinJoin` to 1 Hz, keeping the last change of a burst.
+//! - **Bounded memory; an overflow is one signal.** When the webview falls
+//!   [`QUEUE`] events behind, further events are dropped and the forwarder
+//!   then sends `eventsOverflowed`, coalesced (one for a run of drops it has
+//!   not reported yet): the renderer re-reads everything. Queued events are
+//!   DTOs with bounded payloads, so the queue's memory is bounded too.
+//!   The rate is bounded upstream (the engine debounces `sync`, `balances`,
+//!   `historyChanged` and `platform` to 4 Hz per domain and `coinJoin` to
+//!   1 Hz), so the queue fills only when the webview stalls.
+//! - **One-shot news stays readable.** Every event's news is also state a
+//!   command reads (D3 lists them); notices, which have no other home, are
+//!   kept in a [`NoticeLog`] before the queue (`recentNotices`).
 //! - **Bounded payloads.** `historyChanged` sends at most [`MAX_TXIDS`]
 //!   txids; a larger batch is sent empty, which the engine already defines
 //!   as "reload the whole history". `newTransactions` sends the first
@@ -27,7 +34,11 @@
 //! - Events sent before the page listens are lost; the renderer queries
 //!   everything when it starts.
 
-use std::sync::mpsc;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use dw_engine::{DashNetwork, EngineEvent, EventSink, NoticeCode, PlatformChange};
 use serde::Serialize;
@@ -43,6 +54,18 @@ pub const EVENT: &str = "engine://event";
 
 /// Txids per `historyChanged` or `newTransactions` payload.
 pub const MAX_TXIDS: usize = 256;
+
+/// Events waiting for the webview at most; at ≤ [`MAX_TXIDS`] txids each, a
+/// few MB.
+pub const QUEUE: usize = 1024;
+
+/// Notices [`NoticeLog`] keeps.
+pub const NOTICES: usize = 64;
+
+/// How long the forwarder waits for an event before it looks at the
+/// overflow flag anyway: a drop recorded after the forwarder emptied the
+/// queue is reported within this, even if the engine then goes quiet.
+const OVERFLOW_CHECK: Duration = Duration::from_millis(250);
 
 /// An engine event as the renderer receives it. `network` is the network's
 /// directory name (`mainnet`, `testnet`, `regtest`, `devnet-<name>`).
@@ -90,11 +113,19 @@ pub enum AppEvent {
         wallet_id: String,
         txids: Vec<String>,
     },
+    /// Also kept for `recentNotices`, with its `seq`.
     Notice {
         network: Option<String>,
         code: NoticeCodeName,
         detail: String,
     },
+    /// Not an engine event: the webview fell [`QUEUE`] events behind and
+    /// later events were dropped. Re-read every query; read
+    /// `recentNotices` for notices. Coalesced: one for the drops since the
+    /// last one, sent after the event the forwarder was sending when they
+    /// happened (or within 250 ms when it was idle); events queued before
+    /// the drops may still follow it.
+    EventsOverflowed,
     VaultLockState {
         network: String,
         state: LockStateName,
@@ -333,36 +364,118 @@ impl From<EngineEvent> for AppEvent {
     }
 }
 
+/// A notice as `recentNotices` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentNotice {
+    /// Increases by one per notice, from 1, for the life of the process.
+    pub seq: u64,
+    pub network: Option<String>,
+    pub code: NoticeCodeName,
+    pub detail: String,
+}
+
+/// The last [`NOTICES`] notices, recorded before the event queue so an
+/// overflow cannot lose them.
+#[derive(Default)]
+pub struct NoticeLog(Mutex<(u64, VecDeque<RecentNotice>)>);
+
+impl NoticeLog {
+    fn push(&self, network: Option<&DashNetwork>, code: NoticeCode, detail: &str) {
+        let mut log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (seq, notices) = &mut *log;
+        *seq += 1;
+        if notices.len() == NOTICES {
+            notices.pop_front();
+        }
+        notices.push_back(RecentNotice {
+            seq: *seq,
+            network: network.map(DashNetwork::dir_name),
+            code: code.into(),
+            detail: detail.to_owned(),
+        });
+    }
+
+    /// Oldest first.
+    pub fn recent(&self) -> Vec<RecentNotice> {
+        let log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        log.1.iter().cloned().collect()
+    }
+}
+
 /// The engine's sink: hands each event to the forwarder thread.
 pub struct TauriSink {
-    tx: mpsc::Sender<EngineEvent>,
+    tx: mpsc::SyncSender<AppEvent>,
+    /// Set when an event was dropped; the forwarder clears it and sends
+    /// `eventsOverflowed`.
+    overflowed: Arc<AtomicBool>,
+    notices: Arc<NoticeLog>,
 }
 
 impl TauriSink {
     /// Starts the forwarder thread. It runs for the life of the process:
     /// it holds an `AppHandle`, which owns the engine and so this sink, so
-    /// the channel never closes before exit; events still queued at exit
+    /// the queue never closes before exit; events still queued at exit
     /// are not sent (the window is gone).
-    pub fn new<R: Runtime>(app: AppHandle<R>) -> Result<Self, AppError> {
-        let (tx, rx) = mpsc::channel::<EngineEvent>();
+    pub fn new<R: Runtime>(app: AppHandle<R>, notices: Arc<NoticeLog>) -> Result<Self, AppError> {
+        Self::with_forwarder(QUEUE, notices, move |event| {
+            if let Err(e) = app.emit(EVENT, event) {
+                eprintln!("dw-app: could not forward an engine event: {e}");
+            }
+        })
+    }
+
+    /// The sink over a queue of `capacity` and a forwarder calling `emit`.
+    fn with_forwarder(
+        capacity: usize,
+        notices: Arc<NoticeLog>,
+        mut emit: impl FnMut(AppEvent) + Send + 'static,
+    ) -> Result<Self, AppError> {
+        let (tx, rx) = mpsc::sync_channel::<AppEvent>(capacity);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&overflowed);
         std::thread::Builder::new()
             .name("dw-app-events".into())
             .spawn(move || {
-                for event in rx {
-                    if let Err(e) = app.emit(EVENT, AppEvent::from(event)) {
-                        eprintln!("dw-app: could not forward an engine event: {e}");
+                loop {
+                    match rx.recv_timeout(OVERFLOW_CHECK) {
+                        Ok(event) => emit(event),
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    // A drop can be recorded after the queue drained (the
+                    // engine thread paused between `Full` and the store):
+                    // the timeout still brings the loop back here.
+                    if flag.swap(false, Ordering::AcqRel) {
+                        emit(AppEvent::EventsOverflowed);
                     }
                 }
             })
             .map_err(|e| AppError::new(EngineCode::Io, format!("event thread: {e}")))?;
-        Ok(TauriSink { tx })
+        Ok(TauriSink {
+            tx,
+            overflowed,
+            notices,
+        })
     }
 }
 
 impl EventSink for TauriSink {
     fn emit(&self, event: EngineEvent) {
-        // Fails only once the forwarder is gone, while the app exits.
-        let _ = self.tx.send(event);
+        if let EngineEvent::Notice {
+            network,
+            code,
+            detail,
+        } = &event
+        {
+            self.notices.push(network.as_ref(), *code, detail);
+        }
+        match self.tx.try_send(AppEvent::from(event)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => self.overflowed.store(true, Ordering::Release),
+            // Only once the forwarder is gone, while the app exits.
+            Err(TrySendError::Disconnected(_)) => {}
+        }
     }
 }
 
@@ -508,7 +621,7 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
             sink_seen.lock().unwrap().push(v["running"].clone());
         });
-        let sink = TauriSink::new(app.handle().clone()).unwrap();
+        let sink = TauriSink::new(app.handle().clone(), Arc::default()).unwrap();
         for i in 0..200 {
             sink.emit(EngineEvent::SpvStateChanged {
                 network: DashNetwork::Regtest,
@@ -528,5 +641,88 @@ mod tests {
                 "event {i} out of order"
             );
         }
+    }
+
+    /// Sol r1 F3: a stalled webview fills the bounded queue; the engine
+    /// keeps going, later events are dropped, and the renderer gets exactly
+    /// one `eventsOverflowed`. Notices survive in the log; queued events are
+    /// DTOs, their txids already cut.
+    #[test]
+    fn a_stalled_forwarder_overflows_once_and_stays_bounded() {
+        const CAP: usize = 8;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (stalled_tx, stalled) = std::sync::mpsc::channel::<()>();
+        let record = Arc::clone(&seen);
+        let notices = Arc::new(NoticeLog::default());
+        let sink = TauriSink::with_forwarder(CAP, Arc::clone(&notices), move |e| {
+            // The first event stalls the forwarder until the test lets go.
+            if record.lock().unwrap().is_empty() {
+                stalled_tx.send(()).unwrap();
+                gate.recv().unwrap();
+            }
+            record.lock().unwrap().push(e);
+        })
+        .unwrap();
+        let spv = |running| EngineEvent::SpvStateChanged {
+            network: DashNetwork::Regtest,
+            running,
+        };
+        let started = Instant::now();
+        sink.emit(spv(true));
+        stalled.recv().unwrap();
+        while sink.tx.try_send(AppEvent::from(spv(true))).is_ok() {}
+        // The queue is full: CAP events wait, the first is in flight. Every
+        // further emit returns at once and is dropped, notices included.
+        for i in 0..10_000 {
+            sink.emit(EngineEvent::Notice {
+                network: None,
+                code: NoticeCode::BackupFailed,
+                detail: format!("n{i}"),
+            });
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the engine waited"
+        );
+        release.send(()).unwrap();
+        // Bounded: the in-flight event, the one signal, then the CAP queued
+        // events; none of the 10 000 notices got through.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while seen.lock().unwrap().len() < CAP + 2 {
+            assert!(Instant::now() < deadline, "the forwarder did not drain");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), CAP + 2, "{seen:?}");
+        assert_eq!(seen[1], AppEvent::EventsOverflowed);
+        let spv_events = seen.iter().filter(|e| **e == AppEvent::from(spv(true)));
+        assert_eq!(spv_events.count(), CAP + 1, "{seen:?}");
+        // The notices are readable through the log, the last NOTICES of them.
+        let recent = notices.recent();
+        assert_eq!(recent.len(), NOTICES);
+        assert_eq!(recent.last().unwrap().detail, "n9999");
+        assert_eq!(recent.last().unwrap().seq, 10_000);
+    }
+
+    /// A drop recorded after the forwarder emptied the queue (the engine
+    /// thread paused between `Full` and the flag) is still reported, though
+    /// no event follows it.
+    #[test]
+    fn a_late_overflow_is_reported_by_an_idle_forwarder() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let sink = TauriSink::with_forwarder(8, Arc::default(), move |e| {
+            record.lock().unwrap().push(e);
+        })
+        .unwrap();
+        sink.overflowed.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while seen.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the overflow was not reported");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*seen.lock().unwrap(), [AppEvent::EventsOverflowed]);
     }
 }

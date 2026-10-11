@@ -35,6 +35,10 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
+/// app.sqlite setting of "require authentication for every payment": `"0"`
+/// is off; absent (the default) or anything else is on.
+const PAYMENT_AUTH_KEY: &str = "auth.every_payment";
+
 /// Who schedules the automatic backup of an imported wallet and signals its
 /// DashPay bring-up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -168,6 +172,60 @@ impl NetworkSession {
             self.ensure_background().await;
         }
         out
+    }
+
+    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
+    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
+    /// encrypted vault only against a credential, never `Credential::None`
+    /// (dw-app enforces it at its IPC boundary). Stored in this network's
+    /// app.sqlite, next to its vault, so script in a webview cannot change it.
+    pub async fn payment_authentication(self: &Arc<Self>) -> Result<bool, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(|db| {
+                Ok(db
+                    .setting(dw_appdb::GLOBAL_SCOPE, PAYMENT_AUTH_KEY)?
+                    .as_deref()
+                    != Some("0"))
+            })
+            .await
+        })
+        .await
+    }
+
+    /// Turns "require authentication for every payment" on or off. Either
+    /// way needs a `ChangeCredential` grant, redeemed before the setting is
+    /// written, on an encrypted vault, so the passphrase:
+    /// `VaultError::NotEncrypted` without one. A vault with no passphrase
+    /// has no credential to ask for, and a value stored then would carry
+    /// over, unasked, to the vault once encrypted.
+    pub async fn set_payment_authentication(
+        self: &Arc<Self>,
+        on: bool,
+        grant_id: String,
+    ) -> Result<(), EngineError> {
+        self.vault_op(move |v| {
+            if !v.status().encrypted {
+                return Err(VaultError::NotEncrypted);
+            }
+            v.redeem_grant(&grant_id, GrantKind::ChangeCredential, None)
+                .map(drop)
+        })
+        .await?;
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| {
+                db.set_setting(
+                    dw_appdb::GLOBAL_SCOPE,
+                    PAYMENT_AUTH_KEY,
+                    (!on).then_some("0"),
+                )
+            })
+            .await
+        })
+        .await
     }
 
     /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the

@@ -296,6 +296,36 @@ impl From<CredentialSpec> for OwnedCredential {
     }
 }
 
+/// "Require authentication for every payment" at the IPC boundary: while
+/// it is on, an unlocked encrypted vault issues `spend` and `platformOp`
+/// grants only against the passphrase or the quick-unlock key, never
+/// `unencrypted`, so a compromised renderer cannot obtain a payment grant
+/// without a prompt. The vault itself takes `Credential::None` for them
+/// once unlocked (dash-qt behaviour, the setting off); a locked vault
+/// refuses it itself (`vault.locked`).
+fn check_payment_auth(
+    vault: &dw_vault::Vault,
+    credential: &OwnedCredential,
+    required: bool,
+) -> Result<(), dw_vault::VaultError> {
+    let status = vault.status();
+    if required
+        && matches!(credential, OwnedCredential::None)
+        && status.encrypted
+        && status.state != dw_vault::LockState::Locked
+    {
+        return Err(dw_vault::VaultError::CredentialRequired);
+    }
+    Ok(())
+}
+
+/// Whether the setting applies: a `spend` or `platformOp` among `purposes`.
+fn pays(purposes: &[GrantPurpose]) -> bool {
+    purposes
+        .iter()
+        .any(|p| matches!(p, GrantPurpose::Spend { .. } | GrantPurpose::PlatformOp { .. }))
+}
+
 impl OwnedCredential {
     fn as_credential(&self) -> Credential<'_> {
         match self {
@@ -616,7 +646,10 @@ commands! {
     ///
     /// `walletId` binds the grant to its wallet: required for every purpose
     /// except `changeCredential`, which must pass `null`. A passphrase
-    /// credential does not change the lock state.
+    /// credential does not change the lock state. While "require
+    /// authentication for every payment" is on, `spend` and `platformOp` on
+    /// an encrypted vault need a passphrase or quick-unlock credential
+    /// (`vault.credential_required`).
     #[facade("NetworkSession::vault_op", "Vault::authorize")]
     fn authorize(
         state,
@@ -629,8 +662,10 @@ commands! {
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purpose = GrantPurpose::from(purpose);
         let session = state.session().await?;
+        let required = pays(&[purpose]) && session.payment_authentication().await?;
         let grant = session
             .vault_op(move |v| {
+                check_payment_auth(v, &credential, required)?;
                 v.authorize(
                     purpose,
                     wallet.as_ref().map(|w| &w.0),
@@ -644,7 +679,8 @@ commands! {
     /// One credential check for several grants (E0-04 §3.3), one Argon2id
     /// run and one throttle count: "Accept and pay" asks for a `platformOp`
     /// and a `spend` together. Grants come back in the order of `purposes`;
-    /// every purpose must be allowed or none is issued.
+    /// every purpose must be allowed or none is issued; `authorize`'s
+    /// payment rule applies to the set.
     #[facade("NetworkSession::vault_op", "Vault::authorize_set")]
     fn authorize_set(
         state,
@@ -657,8 +693,10 @@ commands! {
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purposes: Vec<GrantPurpose> = purposes.into_iter().map(Into::into).collect();
         let session = state.session().await?;
+        let required = pays(&purposes) && session.payment_authentication().await?;
         let grants = session
             .vault_op(move |v| {
+                check_payment_auth(v, &credential, required)?;
                 v.authorize_set(
                     &purposes,
                     wallet.as_ref().map(|w| &w.0),
@@ -718,6 +756,23 @@ commands! {
     #[facade("NetworkSession::vault", "Vault::quick_unlock_policy")]
     fn quick_unlock_policy(state) -> QuickUnlockPolicy {
         Ok(state.session().await?.vault().quick_unlock_policy().into())
+    }
+
+    /// "Require authentication for every payment" (default on), as stored
+    /// for this network next to its vault.
+    #[facade("NetworkSession::payment_authentication")]
+    fn payment_authentication(state) -> bool {
+        Ok(state.session().await?.payment_authentication().await?)
+    }
+
+    /// Turns "require authentication for every payment" on or off. Needs a
+    /// `changeCredential` grant either way, so the passphrase; refused on a
+    /// vault without one (`vault.not_encrypted`), where there is nothing to
+    /// ask for. Grants issued and flows started before the change keep
+    /// working until they are used or expire.
+    #[facade("NetworkSession::set_payment_authentication")]
+    fn set_payment_authentication(state, on: bool, grant_id: String) -> () {
+        Ok(state.session().await?.set_payment_authentication(on, grant_id).await?)
     }
 
     /// Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1

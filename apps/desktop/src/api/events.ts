@@ -1,6 +1,7 @@
 // The renderer half of the event bridge: each engine event invalidates the queries that
 // read what changed. Rows are never pushed; the queries refetch (DESIGN-opus §1.5 rule 4).
 // Events arrive in the engine's order on one channel (`ENGINE_EVENT`); see dw-app's bridge.rs.
+// A queue overflow drops events and sends one `eventsOverflowed`, which reloads everything.
 
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Backend } from "./backend";
@@ -13,6 +14,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
   switch (event.kind) {
     case "sessionOpened":
     case "sessionClosed":
+    // The app's queue overflowed and dropped events: whatever they said, the queries know.
+    case "eventsOverflowed":
       return "all";
     case "walletCreated":
     case "walletRemoved":

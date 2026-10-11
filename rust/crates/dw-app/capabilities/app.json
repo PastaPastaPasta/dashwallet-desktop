@@ -10,6 +10,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-launch-info",
+    "allow-recent-notices",
     "allow-startup-mark",
     "allow-selftest-report",
     "allow-selftest-checkpoint",

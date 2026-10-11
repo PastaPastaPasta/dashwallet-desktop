@@ -72,19 +72,7 @@ impl Demo {
 
     /// Invokes `cmd` with `args` (a JSON object, camelCase keys).
     pub(crate) fn call(&self, cmd: &str, args: Value) -> Result<Value, Value> {
-        let response = tauri::test::get_ipc_response(
-            &self.webview,
-            InvokeRequest {
-                cmd: cmd.into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
-                body: tauri::ipc::InvokeBody::Json(args),
-                headers: Default::default(),
-                invoke_key: self.app.invoke_key().to_string(),
-            },
-        );
-        response.map(|b| b.deserialize::<Value>().expect("JSON result"))
+        invoke(&self.webview, self.app.invoke_key(), cmd, args)
     }
 
     /// `call`, which must succeed.
@@ -108,6 +96,28 @@ impl Demo {
     pub(crate) fn open(&self) -> Value {
         self.ok("open_network", json!({ "settings": offline_settings() }))
     }
+}
+
+/// [`Demo::call`] without the app, so several threads can invoke at once.
+fn invoke(
+    webview: &WebviewWindow<MockRuntime>,
+    invoke_key: &str,
+    cmd: &str,
+    args: Value,
+) -> Result<Value, Value> {
+    let response = tauri::test::get_ipc_response(
+        webview,
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: invoke_key.to_string(),
+        },
+    );
+    response.map(|b| b.deserialize::<Value>().expect("JSON result"))
 }
 
 /// `e` has the `AppError` shape and a code of the generated union.
@@ -426,6 +436,237 @@ fn vault_and_wallet_flows_over_ipc() {
         demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
         1
     );
+}
+
+/// "Require authentication for every payment" is enforced in Rust (Sol r1
+/// F1): on an encrypted, unlocked vault, `spend` and `platformOp` grants
+/// need a credential while it is on, and turning it either way needs one.
+#[test]
+fn payment_authentication_is_enforced_over_ipc() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let none = json!({ "kind": "unencrypted" });
+    let pw = json!({ "kind": "passphrase", "passphrase": "pw" });
+    let spend = json!({ "kind": "spend", "maxDuffs": 1000 });
+    let platform = json!({ "kind": "platformOp", "maxDuffs": 1000, "maxCredits": "1000" });
+    let change = json!({ "kind": "changeCredential" });
+    let authorize = |purpose: &Value, wallet: &Value, credential: &Value| json!({ "purpose": purpose, "walletId": wallet, "credential": credential });
+    let refused = |demo: &Demo| {
+        for purpose in [&spend, &platform] {
+            demo.err(
+                "authorize",
+                authorize(purpose, &wallet, &none),
+                "vault.credential_required",
+            );
+        }
+        demo.err(
+            "authorize_set",
+            json!({ "purposes": [platform, spend], "walletId": wallet, "credential": none }),
+            "vault.credential_required",
+        );
+    };
+
+    // On by default: no grant for a payment without the passphrase.
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    refused(&demo);
+    demo.ok("authorize", authorize(&spend, &wallet, &pw));
+    demo.ok("authorize", authorize(&platform, &wallet, &pw));
+    // Other purposes keep the vault's own rules.
+    demo.ok(
+        "authorize",
+        authorize(&json!({ "kind": "signMessage" }), &wallet, &none),
+    );
+
+    // Turning it off needs a credential: no changeCredential grant without
+    // one, and no other grant stands in for it.
+    demo.err(
+        "authorize",
+        authorize(&change, &Value::Null, &none),
+        "vault.credential_required",
+    );
+    let spend_grant = demo.ok("authorize", authorize(&spend, &wallet, &pw))["id"].clone();
+    demo.err(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": spend_grant }),
+        "vault.grant_purpose_mismatch",
+    );
+    demo.err(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": "made-up" }),
+        "vault.grant_invalid",
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    let grant = demo.ok("authorize", authorize(&change, &Value::Null, &pw))["id"].clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+
+    // Off: dash-qt behaviour, an unlocked vault grants without a prompt.
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", authorize(&spend, &wallet, &none));
+    demo.ok("authorize", authorize(&platform, &wallet, &none));
+    demo.ok(
+        "authorize_set",
+        json!({ "purposes": [platform, spend], "walletId": wallet, "credential": none }),
+    );
+
+    // Turning it back on needs a credential too.
+    demo.err(
+        "set_payment_authentication",
+        json!({ "on": true, "grantId": "made-up" }),
+        "vault.grant_invalid",
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    let grant = demo.ok("authorize", authorize(&change, &Value::Null, &pw))["id"].clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": true, "grantId": grant }),
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    refused(&demo);
+
+    // Locked, the vault answers first, as without the setting.
+    demo.ok("lock", json!({}));
+    demo.err(
+        "authorize",
+        authorize(&spend, &wallet, &none),
+        "vault.locked",
+    );
+}
+
+/// On an unencrypted vault there is no credential to ask for: the setting
+/// changes nothing and cannot be changed, so no value stored without a
+/// credential carries over to the vault once encrypted.
+#[test]
+fn payment_authentication_needs_an_encrypted_vault() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "spend", "maxDuffs": 1000 },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+    );
+    let grant = demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "changeCredential" },
+            "walletId": null,
+            "credential": { "kind": "unencrypted" },
+        }),
+    )["id"]
+        .clone();
+    demo.err(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+        "vault.not_encrypted",
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+}
+
+/// Sol r1 F2: two prepares race for the last prepared handle (63 taken).
+/// Exactly one gets past the cap; the other fails with
+/// `app.too_many_handles` before its grant is redeemed. Reservations of
+/// prepares that fail, of closed drafts and of an ended session are given
+/// back.
+#[test]
+fn the_last_prepared_handle_goes_to_one_prepare() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet: dw_engine::WalletId = created["walletId"].as_str().unwrap().parse().unwrap();
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet.to_string() }));
+    let draft_id = draft.as_u64().unwrap();
+    let state = demo.app.state::<crate::state::AppState>();
+    let grant = || {
+        demo.ok(
+            "authorize",
+            json!({
+                "purpose": { "kind": "spend", "maxDuffs": 1000 },
+                "walletId": wallet.to_string(),
+                "credential": { "kind": "unencrypted" },
+            }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let grants = [grant(), grant()];
+    // 63 handles taken: reservations count against the cap as open
+    // handles do (this wallet has no coins to prepare real ones).
+    let taken: Vec<_> = (1..crate::state::SendHandles::MAX)
+        .map(|_| state.sends.reserve_prepared(draft_id).unwrap())
+        .collect();
+    // Both prepares wait at the barrier inside their async commands, each
+    // on its own runtime worker (Tauri's runtime has one per core).
+    *state.sends.reserve_barrier.lock().unwrap() = Some(Arc::new(std::sync::Barrier::new(2)));
+    let key = demo.app.invoke_key().to_string();
+    let results: Vec<Result<Value, Value>> = std::thread::scope(|s| {
+        let calls: Vec<_> = grants
+            .iter()
+            .map(|g| {
+                let (webview, key) = (&demo.webview, &key);
+                s.spawn(move || {
+                    invoke(
+                        webview,
+                        key,
+                        "draft_prepare",
+                        json!({ "draft": draft_id, "grantId": g }),
+                    )
+                })
+            })
+            .collect();
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    *state.sends.reserve_barrier.lock().unwrap() = None;
+    let full: Vec<bool> = results
+        .iter()
+        .map(|r| r.as_ref().unwrap_err()["code"] == "app.too_many_handles")
+        .collect();
+    assert_eq!(full.iter().filter(|f| **f).count(), 1, "{results:?}");
+    // The loser's grant was not redeemed: it is still good for a spend.
+    let session = tauri::async_runtime::block_on(state.session()).unwrap();
+    let loser = &grants[full.iter().position(|f| *f).unwrap()];
+    session
+        .vault()
+        .check_grant(loser, dw_vault::GrantKind::Spend, Some(&wallet.0))
+        .expect("the loser's grant is unspent");
+    // The winner's prepare failed (no coins): its reservation went back.
+    let last = state.sends.reserve_prepared(draft_id).expect("the 64th");
+    assert_eq!(
+        state
+            .sends
+            .reserve_prepared(draft_id)
+            .err()
+            .unwrap()
+            .code_str(),
+        "app.too_many_handles"
+    );
+    // Closing the draft gives back its reservations; the session's end too.
+    drop(last);
+    demo.ok("close_draft", json!({ "draft": draft }));
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet.to_string() }));
+    let draft_id = draft.as_u64().unwrap();
+    let again: Vec<_> = (0..crate::state::SendHandles::MAX)
+        .map(|_| state.sends.reserve_prepared(draft_id).unwrap())
+        .collect();
+    drop(taken);
+    demo.ok("close_network", json!({}));
+    demo.open();
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet.to_string() }));
+    let fresh = state.sends.reserve_prepared(draft.as_u64().unwrap());
+    assert!(fresh.is_ok(), "the ended session's reservations are gone");
+    drop(again);
 }
 
 /// A draft made from a session that closed meanwhile is not stored.

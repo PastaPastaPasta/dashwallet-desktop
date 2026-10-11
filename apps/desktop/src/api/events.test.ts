@@ -13,6 +13,7 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "historyChanged", network: "testnet", walletId: "w", txids: [] })).toEqual([["history", "w"], ["txDetail", "w"]]);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
+    expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([]);
   });

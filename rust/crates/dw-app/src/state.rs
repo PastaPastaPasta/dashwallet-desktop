@@ -12,7 +12,7 @@ use dw_vault::VaultConfig;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
-use crate::bridge::TauriSink;
+use crate::bridge::{NoticeLog, TauriSink};
 use crate::error::{AppCode, AppError, EngineCode};
 use crate::launch::LaunchOptions;
 
@@ -29,6 +29,8 @@ pub struct AppState {
     exit: Box<dyn Fn(i32) + Send + Sync>,
     /// The drafts and prepared transactions of the active session.
     pub sends: SendHandles,
+    /// The engine's recent notices (`recentNotices`).
+    pub notices: Arc<NoticeLog>,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
         vault: VaultConfig,
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
     ) -> Result<Self, AppError> {
+        let notices = Arc::new(NoticeLog::default());
         let engine = if launch.fixture {
             None
         } else {
@@ -54,7 +57,7 @@ impl AppState {
                     worker_threads: None,
                     vault,
                 },
-                Arc::new(TauriSink::new(app.clone())?),
+                Arc::new(TauriSink::new(app.clone(), Arc::clone(&notices))?),
             )?)
         };
         let handle = app.clone();
@@ -65,6 +68,7 @@ impl AppState {
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),
+            notices,
         })
     }
 
@@ -158,9 +162,17 @@ pub fn parse_wallet_id(s: &str) -> Result<WalletId, AppError> {
 /// its draft is open, and a draft only in the epoch of its session; one
 /// that arrives late is dropped (a pending prepared transaction then
 /// releases its inputs).
+///
+/// A prepare reserves its prepared handle before it redeems its grant
+/// ([`SendHandles::reserve_prepared`]); reservations count against the cap,
+/// so a full table refuses a prepare before its grant is spent.
 #[derive(Default)]
 pub struct SendHandles {
     inner: StdMutex<Sends>,
+    /// Test seam: every `reserve_prepared` waits here after its attempt,
+    /// so concurrent prepares all attempt before any of them goes on.
+    #[cfg(test)]
+    pub(crate) reserve_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 #[derive(Default)]
@@ -171,6 +183,10 @@ struct Sends {
     drafts: HashMap<u64, Arc<TxDraft>>,
     /// Each with its draft, and whether a broadcast of it was attempted.
     prepared: HashMap<u64, Prepared>,
+    /// Prepares in flight: reservation id → draft.
+    reserved: HashMap<u64, u64>,
+    /// The last reservation id given out.
+    last_reservation: u64,
 }
 
 struct Prepared {
@@ -241,30 +257,63 @@ impl SendHandles {
             .ok_or_else(|| unknown(id))
     }
 
-    /// Drops a draft and its prepared transactions; `false` when it was not open.
+    /// Drops a draft, its prepared transactions and the reservations of its
+    /// prepares in flight; `false` when it was not open. Closing does not
+    /// stop a broadcast already handed to the engine.
     pub fn close_draft(&self, id: u64) -> bool {
         let mut s = self.lock();
         s.prepared.retain(|_, p| p.draft != id);
+        s.reserved.retain(|_, d| *d != id);
         s.drafts.remove(&id).is_some()
     }
 
-    /// Fails like `insert_prepared` would on a full table: checked before a
-    /// prepare redeems its grant.
-    pub fn room_for_prepared(&self) -> Result<(), AppError> {
-        full(self.lock().prepared.len())
+    /// Reserves room for one prepared transaction of `draft`, before the
+    /// prepare redeems its grant: `app.too_many_handles` when the open and
+    /// reserved handles are the cap. The reservation is given back when the
+    /// slot is dropped unfilled (any failure), its draft is closed, or the
+    /// session ends.
+    pub fn reserve_prepared(&self, draft: u64) -> Result<PreparedSlot<'_>, AppError> {
+        let reserved = {
+            let mut s = self.lock();
+            if !s.drafts.contains_key(&draft) {
+                Err(unknown(draft))
+            } else {
+                full(s.prepared.len() + s.reserved.len()).map(|()| {
+                    s.last_reservation += 1;
+                    let id = s.last_reservation;
+                    s.reserved.insert(id, draft);
+                    id
+                })
+            }
+        };
+        #[cfg(test)]
+        {
+            // Not under the mutex: the other prepare must reach the barrier.
+            let barrier = self.reserve_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.wait();
+            }
+        }
+        Ok(PreparedSlot {
+            handles: self,
+            id: reserved?,
+            draft,
+        })
     }
 
-    /// Stores a transaction prepared from `draft`, if the draft is still open.
-    pub fn insert_prepared(&self, draft: u64, tx: Arc<PreparedTx>) -> Result<u64, AppError> {
+    /// Stores a transaction under its reservation, if that still holds (the
+    /// draft open, the session the same).
+    fn fill(&self, slot: u64, draft: u64, tx: Arc<PreparedTx>) -> Result<u64, AppError> {
         let mut s = self.lock();
-        if !s.drafts.contains_key(&draft) {
+        if s.reserved.remove(&slot).is_none() {
             return Err(AppError::new(
                 AppCode::UnknownHandle,
                 format!("draft {draft} was closed while it was prepared"),
             ));
         }
-        let open = s.prepared.len();
-        let id = s.next_id(open)?;
+        // The reservation held the room: no cap check.
+        s.last += 1;
+        let id = s.last;
         s.prepared.insert(
             id,
             Prepared {
@@ -300,6 +349,31 @@ impl SendHandles {
         s.epoch += 1;
         s.drafts.clear();
         s.prepared.clear();
+        s.reserved.clear();
+    }
+}
+
+/// Room for one prepared transaction ([`SendHandles::reserve_prepared`]).
+/// Dropped unfilled, it gives the room back.
+pub struct PreparedSlot<'a> {
+    handles: &'a SendHandles,
+    id: u64,
+    draft: u64,
+}
+
+impl PreparedSlot<'_> {
+    /// Stores the prepared transaction; fails with `app.unknown_handle` when
+    /// the draft was closed or the network switched meanwhile (`tx` is then
+    /// dropped and releases its inputs).
+    pub fn fill(self, tx: Arc<PreparedTx>) -> Result<u64, AppError> {
+        self.handles.fill(self.id, self.draft, tx)
+    }
+}
+
+impl Drop for PreparedSlot<'_> {
+    fn drop(&mut self) {
+        // A no-op after `fill`, `close_draft` or a session switch.
+        self.handles.lock().reserved.remove(&self.id);
     }
 }
 

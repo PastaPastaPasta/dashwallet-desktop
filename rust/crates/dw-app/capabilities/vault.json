@@ -23,6 +23,8 @@
     "allow-enroll-quick-unlock",
     "allow-remove-quick-unlock",
     "allow-quick-unlock-policy",
+    "allow-payment-authentication",
+    "allow-set-payment-authentication",
     "allow-set-quick-unlock-spend-limit",
     "allow-recover-with-mnemonic",
     "allow-destroy-vault",

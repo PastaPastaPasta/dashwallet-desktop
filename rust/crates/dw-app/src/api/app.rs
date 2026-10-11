@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use crate::bridge::RecentNotice;
 use crate::dto::LaunchInfo;
 use crate::dto::history::{
     HistoryRequest, HistoryRows, TimedHistoryRows, TxCategoryName, TxRow, TxStatusInfo,
@@ -21,6 +22,13 @@ commands! {
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
         Ok(LaunchInfo::new(&state.launch))
+    }
+
+    /// The last 64 engine notices, oldest first, kept apart from the event
+    /// queue: after `eventsOverflowed`, the notices it may have dropped.
+    #[facade()]
+    fn recent_notices(state) -> Vec<RecentNotice> {
+        Ok(state.notices.recent())
     }
 
     /// A start-up milestone of the renderer (`shell`: the window's first

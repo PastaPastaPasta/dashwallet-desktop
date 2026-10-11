@@ -93,6 +93,12 @@ commands! {
     /// prepared transaction releases its reserved inputs; one handed to the
     /// network keeps them until the wallet sees them spent. `false` when the
     /// handle was not open.
+    ///
+    /// Closing only refuses later calls on the handles. It does not cancel
+    /// a `draftBroadcast` already running: that transaction is signed and
+    /// may still reach the network. The send screen closes drafts through
+    /// the renderer's `closeSendDraft`, which gives DEC-67's
+    /// signed-before-lock line to show when a broadcast is running.
     #[facade()]
     fn close_draft(state, draft: u64) -> bool {
         Ok(state.sends.close_draft(draft))
@@ -151,14 +157,16 @@ commands! {
     /// inputs. Never broadcasts. Returns the prepared transaction's handle
     /// and its summary. When the draft was closed (or the network switched)
     /// meanwhile, the transaction is dropped, its inputs are released, and
-    /// the call fails with `app.unknown_handle`.
+    /// the call fails with `app.unknown_handle`. The handle is reserved
+    /// first: with the table full (open and in-flight prepares), the call
+    /// fails with `app.too_many_handles` before the grant is redeemed.
     #[facade("TxDraft::prepare", "PreparedTx::summary")]
     fn draft_prepare(state, draft: u64, grant_id: String) -> PreparedTxHandle {
         let d = draft_of(&state, draft)?;
-        state.sends.room_for_prepared()?;
+        let slot = state.sends.reserve_prepared(draft)?;
         let prepared = d.prepare(grant_id).await?;
         let summary = PreparedTxSummary::from(prepared.summary().clone());
-        let handle = state.sends.insert_prepared(draft, prepared)?;
+        let handle = slot.fill(prepared)?;
         Ok(PreparedTxHandle { handle, summary })
     }
 
@@ -168,7 +176,9 @@ commands! {
     /// transaction (`send.no_peers`, `send.broadcast_rejected`,
     /// `send.cancelled`, …: prepare again). It stays while the transaction is
     /// still held: after `send.broadcast_unknown`, or a failure before
-    /// dispatch, so the call can be repeated.
+    /// dispatch, so the call can be repeated. `closeDraft` during the call
+    /// does not stop it, and a network switch waits for it (the broadcast
+    /// holds the session open); it finishes and reports its outcome.
     #[facade("TxDraft::broadcast")]
     fn draft_broadcast(state, draft: u64, prepared: u64) -> BroadcastOutcome {
         let d = draft_of(&state, draft)?;

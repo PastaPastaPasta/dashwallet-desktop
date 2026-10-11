@@ -104,6 +104,7 @@ import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
 import type { QuorumSource } from "./QuorumSource";
 import type { ReceiveRequest } from "./ReceiveRequest";
+import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
 import type { RegistrationQuote } from "./RegistrationQuote";
 import type { RegistrationRequest } from "./RegistrationRequest";
@@ -154,6 +155,14 @@ export const MAX_TXIDS = 256;
  */
 export function launchInfo(): Promise<LaunchInfo> {
   return invoke<LaunchInfo>("launch_info");
+}
+
+/**
+ * The last 64 engine notices, oldest first, kept apart from the event
+ * queue: after `eventsOverflowed`, the notices it may have dropped.
+ */
+export function recentNotices(): Promise<Array<RecentNotice>> {
+  return invoke<Array<RecentNotice>>("recent_notices");
 }
 
 /**
@@ -316,7 +325,10 @@ export function changePassphrase(oldPassphrase: string, newPassphrase: string): 
  *
  * `walletId` binds the grant to its wallet: required for every purpose
  * except `changeCredential`, which must pass `null`. A passphrase
- * credential does not change the lock state.
+ * credential does not change the lock state. While "require
+ * authentication for every payment" is on, `spend` and `platformOp` on
+ * an encrypted vault need a passphrase or quick-unlock credential
+ * (`vault.credential_required`).
  */
 export function authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant> {
   return invoke<AuthGrant>("authorize", { purpose, walletId, credential });
@@ -326,7 +338,8 @@ export function authorize(purpose: GrantPurposeSpec, walletId: string | null, cr
  * One credential check for several grants (E0-04 §3.3), one Argon2id
  * run and one throttle count: "Accept and pay" asks for a `platformOp`
  * and a `spend` together. Grants come back in the order of `purposes`;
- * every purpose must be allowed or none is issued.
+ * every purpose must be allowed or none is issued; `authorize`'s
+ * payment rule applies to the set.
  */
 export function authorizeSet(purposes: Array<GrantPurposeSpec>, walletId: string | null, credential: CredentialSpec): Promise<Array<AuthGrant>> {
   return invoke<Array<AuthGrant>>("authorize_set", { purposes, walletId, credential });
@@ -370,6 +383,25 @@ export function removeQuickUnlock(): Promise<LockStatus> {
  */
 export function quickUnlockPolicy(): Promise<QuickUnlockPolicy> {
   return invoke<QuickUnlockPolicy>("quick_unlock_policy");
+}
+
+/**
+ * "Require authentication for every payment" (default on), as stored
+ * for this network next to its vault.
+ */
+export function paymentAuthentication(): Promise<boolean> {
+  return invoke<boolean>("payment_authentication");
+}
+
+/**
+ * Turns "require authentication for every payment" on or off. Needs a
+ * `changeCredential` grant either way, so the passphrase; refused on a
+ * vault without one (`vault.not_encrypted`), where there is nothing to
+ * ask for. Grants issued and flows started before the change keep
+ * working until they are used or expire.
+ */
+export function setPaymentAuthentication(on: boolean, grantId: string): Promise<null> {
+  return invoke<null>("set_payment_authentication", { on, grantId });
 }
 
 /**
@@ -973,6 +1005,12 @@ export function newTxDraft(walletId: string): Promise<number> {
  * prepared transaction releases its reserved inputs; one handed to the
  * network keeps them until the wallet sees them spent. `false` when the
  * handle was not open.
+ *
+ * Closing only refuses later calls on the handles. It does not cancel
+ * a `draftBroadcast` already running: that transaction is signed and
+ * may still reach the network. The send screen closes drafts through
+ * the renderer's `closeSendDraft`, which gives DEC-67's
+ * signed-before-lock line to show when a broadcast is running.
  */
 export function closeDraft(draft: number): Promise<boolean> {
   return invoke<boolean>("close_draft", { draft });
@@ -1031,7 +1069,9 @@ export function draftEstimate(draft: number): Promise<TxEstimate> {
  * inputs. Never broadcasts. Returns the prepared transaction's handle
  * and its summary. When the draft was closed (or the network switched)
  * meanwhile, the transaction is dropped, its inputs are released, and
- * the call fails with `app.unknown_handle`.
+ * the call fails with `app.unknown_handle`. The handle is reserved
+ * first: with the table full (open and in-flight prepares), the call
+ * fails with `app.too_many_handles` before the grant is redeemed.
  */
 export function draftPrepare(draft: number, grantId: string): Promise<PreparedTxHandle> {
   return invoke<PreparedTxHandle>("draft_prepare", { draft, grantId });
@@ -1044,7 +1084,9 @@ export function draftPrepare(draft: number, grantId: string): Promise<PreparedTx
  * transaction (`send.no_peers`, `send.broadcast_rejected`,
  * `send.cancelled`, …: prepare again). It stays while the transaction is
  * still held: after `send.broadcast_unknown`, or a failure before
- * dispatch, so the call can be repeated.
+ * dispatch, so the call can be repeated. `closeDraft` during the call
+ * does not stop it, and a network switch waits for it (the broadcast
+ * holds the session open); it finishes and reports its outcome.
  */
 export function draftBroadcast(draft: number, prepared: number): Promise<BroadcastOutcome> {
   return invoke<BroadcastOutcome>("draft_broadcast", { draft, prepared });
@@ -1833,6 +1875,7 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
 /** Each command's arguments, as `invoke` sends them. */
 export type CommandArgs = {
   launch_info: {  };
+  recent_notices: {  };
   startup_mark: { mark: string };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
@@ -1859,6 +1902,8 @@ export type CommandArgs = {
   enroll_quick_unlock: { grantId: string };
   remove_quick_unlock: {  };
   quick_unlock_policy: {  };
+  payment_authentication: {  };
+  set_payment_authentication: { on: boolean; grantId: string };
   set_quick_unlock_spend_limit: { grantId: string; spendLimitDuffs: number };
   recover_with_mnemonic: { walletId: string; mnemonic: string; bip39Passphrase: string; newPassphrase: string };
   destroy_vault: { credential: CredentialSpec };
@@ -2051,6 +2096,7 @@ export type CommandArgs = {
 /** Each command's result. */
 export type CommandResults = {
   launch_info: LaunchInfo;
+  recent_notices: Array<RecentNotice>;
   startup_mark: number;
   selftest_report: null;
   selftest_checkpoint: null;
@@ -2077,6 +2123,8 @@ export type CommandResults = {
   enroll_quick_unlock: string;
   remove_quick_unlock: LockStatus;
   quick_unlock_policy: QuickUnlockPolicy;
+  payment_authentication: boolean;
+  set_payment_authentication: null;
   set_quick_unlock_spend_limit: QuickUnlockPolicy;
   recover_with_mnemonic: VaultRecovery;
   destroy_vault: LockStatus;
@@ -2271,6 +2319,7 @@ export type CommandName = keyof CommandResults;
 /** Every command, with the `api/` module that declares it. */
 export const COMMANDS: Record<CommandName, string> = {
   launch_info: "app",
+  recent_notices: "app",
   startup_mark: "app",
   selftest_report: "app",
   selftest_checkpoint: "app",
@@ -2297,6 +2346,8 @@ export const COMMANDS: Record<CommandName, string> = {
   enroll_quick_unlock: "vault",
   remove_quick_unlock: "vault",
   quick_unlock_policy: "vault",
+  payment_authentication: "vault",
+  set_payment_authentication: "vault",
   set_quick_unlock_spend_limit: "vault",
   recover_with_mnemonic: "vault",
   destroy_vault: "vault",
