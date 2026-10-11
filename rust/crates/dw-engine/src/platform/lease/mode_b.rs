@@ -110,7 +110,7 @@ use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
 use super::fence::{CallStepInfo, CallStepStatus};
 use super::resume::{Resumed, Resumer};
 use super::table::{Effects, Entry, Inner, LeaseTable};
-use super::{ArtifactId, Lease, LeaseError};
+use super::{ArtifactId, FlowOutcome, Lease, LeaseError};
 use crate::platform::errors::PlatformError;
 use crate::platform::flows::{DispatchResolution, DispatchState, is_funding_step};
 use crate::{CoinFence, NetworkSession, WalletId};
@@ -276,6 +276,16 @@ pub(crate) trait TrackedLocks: Send + Sync + 'static {
     /// Whether the wallet holds `txid` (display order, as the journal keeps
     /// it) ChainLocked.
     async fn chain_locked(&self, wallet: WalletId, txid: &[u8; 32]) -> bool;
+    /// Positive evidence that the wallet's tracked rows hold every asset
+    /// lock of it on the chain *now* (review R1-01): its recovery scan ran
+    /// to completeness, and no row was dropped since (a sweep's
+    /// `remove_tracked_asset_locks_for_swept` or a later restore must reset
+    /// it until the scan runs again). Read after [`Self::rows`]; it must
+    /// not report a scan that completed after the rows were read. DP1-05's
+    /// chain scan supplies it; until then, never.
+    async fn recovery_complete(&self, _wallet: WalletId) -> bool {
+        false
+    }
 }
 
 /// What the derivation knows of one wallet, read outside J.
@@ -285,6 +295,8 @@ pub(crate) struct Snapshot {
     pub(crate) drafts: Vec<DraftKey>,
     /// Repair's self-spends (display order) found ChainLocked.
     pub(crate) locked_spends: HashSet<[u8; 32]>,
+    /// [`TrackedLocks::recovery_complete`].
+    pub(crate) recovery_complete: bool,
 }
 
 /// Mode B's state in J.
@@ -298,6 +310,10 @@ pub(crate) struct ModeB {
     /// Per marked step, the rows its marker's key matched when it was
     /// marked in this process: earlier fundings', never its own.
     foreign: HashMap<(WalletId, String), HashSet<Txid>>,
+    /// Per funding step, the tracked rows the changeset tap attributed to a
+    /// call of it in this process ([`LeaseTable::note_tracked`]): its own
+    /// locks, trusted whatever their index (review P2b r1 F1).
+    own: HashMap<(WalletId, String), HashSet<Txid>>,
     /// Per wallet, bumped by its removal: a refresh of it read before is
     /// dropped. Per wallet (review L-5), so one wallet's removal drops no
     /// other wallet's refresh; kept after the removal, so a read of the
@@ -313,6 +329,7 @@ impl ModeB {
         self.snapshots.remove(wallet);
         self.derived.retain(|(w, _), _| w != wallet);
         self.foreign.retain(|(w, _), _| w != wallet);
+        self.own.retain(|(w, _), _| w != wallet);
         self.wallet_closed(wallet);
         *self.epochs.entry(*wallet).or_default() += 1;
     }
@@ -487,6 +504,55 @@ pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<
     derive_funding(info.status, rows.as_deref(), locked, unattributed)
 }
 
+/// Whether tracked row `r` of `wallet` is known to be funding `step`'s own
+/// lock, not only to match its key (review P2b r1 F1, F2): its index is
+/// trusted ([`index_trusted`]), or the changeset tap attributed it to a
+/// call of the step in this process. An untrusted row may be another
+/// singleton step's lock.
+fn own_row(i: &Inner, wallet: WalletId, step: &str, r: &TrackedRow) -> bool {
+    r.trusted
+        || i.mode_b
+            .own
+            .get(&(wallet, step.to_owned()))
+            .is_some_and(|own| own.contains(&r.txid))
+}
+
+/// The key of a tracked row with a proof that matches `step` and is its
+/// own ([`own_row`]) (J): the step's lock was seen out, so it reads `Sent`
+/// (§2a.5 row 2), and that is journaled. Any other matching proved row
+/// reads `Sent` while it stands, and is never made durable.
+fn proving_key(i: &Inner, wallet: WalletId, step: &str) -> Option<FundingKey> {
+    let snap = i.mode_b.snapshots.get(&wallet)?;
+    let info = i.fence.call_step_info(&wallet, step);
+    let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
+    snap.rows
+        .iter()
+        .find(|r| {
+            r.status.proved()
+                && matches_step(snap, step, &info, foreign, r)
+                && own_row(i, wallet, step, r)
+        })
+        .map(|r| r.key)
+}
+
+/// A funding step's outcome in a lock's report (§8.4, review R1-02): its
+/// status now, from history (§2a.5). `NotSent` and never started are
+/// `Cancelled`.
+pub(super) fn funding_outcome(i: &Inner, wallet: WalletId, step: &str) -> FlowOutcome {
+    match funding_status(i, wallet, step) {
+        Some(DispatchState::Sent) => FlowOutcome::Sent,
+        Some(DispatchState::WillBeSent) => FlowOutcome::WillBeSent,
+        // Every call of the step here ended definitely unsent, its
+        // `NotSent` row still to land: the marker reads `MaybeSent` until
+        // then (review P2b r1 F4).
+        Some(DispatchState::MaybeSent) if i.fence.call_ended_unsent(&(wallet, step.to_owned())) => {
+            FlowOutcome::Cancelled
+        }
+        Some(DispatchState::MaybeSent) => FlowOutcome::MaybeSent,
+        Some(DispatchState::NotSent) | None => FlowOutcome::Cancelled,
+    }
+}
+
 /// §16.5's Mode B `funds_committed` of a lease: one of its funding steps
 /// reads anything but `None` or `NotSent`.
 pub(super) fn funds_committed(i: &Inner, e: &Entry) -> bool {
@@ -555,6 +621,16 @@ pub enum StuckFundingRefusal {
     /// nothing. Repair waits until the row is attributed.
     #[error("tracked asset lock {0} may be this funding's: its identity is not known yet")]
     UnattributedLock(Txid),
+    /// No tracked `Built` or `Broadcast` lock of the step is known, and
+    /// nothing shows the wallet's tracked rows complete (review R1-01): a
+    /// lock lost with its row (a restore, a power loss) may be on the chain
+    /// already, its inputs spent, so a self-spend of the other coins would
+    /// prove nothing. Refused until DP1-05's recovery scan vouches for the
+    /// wallet ([`TrackedLocks::recovery_complete`]).
+    #[error(
+        "no tracked asset lock of this funding is known, and the wallet's recovery is not complete"
+    )]
+    NoKnownLock,
 }
 
 /// The tracked `Built` and `Broadcast` rows of funding `step` (J): their
@@ -576,10 +652,29 @@ pub(super) fn pending_step_rows(
         .collect()
 }
 
+/// Whether a tracked `Built` or `Broadcast` row of funding `step` is its
+/// own lock ([`own_row`]) (J).
+fn own_pending_row(i: &Inner, wallet: WalletId, step: &str) -> bool {
+    let Some(s) = i.mode_b.snapshots.get(&wallet) else {
+        return false;
+    };
+    let info = i.fence.call_step_info(&wallet, step);
+    let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
+    s.rows.iter().any(|r| {
+        r.status.pending()
+            && matches_step(s, step, &info, foreign, r)
+            && own_row(i, wallet, step, r)
+    })
+}
+
 /// Whether Repair may resolve funding `step` with a self-spend now (J):
 /// the wallet's rows are known, the step reads `MaybeSent` or
 /// `WillBeSent` (a proof-less tracked row), its marker stands, no call
-/// runs under it, and no unattributed row may be its lock.
+/// runs under it, no unattributed row may be its lock, and the self-spend
+/// can be shown to conflict with the step's lock: a tracked `Built` or
+/// `Broadcast` row known to be the step's own is found ([`own_row`];
+/// Repair spends an input of every row of the step), or the wallet's
+/// recovery is complete (review R1-01, fail closed).
 pub(super) fn stuck_funding(
     i: &Inner,
     wallet: WalletId,
@@ -610,6 +705,9 @@ pub(super) fn stuck_funding(
     {
         return Err(StuckFundingRefusal::UnattributedLock(r.txid));
     }
+    if !i.mode_b.snapshots[&wallet].recovery_complete && !own_pending_row(i, wallet, step) {
+        return Err(StuckFundingRefusal::NoKnownLock);
+    }
     Ok(())
 }
 
@@ -634,6 +732,13 @@ pub(super) fn note_marked(i: &mut Inner, wallet: WalletId, step: &str, key: Fund
 /// A move to `Sent` or `NotSent` from an earlier derivation emits
 /// `DispatchResolved`; a lease whose step moved emits `LeaseChanged`
 /// (`funds_committed`). Nothing before the wallet's first snapshot.
+///
+/// A step a trusted proved row reads `Sent` is journaled (review R1-01): the
+/// step's `Sent` row with its marker and funding key, one DEC-163 bundle,
+/// begun after J and owed until it lands
+/// ([`FenceState::note_proved_funding`](super::fence::FenceState::note_proved_funding)).
+/// So the `Sent` stands once the row is gone (a restore, a sweep), across
+/// restarts too, and Repair's self-spend can never turn it `NotSent`.
 pub(super) fn rederive(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, wallet: WalletId) {
     let Some(snap) = i.mode_b.snapshots.get(&wallet) else {
         return;
@@ -653,6 +758,12 @@ pub(super) fn rederive(t: &LeaseTable, i: &mut Inner, fx: &mut Effects, wallet: 
     let mut moved = Vec::new();
     for step in steps {
         let now = funding_status(i, wallet, &step);
+        if now == Some(DispatchState::Sent)
+            && let Some(key) = proving_key(i, wallet, &step)
+            && i.fence.note_proved_funding(wallet, &step, key)
+        {
+            fx.owe_sent(wallet);
+        }
         let before = i.mode_b.derived.insert((wallet, step.clone()), now);
         if before == Some(now) {
             continue;
@@ -720,12 +831,14 @@ impl LeaseTable {
                 locked_spends.insert(txid);
             }
         }
+        let recovery_complete = source.recovery_complete(wallet).await;
         self.commit_read(
             wallet,
             Snapshot {
                 rows,
                 drafts,
                 locked_spends,
+                recovery_complete,
             },
             Some(epoch),
         )
@@ -817,34 +930,54 @@ impl LeaseTable {
     }
 
     /// The changeset tap stored tracked rows of `wallet`, of any status
-    /// (`tracked`: their txids and keys): a running funding call of the
-    /// wallet that released a signature, whose key one carries, and to
-    /// whose step it is not foreign (it was not standing when the step was
-    /// marked), has signed its lock and the library tracks it, so its
-    /// inputs read reserved from now on: the call's coin fence is
-    /// released, outside J ([`super::call::FundingFence`]). Takes no lock
-    /// but J and awaits nothing: it runs inside the library's store call.
+    /// (`tracked`: their txids and keys). A row is a running funding call's
+    /// when the call released a signature, the row carries its key, and it
+    /// is not foreign to the call's step (it was not standing when the step
+    /// was marked): the call has signed its lock and the library tracks
+    /// it, so its inputs read reserved from now on, and the call's coin
+    /// fence is released, outside J ([`super::call::CallFunding`]). A row
+    /// that is one call's only is that step's own lock (review P2b r1 F1).
+    /// Takes no lock but J and awaits nothing: it runs inside the library's
+    /// store call.
     pub(crate) fn note_tracked(&self, wallet: WalletId, tracked: &[(Txid, FundingKey)]) {
         if tracked.is_empty() {
             return;
         }
         self.with_j(|i, fx| {
-            for run in i.calls.values_mut() {
-                let releases = run.fence.as_ref().is_some_and(|f| {
-                    f.fence.wallet_id() == wallet
-                        && f.signatures.released() > 0
-                        && tracked.iter().any(|(txid, key)| {
-                            *key == f.key
+            let mut attributed = false;
+            for (txid, key) in tracked {
+                let calls: Vec<u64> = i
+                    .calls
+                    .iter()
+                    .filter(|(_, run)| {
+                        run.funding.as_ref().is_some_and(|f| {
+                            f.wallet == wallet
+                                && f.signatures.released() > 0
+                                && f.key == *key
                                 && !i
                                     .mode_b
                                     .foreign
                                     .get(&(wallet, f.step.clone()))
                                     .is_some_and(|rows| rows.contains(txid))
                         })
-                });
-                if releases && let Some(f) = run.fence.take() {
-                    fx.drop_later(f);
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                if let [id] = calls[..]
+                    && let Some(f) = i.calls[&id].funding.as_ref()
+                {
+                    let step = (wallet, f.step.clone());
+                    attributed |= i.mode_b.own.entry(step).or_default().insert(*txid);
                 }
+                for id in calls {
+                    if let Some(fence) = i.calls.get_mut(&id).and_then(|r| r.fence.take()) {
+                        fx.drop_later(fence);
+                    }
+                }
+            }
+            // A row already proved is journaled now.
+            if attributed {
+                rederive(self, i, fx, wallet);
             }
         });
     }
@@ -853,11 +986,9 @@ impl LeaseTable {
     #[cfg(test)]
     pub(crate) fn call_holds_fence(&self, wallet: WalletId) -> bool {
         self.with_j(|i, _| {
-            i.calls.values().any(|r| {
-                r.fence
-                    .as_ref()
-                    .is_some_and(|f| f.fence.wallet_id() == wallet)
-            })
+            i.calls
+                .values()
+                .any(|r| r.fence.as_ref().is_some_and(|f| f.wallet_id() == wallet))
         })
     }
 
@@ -1019,7 +1150,7 @@ impl NetworkSession {
     /// caller's coin policy check ran under ([`Self::fenced_coins`]): the
     /// permit keeps it until the library has tracked the lock it signed
     /// (`Built`, whose inputs then read reserved) or the call ends
-    /// ([`super::call::FundingFence`]), so no coin locked after the check
+    /// ([`super::call::CallFunding`]), so no coin locked after the check
     /// is signed by the call: "Lock unspent" waits for it. Refused, the
     /// fence is released with the refusal. While the permit holds it, the
     /// caller asks for no coin fence of the wallet (it would wait for

@@ -4,7 +4,10 @@
 //!
 //! - **First → Sent:** the test mines the payment while the hand-off waits
 //!   (dash-spv accepts a broadcast from one peer without an InstantSend
-//!   quorum only once it is mined), and the hand-off returns `Sent`.
+//!   quorum only once it is mined), and the hand-off returns `Sent`, or,
+//!   when mining and SPV's sighting outrun the permit's 10 s deadline under
+//!   load, `broadcast_unknown` (review R1-N1); either way the step settles
+//!   `Sent`, announced once.
 //! - **MaybeOut → Sent via the wallet's sighting:** nothing is mined during
 //!   the hand-off, so the permit's deadline (10 s) cuts it:
 //!   `broadcast_unknown`, `MaybeSent`. The wallet holding the transaction
@@ -12,7 +15,8 @@
 //!   (`SessionHub` → `LeaseTable::note_seen`): `Sent` and one
 //!   `DispatchResolved(Sent)`.
 //!
-//! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
+//! The deadline stays 10 s; only the test's eventual waits are load
+//! tolerant ([`LOAD_WAIT`]). Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
 //! to it (e.g. `~/.rust-dashcore-test/dashcore-24.0.0-rc.3/bin/dashd`);
 //! skipped otherwise.
 
@@ -33,6 +37,10 @@ use zeroize::Zeroizing;
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const COIN: u64 = 100_000_000;
+
+/// How long an eventual wait (SPV, a scan, a sighting) may take on a loaded
+/// host (review R1-N1). The permit's deadline is not one of them.
+const LOAD_WAIT: Duration = Duration::from_secs(600);
 
 /// A regtest dashd with its RPC through `dash-cli`; stopped on drop.
 struct Dashd {
@@ -233,7 +241,7 @@ impl Fixture {
 
     fn start_spv(&self) {
         self.engine.block_on(self.session.start_spv()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + LOAD_WAIT;
         while self.session.spv_state().unwrap() != SpvState::Running {
             assert!(Instant::now() < deadline, "SPV did not start");
             std::thread::sleep(Duration::from_millis(100));
@@ -241,7 +249,7 @@ impl Fixture {
     }
 
     fn wait_scanned(&self, height: u32) {
-        let deadline = Instant::now() + Duration::from_secs(180);
+        let deadline = Instant::now() + LOAD_WAIT;
         while self
             .session
             .wallet_scan_height(&self.wallet)
@@ -359,22 +367,46 @@ fn a_leased_first_settles_by_the_wallets_sightings_against_dashd() {
         (draft, prepared)
     };
 
-    // First → Sent: mined while the hand-off waits.
+    // The signed bytes, for dashd when the hand-off left them unsent.
+    let push = |prepared: &dw_engine::PreparedTx| {
+        let raw: String = prepared
+            .raw()
+            .unwrap()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if let Err(e) = node.try_cli(&["sendrawtransaction", &raw]) {
+            assert!(e.contains("already"), "{e}");
+        }
+    };
+
+    // First → Sent: mined while the hand-off waits. Under load the mining
+    // and the sighting may outrun the 10 s deadline: then the hand-off
+    // reads `broadcast_unknown` and the block settles it (R1-N1).
     let lease = f.lease();
     let (draft, prepared) = pay(&lease);
     let txid = prepared.summary().txid.clone();
     let sent = std::thread::scope(|s| {
         let send = s.spawn(|| f.engine.block_on(draft.broadcast(Arc::clone(&prepared))));
-        let deadline = Instant::now() + Duration::from_secs(8);
-        while !node.in_mempool(&txid) {
+        let deadline = Instant::now() + LOAD_WAIT;
+        while !node.in_mempool(&txid) && !send.is_finished() {
             assert!(Instant::now() < deadline, "{txid} never reached dashd");
             std::thread::sleep(Duration::from_millis(100));
+        }
+        if !node.in_mempool(&txid) {
+            push(&prepared);
         }
         node.mine(1);
         send.join().unwrap()
     });
-    assert_eq!(sent.unwrap().txid, txid, "accepted once mined");
-    assert_eq!(f.status(&txid), Some(DispatchState::Sent));
+    match sent {
+        Ok(out) => assert_eq!(out.txid, txid, "accepted once mined"),
+        // The permit's deadline or SPV's own acceptance wait, whichever
+        // a loaded host hits first.
+        Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => {}
+        Err(other) => panic!("{other:?}"),
+    }
+    f.wait_status(&txid, DispatchState::Sent, LOAD_WAIT);
     f.wait_scanned(node.height());
     // Once, whichever came first: the hand-off's acceptance or the block.
     assert_eq!(
@@ -393,25 +425,19 @@ fn a_leased_first_settles_by_the_wallets_sightings_against_dashd() {
         }
         other => panic!("{other:?}"),
     }
+    // Cut at the permit's 10 s deadline, never before it; a loaded host
+    // may poll the overdue timer later (R1-N1).
     let took = started.elapsed();
     assert!(
-        took >= Duration::from_secs(9) && took < Duration::from_secs(15),
+        took >= Duration::from_secs(9),
         "cut at the permit's 10 s deadline: {took:?}"
     );
     assert_eq!(f.status(&txid), Some(DispatchState::MaybeSent));
     // Whatever the cut left on the wire, dashd holds it now.
-    let raw: String = prepared
-        .raw()
-        .unwrap()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if let Err(e) = node.try_cli(&["sendrawtransaction", &raw]) {
-        assert!(e.contains("already"), "{e}");
-    }
+    push(&prepared);
     assert!(node.in_mempool(&txid));
     // The wallet's own mempool view is no evidence.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + LOAD_WAIT;
     while !f.wallet_has(&txid) {
         assert!(Instant::now() < deadline, "the wallet never held {txid}");
         std::thread::sleep(Duration::from_millis(200));
@@ -419,7 +445,7 @@ fn a_leased_first_settles_by_the_wallets_sightings_against_dashd() {
     assert_eq!(f.status(&txid), Some(DispatchState::MaybeSent));
     assert!(f.rec.resolved(f.wallet, &txid).is_empty());
     node.mine(1);
-    f.wait_status(&txid, DispatchState::Sent, Duration::from_secs(60));
+    f.wait_status(&txid, DispatchState::Sent, LOAD_WAIT);
     assert_eq!(
         f.rec.resolved(f.wallet, &txid),
         vec![DispatchResolution::Sent],

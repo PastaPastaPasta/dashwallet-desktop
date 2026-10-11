@@ -1521,6 +1521,20 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
     assert_eq!(status(), Some(DispatchState::MaybeSent));
     // Another funding's lock, Built and never sent, holds `a`.
     f.track_lock(50, 3, &[a], AssetLockStatus::Built);
+    // With no lock of the step known, Repair could not show its self-spend
+    // conflicts with it (review R1-01): refused.
+    match repair_draft() {
+        Err(EngineError::InvalidArgument(m)) => {
+            assert_eq!(m, StuckFundingRefusal::NoKnownLock.to_string())
+        }
+        other => panic!("{other:?}"),
+    }
+    // The step's own lock, Built and withheld, spends `a` too.
+    f.track_lock(51, 0, &[a], AssetLockStatus::Built);
+    let (leases, w) = (Arc::clone(&s.leases), f.wallet);
+    let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+    assert!(f.engine.block_on(refreshed).unwrap());
+    assert_eq!(status(), Some(DispatchState::WillBeSent));
     let plain = f.draft(1_000_000);
     plain.set_source(CoinSource::Outpoints(vec![a])).unwrap();
     assert_eq!(
@@ -1582,8 +1596,8 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
     }));
     assert!(own.unwrap(), "to the wallet itself");
 
-    // Not ChainLocked: still MaybeSent, the self-spend standing.
-    assert_eq!(status(), Some(DispatchState::MaybeSent));
+    // Not ChainLocked: still WillBeSent, the self-spend standing.
+    assert_eq!(status(), Some(DispatchState::WillBeSent));
     assert_eq!(
         s.leases.call_step(f.wallet, STEP).self_spends,
         vec![ArtifactId::from_txid(&txid).0]
@@ -1628,6 +1642,14 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
         Ok(_) => panic!("not refused: {r:?}"),
     };
     f.stuck(STEP);
+    // No lock of the step is known, and the wallet's recovery is not shown
+    // complete: a lost lock may be on the chain already (review R1-01).
+    refused(StuckFundingRefusal::NoKnownLock);
+    // A tracked lock of the step, Built (its own: index 0 is trusted only
+    // there, review P2b r1 F2): the self-spend takes `a`, one of its
+    // inputs, so it conflicts.
+    let gone = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
+    f.track_lock(60, 0, &[gone, a], AssetLockStatus::Built);
 
     // A spend of the wallet's coins short of its ChainLock (here in the
     // mempool) may be what the lost lock conflicts with.
@@ -1656,12 +1678,6 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
     f.record_tx(incoming, TransactionContext::Mempool, false);
     f.record_tx(pending, TransactionContext::InChainLockedBlock(block), true);
     assert!(repair().is_ok());
-
-    // A tracked Broadcast lock of the step: the self-spend takes `a`, one
-    // of its inputs, so it conflicts.
-    let gone = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
-    f.track_lock(60, 0, &[gone, a], AssetLockStatus::Broadcast);
-    assert!(repair().is_ok());
     // One whose every input the wallet saw spent: the self-spend would
     // not conflict with it.
     let lock = f.track_lock(61, 0, &[gone], AssetLockStatus::Broadcast);
@@ -1674,9 +1690,11 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
 fn an_unrecorded_self_spend_is_released_unsent() {
     const STEP: &str = "registration/1/funding";
     let f = fixture(false);
-    f.credit(1, COIN);
+    let a = f.credit(1, COIN);
     let s = &f.session;
     f.stuck(STEP);
+    // The step's lock, Built and withheld: a known lock to conflict with.
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
     let draft = f
         .engine
         .block_on(s.stuck_funding_draft(f.wallet, STEP))
@@ -1694,12 +1712,14 @@ fn an_unrecorded_self_spend_is_released_unsent() {
         .fail_self_spend
         .store(true, std::sync::atomic::Ordering::SeqCst);
     s.leases.journal.set(Some(failing));
+    // `a` stays reserved by the step's own lock throughout.
+    let held = f.reserved();
     let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
     let out = f.engine.block_on(s.send_self_spend(&draft, STEP, grant));
     s.leases.journal.set(real);
     assert!(matches!(out, Err(EngineError::Storage(_))), "{out:?}");
     assert!(seam.seen.lock().unwrap().is_none(), "never broadcast");
-    assert_eq!(f.reserved(), 0, "its inputs released");
+    assert_eq!(f.reserved(), held, "its inputs released");
     assert!(s.leases.call_step(f.wallet, STEP).self_spends.is_empty());
     // The repair runs again once the journal records.
     let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);

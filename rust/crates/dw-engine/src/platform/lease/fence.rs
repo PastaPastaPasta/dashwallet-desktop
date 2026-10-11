@@ -860,6 +860,46 @@ impl FenceState {
         }
     }
 
+    /// A funding step whose lock the wallet saw proved (review R1-01): it
+    /// reads `Sent` for good, and its `Sent` row is owed (`Ambiguous`), to
+    /// be begun after J ([`Effects::owe_sent`]) with the step's marker and
+    /// funding key, as one DEC-163 bundle. Markers a `NotSent` row
+    /// superseded come back with it; a step with no marker (found by its
+    /// draft's own key) gets one, under `key`, the proving row's. A write
+    /// that fails or panics leaves the row owed. `false` when the row is
+    /// written, being written or owed already.
+    pub(super) fn note_proved_funding(
+        &mut self,
+        wallet: WalletId,
+        step: &str,
+        key: FundingKey,
+    ) -> bool {
+        let id = ArtifactId::of_step(&wallet, step);
+        // `sent` may hold it with no row begun (a call that returned `Sent`
+        // while the journal was not ready, a removed wallet re-added):
+        // owed then too (review P2b r1 F3).
+        if !self.sent.insert(id) && self.evidence.contains_key(&(wallet, id)) {
+            return false;
+        }
+        for (s, mark) in self.superseded.remove(&(wallet, id)).unwrap_or_default() {
+            self.steps
+                .entry((wallet, s))
+                .or_default()
+                .entry(id)
+                .or_insert(mark);
+        }
+        let k = (wallet, step.to_owned());
+        self.funding.entry(k.clone()).or_insert(key);
+        self.steps
+            .entry(k)
+            .or_default()
+            .entry(id)
+            .or_insert(Mark::Ambiguous);
+        // Durable or being written already, or owed now.
+        self.evidence.entry((wallet, id)).or_insert(Mark::Ambiguous);
+        true
+    }
+
     /// The wallet's funding steps with a standing marker (§2a.5).
     pub(super) fn funding_steps_of(&self, wallet: &WalletId) -> Vec<String> {
         self.funding
@@ -876,6 +916,16 @@ impl FenceState {
             .filter(|((w, _), _)| w == wallet)
             .flat_map(|(_, txids)| txids.iter().copied())
             .collect()
+    }
+
+    /// Whether every call of the step in this process ended definitely
+    /// unsent and none runs, its `NotSent` row begun after the marker's
+    /// write, being written, or owed after a failed write (the lock report,
+    /// review P2b r1 F4).
+    pub(super) fn call_ended_unsent(&self, key: &(WalletId, String)) -> bool {
+        self.call_steps.get(key).is_some_and(|r| {
+            r.running == 0 && !r.possibly_out && (r.after_write || r.resolving || r.owed)
+        })
     }
 
     /// Whether a `NotSent` row of the call step is being written.
@@ -2214,6 +2264,22 @@ impl LeaseTable {
         for (w, a) in owed {
             self.begin_sent_bundle(i, Arc::clone(backend), w, a);
         }
+    }
+
+    /// Begins `wallets`' owed `Sent` rows ([`Effects::owe_sent`]), reading
+    /// the journal outside J. A journal not ready leaves them owed: the
+    /// next write that lands, or the journal's close, begins them.
+    pub(super) fn write_owed_sent(self: &Arc<Self>, wallets: &BTreeSet<WalletId>) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        self.with_j(|i, _| {
+            if i.fence.journal == JournalState::Ready {
+                for w in wallets {
+                    self.retry_owed_sent(i, &backend, Some(*w));
+                }
+            }
+        });
     }
 
     /// Begins the artifact's `Sent` row with its whole marker set, as one

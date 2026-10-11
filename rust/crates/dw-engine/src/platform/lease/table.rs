@@ -253,6 +253,8 @@ pub(crate) struct Effects {
     changed: BTreeSet<LeaseId>,
     notify: bool,
     resume: bool,
+    /// Wallets with a `Sent` row owed (review R1-01): begun after J.
+    owed_sent: BTreeSet<WalletId>,
 }
 
 impl Effects {
@@ -285,6 +287,12 @@ impl Effects {
     /// the journal recovered from a write failure (§6.4).
     pub(crate) fn resume(&mut self) {
         self.resume = true;
+    }
+
+    /// Begin `wallet`'s owed `Sent` rows after J
+    /// ([`LeaseTable::write_owed_sent`]), which reads the journal outside J.
+    pub(crate) fn owe_sent(&mut self, wallet: WalletId) {
+        self.owed_sent.insert(wallet);
     }
 }
 
@@ -392,6 +400,11 @@ impl LeaseTable {
             && let Some(me) = self.me.upgrade()
         {
             me.request_resume(None);
+        }
+        if !fx.owed_sent.is_empty()
+            && let Some(me) = self.me.upgrade()
+        {
+            me.write_owed_sent(&fx.owed_sent);
         }
         r
     }

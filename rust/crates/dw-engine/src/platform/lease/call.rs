@@ -60,6 +60,7 @@ use super::mode_b::funding_gate;
 use super::stress_tests::Mutation;
 use super::table::{Effects, Inner, Lease, LeaseTable};
 use super::{FlowOutcome, LeaseError, LeaseId};
+use crate::WalletId;
 use crate::platform::flows::BudgetPurpose;
 use crate::platform::signers::{CountingFundingSigner, VaultIdentitySigner};
 
@@ -298,13 +299,16 @@ pub(crate) struct CallRun {
     pub(crate) lease: LeaseId,
     pub(crate) deadline: Instant,
     pub(crate) label: String,
+    /// A funding call's step, key and signature count ([`CallFunding`]).
+    pub(crate) funding: Option<CallFunding>,
     /// A funding call's coin fence, until the library tracked the lock it
-    /// signed or the call ends ([`FundingFence`]).
-    pub(crate) fence: Option<FundingFence>,
+    /// signed or the call ends ([`CallFunding`]).
+    pub(crate) fence: Option<crate::coins::CoinFence>,
 }
 
-/// The coin fence a funding call holds (`coins.rs`, E0-04 §2a.6): the one
-/// its caller's policy check read the coins under. Released, outside J, at
+/// What the changeset tap matches a funding call's tracked rows by. The
+/// coin fence a funding call holds (`coins.rs`, E0-04 §2a.6) is the one its
+/// caller's policy check read the coins under. Released, outside J, at
 /// the first of: the changeset tap reporting a tracked row of the wallet
 /// under `key`, of any status, that is not foreign to `step`, once the
 /// call released a signature (the library tracks and persists its lock
@@ -312,14 +316,16 @@ pub(crate) struct CallRun {
 /// the lock's inputs read reserved; the persister may fold that `Built`
 /// into a later status before the tap sees it, so any status counts; a row
 /// before the call's first signature is not its lock); or the call's end.
-/// Never held through the library's proof wait past that row.
+/// Never held through the library's proof wait past that row. Such a row
+/// is the step's own lock when it is no other running call's
+/// ([`super::mode_b::ModeB`]'s `own`, review P2b r1 F1).
 #[derive(Debug)]
-pub(crate) struct FundingFence {
+pub(crate) struct CallFunding {
+    pub(crate) wallet: WalletId,
     pub(crate) step: String,
     pub(crate) key: FundingKey,
     /// The call's own count ([`CallPermit::signatures`]).
     pub(crate) signatures: Arc<SignatureCount>,
-    pub(crate) fence: crate::coins::CoinFence,
 }
 
 /// A finished call of a lease, for the lock's report (§8.4).
@@ -327,6 +333,9 @@ pub(crate) struct FundingFence {
 pub(crate) struct CallRecord {
     pub(crate) label: String,
     pub(crate) outcome: FlowOutcome,
+    /// A funding call's step: the lock's report reads the step's derived
+    /// status instead of this outcome (review R1-02).
+    pub(crate) funding_step: Option<String>,
 }
 
 /// The RAII proof that a library call may run. Dropping it unfinished
@@ -447,18 +456,22 @@ impl Lease {
                 }
                 let backend = backend.expect("checked by the gate");
                 let took = self.take_call(i, fx, label.clone(), quote)?;
-                if let Some(fence) = fence.take() {
-                    match (step.funding(), i.calls.get_mut(&took.id)) {
-                        (Some(key), Some(run)) => {
-                            run.fence = Some(FundingFence {
-                                step: step.id().to_owned(),
-                                key,
-                                signatures: Arc::clone(&signatures),
-                                fence,
-                            });
+                let run = i.calls.get_mut(&took.id);
+                match (step.funding(), run) {
+                    (Some(key), Some(run)) => {
+                        run.funding = Some(CallFunding {
+                            wallet: self.wallet,
+                            step: step.id().to_owned(),
+                            key,
+                            signatures: Arc::clone(&signatures),
+                        });
+                        run.fence = fence.take();
+                    }
+                    // Only a funding call holds one.
+                    _ => {
+                        if let Some(fence) = fence.take() {
+                            fx.drop_later(fence);
                         }
-                        // Only a funding call holds one.
-                        _ => fx.drop_later(fence),
                     }
                 }
                 let (prior, write) = table.call_step_mark(i, backend, self.wallet, &step);
@@ -591,6 +604,7 @@ impl Lease {
                 lease: self.id,
                 deadline,
                 label,
+                funding: None,
                 fence: None,
             },
         );
@@ -711,6 +725,10 @@ impl CallPermit {
                     e.calls_done.push(CallRecord {
                         label: run.label,
                         outcome,
+                        funding_step: step
+                            .as_ref()
+                            .filter(|s| s.funding().is_some())
+                            .map(|s| s.id().to_owned()),
                     });
                 }
                 if outcome == FlowOutcome::Cancelled

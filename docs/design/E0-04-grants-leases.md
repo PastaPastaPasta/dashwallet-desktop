@@ -558,7 +558,8 @@ Mode B has no registered journal entries, so it derives every status from three 
   `RecoveredFromChain` lock) or to `NotSent` (a definite resolution, or the ChainLocked self-spend).
 - **An orphan can stay unresolved indefinitely.** A lock that lost its row and is withheld by a peer stays
   `MaybeSent` with no time bound. The user can force a resolution with Repair's "Cancel it" (§6.5): a self-spend of
-  every coin. Once that spend is ChainLocked, any lost lock whose inputs it consumed can no longer confirm.
+  every coin. Once that spend is ChainLocked, any lost lock whose inputs it consumed can no longer confirm. As
+  built, Repair waits for DP1-05's chain scan when no row of the step is known (§2a.6, review P2b r1 R1-01).
 - **Row-less state transitions after a restart, in both modes (H16).** The per-process set and its tombstones are
   gone, so `dispatch_status` answers `None`, which for a transition is unknown. Every resolution needs positive
   evidence, and none is offered a retry before it:
@@ -630,7 +631,10 @@ call permit when its task lands.
     reservation (`PendingSpends::reserve`) by `TxDraft::prepare` (every path: plain, leased, CoinJoin source, Repair's
     self-spend), CoinJoin's automatic pass (denomination and collateral funding spend BIP44 coins; released before
     the funding transaction's broadcast) and "Move mixed coins" (every chunk signed and reserved under it, released
-    before the broadcasts; a failed broadcast gives back its chunk's and the later chunks' reservations).
+    before the broadcasts). A broadcast definitely refused (`TransactionBroadcast`) gives back its chunk's and the
+    later chunks' reservations; one whose outcome is unknown (`TransactionBroadcastUnconfirmed`, any other error)
+    keeps its own chunk's claim, which goes once its inputs are seen spent, and gives back only the later chunks',
+    never broadcast (`coinjoin.broadcast_unknown`; review P2b r1).
   - Nothing the library or SPV runs inside a call takes it: the changeset tap (`LeaseTable::note_tracked` is one J
     step), Mode B's refresh, `fee_bound_worst`/`funding_coin_count`, the event handlers and the catch-up's resume
     pass. The CoinJoin status refresher only tries it: a held fence skips that wallet's tick and keeps its cached
@@ -681,6 +685,33 @@ call permit when its task lands.
   step.
 - BL-76 (H12): the session hub feeds `note_seen` an InstantSend lock (also a transaction first seen through its
   lock), a block holding the transaction and a ChainLock over it; never a mempool sighting.
+- **A step's own lock** (review P2b r1 F1, F2). A tracked row is known to be a funding step's own lock when its index
+  is trusted (above), or when the changeset tap attributed it to a call of the step in this process: stored under the
+  call's key once the call released a signature, not foreign to the step, and matching no other running call (the
+  same rule that releases the call's coin fence). So the wallet's first identity (index 0, untrusted once its lock
+  left `Built`) is covered while its process runs.
+- **A proved funding is journaled `Sent`** (review P2b r1 R1-01). When a tracked row with a proof (`InstantSendLocked`,
+  `ChainLocked`, `Consumed`, `RecoveredFromChain`) known to be the step's own lock first makes it read `Sent`, the
+  step gets its DEC-163 `Sent` bundle: the step's marker (one under the row's key if the step had none, found by its
+  draft's own key) with its `funding_marker` row, and the `Sent` row. It is begun after J and stays owed on a
+  failed, cancelled or panicking write: the next journal write of the wallet that lands, or the journal's close,
+  begins it again, and after a restart the rows derive it again. From then on the step reads `Sent` whatever
+  becomes of its rows (a sweep, a restore), and a recorded self-spend can never turn it `NotSent`: `Sent` comes
+  first in §2a.5. Any other matching proved row (index 0, re-added from the chain, or signed when two calls of its
+  key ran) may be another singleton step's lock: it reads `Sent` while it stands and is never journaled. A step
+  that reads `Sent` with no row begun (a call returned `Sent` while the journal was closed) owes it too.
+- **Repair needs a lock to conflict with** (review P2b r1 R1-01, fail closed). Repair resolves a step only while a
+  tracked `Built`/`Broadcast` row known to be the step's own lock is found (its self-spend takes an input of every
+  row of the step), or once the wallet's
+  recovery is complete (`TrackedLocks::recovery_complete`, the seam DP1-05's chain scan fills; `false` at P2b).
+  Otherwise it refuses `NoKnownLock` (`invalid_argument`): a step whose lock lost its row may have that lock on the
+  chain already. So the withheld-T1 trace (§2a.4 item 7) stays `MaybeSent` until DP1-05.
+- **A lock's report of a funding step** (review P2b r1 R1-02). `LockReport` lists each funding step a flow is
+  bound to (`Lease::bind_funding_step`) or called, under its public step id, by its status now: `Sent`,
+  `WillBeSent`, `MaybeSent`; `NotSent` or never started read `Cancelled`. A funding call's own outcome is not listed
+  beside it, so current evidence supersedes a stale local result; a call still running reads `MaybeSent` as before.
+  A step whose calls all ended definitely unsent in this process reads `Cancelled` while its `NotSent` row is still
+  to land (review F4). A flow resumed after a restart reports its funding the same way.
 
 **Residuals** (each fails closed unless marked):
 - D5's re-check in coin selection is unreachable at the pin (the library selects inside the call): a coin received
@@ -714,8 +745,21 @@ call permit when its task lands.
 - The self-spend's `NotSent` rests on the library tracking a lock (`Built`, persisted) before broadcasting it, so a
   ChainLocked lock always has a row, which reads `Sent`. A wallet restored where the journal's marker survives but
   the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked
-  records, so history cannot show it). **DP1-05 owns this:** until its chain scan has run for the wallet, Repair's
-  self-spend must be refused there. Not fail closed.
+  records, so history cannot show it). Fail closed since P2b r1: a proved step's `Sent` is journaled, and with no
+  durable `Sent` and no tracked row of the step known, Repair refuses until DP1-05's chain scan reports the
+  wallet's recovery complete (`TrackedLocks::recovery_complete`). **DP1-05 owns** supplying that evidence;
+  **liveness cost** until then: a step whose lock left no row (the withheld-T1 trace, a restore) cannot be
+  repaired.
+- A durable `Sent` can over-approximate: after a restart the per-step set of earlier rows is gone (above), so an
+  earlier funding's proved row under the same key reads the marked step `Sent`, and that is now journaled. Fail
+  closed (the step is never funded again; no second payment), at a liveness cost to that step only. Funding keys
+  are shared across fundings only by top-ups, whose funding calls P2b refuses.
+- The tap's attribution of a step's own lock is in memory only (persisting the txid with the marker needs a
+  `dispatch.sqlite` change). An index-0 registration lock first proved after a restart reads `Sent` while its row
+  stands but is not journaled, and Repair refuses its step (`NoKnownLock`) until DP1-05. Fail closed.
+- A "Move mixed coins" chunk whose broadcast outcome is unknown keeps its coins reserved until they are seen spent
+  or the wallet unloads; `MixedCoinsSweepResult` does not name its txid, so the host cannot abandon it (review F5;
+  naming it is an FFI and Swift contract change, left for the CoinJoin owner). Fail closed.
 - A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and
   every top-up of an identity shares one key. Until the credit task gives top-ups their own key,
   `funding_call_permit` refuses `topup/...` steps (review M-3); `dispatch_status` still answers them.

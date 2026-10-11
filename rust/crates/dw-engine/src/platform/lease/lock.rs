@@ -344,11 +344,25 @@ impl Freeze {
                         .values()
                         .filter(|c| c.lease == *id)
                         .map(|c| (c.label.clone(), FlowOutcome::MaybeSent));
+                    // Each funding step of the flow, bound or called, by its
+                    // status now under its public id (review R1-02): a
+                    // resumed flow's funding counts, and history supersedes
+                    // its finished calls' own outcomes.
+                    let funding = e
+                        .funding_steps
+                        .iter()
+                        .map(|s| (s.clone(), super::mode_b::funding_outcome(i, e.wallet, s)));
                     let artifacts: Vec<(String, FlowOutcome)> = e
                         .history
                         .iter()
                         .map(|a| (a.to_string(), i.fence.outcome(&e.wallet, a)))
-                        .chain(e.calls_done.iter().map(|c| (c.label.clone(), c.outcome)))
+                        .chain(
+                            e.calls_done
+                                .iter()
+                                .filter(|c| c.funding_step.is_none())
+                                .map(|c| (c.label.clone(), c.outcome)),
+                        )
+                        .chain(funding)
                         .chain(running)
                         .collect();
                     let outcome = artifacts

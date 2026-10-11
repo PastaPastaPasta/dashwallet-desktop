@@ -2,7 +2,7 @@
 //! §2a.3, §2a.4 item 7, §16.5–§16.7), against a fake evidence source.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,6 +40,8 @@ struct FakeTracked {
     rows: Mutex<HashMap<WalletId, Vec<TrackedRow>>>,
     drafts: Mutex<HashMap<WalletId, Vec<DraftKey>>>,
     locked: Mutex<HashSet<[u8; 32]>>,
+    /// [`TrackedLocks::recovery_complete`]: DP1-05's scan finished.
+    complete: AtomicBool,
 }
 
 impl FakeTracked {
@@ -78,6 +80,10 @@ impl TrackedLocks for FakeTracked {
 
     async fn chain_locked(&self, _: WalletId, txid: &[u8; 32]) -> bool {
         self.locked.lock().unwrap().contains(txid)
+    }
+
+    async fn recovery_complete(&self, _: WalletId) -> bool {
+        self.complete.load(Ordering::SeqCst)
     }
 }
 
@@ -130,6 +136,13 @@ async fn setup() -> (
     assert!(t.refresh_funding(W).await);
     assert!(t.refresh_funding(W2).await);
     (t, rec, j, src)
+}
+
+/// DP1-05's scan of W finished ([`TrackedLocks::recovery_complete`]):
+/// Repair may resolve a step with no known lock (review R1-01).
+async fn recovery_complete(t: &Arc<LeaseTable>, src: &FakeTracked) {
+    src.complete.store(true, Ordering::SeqCst);
+    assert!(t.refresh_funding(W).await);
 }
 
 /// A kill now: the next process loads the file as it is (§6.5), with the
@@ -666,7 +679,8 @@ async fn a_possibly_sent_funding_step_refuses_a_second_funding_call() {
 /// - a second funding call of the same step is refused by the gate.
 ///
 /// So no T2 is built. Only Repair's self-spend, once ChainLocked, resolves
-/// it (`NotSent`), and then only under a new step.
+/// it (`NotSent`), and then only under a new step; with no lock of the
+/// step known, Repair waits for DP1-05's scan to complete (review R1-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     let (t, _, j, src) = setup().await;
@@ -697,6 +711,11 @@ async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     // DP1-05 finds nothing: still MaybeSent, with no time bound.
     t2.refresh_funding(W).await;
     assert_eq!(t2.funding_status(W, REG), Some(MaybeSent));
+    assert_eq!(
+        t2.record_self_spend(W, REG, [1; 32]).await,
+        Err(StuckFundingRefusal::NoKnownLock),
+        "the scan is not shown complete"
+    );
 }
 
 fn funds_committed_after_bind(l: &Lease, step: &str) -> bool {
@@ -1191,6 +1210,7 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     maybe_sent(&l, AT3, 3).await;
     maybe_sent(&l, AT0, 0).await;
     // A self-spend of each step, recorded before any row came back.
+    recovery_complete(&t, &src).await;
     t.record_self_spend(W, AT3, [0xa3; 32]).await.unwrap();
     t.record_self_spend(W, AT0, [0xa0; 32]).await.unwrap();
 
@@ -1259,6 +1279,7 @@ async fn a_built_row_at_index_0_is_attributed() {
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     maybe_sent(&l, AT3, 3).await;
+    recovery_complete(&t, &src).await;
     t.record_self_spend(W, AT3, [0xa3; 32]).await.unwrap();
     src.set_rows(W, vec![row(1, 0, R::Built)]);
     src.locked.lock().unwrap().insert([0xa3; 32]);
@@ -1272,6 +1293,7 @@ async fn an_unattributed_row_of_another_funding_type_does_not_block() {
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     maybe_sent(&l, REG, 7).await;
+    recovery_complete(&t, &src).await;
     t.record_self_spend(W, REG, [0xa7; 32]).await.unwrap();
     let invitation = TrackedRow {
         key: FundingKey {
@@ -1440,6 +1462,13 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
         .map(|r| r.seq)
         .unwrap();
 
+    // With no lock of the step known, only a complete recovery lets Repair
+    // resolve it (review R1-01).
+    assert_eq!(
+        t.record_self_spend(W, TOPUP, [0xee; 32]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+    recovery_complete(&t, &src).await;
     t.record_self_spend(W, TOPUP, [0xee; 32]).await.unwrap();
     assert_eq!(t.call_step(W, TOPUP).self_spends, vec![[0xee; 32]]);
     let rows = j.load_calls().self_spends;
@@ -1573,6 +1602,12 @@ async fn repair_refuses_a_step_that_is_not_stuck() {
     t.refresh_funding(W).await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     maybe_sent(&l, ORPHAN, 11).await;
+    // No lock of it is known and the wallet's recovery is not complete.
+    assert_eq!(
+        t.record_self_spend(W, ORPHAN, [1; 32]).await,
+        Err(F::NoKnownLock)
+    );
+    recovery_complete(&t, &src).await;
     j.fail_self_spend.store(true, Ordering::SeqCst);
     assert_eq!(
         t.record_self_spend(W, ORPHAN, [1; 32]).await,
@@ -1597,4 +1632,359 @@ async fn repair_refuses_a_step_that_is_not_stuck() {
         t3.record_self_spend(W, ORPHAN, [1; 32]).await,
         Err(F::JournalUnavailable)
     );
+}
+
+// --- A proved funding is journaled `Sent` (review R1-01) ------------------
+
+/// Whether `j` holds `step`'s `Sent` row.
+fn sent_on_disk(j: &FakeJournal, step: &str) -> bool {
+    let id = ArtifactId::of_step(&W, step);
+    j.load().1.iter().any(|r| r.artifact == id.0 && r.sent)
+}
+
+/// A funding step a ChainLocked row proved gets its `Sent` row: once the
+/// row is gone (a sweep, a restore) the step still reads `Sent`, across a
+/// restart and with the wallet's recovery complete, so Repair refuses it
+/// and so does the funding gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proved_funding_is_journaled_sent_and_outlives_its_row() {
+    use StuckFundingRefusal as F;
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, TOPUP, 9).await;
+    src.set_rows(W, vec![row(1, 9, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
+    until(|| sent_on_disk(&j, TOPUP)).await;
+    let id = ArtifactId::of_step(&W, TOPUP);
+    assert_eq!(
+        j.bundles
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.0 == id.0)
+            .count(),
+        1,
+        "one bundle"
+    );
+
+    src.set_rows(W, Vec::new());
+    recovery_complete(&t, &src).await;
+    assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, TOPUP), Some(Sent));
+    assert_eq!(
+        t2.check_stuck_funding(W, TOPUP).err(),
+        Some(F::NotStuck(Some(Sent)))
+    );
+    assert_eq!(
+        t2.record_self_spend(W, TOPUP, [1; 32]).await,
+        Err(F::NotStuck(Some(Sent)))
+    );
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    assert_eq!(
+        l2.call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+            .await
+            .unwrap_err(),
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(Sent)))
+    );
+}
+
+/// A step with no marker, proved by a row under its draft's own key (a
+/// lost journal), is journaled with a marker and that key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_markerless_step_proved_by_its_drafts_key_is_journaled_sent() {
+    const LOST: &str = "registration/9/funding";
+    let (t, _, j, src) = setup().await;
+    src.set_drafts(W, vec![DraftKey::registration(9, 4)]);
+    src.set_rows(W, vec![row(2, 4, R::InstantSendLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, LOST), Some(Sent));
+    until(|| sent_on_disk(&j, LOST)).await;
+    let id = ArtifactId::of_step(&W, LOST);
+    assert!(
+        j.funding_rows()
+            .iter()
+            .any(|r| r.step_id == LOST && r.artifact == id.0)
+    );
+    src.set_rows(W, Vec::new());
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, LOST), Some(Sent));
+}
+
+/// A registration at identity index 0 (the wallet's first identity): its
+/// lock's row is untrusted once it left `Built`, but the changeset tap
+/// attributed it to the step's call, so Repair counts it as the step's
+/// lock and its proof is journaled (review P2b r1 F1, F2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_0_registrations_own_lock_is_journaled_sent() {
+    const AT0: &str = "registration/4/funding";
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(AT0, 0))
+        .await
+        .unwrap();
+    p.signatures().note_released();
+    t.note_tracked(W, &[(txid(1), key(0))]);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    let broadcast = row(1, 0, R::Broadcast);
+    assert!(!broadcast.trusted);
+    src.set_rows(W, vec![broadcast]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT0), Some(WillBeSent));
+    assert!(t.check_stuck_funding(W, AT0).is_ok(), "its own lock");
+    src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, AT0), Some(Sent));
+    until(|| sent_on_disk(&j, AT0)).await;
+    src.set_rows(W, Vec::new());
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, AT0), Some(Sent));
+}
+
+/// An untrusted row the tap never attributed to the step (index 0,
+/// re-added from the chain) may be another singleton step's lock: Repair
+/// does not count it as the step's (review P2b r1 F2), and its proof reads
+/// `Sent` while it stands but is never journaled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unattributed_index_0_row_is_not_the_steps_own() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, REG, 0).await;
+    src.set_rows(W, vec![row(1, 0, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(WillBeSent));
+    assert_eq!(
+        t.check_stuck_funding(W, REG).err(),
+        Some(StuckFundingRefusal::NoKnownLock)
+    );
+    let lost = row(1, 0, R::RecoveredFromChain);
+    assert!(!lost.trusted);
+    src.set_rows(W, vec![lost]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(Sent));
+    src.set_rows(W, Vec::new());
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
+    assert!(!sent_on_disk(&j, REG));
+}
+
+/// A row two running calls could have signed (the same key) is neither
+/// step's own: neither proof is journaled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_two_calls_could_have_signed_is_neither_steps_own() {
+    const A: &str = "registration/4/funding";
+    const B: &str = "registration/5/funding";
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let pa = l
+        .call_permit_step("funding", quote(10, 0), funding(A, 0))
+        .await
+        .unwrap();
+    let pb = l
+        .call_permit_step("funding", quote(10, 0), funding(B, 0))
+        .await
+        .unwrap();
+    pa.signatures().note_released();
+    pb.signatures().note_released();
+    t.note_tracked(W, &[(txid(1), key(0))]);
+    assert_eq!(pa.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(pb.finish(false), FlowOutcome::MaybeSent);
+    src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(Sent));
+    assert_eq!(t.funding_status(W, B), Some(Sent));
+    src.set_rows(W, Vec::new());
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(MaybeSent));
+    assert_eq!(t.funding_status(W, B), Some(MaybeSent));
+    assert!(!sent_on_disk(&j, A) && !sent_on_disk(&j, B));
+}
+
+/// A funding call that returned `Sent` while the journal was closed wrote
+/// no `Sent` row: once a proved row is read with the journal back, the row
+/// is owed and written (review P2b r1 F3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sent_call_without_its_row_is_journaled_once_proved() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    p.signatures().note_released();
+    t.close_journal().await;
+    assert_eq!(p.finish(true), FlowOutcome::Sent);
+    assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
+    assert!(!sent_on_disk(&j, TOPUP));
+    j.load_into(&t);
+    src.set_rows(W, vec![row(1, 9, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    until(|| sent_on_disk(&j, TOPUP)).await;
+}
+
+/// The `Sent` write of a proved funding fails or panics: the step reads
+/// `Sent` in memory and its row stays owed, so the journal's close writes
+/// it, even after the row is gone. A kill before that: the reopened
+/// process derives the step from its row again and writes it; with the row
+/// gone too, it reads `MaybeSent` and Repair refuses (no lock known, the
+/// recovery incomplete).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proved_fundings_failed_sent_write_stays_owed() {
+    use StuckFundingRefusal as F;
+    for panics in [false, true] {
+        let (t, _, j, src) = setup().await;
+        let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+        maybe_sent(&l, TOPUP, 9).await;
+        let id = ArtifactId::of_step(&W, TOPUP);
+        let fault = if panics { &j.panic_sent } else { &j.fail_sent };
+        fault.store(true, Ordering::SeqCst);
+        let proved = vec![row(1, 9, R::ChainLocked)];
+        src.set_rows(W, proved.clone());
+        t.refresh_funding(W).await;
+        assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
+        until(|| {
+            j.bundles.lock().unwrap().iter().any(|b| b.0 == id.0)
+                && t.with_j(|i, _| i.fence.evidence_mark(&W, &id))
+                    == Some(super::fence::Mark::Ambiguous)
+        })
+        .await;
+        assert!(!sent_on_disk(&j, TOPUP), "panics: {panics}");
+        let killed = j.snapshot();
+
+        // In process: the row goes, the step stays Sent, the close writes it.
+        src.set_rows(W, Vec::new());
+        t.refresh_funding(W).await;
+        assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
+        fault.store(false, Ordering::SeqCst);
+        t.close_journal().await;
+        assert!(sent_on_disk(&j, TOPUP), "panics: {panics}");
+
+        // A kill before the retry, and the row gone: fail closed.
+        let (t2, _) = reload(&killed, &src).await;
+        assert_eq!(t2.funding_status(W, TOPUP), Some(MaybeSent));
+        assert_eq!(
+            t2.record_self_spend(W, TOPUP, [1; 32]).await,
+            Err(F::NoKnownLock)
+        );
+        // With the row read again, the reopened process writes it.
+        src.set_rows(W, proved);
+        let reopened = killed.snapshot();
+        let (t3, _) = table();
+        reopened.load_into(&t3);
+        t3.install_tracked(src.clone());
+        assert!(t3.refresh_funding(W).await);
+        until(|| sent_on_disk(&reopened, TOPUP)).await;
+        src.set_rows(W, Vec::new());
+        let (t4, _) = reload(&reopened, &src).await;
+        assert_eq!(t4.funding_status(W, TOPUP), Some(Sent));
+    }
+}
+
+// --- A lock's report of a funding step (review R1-02) ----------------------
+
+/// The only flow `report` holds.
+fn only_flow(report: &LockReport) -> &FlowReport {
+    let [flow] = &report.flows[..] else {
+        panic!("{report:?}")
+    };
+    flow
+}
+
+/// A fresh lease of a restarted process bound to a funding step reports
+/// it under its step id by its status now: `Sent`, `WillBeSent`,
+/// `MaybeSent`; `NotSent` and never started are `Cancelled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_reports_a_resumed_flows_funding_by_its_status() {
+    use FlowOutcome as O;
+    for (rows, want) in [
+        (vec![row(1, 9, R::ChainLocked)], O::Sent),
+        (vec![row(1, 9, R::Built)], O::WillBeSent),
+        (Vec::new(), O::MaybeSent),
+    ] {
+        let (t, _, j, src) = setup().await;
+        let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+        maybe_sent(&l, TOPUP, 9).await;
+        src.set_rows(W, rows);
+        let (t2, _) = reload(&j, &src).await;
+        let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+        l2.bind_funding_step(TOPUP);
+        let report = t2.lock(RevokeCause::Lock, super::tests::status).await;
+        let flow = only_flow(&report);
+        assert_eq!(flow.artifacts, vec![(TOPUP.to_owned(), want)]);
+        assert_eq!(flow.outcome, want);
+    }
+
+    // Locked before its first signature: NotSent.
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    p.signatures().note_locked();
+    assert_eq!(p.finish(false), O::Cancelled);
+    until(|| t.funding_status(W, TOPUP) == Some(NotSent)).await;
+    let (t2, _) = reload(&j, &src).await;
+    let l2 = begin(&t2, W, 10_000, 0, 0).await.unwrap();
+    l2.bind_funding_step(TOPUP);
+    l2.bind_funding_step(REG);
+    assert_eq!(t2.funding_status(W, REG), None, "never started");
+    let report = t2.lock(RevokeCause::Lock, super::tests::status).await;
+    let flow = only_flow(&report);
+    assert_eq!(
+        flow.artifacts,
+        vec![
+            (TOPUP.to_owned(), O::Cancelled),
+            (REG.to_owned(), O::Cancelled)
+        ]
+    );
+    assert_eq!(flow.outcome, O::Cancelled);
+}
+
+/// A funding call that failed locally (`MaybeSent`) and whose lock the
+/// network later proved is reported `Sent`: the evidence supersedes the
+/// call's own outcome, which is not reported beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_funding_call_proved_later_is_reported_sent() {
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, TOPUP, 9).await;
+    src.set_rows(W, vec![row(1, 9, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    let report = t.lock(RevokeCause::Lock, super::tests::status).await;
+    let flow = only_flow(&report);
+    assert_eq!(flow.artifacts, vec![(TOPUP.to_owned(), FlowOutcome::Sent)]);
+    assert_eq!(flow.outcome, FlowOutcome::Sent);
+}
+
+/// A call the lock found ended definitely unsent, its `NotSent` row lost
+/// (owed to the step's next call): the report reads `Cancelled`, not the
+/// standing marker's `MaybeSent` (review P2b r1 F4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_reports_a_cancelled_call_whose_not_sent_row_is_owed() {
+    let (t, _, j, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    p.signatures().note_locked();
+    j.fail_resolve.store(true, Ordering::SeqCst);
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled);
+    let step = (W, TOPUP.to_owned());
+    until(|| t.with_j(|i, _| !i.fence.call_resolving(&step))).await;
+    assert_eq!(
+        t.funding_status(W, TOPUP),
+        Some(MaybeSent),
+        "the marker stands"
+    );
+    let report = t.lock(RevokeCause::Lock, super::tests::status).await;
+    let flow = only_flow(&report);
+    assert_eq!(
+        flow.artifacts,
+        vec![(TOPUP.to_owned(), FlowOutcome::Cancelled)]
+    );
+    assert_eq!(flow.outcome, FlowOutcome::Cancelled);
 }
