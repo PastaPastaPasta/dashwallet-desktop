@@ -6,5 +6,18 @@
     "main"
   ],
   "local": true,
-  "permissions": []
+  "permissions": [
+    "allow-coinjoin-limits",
+    "allow-coinjoin-settings",
+    "allow-set-coinjoin-settings",
+    "allow-coinjoin-status",
+    "allow-start-mixing",
+    "allow-stop-mixing",
+    "allow-coinjoin-salt",
+    "allow-set-coinjoin-salt",
+    "allow-generate-coinjoin-salt",
+    "allow-coinjoin-recovery-scan",
+    "allow-mixed-coins-sweep-plan",
+    "allow-move-mixed-coins"
+  ]
 }
