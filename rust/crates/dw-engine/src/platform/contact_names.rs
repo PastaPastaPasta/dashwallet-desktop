@@ -143,11 +143,15 @@ impl ContactNames {
     }
 
     /// Stores a fetch's answer; the identities to signal (none when nothing
-    /// shown changed).
+    /// shown changed). A changed name is published while the names are
+    /// locked, so publications follow the landings and the last one is the
+    /// name shown (Sol r3 R3-01). A failure keeps the name and publishes
+    /// nothing.
     fn land(
         &self,
         id: Identifier,
         answer: Result<Option<String>, PlatformError>,
+        publish: Publish<'_>,
     ) -> BTreeSet<(WalletId, String)> {
         let mut states = guard(&self.states);
         let state = states.entry(id).or_default();
@@ -158,6 +162,7 @@ impl ContactNames {
                 state.checked = Some((Instant::now(), false));
                 if state.label != label {
                     state.label = label;
+                    publish(id, state.label.as_deref());
                     return waiters;
                 }
             }
@@ -168,7 +173,16 @@ impl ContactNames {
         }
         BTreeSet::new()
     }
+
+    /// Lands a fetch that never answered: the name stays, nothing to
+    /// publish.
+    fn fail(&self, id: Identifier) {
+        self.land(id, Err(PlatformError::Unavailable), &|_, _| {});
+    }
 }
+
+/// Where a landing publishes a changed name: `Provenance::show_label`.
+type Publish<'a> = &'a dyn Fn(Identifier, Option<&str>);
 
 /// The names a fetch task still owes an answer. Whatever it has not landed
 /// when it ends (session close, a panic, the runtime shutting down) lands
@@ -181,7 +195,7 @@ struct Owed {
 impl Drop for Owed {
     fn drop(&mut self) {
         for id in self.ids.drain(..) {
-            self.names.land(id, Err(PlatformError::Unavailable));
+            self.names.fail(id);
         }
     }
 }
@@ -215,7 +229,7 @@ impl NetworkSession {
         }
         let (Some(source), Ok(live)) = (self.name_source(), self.live()) else {
             for contact in claimed {
-                names.land(contact, Err(PlatformError::Unavailable));
+                names.fail(contact);
             }
             return;
         };
@@ -230,9 +244,8 @@ impl NetworkSession {
                     .await
                     .unwrap_or(Err(PlatformError::Timeout));
                 owed.ids.pop_front();
-                let waiters = owed.names.land(contact, answer);
-                provenance.show_label(contact, owed.names.label(&contact).as_deref());
-                for (wallet, identity) in waiters {
+                let publish = |c, label: Option<&str>| provenance.show_label(c, label);
+                for (wallet, identity) in owed.names.land(contact, answer, &publish) {
                     (hub.pump).mark_platform(wallet, [PlatformChange::Contacts { identity }]);
                 }
             }
@@ -242,6 +255,7 @@ impl NetworkSession {
 
 #[cfg(test)]
 mod tests {
+    use super::super::provenance::Provenance;
     use super::*;
 
     const W: WalletId = WalletId([0xAA; 32]);
@@ -263,7 +277,7 @@ mod tests {
         assert_eq!(names.claim([id(2), id(3)], waiter("a")), [id(2), id(3)]);
         assert!(names.claim([id(2)], waiter("b")).is_empty());
         assert_eq!(
-            names.land(id(2), Ok(Some("bob".into()))),
+            names.land(id(2), Ok(Some("bob".into())), &|_, _| {}),
             BTreeSet::from([waiter("a"), waiter("b")])
         );
         assert_eq!(names.label(&id(2)).as_deref(), Some("bob"));
@@ -271,7 +285,7 @@ mod tests {
 
         assert!(
             names
-                .land(id(3), Err(PlatformError::Unavailable))
+                .land(id(3), Err(PlatformError::Unavailable), &|_, _| {})
                 .is_empty()
         );
         assert_eq!(names.label(&id(3)), None);
@@ -280,11 +294,18 @@ mod tests {
         // Stale again, the same answer: nothing shown changes.
         guard(&names.states).get_mut(&id(2)).unwrap().checked = None;
         assert_eq!(names.claim([id(2)], waiter("a")), [id(2)]);
-        assert!(names.land(id(2), Ok(Some("bob".into()))).is_empty());
+        assert!(
+            names
+                .land(id(2), Ok(Some("bob".into())), &|_, _| {})
+                .is_empty()
+        );
         // A name that goes away is a change.
         guard(&names.states).get_mut(&id(2)).unwrap().checked = None;
         assert_eq!(names.claim([id(2)], waiter("a")), [id(2)]);
-        assert_eq!(names.land(id(2), Ok(None)), BTreeSet::from([waiter("a")]));
+        assert_eq!(
+            names.land(id(2), Ok(None), &|_, _| {}),
+            BTreeSet::from([waiter("a")])
+        );
         assert_eq!(names.label(&id(2)), None);
     }
 
@@ -298,7 +319,7 @@ mod tests {
         names.claim([id(2)], other.clone());
         names.forget(&W);
         assert_eq!(
-            names.land(id(2), Ok(Some("bob".into()))),
+            names.land(id(2), Ok(Some("bob".into())), &|_, _| {}),
             BTreeSet::from([other])
         );
 
@@ -312,6 +333,50 @@ mod tests {
             let state = &states[&id(n)];
             assert!(!state.in_flight);
             assert!(state.checked.is_some_and(|(_, failed)| failed));
+        }
+    }
+
+    /// Sol r3 R3-01: a landing publishes its name while the names are
+    /// locked, so an earlier landing's publication can never overwrite a
+    /// later one, however long it stalls. Worker A lands `bob` and stalls in
+    /// its publication; worker B, due again meanwhile, re-spells the name or
+    /// withdraws it, and lands only after A has published. Provenance ends
+    /// with the name shown. A failure publishes nothing.
+    #[test]
+    fn a_landing_publishes_before_the_next_one_lands() {
+        let bob = id(2);
+        for later in [Some("B0b"), None] {
+            let names = ContactNames::default();
+            let appdb = Arc::new(dw_appdb::AppDb::open_in_memory().unwrap());
+            let provenance = Arc::new(Provenance::open(appdb));
+            let b = Mutex::new(None);
+            names.claim([bob], waiter("a"));
+            names.land(bob, Ok(Some("bob".into())), &|contact, label| {
+                assert!(names.states.try_lock().is_err(), "published unlocked");
+                // Worker B.
+                let (b_names, b_provenance) = (names.clone(), Arc::clone(&provenance));
+                *guard(&b) = Some(std::thread::spawn(move || {
+                    b_names.expire(&bob);
+                    assert_eq!(b_names.claim([bob], waiter("a")), [bob]);
+                    let publish = |c, label: Option<&str>| b_provenance.show_label(c, label);
+                    b_names.land(bob, Ok(later.map(str::to_owned)), &publish);
+                }));
+                std::thread::sleep(Duration::from_millis(200));
+                let landed = guard(&b).as_ref().is_some_and(|b| b.is_finished());
+                assert!(!landed, "B landed during A's publication");
+                provenance.show_label(contact, label);
+            });
+            guard(&b).take().unwrap().join().unwrap();
+            assert_eq!(names.label(&bob).as_deref(), later);
+            let shown: Vec<_> = (later.iter()).map(|l| (bob, l.to_string())).collect();
+            assert_eq!(provenance.shown_labels(), shown);
+
+            names.expire(&bob);
+            assert_eq!(names.claim([bob], waiter("a")), [bob]);
+            let published = |_, _: Option<&str>| panic!("a failure published");
+            names.land(bob, Err(PlatformError::Unavailable), &published);
+            assert_eq!(names.label(&bob).as_deref(), later);
+            assert_eq!(provenance.shown_labels(), shown);
         }
     }
 
