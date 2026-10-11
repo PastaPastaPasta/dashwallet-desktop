@@ -27,9 +27,8 @@
 //! are `rs-sdk-ffi/src/dpns/helpers.rs` (`dash_sdk_dpns_is_valid_username`,
 //! `dash_sdk_dpns_get_validation_message`).
 
-use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 
 use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
 use dash_sdk::platform::dpns_usernames::{
@@ -52,6 +51,7 @@ use super::dashpay::{DashPay, stub};
 use super::errors::{IdentityError, NameError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity::KeyPurpose;
+use super::identity_writes::{IdentityLocks, identity_locks};
 use super::lease::{CallQuote, Lease};
 use super::recovery::{MAIN_NAME_PREF, owned_names, row_owned};
 use super::signers::VaultIdentitySigner;
@@ -699,11 +699,11 @@ fn engine(e: EngineError) -> NameError {
 async fn platform_wallet(
     manager: &Manager,
     wallet_id: WalletId,
-) -> Result<Arc<PlatformWallet>, NameError> {
+) -> Result<Arc<PlatformWallet>, PlatformError> {
     manager
         .get_wallet(&wallet_id.0)
         .await
-        .ok_or_else(|| PlatformError::WalletNotFound.into())
+        .ok_or(PlatformError::WalletNotFound)
 }
 
 /// One identity of the wallet as platform-wallet holds it in memory.
@@ -783,13 +783,13 @@ impl NameAuthority {
 /// Refuses an authority that is not this wallet's `PlatformOp` (or a lease
 /// with Credits) or whose credit cap is below `needed`
 /// (`platform.grant_exceeded`; a zero-credit grant too), without consuming
-/// it: a refused registration leaves the grant for the next try.
-async fn check_credit_cap(
+/// it: a refused write leaves the grant for the next try.
+pub(super) async fn check_credit_cap(
     session: &NetworkSession,
     wallet_id: WalletId,
     authority: &NameAuthority,
     needed: u64,
-) -> Result<(), NameError> {
+) -> Result<(), PlatformError> {
     let remaining = match authority {
         NameAuthority::Grant(grant) => {
             let vault = session.vault.clone();
@@ -798,28 +798,24 @@ async fn check_credit_cap(
                 vault.grant_purpose(&grant, GrantKind::PlatformOp, Some(&wallet_id.0))
             })
             .await
-            .map_err(|e| engine(e.into()))?
-            .map_err(PlatformError::from)?;
+            .map_err(|e| PlatformError::from(EngineError::from(e)))??;
             let GrantPurpose::PlatformOp {
                 max_credits: remaining,
                 ..
             } = purpose
             else {
-                return Err(PlatformError::GrantInvalid.into());
+                return Err(PlatformError::GrantInvalid);
             };
             remaining
         }
-        NameAuthority::Lease(lease) => lease
-            .available(BudgetPurpose::Credits)
-            .map_err(PlatformError::from)?,
+        NameAuthority::Lease(lease) => lease.available(BudgetPurpose::Credits)?,
     };
     if needed > remaining {
         return Err(PlatformError::GrantExceeded {
             purpose: BudgetPurpose::Credits,
             needed,
             remaining,
-        }
-        .into());
+        });
     }
     Ok(())
 }
@@ -843,33 +839,6 @@ async fn call_lease(
     }
 }
 
-/// One identity's locks.
-#[derive(Default)]
-struct IdentityLocks {
-    /// Held for a whole registration: two calls for one label would each
-    /// pay a preorder, and a call's [`NameKind`] reads the open contests
-    /// another call is changing.
-    serial: tokio::sync::Mutex<()>,
-    /// Held, never across the network, around each change to the pending
-    /// labels and the wallet's names that goes with it, and around a read
-    /// of both, so a read never pairs one's old state with the other's new.
-    state: tokio::sync::Mutex<()>,
-}
-
-fn identity_locks(wallet: WalletId, identity: Identifier) -> Arc<IdentityLocks> {
-    type Locks = HashMap<(WalletId, Identifier), Weak<IdentityLocks>>;
-    static LOCKS: LazyLock<Mutex<Locks>> = LazyLock::new(Mutex::default);
-    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
-    locks.retain(|_, lock| lock.strong_count() > 0);
-    let key = (wallet, identity);
-    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(IdentityLocks::default());
-    locks.insert(key, Arc::downgrade(&lock));
-    lock
-}
-
 /// One `register_name` call.
 struct Registration {
     wallet_id: WalletId,
@@ -886,14 +855,16 @@ impl DashPay {
     /// Runs `body` on the engine runtime (m4 §1: any executor may poll a
     /// call) inside a session operation, with the session, its manager and
     /// this wallet's platform wallet (`wallet_not_found` otherwise).
-    async fn on_wallet<T, F, Fut>(&self, body: F) -> Result<T, NameError>
+    pub(super) async fn on_wallet<T, E, F, Fut>(&self, body: F) -> Result<T, E>
     where
         T: Send + 'static,
+        E: From<PlatformError> + Send + 'static,
         F: FnOnce(Arc<NetworkSession>, Arc<Manager>, Arc<PlatformWallet>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, NameError>> + Send + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
+        let engine = |e: EngineError| E::from(PlatformError::from(e));
         self.session
             .rt
             .spawn(async move {
@@ -1044,7 +1015,7 @@ impl DashPay {
         authority: NameAuthority,
     ) -> Result<NameOutcome, NameError> {
         let locks = identity_locks(ask.wallet_id, ask.identity);
-        let _serial = locks.serial.lock().await;
+        let _write = locks.write.lock().await;
         Self::conclude_others(net, session, wallet, &locks, &ask).await?;
         let (names, prefs) = Self::local_view(session, wallet, &locks, &ask).await?;
         ask.ours = prefs.is_pending(&ask.label);

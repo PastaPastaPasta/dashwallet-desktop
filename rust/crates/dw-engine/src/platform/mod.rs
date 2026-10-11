@@ -16,6 +16,7 @@ mod dashpay;
 mod errors;
 mod flows;
 mod identity;
+mod identity_writes;
 mod invitations;
 pub(crate) mod journal;
 #[cfg(test)]
