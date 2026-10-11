@@ -349,10 +349,12 @@ impl SyncTracker {
         self.masternode_counts = counts;
     }
 
-    /// The masternode phase is done (DASHPAY §2.2: the quorum provider's
-    /// "masternode sync").
+    /// The headers and masternode phases are done (DASHPAY §2.2: the quorum
+    /// provider's "masternode sync"). Headers too: after time offline the
+    /// masternode phase can report done against a stale tip.
     pub(crate) fn masternodes_synced(&self) -> bool {
-        self.readings.masternodes.is_some_and(|r| r.done())
+        let done = |r: Option<PhaseReading>| r.is_some_and(|r| r.done());
+        done(self.readings.headers) && done(self.readings.masternodes)
     }
 
     /// Masternode and evonode counts, once the masternode phase finished.
@@ -600,20 +602,24 @@ mod tests {
         assert_eq!(s.seconds_since_progress, None);
     }
 
-    /// The quorum provider's "masternode sync" (E0-10b): the masternode
-    /// phase done, whatever the other phases do.
+    /// The quorum provider's "masternode sync" (E0-10b): the headers and
+    /// masternode phases done, whatever the filter phases do.
     #[test]
-    fn masternodes_synced_follows_the_masternode_phase() {
+    fn masternodes_synced_needs_headers_and_masternodes() {
         let mut t = running();
         let mut p = SyncProgress::default();
         p.update_headers(headers(SyncState::Syncing, 500, 1000));
         p.update_masternodes(masternodes(SyncState::Syncing, 400, 1000));
+        p.update_filter_headers(filter_headers(SyncState::Syncing, 400, 1000));
         t.on_progress(&p);
         assert!(!t.masternodes_synced());
         p.update_masternodes(masternodes(SyncState::WaitForEvents, 1000, 1000));
         t.on_progress(&p);
+        assert!(!t.masternodes_synced(), "headers are still syncing");
+        p.update_headers(headers(SyncState::Synced, 1000, 1000));
+        t.on_progress(&p);
         assert!(t.masternodes_synced());
-        assert!(!t.snapshot().caught_up, "headers are still syncing");
+        assert!(!t.snapshot().caught_up, "filter headers are still syncing");
     }
 
     #[test]

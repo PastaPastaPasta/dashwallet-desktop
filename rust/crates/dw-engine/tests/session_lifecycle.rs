@@ -506,3 +506,42 @@ fn bad_options_fail_open_before_anything_is_created() {
         assert!(!root.join("regtest").exists(), "open created a directory");
     }
 }
+
+/// E0-10b: the trusted-only toggle is stored globally and read when a
+/// session opens; the degraded mode reports `Trusted` either way. Also a
+/// close and reopen with the quorum provider wired into the session hub.
+#[test]
+fn the_trusted_only_toggle_survives_a_reopen() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+    let open = || {
+        engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .unwrap()
+    };
+    let close = || {
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        )
+    };
+    let s = open();
+    assert!(!s.trusted_quorums_only().unwrap());
+    assert_eq!(
+        s.quorum_source().unwrap(),
+        dw_engine::platform::QuorumSource::Trusted
+    );
+    engine.block_on(s.set_trusted_quorums_only(true)).unwrap();
+    assert!(s.trusted_quorums_only().unwrap(), "applied at once");
+    drop(s);
+    close();
+
+    let s = open();
+    assert!(s.trusted_quorums_only().unwrap(), "read when reopened");
+    engine.block_on(s.set_trusted_quorums_only(false)).unwrap();
+    drop(s);
+    close();
+    assert!(!open().trusted_quorums_only().unwrap());
+    engine.block_on(engine.shutdown()).unwrap();
+}

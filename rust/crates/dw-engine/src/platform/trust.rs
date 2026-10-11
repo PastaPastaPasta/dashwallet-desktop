@@ -12,18 +12,22 @@
 //!   waits a bounded time for SPV, then fails closed.
 //! - trusted-only ([`TRUSTED_ONLY_KEY`]): the trusted service alone.
 //!
-//! In every mode a mismatch between SPV and the trusted service refuses
-//! (`platform.trust_mismatch`, `Notice{PlatformTrustMismatch}`), and a key
-//! SPV did not verify is served only after the durable fallback latch
-//! ([`Provenance::fallback_in_use`]): if the latch cannot be made durable,
-//! nothing is served.
+//! Whenever both sources answer, a mismatch refuses
+//! (`platform.trust_mismatch`, `Notice{PlatformTrustMismatch}`). In every
+//! mode a key SPV did not verify is served only after the durable fallback
+//! latch ([`Provenance::fallback_in_use`]): if the latch cannot be made
+//! durable, nothing is served.
+//!
+//! The provider holds SPV and provenance weakly: the SPV runtime's event
+//! handlers reach it through the session hub, and a strong handle would keep
+//! the closed session's storage claimed.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use dash_context_provider::{ContextProvider, ContextProviderError};
@@ -49,7 +53,11 @@ pub(crate) const UNKNOWN_QUORUM_WAIT: Duration = Duration::from_secs(120);
 /// a failed proof on other nodes, which cite the same quorum.
 const FAILED_CLOSED_FOR: Duration = Duration::from_secs(30);
 const SPV_POLL: Duration = Duration::from_secs(1);
+/// One SPV lookup; a lookup that takes longer counts as `Absent`.
+const SPV_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Cached `Verified` keys; the cache is cleared when it reaches this size.
+/// A cached key is not re-checked within the session: a mined quorum's key
+/// does not change.
 const CACHE_CAP: usize = 256;
 /// Starts the `InvalidQuorum` text of a mismatch refusal; see
 /// [`is_trust_mismatch`].
@@ -101,13 +109,16 @@ pub(crate) trait SpvQuorums: Send + Sync + 'static {
     fn lookup(&self, quorum_type: u32, quorum_hash: [u8; 32], height: u32) -> BoxFuture<SpvAnswer>;
 }
 
-/// platform-wallet's SPV lookup (platform#5366).
-pub(crate) struct RuntimeQuorums(pub(crate) Arc<SpvRuntime>);
+/// platform-wallet's SPV lookup (platform#5366). Weak: see the module doc.
+pub(crate) struct RuntimeQuorums(pub(crate) Weak<SpvRuntime>);
 
 impl SpvQuorums for RuntimeQuorums {
     fn lookup(&self, quorum_type: u32, quorum_hash: [u8; 32], height: u32) -> BoxFuture<SpvAnswer> {
-        let spv = Arc::clone(&self.0);
+        let spv = self.0.upgrade();
         Box::pin(async move {
+            let Some(spv) = spv else {
+                return SpvAnswer::Absent;
+            };
             match spv
                 .get_quorum_public_key_with_status(quorum_type, quorum_hash, height)
                 .await
@@ -155,7 +166,8 @@ type Quorum = (u32, [u8; 32]);
 
 struct Attached {
     spv: Arc<dyn SpvQuorums>,
-    provenance: Arc<Provenance>,
+    /// Gone once the session closed; then nothing unverified is served.
+    provenance: Weak<Provenance>,
 }
 
 /// The session's quorum provider. Shared by the SDK's `ContextProvider`
@@ -210,7 +222,8 @@ impl TrustProvider {
     }
 
     /// Gives the provider SPV and provenance. Later calls are ignored.
-    pub(crate) fn attach(&self, spv: Arc<dyn SpvQuorums>, provenance: Arc<Provenance>) {
+    pub(crate) fn attach(&self, spv: Arc<dyn SpvQuorums>, provenance: &Arc<Provenance>) {
+        let provenance = Arc::downgrade(provenance);
         if self.attached.set(Attached { spv, provenance }).is_err() {
             tracing::warn!("the quorum provider was already attached");
         }
@@ -234,7 +247,7 @@ impl TrustProvider {
         *self.synced.borrow()
     }
 
-    /// Resolves once masternode sync is done (at once if it is).
+    /// Watches masternode sync: `true` once done, never `false` again.
     pub(crate) fn subscribe_synced(&self) -> watch::Receiver<bool> {
         self.synced.subscribe()
     }
@@ -311,6 +324,10 @@ impl TrustProvider {
             // compared with what SPV holds.
             (_, held) => {
                 let t = trusted()?;
+                if matches!(self.mode, TrustMode::Enforcing) && self.masternodes_synced() {
+                    // Synced while the service answered: no fallback now.
+                    return self.wait_for_verified(attached, quorum, height);
+                }
                 if matches!(held, SpvAnswer::Held(k) if k != t) {
                     return Err(self.mismatch(quorum));
                 }
@@ -324,8 +341,8 @@ impl TrustProvider {
         if let Some(key) = guard(&self.cache).get(&quorum) {
             return SpvAnswer::Verified(*key);
         }
-        let answer =
-            block_on(attached.spv.lookup(quorum.0, quorum.1, height)).unwrap_or(SpvAnswer::Absent);
+        let lookup = attached.spv.lookup(quorum.0, quorum.1, height);
+        let answer = block_on(bounded(lookup, SPV_LOOKUP_TIMEOUT)).unwrap_or(SpvAnswer::Absent);
         if let SpvAnswer::Verified(key) = answer {
             self.remember(quorum, key);
         }
@@ -365,7 +382,11 @@ impl TrustProvider {
         let verified = block_on(async move {
             let deadline = tokio::time::Instant::now() + wait;
             loop {
-                if let SpvAnswer::Verified(key) = spv.lookup(quorum.0, quorum.1, height).await {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let lookup = spv.lookup(quorum.0, quorum.1, height);
+                if let SpvAnswer::Verified(key) =
+                    bounded(lookup, SPV_LOOKUP_TIMEOUT.min(left)).await
+                {
                     return Some(key);
                 }
                 if tokio::time::Instant::now() + poll > deadline {
@@ -398,7 +419,12 @@ impl TrustProvider {
         attached: &Attached,
         key: [u8; 48],
     ) -> Result<Served, ContextProviderError> {
-        blocking(|| attached.provenance.fallback_in_use()).map_err(|e| {
+        let Some(provenance) = attached.provenance.upgrade() else {
+            return Err(ContextProviderError::Generic(
+                "the trusted quorum key is refused: the session is closed".into(),
+            ));
+        };
+        blocking(|| provenance.fallback_in_use()).map_err(|e| {
             tracing::warn!(error = %e, "the trust latch is not durable: trusted quorum key refused");
             ContextProviderError::Generic(format!(
                 "the trusted quorum key is refused: the fallback latch is not durable ({e})"
@@ -448,16 +474,23 @@ tokio::task_local! {
     static SCOPE: RefCell<Tally>;
 }
 
-/// Runs `fut`, counting the quorum lookups its proofs make on this task. A
-/// lookup on another task (one the SDK spawned) is not counted, so the
-/// tally can only under-report verification.
+/// Runs `fut`, counting the quorum lookups its proofs make on this task.
+/// A nested scope's lookups count in the enclosing one too. A lookup on
+/// another task (one the SDK spawned) is not counted, so a fetch whose
+/// proofs run elsewhere records nothing: it fails closed.
 pub(crate) async fn scoped<F: Future>(fut: F) -> (F::Output, Tally) {
-    SCOPE
+    let (out, inner) = SCOPE
         .scope(RefCell::new(Tally::default()), async move {
             let out = fut.await;
             (out, SCOPE.with(|t| *t.borrow()))
         })
-        .await
+        .await;
+    let _ = SCOPE.try_with(|outer| {
+        let mut outer = outer.borrow_mut();
+        outer.lookups += inner.lookups;
+        outer.unverified += inner.unverified;
+    });
+    (out, inner)
 }
 
 fn tally(verified: bool) {
@@ -468,6 +501,13 @@ fn tally(verified: bool) {
             t.unverified += 1;
         }
     });
+}
+
+/// `fut`, or `Absent` once `limit` passes.
+async fn bounded(fut: BoxFuture<SpvAnswer>, limit: Duration) -> SpvAnswer {
+    tokio::time::timeout(limit, fut)
+        .await
+        .unwrap_or(SpvAnswer::Absent)
 }
 
 /// Drives `fut` to completion from synchronous code on a tokio worker (the
@@ -570,7 +610,8 @@ impl crate::NetworkSession {
         Ok(self.trust.trusted_only())
     }
 
-    /// Sets the developer toggle, stored in app.sqlite and applied at once.
+    /// Sets the developer toggle, stored in app.sqlite (global) and applied
+    /// to this session at once; other open sessions take it when reopened.
     pub async fn set_trusted_quorums_only(&self, on: bool) -> Result<(), crate::EngineError> {
         let _op = self.enter().await?;
         let value = on.then(|| "1".to_string());

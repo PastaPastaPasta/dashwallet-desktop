@@ -18,7 +18,7 @@ use dw_appdb::AppDb;
 
 use super::errors::PlatformError;
 use super::provenance::{Provenance, kind};
-use super::reverify::{Held, Refetcher, ShownProfile, reverify};
+use super::reverify::{Held, Refetcher, ShownProfile, confirmed, reverify};
 use super::startup::QuorumSource;
 use super::trust::{
     BoxFuture, SpvAnswer, SpvQuorums, TrustMode, TrustProvider, TrustedQuorums, is_trust_mismatch,
@@ -136,7 +136,7 @@ fn rig_with(mode: TrustMode, f: impl FnOnce(TrustProvider) -> TrustProvider) -> 
         Arc::clone(&notices) as _,
         DashNetwork::Regtest,
     ));
-    trust.attach(Arc::clone(&spv) as _, Arc::clone(&provenance));
+    trust.attach(Arc::clone(&spv) as _, &provenance);
     Rig {
         trust: Arc::new(trust),
         spv,
@@ -536,15 +536,120 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             owner: alice,
         },
     ];
-    let records = tokio::spawn(async move { reverify(&held, &fetch).await })
-        .await
-        .unwrap();
-    let alice58 = alice.to_string(dpp::platform_value::string_encoding::Encoding::Base58);
+    let verified = tokio::spawn(async move {
+        let mut verified = Vec::new();
+        for h in &held {
+            verified.push(reverify(h, &fetch).await);
+        }
+        verified
+    })
+    .await
+    .unwrap();
     assert_eq!(
-        records,
-        vec![(kind::IDENTITY, alice58)],
+        verified,
+        [true, false, false],
         "the profile differs and the label came through the fallback"
     );
+}
+
+/// Design §5: a verified fetch is recorded only if the library still holds
+/// the entity unchanged (and unverified) when the record is written.
+#[test]
+fn a_record_needs_the_entity_unchanged_at_write_time() {
+    let alice = Identifier::new([7; 32]);
+    let profile = |name: &str| Held::Profile {
+        id: alice,
+        shown: ShownProfile {
+            display_name: Some(name.into()),
+            ..Default::default()
+        },
+    };
+    let identity = Held::Identity {
+        id: alice,
+        keys: BTreeMap::new(),
+    };
+    let fetched = [profile("Alice"), identity.clone()];
+    let verified: Vec<&Held> = fetched.iter().collect();
+    let alice58 = alice.to_string(dpp::platform_value::string_encoding::Encoding::Base58);
+    assert_eq!(
+        confirmed(&verified, &[profile("Mallory"), identity]),
+        vec![(kind::IDENTITY, alice58)],
+        "the profile changed during the fetch"
+    );
+    assert!(
+        confirmed(&verified, &[]).is_empty(),
+        "recorded meanwhile, or gone"
+    );
+}
+
+/// A nested scope's lookups count in the enclosing scope too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_nested_scope_counts_in_the_outer_one() {
+    let r = rig(TrustMode::Degraded);
+    r.spv.set(A, SpvAnswer::Verified(REAL));
+    r.trusted.set(B, REAL);
+    let trust = Arc::clone(&r.trust);
+    tokio::spawn(async move {
+        let (inner, outer) = scoped(async {
+            trust.quorum_public_key(A.0, A.1, 1).unwrap();
+            scoped(async { trust.quorum_public_key(B.0, B.1, 1).unwrap() })
+                .await
+                .1
+        })
+        .await;
+        assert!(!inner.verified(), "the inner lookup used the fallback");
+        assert!(!outer.verified(), "and so does the outer scope");
+    })
+    .await
+    .unwrap();
+}
+
+/// After the session closed (its provenance dropped) no unverified key is
+/// served: the latch cannot be set.
+#[test]
+fn nothing_unverified_is_served_once_the_session_closed() {
+    let Rig {
+        trust,
+        spv,
+        trusted,
+        provenance,
+        _dir,
+        ..
+    } = rig(TrustMode::Degraded);
+    spv.set(A, SpvAnswer::Verified(REAL));
+    trusted.set(A, REAL);
+    trusted.set(B, REAL);
+    drop(provenance);
+    assert_eq!(
+        trust.quorum_public_key(A.0, A.1, 1).unwrap(),
+        REAL,
+        "a verified key needs no latch"
+    );
+    assert!(trust.quorum_public_key(B.0, B.1, 1).is_err());
+}
+
+/// Rule 3 from a multi-thread runtime worker, as the SDK calls it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rule_3_holds_on_a_runtime_worker() {
+    let r = rig_with(TrustMode::Enforcing, |t| {
+        t.with_waits(Duration::from_millis(200), Duration::from_millis(20))
+    });
+    r.trusted.set(A, REAL);
+    r.trust.note_masternodes_synced();
+    let trust = Arc::clone(&r.trust);
+    let spv = Arc::clone(&r.spv);
+    tokio::spawn(async move {
+        assert!(
+            trust.quorum_public_key(A.0, A.1, 1).is_err(),
+            "failed closed"
+        );
+        spv.set(B, SpvAnswer::Verified(REAL));
+        assert_eq!(trust.quorum_public_key(B.0, B.1, 1).unwrap(), REAL);
+    })
+    .await
+    .unwrap();
+    assert_eq!(r.trusted.calls(), 0);
+    assert!(!r.latched());
 }
 
 /// The re-fetch task starts on the masternode-sync transition, which is

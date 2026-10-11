@@ -35,7 +35,7 @@ closed.
 |---|---|---|---|
 | `Degraded` | **default** (DEC-168) | the trusted service; when SPV holds the quorum, its key is compared, and a mismatch refuses. A `Verified` SPV key is served when the service is unreachable | `Trusted` |
 | `Enforcing` | R7 full mode (H-09 makes it the default once #1117 lands); selectable in tests | SPV `Verified` only; the trusted service before masternode sync, for reads | `Spv`, or `TrustedFallback` before masternode sync |
-| trusted-only toggle | developer setting `trust.trusted_only` (global, app.sqlite) | the trusted service only; SPV is not consulted | `Trusted` |
+| trusted-only toggle | developer setting `trust.trusted_only` (global, app.sqlite; read when a session opens, applied at once to the session that sets it) | the trusted service only; SPV is not consulted | `Trusted` |
 
 The toggle wins over the mode. It exists to compare behaviour with iOS and to work around a broken SPV state during
 development. It is not offered as a user setting.
@@ -71,13 +71,18 @@ verified.
 3. After masternode sync (rule 3): never the trusted service. Wait up to `unknown_quorum_wait` (default 2 minutes),
    polling SPV once a second for `Verified`; serve it if it comes, otherwise fail closed. A quorum that failed closed
    fails at once for `FAILED_CLOSED_FOR` (30 s), so the SDK's retries on other DAPI nodes (which cite the same quorum)
-   do not each wait another 2 minutes. Each waiting lookup polls on its own; a poll is a local storage read. "Rebuild the lookup from
-   storage" is not offered by platform-wallet's API at the pin; a follow-up if the wait proves too short.
+   do not each wait another 2 minutes. Each waiting lookup polls on its own; a poll is a local storage read. "Rebuild
+   the lookup from storage" is not offered by platform-wallet's API at the pin; a follow-up if the wait proves too
+   short. If masternode sync completes while a lookup waits for the trusted service, the
+   lookup re-checks and applies rule 3 instead of the fallback.
+
+Every SPV lookup is bounded (5 s, or what is left of the rule-3 wait); one that takes longer counts as `Absent`.
 
 **Trusted-only**: serve `t` behind the latch, unverified.
 
-"Masternode sync" is the masternode phase of `SyncTracker` (`done()`: `Synced`, or `WaitForEvents` with the target
-reached), fed by `SessionHub::on_progress`. It is sticky for the session: once SPV has synced, a later restart of SPV
+"Masternode sync" is the headers and masternode phases of `SyncTracker` both done (`Synced`, or `WaitForEvents` with
+the target reached), fed by `SessionHub::on_progress`. Headers too: after time offline the masternode phase can report
+done against a stale tip. It is sticky for the session: once SPV has synced, a later restart of SPV
 does not reopen the fallback (rule 3: "once SPV is synced, an unknown quorum never falls back").
 
 **Behind the latch** means `Provenance::fallback_in_use()` returned `Ok` first: the latch is committed and a full WAL
@@ -86,9 +91,14 @@ keeps the checkpoint from completing, no provenance attached yet) the lookup fai
 The latch is blocking SQLite work, done under `block_in_place` on the multi-thread engine runtime.
 
 **Cache (rule 1).** `Verified` SPV keys are cached by `(type, hash)`; the key of a mined quorum commitment does not
-change. Misses run the async SPV lookup as a task on the runtime and wait for it (`dash_async::block_on`, the call the
-trusted provider uses for its own refetch). The cache holds at most 256 entries and is cleared when full. Nothing else
-is cached, except the failed-closed window above.
+change, and a cached key is not re-checked within the session. Misses drive the async SPV lookup from the synchronous
+`ContextProvider` call (`block_in_place` on the engine's multi-thread runtime, a thread of its own otherwise). The
+cache holds at most 256 entries and is cleared when full. Nothing else is cached, except the failed-closed window
+above.
+
+**Lifetimes.** The provider holds SPV and provenance weakly: SPV's event handlers reach it through the session hub,
+so strong handles would form a cycle that keeps a closed session's storage claimed. Once the session closed, lookups
+see SPV as `Absent` and the latch as unavailable, so nothing unverified is served.
 
 **Mismatch (rule 4).** The lookup fails with `ContextProviderError::InvalidQuorum` carrying a fixed marker.
 `PlatformError::from(dash_sdk::Error)` maps it to `platform.trust_mismatch` (directly, or wrapped in
@@ -102,7 +112,10 @@ A fetch counts as SPV-verified when every quorum key its proofs used was `Verifi
 key where both were consulted), and it used at least one. The provider cannot see which entity a proof is for, so the
 engine runs a fetch it wants to record inside `trust::scoped(fut)`, a tokio task-local that each lookup updates.
 A lookup outside a scope (platform-wallet's own sync loops), or in a task the SDK spawned, updates nothing, so a scope
-can only ever under-count verification: it fails closed.
+can only ever under-count verification: it fails closed. A nested scope's lookups also count in the enclosing scope.
+
+Errors platform-wallet turns into strings lose the mismatch code: such a refusal surfaces as the library's error,
+still a refusal. The mismatch marker is a fixed prefix of `InvalidQuorum` text that only this provider produces.
 
 ## 5. Re-fetching unverified entities after sync
 
@@ -116,8 +129,13 @@ unverified (the kinds with consumers today):
 | `dpns_label` | `Sdk::resolve_dpns_name` | it verified and resolves to the identity holding it |
 
 A verified fetch that differs from what the library holds records nothing: the library's own sync replaces the data,
-and the next run records it. The task runs at the sync transition and then every 10 minutes while unverified entities
-remain and the session is open. `contact_request` and `payment` records are left to their consumers (DP2's read
+and the next run records it. The task runs at the sync transition and then every 10 minutes while the session is open
+(a run with nothing unverified is a read of the library). It enters the session only to read the library and to
+record, not across the network fetches, and stops when the session closes. Records are written under the wallet
+manager's read lock, and only for entities the library still holds unchanged and unverified at that point.
+
+The DPNS re-fetch queries the `domain` document (`normalizedParentDomainName = "dash"`, `normalizedLabel = label`) and
+takes `records.identity`, as the SDK's `resolve_dpns_name` does, without re-normalizing the already normalized label. `contact_request` and `payment` records are left to their consumers (DP2's read
 models, DP3-04's gate), which re-fetch through the same `scoped`.
 
 In the degraded mode this works the same way: with #1150 the Platform quorums are `Verified` on first ask, so most
@@ -143,13 +161,15 @@ the same value without a wallet.
 | 1 | a `Verified` SPV key is served and cached (one SPV call for two lookups) |
 | 2 | Enforcing, before sync: the trusted key is served, the latch is on file, the source is `TrustedFallback` |
 | 2 | the fallback is used only before sync: after sync the trusted service is never called |
-| 3 | after sync an unknown quorum waits, then fails closed; a retry within the window fails at once; a key that turns `Verified` during the wait is served |
+| 3 | after sync an unknown quorum waits, then fails closed; a retry within the window fails at once; a key that turns `Verified` during the wait is served; the same on a runtime worker |
 | 4 | a mismatch refuses in both modes, maps to `platform.trust_mismatch`, and emits one notice per quorum |
 | 4 | a forged trusted key with SPV holding the real one refuses every lookup, so every DashPay read refuses |
 | latch | a held writer, and a checkpoint a reader blocks, refuse the fallback (nothing served) |
 | status map | `Skipped(*)` and `Unknown` count as held (compared, never verified); `Invalid` refuses |
 | degraded | SPV `Verified` + equal: served and verified; trusted unreachable + SPV `Verified`: served |
 | toggle | trusted-only never consults SPV and reports `Trusted` |
-| §4 | a scope records only when every lookup was SPV-verified; no lookup records nothing |
+| §4 | a scope records only when every lookup was SPV-verified; no lookup records nothing; nested scopes add up |
 | §5 | the post-sync re-fetch records equal, verified entities and skips differing ones |
+| §5 | a record needs the entity unchanged at write time; profile documents parse as the library caches them |
+| lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

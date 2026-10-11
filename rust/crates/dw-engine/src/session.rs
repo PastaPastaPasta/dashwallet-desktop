@@ -390,8 +390,8 @@ impl NetworkSession {
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
         trust.attach(
-            Arc::new(trust::RuntimeQuorums(manager.spv_arc())),
-            Arc::clone(&provenance),
+            Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
+            &provenance,
         );
         if hub.trust.set(Arc::clone(&trust)).is_err() {
             tracing::warn!("the session hub already had a quorum provider");
