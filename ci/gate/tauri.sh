@@ -132,7 +132,7 @@ selftest_with_shots() { # REPORT LOG ARGS...
   local deadline=$(($(date +%s) + 900))
   # macOS ships bash 3.2: no mapfile, and empty arrays trip `set -u`, so read the log line by line.
   while kill -0 "$pid" 2>/dev/null && (($(date +%s) < deadline)); do
-    count=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | wc -l | tr -d ' ')
+    count=$({ grep -o 'selftest-screen [a-zA-Z/]*' "$log" || true; } | wc -l | tr -d ' ')
     while ((seen < count)); do
       screen=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | sed -n "$((seen + 1))p" | awk '{print $2}')
       sleep 0.8
