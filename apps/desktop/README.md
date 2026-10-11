@@ -53,13 +53,19 @@ The app (`rust/target/release/dash-wallet`):
 
 ```
 dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--sync]
-            [--spv-peer IP:PORT]… [--dapi URL]… [--theme light|dark]
-            [--fixture] [--selftest FILE [--selftest-pause MS]]
+            [--spv-peer IP:PORT]… [--dapi URL]… [--no-platform] [--theme light|dark]
+            [--window-size WxH] [--fixture] [--selftest FILE [--selftest-pause MS]]
 ```
 
 `--fixture` uses the TypeScript sample wallet (passphrase `demo`) instead of the engine. `--selftest FILE`
 renders the four screens in light and dark, writes every `data-testid` box, the style-check results, the
-IPC timings and the security probes to `FILE`, and exits.
+IPC timings and the security probes to `FILE`, and exits. `--no-platform` opens a chain without Platform
+(a plain dashd regtest; regtest still needs a `--dapi` address, which nothing connects to).
+`--window-size` sets the window's inner size; the gate's self-tests use 1000x620 on every OS.
+
+On Linux without a GPU (no `/dev/dri/renderD*`), the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before
+GTK starts: WebKitGTK's DMA-BUF renderer falls back to slow software rendering there (about 1 s of first
+paint and 170 MB of memory on agentbox). Set the variable yourself to override the choice.
 
 Linux gate harness (Xvfb + private D-Bus + AT-SPI; nothing shows on a display):
 
@@ -67,3 +73,12 @@ Linux gate harness (Xvfb + private D-Bus + AT-SPI; nothing shows on a display):
 apps/desktop/scripts/gate/linux-gate.sh OUT_DIR [--datadir DIR --network regtest --spv-peer … --dapi …]
 apps/desktop/scripts/gate/linux-packages.sh OUT_DIR   # U7: install the .deb, run the AppImage (sudo)
 ```
+
+`DW_GATE_DISPLAY=:N` (with `XAUTHORITY`) makes both use an existing X display, such as an `agent-gui`
+session, instead of their own Xvfb.
+
+The GitHub Actions side is `.github/workflows/gate.yml` (`gh workflow run gate.yml -f candidate=tauri
+-f os=linux|windows|macos|all`), which runs `ci/gate/tauri.sh`; on Windows that calls
+`ci/gate/tauri-windows.ps1` and `scripts/gate/uia_walk.ps1`. Every run opens the regtest 40k wallet in
+`ci/gate/fixtures/` (rebuilt by `ci/gate/make-regtest-fixture.sh`) and uploads `gate-tauri-<os>`.
+Results and method: [ADR 0003](../../docs/adr/0003-ui-stack.md).
