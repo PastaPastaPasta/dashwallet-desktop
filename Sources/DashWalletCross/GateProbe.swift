@@ -126,7 +126,9 @@ enum GateProbe {
             detailOpened = true
             Task { await model.select(first.id) }
         }
-        if historyRounds > 0, benchState == .idle {
+        // A live launch can list rows before the vault reports it is locked; the bench waits
+        // for its own unlock.
+        if historyRounds > 0, benchState == .idle, unlockFile == nil || unlockSent {
             benchState = .running
             Task {
                 await historyBench(state: state, model: model)

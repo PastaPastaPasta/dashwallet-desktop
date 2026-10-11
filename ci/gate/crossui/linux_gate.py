@@ -356,9 +356,11 @@ def phase_history(gate):
         for fields in app.all("history-ffi"):
             ffi1.append(float(fields["ffiMs"]))
             cpu1.append(float(fields["cpuMs"]))
+        exited = None if app.alive() else app.proc.returncode
         app.stop()
         if not done:
-            gate.note("U5", f"history bench run {run}", f"incomplete: {errors or 'no history-bench-done'}")
+            gate.note("U5", f"history bench run {run}",
+                      f"incomplete: {errors or 'no history-bench-done'}; app exit status {exited}")
     result = {"totalMs": summary(renders), "ffiMs200": summary(ffi200), "ffiMs1": summary(ffi1),
               "cpuMs200": summary(cpu200), "cpuMs1": summary(cpu1),
               "raw": {"totalMs": renders, "ffiMs200": ffi200, "ffiMs1": ffi1}, "uptime": uptime()}
