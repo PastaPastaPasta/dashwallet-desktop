@@ -6,3 +6,5 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo \
     && flatpak install --system -y --noninteractive flathub org.gnome.Platform//47 org.gnome.Sdk//47
+# xwd for the launch screenshot (after the runtime layer, which takes a while to download).
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends x11-apps && rm -rf /var/lib/apt/lists/*

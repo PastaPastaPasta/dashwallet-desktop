@@ -48,6 +48,12 @@ docker run --rm \
     rm -rf /tmp/pkg && mkdir -p "$pkg"
     cp "$bin_dir/dash-wallet" "$pkg/"
     strip "$pkg/dash-wallet"
+    # The app ID GTK registers on D-Bus. SwiftCrossUI reads it from the Swift Bundler metadata
+    # trailer (the JSON, its length as a big-endian UInt64, "SBUNMETA") at the end of the
+    # executable; without one it is com.example.SwiftCrossUIApp, which a Flatpak may not own.
+    meta="{\"appIdentifier\":\"org.dash.wallet.desktop.CrossUI\",\"appVersion\":\"0.1.0\"}"
+    printf "%s" "$meta" >>"$pkg/dash-wallet"
+    perl -e "print pack(q(Q>), shift), q(SBUNMETA)" "${#meta}" >>"$pkg/dash-wallet"
     for bundle in "$bin_dir"/*.resources; do cp -R "$bundle" "$pkg/"; done
     tar -C /tmp/pkg -czf /out/dash-wallet-linux-x86_64.tar.gz dash-wallet
     needs=$(objdump -p "$pkg/dash-wallet" | awk "/NEEDED/ {print \$2}" | paste -sd, -)

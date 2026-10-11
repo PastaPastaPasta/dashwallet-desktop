@@ -27,7 +27,9 @@ docker run --rm --privileged \
       echo "build+bundle: $((t1 - t0)) s; bundle $(stat -c %s /out/dash-wallet-crossui.flatpak) bytes"
       flatpak info $app | sed "s/^/  /"
     } >/out/flatpak.txt
-    # Launch the installed app (demo mode) on Xvfb; GateProbe marks the first frame.
+    # Launch the installed app (demo mode) on Xvfb; GateProbe marks Overview. `flatpak run` needs
+    # the system bus.
+    mkdir -p /run/dbus && dbus-daemon --system --fork
     export DISPLAY=:91
     Xvfb $DISPLAY -screen 0 1280x860x24 -nolisten tcp >/dev/null 2>&1 &
     for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
