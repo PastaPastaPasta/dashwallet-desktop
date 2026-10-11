@@ -4,13 +4,13 @@
 
 import { COIN } from "../format/amount";
 import type { Backend } from "./backend";
-import type { AppError } from "./generated/AppError";
+import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import type { Balances } from "./generated/Balances";
-import type { EngineSignal } from "./generated/EngineSignal";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { LaunchInfo } from "./generated/LaunchInfo";
 import type { LockStatus } from "./generated/LockStatus";
+import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxCategoryName } from "./generated/TxCategoryName";
 import type { TxDetails } from "./generated/TxDetails";
@@ -173,15 +173,15 @@ const BALANCES: Balances = {
   coinjoin: 0,
 };
 
-function fail(code: string, message: string, retryAfterSecs: number | null = null): AppError {
-  return { code, message, retryAfterSecs };
+function fail(code: ErrorCode, message: string): AppError {
+  return { code, message, data: null };
 }
 
 export class FixtureBackend implements Backend {
   readonly kind = "fixture";
   readonly locale = "en-US";
   private readonly rows: TxRow[];
-  private readonly listeners = new Set<(s: EngineSignal) => void>();
+  private readonly listeners = new Set<(e: AppEvent) => void>();
   private locked: boolean;
   private failedAttempts = 0;
 
@@ -211,20 +211,22 @@ export class FixtureBackend implements Backend {
     return {
       state: this.locked ? "locked" : "unlocked",
       encrypted: true,
+      quickUnlockEnrolled: false,
       failedAttempts: this.failedAttempts,
       retryAfterSecs: null,
+      walletsWithSecrets: [FIXTURE_WALLET_ID],
     };
   }
 
-  private emit(signal: EngineSignal) {
-    for (const l of this.listeners) l(signal);
+  private emit(event: AppEvent) {
+    for (const l of this.listeners) l(event);
   }
 
   private wallet(id: string) {
     if (id !== FIXTURE_WALLET_ID) throw fail("wallet_not_found", `wallet not found: ${id}`);
   }
 
-  openNetwork = async () => this.status();
+  openNetwork = async (): Promise<OpenedNetwork> => ({ network: this.launch.network, lock: this.status() });
   lockStatus = async () => this.status();
 
   listWallets = async (): Promise<WalletSummary[]> => [
@@ -232,8 +234,10 @@ export class FixtureBackend implements Backend {
       walletId: FIXTURE_WALLET_ID,
       name: this.variant === "xss" ? XSS_PAYLOADS.walletName : "Main",
       watchOnly: false,
+      hasMnemonic: true,
       hd: true,
       birthHeight: 1_200_000,
+      createdAt: null,
       balances: BALANCES,
     },
   ];
@@ -245,13 +249,13 @@ export class FixtureBackend implements Backend {
     }
     this.failedAttempts = 0;
     this.locked = false;
-    this.emit({ kind: "lockState", network: this.launch.network.dirName });
+    this.emit({ kind: "vaultLockState", network: this.launch.network.dirName, state: "unlocked" });
     return this.status();
   };
 
   lock = async () => {
     this.locked = true;
-    this.emit({ kind: "lockState", network: this.launch.network.dirName });
+    this.emit({ kind: "vaultLockState", network: this.launch.network.dirName, state: "locked" });
     return this.status();
   };
 
@@ -335,7 +339,7 @@ export class FixtureBackend implements Backend {
     };
   };
 
-  onSignal = async (listener: (s: EngineSignal) => void) => {
+  onEvent = async (listener: (e: AppEvent) => void) => {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
   };

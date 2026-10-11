@@ -42,7 +42,8 @@ row):
 | Job | Runner | Steps |
 |---|---|---|
 | Rust lint | `ubuntu-24.04` | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` |
-| Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked` |
+| Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked`; then the Tauri bindings regenerated (`DW_UPDATE_BINDINGS=1 cargo test -p dw-app` for `codegen` and `coverage`) and `git diff --exit-code` over `apps/desktop/src/api/generated` and `docs/design/E0-13-facade-coverage.md` (E0-13) |
+| Tauri renderer | `ubuntu-24.04`, Node 24, pnpm | `apps/desktop`: `pnpm install --frozen-lockfile`, `pnpm tokens:check`, `pnpm typecheck`, `pnpm test` (vitest, including the per-facade command test against a mocked IPC) |
 | Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` (`SwiftCrossUIPatchTests`, the vendored SwiftCrossUI patches, among them) plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
 | macOS | `macos-latest` (arm64) | `cargo test --workspace --locked`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
 | Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |

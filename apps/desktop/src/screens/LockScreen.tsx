@@ -2,7 +2,7 @@
 // dash-qt passphrase prompt. The vault's own throttle (retryAfterSecs) gates the next attempt.
 
 import { useEffect, useState, type FormEvent } from "react";
-import { errorMessage, isAppError } from "../api/backend";
+import { errorMessage, hasCode, retryAfterSecs } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { useBackend } from "../api/queries";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
@@ -46,12 +46,12 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
     try {
       await backend.unlock(passphrase);
     } catch (err) {
-      const wait = isAppError(err) ? err.retryAfterSecs ?? 0 : 0;
+      const wait = retryAfterSecs(err);
       if (wait > 0) {
         // Wrong passphrase with a wait, or throttled: the vault refuses attempts until then.
         setRetryAt(Date.now() + wait * 1000);
-        setError(`${isAppError(err) && err.code === "vault.wrong_passphrase" ? `${Lock.incorrect} ` : ""}${Lock.tryAgainIn(waitText(wait))}`);
-      } else if (isAppError(err) && err.code === "vault.wrong_passphrase") {
+        setError(`${hasCode(err, "vault.wrong_passphrase") ? `${Lock.incorrect} ` : ""}${Lock.tryAgainIn(waitText(wait))}`);
+      } else if (hasCode(err, "vault.wrong_passphrase")) {
         setError(Lock.incorrect);
       } else {
         setError(errorMessage(err));
