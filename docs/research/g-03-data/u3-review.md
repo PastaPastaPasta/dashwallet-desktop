@@ -7,7 +7,7 @@ SwiftCrossUI 0.10 do not count as defects.
 **Shots:**
 - `agentbox/` (Linux, GtkBackend);
 - `macos/` (AppKitBackend);
-- `windows/` (WinUIBackend; only the lock screen renders).
+- `windows/` (WinUIBackend, run 38119740971 with the 8 MB main-thread stack; all eight screens).
 
 **Method:**
 - Colours were sampled from the PNGs with ImageMagick. The macOS PNGs carry a "Display" ICC
@@ -166,20 +166,94 @@ truncate. The day header is consistently "February 10, 2026".
 
 ### Windows (WinUIBackend)
 
+Run 38119740971 (commit 38b9051, 8 MB main-thread stack) on windows-latest (Server 2025), 1024×768.
+All 8 shots reach their screen mark (`windows/results.txt`).
+
+**Not counted on any screen:**
+- The window is not maximized. Windows cascades it to (34,27), (86,80) or (138,131).
+- It is wider than the screen: only the minimise and maximise buttons show, e.g. dark overview at
+  (945,40) and (993,40).
+- It runs under the taskbar at y=720, so the status bar is never visible and C6 is not counted.
+- Content past x=1024 or y=720 is clipped by the screen, not by the app.
+
+**What is right:**
+- Every sampled role colour is exact:
+  - hero #0063B7 (light overview 450,320; dark 350,220);
+  - canvas F7F7F7/141519 (200,600 / 150,600);
+  - card FFFFFF/1E1F24 (500,650 / 400,600);
+  - strip #146FBD (640–680,430–450 / 480–520,325–345);
+  - links #006FC3/#1594EC ("Syncing 75.0%", 950–1040,604–618 / 848–938,499–513);
+  - "Locked" #B6542C/#FA9169 (light transactions 958–1003,544–558 / dark overview 958–1003,616–630);
+  - "(out of sync)" #FFBF42;
+  - lock prompt #E6F0F8 (white at 90 %).
+- Card hairlines match Linux: #F3F4F5 in light (408,690), none in dark, #292A2F on the floating
+  shortcut card (408,420).
+- The sizes match Linux: the cap heights are equal (title2 17 px, hero 25 px).
+- "Sign / Verify Message" and "Type" do not truncate.
+
 **Lock, light and dark: FAIL, 4/9 each.**
-- C6 and C9 are not counted: the window extends below the taskbar or past the screen edge, so the
-  status bar is not visible.
+- C6 and C9 are not counted: the status bar is below the taskbar.
 - Passes: hero #0063B7, capsule #B6542C, wordmark, title, prompt.
-- §2.2: the face looks like Segoe UI, not Inter. It is about 7 % narrower, with Segoe glyph shapes.
-  There is no font dump to confirm this.
+- §2.2: the face is Segoe UI, not Inter. Text is 6–7 % narrower than Linux at the same cap height,
+  and the glyphs have Segoe shapes.
 - §2.4: the field corner is about 4 px.
-- L3: the field is translucent.
-- L4 and L5 are missing.
+- L3: the field is WinUI's translucent default, #B3D1EA in light (600,530) and #0F6CBB in dark
+  (650,582), not white.
+- L4 and L5 are missing. Unlock is disabled in the shot.
 
-**Overview, Transactions and Detail, light and dark: not rendered.** All six processes exit with
-0xC00000FD (stack overflow) before they paint. Their PNGs are desktop captures.
+**Overview, light and dark: FAIL, 8/17 each.**
+- C6 is not counted.
+- C3: Segoe UI.
+- C7: the selected row is WinUI's default, not the accent pill, in both appearances:
+  - a pill of about r4, #EEEEEE in light (160–356, 316–364) and #131418 in dark (56–252, 212–260),
+    which is indistinguishable from the #141519 canvas;
+  - a 3 px #0067C0 Windows-accent bar on its left;
+  - white icon and text, which is 1.16:1 on #EEEEEE in light.
+- C8: there is no header row. The discreet toggle is a "Hide balance" pill in the hero.
+- O1: the capsule straddles the hero top: (739–804, 261–281) against a hero top at y=278 in light,
+  and (635–701, 157–177) against y=174 in dark.
+- O4: the cells are unequal (dark: Available 368–752, Pending 752–968). "Awaiting / confirmation"
+  wraps to 2 lines, and there is no Immature cell.
+- O5: "Spend" is a blank grey disc, at (965,515) in light (#C8CCD0) and (862,410) in dark (#747579).
+- O7: the day header reads "10 February 2026" (424,659 in light; 320,555 in dark).
+- O8: amounts are drawn as "[+0.00000008]Ð".
+- O9: the pre-release banner is at the window top.
+- C9 passes on the visible text. The breakdown wraps at a word break, with no hyphen, unlike Linux.
+- C2 passes on what is visible. On Linux it failed on the main screens only because of the status
+  bar's red "Unlocked", which is never visible here.
 
-**Windows total: 8/18,** on the lock screen only.
+**Transactions, light and dark: FAIL, 7/14 each.**
+- C6 is not counted.
+- C3, C7 and C8 fail as on Overview. The selected "Transactions" pill is also clipped; see the
+  rendering bugs.
+- C4/T4: the fields are WinUI TextBox defaults with corners of about 4 px:
+  - light: #FFFFFF fill with a #F0F0F0 border and a dark bottom stroke (320–867, 362–393);
+  - dark: #2B2C31 (372–919, 414–445), which is WinUI's white at about 6 %;
+  - there is no leading search icon.
+- T5: there is no Mixing chip, and "All" shows no active state (#F2F9FE like the other chips). Rewards
+  is present in light (506–579, 405–430) and missing in dark.
+- T6: the amounts are bracketed (898–997, 532).
+- T3: in dark, Export is past the screen edge; only its icon shows, at (1005,284).
+- The day header "February 10, 2026" (320,482) has the correct form.
+
+**Detail, light: FAIL, 6/12.**
+- C6 is not counted, and neither are D5–D7: the value grid, copy buttons and nested card are below
+  y=720.
+- C3, C4, C7 and C8 fail as on Transactions.
+- D1: the detail is an inline card under the filters, with a "Close" pill cut off at (1008–1024,
+  538–562), not a `.sheet`.
+- D4: there is no status chip, and the date reads "10 Feb 2026 at 2:16 AM" (653–787, 713).
+- Passes: D2 (50 px icon, "Mined" title3) and D3 ("+0.00000008Ð" title1).
+
+**Detail, dark: FAIL, 4/12.** No detail is drawn.
+- The screen shows the transaction list with row 1 selected: a 3 px #0067C0 bar at (419–421,
+  626–662). The row tint is #1D1E23 against the #1E1F24 card.
+- The run nevertheless logged 'detail-paint' after 11.7 s.
+- D1–D4 fail. D5–D7 are not counted: they would sit below y=720 even if the detail were drawn.
+- C3, C4, C7 and C8 fail as on Transactions. The Rewards chip is missing again.
+- Counted as "not rendered" instead, the Windows total would be 44/92.
+
+**Windows total: 48/104.** 16 checks are not counted because of off-screen clipping.
 
 ## 2. Totals
 
@@ -187,7 +261,7 @@ truncate. The day header is consistently "February 10, 2026".
 |---|---|---|
 | Linux | 56/120 | |
 | macOS | 51/120 | |
-| Windows | 8/18 | lock only; 6 of 8 shots crashed |
+| Windows | 48/104 | 16 checks not counted (window off-screen, status bar never visible); dark detail shows no detail |
 
 ## 3. U3(b): fidelity gap against the main spec
 
@@ -197,7 +271,7 @@ truncate. The day header is consistently "February 10, 2026".
 | 2 | Circular, not continuous, corners | permitted (§2.4) |
 | 3 | The sidebar is a custom List on canvas, not system sidebar material | permitted (§2.1 `sidebar` Cross, C1) |
 | 4 | The status bar uses text items, not symbols | permitted (C3, §4.1); its order and 28 px height are **not** |
-| 5 | Inter on Linux, not SF | required (§2.2); Windows apparently not using Inter is **not permitted** |
+| 5 | Inter on Linux, not SF | required (§2.2); Windows draws Segoe UI (glyph shapes, 6–7 % narrower set width at equal cap height; no font dump), **not permitted** |
 | 6 | No line height, so a different vertical rhythm | permitted (§2.2, §3.0) |
 | 7 | A hover tint instead of press or scale effects; no motion | permitted (§2.6, §3.0) |
 | 8 | No accessibility labels, so controls are icon and text | permitted (§1.8, ADR A1) |
@@ -205,23 +279,27 @@ truncate. The day header is consistently "February 10, 2026".
 | 10 | Toolkit-native drop-downs and unit picker | permitted (§3.0 Picker) |
 | 11 | No toolbar or header row; lock is in the sidebar; the discreet toggle is a persistent "Hide balance" pill | **not permitted** (C2 Cross, §4.5) |
 | 12 | The transaction detail is inline, not a sheet | **not permitted** (C23 Cross `.sheet`) |
-| 13 | The text fields are toolkit defaults (r≈4, wrong fill), and search has no icon | **not permitted** (§2.4, C16, C18) |
+| 13 | The text fields are toolkit defaults (r≈4, wrong fill; Windows: WinUI TextBox white/#2B2C31 with a bottom stroke, translucent on the lock screen), and search has no icon | **not permitted** (§2.4, C16, C18) |
 | 14 | The lock screen has no mixing-only checkbox, no Quick Receive or Scan to Send, and the field is not white | **not permitted** (§4.4) |
 | 15 | Amounts are bracketed ("[+0.00000008]") | **not permitted** (§5.1) |
 | 16 | The breakdown strip has unequal cells, a wrapped subtitle and no Immature cell | **not permitted** (C5, §4.5) |
 | 17 | The capsule is outside or straddling the hero | **not permitted** (§4.5, C4) |
 | 18 | The node-warning banner is at the window top | **not permitted** (§4.5) |
 | 19 | The disabled shortcut has no glyph | **not permitted** (C6) |
-| 20 | The detail has no status chip, and the filter chips lack Mixing and an active state | **not permitted** (§4.9) |
+| 20 | The detail has no status chip; the filter chips lack Mixing and an active state, and Rewards appears in some runs and not others (Windows: present in light, absent in both dark shots) | **not permitted** (§4.9) |
 | 21 | Detail amounts use "tDASH", not the glyph | **not permitted** (§5.1) |
-| 22 | Linux date formats differ between screens | **not permitted** (§5.7) |
+| 22 | Linux and Windows date formats differ between screens ("10 February 2026" / "February 10, 2026" / "10 Feb 2026 at …") | **not permitted** (§5.7) |
 | 23 | "Unlocked" is red text without an AA variant | **not permitted** (§2.1a) |
 | 24 | macOS colours are shifted; links and "Locked" fall below 4.5:1 | **not permitted** (§2.1, §2.1a) |
 | 25 | The macOS sidebar selection is grey with white text | **not permitted** (C1) |
 | 26 | The macOS progress bar uses the system accent | **not permitted** (§2.8.6, C27) |
 | 27 | Linux sidebar labels truncate | **not permitted** (§2.2) |
 | 28 | The detail's label-left grid is closer to the main spec than Cross C12 ("stacked only") | a Cross deviation, not a gap |
-| 29 | Windows: 6 of 8 shots crash | functional, not styling |
+| 29 | Windows: 6 of 8 shots crashed (0xC00000FD) | **fixed** by the 8 MB main-thread stack (38b9051): 8/8 reach their mark, and u2 is alive after 612 s (peak working set 245 MB) |
+| 30 | The Windows sidebar selection is the WinUI ListView default: #EEEEEE/#131418 pill r≈4, 3 px system-accent #0067C0 bar, white icon and text (1.16:1 in light) | **not permitted** (C1, §2.1 `accent`) |
+| 31 | Windows dark detail: the row is selected but no detail is drawn, even though the run logged 'detail-paint' | functional, not styling |
+| 32 | Windows: the UIA walk crashes the app (FindAll E_UNEXPECTED, then 0xC0000005) in all 3 u4 runs | functional (accessibility), not styling |
+| 33 | Windows: the main window opens un-maximized and larger than a 1024×768 work area, so the status bar is never visible | harness or placement; its effect on §4.1 cannot be judged |
 
 ## 4. Rendering bugs
 
@@ -238,5 +316,23 @@ truncate. The day header is consistently "February 10, 2026".
 - **"40053 transactions":** ungrouped, in `styles-*-transactions.json` off-screen; §5.7 wants
   "40,053".
 - **Windows:**
-  - The window is placed partly off-screen.
-  - The later PNGs are desktop captures.
+  - The window is cascaded to (34,27), (86,80) or (138,131), extends past x=1024 and under the
+    taskbar at y=720. The status bar never shows.
+  - Light sidebar selection: white icon and text on #EEEEEE with a 3 px #0067C0 bar, light overview
+    (160–356, 316–364). In dark the pill is #131418 on #141519, so it is invisible.
+  - The selected last row ("Transactions") is clipped: the pill is 196×38 with a flat bottom at
+    light transactions (56–252, 367–405), against 196×48 for Overview at (160–356, 316–364).
+  - The capsule straddles the hero top: light (739–804, 261–281) against hero y=278; dark
+    (635–701, 157–177) against y=174.
+  - Blank "Spend" disc: light (965,515), dark (862,410).
+  - Bracketed amounts: light transactions (898–997, 532), dark overview (898–997, 605).
+  - Dates: "10 February 2026" on Overview (424,659), "February 10, 2026" on Transactions (320,482),
+    and "10 Feb 2026 at 2:16 AM" in the detail (653–787, 713).
+  - Dark detail: the list with row 1 selected (a #0067C0 bar at 419–421, 626–662) and no detail.
+  - The Rewards chip is present in light transactions (506–579, 405–430), light detail and u4,
+    and missing in dark transactions and dark detail.
+  - Dark mode keeps a light caption bar (#F3F3F3 at 500,145) above a #000000 menu bar (500,182). In
+    light the menu bar is #FFFFFF, not the #F7F7F7 canvas.
+  - u2 after 612 s: the top banner changes to "Sync has not made progress…" while "Sync has stalled.
+    Try other peers." shows above History (434–1024, 622–670), so there are two stall banners. The
+    Linux detail shot shows the same top banner, so this is not Windows-specific.
