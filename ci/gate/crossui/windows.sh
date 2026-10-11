@@ -28,6 +28,10 @@ if [[ "${DWD_CROSS_BACKEND:-}" == gtk ]]; then
   gtk_prefix=/c/gtk-build/gtk/x64/release
   mkdir -p "$gtk_prefix"
   7z x -y -bd -o"$(win "$gtk_prefix")" "$(win "$gtk_zip")" >/dev/null
+  # SwiftPM's pkg-config parser reads any line with a ':' as a "Key: value" field, so the drive
+  # letter in "prefix=C:/..." left ${prefix} undefined (and no include paths). The prefix is
+  # relative to pcfiledir instead, which pkgconf reads too.
+  sed -i 's|C:/gtk-build/gtk/x64/release|${pcfiledir}/../..|g; s/\r$//' "$gtk_prefix"/lib/pkgconfig/*.pc
   export PKG_CONFIG_PATH="$(win "$gtk_prefix/lib/pkgconfig")"
   export PATH="$gtk_prefix/bin:$PATH"
   result "GTK: gvsbuild 2026.8.0, GTK $(pkgconf --modversion gtk4)"
@@ -63,6 +67,8 @@ result "stack reserve: $stack bytes"
 # --- U2/U7: the archive: the exe, SwiftPM's resource bundles, any DLLs the build put next to it,
 # and the Swift runtime's DLLs (the toolchain's runtime directory, found through swiftCore.dll).
 runtime_dir=$(dirname "$(cygpath -u "$(where.exe swiftCore.dll | head -1 | tr -d '\r')")")
+# The launches run without these on PATH: the archive must carry what they hold.
+drop_from_path="$(win "$runtime_dir")${gtk_prefix:+;$(win "$gtk_prefix/bin")}"
 stage="$GATE_WORK/archive/dash-wallet"
 rm -rf "$GATE_WORK/archive" && mkdir -p "$stage"
 cp "$bin_dir/dash-wallet.exe" "$stage/"
@@ -103,7 +109,7 @@ run() { # NAME MARK [windows-run.ps1 switches...]
   local name=$1 mark=$2
   shift 2
   pwsh -NoProfile -File ci/gate/crossui/windows-run.ps1 -Name "$name" -OutDir "$(win "$OUT")" -Exe "$(win "$exe")" \
-    -Datadir "$(win "$GATE_WALLET")" -PassphraseFile "$(win "$GATE_PASSPHRASE_FILE")" -Mark "$mark" -CleanPath "$@" || status=1
+    -Datadir "$(win "$GATE_WALLET")" -PassphraseFile "$(win "$GATE_PASSPHRASE_FILE")" -Mark "$mark" -DropFromPath "$drop_from_path" "$@" || status=1
 }
 
 # U2: unlock, Overview, then keep it running for 10 minutes (600 s from launch).
