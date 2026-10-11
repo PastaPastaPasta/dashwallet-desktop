@@ -418,6 +418,9 @@ struct World {
     name_error: Option<NameError>,
     /// Publishing a profile fails with this (MJ-1).
     profile_error: Option<PlatformError>,
+    /// With `profile_error`: the put landed all the same (an earlier put
+    /// in flight, or an outcome the error hid).
+    profile_lands: bool,
     /// The tap does not record the funding's lock: the library's store, or
     /// the tap's own write, failed (MN-1).
     skip_tap: bool,
@@ -704,6 +707,9 @@ impl RegistrationLib for Fake {
         {
             let mut w = self.w();
             if let Some(e) = w.profile_error.clone() {
+                if w.profile_lands {
+                    w.profiles.insert(identity.to_owned(), published(profile));
+                }
                 return Err(e);
             }
             // Platform's unique `$ownerId` index: one profile document.
@@ -1695,20 +1701,19 @@ fn reconstructed_nonzero_index_does_not_fund_twice() {
     let draft = f.insert(row);
     lib.w().identities.push((0, "earlier-identity".into()));
     let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
+    // Before the row runs it reads committed: the lock "Finish transfers"
+    // would give it may be its own (MN-1).
+    assert!(f.status(&lib, draft).funds_committed);
+    // Its run takes the lock as "Finish transfers" would give it, not a
+    // new row beside it (which would leave this row to fund again), and
+    // funds none.
     f.drive(&lib, draft, Some(f.lease()), false);
-    assert_eq!(lib.counts(), (0, 0), "no second lock");
+    assert_eq!(lib.counts(), (0, 1), "no second lock");
+    assert_eq!(f.rows().len(), 1);
     let row = f.row(draft);
-    assert_eq!(
-        (phase(&row), row.asset_lock_outpoint),
-        (Phase::KeysPrepared, None)
-    );
-    assert_eq!(
-        f.status(&lib, draft).waiting,
-        Some(RegistrationWait::ChainLock)
-    );
-
-    // "Finish transfers" gives the lock to the row waiting for one, not to
-    // a new row beside it (which would leave this row to fund again).
+    assert_eq!(phase(&row), Phase::Done);
+    assert_eq!(flow::outpoint_of(&row), Some(lock));
+    assert_eq!(row.identity_index, Some(7));
     let report = f
         .engine
         .block_on(registration::finish(
@@ -1718,13 +1723,7 @@ fn reconstructed_nonzero_index_does_not_fund_twice() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
-    assert_eq!((report.resumed, report.completed), (1, 1), "{report:?}");
-    assert_eq!(f.rows().len(), 1);
-    let row = f.row(draft);
-    assert_eq!(phase(&row), Phase::Done);
-    assert_eq!(flow::outpoint_of(&row), Some(lock));
-    assert_eq!(row.identity_index, Some(7));
-    assert_eq!(lib.counts(), (0, 1));
+    assert_eq!((report.resumed, report.still_pending), (0, 0), "{report:?}");
 }
 
 /// "Finish transfers" chooses no index for a lock while the funding hold
@@ -2765,6 +2764,9 @@ fn a_failed_row_with_an_identity_is_not_in_progress() {
         f.grant(COIN, 10 * COIN * 1000, Credential::None),
     ));
     assert!(start.is_ok(), "{start:?}");
+    // It holds nothing: discard removes it.
+    f.discard(&lib, draft).unwrap();
+    assert!(f.rows().iter().all(|r| r.id != draft));
 }
 
 /// MN-1: the funding call's own lock reaches its row though its outpoint
@@ -2826,8 +2828,9 @@ fn an_untapped_index_one_lock_is_its_calls_own() {
 }
 
 /// MN-1: the lock's record is retried; one that never lands ends the run
-/// as a storage error with the row still bound to its index, unfailed, so
-/// it funds nothing again and Finish hands it its own lock.
+/// as a storage error with the row still bound to its index, unfailed. It
+/// reads committed (no discard, no second registration), and its resume and
+/// "Finish transfers" both hand it its own lock: never a second row.
 #[test]
 fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
     let f = fixture(false);
@@ -2848,7 +2851,56 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
     assert_eq!(flow::outpoint_of(&row), Some(lib.w().locks[0].outpoint));
 
     // Three: the run fails as storage.
-    let f = fixture(false);
+    for via_finish in [false, true] {
+        let f = fixture(false);
+        let (lib, draft, lock) = lock_record_failed(&f);
+        let status = f.status(&lib, draft);
+        assert!(status.funds_committed, "{via_finish}");
+        let discard = f.discard(&lib, draft);
+        assert_eq!(discard.unwrap_err().code(), "invalid_argument");
+        let start = f.engine.block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request("erin2"),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ));
+        assert_eq!(start, Err(RegistrationError::InProgress));
+        if via_finish {
+            f.engine
+                .block_on(registration::finish(
+                    &f.session,
+                    f.wallet,
+                    &*lib,
+                    f.grant(COIN, 10 * COIN * 1000, Credential::None),
+                ))
+                .unwrap();
+        } else {
+            f.drive(&lib, draft, Some(f.lease()), false);
+        }
+        let rows = f.rows();
+        assert_eq!(rows.len(), 1, "{via_finish}: {rows:?}");
+        assert_eq!(rows[0].id, draft);
+        assert_eq!(flow::outpoint_of(&rows[0]), Some(lock), "{via_finish}");
+        assert_eq!(lib.counts(), (1, 0), "{via_finish}: funded again");
+        lib.w().proof_arrives = true;
+        resume(
+            &f,
+            &lib,
+            draft,
+            Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+        );
+        f.settle(draft);
+        assert_eq!(phase(&f.row(draft)), Phase::Done);
+        assert_eq!(f.rows().len(), 1);
+        assert_eq!(lib.counts(), (1, 1));
+    }
+}
+
+/// A run at index 0 whose lock (untapped, `Broadcast`, its index lost)
+/// could not be recorded: the run failed as storage, the row at
+/// `KeysPrepared` without an outpoint. Returns the lock.
+fn lock_record_failed(f: &Fixture) -> (Arc<Fake>, i64, OutPoint) {
     let flows = &f.session.platform.registrations;
     let lib = f.fake();
     lib.w().fund_script = Some(FundScript::IsTimeout);
@@ -2875,20 +2927,49 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
     );
     assert_eq!(row.asset_lock_outpoint, None);
     let lock = lib.w().locks[0].outpoint;
-    // Still in progress: no second registration, and its own run funds
-    // nothing again.
-    let start = f.engine.block_on(registration::start(
-        &f.session,
-        f.wallet,
-        Arc::clone(&lib),
-        request("erin2"),
-        f.grant(COIN, 10 * COIN * 1000, Credential::None),
-    ));
-    assert_eq!(start, Err(RegistrationError::InProgress));
-    f.drive(&lib, draft, Some(f.lease()), false);
-    assert_eq!(lib.counts(), (1, 0));
-    // Finish attributes the lock to this row; a resume completes it.
-    f.engine
+    (lib, draft, lock)
+}
+
+/// The tap retries its record too; one that keeps failing is an error
+/// (the funding call then attributes the lock: MN-1).
+#[test]
+fn the_taps_lock_record_is_retried() {
+    for (faults, recorded) in [(2, true), (3, false)] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let mut row = core_row(PLAIN);
+        row.identity_index = Some(1);
+        row.phase = Phase::KeysPrepared.as_str().into();
+        let draft = f.insert(row);
+        let lock = lib.lock_at(1, LockStatus::Built);
+        let flows = &f.session.platform.registrations;
+        flows.fail_tap_writes(faults);
+        let tracked = flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(1), false);
+        match recorded {
+            true => {
+                assert_eq!(tracked.unwrap(), Some(draft));
+                assert_eq!(flow::outpoint_of(&f.row(draft)), Some(lock));
+            }
+            false => {
+                assert!(tracked.is_err());
+                assert_eq!(f.row(draft).asset_lock_outpoint, None);
+            }
+        }
+    }
+}
+
+/// N-7: one row's storage error in "Finish transfers" leaves it pending
+/// and the other rows run.
+#[test]
+fn finish_runs_the_other_rows_past_a_failed_one() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let failing = adopted_lock_row(&f, &lib, 1, LockStatus::InstantSendLocked);
+    let other = adopted_lock_row(&f, &lib, 2, LockStatus::InstantSendLocked);
+    let flows = &f.session.platform.registrations;
+    flows.fail_writes((f.wallet, failing), 1);
+    let report = f
+        .engine
         .block_on(registration::finish(
             &f.session,
             f.wallet,
@@ -2896,25 +2977,44 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
-    let rows = f.rows();
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].id, draft);
-    assert_eq!(flow::outpoint_of(&rows[0]), Some(lock));
-    lib.w().proof_arrives = true;
-    resume(
-        &f,
-        &lib,
-        draft,
-        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    assert_eq!(
+        (report.resumed, report.completed, report.still_pending),
+        (2, 1, 1),
+        "{report:?}"
     );
-    f.settle(draft);
-    assert_eq!(phase(&f.row(draft)), Phase::Done);
-    assert_eq!(f.rows().len(), 1);
-    assert_eq!(lib.counts(), (1, 1));
+    assert_eq!(phase(&f.row(other)), Phase::Done);
+    let row = f.row(failing);
+    assert_ne!(phase(&row), Phase::Done);
+    assert_eq!(row.error, None);
+}
+
+/// A call's own lock is only one still on its way: a lock rebuilt from the
+/// chain during the call is another device's.
+#[test]
+fn a_lock_rebuilt_from_the_chain_is_not_the_calls() {
+    let lock = |status| LockInfo {
+        outpoint: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+        registration: true,
+        identity_index: 0,
+        account: 0,
+        amount: flow::LOCK_DUFFS,
+        status,
+    };
+    for (status, own) in [
+        (LockStatus::Built, true),
+        (LockStatus::Broadcast, true),
+        (LockStatus::ChainLocked, false),
+        (LockStatus::RecoveredFromChain, false),
+        (LockStatus::Consumed, false),
+    ] {
+        let ev = flow::Evidence::new(vec![lock(status)], vec![], vec![]);
+        let found = ev.built_by_the_call(&[], 0, flow::LOCK_DUFFS).is_some();
+        assert_eq!(found, own, "{status:?}");
+    }
 }
 
 /// MN-2: a funding definitely rejected after its tap scheduled the backup
-/// unschedules it; the retry that funds schedules it again.
+/// re-arms the once-only backup, so the retry that funds schedules another.
 #[test]
 fn a_retried_funding_schedules_the_backup_again() {
     let f = fixture(false);
@@ -2955,7 +3055,12 @@ fn the_profile_step_reads_platform_first() {
         public_message: Some("hi".into()),
         ..ProfileRecord::default()
     };
-    for (on_platform, updates) in [(alice.clone(), 0), (older, 1)] {
+    // The fields the row leaves out are not compared.
+    let alice_hi = ProfileRecord {
+        public_message: Some("hi".into()),
+        ..alice.clone()
+    };
+    for (on_platform, updates) in [(alice.clone(), 0), (alice_hi, 0), (older, 1)] {
         let f = fixture(false);
         let lib = f.fake();
         lib.w().profiles.insert(id.clone(), on_platform.clone());
@@ -2978,6 +3083,72 @@ fn the_profile_step_reads_platform_first() {
         assert_eq!(published.display_name.as_deref(), Some("Alice"));
         assert_eq!(published.public_message, on_platform.public_message);
     }
+}
+
+/// MJ-1: a name or profile step whose outcome is unknown, or that met the
+/// network, waits rather than settles: the next try reads Platform.
+#[test]
+fn an_unknown_outcome_after_the_identity_does_not_settle() {
+    let unknown = PlatformError::BroadcastUnknown {
+        artifact: "st".into(),
+    };
+    for error in [PlatformError::Timeout, unknown.clone()] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().name_error = Some(NameError::Platform(error.clone()));
+        let draft = f.insert(core_row(PLAIN));
+        f.drive(&lib, draft, Some(f.lease()), false);
+        let row = f.row(draft);
+        assert_eq!(
+            (phase(&row), row.error.as_deref(), row.name_error.as_deref()),
+            (Phase::NameRequested, None, None),
+            "{error:?}"
+        );
+        lib.w().name_error = None;
+        f.drive(&lib, draft, Some(f.lease()), false);
+        let row = f.row(draft);
+        assert_eq!(
+            (phase(&row), row.name_error),
+            (Phase::Done, None),
+            "{error:?}"
+        );
+        assert_eq!(lib.w().names.len(), 1);
+    }
+    // The profile's put: unknown, then found published.
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().profile_error = Some(unknown);
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    assert_eq!(phase(&f.row(draft)), Phase::NameRegistered);
+    lib.w().profile_error = None;
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.profile_error), (Phase::Done, None));
+}
+
+/// MN-3: a put Platform refuses because an earlier one landed (a duplicate
+/// of the same profile) is published.
+#[test]
+fn a_refused_put_whose_profile_landed_is_published() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().profile_error = Some(PlatformError::Internal {
+        detail: "duplicate unique index $ownerId".into(),
+    });
+    lib.w().profile_lands = true;
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), true);
+    let row = f.row(draft);
+    assert_eq!(
+        (
+            phase(&row),
+            row.error.as_deref(),
+            row.profile_error.as_deref()
+        ),
+        (Phase::Done, None, None)
+    );
+    assert_eq!(lib.w().profiles.len(), 1);
 }
 
 mod rules;

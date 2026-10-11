@@ -424,17 +424,26 @@ pub(crate) async fn quote<L: RegistrationLib>(
 }
 
 /// A row that counts towards `registration.in_progress`: one that runs or
-/// can be resumed, or whose funds are committed and have no identity yet.
-/// A flow that failed for good with nothing committed (an invitation row
-/// restored here, a newer build's row) does not, and neither does one
-/// whose identity exists: its funds are that identity's (MJ-1).
+/// can be resumed, or whose funds are committed. A flow that failed for
+/// good with nothing committed (an invitation row restored here, a newer
+/// build's row) does not, and neither does a [`settled`] one.
 fn in_progress(row: &RegistrationRow, ev: &flow::Evidence) -> bool {
     match flow::failure_of(row) {
         None => row.phase != Phase::Done.as_str(),
         Some((_, retryable)) => {
-            retryable || (row.identity.is_none() && flow::funds_committed(row, ev, false))
+            retryable || (!settled(row) && flow::funds_committed(row, ev, false))
         }
     }
+}
+
+/// A row an earlier build failed for good after its identity existed: its
+/// funds are that identity's, so it holds nothing and may be discarded
+/// (MJ-1; this build settles such a step `Done`). A row this build cannot
+/// read is never settled by it (DEC-171 (3)).
+fn settled(row: &RegistrationRow) -> bool {
+    row.identity.is_some()
+        && !flow::is_unsupported(row)
+        && flow::failure_of(row).is_some_and(|(_, retryable)| !retryable)
 }
 
 fn any_in_progress(ev: &flow::Evidence) -> bool {
@@ -802,6 +811,9 @@ fn discard_refused(
         // DEC-171 (3): what this build cannot read, it does not delete.
         return Some("the registration was written by a newer version");
     }
+    if settled(row) {
+        return None;
+    }
     flow::funds_committed(row, ev, in_call).then_some("the registration's funds are committed")
 }
 
@@ -910,6 +922,11 @@ pub(crate) async fn finish<L: RegistrationLib>(
                     report.still_pending += 1;
                 }
             }
+            Ok(Finished::Failed(e)) => {
+                tracing::warn!(draft = row.id, error = %e, "a registration's run failed in Finish transfers");
+                report.resumed += 1;
+                report.still_pending += 1;
+            }
             Err(e) => {
                 tracing::warn!(draft = row.id, error = %e, "Finish transfers could not run a registration");
                 report.still_pending += 1;
@@ -928,6 +945,8 @@ enum Finished {
     Ran {
         done: bool,
     },
+    /// Its run ended with a storage error: still pending.
+    Failed(PlatformError),
 }
 
 async fn finish_row<L: RegistrationLib>(
@@ -945,7 +964,9 @@ async fn finish_row<L: RegistrationLib>(
         return Ok(Finished::Skipped);
     }
     let driver = flow::Driver::new(session, lib, &claim, Some(lease.clone()), false);
-    driver.run().await?;
+    if let Err(e) = driver.run().await {
+        return Ok(Finished::Failed(e));
+    }
     let done = registration_row(session, wallet, &draft.to_string())
         .await
         .is_ok_and(|r| r.error.is_none() && r.phase == Phase::Done.as_str());

@@ -340,6 +340,9 @@ pub(crate) struct FlowState {
     /// fault).
     #[cfg(test)]
     lock_write_faults: u32,
+    /// Storage faults a test set for the run's next writes.
+    #[cfg(test)]
+    write_faults: u32,
     /// Automatic backups scheduled for the flow (a test's count).
     #[cfg(test)]
     pub(crate) backups: u32,
@@ -405,6 +408,9 @@ pub(crate) struct Flows {
     /// the library tracks the lock it built, whose inputs then read
     /// reserved ([`lock_tracked`]), or when the call ends.
     fences: Mutex<HashMap<WalletId, HeldFence>>,
+    /// Storage faults a test set for the tap's next lock records.
+    #[cfg(test)]
+    tap_write_faults: std::sync::atomic::AtomicU32,
 }
 
 /// A funding call's coin fence ([`PwLib::fenced`]).
@@ -737,10 +743,43 @@ impl Flows {
         self.take_fence(wallet, |h| h.index == index);
     }
 
+    /// A funding call of `wallet` runs.
+    fn calling(&self, wallet: WalletId) -> bool {
+        self.flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|((w, _), s)| *w == wallet && s.in_call)
+    }
+
     /// Fails the next `n` lock records of `key`'s run with a storage error.
     #[cfg(test)]
     pub(crate) fn fail_lock_writes(&self, key: (WalletId, i64), n: u32) {
         self.with(key, |s| s.lock_write_faults = n);
+    }
+
+    /// Fails the next `n` writes of `key`'s run with a storage error.
+    #[cfg(test)]
+    pub(crate) fn fail_writes(&self, key: (WalletId, i64), n: u32) {
+        self.with(key, |s| s.write_faults = n);
+    }
+
+    /// Fails the tap's next `n` lock records with a storage error.
+    #[cfg(test)]
+    pub(crate) fn fail_tap_writes(&self, n: u32) {
+        self.tap_write_faults
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn tap_write_fault(&self) -> bool {
+        self.tap_write_faults
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| n.checked_sub(1),
+            )
+            .is_ok()
     }
 }
 
@@ -999,9 +1038,11 @@ impl Evidence {
     /// for that index and amount, that no row holds. The fence and the
     /// in-progress gate let no other funding of the wallet run meanwhile, so
     /// it is the call's own even where its index alone cannot say so (0
-    /// past `Built`) and its outpoint never reached the row (MN-1). Two
-    /// such locks say nothing.
-    fn built_by_the_call(
+    /// past `Built`) and its outpoint never reached the row (MN-1). Only a
+    /// lock still on its way (`Built`, `Broadcast`) counts: one rebuilt from
+    /// the chain meanwhile is another device's. One a row this build cannot
+    /// read may own stays with it (DEC-173 (2)). Two such locks say nothing.
+    pub(crate) fn built_by_the_call(
         &self,
         before: &[OutPoint],
         index: u32,
@@ -1013,7 +1054,8 @@ impl Evidence {
                 && !self.held(l.outpoint)
                 && l.identity_index == index
                 && l.amount == lock_duffs
-                && l.status != LockStatus::Consumed
+                && matches!(l.status, LockStatus::Built | LockStatus::Broadcast)
+                && !self.may_be_unreadables(l)
         });
         let lock = new.next()?;
         new.next().is_none().then_some(lock)
@@ -1063,6 +1105,21 @@ impl Evidence {
     /// row) settles it.
     fn stranded(&self) -> impl Iterator<Item = &LockInfo> {
         self.unclaimed().filter(|l| !self.may_be_unreadables(l))
+    }
+
+    /// The lock whose index the library lost that "Finish transfers" gives
+    /// `row`: stranded locks go, in order, to the oldest row of
+    /// [`Self::awaiting_a_lock`] whose amount each covers.
+    fn destined_lock(&self, row: &RegistrationRow) -> Option<&LockInfo> {
+        let mut waiting = self.awaiting_a_lock();
+        for lock in self.stranded().filter(|l| l.known_index().is_none()) {
+            if let Some(at) = waiting.iter().position(|(_, duffs)| *duffs <= lock.amount)
+                && waiting.remove(at).0.id == row.id
+            {
+                return Some(lock);
+            }
+        }
+        None
     }
 
     /// The unclaimed locks [`Self::stranded`] parks.
@@ -1185,6 +1242,11 @@ pub(crate) fn funding_status(row: &RegistrationRow, ev: &Evidence) -> Option<Dis
             },
         );
     }
+    // The lock whose index the library lost that "Finish transfers" gives
+    // this row may be its own: a funding whose record never landed (MN-1).
+    if ev.destined_lock(row).is_some() {
+        return Some(DispatchState::MaybeSent);
+    }
     if row.asset_lock_outpoint.is_some()
         || row.error.as_deref() == Some(broadcast_unknown())
         || Phase::parse(&row.phase).is_some_and(|p| !p.unfunded())
@@ -1265,14 +1327,23 @@ pub(crate) fn lock_tracked(
     let mut tries = 1;
     loop {
         let (db, job_flows) = (Arc::clone(appdb), Arc::clone(flows));
-        let noted = flows
-            .act_blocking(wallet, move || {
-                note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
-            })
-            .unwrap_or(Ok(None));
+        #[cfg(test)]
+        let fault = flows.tap_write_fault();
+        #[cfg(not(test))]
+        let fault = false;
+        let noted = match fault {
+            true => Err(AppDbError::Corrupt("a test's fault".into())),
+            false => flows
+                .act_blocking(wallet, move || {
+                    note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
+                })
+                .unwrap_or(Ok(None)),
+        };
         match noted {
             Err(e) if tries < LOCK_WRITE_TRIES => {
                 tracing::warn!(error = %e, "retrying a registration lock's record");
+                // Inside the library's store: a short, blocking pause.
+                std::thread::sleep(LOCK_WRITE_RETRY * tries);
                 tries += 1;
             }
             noted => return noted,
@@ -1666,6 +1737,20 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         row: &RegistrationRow,
         change: impl FnOnce(&AppDb) -> Result<RegistrationChange, AppDbError> + Send + 'static,
     ) -> Result<Step, PlatformError> {
+        #[cfg(test)]
+        if self
+            .flows()
+            .with_held(self.claim, |s| {
+                s.write_faults = s.write_faults.checked_sub(1)?;
+                Some(())
+            })
+            .flatten()
+            .is_some()
+        {
+            return Err(PlatformError::Storage {
+                detail: "a test's fault".into(),
+            });
+        }
         Ok(match self.write_from(row, change).await? {
             Written::Lost => Step::Stop,
             Written::Applied | Written::Moved => Step::Again,
@@ -1815,11 +1900,6 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         .await
     }
 
-    /// Records the flow's lock: the outpoint and `phase`, then the
-    /// automatic backup of §3.4 Restore rule 4. A failed write is retried;
-    /// one that keeps failing ends the run as a storage error, the row
-    /// unfailed at its index, where resume and "Finish transfers" find the
-    /// lock again (MN-1).
     /// A storage fault a test set for the next lock record.
     #[cfg(test)]
     fn lock_write_fault(&self) -> Option<PlatformError> {
@@ -1833,6 +1913,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             .flatten()
     }
 
+    /// Records the flow's lock: the outpoint and `phase`, then the
+    /// automatic backup of §3.4 Restore rule 4. A failed write is retried;
+    /// one that keeps failing ends the run as a storage error, the row
+    /// unfailed at its index, where resume and "Finish transfers" find the
+    /// lock again (MN-1).
     async fn record_lock(
         &self,
         row: &RegistrationRow,
@@ -1921,7 +2006,20 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             // reality whose lock "Finish transfers" adopted): this one
             // takes a new index rather than a second lock for it.
             IndexOwner::Taken => return self.assign_index(row).await,
-            IndexOwner::Unknown => return Ok(Step::Wait(RegistrationWait::ChainLock)),
+            // A lock whose index the library lost: the row takes it when
+            // "Finish transfers" would give it this row (its own funding,
+            // whose record never landed: MN-1), unless a funding call of
+            // the wallet runs, whose own lock it may be.
+            IndexOwner::Unknown => {
+                let destined = match self.flows().calling(self.wallet) {
+                    true => None,
+                    false => ev.destined_lock(row).map(|l| l.outpoint),
+                };
+                return match destined {
+                    Some(lock) => self.record_lock(row, lock, Phase::FundingSent).await,
+                    None => Ok(Step::Wait(RegistrationWait::ChainLock)),
+                };
+            }
         }
         // The funding gate (H11): a second funding only after `NotSent`
         // or `None`. P2b seam: the funding marker's status joins here.
@@ -2012,10 +2110,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         // library untracked as swept, a wallet closing) may be out.
         let current = self.row().await?;
         let ev = self.evidence().await?;
+        // A call refused before it built anything has no lock of its own.
+        let built = !matches!(funded, Err(FundError::Refused(_) | FundError::CoinsLocked));
         let tracked = match &current {
-            Some(r) => ev
-                .lock_of(r)
-                .or_else(|| ev.built_by_the_call(&before, index, lock_duffs)),
+            Some(r) => ev.lock_of(r).or_else(|| {
+                built
+                    .then(|| ev.built_by_the_call(&before, index, lock_duffs))
+                    .flatten()
+            }),
             None => None,
         }
         .map(|l| l.outpoint);
@@ -2246,7 +2348,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                     match self.lib.register_name(identity, temp, &lease).await {
                         Ok(_) => {}
                         Err(NameError::Platform(e)) => {
-                            let step = self.failed(&e);
+                            let step = self.after_identity(&e)?;
                             if !matches!(step, Step::Fail(..)) {
                                 return Ok(step);
                             }
@@ -2259,7 +2361,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 }
                 return self.to_phase(row, Phase::Contested).await;
             }
-            Err(NameError::Platform(e)) => self.failed(&e),
+            Err(NameError::Platform(e)) => self.after_identity(&e)?,
             // Taken, locked, a contest open, an invalid label.
             Err(e) => Step::Fail(e.code(), false),
         };
@@ -2293,7 +2395,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         };
         let existing = match self.lib.platform_profile(identity).await {
             Ok(existing) => existing,
-            Err(e) => return self.settle(row, self.failed(&e), settled).await,
+            Err(e) => return self.settle(row, self.after_identity(&e)?, settled).await,
         };
         if existing.as_ref().is_some_and(|p| profile_says(p, &profile)) {
             return self.profile_created(row).await;
@@ -2319,7 +2421,15 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         };
         match put {
             Ok(()) => self.profile_created(row).await,
-            Err(e) => self.settle(row, self.failed(&e), settled).await,
+            Err(e) => {
+                // An earlier put may have landed meanwhile (one whose
+                // outcome was unknown): Platform's answer decides.
+                let landed = self.lib.platform_profile(identity).await;
+                if landed.is_ok_and(|p| p.is_some_and(|p| profile_says(&p, &profile))) {
+                    return self.profile_created(row).await;
+                }
+                self.settle(row, self.after_identity(&e)?, settled).await
+            }
         }
     }
 
@@ -2333,6 +2443,24 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             },
         )
         .await
+    }
+
+    /// A library error at a step after the identity exists (MJ-1). Only a
+    /// refusal a retry would meet again fails the step, which `settle`
+    /// settles: a write whose outcome is unknown, a proof or trust failure
+    /// and the network are waited for (both steps read Platform before they
+    /// write, so a retry finds what landed), a closed session stops the run
+    /// and a storage error ends it, the row as it was.
+    fn after_identity(&self, e: &PlatformError) -> Result<Step, PlatformError> {
+        Ok(match e {
+            PlatformError::BroadcastUnknown { .. }
+            | PlatformError::WillBeSent { .. }
+            | PlatformError::ProofInvalid
+            | PlatformError::TrustMismatch => Step::Wait(RegistrationWait::Network),
+            PlatformError::NetworkNotOpen | PlatformError::WalletNotFound => Step::Stop,
+            PlatformError::Storage { .. } => return Err(e.clone()),
+            e => self.failed(e),
+        })
     }
 
     /// A step after the identity exists ended with `step`. A failure
@@ -2518,8 +2646,9 @@ fn profile_update(profile: &ProfileRecord) -> platform_wallet::wallet::identity:
     }
 }
 
-/// The DashPay system contract at the SDK's platform version, parsed once.
-fn dashpay_contract(sdk: &dash_sdk::Sdk) -> Result<Arc<dpp::prelude::DataContract>, PlatformError> {
+/// The DashPay system contract, parsed once, at the version platform-wallet
+/// loads it (`PlatformVersion::latest()`).
+fn dashpay_contract() -> Result<Arc<dpp::prelude::DataContract>, PlatformError> {
     static CONTRACT: std::sync::OnceLock<Arc<dpp::prelude::DataContract>> =
         std::sync::OnceLock::new();
     if let Some(contract) = CONTRACT.get() {
@@ -2527,7 +2656,7 @@ fn dashpay_contract(sdk: &dash_sdk::Sdk) -> Result<Arc<dpp::prelude::DataContrac
     }
     let contract = dpp::system_data_contracts::load_system_data_contract(
         dpp::system_data_contracts::SystemDataContract::Dashpay,
-        sdk.version(),
+        dpp::version::PlatformVersion::latest(),
     )
     .map_err(|e| PlatformError::Internal {
         detail: format!("the DashPay contract: {e}"),
@@ -2777,7 +2906,7 @@ impl RegistrationLib for PwLib {
         use dash_sdk::platform::{DocumentQuery, FetchMany};
         use dpp::document::{Document, DocumentV0Getters};
         let id = parse_identity(identity)?;
-        let query = DocumentQuery::new(dashpay_contract(&self.sdk)?, "profile")
+        let query = DocumentQuery::new(dashpay_contract()?, "profile")
             .map_err(|e| PlatformError::Internal {
                 detail: format!("the profile query: {e}"),
             })?
