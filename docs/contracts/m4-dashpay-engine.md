@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 8
+Contract-Version: 9
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -190,7 +190,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
-| `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. | `PlatformError` |
+| `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
@@ -317,7 +317,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 8 -->
+<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 9 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1427,15 +1427,29 @@ The shapes are in §3. What they mean, where the name does not say:
   fallback use, even when the latch is already on file, since a row left by a refused checkpoint is readable but
   unsynced. A latch read back at open, or one that cannot be read, still counts as set for classification. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
   `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
-  `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
-  exported, so a restored wallet's data verifies again. Absence fails closed: data the library keeps in memory after
+  `dpns_label` keyed by the homograph-normalized label with a digest binding the spelling shown and the owner,
+  `payment` keyed by txid; a contact's identity has no record of its own, its verified `contact_request` binds the
+  keys and the xpub the channel uses); the table is global and not
+  exported, so a restored wallet's data verifies again. A record is bound to content (DEC-183): it stores a digest of
+  the entity's canonical bytes as verified, naming its encoding version (`v2:` and a SHA-256), and data counts as
+  verified only while the digest of what the library holds now equals it. An entity the library replaced after it
+  verified (from any source, the fallback included) reads as unverified until a fetch of the new content verifies;
+  records written before the digest existed verify nothing. A record says that this content verified, not that it is
+  current. An identity's balance is not covered. Absence fails closed: data the library keeps in memory after
   a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
-  is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
-  unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
+  is unverified if its identity, its shown profile or any name in its `names` is (a hidden contested or pending name
+  does not count). Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
+  keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
+  `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
   `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
   `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
-  (the developer toggle, or the degraded mode of §2.2 if E0-10a fails).
+  (the developer toggle, or the degraded mode of §2.2). E0-10a failed, so 1.0 reports `Trusted` (DEC-168) until H-09
+  turns on full enforcement. E0-10b's provider (`docs/design/E0-10b-trust-provider.md`) refuses a quorum key SPV and
+  the trusted service disagree on with `platform.trust_mismatch`; any other quorum key it cannot supply (an unknown
+  quorum after masternode sync, a fallback latch that cannot be made durable, the trusted service unreachable while
+  SPV does not verify the quorum) fails the proof as `platform.context_unavailable`, not `proof_invalid`: the proof
+  was not judged.
 - **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
   - `waiting` says what a parked or slow flow waits for, and so which line the UI shows: `Unlock` ("Unlock to finish";
     the flow parked keyless, and `resume_registration` needs a grant), `Authorize` ("Confirm to finish": the vault is
@@ -1567,7 +1581,8 @@ changes code paths or bindings that would otherwise need behaviour now:
 |---|---|
 | `TxDraft` gains `Recipient::Contact{identity, contact, amount, subtract_fee, note}` | DP3-01 |
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
-| `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13 | E0-05, E0-10b, E0-13 |
+| `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13. **Done (E0-05, E0-10b):** both are engine-side, and `dw-ffi` withholds them until E0-13 binds them. `PlatformTrustMismatch` goes out once per quorum and session; its detail names the LLMQ type and quorum hash | E0-05, E0-10b, E0-13 |
+| `NetworkSession` gains `quorum_source()` (sync) and the developer toggle `trusted_quorums_only()` / `set_trusted_quorums_only(on)` (the global setting `trust.trusted_only`): quorum keys from the trusted service only, SPV not consulted. **Done (E0-10b).** Not a user setting; the binding exposes it in developer builds | E0-10b, E0-13 |
 | `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}` and `Names`. The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
@@ -1698,3 +1713,16 @@ renames or reshapes them takes the next version bump:
     fallback path that looks like ownership evidence (the snapshot's marketplace rows, a retained pick) is as old as
     the snapshot, so the older snapshot shows no names and no main name, and `IdentitySummary` gains
     `names_updating: bool`, `true` exactly then, so the UI shows "updating". The markers govern the live list only.
+
+**From E0-10b** (version 9, DEC-183, no surface change):
+
+36. **Content-bound provenance.** `unverified` (§5) compares a digest of the content shown with the digest the
+    verification record stores, not the record's presence: a replaced entity reads as unverified until its new content
+    verifies, and pre-DEC-183 records (dw-appdb migration `trust_digest`) verify nothing. `contact_request` records
+    (key `sender:recipient:$createdAt`, `provenance::contact_request_key`) follow the same model, so the contacts read
+    model (DP2-01) checks content as well as the key. A `dpns_label` record binds the spelling shown and the owner
+    (encoding `v2`; `v1` records verify nothing), so another spelling of the same normalized label, or the label
+    shown for another identity, is unverified. Records are per network (each network's app.sqlite). The re-fetch also
+    verifies contacts' cached profiles and the contact labels the read model reports (`Provenance::show_label`); a
+    contact's identity has no record class. An `IdentitySummary`'s flag covers the names it shows, and an
+    installation holding wallets from before E0-10b starts latched (migration `trust_digest`).

@@ -9,7 +9,7 @@
 //! the last change of a burst (reviews H2, M4).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
@@ -201,6 +201,11 @@ pub enum NoticeCode {
     /// The dispatch journal cannot be opened or is newer than this build:
     /// leased hand-offs are refused (E0-04 §6.4). Engine-side.
     DispatchJournalUnavailable,
+    /// SPV and the trusted quorum service disagree on a quorum key (DASHPAY
+    /// §2.2 rule 4): every proof citing it is refused with
+    /// `platform.trust_mismatch`. Once per quorum and session; the detail
+    /// names the quorum. Engine-side.
+    PlatformTrustMismatch,
 }
 
 impl NoticeCode {
@@ -212,6 +217,7 @@ impl NoticeCode {
                 | Self::DispatchRecordMissing
                 | Self::UnscopedDispatch
                 | Self::DispatchJournalUnavailable
+                | Self::PlatformTrustMismatch
         )
     }
 }
@@ -303,6 +309,8 @@ pub(crate) struct SessionHub {
     /// When this session last handed a transaction to the network (send or
     /// resend), UNIX seconds.
     pub announced: Mutex<HashMap<Txid, u64>>,
+    /// The quorum provider, told when the masternode phase is done.
+    pub trust: OnceLock<Arc<crate::platform::trust::TrustProvider>>,
 }
 
 impl SessionHub {
@@ -318,6 +326,7 @@ impl SessionHub {
             rescan: Mutex::new(None),
             chainlock: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
+            trust: OnceLock::new(),
         }
     }
 
@@ -610,7 +619,14 @@ impl SessionHub {
 
 impl EventHandler for SessionHub {
     fn on_progress(&self, progress: &SyncProgress) {
-        if self.tracker().on_progress(progress) {
+        let (changed, masternodes_synced) = {
+            let mut tracker = self.tracker();
+            (tracker.on_progress(progress), tracker.masternodes_synced())
+        };
+        if masternodes_synced && let Some(trust) = self.trust.get() {
+            trust.note_masternodes_synced();
+        }
+        if changed {
             self.pump.mark_sync();
         }
     }

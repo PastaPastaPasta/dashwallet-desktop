@@ -1777,12 +1777,17 @@ mod tests {
         ("name check alice", ALICE),
         ("name availability alice", NO_PLATFORM),
         ("name register --identity I bob", NO_PLATFORM),
+        ("dashpay sync-status", SYNC_STATUS),
         ("dashpay leases", r#"{"ok":true,"result":[]}"#),
         (
             "dashpay dispatch-status ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a txid, transition hash or step id","params":{"detail":"not a txid, transition hash or step id"}}}"#,
         ),
     ];
+
+    /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
+    /// from the trusted service (DEC-168's degraded mode, E0-10b).
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
 
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
 

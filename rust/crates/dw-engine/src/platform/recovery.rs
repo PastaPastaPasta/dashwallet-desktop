@@ -80,7 +80,8 @@ use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
 use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
 use super::profile::Profile;
-use super::provenance::kind;
+use super::provenance::Entity;
+use super::reverify::{Held, identity_and_profile};
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
 use crate::session::Manager;
@@ -111,6 +112,11 @@ pub(super) struct OwnedIdentity {
     pub(super) balance: Option<u64>,
     pub(super) has_dashpay_keys: bool,
     pub(super) profile: Option<Profile>,
+    /// The identity and its shown profile as provenance sees them, digests
+    /// of this content included (DEC-183). The names are checked as shown.
+    pub(super) entities: Vec<Entity>,
+    /// The identity, owner of the names shown.
+    pub(super) owner: Identifier,
 }
 
 /// The wallet's identity choices, as stored: the main identity (cached) and
@@ -130,7 +136,7 @@ pub(crate) struct Recovery {
     /// Held across each choice's database write or read and its cache
     /// update, so the cache ends as the database does (review r1 N2).
     choice_writer: tokio::sync::Mutex<()>,
-    snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
+    pub(super) snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
     /// Wallets with identities a discovery stored that no bring-up has
     /// replayed yet: the next bring-up to reach its Platform pass starts a
@@ -319,14 +325,15 @@ pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Outpu
 /// shows no names and no main name, and says so with `names_updating`.
 /// Identity, profile and balance still come from it.
 ///
-/// `is_unverified(kind, key)` is the provenance check (DEC-125): a row is
-/// unverified if the identity, its shown profile or any of the names the
-/// library holds for it is.
+/// `is_unverified` is the provenance check (DEC-125, DEC-183): a row is
+/// unverified if the identity, its shown profile or any of the names it
+/// shows is, as the snapshot holds them. A name it hides (a contest, a
+/// pending or refused copy) does not count (Opus-high M2).
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
     current: bool,
-    is_unverified: impl Fn(&str, &str) -> bool,
+    is_unverified: impl Fn(&Entity) -> bool,
 ) -> Vec<IdentitySummary> {
     owned.sort_by(|a, b| (a.index, &a.identity).cmp(&(b.index, &b.identity)));
     let main = choices
@@ -338,11 +345,6 @@ pub(super) fn summaries(
         .into_iter()
         .enumerate()
         .map(|(i, o)| {
-            let unverified = is_unverified(kind::IDENTITY, &o.identity)
-                || (o.profile.is_some() && is_unverified(kind::PROFILE, &o.identity))
-                || o.names.iter().any(|(label, _)| {
-                    is_unverified(kind::DPNS_LABEL, &convert_to_homograph_safe_chars(label))
-                });
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
             let names = if current {
                 evident_names(o.names, &prefs, |label| {
@@ -352,10 +354,13 @@ pub(super) fn summaries(
             } else {
                 Vec::new()
             };
+            let shown = shown_names(&names, &o.open_contests);
+            let unverified = o.entities.iter().any(&is_unverified)
+                || (shown.iter()).any(|n| is_unverified(&Held::label(n, o.owner).entity()));
             IdentitySummary {
                 main_name: resolve_main_name(&names, &o.open_contests, &prefs),
                 is_main: i == main,
-                names: shown_names(&names, &o.open_contests),
+                names: shown,
                 names_updating: !current,
                 identity: o.identity,
                 index: o.index,
@@ -435,6 +440,8 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
                     avatar_fingerprint: p.avatar_fingerprint.map(hex::encode),
                     updated_at: None,
                 }),
+                entities: identity_and_profile(m).iter().map(Held::entity).collect(),
+                owner: m.identity.id(),
             })
         })
         .collect()
@@ -478,8 +485,8 @@ impl NetworkSession {
             ..recovery.choices_of(&id)
         };
         let provenance = self.live()?.provenance;
-        Ok(summaries(owned, &choices, current, |kind, key| {
-            provenance.is_unverified(kind, key)
+        Ok(summaries(owned, &choices, current, |e| {
+            provenance.is_unverified(e)
         }))
     }
 

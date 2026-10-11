@@ -50,6 +50,8 @@ const IMPLEMENTED: &[&str] = &[
     "NetworkSession.leases",
     "DashPay.grant_request",
     "DashPay.dispatch_status",
+    // E0-10b: the status card's quorum source.
+    "DashPay.sync_status",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -74,7 +76,8 @@ const FACADE: &[&str] = &[
 /// root, the vault signers (E0-03), `platform-status` (E0-02), the
 /// identity key policy (DP1-01), the bring-up runtime (E0-05), the names
 /// network seam and session tests (DP1-03), the changeset tap and trust
-/// records (E0-06) and the lease table and dispatch fence (E0-04).
+/// records (E0-06), the lease table and dispatch fence (E0-04) and the
+/// quorum provider and its re-fetch (E0-10b).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "journal.rs",
@@ -86,12 +89,15 @@ const NOT_FACADE: &[&str] = &[
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
+    "reverify.rs",
     "names_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "signers.rs",
     "startup_status.rs",
     "status.rs",
+    "trust.rs",
+    "trust_tests.rs",
 ];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
@@ -1099,7 +1105,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         );
 
         c.stub(dp.status());
-        c.stub(dp.sync_status());
+        assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
         c.stub(dp.identity_detail(s()).await);
         c.stub(dp.refresh_balance(s()).await);

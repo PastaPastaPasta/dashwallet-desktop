@@ -9,6 +9,7 @@ use crate::{AppDb, embedded};
 const INITIAL: i64 = 2026100501;
 const DASHPAY: i64 = 2026100801;
 const TRUST: i64 = 2026100901;
+const TRUST_DIGEST: i64 = 2026101101;
 
 const DP_TABLES: [&str; 9] = [
     "dp_avatar",
@@ -69,11 +70,11 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), TRUST);
+    assert_eq!(db.schema_version().unwrap(), TRUST_DIGEST);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST]);
+    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, TRUST_DIGEST]);
     assert_eq!(tables(&conn), DP_TABLES);
     // Every dp_ table is STRICT, like the rest of the schema.
     for table in DP_TABLES {
@@ -113,7 +114,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), TRUST);
+    assert_eq!(db.schema_version().unwrap(), TRUST_DIGEST);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -126,7 +127,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST]);
+    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, TRUST_DIGEST]);
     assert_eq!(tables(&conn), DP_TABLES);
     for table in DP_TABLES {
         assert_eq!(count(&conn, &format!("SELECT COUNT(*) FROM {table}")), 0);
@@ -142,7 +143,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), TRUST);
+        assert_eq!(db.schema_version().unwrap(), TRUST_DIGEST);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -159,7 +160,7 @@ fn reopening_and_rerunning_change_nothing() {
         .run(&mut conn)
         .unwrap();
     assert!(report.applied_migrations().is_empty());
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST]);
+    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, TRUST_DIGEST]);
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
 }
 
@@ -183,6 +184,11 @@ fn shipped_migrations_are_unchanged() {
             (INITIAL, "initial".to_string(), CHECKSUM_INITIAL),
             (DASHPAY, "dashpay".to_string(), CHECKSUM_DASHPAY),
             (TRUST, "trust_verified".to_string(), CHECKSUM_TRUST),
+            (
+                TRUST_DIGEST,
+                "trust_digest".to_string(),
+                CHECKSUM_TRUST_DIGEST
+            ),
         ]
     );
 }
@@ -190,6 +196,7 @@ fn shipped_migrations_are_unchanged() {
 const CHECKSUM_INITIAL: u64 = 15039092102494657885;
 const CHECKSUM_DASHPAY: u64 = 11805424486264248187;
 const CHECKSUM_TRUST: u64 = 11010845116850883893;
+const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -482,7 +489,7 @@ fn dashpay_rows_travel_in_the_wallet_export() {
         )
         .unwrap();
     }
-    src.mark_verified("identity", "x", 1).unwrap();
+    src.mark_verified("identity", "x", "v1:aa", 1).unwrap();
     let rows = src.export_wallet_rows(W).unwrap();
     let names: Vec<_> = rows.iter().map(|t| t.table.as_str()).collect();
     assert_eq!(
@@ -610,6 +617,86 @@ fn upgraded_schema_equals_the_fresh_one() {
         );
     }
     assert_eq!(fresh, upgraded);
+}
+
+/// DEC-183: a verification record written before the digest column existed
+/// verifies nothing; a new verification of the entity replaces it.
+#[test]
+fn verification_records_without_a_digest_verify_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(TRUST as i32))
+            .run(&mut conn)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO dp_trust_verified (kind, key, verified_at) VALUES ('identity', 'x', 9)",
+            [],
+        )
+        .unwrap();
+    }
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), TRUST_DIGEST);
+    assert!(db.verified_entities().unwrap().is_empty(), "the old row");
+    assert_eq!(
+        count(
+            &db.conn(),
+            "SELECT COUNT(*) FROM dp_trust_verified WHERE digest IS NULL"
+        ),
+        1,
+        "kept, not deleted"
+    );
+    db.mark_verified("identity", "x", "v1:aa", 8).unwrap();
+    assert_eq!(
+        db.verified_entities().unwrap(),
+        vec![("identity".into(), "x".into(), "v1:aa".into())]
+    );
+    let at: i64 = db
+        .conn()
+        .query_row("SELECT verified_at FROM dp_trust_verified", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(at, 8, "the old row's time does not carry over");
+}
+
+/// Opus-high M1: a database that already holds wallets when `trust_digest`
+/// runs was written by a build that never set the fallback latch; it comes
+/// out latched. One without wallets does not.
+#[test]
+fn an_installation_with_wallets_starts_latched() {
+    let latch = |db: &AppDb| {
+        db.setting(crate::GLOBAL_SCOPE, "trust.fallback_used_at")
+            .unwrap()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let at_trust = |name: &str, wallet: bool| {
+        let path = dir.path().join(name);
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(TRUST as i32))
+            .run(&mut conn)
+            .unwrap();
+        if wallet {
+            conn.execute(
+                "INSERT INTO wallets (wallet_id, name, created_at) VALUES ('aa', 'w', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        AppDb::open(&path).unwrap()
+    };
+    let upgraded = at_trust("with-wallet.sqlite", true);
+    let at: u64 = latch(&upgraded).expect("latched").parse().unwrap();
+    assert!(at > 1_700_000_000, "{at}: UNIX seconds");
+    assert_eq!(latch(&at_trust("empty.sqlite", false)), None);
+    assert_eq!(
+        latch(&AppDb::open(&dir.path().join("fresh.sqlite")).unwrap()),
+        None
+    );
 }
 
 /// `delete_wallet` lists its tables; the export finds them by their

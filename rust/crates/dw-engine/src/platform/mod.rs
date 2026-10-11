@@ -27,6 +27,7 @@ mod recovery;
 #[cfg(test)]
 mod recovery_tests;
 mod registration;
+mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
@@ -34,6 +35,9 @@ pub mod signers;
 mod startup;
 mod startup_status;
 mod status;
+pub(crate) mod trust;
+#[cfg(test)]
+mod trust_tests;
 
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
