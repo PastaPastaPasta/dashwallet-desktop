@@ -301,24 +301,23 @@ pub(crate) struct CallRun {
     pub(crate) label: String,
     /// A funding call's step, key and signature count ([`CallFunding`]).
     pub(crate) funding: Option<CallFunding>,
-    /// A funding call's coin fence, until the library tracked the lock it
-    /// signed or the call ends ([`CallFunding`]).
+    /// A funding call's coin fence (`coins.rs`, E0-04 §2a.6): the one its
+    /// caller's policy check read the coins under. Released, outside J, at
+    /// the first of: the changeset tap reporting a tracked row of the wallet
+    /// under the call's key, of any status, that is not foreign to its
+    /// step, once the call released a signature (the library tracks and
+    /// persists its lock `Built` after signing it and before broadcasting
+    /// it, and from then on the lock's inputs read reserved; the persister
+    /// may fold that `Built` into a later status before the tap sees it, so
+    /// any status counts; a row before the call's first signature is not
+    /// its lock); or the call's end. Never held through the library's proof
+    /// wait past that row.
     pub(crate) fence: Option<crate::coins::CoinFence>,
 }
 
-/// What the changeset tap matches a funding call's tracked rows by. The
-/// coin fence a funding call holds (`coins.rs`, E0-04 §2a.6) is the one its
-/// caller's policy check read the coins under. Released, outside J, at
-/// the first of: the changeset tap reporting a tracked row of the wallet
-/// under `key`, of any status, that is not foreign to `step`, once the
-/// call released a signature (the library tracks and persists its lock
-/// `Built` after signing it and before broadcasting it, and from then on
-/// the lock's inputs read reserved; the persister may fold that `Built`
-/// into a later status before the tap sees it, so any status counts; a row
-/// before the call's first signature is not its lock); or the call's end.
-/// Never held through the library's proof wait past that row. Such a row
-/// is the step's own lock when it is no other running call's
-/// ([`super::mode_b::ModeB`]'s `own`, review P2b r1 F1).
+/// What the changeset tap matches a funding call's tracked rows by
+/// ([`LeaseTable::note_tracked`]): a row it matches for no other running
+/// call is the step's own lock (review P2b r1 F1).
 #[derive(Debug)]
 pub(crate) struct CallFunding {
     pub(crate) wallet: WalletId,

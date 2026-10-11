@@ -1691,9 +1691,11 @@ fn an_unrecorded_self_spend_is_released_unsent() {
     const STEP: &str = "registration/1/funding";
     let f = fixture(false);
     let a = f.credit(1, COIN);
+    f.credit(2, COIN / 2);
     let s = &f.session;
     f.stuck(STEP);
     // The step's lock, Built and withheld: a known lock to conflict with.
+    // It holds `a`; the self-spend takes the other coin too.
     f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
     let draft = f
         .engine
@@ -1712,14 +1714,12 @@ fn an_unrecorded_self_spend_is_released_unsent() {
         .fail_self_spend
         .store(true, std::sync::atomic::Ordering::SeqCst);
     s.leases.journal.set(Some(failing));
-    // `a` stays reserved by the step's own lock throughout.
-    let held = f.reserved();
     let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
     let out = f.engine.block_on(s.send_self_spend(&draft, STEP, grant));
     s.leases.journal.set(real);
     assert!(matches!(out, Err(EngineError::Storage(_))), "{out:?}");
     assert!(seam.seen.lock().unwrap().is_none(), "never broadcast");
-    assert_eq!(f.reserved(), held, "its inputs released");
+    assert_eq!(f.reserved(), 1, "its inputs released: the lock's `a` only");
     assert!(s.leases.call_step(f.wallet, STEP).self_spends.is_empty());
     // The repair runs again once the journal records.
     let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
@@ -1860,7 +1860,6 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     assert!(!s.leases.call_holds_fence(f.wallet));
     assert!(l.view().unwrap().call_running);
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
-
     // A call that never tracks a lock: released at its end.
     let draft = f.registration_draft(1);
     let l = f
@@ -1903,4 +1902,25 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     f.engine
         .block_on(s.unlock_outpoints(f.wallet, vec![a, b]))
         .unwrap();
+
+    // The tap attributed that index-0 row to the call: once the wallet
+    // holds it ChainLocked, the step's `Sent` row is journaled though the
+    // row's index is untrusted (review P2b r1 F1).
+    f.track_lock(63, 0, &[], A::ChainLocked);
+    let (leases, w) = (Arc::clone(&s.leases), f.wallet);
+    let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+    assert!(f.engine.block_on(refreshed).unwrap());
+    let id = ArtifactId::of_step(&f.wallet, &step);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while s
+        .leases
+        .with_j(|i, _| i.fence.evidence_mark(&f.wallet, &id))
+        != Some(super::fence::Mark::Durable)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the step's Sent row was never written"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

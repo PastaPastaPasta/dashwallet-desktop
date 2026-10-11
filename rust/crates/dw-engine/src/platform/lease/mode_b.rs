@@ -486,7 +486,16 @@ fn markerless_unattributed_row<'a>(
 
 /// `step`'s funding status now (J).
 pub(super) fn funding_status(i: &Inner, wallet: WalletId, step: &str) -> Option<DispatchState> {
-    let info = i.fence.call_step_info(&wallet, step);
+    derive_step(i, wallet, step, i.fence.call_step_info(&wallet, step))
+}
+
+/// [`funding_status`] from the step's journal state `info`.
+fn derive_step(
+    i: &Inner,
+    wallet: WalletId,
+    step: &str,
+    info: CallStepInfo,
+) -> Option<DispatchState> {
     let snap = i.mode_b.snapshots.get(&wallet);
     let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
     let rows: Option<Vec<TrackedStatus>> = snap.map(|s| {
@@ -522,32 +531,41 @@ fn own_row(i: &Inner, wallet: WalletId, step: &str, r: &TrackedRow) -> bool {
 /// (§2a.5 row 2), and that is journaled. Any other matching proved row
 /// reads `Sent` while it stands, and is never made durable.
 fn proving_key(i: &Inner, wallet: WalletId, step: &str) -> Option<FundingKey> {
-    let snap = i.mode_b.snapshots.get(&wallet)?;
+    step_rows(i, wallet, step)
+        .into_iter()
+        .find(|r| r.status.proved() && own_row(i, wallet, step, r))
+        .map(|r| r.key)
+}
+
+/// The tracked rows of `wallet` that match funding `step` (J): by the
+/// draft's key, or by the marker's less the rows foreign to it.
+fn step_rows<'a>(i: &'a Inner, wallet: WalletId, step: &str) -> Vec<&'a TrackedRow> {
+    let Some(s) = i.mode_b.snapshots.get(&wallet) else {
+        return Vec::new();
+    };
     let info = i.fence.call_step_info(&wallet, step);
     let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
-    snap.rows
+    s.rows
         .iter()
-        .find(|r| {
-            r.status.proved()
-                && matches_step(snap, step, &info, foreign, r)
-                && own_row(i, wallet, step, r)
-        })
-        .map(|r| r.key)
+        .filter(|r| matches_step(s, step, &info, foreign, r))
+        .collect()
 }
 
 /// A funding step's outcome in a lock's report (§8.4, review R1-02): its
 /// status now, from history (§2a.5). `NotSent` and never started are
-/// `Cancelled`.
+/// `Cancelled`. A step whose calls here all ended definitely unsent reads
+/// as it will once its `NotSent` row lands, not by the marker standing
+/// until then (review P2b r1 F4).
 pub(super) fn funding_outcome(i: &Inner, wallet: WalletId, step: &str) -> FlowOutcome {
-    match funding_status(i, wallet, step) {
+    let mut info = i.fence.call_step_info(&wallet, step);
+    if matches!(info.status, CallStepStatus::Marked { .. })
+        && i.fence.call_ended_unsent(&(wallet, step.to_owned()))
+    {
+        info.status = CallStepStatus::NotSent;
+    }
+    match derive_step(i, wallet, step, info) {
         Some(DispatchState::Sent) => FlowOutcome::Sent,
         Some(DispatchState::WillBeSent) => FlowOutcome::WillBeSent,
-        // Every call of the step here ended definitely unsent, its
-        // `NotSent` row still to land: the marker reads `MaybeSent` until
-        // then (review P2b r1 F4).
-        Some(DispatchState::MaybeSent) if i.fence.call_ended_unsent(&(wallet, step.to_owned())) => {
-            FlowOutcome::Cancelled
-        }
         Some(DispatchState::MaybeSent) => FlowOutcome::MaybeSent,
         Some(DispatchState::NotSent) | None => FlowOutcome::Cancelled,
     }
@@ -640,14 +658,9 @@ pub(super) fn pending_step_rows(
     wallet: WalletId,
     step: &str,
 ) -> Vec<(Txid, Vec<OutPoint>)> {
-    let Some(s) = i.mode_b.snapshots.get(&wallet) else {
-        return Vec::new();
-    };
-    let info = i.fence.call_step_info(&wallet, step);
-    let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
-    s.rows
-        .iter()
-        .filter(|r| r.status.pending() && matches_step(s, step, &info, foreign, r))
+    step_rows(i, wallet, step)
+        .into_iter()
+        .filter(|r| r.status.pending())
         .map(|r| (r.txid, r.inputs.clone()))
         .collect()
 }
@@ -655,16 +668,9 @@ pub(super) fn pending_step_rows(
 /// Whether a tracked `Built` or `Broadcast` row of funding `step` is its
 /// own lock ([`own_row`]) (J).
 fn own_pending_row(i: &Inner, wallet: WalletId, step: &str) -> bool {
-    let Some(s) = i.mode_b.snapshots.get(&wallet) else {
-        return false;
-    };
-    let info = i.fence.call_step_info(&wallet, step);
-    let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
-    s.rows.iter().any(|r| {
-        r.status.pending()
-            && matches_step(s, step, &info, foreign, r)
-            && own_row(i, wallet, step, r)
-    })
+    step_rows(i, wallet, step)
+        .into_iter()
+        .any(|r| r.status.pending() && own_row(i, wallet, step, r))
 }
 
 /// Whether Repair may resolve funding `step` with a self-spend now (J):
@@ -733,7 +739,8 @@ pub(super) fn note_marked(i: &mut Inner, wallet: WalletId, step: &str, key: Fund
 /// `DispatchResolved`; a lease whose step moved emits `LeaseChanged`
 /// (`funds_committed`). Nothing before the wallet's first snapshot.
 ///
-/// A step a trusted proved row reads `Sent` is journaled (review R1-01): the
+/// A step its own proved row reads `Sent` (trusted, or attributed by the
+/// changeset tap: [`own_row`]) is journaled (review R1-01): the
 /// step's `Sent` row with its marker and funding key, one DEC-163 bundle,
 /// begun after J and owed until it lands
 /// ([`FenceState::note_proved_funding`](super::fence::FenceState::note_proved_funding)).
@@ -946,30 +953,27 @@ impl LeaseTable {
         self.with_j(|i, fx| {
             let mut attributed = false;
             for (txid, key) in tracked {
-                let calls: Vec<u64> = i
+                let calls: Vec<(u64, String)> = i
                     .calls
                     .iter()
-                    .filter(|(_, run)| {
-                        run.funding.as_ref().is_some_and(|f| {
-                            f.wallet == wallet
-                                && f.signatures.released() > 0
-                                && f.key == *key
-                                && !i
-                                    .mode_b
-                                    .foreign
-                                    .get(&(wallet, f.step.clone()))
-                                    .is_some_and(|rows| rows.contains(txid))
-                        })
+                    .filter_map(|(id, run)| {
+                        let f = run.funding.as_ref()?;
+                        let signed = f.wallet == wallet
+                            && f.signatures.released() > 0
+                            && f.key == *key
+                            && !i
+                                .mode_b
+                                .foreign
+                                .get(&(wallet, f.step.clone()))
+                                .is_some_and(|rows| rows.contains(txid));
+                        signed.then(|| (*id, f.step.clone()))
                     })
-                    .map(|(id, _)| *id)
                     .collect();
-                if let [id] = calls[..]
-                    && let Some(f) = i.calls[&id].funding.as_ref()
-                {
-                    let step = (wallet, f.step.clone());
-                    attributed |= i.mode_b.own.entry(step).or_default().insert(*txid);
+                if let [(_, step)] = &calls[..] {
+                    let own = i.mode_b.own.entry((wallet, step.clone())).or_default();
+                    attributed |= own.insert(*txid);
                 }
-                for id in calls {
+                for (id, _) in calls {
                     if let Some(fence) = i.calls.get_mut(&id).and_then(|r| r.fence.take()) {
                         fx.drop_later(fence);
                     }

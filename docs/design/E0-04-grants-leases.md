@@ -750,10 +750,13 @@ call permit when its task lands.
   wallet's recovery complete (`TrackedLocks::recovery_complete`). **DP1-05 owns** supplying that evidence;
   **liveness cost** until then: a step whose lock left no row (the withheld-T1 trace, a restore) cannot be
   repaired.
-- A durable `Sent` can over-approximate: after a restart the per-step set of earlier rows is gone (above), so an
-  earlier funding's proved row under the same key reads the marked step `Sent`, and that is now journaled. Fail
-  closed (the step is never funded again; no second payment), at a liveness cost to that step only. Funding keys
-  are shared across fundings only by top-ups, whose funding calls P2b refuses.
+- A durable `Sent` can over-approximate. After a restart the per-step set of earlier rows is gone (above), so an
+  earlier funding's trusted proved row under the same key reads the marked step `Sent`, and that is now journaled.
+  The tap is a second source: a row under the call's key that first appears while the call runs, after its first
+  signature (a reconstruction's re-add, a snapshot that lagged the funding gate), is taken for the step's own lock,
+  and journaled once proved. Fail closed either way (the step is never funded again; no second payment), at a
+  liveness cost to that step only. Funding keys are shared across fundings only by top-ups, whose funding calls P2b
+  refuses, and the funding gate refuses a call while a matching row stands.
 - The tap's attribution of a step's own lock is in memory only (persisting the txid with the marker needs a
   `dispatch.sqlite` change). An index-0 registration lock first proved after a restart reads `Sent` while its row
   stands but is not journaled, and Repair refuses its step (`NoKnownLock`) until DP1-05. Fail closed.
