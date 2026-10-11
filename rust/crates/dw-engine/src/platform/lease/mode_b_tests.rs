@@ -2141,11 +2141,19 @@ async fn an_index_0_signed_lock_first_proved_after_a_restart_is_journaled_sent()
     sign_lock(&t, &p, W, &row(1, 0, R::Built));
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(j.load_calls().signed_locks.len(), 1);
-    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(t.signed_lock_txids(W, REG), vec![txid(1)]);
+    assert!(t.signed_lock_txids(W, TOPUP).is_empty());
+    // The next process, on its own copy of the file.
+    let file = j.snapshot();
+    let (reopened, _) = table();
+    file.load_into(&reopened);
+    assert_eq!(reopened.signed_lock_txids(W, REG), vec![txid(1)]);
+    reopened.install_tracked(src.clone());
+    assert!(reopened.refresh_funding(W).await);
     src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
     reopened.refresh_funding(W).await;
     assert_eq!(reopened.funding_status(W, REG), Some(Sent));
-    until(|| sent_on_disk(&j, REG)).await;
+    until(|| sent_on_disk(&file, REG)).await;
     src.set_rows(W, Vec::new());
     reopened.refresh_funding(W).await;
     assert_eq!(reopened.funding_status(W, REG), Some(Sent));

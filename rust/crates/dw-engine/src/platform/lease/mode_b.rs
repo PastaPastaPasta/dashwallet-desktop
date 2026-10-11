@@ -1132,6 +1132,25 @@ impl LeaseTable {
         });
     }
 
+    /// The txids of the asset locks the calls of funding `step` signed
+    /// ([`SignedLock`], §2a.6): exactly the step's own locks. One whose
+    /// `signed_lock` write has not landed is known to this process only
+    /// and is gone after a restart; a rejected broadcast leaves its txid
+    /// here.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02 attributes its rows by it")
+    )]
+    pub(crate) fn signed_lock_txids(&self, wallet: WalletId, step: &str) -> Vec<Txid> {
+        self.with_j(|i, _| {
+            i.fence
+                .signed_locks(&wallet, step)
+                .iter()
+                .map(|l| l.txid)
+                .collect()
+        })
+    }
+
     /// Whether a funding call of `wallet` runs (§2a.6: only its locks are
     /// checked for provenance).
     pub(crate) fn funding_call_runs(&self, wallet: WalletId) -> bool {
