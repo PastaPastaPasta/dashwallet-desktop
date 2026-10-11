@@ -1,0 +1,15 @@
+[application] "dash-wallet" {}
+  [frame] "Dash Wallet — Testnet" attrs=window-type:normal {active,enabled,sensitive,showing,visible} @(-1,-22 1282x847)
+    [filler] "" {enabled,sensitive,showing,visible}
+      [filler] "" {}
+        [filler] "" {}
+          [scroll pane] "" actions= {enabled,focusable,focused,sensitive} @(0,0 1280x820)
+            [document web] "Dash Wallet" actions= {enabled,focusable,focused,sensitive,showing,visible}
+              [dialog] "Unlock wallet" actions= attrs=computed-role:dialog,tag:div,xml-roles:dialog {enabled,sensitive,showing,visible}
+                [image] "Dash" actions= attrs=computed-role:image,tag:span,xml-roles:img {enabled,sensitive,showing,visible}
+                [heading] "Unlock wallet" text="Unlock wallet" actions= attrs=computed-role:heading,id:lock-title,level:1,tag:h1 {enabled,sensitive,showing,visible}
+                [paragraph] "" text="This operation needs your wallet passphrase to unlock the wallet." actions= attrs=computed-role:paragraph,tag:p {enabled,sensitive,showing,visible}
+                [form] "" actions= attrs=computed-role:form,tag:form,xml-roles:form {enabled,sensitive,showing,visible}
+                  [password text] "Passphrase" text="Passphrase" actions=activate attrs=computed-role:textbox,placeholder-text:Passphrase,tag:input {editable,enabled,focusable,focused,sensitive,showing,visible}
+                  [notification] "" actions= attrs=atomic:true,computed-role:alert,container-atomic:true,container-live-role:alert,container-live:assertive,container-relevant:additions text,id:lock-error,live:assertive,relevant:additions text,tag:p,xml-roles:alert {enabled,sensitive,showing,visible}
+                  [button] "Unlock" actions=press attrs=computed-role:button,tag:button {showing,visible}

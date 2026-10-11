@@ -1,0 +1,7 @@
+gate-mark main 2514.217203 cpu=0.014
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 2514.545207 cpu=0.354
+
+(dash-wallet:35992): Gtk-WARNING **: 06:20:21.330: GtkLabel 0x55a1a157e540 (label) reported min width 12 and natural width 3 in measure() with for_size=17; natural size must be >= min size
+gate-mark overview-paint 2515.713165 cpu=1.517

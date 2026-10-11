@@ -1,0 +1,5 @@
+2026-10-11T06:50:38+0000 warning TestLogger: error=Error(message: "Failed to get console screen buffer info") [WinUIBackend] failed to attach to parent console
+gate-mark main 3359.218000 cpu=0.062
+2026-10-11T06:50:38+0000 warning SwiftCrossUI: error=Error(message: "Failed to get console screen buffer info") [WinUIBackend] failed to attach to parent console
+2026-10-11T06:50:43+0000 warning SwiftCrossUI: [SwiftCrossUI] WinUIBackend doesn't support accessibility labels.
+gate-mark lock-paint 3365.359000 cpu=5.844

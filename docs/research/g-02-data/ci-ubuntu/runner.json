@@ -1,0 +1,12 @@
+{
+  "os": "linux",
+  "runnerImage": "ubuntu24 20261004.327.1",
+  "runnerName": "GitHub Actions 1000101382",
+  "arch": "x86_64",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "cores": 4,
+  "memoryMB": 15989,
+  "system": "Ubuntu 24.04.5 LTS",
+  "webview": "WebKitGTK 2.52.6",
+  "load": "1.07, 0.50, 0.20"
+}

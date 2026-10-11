@@ -1,0 +1,18 @@
+date: 2026-10-11T11:30:42Z
+runner: GitHub Actions 1000101468 win25-vs2026 20260925.250.1 (Windows X64)
+commit: 731bccb4d1c03a27a229f9cd2805acff22f974cf
+
+
+Caption                : Microsoft Windows Server 2025 Datacenter
+Version                : 10.0.26100
+TotalVisibleMemorySize : 16771836
+
+
+
+
+
+Name                      : AMD EPYC 7763 64-Core Processor                
+NumberOfLogicalProcessors : 4
+
+
+

@@ -1,0 +1,13 @@
+ new Debian package, version 2.0.
+ size 23643858 bytes: control archive=473 bytes.
+     227 bytes,     9 lines      control
+     392 bytes,     5 lines      md5sums
+ Package: dash-wallet
+ Version: 0.1.0
+ Architecture: amd64
+ Installed-Size: 69620
+ Maintainer: dash
+ Priority: optional
+ Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+ Description: Dash Wallet
+  The Dash wallet with DashPay, on the desktop.

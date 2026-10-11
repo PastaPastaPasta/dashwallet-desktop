@@ -1,0 +1,12 @@
+{
+  "os": "windows",
+  "runnerImage": "win25-vs2026 20260925.250.1",
+  "runnerName": "GitHub Actions 1000101404",
+  "arch": "x86_64",
+  "cpu": "AMD EPYC 7763 64-Core Processor",
+  "cores": 4,
+  "memoryMB": 16379,
+  "system": "Microsoft Windows Server 2025 Datacenter 10.0.26100",
+  "webview": "WebView2 153.0.4234.48",
+  "load": "n/a"
+}

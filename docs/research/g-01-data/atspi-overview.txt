@@ -1,0 +1,72 @@
+[application] "dash-wallet" {}
+  [frame] "Dash Wallet — Testnet" attrs=window-type:normal {active,enabled,sensitive,showing,visible} @(0,0 1280x820)
+    [filler] "" {enabled,sensitive,showing,visible}
+      [filler] "" {}
+        [filler] "" {}
+          [scroll pane] "" actions= {enabled,focusable,sensitive} @(0,0 1280x820)
+            [document web] "Dash Wallet" actions= {enabled,focusable,sensitive,showing,visible}
+              [landmark] "" actions= attrs=computed-role:banner,tag:header,xml-roles:banner {enabled,sensitive,showing,visible}
+                [toggle button] "Hide balance" desc="Hide balance" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [button] "Lock wallet" desc="Lock wallet" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+              [landmark] "Main" actions= attrs=computed-role:navigation,tag:nav,xml-roles:navigation {enabled,sensitive,showing,visible}
+                [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(10,50 199x134)
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,50 199x32)
+                    [button] "Overview" actions=press attrs=computed-role:button,current:page,tag:button {active,enabled,focusable,sensitive,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,84 199x32)
+                    [button] "Send" desc="Send is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,118 199x32)
+                    [button] "Receive" desc="Receive is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,152 199x32)
+                    [button] "Transactions" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+              [landmark] "" actions= attrs=computed-role:main,tag:main,xml-roles:main {enabled,sensitive,showing,visible}
+                [landmark] "Balance" actions= attrs=computed-role:region,tag:section,xml-roles:region {enabled,sensitive,showing,visible}
+                  [button] "30.39 tDASH" desc="Click to hide balance" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [landmark] "Shortcuts" actions= attrs=computed-role:navigation,tag:nav,xml-roles:navigation {enabled,sensitive,showing,visible}
+                  [button] "Receive" desc="Receive is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [button] "Send" desc="Send is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [button] "Scan QR" desc="Scanning is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [button] "Back up" desc="Backup is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                [heading] "History" text="History" actions= attrs=computed-role:heading,level:2,tag:h2 {enabled,sensitive,showing,visible}
+                [button] "Filter" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "Today" text="Today
+Tuesday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "Today" text="Today" actions= attrs=computed-role:heading,id:_r_0_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,422 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,422 748x62)
+                      [button] "Received 1:40 AM Pending
++0.20 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,484 748x62)
+                      [button] "Coffee refund 1:10 AM InstantSend
++1.25 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "Yesterday" text="Yesterday
+Monday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "Yesterday" text="Yesterday" actions= attrs=computed-role:heading,id:_r_1_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,605 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,605 748x62)
+                      [button] "Alice 5:46 AM
+-0.50000226 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "October 4, 2026" text="October 4, 2026
+Sunday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "October 4, 2026" text="October 4, 2026" actions= attrs=computed-role:heading,id:_r_2_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,726 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,726 748x62)
+                      [button] "Masternode reward 11:06 AM
++0.71561845 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,788 748x62)
+                      [button] "Exchange withdrawal 1:44 AM
++0.32237277 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [button] "See all transactions" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+              [landmark] "" actions= attrs=computed-role:contentinfo,tag:footer,xml-roles:contentinfo {enabled,sensitive,showing,visible}
+                [status bar] "" text="Up to date" actions= attrs=atomic:true,computed-role:status,container-atomic:true,container-live-role:status,container-live:polite,container-relevant:additions text,live:polite,relevant:additions text,tag:span,xml-roles:status {enabled,sensitive,showing,visible}
+              [status bar] "" actions= attrs=atomic:true,computed-role:status,container-atomic:true,container-live-role:status,container-live:polite,container-relevant:additions text,live:polite,relevant:additions text,tag:div,xml-roles:status {enabled,sensitive,visible}

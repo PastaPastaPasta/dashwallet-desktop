@@ -1,0 +1,16 @@
+# perf record -F 499 -g of one history-bench launch on agentbox (perf/bench.sh), 60 s from the first 200-row render; perf report --no-children --sort dso (head). Host GTK 4.22.4.
+    62.04%  libgtk-4.so.1.2200.4         
+            |          
+            |--27.46%--0x7c539e59c56b
+            |          g_closure_invoke
+            |          0x7c539e1d0bc9
+            |          0x7c539e1d2b66
+            |          g_signal_emit_valist
+            |          g_signal_emit
+            |          |          
+            |          |--12.98%--deinit (inlined)
+            |          |          deinit (inlined)
+            |          |          _swift_release_dealloc
+            |          |          bool swift::RefCounts<swift::RefCountBitsT<(swift::RefCountInlinedness)1> >::doDecrementSlow<(swift::PerformDeinit)1>(swift::RefCountBitsT<(swift::RefCountInlinedness)1>, unsigned int)
+            |          |          deinit (inlined)
+            |          |          deinit (inlined)

@@ -1,0 +1,11 @@
+gl1: first-paint 54.717 cpu=0.700  overview-paint 71.214 cpu=4.406  
+cairo1: first-paint 50.734 cpu=0.599  overview-paint 70.103 cpu=3.741  
+gl2: first-paint 55.235 cpu=0.820  overview-paint 68.921 cpu=4.685  
+cairo2: first-paint 55.431 cpu=0.537  overview-paint 79.179 cpu=3.511  
+gl3: first-paint 53.225 cpu=0.644  overview-paint 62.923 cpu=4.267  
+grep: demo-cairo3.err: No such file or directory
+cairo3: first-paint 52.128 cpu=0.477  overview-paint 62.344 cpu=3.261  
+gl4: first-paint 54.486 cpu=0.729  overview-paint 69.647 cpu=4.960  
+cairo4: first-paint 46.847 cpu=0.513  overview-paint 53.389 cpu=3.187  
+gl5: first-paint 53.057 cpu=0.691  overview-paint 66.458 cpu=4.344  
+cairo5: first-paint 51.603 cpu=0.563  overview-paint 60.732 cpu=3.532  

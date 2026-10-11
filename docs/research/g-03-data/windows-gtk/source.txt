@@ -1,0 +1,21 @@
+GtkBackend on windows-latest (swiftcrossui.sh --backend gtk; Vendor/PATCHES.md P14, P15).
+
+Run 38135678506, commit 731bccb (the mark parser fix); the zip (108,683,983 bytes) is in the
+run's artifact gate-swiftcrossui-windows. Build: core 1800 s, Swift 583 s, GTK 4.22.4 from
+gvsbuild 2026.8.0. The earlier run 38130603972 (commit 6e300e8, core 1703 s, Swift 598 s) built
+and launched the same app, but its harness missed the screen marks: Pango's "couldn't load font"
+warning ends without a newline, so the next gate-mark followed it on the same line.
+
+U4: FindAll over the window returns 0 elements on every screen, and the app keeps running.
+gvsbuild's gtk-4-1.dll was built without GTK's AccessKit backend, its only accessibility backend
+on Windows; `strings` on it prints "accesskit - Disabled during GTK build". With no UI Automation
+provider, the window exposes nothing. No *-uia.txt is written for an empty walk.
+
+Screens: the lock screen and Overview shots match their marks (Overview shows the 40k wallet's
+206 014.36392896 balance). The Transactions and detail shots do not: four show the sync overlay
+over the page (GateProbe logged sync-overlay-hide), and light-transactions.png shows the lock
+screen with "An unexpected error occurred.". On Windows the marks come from GateProbe's 250 ms
+view-model poll, not from painted frames, so a mark is not proof of what is on screen.
+
+Fonts: GTK falls back from Inter to "Sans" (36 distinct face/size fallbacks per launch); the app
+registers its bundled Inter with Fontconfig only under os(Linux).
