@@ -402,6 +402,15 @@ pub struct HistoryRows {
     pub total_matching: Option<u32>,
 }
 
+/// `history_page_timed` (U5): the page plus the time the engine took to build
+/// it, so the round trip splits into engine work and IPC + serialisation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TimedHistoryRows {
+    pub engine_micros: u64,
+    pub page: HistoryRows,
+}
+
 impl From<HistoryPage> for HistoryRows {
     fn from(p: HistoryPage) -> Self {
         HistoryRows {
@@ -572,6 +581,7 @@ pub(crate) fn export_all(dir: &std::path::Path) -> Result<(), ts_rs::ExportError
     SyncStatus::export_all(&cfg)?;
     HistoryRequest::export_all(&cfg)?;
     HistoryRows::export_all(&cfg)?;
+    TimedHistoryRows::export_all(&cfg)?;
     TxDetails::export_all(&cfg)?;
     EngineSignal::export_all(&cfg)?;
     AppError::export_all(&cfg)?;

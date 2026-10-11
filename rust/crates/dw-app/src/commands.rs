@@ -19,7 +19,8 @@ use zeroize::Zeroizing;
 use crate::bridge::TauriSink;
 use crate::dto::{
     AppError, Balances, HistoryRequest, HistoryRows, LaunchInfo, LockStatus, SyncStatus,
-    TxCategoryName, TxDetails, TxRow, TxStatusInfo, TxStatusKindName, TxTypeName, WalletSummary,
+    TimedHistoryRows, TxCategoryName, TxDetails, TxRow, TxStatusInfo, TxStatusKindName, TxTypeName,
+    WalletSummary,
 };
 use crate::launch::LaunchOptions;
 
@@ -185,7 +186,15 @@ pub async fn history_page(
     request: HistoryRequest,
 ) -> Result<HistoryRows, AppError> {
     let id = parse_wallet_id(&wallet_id)?;
-    let query = HistoryQuery {
+    let session = state.session().await?;
+    Ok(session
+        .history_page(id, history_query(request))
+        .await?
+        .into())
+}
+
+fn history_query(request: HistoryRequest) -> HistoryQuery {
+    HistoryQuery {
         filter: HistoryFilter {
             categories: request.categories.into_iter().map(Into::into).collect(),
             text: request.text.filter(|t| !t.trim().is_empty()),
@@ -194,8 +203,27 @@ pub async fn history_page(
         sort: request.sort.into(),
         cursor: request.cursor,
         limit: request.limit,
-    };
-    Ok(state.session().await?.history_page(id, query).await?.into())
+    }
+}
+
+/// `history_page` with the engine's share of the time (U5): the renderer
+/// subtracts `engine_micros` from its round trip to get the IPC and
+/// serialisation cost of a real page, apart from the engine's query cost.
+#[tauri::command]
+pub async fn history_page_timed(
+    state: State<'_, AppState>,
+    wallet_id: String,
+    request: HistoryRequest,
+) -> Result<TimedHistoryRows, AppError> {
+    let id = parse_wallet_id(&wallet_id)?;
+    let session = state.session().await?;
+    let started = Instant::now();
+    let page = session.history_page(id, history_query(request)).await?;
+    let engine_micros = started.elapsed().as_micros() as u64;
+    Ok(TimedHistoryRows {
+        engine_micros,
+        page: page.into(),
+    })
 }
 
 #[tauri::command]

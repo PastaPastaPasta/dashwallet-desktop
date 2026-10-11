@@ -8,6 +8,7 @@ import type { HistoryRows } from "./generated/HistoryRows";
 import type { LaunchInfo } from "./generated/LaunchInfo";
 import type { LockStatus } from "./generated/LockStatus";
 import type { SyncStatus } from "./generated/SyncStatus";
+import type { TimedHistoryRows } from "./generated/TimedHistoryRows";
 import type { TxDetails } from "./generated/TxDetails";
 import type { WalletSummary } from "./generated/WalletSummary";
 
@@ -41,6 +42,8 @@ export const tauriTools = {
   selftestReport: (report: unknown) => invoke<void>("selftest_report", { report }),
   selftestCheckpoint: (screen: string) => invoke<void>("selftest_checkpoint", { screen }),
   ipcBenchRows: (rows: number) => invoke<HistoryRows>("ipc_bench_rows", { rows }),
+  historyPageTimed: (walletId: string, request: HistoryRequest) =>
+    invoke<TimedHistoryRows>("history_page_timed", { walletId, request }),
   probeUnlisted: () => invoke<string>("probe_unlisted"),
   /** A plugin command that is not installed (U6: the renderer cannot reach a shell). */
   invokeUnknownPlugin: () => invoke<unknown>("plugin:shell|execute", { program: "sh", args: ["-c", "id"] }),

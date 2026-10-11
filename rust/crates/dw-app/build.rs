@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "selftest_report",
     "selftest_checkpoint",
     "ipc_bench_rows",
+    "history_page_timed",
     "probe_unlisted",
 ];
 

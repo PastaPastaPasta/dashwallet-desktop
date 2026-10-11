@@ -50,6 +50,9 @@ export interface Report {
   /** Milestones in ms since the webview's navigation start, plus the navigation timing entry. */
   startup?: { milestones: Record<string, number>; navigation: Record<string, number> };
   ipc?: Record<string, Stats>;
+  /** U5 with the engine's share taken out: per call, the round trip, the engine's time to
+   * build the page (`history_page_timed`) and the rest (IPC, serialisation, JSON parse). */
+  ipcSplit?: Record<string, { roundTrip: Stats; engine: Stats; ipc: Stats }>;
   security?: Record<string, string>;
 }
 
@@ -139,6 +142,24 @@ async function time(n: number, f: () => Promise<unknown>): Promise<Stats> {
     samples.push(performance.now() - t);
   }
   return stats(samples);
+}
+
+/** Like `time`, for calls that report the engine's share in µs: the round trip, the engine and
+ * the remainder (IPC + serialisation), each as its own distribution over the same samples. */
+async function timeSplit(n: number, f: () => Promise<{ engineMicros: number }>) {
+  for (let i = 0; i < 20; i++) await f();
+  const roundTrip: number[] = [];
+  const engine: number[] = [];
+  const ipc: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = performance.now();
+    const { engineMicros } = await f();
+    const ms = performance.now() - t;
+    roundTrip.push(ms);
+    engine.push(engineMicros / 1000);
+    ipc.push(ms - engineMicros / 1000);
+  }
+  return { roundTrip: stats(roundTrip), engine: stats(engine), ipc: stats(ipc) };
 }
 
 /** Called after each screen is recorded (the Tauri harness screenshots it). */
@@ -276,6 +297,7 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
       report.ipc.historyPage200 = await time(200, () => backend.historyPage(wallet.walletId, request));
       // Same engine work, one-row payload: separates the engine's query cost from IPC and rendering.
       report.ipc.historyPage1 = await time(50, () => backend.historyPage(wallet.walletId, { ...request, limit: 1 }));
+      report.ipcSplit = { historyPage200: await timeSplit(200, () => tauriTools.historyPageTimed(wallet.walletId, request)) };
     }
   }
 
