@@ -2199,9 +2199,11 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOptions) async throws  -> String
     
     /**
-     * Unloads the wallet, deletes its wallet-state rows, its app metadata
-     * and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
-     * grant. Emits `WalletRemoved`.
+     * Deletes the wallet's vault records, then unloads it and deletes its
+     * wallet-state rows and app metadata (IOS-109, QT-101 close+delete).
+     * Needs a `Wipe` grant. Fails closed (E0-04 DEC-134): when the vault
+     * records cannot be deleted the error is returned and the wallet stays
+     * listed and usable. Emits `WalletRemoved`.
      */
     func removeWallet(walletId: String, grantId: String) async throws 
     
@@ -3900,9 +3902,11 @@ open func importWallet(mnemonic: Data, bip39Passphrase: Data, options: ImportOpt
 }
     
     /**
-     * Unloads the wallet, deletes its wallet-state rows, its app metadata
-     * and its vault records (IOS-109, QT-101 close+delete). Needs a `Wipe`
-     * grant. Emits `WalletRemoved`.
+     * Deletes the wallet's vault records, then unloads it and deletes its
+     * wallet-state rows and app metadata (IOS-109, QT-101 close+delete).
+     * Needs a `Wipe` grant. Fails closed (E0-04 DEC-134): when the vault
+     * records cannot be deleted the error is returned and the wallet stays
+     * listed and usable. Emits `WalletRemoved`.
      */
 open func removeWallet(walletId: String, grantId: String)async throws   {
     return
@@ -24237,7 +24241,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet() != 47304) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_remove_wallet() != 50684) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_remove_wallet() != 29760) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_rename_wallet() != 59660) {

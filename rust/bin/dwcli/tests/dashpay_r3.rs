@@ -29,17 +29,29 @@ struct Run {
     stderr: String,
 }
 
-/// Runs `dwcli` with `stdin`, killing it at [`DEADLINE`]. Without
-/// `capture`, stdout is `/dev/full`.
-fn dwcli(dir: &Path, args: &[&str], fault: Option<&str>, stdin: &[u8], capture: bool) -> Run {
-    let stdout = if capture {
-        Stdio::piped()
-    } else {
+/// A stdout every write to fails: `/dev/full` on Linux, else a pipe whose
+/// reader is closed (macOS and Windows have no `/dev/full`).
+fn failing_stdout() -> Stdio {
+    if cfg!(target_os = "linux") {
         File::options()
             .write(true)
             .open("/dev/full")
             .unwrap()
             .into()
+    } else {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        writer.into()
+    }
+}
+
+/// Runs `dwcli` with `stdin`, killing it at [`DEADLINE`]. Without
+/// `capture`, stdout fails every write ([`failing_stdout`]).
+fn dwcli(dir: &Path, args: &[&str], fault: Option<&str>, stdin: &[u8], capture: bool) -> Run {
+    let stdout = if capture {
+        Stdio::piped()
+    } else {
+        failing_stdout()
     };
     let mut command = Command::new(env!("CARGO_BIN_EXE_dwcli"));
     command
@@ -111,7 +123,8 @@ const WIPED: &str = "dwcli: forced exit, passphrase wiped";
 /// Sol finding 1 (and 2): a session whose engine stalls after a task panic
 /// prints the request's error and `session_poisoned`, runs no later
 /// request, and exits 1 without the engine's shutdown; with stdout on
-/// `/dev/full` it exits the same way, within the same bound. The
+/// `/dev/full` (or a closed pipe) it exits the same way, within the same
+/// bound. The
 /// passphrase is wiped before either exit.
 #[test]
 fn a_stalled_engine_is_abandoned_whatever_stdout_does() {

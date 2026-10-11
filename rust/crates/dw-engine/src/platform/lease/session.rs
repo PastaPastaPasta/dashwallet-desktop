@@ -345,12 +345,14 @@ impl NetworkSession {
     async fn create_background(self: &Arc<Self>, wallet: WalletId) {
         let gens = self.leases.wait_clear(&wallet).await;
         let vault = self.vault.clone();
-        let made = tokio::task::spawn_blocking(move || {
-            let epoch = vault.epoch();
-            let signer = vault.dashpay_crypto_signer(&wallet.0).ok()?;
-            Some((epoch, VaultContactCrypto::new(signer).ok()?))
-        })
-        .await;
+        let made = self
+            .rt
+            .spawn_blocking(move || {
+                let epoch = vault.epoch();
+                let signer = vault.dashpay_crypto_signer(&wallet.0).ok()?;
+                Some((epoch, VaultContactCrypto::new(signer).ok()?))
+            })
+            .await;
         if let Ok(Some((epoch, crypto))) = made {
             self.leases.insert_background(wallet, gens, epoch, crypto);
         }

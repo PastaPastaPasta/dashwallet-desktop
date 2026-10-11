@@ -187,19 +187,25 @@ import Testing
         try await client.shutdown()
     }
 
-    @Test func spvStartStopEmitsStateEvents() async throws {
+    /// `startSPV` returns at once and SPV starts after the bring-up (E0-05),
+    /// so the test waits for the start's event before stopping: a stop
+    /// before it cancels the start, which then emits nothing.
+    @Test(.timeLimit(.minutes(1))) func spvStartStopEmitsStateEvents() async throws {
         let dir = try TempDir()
         let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
-        let stream = client.events.subscribe(network: .regtest)
+        var events = client.events.subscribe(network: .regtest).makeAsyncIterator()
         try await client.open(.regtest, options: Self.regtestOptions)
         try await client.startSPV(on: .regtest)
         #expect(try await client.isSPVRunning(on: .regtest))
+
+        var states: [Bool] = []
+        while states.isEmpty, let e = await events.next() {
+            if case .spvStateChanged(_, let running) = e { states.append(running) }
+        }
         try await client.stopSPV(on: .regtest)
         #expect(try await client.isSPVRunning(on: .regtest) == false)
         try await client.shutdown()
-
-        var states: [Bool] = []
-        for await e in stream {
+        while let e = await events.next() {
             if case .spvStateChanged(_, let running) = e { states.append(running) }
         }
         #expect(states == [true, false])

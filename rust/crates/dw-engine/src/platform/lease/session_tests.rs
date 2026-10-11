@@ -412,6 +412,39 @@ fn the_background_lease_follows_the_vault_state() {
     );
 }
 
+/// Polls `fut` on this thread, outside any tokio runtime, as UniFFI's
+/// foreign executor polls dw-ffi's futures (the crate docs' contract).
+fn block_on_foreign<F: std::future::Future>(fut: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Arc::new(Unpark(std::thread::current())).into();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let std::task::Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::thread::park();
+    }
+}
+
+/// An unlock through `vault_op` polled off the engine's runtime (dw-ffi's
+/// `Vault`) re-creates the background lease. Its key read used the
+/// caller's runtime and panicked with "there is no reactor running".
+#[test]
+fn an_unlock_polled_off_the_runtime_recreates_the_background_lease() {
+    let f = fixture(true);
+    let s = &f.session;
+    s.lock_vault_sync().unwrap();
+    assert!(s.leases.background(&f.wallet).is_none());
+    block_on_foreign(s.vault_op(|v| v.unlock(PASS, UnlockScope::Full))).unwrap();
+    assert!(s.leases.background(&f.wallet).is_some());
+}
+
 #[test]
 fn an_epoch_change_through_vault_op_needs_a_grant_and_rebind_restores() {
     let f = fixture(true);
