@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::parse_network;
-use crate::error::AppError;
+use crate::error::{AppError, UriCode};
 
 /// Dash Core `MAX_MONEY`: 21 million DASH in duffs.
 pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
@@ -197,9 +197,11 @@ pub fn classify_address(network: &str, text: &str) -> Result<AddressClass, AppEr
 /// mode, ECC L, at most 255 characters).
 pub fn qr_matrix(text: &str) -> Result<QrMatrix, AppError> {
     let m = dw_uri::qr::qr_matrix(text).map_err(|e| match e {
-        dw_uri::qr::QrError::TooLong { len } => AppError::invalid_argument(format!(
-            "text is {len} characters; a QR code holds at most 255"
-        )),
+        dw_uri::qr::QrError::TooLong { len } => AppError {
+            code: UriCode::TooLongForQr.into(),
+            message: format!("text is {len} characters; a QR code holds at most 255"),
+            data: None,
+        },
     })?;
     Ok(QrMatrix {
         size: m.size,
@@ -282,7 +284,7 @@ mod tests {
         assert_eq!(m.modules.len(), (m.size * m.size) as usize);
         assert_eq!(
             qr_matrix(&"x".repeat(256)).unwrap_err().code_str(),
-            "invalid_argument"
+            "uri.too_long_for_qr"
         );
     }
 

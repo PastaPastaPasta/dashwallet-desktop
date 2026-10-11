@@ -47,7 +47,8 @@
         "send",
         "coinjoin",
         "identity",
-        "social"
+        "social",
+        "console"
       ]
     },
     "withGlobalTauri": false

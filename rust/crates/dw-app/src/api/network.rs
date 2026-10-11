@@ -26,7 +26,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("NetworkSession::data_dir", "internal: a path the engine owns"),
     ("NetworkSession::avatars_dir", "internal: avatars cross as bytes"),
     ("NetworkSession::is_open", "internal: the binding drops a session it closes"),
-    ("NetworkSession::run_on_engine", "internal: runs engine work for the facade"),
     ("NetworkSession::platform_context_ready", "internal: the `platform` events and `platformStatus` report it"),
 ];
 

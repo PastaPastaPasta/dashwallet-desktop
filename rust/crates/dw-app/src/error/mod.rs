@@ -27,8 +27,8 @@ use crate::dto::platform::{
 
 pub use engine::{EngineCode, VaultCode};
 pub use nested::{
-    BackupCode, CoinJoinCode, CompatCode, LabelsCode, MasternodeCode, PsbtCode, SendCode,
-    SignerCode,
+    BackupCode, CoinJoinCode, CompatCode, ConsoleCode, LabelsCode, MasternodeCode, PsbtCode,
+    SendCode, SignerCode, UriCode,
 };
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
@@ -62,6 +62,8 @@ pub enum ErrorCode {
     Psbt(PsbtCode),
     CoinJoin(CoinJoinCode),
     Masternode(MasternodeCode),
+    Uri(UriCode),
+    Console(ConsoleCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
     Registration(RegistrationCode),
@@ -117,32 +119,6 @@ codes! {
     }
 }
 
-impl ErrorCode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ErrorCode::App(c) => c.as_str(),
-            ErrorCode::Engine(c) => c.as_str(),
-            ErrorCode::Vault(c) => c.as_str(),
-            ErrorCode::Signer(c) => c.as_str(),
-            ErrorCode::Send(c) => c.as_str(),
-            ErrorCode::Labels(c) => c.as_str(),
-            ErrorCode::Compat(c) => c.as_str(),
-            ErrorCode::Backup(c) => c.as_str(),
-            ErrorCode::Psbt(c) => c.as_str(),
-            ErrorCode::CoinJoin(c) => c.as_str(),
-            ErrorCode::Masternode(c) => c.as_str(),
-            ErrorCode::Platform(c) => c.as_str(),
-            ErrorCode::Identity(c) => c.as_str(),
-            ErrorCode::Registration(c) => c.as_str(),
-            ErrorCode::Name(c) => c.as_str(),
-            ErrorCode::Contact(c) => c.as_str(),
-            ErrorCode::Invitation(c) => c.as_str(),
-            ErrorCode::Avatar(c) => c.as_str(),
-            ErrorCode::Credits(c) => c.as_str(),
-        }
-    }
-}
-
 /// Fields some codes carry. Credit amounts are decimal strings (see
 /// `dto::credits`); duff amounts are numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -154,6 +130,15 @@ impl ErrorCode {
 pub enum ErrorData {
     /// `vault.wrong_passphrase`, `vault.throttled`: when to allow the next try.
     RetryAfter { secs: u64 },
+    /// `console.rpc_error`: Core's error code and message for the same
+    /// failure, shown as "message (code N)".
+    Rpc { rpc_code: i32, rpc_message: String },
+    /// `console.authorization_required`: the grant to ask for (`authorize`),
+    /// and the wallet it is for; then run the line again with it.
+    Authorize {
+        purpose: crate::api::vault::GrantPurposeSpec,
+        wallet_id: Option<String>,
+    },
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
     /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
@@ -279,6 +264,12 @@ macro_rules! into_code {
         })+
 
         impl ErrorCode {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(ErrorCode::$variant(c) => c.as_str(),)+
+                }
+            }
+
             /// Every code, in declaration order (the TypeScript union's).
             pub fn all() -> Vec<ErrorCode> {
                 let mut all = Vec::new();
@@ -301,6 +292,8 @@ into_code!(
     Psbt(PsbtCode),
     CoinJoin(CoinJoinCode),
     Masternode(MasternodeCode),
+    Uri(UriCode),
+    Console(ConsoleCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
     Registration(RegistrationCode),

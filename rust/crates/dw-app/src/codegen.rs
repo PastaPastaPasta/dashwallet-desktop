@@ -253,9 +253,13 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = config(dir.path());
         let mut exports = Exports::default();
-        TypeSpec::of::<a::Clash>().export(&cfg, &mut exports).unwrap();
+        TypeSpec::of::<a::Clash>()
+            .export(&cfg, &mut exports)
+            .unwrap();
         // The same type again is fine.
-        TypeSpec::of::<a::Clash>().export(&cfg, &mut exports).unwrap();
+        TypeSpec::of::<a::Clash>()
+            .export(&cfg, &mut exports)
+            .unwrap();
         // Reached as a dependency, not only at the signature's level.
         let e = TypeSpec::of::<b::Holder>()
             .export(&cfg, &mut exports)
