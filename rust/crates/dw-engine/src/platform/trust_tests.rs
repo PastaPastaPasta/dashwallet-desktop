@@ -18,7 +18,7 @@ use dw_appdb::AppDb;
 use platform_wallet::ContactRequest;
 
 use super::errors::PlatformError;
-use super::provenance::{Provenance, contact_request_key, kind};
+use super::provenance::{Entity, Provenance, contact_request_key, kind};
 use super::reverify::{Held, Refetcher, ShownProfile, confirmed, reverify};
 use super::startup::QuorumSource;
 use super::trust::{
@@ -156,12 +156,19 @@ impl Rig {
 
     /// The fallback latch is set (data counts as unverified from now on).
     fn latched(&self) -> bool {
-        self.provenance.is_unverified(kind::IDENTITY, "probe")
+        self.provenance.is_unverified(&probe())
     }
 
     fn latched_on_reopen(&self) -> bool {
-        Provenance::open(Arc::new(AppDb::open(&self.path).unwrap()))
-            .is_unverified(kind::IDENTITY, "probe")
+        Provenance::open(Arc::new(AppDb::open(&self.path).unwrap())).is_unverified(&probe())
+    }
+}
+
+fn probe() -> Entity {
+    Entity {
+        kind: kind::IDENTITY,
+        key: "probe".into(),
+        digest: Some("v1:00".into()),
     }
 }
 
@@ -607,19 +614,28 @@ fn a_verified_contact_request_records_the_contacts_model_key() {
             1_700_000_000_123
         )
     );
+    let records = confirmed(&[&held], std::slice::from_ref(&held));
+    assert_eq!(records, vec![held.entity()]);
     assert_eq!(
-        confirmed(&[&held], std::slice::from_ref(&held)),
-        vec![(kind::CONTACT_REQUEST, key.clone())]
+        (records[0].kind, records[0].key.as_str()),
+        (kind::CONTACT_REQUEST, key.as_str())
     );
 
     let r = rig(TrustMode::Degraded);
     r.trusted.set(A, REAL); // the fallback sets the latch
     r.lookup(A).unwrap();
-    assert!(r.provenance.is_unverified(kind::CONTACT_REQUEST, &key));
-    r.provenance
-        .record_verified(kind::CONTACT_REQUEST, &key)
-        .unwrap();
-    assert!(!r.provenance.is_unverified(kind::CONTACT_REQUEST, &key));
+    assert!(r.provenance.is_unverified(&held.entity()));
+    r.provenance.record_verified(&records[0]).unwrap();
+    assert!(!r.provenance.is_unverified(&held.entity()));
+    let changed = Held::ContactRequest(ContactRequest {
+        account_reference: 4,
+        ..request(7, 8, 1_700_000_000_123)
+    });
+    assert_eq!(changed.entity().key, key, "the same record key");
+    assert!(
+        r.provenance.is_unverified(&changed.entity()),
+        "other content"
+    );
 }
 
 /// Design §5: a verified fetch is recorded only if the library still holds
@@ -641,9 +657,13 @@ fn a_record_needs_the_entity_unchanged_at_write_time() {
     let fetched = [profile("Alice"), identity.clone()];
     let verified: Vec<&Held> = fetched.iter().collect();
     let alice58 = alice.to_string(dpp::platform_value::string_encoding::Encoding::Base58);
+    let records = confirmed(&verified, &[profile("Mallory"), identity]);
     assert_eq!(
-        confirmed(&verified, &[profile("Mallory"), identity]),
-        vec![(kind::IDENTITY, alice58)],
+        records
+            .iter()
+            .map(|e| (e.kind, e.key.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(kind::IDENTITY, alice58.as_str())],
         "the profile changed during the fetch"
     );
     assert!(
@@ -738,4 +758,166 @@ async fn masternode_sync_wakes_the_refetch_once_and_stays() {
         "a second note changes nothing"
     );
     assert!(r.trust.masternodes_synced());
+}
+
+/// One re-fetch of `h` through `fetch`, recording it if it verified (the
+/// task's steps, design §5).
+async fn refetch(r: &Rig, h: Held, fetch: FakeRefetch) -> bool {
+    let verified = tokio::spawn(async move { reverify(&h, &fetch).await.then_some(h) })
+        .await
+        .unwrap();
+    let Some(h) = verified else { return false };
+    for e in confirmed(&[&h], std::slice::from_ref(&h)) {
+        r.provenance.record_verified(&e).unwrap();
+    }
+    true
+}
+
+/// DEC-183: a record verifies the content it was written for. An entity the
+/// library replaced afterwards reads as unverified; a replacement Platform
+/// only served through the fallback never reads as verified; the re-fetch
+/// verifies the new content once SPV-held keys back it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replaced_entity_reads_unverified_until_its_new_content_verifies() {
+    let r = rig(TrustMode::Degraded);
+    r.spv.set(A, SpvAnswer::Verified(REAL));
+    r.trusted.set(A, REAL);
+    r.trusted.set(B, REAL); // SPV does not hold B: the fallback
+    r.lookup(B).unwrap();
+    assert!(r.latched());
+    let alice = Identifier::new([7; 32]);
+    let shown = |name: &str| ShownProfile {
+        display_name: Some(name.into()),
+        ..Default::default()
+    };
+    let held = |name: &str| Held::Profile {
+        id: alice,
+        shown: shown(name),
+    };
+    let platform = |name: &str, quorum: Quorum| FakeRefetch {
+        trust: Arc::clone(&r.trust),
+        keys: BTreeMap::new(),
+        profile: shown(name),
+        owner: alice,
+        request: request(7, 8, 1),
+        quorum: HashMap::from([(kind::PROFILE, quorum)]),
+    };
+    let unverified = |name: &str| r.provenance.is_unverified(&held(name).entity());
+
+    assert!(refetch(&r, held("Alice"), platform("Alice", A)).await);
+    assert!(!unverified("Alice"));
+
+    // The library's sync replaced the profile with what the trusted
+    // service's keys proved: it reads as unverified, and stays so.
+    assert!(unverified("Mallory"), "replaced after verification");
+    assert!(!refetch(&r, held("Mallory"), platform("Mallory", B)).await);
+    assert!(unverified("Mallory"), "a fallback-sourced replacement");
+    assert!(
+        Provenance::open(Arc::new(AppDb::open(&r.path).unwrap()))
+            .is_unverified(&held("Mallory").entity()),
+        "after a reopen too"
+    );
+
+    // Platform serves it under SPV-held keys: the re-fetch verifies it.
+    assert!(refetch(&r, held("Mallory"), platform("Mallory", A)).await);
+    assert!(!unverified("Mallory"), "re-verified");
+    assert!(unverified("Alice"), "the record moved to the new content");
+}
+
+/// DEC-183: every field a reader shows is in the digest, and the encoding
+/// names its version.
+#[test]
+fn the_digest_covers_the_content_and_names_its_version() {
+    let alice = Identifier::new([7; 32]);
+    let profile = |p: ShownProfile| {
+        Held::Profile {
+            id: alice,
+            shown: p,
+        }
+        .entity()
+        .digest
+        .unwrap()
+    };
+    let base = ShownProfile {
+        display_name: Some("Alice".into()),
+        ..Default::default()
+    };
+    let d = profile(base.clone());
+    assert!(d.starts_with("v1:") && d.len() == 3 + 64, "{d}");
+    assert_eq!(d, profile(base.clone()), "deterministic");
+    for changed in [
+        ShownProfile {
+            display_name: Some("Alicf".into()),
+            ..base.clone()
+        },
+        ShownProfile {
+            public_message: Some(String::new()),
+            ..base.clone()
+        },
+        ShownProfile {
+            avatar_url: Some("https://a.example/x".into()),
+            ..base.clone()
+        },
+        ShownProfile {
+            avatar_hash: Some([0; 32]),
+            ..base.clone()
+        },
+        ShownProfile {
+            avatar_fingerprint: Some([0; 8]),
+            ..base.clone()
+        },
+    ] {
+        assert_ne!(profile(changed.clone()), d, "{changed:?}");
+    }
+    let r = request(7, 8, 1);
+    let req = |r: ContactRequest| Held::ContactRequest(r).entity().digest.unwrap();
+    let d = req(r.clone());
+    for changed in [
+        ContactRequest {
+            sender_key_index: 9,
+            ..r.clone()
+        },
+        ContactRequest {
+            recipient_key_index: 9,
+            ..r.clone()
+        },
+        ContactRequest {
+            account_reference: 9,
+            ..r.clone()
+        },
+        ContactRequest {
+            encrypted_account_label: Some(vec![]),
+            ..r.clone()
+        },
+        ContactRequest {
+            encrypted_public_key: vec![4; 95],
+            ..r.clone()
+        },
+        ContactRequest {
+            auto_accept_proof: Some(vec![1]),
+            ..r.clone()
+        },
+        ContactRequest {
+            core_height_created_at: 901,
+            ..r.clone()
+        },
+    ] {
+        assert_ne!(req(changed.clone()), d, "{changed:?}");
+    }
+    let label = |l: &str, o: u8| {
+        Held::Label {
+            label: l.into(),
+            owner: Identifier::new([o; 32]),
+        }
+        .entity()
+        .digest
+        .unwrap()
+    };
+    assert_ne!(label("a11ce", 7), label("a11ce", 8), "the owner");
+    let empty = Held::Identity {
+        id: alice,
+        keys: BTreeMap::new(),
+    }
+    .entity();
+    assert!(empty.digest.is_some());
 }

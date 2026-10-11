@@ -117,6 +117,17 @@ can only ever under-count verification: it fails closed. A nested scope's lookup
 Errors platform-wallet turns into strings lose the mismatch code: such a refusal surfaces as the library's error,
 still a refusal. The mismatch marker is a fixed prefix of `InvalidQuorum` text that only this provider produces.
 
+**Content binding (DEC-183).** A record verifies the content it was written for. `dp_trust_verified.digest` (dw-appdb
+migration `trust_digest`) holds `v1:` and the hex SHA-256 of the entity's canonical bytes (`reverify::Canon`: a domain
+tag, the encoding version and the kind, then each field; byte strings length-prefixed, integers u64 LE, options
+tagged; identity keys in their platform serialization). Readers (`recovery::summaries` through each identity's
+`entities`, DP2-01's contacts model) compute the digest of what the library holds now, and `Provenance::is_unverified`
+counts the record only when the digests are equal. So an entity the library replaced after it verified, from any
+source, reads as unverified, and a replacement served only through the fallback never reads as verified; the
+re-fetch verifies new content and its record replaces the old one. Rows written before the column existed have no
+digest and verify nothing. Nothing clears records on change: the comparison is the whole mechanism. A change to the
+encoding takes the next version, and records of the old one read as unverified until re-verified.
+
 ## 5. Re-fetching unverified entities after sync
 
 Once the latch is set and masternode sync completes, a session task re-fetches what the read models show as
@@ -176,6 +187,7 @@ the same value without a wallet.
 | §4 | a scope records only when every lookup was SPV-verified; no lookup records nothing; nested scopes add up |
 | §5 | the post-sync re-fetch records equal, verified entities and skips differing ones |
 | §5 | a record needs the entity unchanged at write time; profile documents parse as the library caches them |
+| DEC-183 | a replaced entity reads as unverified; a fallback-sourced replacement never verifies; the re-fetch re-verifies new content; every shown field is in the digest; pre-digest rows (migration test) verify nothing |
 | §5 | a verified, equal contact request records under DP2-01's key; a differing or absent one records nothing; `contactRequest` documents parse as the library reads them |
 | lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

@@ -14,20 +14,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dash_sdk::platform::{DocumentQuery, Fetch, FetchMany};
+use dashcore::hashes::{Hash, sha256};
 use dpp::document::{Document, DocumentV0Getters};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID};
 use dpp::platform_value::Value;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::serialization::PlatformSerializable;
 use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use platform_wallet::key_wallet_manager::WalletManager;
 use platform_wallet::wallet::identity::DashPayProfile;
-use platform_wallet::{ContactRequest, PlatformWalletInfo};
+use platform_wallet::{ContactRequest, ManagedIdentity, PlatformWalletInfo};
 
 use super::errors::PlatformError;
-use super::provenance::{Provenance, contact_request_key, kind};
+use super::provenance::{Entity, Provenance, contact_request_key, kind};
 use super::recovery::owned_names;
 use super::trust::{self, BoxFuture};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -107,6 +109,56 @@ pub(super) enum Held {
 }
 
 impl Held {
+    /// The entity as provenance sees it (DEC-183): its record and the digest
+    /// of this content.
+    pub(super) fn entity(&self) -> Entity {
+        let (kind, key) = self.record();
+        Entity {
+            kind,
+            key,
+            digest: self.digest(kind),
+        }
+    }
+
+    /// The content digest, `v1:` and the hex SHA-256 of [`Canon`] bytes.
+    /// `None` if an identity key does not serialize.
+    fn digest(&self, kind: &str) -> Option<String> {
+        let mut c = Canon::new(kind);
+        match self {
+            Self::Identity { id, keys } => {
+                c.id(id).u64(keys.len() as u64);
+                for (key_id, key) in keys {
+                    c.u64((*key_id).into())
+                        .bytes(&key.serialize_to_bytes().ok()?);
+                }
+            }
+            Self::Profile { id, shown } => {
+                c.id(id)
+                    .opt(shown.display_name.as_deref().map(str::as_bytes))
+                    .opt(shown.public_message.as_deref().map(str::as_bytes))
+                    .opt(shown.avatar_url.as_deref().map(str::as_bytes))
+                    .opt(shown.avatar_hash.as_ref().map(|h| &h[..]))
+                    .opt(shown.avatar_fingerprint.as_ref().map(|f| &f[..]));
+            }
+            Self::Label { label, owner } => {
+                c.bytes(label.as_bytes()).id(owner);
+            }
+            Self::ContactRequest(r) => {
+                c.id(&r.sender_id)
+                    .id(&r.recipient_id)
+                    .u64(r.sender_key_index.into())
+                    .u64(r.recipient_key_index.into())
+                    .u64(r.account_reference.into())
+                    .opt(r.encrypted_account_label.as_deref())
+                    .bytes(&r.encrypted_public_key)
+                    .opt(r.auto_accept_proof.as_deref())
+                    .u64(r.core_height_created_at.into())
+                    .u64(r.created_at);
+            }
+        }
+        Some(c.finish())
+    }
+
     /// The `dp_trust_verified` record a verified match writes.
     fn record(&self) -> (&'static str, String) {
         match self {
@@ -118,6 +170,59 @@ impl Held {
                 contact_request_key(&r.sender_id, &r.recipient_id, r.created_at),
             ),
         }
+    }
+}
+
+/// The digest encoding (DEC-183); a change to [`Canon`] or to a field set
+/// takes the next version, and records of the old one read as unverified.
+const DIGEST_VERSION: &str = "v1";
+
+/// The canonical bytes of an entity: a domain tag and the kind, then each
+/// field in order. Byte strings are length-prefixed (u64 LE), integers u64
+/// LE, an option is a 0 or 1 byte then its value. Identity keys are their
+/// platform serialization (unversioned bincode).
+struct Canon(Vec<u8>);
+
+impl Canon {
+    fn new(kind: &str) -> Self {
+        let mut c = Self(Vec::new());
+        c.bytes(b"dw-trust-digest")
+            .bytes(DIGEST_VERSION.as_bytes())
+            .bytes(kind.as_bytes());
+        c
+    }
+
+    fn u64(&mut self, v: u64) -> &mut Self {
+        self.0.extend_from_slice(&v.to_le_bytes());
+        self
+    }
+
+    fn bytes(&mut self, b: &[u8]) -> &mut Self {
+        self.u64(b.len() as u64);
+        self.0.extend_from_slice(b);
+        self
+    }
+
+    fn id(&mut self, id: &Identifier) -> &mut Self {
+        self.bytes(&id.to_buffer())
+    }
+
+    fn opt(&mut self, b: Option<&[u8]>) -> &mut Self {
+        match b {
+            Some(b) => {
+                self.0.push(1);
+                self.bytes(b)
+            }
+            None => {
+                self.0.push(0);
+                self
+            }
+        }
+    }
+
+    fn finish(&self) -> String {
+        let digest = sha256::Hash::hash(&self.0).to_byte_array();
+        format!("{DIGEST_VERSION}:{}", hex::encode(digest))
     }
 }
 
@@ -168,16 +273,49 @@ pub(super) async fn reverify(h: &Held, fetch: &dyn Refetcher) -> bool {
 
 /// The records to write: entities whose fetch verified and that the
 /// library still holds, unchanged and unverified (`current`).
-pub(super) fn confirmed(verified: &[&Held], current: &[Held]) -> Vec<(&'static str, String)> {
+pub(super) fn confirmed(verified: &[&Held], current: &[Held]) -> Vec<Entity> {
     verified
         .iter()
         .filter(|h| current.contains(h))
-        .map(|h| h.record())
+        .map(|h| h.entity())
         .collect()
 }
 
-/// The entities of `info` the read models would show as unverified
-/// (`recovery::summaries`), each once.
+/// What an identity summary shows of `m` (`recovery::summaries`): the
+/// identity and its keys, its profile, the names it owns.
+pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Held> {
+    let identity = m.identity.id();
+    let mut held = vec![Held::Identity {
+        id: identity,
+        keys: m.identity.public_keys().clone(),
+    }];
+    if let Some(p) = &m.dashpay().profile {
+        held.push(Held::Profile {
+            id: identity,
+            shown: ShownProfile::of(p),
+        });
+    }
+    for (label, _) in owned_names(identity, &m.dpns_names, &info.dpns_name_states) {
+        held.push(Held::Label {
+            label: convert_to_homograph_safe_chars(&label),
+            owner: identity,
+        });
+    }
+    held
+}
+
+/// The contact requests of `m`: sent, received and established.
+fn requests_of(m: &ManagedIdentity) -> impl Iterator<Item = Held> + '_ {
+    let dp = m.dashpay();
+    let established = dp.established_contacts().values();
+    (dp.sent_contact_requests().values())
+        .chain(dp.incoming_contact_requests().values())
+        .chain(established.flat_map(|c| [&c.outgoing_request, &c.incoming_request]))
+        .map(|r| Held::ContactRequest(r.clone()))
+}
+
+/// The entities of `info` the read models would show as unverified, each
+/// once.
 fn unverified_of(
     info: &PlatformWalletInfo,
     id: &WalletId,
@@ -185,37 +323,12 @@ fn unverified_of(
     seen: &mut HashSet<(&'static str, String)>,
 ) -> Vec<Held> {
     let mut held = Vec::new();
-    let mut push = |h: Held| {
-        let (k, key) = h.record();
-        if provenance.is_unverified(k, &key) && seen.insert((k, key)) {
-            held.push(h);
-        }
-    };
     for m in info.identity_manager.wallet_managed_identities(&id.0) {
-        let identity = m.identity.id();
-        push(Held::Identity {
-            id: identity,
-            keys: m.identity.public_keys().clone(),
-        });
-        if let Some(p) = &m.dashpay().profile {
-            push(Held::Profile {
-                id: identity,
-                shown: ShownProfile::of(p),
-            });
-        }
-        for (label, _) in owned_names(identity, &m.dpns_names, &info.dpns_name_states) {
-            push(Held::Label {
-                label: convert_to_homograph_safe_chars(&label),
-                owner: identity,
-            });
-        }
-        let dp = m.dashpay();
-        let established = dp.established_contacts().values();
-        let requests = (dp.sent_contact_requests().values())
-            .chain(dp.incoming_contact_requests().values())
-            .chain(established.flat_map(|c| [&c.outgoing_request, &c.incoming_request]));
-        for r in requests {
-            push(Held::ContactRequest(r.clone()));
+        for h in held_of(m, info).into_iter().chain(requests_of(m)) {
+            let e = h.entity();
+            if provenance.is_unverified(&e) && seen.insert((e.kind, e.key)) {
+                held.push(h);
+            }
         }
     }
     held
@@ -423,9 +536,9 @@ impl NetworkSession {
         let written = records.len();
         let provenance = Arc::clone(&live.provenance);
         tokio::task::spawn_blocking(move || {
-            for (k, key) in records {
-                if let Err(e) = provenance.record_verified(k, &key) {
-                    tracing::warn!(error = %e, kind = k, "could not record a verified fetch");
+            for entity in records {
+                if let Err(e) = provenance.record_verified(&entity) {
+                    tracing::warn!(error = %e, kind = entity.kind, "could not record a verified fetch");
                 }
             }
         })

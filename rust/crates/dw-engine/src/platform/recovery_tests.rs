@@ -144,6 +144,7 @@ fn owned(identity: &str, index: u32, list: &[(&str, Option<u64>)]) -> OwnedIdent
         balance: Some(1),
         has_dashpay_keys: true,
         profile: None,
+        entities: Vec::new(),
     }
 }
 
@@ -156,7 +157,7 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         ]
     };
     let shown = |choices: &IdentityChoices| {
-        summaries(list(), choices, true, |_, _| false)
+        summaries(list(), choices, true, |_| false)
             .into_iter()
             .map(|s| (s.identity, s.index, s.is_main, s.main_name))
             .collect::<Vec<_>>()
@@ -190,8 +191,8 @@ fn the_main_identity_is_the_choice_while_held_else_the_lowest_index() {
         main_identity: Some("elsewhere".into()),
         ..IdentityChoices::default()
     };
-    assert!(summaries(list(), &stale, true, |_, _| false)[0].is_main);
-    assert!(summaries(Vec::new(), &chosen, true, |_, _| true).is_empty());
+    assert!(summaries(list(), &stale, true, |_| false)[0].is_main);
+    assert!(summaries(Vec::new(), &chosen, true, |_| true).is_empty());
 }
 
 /// Review DP1-03 R5: `identities()` shows what `DashPay::main_name` does. A
@@ -215,7 +216,7 @@ fn identities_show_only_names_platform_shows_owned() {
         ..MainNamePrefs::default()
     };
     let shown = |o: &OwnedIdentity, c: &IdentityChoices| {
-        let s = summaries(vec![o.clone()], c, true, |_, _| false).remove(0);
+        let s = summaries(vec![o.clone()], c, true, |_| false).remove(0);
         (s.names, s.main_name)
     };
     assert_eq!(
@@ -260,7 +261,7 @@ fn an_older_snapshot_shows_no_names() {
         )]),
         ..IdentityChoices::default()
     };
-    let shown = |current| summaries(vec![alice.clone()], &choices, current, |_, _| false).remove(0);
+    let shown = |current| summaries(vec![alice.clone()], &choices, current, |_| false).remove(0);
     let live = shown(true);
     assert_eq!(live.names, ["carol", "dash"]);
     assert_eq!(live.main_name.as_deref(), Some("carol"));
@@ -917,10 +918,21 @@ fn a_refused_store_leaves_a_discovered_identity_unverified() {
     };
     assert_eq!(unverified(), vec![(base58(ALICE), true)]);
 
-    provenance
-        .record_verified(super::provenance::kind::IDENTITY, &base58(ALICE))
-        .unwrap();
+    // DEC-183: the record of the identity as the library holds it.
+    let identity = guard(&s.platform.recovery.snapshots)[&id][0].entities[0].clone();
+    assert_eq!(identity.kind, super::provenance::kind::IDENTITY);
+    provenance.record_verified(&identity).unwrap();
     assert_eq!(unverified(), vec![(base58(ALICE), false)]);
+    let other_content = super::provenance::Entity {
+        digest: Some("v1:00".into()),
+        ..identity
+    };
+    provenance.record_verified(&other_content).unwrap();
+    assert_eq!(
+        unverified(),
+        vec![(base58(ALICE), true)],
+        "a record of other content verifies nothing"
+    );
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -1083,7 +1095,11 @@ fn a_reopen_after_a_refused_checkpoint_checkpoints_before_the_fallback() {
 
     let (engine, s) = reopen(dir.path(), platform);
     let provenance = s.live().unwrap().provenance;
-    assert!(provenance.is_unverified(super::provenance::kind::IDENTITY, "x"));
+    assert!(provenance.is_unverified(&super::provenance::Entity {
+        kind: super::provenance::kind::IDENTITY,
+        key: "x".into(),
+        digest: Some("v1:00".into()),
+    }));
     assert!(
         provenance.fallback_in_use().is_err(),
         "a committed row is not a durable one"

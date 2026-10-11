@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 8
+Contract-Version: 9
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -317,7 +317,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 8 -->
+<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 9 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1428,7 +1428,11 @@ The shapes are in §3. What they mean, where the name does not say:
   unsynced. A latch read back at open, or one that cannot be read, still counts as set for classification. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
   `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
   `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
-  exported, so a restored wallet's data verifies again. Absence fails closed: data the library keeps in memory after
+  exported, so a restored wallet's data verifies again. A record is bound to content (DEC-183): it stores a digest of
+  the entity's canonical bytes as verified, naming its encoding version (`v1:` and a SHA-256), and data counts as
+  verified only while the digest of what the library holds now equals it. An entity the library replaced after it
+  verified (from any source, the fallback included) reads as unverified until a fetch of the new content verifies;
+  records written before the digest existed verify nothing. Absence fails closed: data the library keeps in memory after
   a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
   is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
   unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
@@ -1704,3 +1708,11 @@ renames or reshapes them takes the next version bump:
     fallback path that looks like ownership evidence (the snapshot's marketplace rows, a retained pick) is as old as
     the snapshot, so the older snapshot shows no names and no main name, and `IdentitySummary` gains
     `names_updating: bool`, `true` exactly then, so the UI shows "updating". The markers govern the live list only.
+
+**From E0-10b** (version 9, DEC-183, no surface change):
+
+36. **Content-bound provenance.** `unverified` (§5) compares a digest of the content shown with the digest the
+    verification record stores, not the record's presence: a replaced entity reads as unverified until its new content
+    verifies, and pre-DEC-183 records (dw-appdb migration `trust_digest`) verify nothing. `contact_request` records
+    (key `sender:recipient:$createdAt`, `provenance::contact_request_key`) follow the same model, so the contacts read
+    model (DP2-01) checks content as well as the key.

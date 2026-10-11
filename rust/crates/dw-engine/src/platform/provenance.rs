@@ -22,7 +22,7 @@
 //! Reads are in memory (the facade's `identities()` is), loaded at open and
 //! written through.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -65,6 +65,16 @@ pub(crate) fn contact_request_key(
     format!("{}:{}:{created_at}", b58(sender), b58(recipient))
 }
 
+/// An entity as provenance sees it: its record's kind and key, and the
+/// digest of its content as the library holds it now (DEC-183).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Entity {
+    pub(crate) kind: &'static str,
+    pub(crate) key: String,
+    /// `None` if the content could not be encoded: it never verifies.
+    pub(crate) digest: Option<String>,
+}
+
 /// The session's provenance: the fallback latch and the verified records.
 pub(crate) struct Provenance {
     appdb: Arc<AppDb>,
@@ -74,7 +84,8 @@ pub(crate) struct Provenance {
     /// succeeded in this process (DEC-143). Never inferred from a row read
     /// back, which may be a committed but unsynced WAL frame.
     latch_durable: AtomicBool,
-    verified: Mutex<HashSet<(String, String)>>,
+    /// `(kind, key)` → the digest of the content that verified.
+    verified: Mutex<HashMap<(String, String), String>>,
 }
 
 impl Provenance {
@@ -96,7 +107,11 @@ impl Provenance {
             appdb,
             fallback_used: AtomicBool::new(fallback_used),
             latch_durable: AtomicBool::new(false),
-            verified: Mutex::new(verified.into_iter().collect()),
+            verified: Mutex::new(
+                (verified.into_iter())
+                    .map(|(kind, key, digest)| ((kind, key), digest))
+                    .collect(),
+            ),
         }
     }
 
@@ -129,29 +144,42 @@ impl Provenance {
         Ok(())
     }
 
-    /// One of the entity's fetches verified against SPV-held quorum keys
-    /// (E0-10b). Blocking (app.sqlite).
-    pub(crate) fn record_verified(
-        &self,
-        kind: &str,
-        key: &str,
-    ) -> Result<(), dw_appdb::AppDbError> {
-        self.appdb.mark_verified(kind, key, unix_now())?;
-        guard(&self.verified).insert((kind.to_string(), key.to_string()));
+    /// A fetch of `entity`, with this content, verified against SPV-held
+    /// quorum keys (E0-10b). An entity without a digest records nothing.
+    /// Blocking (app.sqlite).
+    pub(crate) fn record_verified(&self, entity: &Entity) -> Result<(), dw_appdb::AppDbError> {
+        let Some(digest) = &entity.digest else {
+            return Ok(());
+        };
+        (self.appdb).mark_verified(entity.kind, &entity.key, digest, unix_now())?;
+        let key = (entity.kind.to_string(), entity.key.clone());
+        guard(&self.verified).insert(key, digest.clone());
         Ok(())
     }
 
-    /// Whether `(kind, key)` must be treated as unverified: the fallback has
-    /// been used and no verification is on record. In memory.
-    pub(crate) fn is_unverified(&self, kind: &str, key: &str) -> bool {
-        self.fallback_used.load(Ordering::SeqCst)
-            && !guard(&self.verified).contains(&(kind.to_string(), key.to_string()))
+    /// Whether `entity` must be treated as unverified: the fallback has been
+    /// used and no verification of this content is on record (DEC-183: a
+    /// record of other content does not count). In memory.
+    pub(crate) fn is_unverified(&self, entity: &Entity) -> bool {
+        self.fallback_used.load(Ordering::SeqCst) && {
+            let key = (entity.kind.to_string(), entity.key.clone());
+            let verified = guard(&self.verified);
+            entity.digest.is_none() || verified.get(&key) != entity.digest.as_ref()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn e(kind: &'static str, key: &str, digest: &str) -> Entity {
+        Entity {
+            kind,
+            key: key.to_string(),
+            digest: Some(digest.to_string()),
+        }
+    }
 
     /// Before the fallback is ever used nothing is unverified; once it is,
     /// everything without a record is, for good (a later session reads the
@@ -160,18 +188,61 @@ mod tests {
     fn absence_is_unverified_once_the_fallback_was_used() {
         let appdb = Arc::new(AppDb::open_in_memory().unwrap());
         let p = Provenance::open(Arc::clone(&appdb));
-        assert!(!p.is_unverified(kind::IDENTITY, "a"));
+        assert!(!p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
 
         p.fallback_in_use().unwrap();
-        assert!(p.is_unverified(kind::IDENTITY, "a"));
-        assert!(p.is_unverified(kind::PROFILE, "a"));
-        p.record_verified(kind::IDENTITY, "a").unwrap();
-        assert!(!p.is_unverified(kind::IDENTITY, "a"));
-        assert!(p.is_unverified(kind::PROFILE, "a"), "per kind");
+        assert!(p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
+        assert!(p.is_unverified(&e(kind::PROFILE, "a", "v1:aa")));
+        p.record_verified(&e(kind::IDENTITY, "a", "v1:aa")).unwrap();
+        assert!(!p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
+        assert!(p.is_unverified(&e(kind::PROFILE, "a", "v1:aa")), "per kind");
 
         let later = Provenance::open(Arc::clone(&appdb));
-        assert!(!later.is_unverified(kind::IDENTITY, "a"));
-        assert!(later.is_unverified(kind::DPNS_LABEL, "a11ce"));
+        assert!(!later.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
+        assert!(later.is_unverified(&e(kind::DPNS_LABEL, "a11ce", "v1:aa")));
+    }
+
+    /// DEC-183: a record verifies the content it was written for. The entity
+    /// replaced afterwards reads as unverified, in this session and the next,
+    /// until its new content verifies; content that cannot be encoded never
+    /// verifies.
+    #[test]
+    fn a_record_verifies_only_the_content_it_was_written_for() {
+        let appdb = Arc::new(AppDb::open_in_memory().unwrap());
+        let p = Provenance::open(Arc::clone(&appdb));
+        p.fallback_in_use().unwrap();
+        p.record_verified(&e(kind::IDENTITY, "a", "v1:aa")).unwrap();
+        assert!(
+            p.is_unverified(&e(kind::IDENTITY, "a", "v1:bb")),
+            "replaced"
+        );
+        assert!(Provenance::open(Arc::clone(&appdb)).is_unverified(&e(
+            kind::IDENTITY,
+            "a",
+            "v1:bb"
+        )));
+
+        p.record_verified(&e(kind::IDENTITY, "a", "v1:bb")).unwrap();
+        assert!(
+            !p.is_unverified(&e(kind::IDENTITY, "a", "v1:bb")),
+            "re-verified"
+        );
+        assert!(
+            p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")),
+            "the old content"
+        );
+        assert!(!Provenance::open(Arc::clone(&appdb)).is_unverified(&e(
+            kind::IDENTITY,
+            "a",
+            "v1:bb"
+        )));
+
+        let unencodable = Entity {
+            digest: None,
+            ..e(kind::IDENTITY, "c", "")
+        };
+        p.record_verified(&unencodable).unwrap();
+        assert!(p.is_unverified(&unencodable));
     }
 
     /// Sol r3's busy-write probe (DEC-135): a latch write that fails (another
@@ -189,12 +260,15 @@ mod tests {
         assert!(p.fallback_in_use().is_err(), "the fallback is refused");
         assert!(p.fallback_in_use().is_err(), "and again, not skipped");
         holder.execute_batch("ROLLBACK").unwrap();
-        assert!(!p.is_unverified(kind::IDENTITY, "a"));
-        assert!(!open().is_unverified(kind::IDENTITY, "a"));
+        assert!(!p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
+        assert!(!open().is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
 
         p.fallback_in_use().unwrap();
-        assert!(p.is_unverified(kind::IDENTITY, "a"));
-        assert!(open().is_unverified(kind::IDENTITY, "a"), "after a reopen");
+        assert!(p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
+        assert!(
+            open().is_unverified(&e(kind::IDENTITY, "a", "v1:aa")),
+            "after a reopen"
+        );
     }
 
     /// DEC-139: the latch is power-loss durable before `fallback_in_use`
@@ -230,7 +304,10 @@ mod tests {
         let raw = rusqlite::Connection::open(&path).unwrap();
         raw.execute_batch("DROP TABLE settings_kv").unwrap();
         let p = Provenance::open(Arc::clone(&appdb));
-        assert!(p.is_unverified(kind::IDENTITY, "a"), "fails closed");
+        assert!(
+            p.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")),
+            "fails closed"
+        );
 
         raw.execute_batch(
             "CREATE TABLE settings_kv (
@@ -243,6 +320,6 @@ mod tests {
         .unwrap();
         p.fallback_in_use().unwrap();
         let reopened = Provenance::open(appdb);
-        assert!(reopened.is_unverified(kind::IDENTITY, "a"));
+        assert!(reopened.is_unverified(&e(kind::IDENTITY, "a", "v1:aa")));
     }
 }
