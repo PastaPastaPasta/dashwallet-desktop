@@ -6,5 +6,36 @@
     "main"
   ],
   "local": true,
-  "permissions": []
+  "permissions": [
+    "allow-new-tx-draft",
+    "allow-close-draft",
+    "allow-max-spendable",
+    "allow-draft-wallet-id",
+    "allow-draft-set-recipients",
+    "allow-draft-set-source",
+    "allow-draft-set-fee",
+    "allow-draft-set-change",
+    "allow-draft-estimate",
+    "allow-draft-prepare",
+    "allow-draft-broadcast",
+    "allow-draft-abandon",
+    "allow-prepared-summary",
+    "allow-prepared-raw",
+    "allow-draft-create-unsigned",
+    "allow-analyze-psbt",
+    "allow-sign-psbt",
+    "allow-broadcast-psbt",
+    "allow-utxos",
+    "allow-lock-outpoints",
+    "allow-unlock-outpoints",
+    "allow-locked-outpoints",
+    "allow-dust-protection",
+    "allow-set-dust-protection",
+    "allow-fee-policy",
+    "allow-coin-selection-summary",
+    "allow-parse-payment-uri",
+    "allow-build-payment-uri",
+    "allow-classify-address",
+    "allow-qr-matrix"
+  ]
 }
