@@ -23,10 +23,10 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.For
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $AE = [System.Windows.Automation.AutomationElement]
-$CT = [System.Windows.Automation.ControlType]
+# UIA control types (ControlType.ProgrammaticName without its prefix) that a user operates.
 $interactiveTypes = @(
-    $CT::Button, $CT::CheckBox, $CT::ComboBox, $CT::Edit, $CT::Hyperlink, $CT::ListItem, $CT::MenuItem,
-    $CT::RadioButton, $CT::Slider, $CT::Spinner, $CT::SplitButton, $CT::TabItem, $CT::TreeItem
+    'Button', 'CheckBox', 'ComboBox', 'Edit', 'Hyperlink', 'ListItem', 'MenuItem',
+    'RadioButton', 'Slider', 'Spinner', 'SplitButton', 'TabItem', 'TreeItem'
 )
 $checks = New-Object System.Collections.ArrayList
 $summary = [ordered]@{}
@@ -45,9 +45,11 @@ function Find-Window {
     return $AE::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
 }
 
+# Every property read is a cross-process call: read each once, and leave the supported patterns to
+# Dump (Wait-For polls the whole tree every 250 ms).
 function Info($e) {
     $c = $e.Current
-    $patterns = @($e.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\.Pattern$', '' })
+    $r = $c.BoundingRectangle
     return [ordered]@{
         type      = $c.ControlType.ProgrammaticName -replace '^ControlType\.', ''
         localized = $c.LocalizedControlType
@@ -57,8 +59,7 @@ function Info($e) {
         enabled   = $c.IsEnabled
         focusable = $c.IsKeyboardFocusable
         password  = $c.IsPassword
-        patterns  = $patterns
-        rect      = "$([int]$c.BoundingRectangle.X),$([int]$c.BoundingRectangle.Y) $([int]$c.BoundingRectangle.Width)x$([int]$c.BoundingRectangle.Height)"
+        rect      = "$([int]$r.X),$([int]$r.Y) $([int]$r.Width)x$([int]$r.Height)"
         element   = $e
     }
 }
@@ -83,9 +84,9 @@ function Walk($root) {
     return , $out
 }
 
-function Is-Interactive($info) {
-    foreach ($t in $interactiveTypes) { if ($info.type -eq ($t.ProgrammaticName -replace '^ControlType\.', '')) { return $true } }
-    return $false
+function Patterns($e) {
+    try { return @($e.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\.Pattern$', '' }) }
+    catch { return @('?') }
 }
 
 function Dump([string] $Screen) {
@@ -94,10 +95,10 @@ function Dump([string] $Screen) {
     $nodes = Walk $win
     $lines = foreach ($n in $nodes) {
         $i = $n[1]
-        ('  ' * $n[0]) + "[$($i.type)/$($i.localized)] '$($i.name)' id=$($i.id) $($i.rect)$(if ($i.offscreen) { ' offscreen' })$(if ($i.password) { ' password' }) {$($i.patterns -join ',')}"
+        ('  ' * $n[0]) + "[$($i.type)/$($i.localized)] '$($i.name)' id=$($i.id) $($i.rect)$(if ($i.offscreen) { ' offscreen' })$(if ($i.password) { ' password' }) {$((Patterns $i.element) -join ',')}"
     }
     $lines | Set-Content -Encoding UTF8 (Join-Path $OutDir "uia-$Screen.txt")
-    $items = @($nodes | Where-Object { (Is-Interactive $_[1]) -and -not $_[1].offscreen } | ForEach-Object { $_[1] })
+    $items = @($nodes | Where-Object { ($_[1].type -in $interactiveTypes) -and -not $_[1].offscreen } | ForEach-Object { $_[1] })
     $unnamed = @($items | Where-Object { -not $_.name.Trim() })
     $summary[$Screen] = [ordered]@{
         nodes            = $nodes.Count
@@ -124,8 +125,11 @@ function Wait-For([scriptblock] $Match, [int] $Seconds = 15) {
     return $null
 }
 
+# Invokes the first on-screen element that matches and supports Invoke (a list item that wraps a
+# button shares its name but has no Invoke pattern).
 function Press([scriptblock] $Want, [string] $Label) {
-    $hit = Wait-For ({ param($i) $i.type -in @('Button', 'Hyperlink', 'ListItem', 'MenuItem') -and (& $Want $i) }.GetNewClosure())
+    $invokable = $AE::IsInvokePatternAvailableProperty
+    $hit = Wait-For ({ param($i) (& $Want $i) -and $(try { $i.element.GetCurrentPropertyValue($invokable) } catch { $false }) }.GetNewClosure())
     if ($null -eq $hit) { return Check 'hard' "find '$Label'" $false }
     $ok = $false
     try {
@@ -153,8 +157,9 @@ try {
         Start-Sleep -Seconds 1
         Dump 'transactions'
 
-        # Rows are buttons named by their content ("Received 1:40 AM Pending +0.20 tDASH").
-        Press { param($i) $i.name -match 'DASH' -and $i.name -match '\d' -and $i.name -notmatch '^Click' } 'first transaction row' | Out-Null
+        # Rows are buttons named by their content ("Received 1:40 AM Pending +0.20 tDASH"); the time
+        # tells them from the hero's amount button.
+        Press { param($i) $i.name -match '\d{1,2}:\d{2} [AP]M' -and $i.name -match 'DASH' } 'first transaction row' | Out-Null
         # PowerShell's -and and -or bind equally (left to right): keep the parentheses.
         $dialog = Wait-For { param($i) ($i.localized -match 'dialog') -or ($i.type -eq 'Window' -and $i.name -eq 'Transaction details') }
         if (Check 'hard' 'the detail sheet is a dialog' ($null -ne $dialog)) {
