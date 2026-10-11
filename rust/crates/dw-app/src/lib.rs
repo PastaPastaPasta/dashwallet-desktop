@@ -104,9 +104,37 @@ pub unsafe fn webkit_renderer_without_gpu() {
     }
 }
 
+/// Milliseconds from the process's creation to now, from `/proc/self/stat`'s
+/// `starttime` (field 22, in 1/100 s since boot) and `/proc/uptime`: the part
+/// of a cold start before `run` (exec, dynamic linking), which the marks
+/// measured from `run` cannot see. Both are CLOCK_BOOTTIME, in 10 ms steps.
+#[cfg(any(target_os = "linux", test))]
+fn ms_since_process_start(stat: &str, uptime: &str) -> Option<u64> {
+    // The command name, in parentheses, may itself contain spaces and ')'.
+    let start: u64 = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()?;
+    let (secs, hundredths) = uptime.split_whitespace().next()?.split_once('.')?;
+    let now = secs.parse::<u64>().ok()? * 100 + hundredths.parse::<u64>().ok()?;
+    Some(now.checked_sub(start)? * 10)
+}
+
 /// Entry point of the `dash-wallet` binary.
 pub fn run() {
     let started = Instant::now();
+    // U5 measures cold start from spawn: harnesses add this to the marks.
+    #[cfg(target_os = "linux")]
+    if let (Ok(stat), Ok(uptime)) = (
+        std::fs::read_to_string("/proc/self/stat"),
+        std::fs::read_to_string("/proc/uptime"),
+    ) && let Some(ms) = ms_since_process_start(&stat, &uptime)
+    {
+        eprintln!("dw-app: startup before-run {ms}");
+    }
     let launch = match launch::parse(std::env::args().skip(1)) {
         Ok(ParseOutcome::Run(o)) => o,
         Ok(ParseOutcome::Help) => {
@@ -203,6 +231,22 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+
+    #[test]
+    fn time_since_process_start_reads_the_kernel_clocks() {
+        // Fields 3..: state, ppid, ..., starttime (22) = 4000 ticks (40.00 s).
+        let stat =
+            "123 (dash wallet) x) S 1 123 123 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 4000 0 0";
+        assert_eq!(ms_since_process_start(stat, "41.37 99.00\n"), Some(1370));
+        assert_eq!(ms_since_process_start(stat, "39.99 1.00"), None);
+        assert_eq!(ms_since_process_start("123 (x) S", "41.37 1.00"), None);
+        #[cfg(target_os = "linux")]
+        {
+            let read = |p| std::fs::read_to_string(p).unwrap();
+            let ms = ms_since_process_start(&read("/proc/self/stat"), &read("/proc/uptime"));
+            assert!(ms.is_some_and(|ms| ms < 3_600_000), "{ms:?}");
+        }
+    }
 
     #[test]
     fn only_app_origins_are_navigable() {

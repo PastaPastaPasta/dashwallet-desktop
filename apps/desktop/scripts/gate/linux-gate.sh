@@ -102,6 +102,18 @@ cpu_ms_tree() {
 }
 mark_ms() { grep -o "startup $2 [0-9]*" "$1" | awk '{print $3}'; } # LOG MARK
 
+# Spawn to first paint, as JSON fields. The app logs `before-run` (its process's age when `run`
+# starts, from the kernel's start time) and `first-paint` (from `run`): their sum has no polling
+# error. The harness's own time (`harnessSawFirstPaintMs`) adds up to one wait_line round, about
+# 100 ms on a quiet runner and more under load. LOG T0 T1
+start_fields() {
+  local before paint
+  before=$(mark_ms "$1" before-run)
+  paint=$(mark_ms "$1" first-paint)
+  printf '"shellMs":%s,"firstPaintMs":%s,"beforeRunMs":%s,"spawnToFirstPaintMs":%s,"harnessSawFirstPaintMs":%s' \
+    "$(mark_ms "$1" shell)" "$paint" "${before:-null}" "$((${before:-$(($3 - $2 - paint))} + paint))" "$(($3 - $2))"
+}
+
 wait_line() { # FILE PATTERN TIMEOUT_S
   local deadline=$(($(date +%s) + $3))
   while (($(date +%s) < deadline)); do
@@ -126,7 +138,7 @@ pid=$!
 seen=0
 while kill -0 $pid 2>/dev/null; do
   # Complete lines only: a line read while the app writes it would give a cut-off name.
-  mapfile -t screens < <(head -n "$(wc -l <"$log")" "$log" | grep -o 'selftest-screen [a-zA-Z/]*' | awk '{print $2}')
+  mapfile -t screens < <(head -n "$(wc -l <"$log")" "$log" | grep -o 'selftest-screen [a-zA-Z/][a-zA-Z/]*' | awk '{print $2}')
   while ((seen < ${#screens[@]})); do
     sleep 0.4
     window_shot "${screens[$seen]//\//-}"
@@ -162,7 +174,7 @@ for i in $(seq "$RUNS"); do
   if wait_line "$log" "startup first-paint" 60; then
     t1=$(now_ms)
     cpu=$(cpu_ms_tree $pid)
-    start_json+="{\"run\":$i,\"dropCaches\":$cold,\"load1\":$load,\"shellMs\":$(mark_ms "$log" shell),\"firstPaintMs\":$(mark_ms "$log" first-paint),\"spawnToFirstPaintMs\":$((t1 - t0)),\"cpuMsAtFirstPaint\":$cpu},"
+    start_json+="{\"run\":$i,\"dropCaches\":$cold,\"load1\":$load,$(start_fields "$log" "$t0" "$t1"),\"cpuMsAtFirstPaint\":$cpu},"
   else
     start_json+="{\"run\":$i,\"dropCaches\":$cold,\"load1\":$load,\"error\":\"no first paint in 60 s\"},"
   fi
@@ -190,7 +202,7 @@ if ((${#ENGINE_ARGS[@]})); then
     load=$(load1)
     if wait_line "$log" "startup first-paint" 180; then
       t1=$(now_ms)
-      engine_starts+="{\"run\":$i,\"load1\":$load,\"shellMs\":$(mark_ms "$log" shell),\"firstPaintMs\":$(mark_ms "$log" first-paint),\"spawnToFirstPaintMs\":$((t1 - t0)),\"cpuMsAtFirstPaint\":$(cpu_ms_tree $pid)},"
+      engine_starts+="{\"run\":$i,\"load1\":$load,$(start_fields "$log" "$t0" "$t1"),\"cpuMsAtFirstPaint\":$(cpu_ms_tree $pid)},"
     else
       engine_starts+="{\"run\":$i,\"load1\":$load,\"error\":\"no first paint in 180 s\"},"
     fi
@@ -216,7 +228,7 @@ if ((${#ENGINE_ARGS[@]})); then
       window_shot engine-transactions
     fi
     sleep 30
-    engine_json="{\"starts\":$engine_starts,\"load1\":$load,\"loadIdle\":$(load1),\"shellMs\":$(mark_ms "$log" shell),\"firstPaintMs\":$(mark_ms "$log" first-paint),\"spawnToFirstPaintMs\":$((t1 - t0)),\"idle\":$(pss_tree $pid)}"
+    engine_json="{\"starts\":$engine_starts,\"load1\":$load,\"loadIdle\":$(load1),$(start_fields "$log" "$t0" "$t1"),\"idle\":$(pss_tree $pid)}"
   else
     engine_json="{\"starts\":$engine_starts,\"error\":\"no first paint in 180 s\"}"
   fi
