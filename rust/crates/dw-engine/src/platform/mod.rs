@@ -50,7 +50,7 @@ pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
     ContactSummary, ContactsPage, Eligibility, PrivateDetails, PublishState, Relation,
-    RequestOutcome, ScannedContact,
+    RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
     CostTable, TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote,

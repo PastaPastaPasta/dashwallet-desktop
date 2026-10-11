@@ -20,7 +20,7 @@ use platform_wallet::wallet::identity::crypto::auto_accept::{
 use platform_wallet::{ContactRequest, EstablishedContact};
 use zeroize::Zeroizing;
 
-use super::contacts::{Relation, ScannedContact};
+use super::contacts::{Relation, ScannedCode, ScannedContact};
 use super::dashpay::{BearerSecret, DashPay};
 use super::errors::PlatformError;
 use super::journal_tests::{Recorder, engine, session};
@@ -84,6 +84,14 @@ struct FakeNet {
     names_lookup: Option<bool>,
     profiles_lookup: Option<bool>,
     asked: Mutex<Vec<String>>,
+    /// The next domain lookup stops until the test lets it go on.
+    pause: Mutex<Option<Pause>>,
+}
+
+/// A lookup's stop: it says it got there, then waits to be let go.
+struct Pause {
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl FakeNet {
@@ -126,7 +134,15 @@ impl UserNet for FakeNet {
         let found = (self.names.iter())
             .find(|(l, _)| convert_to_homograph_safe_chars(l) == label)
             .cloned();
-        answer(self.names_lookup, Ok(found))
+        let found = answer(self.names_lookup, Ok(found));
+        match self.pause.lock().unwrap().take() {
+            None => found,
+            Some(pause) => Box::pin(async move {
+                pause.reached.send(()).unwrap();
+                pause.resume.await.unwrap();
+                found.await
+            }),
+        }
     }
 
     fn profiles(
@@ -301,6 +317,10 @@ fn search_shows_profiles_and_relations() {
         f.search("d", 1).unwrap(),
         vec![hit(DAVE, "dave", Some("Dave"), Relation::Stranger)]
     );
+    // No name found: no profiles asked for.
+    f.asked();
+    assert_eq!(f.search("zz", 10).unwrap(), vec![]);
+    assert_eq!(f.asked(), ["search zz 10"]);
 
     // Nothing a label could start with: no question at all.
     f.asked();
@@ -406,8 +426,8 @@ fn hits_follow_their_fetches() {
     assert!(unverified(no, yes, false));
 }
 
-/// An exact lookup: `.dash` and case do not matter; a label DPNS could not
-/// hold asks nothing.
+/// An exact lookup: one `.dash` and case do not matter; a label DPNS could
+/// not hold asks nothing.
 #[test]
 fn resolve_reads_one_name() {
     let f = Fixture::new();
@@ -424,7 +444,7 @@ fn resolve_reads_one_name() {
     );
     assert_eq!(resolve("nobody"), None);
     assert_eq!(f.asked(), ["domain n0b0dy"]);
-    for unheld in ["ab", "a b", ".dash", "-bob"] {
+    for unheld in ["ab", "a b", ".dash", "-bob", "bob.dash.dash"] {
         assert_eq!(resolve(unheld), None, "{unheld}");
     }
     assert_eq!(f.asked(), Vec::<String>::new());
@@ -523,7 +543,7 @@ fn ios_made_links_verify() {
                 identity: owner(link).to_string(Encoding::Base58),
                 username: Some(label(link)),
                 display_name: None,
-                scan: None,
+                code: ScannedCode::UserLink,
                 relation: Relation::Stranger,
                 unverified: false,
             }
@@ -547,7 +567,10 @@ fn a_user_link_must_match_platform() {
     assert_eq!(bob.identity, b58(BOB));
     assert_eq!(bob.username.as_deref(), Some("Bob"), "Platform's spelling");
     assert_eq!(bob.display_name.as_deref(), Some("Bob"));
-    assert_eq!((bob.relation, bob.scan), (Relation::Contact, None));
+    assert_eq!(
+        (bob.relation, bob.code),
+        (Relation::Contact, ScannedCode::UserLink)
+    );
     assert_eq!(f.scan(&link(ME, "me1")).unwrap().relation, Relation::IsSelf);
     assert_eq!(
         f.scan(&link(CAROL, "bob")).unwrap_err(),
@@ -555,6 +578,11 @@ fn a_user_link_must_match_platform() {
     );
     assert_eq!(
         f.scan(&link(BOB, "nobody")).unwrap_err(),
+        "contact.scan_unverified"
+    );
+    // The link drops one `.dash`, as iOS does; nothing drops another.
+    assert_eq!(
+        f.scan(&link(BOB, "bob.dash.dash")).unwrap_err(),
         "contact.scan_unverified"
     );
     for junk in ["alice", "dash:XabcD?amount=1", "dashpay://invite?du=a", ""] {
@@ -571,6 +599,14 @@ fn dapk(username: &str, expiry: u32) -> String {
     encode_dashpay_contact_uri(username, &encode_auto_accept_key_blob(&key(), expiry))
 }
 
+/// The scan a `dapk` code left for the send.
+fn scan_id(scanned: &ScannedContact) -> String {
+    match &scanned.code {
+        ScannedCode::AutoAcceptClaim { scan, .. } => scan.clone(),
+        ScannedCode::UserLink => panic!("not a contact code"),
+    }
+}
+
 /// A valid code leaves a scan for the send; an expired one is refused
 /// before anything is asked; a malformed one never shows its key.
 #[test]
@@ -581,7 +617,10 @@ fn dapk_codes_are_checked() {
     assert_eq!(bob.identity, b58(BOB));
     assert_eq!(bob.relation, Relation::Contact);
     assert_eq!(bob.username.as_deref(), Some("Bob"));
-    let scan = bob.scan.unwrap();
+    let ScannedCode::AutoAcceptClaim { scan, expires_at } = bob.code else {
+        panic!("no auto-accept claim");
+    };
+    assert_eq!(expires_at, u64::from(soon));
     assert!(
         scan.len() <= 64
             && scan
@@ -589,7 +628,7 @@ fn dapk_codes_are_checked() {
                 .all(|b| b"0123456789abcdefghijklmnopqrstuvwxyz_-".contains(&b))
     );
     assert_eq!(f.asked(), ["domain b0b", "profiles 1"]);
-    // `.dash` is the lookup's to drop, once.
+    // The parser drops one `.dash`; nothing drops another.
     assert!(f.scan(&dapk("BOB.dash", soon)).is_ok());
     let twice = f.scan(&dapk("bob.dash.dash", soon));
     assert_eq!(twice.unwrap_err(), "contact.scan_unverified");
@@ -624,28 +663,40 @@ fn dapk_codes_are_checked() {
     assert!(!format!("{err} {err:?}").contains(dapk_value));
 }
 
-/// DP2-02's seam: the scan's key signs a proof the QR owner's key verifies,
-/// and stays until the send spends it; a spent, unknown, other wallet's or
+/// DP2-02's seam: the scan's key signs a proof the code's key verifies, and
+/// stays until the send spends it; a spent, unknown, other wallet's or
 /// expired scan is `contact.scan_expired`.
 #[test]
 fn a_scan_gives_a_send_its_proof() {
     let f = Fixture::new();
     let soon = (unix_now() + 3600) as u32;
-    let scan = || f.scan(&dapk("bob", soon)).unwrap().scan.unwrap();
+    let scan = || scan_id(&f.scan(&dapk("bob", soon)).unwrap());
     let intent = |to: u8, scan: Option<&str>| {
         (f.s)
             .send_request_intent(f.wallet, &b58(ME), &b58(to), scan)
             .map_err(|e| e.code())
     };
     let scans = &f.s.platform.users.scans;
+    let claim = |wallet, scan: &str, now| {
+        scans
+            .claim(wallet, scan, id(BOB), now)
+            .err()
+            .map(|e| e.code())
+    };
 
     let first = scan();
     assert_eq!(intent(CAROL, Some(&first)).err(), Some("invalid_argument"));
+    // A send refused before it took the key releases the scan for a retry.
+    drop(intent(BOB, Some(&first)).unwrap());
     let sent = intent(BOB, Some(&first)).unwrap();
     assert_eq!((sent.sender, sent.recipient), (id(ME), id(BOB)));
-    let auto_accept = sent.auto_accept.unwrap();
-    assert!(!auto_accept.recipient_unverified);
-    let AutoAcceptProofSource::SignWithKey { secret_key, expiry } = auto_accept.proof_source()
+    let mut auto_accept = sent.auto_accept.unwrap();
+    assert_eq!(
+        (auto_accept.expiry, auto_accept.recipient_unverified),
+        (soon, false)
+    );
+    let Ok(AutoAcceptProofSource::SignWithKey { secret_key, expiry }) =
+        auto_accept.proof_source(unix_now())
     else {
         panic!("not signed with the scanned key");
     };
@@ -660,11 +711,12 @@ fn a_scan_gives_a_send_its_proof() {
         &id(BOB),
         account_reference
     ));
-    // A send that failed before it was sent can retry; a sent one spends it.
-    assert!(intent(BOB, Some(&first)).is_ok());
-    scans.spend(WalletId([9; 32]), &first);
-    assert!(intent(BOB, Some(&first)).is_ok(), "another wallet's spend");
-    scans.spend(f.wallet, &first);
+    assert_eq!(
+        intent(BOB, Some(&first)).err(),
+        Some("contact.request_pending")
+    );
+    // Once the key went out the scan is spent, whatever the send did.
+    drop(auto_accept);
     assert_eq!(
         intent(BOB, Some(&first)).err(),
         Some("contact.scan_expired")
@@ -677,40 +729,130 @@ fn a_scan_gives_a_send_its_proof() {
         Some("contact.scan_expired")
     );
     let other_wallet = scan();
-    let taken = scans.key(WalletId([9; 32]), &other_wallet, id(BOB), 0);
-    assert_eq!(taken.err().map(|e| e.code()), Some("contact.scan_expired"));
-    // Expired by the time the send asks: it goes.
+    assert_eq!(
+        claim(WalletId([9; 32]), &other_wallet, 0),
+        Some("contact.scan_expired")
+    );
+    // Expired by the time the send claims it: it goes.
     let late = scan();
-    let taken = scans.key(f.wallet, &late, id(BOB), u64::from(soon));
-    assert_eq!(taken.err().map(|e| e.code()), Some("contact.scan_expired"));
-    let taken = scans.key(f.wallet, &late, id(BOB), 0);
-    assert_eq!(taken.err().map(|e| e.code()), Some("contact.scan_expired"));
+    assert_eq!(
+        claim(f.wallet, &late, u64::from(soon)),
+        Some("contact.scan_expired")
+    );
+    assert_eq!(claim(f.wallet, &late, 0), Some("contact.scan_expired"));
     assert!(intent(BOB, Some(&other_wallet)).is_ok());
+    // Expired by the time the send signs: no proof, and it goes.
+    let crossing = scan();
+    let mut held = scans.claim(f.wallet, &crossing, id(BOB), 0).ok().unwrap();
+    let signed = held.proof_source(u64::from(soon));
+    assert_eq!(signed.err().map(|e| e.code()), Some("contact.scan_expired"));
+    drop(held);
+    assert_eq!(claim(f.wallet, &crossing, 0), Some("contact.scan_expired"));
 
     // A recipient Platform named without verified proof is flagged.
     f.s.live().unwrap().provenance.fallback_in_use().unwrap();
     let unverified = f.scan(&dapk("bob", soon)).unwrap();
     assert!(unverified.unverified);
-    let sent = intent(BOB, unverified.scan.as_deref()).unwrap();
+    let sent = intent(BOB, Some(&scan_id(&unverified))).unwrap();
     assert!(sent.auto_accept.unwrap().recipient_unverified);
 }
 
-/// Scans end with their wallet, the oldest goes once 16 wait, and a new
-/// scan drops the expired ones.
+/// Sol r1 M2: one send at a time holds a scan, however many race for it,
+/// so one scan cannot make two requests.
+#[test]
+fn one_send_at_a_time_claims_a_scan() {
+    let f = Fixture::new();
+    let scan = scan_id(&f.scan(&dapk("bob", (unix_now() + 3600) as u32)).unwrap());
+    let scans = &f.s.platform.users.scans;
+    let barrier = std::sync::Barrier::new(8);
+    let claims: Vec<_> = std::thread::scope(|threads| {
+        let racers: Vec<_> = (0..8)
+            .map(|_| {
+                threads.spawn(|| {
+                    barrier.wait();
+                    scans.claim(f.wallet, &scan, id(BOB), 0)
+                })
+            })
+            .collect();
+        racers.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(claims.iter().filter(|c| c.is_ok()).count(), 1);
+    for refused in claims.iter().filter_map(|c| c.as_ref().err()) {
+        assert_eq!(refused.code(), "contact.request_pending");
+    }
+    drop(claims);
+    // Released (no send went out): the next send may claim it.
+    assert!(scans.claim(f.wallet, &scan, id(BOB), 0).is_ok());
+}
+
+/// Sol r1 M2: a lookup paused across an unload and reload of its wallet
+/// keeps no key, and its scan is refused.
+#[test]
+fn a_scan_outlived_by_its_wallet_keeps_no_key() {
+    let f = Fixture::new();
+    let (reached, at_lookup) = tokio::sync::oneshot::channel();
+    let (go_on, resume) = tokio::sync::oneshot::channel();
+    *f.net.pause.lock().unwrap() = Some(Pause { reached, resume });
+    let soon = (unix_now() + 3600) as u32;
+    let scanned = std::thread::scope(|threads| {
+        let scanning = threads.spawn(|| f.scan(&dapk("bob", soon)));
+        at_lookup.blocking_recv().unwrap();
+        // The wallet goes and comes back while the lookup waits.
+        f.s.platform.forget(&f.wallet);
+        go_on.send(()).unwrap();
+        scanning.join().unwrap()
+    });
+    assert_eq!(scanned.unwrap_err(), "wallet_not_found");
+    assert_eq!(f.s.platform.users.scans.len(), 0);
+    // The reloaded wallet scans again.
+    assert!(f.scan(&dapk("bob", soon)).is_ok());
+}
+
+/// Sol r1 M2: closing the session drops its scans, even with the session
+/// handle and a claim kept: the claim has no key left to sign with.
+#[test]
+fn closing_the_session_drops_its_scans() {
+    let f = Fixture::new();
+    let soon = (unix_now() + 3600) as u32;
+    let first = scan_id(&f.scan(&dapk("bob", soon)).unwrap());
+    let second = scan_id(&f.scan(&dapk("bob", soon)).unwrap());
+    let scans = Arc::clone(&f.s.platform.users.scans);
+    let mut claim = scans.claim(f.wallet, &first, id(BOB), 0).ok().unwrap();
+    f.engine.block_on(f.s.close());
+    assert_eq!(scans.len(), 0);
+    assert_eq!(
+        claim.proof_source(0).err().map(|e| e.code()),
+        Some("contact.scan_expired")
+    );
+    let taken = scans.claim(f.wallet, &second, id(BOB), 0);
+    assert_eq!(taken.err().map(|e| e.code()), Some("contact.scan_expired"));
+    assert_eq!(f.scan(&dapk("bob", soon)).unwrap_err(), "network_not_open");
+}
+
+/// Scans end with their wallet, the oldest goes once 16 wait (not one a
+/// send holds), and a new scan drops the expired ones.
 #[test]
 fn scans_are_bounded_and_forgotten() {
     let f = Fixture::new();
     let soon = (unix_now() + 3600) as u32;
     let scans: Vec<String> = (0..17)
-        .map(|_| f.scan(&dapk("bob", soon)).unwrap().scan.unwrap())
+        .map(|_| scan_id(&f.scan(&dapk("bob", soon)).unwrap()))
         .collect();
     let store = &f.s.platform.users.scans;
     let key = |scan: &str| {
-        let key = store.key(f.wallet, scan, id(BOB), 0);
-        key.map(|_| ()).map_err(|e| e.code())
+        let claim = store.claim(f.wallet, scan, id(BOB), 0);
+        claim.map(drop).map_err(|e| e.code())
     };
     assert_eq!(key(&scans[0]), Err("contact.scan_expired"));
     assert_eq!(key(&scans[1]), Ok(()));
+    assert_eq!(store.len(), 16);
+    let mut held = store.claim(f.wallet, &scans[1], id(BOB), 0).ok().unwrap();
+    for _ in 0..16 {
+        f.scan(&dapk("bob", soon)).unwrap();
+    }
+    assert_eq!(store.len(), 17);
+    assert!(held.proof_source(0).is_ok());
+    drop(held);
     assert_eq!(store.len(), 16);
     f.s.platform.forget(&f.wallet);
     assert_eq!(key(&scans[2]), Err("contact.scan_expired"));
@@ -814,7 +956,7 @@ fn the_testnet_fixture_verifies_links_and_scans() {
     eprintln!("B scanned after {:?}: {b:?}", t0.elapsed());
     assert_eq!(b.identity, b_id);
     assert_eq!(b.username.as_deref(), Some(b_name.as_str()));
-    assert_eq!(b.scan, None);
+    assert_eq!(b.code, ScannedCode::UserLink);
     let swapped = format!("dashpay://user?id={a_id}&username={b_name}");
     assert_eq!(scan(swapped).unwrap_err().code(), "contact.scan_unverified");
 
@@ -842,11 +984,12 @@ fn the_testnet_fixture_verifies_links_and_scans() {
     let soon = (unix_now() + 3600) as u32;
     let scanned = scan(dapk(&b_name, soon)).unwrap();
     assert_eq!(scanned.identity, b_id);
-    let intent = s
-        .send_request_intent(a, &a_id, &b_id, scanned.scan.as_deref())
+    let mut intent = s
+        .send_request_intent(a, &a_id, &b_id, Some(&scan_id(&scanned)))
         .unwrap();
-    let AutoAcceptProofSource::SignWithKey { secret_key, expiry } =
-        intent.auto_accept.unwrap().proof_source()
+    let auto_accept = intent.auto_accept.as_mut().unwrap();
+    let Ok(AutoAcceptProofSource::SignWithKey { secret_key, expiry }) =
+        auto_accept.proof_source(unix_now())
     else {
         panic!("not signed with the scanned key");
     };

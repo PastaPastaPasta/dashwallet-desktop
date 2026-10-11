@@ -43,7 +43,7 @@ use dw_engine::platform::{
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, GrantAction,
     GrantRequest, IdentityError, InitialProfile, InvitationError, NameError, PlatformError,
     PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding, RegistrationRequest,
-    RegistrationWait, WithdrawAmount, check_username,
+    RegistrationWait, ScannedCode, WithdrawAmount, check_username,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, TASK_PANICKED};
 use dw_vault::{GrantPurpose, VaultError};
@@ -1585,7 +1585,11 @@ fn contact_cmd(ctx: &Ctx, cmd: ContactCmd, stdin: &mut dyn Read) -> Result<Value
             let (to, scan, scanned) = if scanned {
                 let text = read_secret(&input, stdin)?;
                 let s = ctx.block_on(dp.verify_scanned(text))?;
-                (s.identity.clone(), s.scan.clone(), Some(s))
+                let scan = match &s.code {
+                    ScannedCode::AutoAcceptClaim { scan, .. } => Some(scan.clone()),
+                    ScannedCode::UserLink => None,
+                };
+                (s.identity.clone(), scan, Some(s))
             } else {
                 let to = contact.expect("clap requires a contact without --scanned");
                 (to, None, None)

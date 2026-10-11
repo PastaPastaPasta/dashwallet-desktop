@@ -12,11 +12,16 @@
 //! - The user link is iOS's (`DashPayUserLink.swift`): its main name, and a
 //!   scanned link verifies as iOS's `handleScannedCode` does, by an exact
 //!   DPNS lookup that must return the scanned identity.
-//! - A DIP-15 code (`dash:?du=&dapk=`) carries the QR owner's auto-accept
-//!   key. It stays here as a scan for DP2-02's send, which signs the proof
-//!   with it and spends the scan once sent ([`send_seam`]); the host gets
-//!   only the scan id.
-//!   Neither app makes such codes yet (DEC-15).
+//! - A DIP-15 code (`dash:?du=&dapk=`) carries an auto-accept key. It stays
+//!   here as a scan for DP2-02's send, which claims it, signs the proof with
+//!   it and spends it once sent ([`send_seam`]); the host gets only the scan
+//!   id. Neither app makes such codes yet (DEC-15).
+//! - Neither code is signed. A scan shows that its username belongs to its
+//!   identity now, not who made the QR, and a code's key is only claimed to
+//!   be that identity's: it derives on a hardened path of the owner's seed
+//!   (`m/9'/coin'/16'/expiry'`) that nothing published reveals, so only the
+//!   recipient can check it, when the request arrives. Auto-accept stays
+//!   unconfirmed until the recipient accepts.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -26,11 +31,9 @@ use dash_sdk::platform::dpns_usernames::is_valid_username;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use dw_uri::deeplink::{DashPayContactCode, DashPayUserLink};
-use platform_wallet::wallet::identity::crypto::auto_accept::decode_auto_accept_key_blob;
-use zeroize::Zeroizing;
+use dw_uri::deeplink::{DashPayContactCode, DashPayUserLink, dpns_label};
 
-use super::contacts::ScannedContact;
+use super::contacts::{ScannedCode, ScannedContact};
 use super::contacts_model::identifier;
 use super::errors::{ContactError, IdentityError, PlatformError};
 use super::names::UserHit;
@@ -38,9 +41,9 @@ use super::reverify::{Held, Refetcher, SdkRefetcher, ShownProfile};
 use super::runtime::guard;
 use super::trust::{self, BoxFuture};
 use crate::{NetworkSession, WalletId};
-use send_seam::{AutoAcceptKey, Scan};
+use send_seam::Scan;
 
-/// Scans a session keeps; the oldest goes first.
+/// Scans a session keeps that no send holds; the oldest goes first.
 const MAX_SCANS: usize = 16;
 
 /// Platform's answers for user lookups: the SDK, or a test's script.
@@ -105,40 +108,86 @@ impl UserNet for SdkUsers {
 /// network.
 #[derive(Default)]
 pub(crate) struct UsersRuntime {
-    pub(super) scans: Scans,
+    pub(crate) scans: Arc<Scans>,
     #[cfg(test)]
     pub(super) net: Mutex<Option<Arc<dyn UserNet>>>,
 }
 
-/// The session's scans by id, oldest first. Single-use: a send spends one.
+/// The session's scans, oldest first, under one lock with each wallet's
+/// load generation: [`Scans::forget`] (a removal or unload) starts a new
+/// one, and a scan begun in an older one is refused, so a lookup that was
+/// paused across an unload and reload cannot leave a key behind. Closing
+/// the session drops them all for good.
 #[derive(Default)]
-pub(crate) struct Scans(Mutex<VecDeque<(String, Scan)>>);
+pub(crate) struct Scans(Mutex<ScanStore>);
+
+#[derive(Default)]
+struct ScanStore {
+    scans: VecDeque<(String, Scan)>,
+    generations: HashMap<WalletId, u64>,
+    closed: bool,
+}
+
+impl ScanStore {
+    fn generation(&self, wallet: WalletId) -> u64 {
+        self.generations.get(&wallet).copied().unwrap_or(0)
+    }
+
+    /// Where `wallet`'s scan `id` is.
+    fn position(&self, wallet: WalletId, id: &str) -> Option<usize> {
+        (self.scans.iter()).position(|(i, s)| i == id && s.wallet == wallet)
+    }
+}
 
 impl Scans {
-    /// Keeps `scan`, dropping the expired ones (their keys are of no use).
-    fn insert(&self, scan: Scan, now: u64) -> String {
-        let id = format!("scan-{}", hex::encode(rand::random::<[u8; 12]>()));
-        let mut scans = guard(&self.0);
-        scans.retain(|(_, s)| !s.key.expired(now));
-        if scans.len() == MAX_SCANS {
-            scans.pop_front();
+    /// The wallet's load generation, to pass to [`Self::insert`]. Read it
+    /// before checking that the wallet is loaded.
+    fn generation(&self, wallet: WalletId) -> u64 {
+        guard(&self.0).generation(wallet)
+    }
+
+    /// Keeps `scan`, begun in the wallet's load `generation`, dropping the
+    /// expired ones (their keys are of no use) and, at [`MAX_SCANS`], the
+    /// oldest; a scan a send holds stays. A newer generation:
+    /// `wallet_not_found`; a closed session: `network_not_open`.
+    fn insert(&self, scan: Scan, generation: u64, now: u64) -> Result<String, PlatformError> {
+        let mut store = guard(&self.0);
+        if store.closed {
+            return Err(PlatformError::NetworkNotOpen);
         }
-        scans.push_back((id.clone(), scan));
-        id
+        if store.generation(scan.wallet) != generation {
+            return Err(PlatformError::WalletNotFound);
+        }
+        let id = format!("scan-{}", hex::encode(rand::random::<[u8; 12]>()));
+        store.scans.retain(|(_, s)| s.claimed || !s.expired(now));
+        let free = (store.scans.iter()).filter(|(_, s)| !s.claimed).count();
+        if free >= MAX_SCANS
+            && let Some(oldest) = (store.scans.iter()).position(|(_, s)| !s.claimed)
+        {
+            store.scans.remove(oldest);
+        }
+        store.scans.push_back((id.clone(), scan));
+        Ok(id)
     }
 
-    fn remove(&self, id: &str) {
-        guard(&self.0).retain(|(i, _)| i != id);
-    }
-
-    /// Drops the wallet's scans (removal, unload).
+    /// Drops the wallet's scans and starts its next load generation
+    /// (removal, unload).
     pub(crate) fn forget(&self, wallet: &WalletId) {
-        guard(&self.0).retain(|(_, s)| s.wallet != *wallet);
+        let mut store = guard(&self.0);
+        store.scans.retain(|(_, s)| s.wallet != *wallet);
+        *store.generations.entry(*wallet).or_default() += 1;
+    }
+
+    /// Drops every scan; none is kept again (the session closes).
+    pub(crate) fn close(&self) {
+        let mut store = guard(&self.0);
+        store.scans.clear();
+        store.closed = true;
     }
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        guard(&self.0).len()
+        guard(&self.0).scans.len()
     }
 }
 
@@ -189,23 +238,18 @@ impl NetworkSession {
     ) -> Result<Option<UserHit>, PlatformError> {
         let _op = self.enter().await?;
         self.require_wallet(&wallet)?;
-        Ok(self.lookup(wallet, &username).await?.map(|(_, hit)| hit))
+        let label = dpns_label(username.trim());
+        Ok(self.lookup(wallet, label).await?.map(|(_, hit)| hit))
     }
 
-    /// The user who owns `username` now, with the hit shown for them. A
-    /// label DPNS could not hold asks nothing.
+    /// The user who owns `label` now (no `.dash`: each caller drops it once,
+    /// as its form says), with the hit shown for them. A label DPNS could
+    /// not hold asks nothing.
     async fn lookup(
         &self,
         wallet: WalletId,
-        username: &str,
+        label: &str,
     ) -> Result<Option<(Identifier, UserHit)>, PlatformError> {
-        let name = username.trim();
-        let label = match name.len().checked_sub(5) {
-            Some(i) if name.is_char_boundary(i) && name[i..].eq_ignore_ascii_case(".dash") => {
-                &name[..i]
-            }
-            _ => name,
-        };
         if !is_valid_username(label) {
             return Ok(None);
         }
@@ -233,6 +277,9 @@ impl NetworkSession {
         found: Vec<(String, Identifier)>,
         labels_verified: bool,
     ) -> Result<Vec<UserHit>, PlatformError> {
+        if found.is_empty() {
+            return Ok(Vec::new());
+        }
         let ids: Vec<Identifier> = found.iter().map(|(_, id)| *id).collect();
         let distinct = ids.iter().copied().collect::<BTreeSet<_>>();
         let (profiles, scope) = trust::scoped(net.profiles(distinct.into_iter().collect())).await;
@@ -313,76 +360,78 @@ impl NetworkSession {
         text: &str,
     ) -> Result<ScannedContact, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
+        let scans = &self.platform.users.scans;
+        // Before the wallet check: an unload after it starts a newer one.
+        let generation = scans.generation(wallet);
         self.require_wallet(&wallet).map_err(PlatformError::from)?;
         if let Some(link) = DashPayUserLink::parse(text) {
             let claimed = Identifier::from(link.identity_id);
             return match self.lookup(wallet, &link.username).await? {
-                Some((owner, hit)) if owner == claimed => Ok(scanned(hit, None)),
+                Some((owner, hit)) if owner == claimed => Ok(scanned(hit, ScannedCode::UserLink)),
                 _ => Err(ContactError::ScanUnverified),
             };
         }
-        let not_a_code = || ContactError::from(invalid("not a DashPay contact code"));
-        let code = DashPayContactCode::parse(text).ok_or_else(not_a_code)?;
-        // The expiry is the key's hardened derivation index (DIP-15), so the
-        // owner can verify no proof whose expiry is past 2^31 − 1.
-        let (key, expiry) = (decode_auto_accept_key_blob(&code.key_blob).ok())
-            .filter(|(_, expiry)| *expiry < 1 << 31)
-            .ok_or_else(not_a_code)?;
+        let code = (DashPayContactCode::parse(text))
+            .ok_or_else(|| invalid("not a DashPay contact code"))?;
         let now = crate::events::unix_now();
-        let key = AutoAcceptKey {
-            key: Zeroizing::new(key.to_secret_bytes()),
-            expiry,
-            recipient_unverified: false,
-        };
-        if key.expired(now) {
+        let expires_at = u64::from(code.expiry);
+        if expires_at <= now {
             return Err(ContactError::ScanExpired);
         }
         let (recipient, hit) =
             (self.lookup(wallet, &code.username).await?).ok_or(ContactError::ScanUnverified)?;
-        let key = AutoAcceptKey {
+        let scan = Scan {
+            wallet,
+            recipient,
+            key: code.key,
+            expiry: code.expiry,
             recipient_unverified: hit.unverified,
-            ..key
+            claimed: false,
         };
-        let scans = &self.platform.users.scans;
-        let scan = scans.insert(
-            Scan {
-                wallet,
-                recipient,
-                key,
-            },
-            now,
-        );
-        // A removal or unload since the check above took the wallet's scans
-        // (after the wallet left the manager); this one must not outlive it.
-        if let Err(e) = self.require_wallet(&wallet) {
-            scans.remove(&scan);
-            return Err(PlatformError::from(e).into());
-        }
-        Ok(scanned(hit, Some(scan)))
+        let scan = scans.insert(scan, generation, now)?;
+        Ok(scanned(
+            hit,
+            ScannedCode::AutoAcceptClaim { scan, expires_at },
+        ))
     }
 }
 
-fn scanned(hit: UserHit, scan: Option<String>) -> ScannedContact {
+fn scanned(hit: UserHit, code: ScannedCode) -> ScannedContact {
     ScannedContact {
         identity: hit.identity,
         username: Some(hit.username),
         display_name: hit.display_name,
-        scan,
+        code,
         relation: hit.relation,
         unverified: hit.unverified,
     }
 }
 
 /// The seam DP2-02's `send_request` sends through: the request's sides and,
-/// from a scan, the auto-accept key. platform-wallet's
-/// `send_contact_request_from_qr` would parse the code and resolve its name
-/// again at send time, so the send uses
-/// `send_contact_request_with_external_signer` with
-/// [`AutoAcceptKey::proof_source`] instead: the recipient is the identity
-/// `verify_scanned` showed, and the proof is signed once the send knows its
-/// `accountReference`.
+/// from a scan, a claim on its auto-accept key.
+///
+/// The contract DP2-02 spends through:
+/// - [`NetworkSession::send_request_intent`] claims the scan atomically: one
+///   send at a time holds it (another gets `contact.request_pending`), and
+///   the claim lives as long as the intent; nothing but the wallet's
+///   removal or unload, or the session's close, takes a claimed scan away.
+/// - The send does every check that may refuse it (eligibility, grant,
+///   vault) first, then takes [`ScanClaim::proof_source`] and signs with it
+///   through `send_contact_request_with_external_signer`. platform-wallet's
+///   `send_contact_request_from_qr` would parse the code and resolve its
+///   name again at send time; the recipient is the identity
+///   `verify_scanned` showed, and the library signs once it knows the
+///   send's `accountReference`.
+/// - Fail closed: a claim dropped before `proof_source` (a send refused)
+///   releases the scan for a retry; once `proof_source` gave the key out,
+///   the request may have been broadcast, so dropping the claim spends the
+///   scan whatever happened next (sent, failed, cancelled, panicked).
+/// - The outcome is `Pending` like any other request: the auto-accept is
+///   only claimed (module doc) until the recipient accepts.
 #[cfg_attr(not(test), expect(dead_code, reason = "DP2-02's send_request"))]
 pub(crate) mod send_seam {
+    use std::sync::Arc;
+
     use dashcore::secp256k1::SecretKey;
     use dpp::prelude::Identifier;
     use platform_wallet::AutoAcceptProofSource;
@@ -394,87 +443,138 @@ pub(crate) mod send_seam {
     use crate::platform::runtime::guard;
     use crate::{NetworkSession, WalletId};
 
-    /// A verified `dapk` code: whom it lets this wallet's request reach
-    /// auto-accepted, and the key that signs the proof.
+    /// A verified `dapk` code: whom it lets this wallet's request reach,
+    /// auto-accepted as its maker claims, and the key that signs the proof.
+    /// The key's only copy in the engine.
     pub(crate) struct Scan {
         pub(super) wallet: WalletId,
         pub(super) recipient: Identifier,
-        pub(super) key: AutoAcceptKey,
+        pub(super) key: Box<Zeroizing<[u8; 32]>>,
+        /// When the key stops being honoured: UNIX seconds.
+        pub(super) expiry: u32,
+        /// The lookup that named the recipient did not verify (m4 §5).
+        pub(super) recipient_unverified: bool,
+        /// A send holds it ([`ScanClaim`]).
+        pub(super) claimed: bool,
+    }
+
+    impl Scan {
+        pub(super) fn expired(&self, now: u64) -> bool {
+            u64::from(self.expiry) <= now
+        }
     }
 
     /// One contact request to send.
     pub(crate) struct SendRequestIntent {
         pub(crate) sender: Identifier,
         pub(crate) recipient: Identifier,
-        /// From a `dapk` scan: the proof's key. The send spends the scan
-        /// ([`Scans::spend`]) once the request was broadcast, or may have
-        /// been; a send that fails before that leaves it for a retry.
-        pub(crate) auto_accept: Option<AutoAcceptKey>,
+        /// From a `dapk` scan: the claim on its key, held until the intent
+        /// goes.
+        pub(crate) auto_accept: Option<ScanClaim>,
     }
 
-    /// A scanned code's auto-accept key.
-    #[derive(Clone)]
-    pub(crate) struct AutoAcceptKey {
-        pub(super) key: Zeroizing<[u8; 32]>,
+    /// One send's hold on a scan (module doc). It holds no key: the proof's
+    /// key is read from the scan when the send asks for it.
+    pub(crate) struct ScanClaim {
+        scans: Arc<Scans>,
+        wallet: WalletId,
+        id: String,
         /// When the key stops being honoured: UNIX seconds.
         pub(crate) expiry: u32,
         /// The lookup that named the recipient did not verify (m4 §5): the
-        /// send confirms before it auto-accepts with Platform's word alone.
+        /// send confirms before it relies on Platform's word alone.
         pub(crate) recipient_unverified: bool,
+        /// The key went out: the scan is spent when the claim goes.
+        used: bool,
     }
 
-    impl AutoAcceptKey {
-        /// The proof the send signs over its own `accountReference`.
-        pub(crate) fn proof_source(&self) -> AutoAcceptProofSource {
-            let secret_key = SecretKey::from_secret_bytes(*self.key)
-                .expect("a valid scalar: decode_auto_accept_key_blob checked it");
-            AutoAcceptProofSource::SignWithKey {
+    impl ScanClaim {
+        /// The proof source for the send, made once, right before it. The
+        /// bytes `SecretKey::from_secret_bytes` takes by value and the
+        /// `SecretKey` handed to platform-wallet are copies this engine
+        /// cannot erase: secp256k1 keys are `Copy`, and the library drops
+        /// its own unerased once the proof is signed. A scan forgotten
+        /// meanwhile (the wallet unloaded, the session closed) or expired by
+        /// `now` (the recipient would discard the proof): `contact.scan_expired`.
+        /// From here on the claim spends the scan when it goes (module doc).
+        pub(crate) fn proof_source(
+            &mut self,
+            now: u64,
+        ) -> Result<AutoAcceptProofSource, ContactError> {
+            let mut store = guard(&self.scans.0);
+            let at = (store.position(self.wallet, &self.id)).ok_or(ContactError::ScanExpired)?;
+            if store.scans[at].1.expired(now) {
+                store.scans.remove(at);
+                return Err(ContactError::ScanExpired);
+            }
+            let secret_key = SecretKey::from_secret_bytes(**store.scans[at].1.key)
+                .expect("a valid scalar: DashPayContactCode checked it");
+            self.used = true;
+            Ok(AutoAcceptProofSource::SignWithKey {
                 secret_key,
                 expiry: self.expiry,
-            }
+            })
         }
+    }
 
-        pub(super) fn expired(&self, now: u64) -> bool {
-            u64::from(self.expiry) <= now
+    impl Drop for ScanClaim {
+        /// Releases the scan, or spends it once its key went out.
+        fn drop(&mut self) {
+            let mut store = guard(&self.scans.0);
+            if let Some(at) = store.position(self.wallet, &self.id) {
+                if self.used {
+                    store.scans.remove(at);
+                } else {
+                    store.scans[at].1.claimed = false;
+                }
+            }
         }
     }
 
     impl Scans {
-        /// The key of `wallet`'s scan `id` for `recipient`, which stays until
-        /// spent. Unknown, spent, another wallet's or expired by `now`:
-        /// `contact.scan_expired` (m4 §2.4), and an expired scan goes.
-        /// Scanned for someone else: `invalid_argument`.
-        pub(crate) fn key(
-            &self,
+        /// Claims `wallet`'s scan `id` for `recipient`. Unknown, spent,
+        /// another wallet's or expired by `now`: `contact.scan_expired`
+        /// (m4 §2.4), and an expired scan goes. Scanned for someone else:
+        /// `invalid_argument`. Held by another send:
+        /// `contact.request_pending`.
+        pub(crate) fn claim(
+            self: &Arc<Self>,
             wallet: WalletId,
             id: &str,
             recipient: Identifier,
             now: u64,
-        ) -> Result<AutoAcceptKey, ContactError> {
-            let mut scans = guard(&self.0);
-            let at = (scans.iter())
-                .position(|(i, s)| i == id && s.wallet == wallet)
+        ) -> Result<ScanClaim, ContactError> {
+            let mut store = guard(&self.0);
+            let at = store
+                .position(wallet, id)
                 .ok_or(ContactError::ScanExpired)?;
-            let scan = &scans[at].1;
+            let scan = &mut store.scans[at].1;
             if scan.recipient != recipient {
                 return Err(invalid("the scan is for another contact").into());
             }
-            if scan.key.expired(now) {
-                scans.remove(at);
+            if scan.expired(now) {
+                store.scans.remove(at);
                 return Err(ContactError::ScanExpired);
             }
-            Ok(scan.key.clone())
-        }
-
-        /// Spends `wallet`'s scan `id`: a request was sent with it.
-        pub(crate) fn spend(&self, wallet: WalletId, id: &str) {
-            guard(&self.0).retain(|(i, s)| !(i == id && s.wallet == wallet));
+            if scan.claimed {
+                return Err(ContactError::RequestPending);
+            }
+            scan.claimed = true;
+            Ok(ScanClaim {
+                scans: Arc::clone(self),
+                wallet,
+                id: id.to_owned(),
+                expiry: scan.expiry,
+                recipient_unverified: scan.recipient_unverified,
+                used: false,
+            })
         }
     }
 
     impl NetworkSession {
-        /// What `send_request(identity, to, scan)` sends; DP2-02 checks
-        /// eligibility and grants, sends it, then spends the scan.
+        /// What `send_request(identity, to, scan)` sends, with the scan
+        /// claimed; DP2-02 checks eligibility and grants, sends it, then
+        /// spends the claim (module doc).
         pub(crate) fn send_request_intent(
             &self,
             wallet: WalletId,
@@ -484,9 +584,9 @@ pub(crate) mod send_seam {
         ) -> Result<SendRequestIntent, ContactError> {
             let (sender, recipient) = (identifier(sender)?, identifier(to)?);
             let now = crate::events::unix_now();
-            let auto_accept = (scan
-                .map(|id| (self.platform.users.scans).key(wallet, id, recipient, now)))
-            .transpose()?;
+            let scans = &self.platform.users.scans;
+            let auto_accept =
+                (scan.map(|id| scans.claim(wallet, id, recipient, now))).transpose()?;
             Ok(SendRequestIntent {
                 sender,
                 recipient,

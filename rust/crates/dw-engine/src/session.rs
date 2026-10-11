@@ -670,6 +670,8 @@ impl NetworkSession {
         let _closing = self.gate.close().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
+        // A retained session handle keeps no scanned key (DP2-03).
+        self.platform.users.scans.close();
         let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();
