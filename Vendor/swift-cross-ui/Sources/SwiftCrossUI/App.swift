@@ -187,6 +187,33 @@ extension App {
     import SwiftCrossUIMetadataSupport
 #endif
 
+/// The JSON of the Swift Bundler metadata trailer at the end of an executable (the JSON, its
+/// length as a big-endian UInt64, then "SBUNMETA"), or nil when there is none.
+///
+/// dashwallet-desktop patch P12: reads only the trailer. Upstream read the whole executable
+/// into `Data` and compared `data.suffix(8)` with an `Array`, which resolves to
+/// `Sequence.suffix` and walks every byte: about a second of CPU before `App.init` for the
+/// 136 MB release binary.
+func swiftBundlerMetadataJSON(inExecutableAt url: URL) throws -> Data? {
+    guard let file = try? FileHandle(forReadingFrom: url) else {
+        throw SwiftBundlerMetadataError.failedToReadExecutable
+    }
+    defer { try? file.close() }
+    let size = try file.seekToEnd()
+    guard size >= 16 else { return nil }
+    try file.seek(toOffset: size - 16)
+    guard let trailer = try file.read(upToCount: 16), trailer.count == 16,
+        trailer.suffix(8).elementsEqual("SBUNMETA".utf8)
+    else { return nil }
+    let jsonLength = trailer.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+    guard jsonLength <= size - 16 else { throw SwiftBundlerMetadataError.failedToReadExecutable }
+    try file.seek(toOffset: size - 16 - jsonLength)
+    guard let json = try file.read(upToCount: Int(jsonLength)), json.count == jsonLength else {
+        throw SwiftBundlerMetadataError.failedToReadExecutable
+    }
+    return json
+}
+
 extension App {
     private static func extractSwiftBundlerMetadata() throws -> AppMetadata? {
         // If we know for a fact we've been compiled using swift-bundler's new metadata
@@ -220,32 +247,12 @@ extension App {
             }
             let jsonData = Data(jsonBytes)
         #else
-            func parseBigEndianUInt64(
-                startingAt startIndex: Int,
-                in data: Data
-            ) -> UInt64 {
-                data[startIndex..<(startIndex + 8)].withUnsafeBytes { pointer in
-                    let bigEndianValue = pointer.assumingMemoryBound(to: UInt64.self)
-                        .baseAddress!.pointee
-                    return UInt64(bigEndian: bigEndianValue)
-                }
-            }
-
             guard let executable = Bundle.main.executableURL else {
                 throw SwiftBundlerMetadataError.noExecutableURL
             }
-
-            guard let data = try? Data(contentsOf: executable) else {
-                throw SwiftBundlerMetadataError.failedToReadExecutable
+            guard let jsonData = try swiftBundlerMetadataJSON(inExecutableAt: executable) else {
+                return nil
             }
-
-            // Check if executable has Swift Bundler metadata magic bytes.
-            guard data.suffix(8) == Array("SBUNMETA".utf8) else { return nil }
-
-            let lengthStart = data.count - 16
-            let jsonLength = parseBigEndianUInt64(startingAt: lengthStart, in: data)
-            let jsonStart = lengthStart - Int(jsonLength)
-            let jsonData = data[jsonStart..<lengthStart]
         #endif
 
         // Manually parsed due to the `additionalMetadata` field (which would

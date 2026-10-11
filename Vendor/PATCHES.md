@@ -290,3 +290,23 @@ Test: `WindowSizeTests` "a resize while the window is first shown does not show 
 fake backend's `show(window:)` shrinks the window to a 1100x645 screen and calls the resize handler
 synchronously, as AppKit does. Without the patch, `show` re-enters until the fake's guard stops it
 at 50 calls; with it, the window is shown once and the main loop settles.
+
+### P12 — the metadata trailer is read without reading the whole executable (cold start)
+
+Rationale: at launch, before `App.init`, SwiftCrossUI looks for Swift Bundler's metadata trailer
+(the JSON, its length as a big-endian UInt64, then `SBUNMETA`) at the end of the executable; it
+names the app (on Linux, the GApplication ID). Builds without `SWIFT_BUNDLER_METADATA`, which is
+all of ours, read the whole executable into `Data` and compare `data.suffix(8)` with an `Array`.
+That comparison resolves to `Sequence.suffix`, which walks every byte. On agentbox, `perf` puts
+the demo launch's samples before `App.init` in `Data.Iterator.next` and `Sequence.suffix`. The
+gate's `main` mark already has 1.3–1.8 s of process CPU for the 136 MB stripped release binary
+(gate G-03, U5 cold start). macOS and Windows take the same path. Upstream 0.10.0 has the same
+code.
+
+Change (`Sources/SwiftCrossUI/App.swift`, comment `dashwallet-desktop patch P12`):
+`swiftBundlerMetadataJSON(inExecutableAt:)` seeks to the last 16 bytes, checks the magic, and
+reads only the JSON. Without a trailer it returns nil, as before. A length that runs past the
+start of the file throws (upstream trapped on the range).
+
+Test: `MetadataTrailerTests` reads a trailer after 1 MiB of bytes, returns nil for files without
+one (including files shorter than a trailer), and throws for a bad length or a missing file.
