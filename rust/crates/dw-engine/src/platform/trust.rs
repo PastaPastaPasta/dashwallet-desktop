@@ -497,6 +497,12 @@ pub(crate) async fn scoped<F: Future>(fut: F) -> (F::Output, Tally) {
     (out, inner)
 }
 
+/// A quorum lookup, as a proof would make one, for a test's scripted fetch.
+#[cfg(test)]
+pub(crate) fn note_lookup(verified: bool) {
+    tally(verified);
+}
+
 fn tally(verified: bool) {
     let _ = SCOPE.try_with(|t| {
         let mut t = t.borrow_mut();

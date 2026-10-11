@@ -1,10 +1,12 @@
 //! Contacts: the read model, requests, ignore, private details, DashPay
 //! keys, user links and scans (DP2-01…DP2-04).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{BearerSecret, DashPay, stub};
-use super::errors::ContactError;
+use super::errors::{ContactError, PlatformError};
 use super::payments::PaymentLock;
 use super::profile::Profile;
 
@@ -135,18 +137,35 @@ pub enum RequestOutcome {
     Established { request: String },
 }
 
-/// A scanned or pasted contact, verified against Platform.
+/// A scanned or pasted contact. Verified against Platform means only that
+/// `username` belongs to `identity` now: a QR is unsigned, so nothing shows
+/// who made it, and a code's key stays a claim ([`ScannedCode`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedContact {
     pub identity: String,
     pub username: Option<String>,
     pub display_name: Option<String>,
-    /// Set when the payload carried a `dapk` auto-accept proof: an id for
-    /// the proof, which the engine holds in memory for `send_request`.
-    pub scan: Option<String>,
+    /// What was scanned, and what it claims beyond the name.
+    pub code: ScannedCode,
     pub relation: Relation,
-    /// Verified only through the trusted fallback (§2.2 rule 2).
+    /// The shown name or profile is verified only through the trusted
+    /// fallback (§2.2 rule 2), as on a `UserHit`; says nothing of the key.
     pub unverified: bool,
+}
+
+/// The kind of a scanned code (m4 §2.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScannedCode {
+    /// A `dashpay://user` link: the name and its identity, nothing more.
+    UserLink,
+    /// A DIP-15 code with an auto-accept key, held by the engine as `scan`
+    /// for `send_request`. Its claim that the recipient accepts such a
+    /// request on its own is unconfirmed: the key derives on a hardened
+    /// path of the recipient's seed that is never published, so only the
+    /// recipient can check it. A request sent with it is `Pending` like any
+    /// other until the recipient accepts.
+    AutoAcceptClaim { scan: String, expires_at: u64 },
 }
 
 impl DashPay {
@@ -177,6 +196,24 @@ impl DashPay {
     /// finish their channel or accept their request.
     pub fn pending_setup_count(&self) -> Result<u32, ContactError> {
         self.session.pending_setup(self.wallet_id())
+    }
+
+    /// The identity's `dashpay://user?id=&username=` link with its main
+    /// name, as iOS writes it (DP2-03, `users.rs`). An identity without a
+    /// name has none: `contact.no_username`.
+    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError> {
+        self.session.my_user_link_of(self.wallet_id(), &identity)
+    }
+
+    /// A scanned or pasted `dashpay://user` link or DIP-15
+    /// `dash:?du=&dapk=` code, verified against Platform (DP2-03). A `dapk`
+    /// key stays in the engine; `scan` names it for `send_request`.
+    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.verify_scanned_of(id, text.expose()).await) })
+            .await
+            .map_err(PlatformError::from)?
     }
 }
 
@@ -233,13 +270,5 @@ impl DashPay {
         grant: String,
     ) -> Result<(), ContactError> {
         stub("DashPay.enable_dashpay_keys")
-    }
-
-    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError> {
-        stub("DashPay.my_user_link")
-    }
-
-    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError> {
-        stub("DashPay.verify_scanned")
     }
 }

@@ -1,5 +1,5 @@
 //! Usernames: rules, availability, registration, the own contest and user
-//! search (DP1-03, DP1-04, DP2-03).
+//! search (DP1-03, DP1-04, DP2-03; the search is `users.rs`).
 //!
 //! DP1-03's part:
 //! - [`check_username`]: dash-platform-queries' DPNS rules (`dpns_usernames.rs`
@@ -1486,18 +1486,34 @@ impl DashPay {
         stub("DashPay.contest_status")
     }
 
-    #[expect(unused_variables, reason = "stub until DP2-03")]
+    /// Users whose DPNS name starts with `prefix` (homograph-folded, as
+    /// DPNS compares), at most `limit` (capped at 100), in Platform's order,
+    /// each with its profile and its relation to the main identity
+    /// (DP2-03, `users.rs`). Only the prefix goes to DAPI.
     pub async fn search_users(
         &self,
         prefix: String,
         limit: u32,
     ) -> Result<Vec<UserHit>, NameError> {
-        stub("DashPay.search_users")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id);
+        let found = self
+            .session
+            .on_runtime(async move { Ok(session.search_users_of(id, prefix, limit).await) })
+            .await
+            .map_err(engine)?;
+        Ok(found?)
     }
 
-    #[expect(unused_variables, reason = "stub until DP2-03")]
+    /// The user who owns `username` (`alice` or `alice.dash`, any case);
+    /// `None` if no one does (DP2-03).
     pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError> {
-        stub("DashPay.resolve_user")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id);
+        let found = self
+            .session
+            .on_runtime(async move { Ok(session.resolve_user_of(id, username).await) })
+            .await
+            .map_err(engine)?;
+        Ok(found?)
     }
 }
 

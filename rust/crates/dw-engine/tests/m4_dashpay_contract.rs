@@ -56,6 +56,11 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.contacts",
     "DashPay.contact",
     "DashPay.pending_setup_count",
+    // DP2-03: user search, links and scans.
+    "DashPay.search_users",
+    "DashPay.resolve_user",
+    "DashPay.my_user_link",
+    "DashPay.verify_scanned",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -82,7 +87,8 @@ const FACADE: &[&str] = &[
 /// network seam and session tests (DP1-03), the changeset tap and trust
 /// records (E0-06), the lease table and dispatch fence (E0-04) and the
 /// quorum provider and its re-fetch (E0-10b), the contacts read model, its
-/// usernames and its tests (DP2-01).
+/// usernames and its tests (DP2-01), and user search, links and scans
+/// with their tests (DP2-03).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
@@ -106,6 +112,8 @@ const NOT_FACADE: &[&str] = &[
     "status.rs",
     "trust.rs",
     "trust_tests.rs",
+    "users.rs",
+    "users_tests.rs",
 ];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
@@ -830,6 +838,8 @@ fn error_codes_match_the_contract() {
             ContactError::ChannelBroken,
             ContactError::PaymentLocked { txid: s() },
             ContactError::ScanExpired,
+            ContactError::ScanUnverified,
+            ContactError::NoUsername,
         ],
         ContactError::code,
     );
@@ -1122,8 +1132,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(dp.prepare_faucet_lock(s()).await);
 
         c.stub(dp.contest_status(s(), s()).await);
-        c.stub(dp.search_users(s(), 10).await);
-        c.stub(dp.resolve_user(s()).await);
+        // DP2-03's calls are implemented: an unknown wallet is refused.
+        for found in [
+            dp.search_users(s(), 10).await.map(drop),
+            dp.resolve_user(s()).await.map(drop),
+        ] {
+            assert_eq!(found.unwrap_err().code(), "wallet_not_found");
+        }
 
         c.stub(dp.eligibility(s(), s()).await);
         c.stub(dp.send_request(s(), s(), None, s()).await);
@@ -1135,8 +1150,11 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await,
         );
         c.stub(dp.enable_dashpay_keys(s(), s()).await);
-        c.stub(dp.my_user_link(s()));
-        c.stub(dp.verify_scanned(secret()).await);
+        assert_eq!(dp.my_user_link(s()).unwrap_err().code(), "wallet_not_found");
+        assert_eq!(
+            dp.verify_scanned(secret()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
 
         c.stub(dp.payment_lock(s(), s()));
         c.stub(dp.resolve_payment_lock(s(), s()).await);

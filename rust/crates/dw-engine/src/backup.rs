@@ -681,6 +681,9 @@ impl NetworkSession {
                 let removed = async {
                     let live = self.live()?;
                     live.manager.remove_wallet(&id.0).await?;
+                    // Again, now that it is out of the manager: a scan begun
+                    // since the first forget passed the wallet check.
+                    self.platform.users.scans.forget(&id);
                     self.hub.forget_wallet(&id);
                     let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                     tokio::task::spawn_blocking(move || -> Result<(), EngineError> {

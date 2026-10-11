@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 10
+Contract-Version: 11
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, and DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, and DP2-03's user search, links and scans `users.rs` with `users_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -183,8 +183,9 @@ status 1.
 
 Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
-`register_name`, `set_main_name`, `main_name`), and DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
-`pending_setup_count`). Kind is `sync`, `async` or `free, pure` (§1).
+`register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
+`pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
+`my_user_link` and `verify_scanned` in §2.4). Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -221,8 +222,8 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own by Platform's evidence (a label whose write may be in flight included) is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). | `NameError` |
 | `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the name it got first by Platform's acquisition time (the marketplace row's `$transferredAt`, else `$createdAt`, else the library's stamp; untimed names last). `None` if it owns none. | `NameError` |
 | `contest_status(identity, label)` | async | The own contest: state, deadline, contenders and votes, the temporary name. | `NameError` |
-| `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI. `relation` is relative to the main identity. | `NameError` |
-| `resolve_user(username)` | async | Exact lookup; `None` if no such name. `relation` as in `search_users`. | `NameError` |
+| `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI: trimmed and normalized (homograph-safe, lower case); blank or `limit` 0 is `invalid_argument`, a prefix no label could start with (anything outside `[a-z0-9-]` after normalizing, a `.dash` suffix included) returns no hits without a query, and `limit` is capped at 100. Hits in Platform's order, each with the label as Platform spells it and the identity's profile (the hits' profiles in one query, `$ownerId In`, once per identity; a failed fetch shows no profile). `relation` is relative to the wallet's main identity (`IsSelf` for it; `Stranger` with no main identity or no contacts snapshot yet). `unverified` (§5): the label as that identity's unless the names' fetch verified, and the profile shown unless the profiles' fetch did. Search writes no trust records. **Implemented (DP2-03).** | `NameError` |
+| `resolve_user(username)` | async | Exact lookup: trimmed, one `.dash` suffix dropped (any case), normalized; `None` if no such name, and without a query for a label DPNS cannot hold. Hit as in `search_users`. **Implemented (DP2-03).** | `NameError` |
 
 ### 2.4 Contacts
 
@@ -232,14 +233,14 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `contact(identity, contact)` | sync | One contact in any relation, as in `contacts`, with its profile, private details and both request times; `None` if unknown. While a writer holds the state and the snapshot lacks the identity, `platform.unavailable` (not "unknown"): re-query on the `Platform{Contacts}` that follows. `publish_state` is `DeferredUntilTwoContacts` for a contact while the identity has fewer than two, else `Local`: whether a `contactInfo` was published is DP2-04's to record. `payment_lock` is `None` until DP3-01. **Implemented (DP2-01).** | `ContactError` (as `contacts`; `platform.unavailable` as above) |
 | `pending_setup_count()` | sync | Over every identity of the wallet: contacts whose channel is `SetupPending`, and requests with a queued auto-accept ("Unlock to finish setting up N contacts"). From the last snapshot while a writer holds the state; `platform.unavailable` with none yet. Re-query on `Platform{Contacts}` for any of the wallet's identities and on `Identities`. **Implemented (DP2-01).** | `ContactError` |
 | `eligibility(identity, contact)` | async | Before any prompt: `Ok`, `NoDashPayKeys`, `IsSelf`, `AlreadyContact`, `PendingOutgoing`, `PendingIncoming`. | `ContactError` |
-| `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is `ScannedContact.scan` when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_from_qr`). A scan id is single-use and lives for the session; a stale id or an expired proof is `contact.scan_expired`. An ineligible target is `contact.ineligible{reason}` with the `eligibility` answer. | `ContactError` |
+| `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is the id in `ScannedContact.code` (`AutoAcceptClaim{scan}`) when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_with_external_signer` with `AutoAcceptProofSource::SignWithKey`, the key and expiry of the scan, so that the send does not re-resolve the username the scan verified; DP2-02). The send claims the scan first, atomically: while one send holds it another is `contact.request_pending`, and a claim makes one proof (taking the proof source consumes it), so one scan never makes two requests. A send refused before it signs (a locked vault, an ineligible target, a refused grant) releases the scan for a retry; once it has signed the proof, the request may have been broadcast, so the scan is spent whatever happens next (fail closed). A scan that expires before the send signs is `contact.scan_expired`. Scans go with their wallet (removal, unload) and with the session's close, a claimed one included; the 16-scan bound never evicts a claimed one. An unknown, spent or expired scan is `contact.scan_expired`; a scan for another identity than `to` is `invalid_argument`. The outcome is `Pending` like any send's: the code's key is only claimed to be the recipient's (`verify_scanned`), so the auto-accept is unconfirmed until the recipient accepts. A scan whose shown name or profile was unverified (§5) says so to the send, which confirms before it auto-accepts on Platform's word alone. An ineligible target is `contact.ineligible{reason}` with the `eligibility` answer. | `ContactError` |
 | `accept_request(identity, from, grant)` | async | Sends the reverse request. | `ContactError` |
 | `ignore(identity, contact)` | async | Adds to `ignored_senders`. | `ContactError` |
 | `unignore(identity, contact)` | async | Removes it again. | `ContactError` |
 | `set_private_details(identity, contact, d, grant)` | async | Alias, note, hidden. Stored locally; published as an encrypted `contactInfo` once there are ≥ 2 contacts (`DeferredUntilTwoContacts` before that; `grant` is needed to publish). | `ContactError` |
 | `enable_dashpay_keys(identity, grant)` | async | Adds keys 4–5 to an identity that lacks them (F9). | `ContactError` |
-| `my_user_link(identity)` | sync | `dashpay://user?id=&username=`. | `ContactError` |
-| `verify_scanned(text)` | async | A plain user link or a DIP-15 `dash:?du=&dapk=` payload, verified against Platform. A `dapk` proof stays in the engine; the result carries its `scan` id. An expired proof is `contact.scan_expired`. | `ContactError` |
+| `my_user_link(identity)` | sync | iOS's user link (dashwallet-ios `DashPayUserLink`): `dashpay://user?id=<Base58 identity>&username=<main name>`, the name as `main_name` gives it, percent-encoded (every character outside RFC 3986's unreserved set; a DPNS label has none, so the bytes are iOS's). An identity with no name is `contact.no_username`; while a sync pass holds the identities, `platform.unavailable` (also for an identity the last snapshot lacks, or before the first). The main name may change once the names pass has Platform's timestamps (DP1-03), and the link with it; any of the identity's names verifies. **Implemented (DP2-03).** | `ContactError` (`identity.not_found` for an identity the wallet lacks; `invalid_argument` for an id that is not Base58) |
+| `verify_scanned(text)` | async | A plain user link or a DIP-15 `dash:?du=&dapk=` payload, verified against Platform. A user link is parsed as iOS parses it (scheme, host and names case-insensitive; `id` and `username` once each, nothing else) and verifies as iOS's scanner does: its username must belong to its `id` now, else `contact.scan_unverified` ("couldn't be verified on the Dash network"). A DIP-15 code has `du` and `dapk` once each and nothing else (the merchant form `dash:<address>?du=…` is not a contact code, and an empty parameter such as a trailing `&` is refused); `dapk` is the 38-byte key blob (type 0, expiry, 32-byte key), whose expiry, UNIX seconds and the owner's hardened derivation index, must be below 2^31. An expired code is `contact.scan_expired` before any query; a `du` with no identity is `contact.scan_unverified`. The key stays in the engine as a scan for this wallet (16 at most; expired ones go at the next scan, then the oldest; all go with the wallet and with the session), and the result's `code` is `AutoAcceptClaim{scan, expires_at}`; a user link's is `UserLink`. A scan begun before its wallet was removed or unloaded keeps no key (`wallet_not_found`), even if the wallet is back by the time Platform answers. Neither form is signed: a verified scan shows that its username belongs to its identity now, not who made the QR. A code's key derives on a hardened path of its owner's seed (`m/9'/coin'/16'/expiry'`) that nothing on Platform reveals, so no scanner can tie it to the identity; only the recipient can check the proof, when the request arrives. `AutoAcceptClaim` is that claim, unconfirmed until the recipient accepts. Each form trims its username, then drops one `.dash`, once: a user link as iOS does (case-sensitive), a code in any case; the label is then normalized, and nothing drops a second `.dash`. Anything else is `invalid_argument`, which never quotes the text. `username` is Platform's spelling, `relation` and `unverified` as in `search_users`. **Implemented (DP2-03).** | `ContactError` |
 
 ### 2.5 Payments and activity (the `TxDraft` recipient is in `send/`, §6)
 
@@ -318,7 +319,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 4e66f3cca4fbd147c571b7a2ab091fbd95b5badac2f9ecf77a7c5ae993fa9148 version: 10 -->
+<!-- surface-sha256: c241b6ede999045e6a77b5e78ff01eebfd493c8263e411c8219d931db7532795 version: 11 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -429,14 +430,22 @@ pub struct ScannedContact {
     pub identity: String,
     pub username: Option<String>,
     pub display_name: Option<String>,
-    pub scan: Option<String>,
+    pub code: ScannedCode,
     pub relation: Relation,
     pub unverified: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScannedCode {
+    UserLink,
+    AutoAcceptClaim { scan: String, expires_at: u64 },
 }
 impl DashPay {
     pub fn contacts(&self, identity: String, q: ContactQuery) -> Result<ContactsPage, ContactError>;
     pub fn contact(&self, identity: String, contact: String) -> Result<Option<ContactDetail>, ContactError>;
     pub fn pending_setup_count(&self) -> Result<u32, ContactError>;
+    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError>;
+    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError>;
 }
 impl DashPay {
     pub async fn eligibility(&self, identity: String, contact: String) -> Result<Eligibility, ContactError>;
@@ -446,8 +455,6 @@ impl DashPay {
     pub async fn unignore(&self, identity: String, contact: String) -> Result<(), ContactError>;
     pub async fn set_private_details(&self, identity: String, contact: String, d: PrivateDetails, grant: Option<String>) -> Result<PublishState, ContactError>;
     pub async fn enable_dashpay_keys(&self, identity: String, grant: String) -> Result<(), ContactError>;
-    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError>;
-    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError>;
 }
 // src/platform/credits.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -598,6 +605,8 @@ pub enum ContactError {
     ChannelBroken,
     PaymentLocked { txid: String },
     ScanExpired,
+    ScanUnverified,
+    NoUsername,
     Platform(PlatformError),
 }
 impl ContactError {
@@ -1268,7 +1277,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
-| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired` |
+| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum` |
@@ -1327,7 +1336,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   `platform.insufficient_credits`.
 - **Contacts.** `contact.ineligible{reason}` carries the `Eligibility` that refused (never `Ok`), so `NoDashPayKeys`
   leads to "Enable DashPay keys". `contact.scan_expired` is an expired `dapk` proof or a stale or used scan id: "this
-  QR code has expired; ask for a new one".
+  QR code has expired; ask for a new one". `contact.scan_unverified` is a scanned user link or code whose username
+  Platform does not give to it (iOS: "… couldn't be verified on the Dash network. The QR code may be outdated.").
+  `contact.no_username` is `my_user_link` for an identity with no name.
 - Refusals §3.6 names no code for, so that every DP task uses the same one:
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
@@ -1520,7 +1531,10 @@ The shapes are in §3. What they mean, where the name does not say:
   (`payment_channel_broken`).
 - **`RequestOutcome`.** `Pending{request}` after a send; `Established{request}` when both directions exist (an accept,
   or a send to someone whose request was already in). `request` is the contact-request document id.
-- **`ScannedContact.scan`**: set when the payload carried a `dapk` auto-accept proof; pass it to `send_request`.
+- **`ScannedContact.code`** (`ScannedCode`, tagged `kind`): `user_link`, or `auto_accept_claim{scan, expires_at}`
+  when the payload carried a `dapk` key, unconfirmed until the recipient accepts (§2.4 `verify_scanned`); pass `scan`
+  to `send_request`. `unverified` is the shown name's or profile's provenance, as on `UserHit` (either one
+  unverified sets it); it says nothing about the QR key's claim.
 - **`IdentityKeyInfo.contract_bound`** and **`contract_bound_document_type`**: keys 4–5 are bound to the DashPay
   contract's `contactRequest`.
 - **`EventKind`** covers the §3.5 journal: `UsernameRegistered`, `ContestWon`, `ContestLost`, `ContestLocked`,
@@ -1739,3 +1753,17 @@ renames or reshapes them takes the next version bump:
     `Platform{Contacts}`, `Identities`, `Payments` and the wallet's `HistoryChanged`. Rows flag `unverified` from the
     shown profile, the shown username (reported to the re-fetch with `Provenance::show_label`) and the requests the
     relation rests on, by content (item 36).
+38. **User search, links and scans (DP2-03, version 11).** `search_users`, `resolve_user`, `my_user_link` and
+    `verify_scanned` are implemented (§2.3, §2.4). `ContactError` gains `scan_unverified` (a scanned link or code
+    whose username Platform does not give to it, as iOS's scanner refuses one) and `no_username` (`my_user_link` for
+    an identity with no name). A `dapk` scan is kept as a session-lived key and expiry for the wallet that scanned
+    it; `send_request` (DP2-02) reads it with the identities it names, signs the proof with
+    `AutoAcceptProofSource::SignWithKey` without re-resolving the username, and spends the scan once sent, so a
+    send refused before broadcast can retry. Only the bare contact form `dash:?du=&dapk=` is a contact code.
+    Then (Sol r1): `ScannedContact.scan` became `code: ScannedCode` (`UserLink` or `AutoAcceptClaim{scan,
+    expires_at}`), since a code's key cannot be tied to its identity by a scanner and its auto-accept is only
+    claimed; a send claims its scan atomically (another is `contact.request_pending`) and spends it once it has
+    signed, fail closed; scans begun before their wallet left keep no key, and the session's close drops them all.
+    Each form drops one `.dash`, once. Then (Sol r2): a claim makes one proof (`proof_source` consumes it and
+    returns the guard that spends the scan), and `ScannedContact.unverified` is the shown name's or profile's
+    provenance, not the key's.
