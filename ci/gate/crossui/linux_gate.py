@@ -304,10 +304,12 @@ def dump(gate, app, tag):
 # --- phases ---
 
 def phase_start(gate):
-    """U5 cold start. Spawn to GateProbe's first painted frame, on CLOCK_MONOTONIC (the probe's
-    clock), with the process's CPU time at that frame."""
+    """U5 cold start: spawn to GateProbe's marks, on CLOCK_MONOTONIC (the probe's clock), with the
+    process's CPU time at each. The demo's Overview, with its balance and history, is the criterion
+    (Tauri's fixture-mode first paint); its first frame (the window, Tauri's "shell") and the live
+    wallet's lock screen, which waits for the engine to open the 40k wallet, are recorded."""
     rows = {"demo-first-paint": [], "demo-overview-paint": [], "live-lock-paint": [], "live-unlock-to-overview": []}
-    cpu = {"demo-first-paint": [], "live-lock-paint": []}
+    cpu = {"demo-first-paint": [], "demo-overview-paint": [], "live-lock-paint": []}
     exits = []  # seconds from the window's close to the process's exit (None: it had to be killed)
     for run in range(gate.runs):
         app = gate.launch(["--demo", "--appearance", "light"], tag=f"start-demo-{run}")
@@ -318,6 +320,7 @@ def phase_start(gate):
             cpu["demo-first-paint"].append(float(first[1]["cpu"]))
         if overview:
             rows["demo-overview-paint"].append(overview[0])
+            cpu["demo-overview-paint"].append(float(overview[1]["cpu"]))
         app = gate.launch(gate.live_args(), env=gate.unlock_env(), tag=f"start-live-{run}")
         lock, requested = app.wait("lock-paint", 120), app.wait("unlock-requested", 120)
         overview = app.wait("overview-paint", 180, after="unlock-requested")
@@ -332,10 +335,12 @@ def phase_start(gate):
               "cpuSeconds": {k: summary(v) for k, v in cpu.items()}, "closeToExitSeconds": exits,
               "uptime": uptime()}
     gate.results["u5-start"] = result
+    s, c = result["seconds"]["demo-overview-paint"], result["cpuSeconds"]["demo-overview-paint"]
+    gate.check("U5", f"cold start to first paint (demo Overview): median {s.get('median')} s, max {s.get('max')} s "
+               f"(<= 1.5 s)", bool(s) and s["max"] <= 1.5,
+               f"{s.get('n')} runs; CPU median {c.get('median')} s; load {result['uptime']}")
     for key in ("demo-first-paint", "live-lock-paint"):
-        s = result["seconds"][key]
-        gate.check("U5", f"cold start to first paint, {key}: median {s.get('median')} s, max {s.get('max')} s "
-                   f"(<= 1.5 s)", bool(s) and s["max"] <= 1.5, f"{s.get('n')} runs; load {result['uptime']}")
+        gate.note("U5", f"spawn to {key} (s; CPU s)", f"{result['seconds'][key]}; {result['cpuSeconds'][key]}")
     gate.note("U5", "unlock to Overview (KDF + first page)", result["seconds"]["live-unlock-to-overview"])
 
 
@@ -372,7 +377,16 @@ def phase_history(gate):
 
 
 def phase_pss(gate, idle=30):
-    """U5 idle PSS: Overview after unlock, then Transactions with 200 rows, each after `idle` s."""
+    """U5 idle PSS, after `idle` s on each screen. The UI's own cost (DEC-36) is the demo's Overview,
+    without the engine; the live runs, with the engine in the same process, show Overview after
+    unlock, then Transactions with 200 rows."""
+    demo = []
+    for run in range(max(1, gate.runs // 3)):
+        app = gate.launch(["--demo", "--appearance", "light"], tag=f"pss-demo-{run}")
+        if app.wait("overview-paint", 120) is not None:
+            time.sleep(idle)
+            demo.append(app.memory())
+        app.stop()
     samples = []
     for run in range(max(1, gate.runs // 3)):
         app = gate.launch(gate.live_args(), env=gate.unlock_env(), tag=f"pss-{run}")
@@ -393,10 +407,12 @@ def phase_pss(gate, idle=30):
             transactions = app.memory()
         samples.append({"overview": overview, "transactions": transactions, "idleCpuPercent": idle_cpu_pct})
         app.stop()
-    gate.results["u5-pss"] = {"samples": samples, "idleSeconds": idle, "uptime": uptime()}
-    worst = max((s["transactions"] or s["overview"])["Pss"] for s in samples) if samples else None
-    gate.check("U5", f"idle PSS max {worst} MiB (<= 400 MiB)", worst is not None and worst <= 400,
-               json.dumps(samples))
+    gate.results["u5-pss"] = {"demo": demo, "samples": samples, "idleSeconds": idle, "uptime": uptime()}
+    ui = max(s["Pss"] for s in demo) if demo else None
+    gate.check("U5", f"idle PSS without the engine (demo Overview) max {ui} MiB (<= 400 MiB)",
+               ui is not None and ui <= 400, json.dumps(demo))
+    live = max((s["transactions"] or s["overview"])["Pss"] for s in samples) if samples else None
+    gate.note("U5", f"idle PSS with the engine, 40k wallet, max {live} MiB", json.dumps(samples))
 
 
 def transaction_rows(app, timeout=0, more_than=0):
