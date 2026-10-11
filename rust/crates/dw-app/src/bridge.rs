@@ -202,12 +202,16 @@ pub enum NoticeCodeName {
     /// The dispatch journal cannot be opened or is newer than this build;
     /// leased hand-offs are refused.
     DispatchJournalUnavailable,
+    /// SPV and the trusted quorum service disagree on a quorum key: every
+    /// proof citing it is refused with `platform.trust_mismatch`. Once per
+    /// quorum and session; the detail names the quorum.
+    PlatformTrustMismatch,
 }
 
 mirror_enum!(NoticeCode => NoticeCodeName {
     PlatformContextUnavailable, SpvError, UncleanShutdown, SyncStalled, BackupFailed,
     WalletSecretNotDeleted, DashPayStartupIncomplete, DispatchRecordMissing, UnscopedDispatch,
-    DispatchJournalUnavailable
+    DispatchJournalUnavailable, PlatformTrustMismatch
 });
 
 impl From<EngineEvent> for AppEvent {

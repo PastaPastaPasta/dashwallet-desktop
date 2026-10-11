@@ -153,13 +153,17 @@ impl From<ContactSectionPage> for ContactSectionRows {
 #[serde(rename_all = "camelCase")]
 pub struct ContactList {
     pub sections: Vec<ContactSectionRows>,
+    /// A sync pass holds the wallet's state: the page is the last one read
+    /// before it (possibly none yet). Show "updating", not "no contacts".
+    pub updating: bool,
 }
 
 impl From<ContactsPage> for ContactList {
     fn from(p: ContactsPage) -> Self {
-        let ContactsPage { sections } = p;
+        let ContactsPage { sections, updating } = p;
         ContactList {
             sections: sections.into_iter().map(Into::into).collect(),
+            updating,
         }
     }
 }

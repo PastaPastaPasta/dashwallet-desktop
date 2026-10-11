@@ -104,6 +104,8 @@ codes! {
         FixtureMode = "app.fixture_mode",
         /// A self-test command in a normal launch.
         NotSelftest = "app.not_selftest",
+        /// A developer-only command in a release build.
+        NotDeveloperBuild = "app.not_developer_build",
         /// The self-test report could not be written.
         Selftest = "app.selftest",
         /// The platform's app-data directory is unknown.

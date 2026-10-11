@@ -310,6 +310,18 @@ fn a_command_of_every_facade_over_ipc() {
         "platform.not_implemented",
     );
     assert_eq!(e["data"]["kind"], "call", "{e}");
+    // The contacts read model (DP2-01) answers from memory.
+    assert_eq!(
+        demo.ok("dashpay_pending_setup_count", json!({ "walletId": wallet })),
+        0
+    );
+    // The quorum provider (E0-10b): before masternode sync, the trusted
+    // service. The developer toggle round-trips (a debug build takes it).
+    assert_eq!(demo.ok("quorum_source", json!({})), "trusted");
+    assert_eq!(demo.ok("trusted_quorums_only", json!({})), false);
+    demo.ok("set_trusted_quorums_only", json!({ "on": true }));
+    assert_eq!(demo.ok("trusted_quorums_only", json!({})), true);
+    demo.ok("set_trusted_quorums_only", json!({ "on": false }));
 }
 
 /// The vault and wallet flows whose arguments are tagged records or

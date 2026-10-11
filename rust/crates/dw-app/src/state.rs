@@ -118,6 +118,19 @@ impl AppState {
         })
     }
 
+    /// Developer-only commands (the trusted-quorums toggle, m4 contract)
+    /// refuse in release builds.
+    pub fn developer_build(&self) -> Result<(), AppError> {
+        if cfg!(debug_assertions) {
+            Ok(())
+        } else {
+            Err(AppError::app(
+                AppCode::NotDeveloperBuild,
+                "a developer-only command in a release build",
+            ))
+        }
+    }
+
     pub fn exit(&self, code: i32) {
         (self.exit)(code)
     }

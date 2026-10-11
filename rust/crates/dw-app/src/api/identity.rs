@@ -25,7 +25,7 @@ use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, Usernam
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
-use self::startup::{DashPayStatus, DashPaySyncStatus, SyncPassReport};
+use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -397,5 +397,27 @@ commands! {
     #[facade("DashPay::sync_status")]
     fn dashpay_sync_status(state, wallet_id: String) -> DashPaySyncStatus {
         Ok(state.dashpay(&wallet_id).await?.sync_status()?.into())
+    }
+
+    /// Where Platform proofs get their quorum keys now (Tools ▸ Information).
+    #[facade("NetworkSession::quorum_source")]
+    fn quorum_source(state) -> QuorumSource {
+        Ok(state.session().await?.quorum_source()?.into())
+    }
+
+    /// The developer toggle: quorum keys from the trusted service only.
+    #[facade("NetworkSession::trusted_quorums_only")]
+    fn trusted_quorums_only(state) -> bool {
+        Ok(state.session().await?.trusted_quorums_only()?)
+    }
+
+    /// Sets the developer toggle. It is global (every network, kept across
+    /// launches) and turns SPV checks of quorum keys off, so only developer
+    /// builds take it (m4 contract); a release build refuses with
+    /// `app.not_developer_build`.
+    #[facade("NetworkSession::set_trusted_quorums_only")]
+    fn set_trusted_quorums_only(state, on: bool) -> () {
+        state.developer_build()?;
+        Ok(state.session().await?.set_trusted_quorums_only(on).await?)
     }
 }

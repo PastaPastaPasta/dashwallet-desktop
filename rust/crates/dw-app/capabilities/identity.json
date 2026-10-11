@@ -9,6 +9,9 @@
   "permissions": [
     "allow-discover-identities",
     "allow-identities",
+    "allow-quorum-source",
+    "allow-trusted-quorums-only",
+    "allow-set-trusted-quorums-only",
     "allow-identity-detail",
     "allow-identity-refresh-balance",
     "allow-set-main-identity",

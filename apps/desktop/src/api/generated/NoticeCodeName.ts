@@ -3,4 +3,4 @@
 /**
  * Non-fatal conditions the UI may surface.
  */
-export type NoticeCodeName = "platformContextUnavailable" | "spvError" | "uncleanShutdown" | "syncStalled" | "backupFailed" | "walletSecretNotDeleted" | "dashPayStartupIncomplete" | "dispatchRecordMissing" | "unscopedDispatch" | "dispatchJournalUnavailable";
+export type NoticeCodeName = "platformContextUnavailable" | "spvError" | "uncleanShutdown" | "syncStalled" | "backupFailed" | "walletSecretNotDeleted" | "dashPayStartupIncomplete" | "dispatchRecordMissing" | "unscopedDispatch" | "dispatchJournalUnavailable" | "platformTrustMismatch";

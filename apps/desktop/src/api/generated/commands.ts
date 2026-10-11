@@ -102,6 +102,7 @@ import type { PsbtAnalysis } from "./PsbtAnalysis";
 import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
+import type { QuorumSource } from "./QuorumSource";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { Recipient } from "./Recipient";
 import type { RegistrationQuote } from "./RegistrationQuote";
@@ -1559,6 +1560,30 @@ export function dashpaySyncStatus(walletId: string): Promise<DashPaySyncStatus> 
 }
 
 /**
+ * Where Platform proofs get their quorum keys now (Tools ▸ Information).
+ */
+export function quorumSource(): Promise<QuorumSource> {
+  return invoke<QuorumSource>("quorum_source");
+}
+
+/**
+ * The developer toggle: quorum keys from the trusted service only.
+ */
+export function trustedQuorumsOnly(): Promise<boolean> {
+  return invoke<boolean>("trusted_quorums_only");
+}
+
+/**
+ * Sets the developer toggle. It is global (every network, kept across
+ * launches) and turns SPV checks of quorum keys off, so only developer
+ * builds take it (m4 contract); a release build refuses with
+ * `app.not_developer_build`.
+ */
+export function setTrustedQuorumsOnly(on: boolean): Promise<null> {
+  return invoke<null>("set_trusted_quorums_only", { on });
+}
+
+/**
  * The contacts of `identity` in the sections `query` selects.
  */
 export function dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList> {
@@ -1986,6 +2011,9 @@ export type CommandArgs = {
   dashpay_status: { walletId: string };
   dashpay_sync_now: { walletId: string };
   dashpay_sync_status: { walletId: string };
+  quorum_source: {  };
+  trusted_quorums_only: {  };
+  set_trusted_quorums_only: { on: boolean };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -2201,6 +2229,9 @@ export type CommandResults = {
   dashpay_status: DashPayStatus;
   dashpay_sync_now: SyncPassReport;
   dashpay_sync_status: DashPaySyncStatus;
+  quorum_source: QuorumSource;
+  trusted_quorums_only: boolean;
+  set_trusted_quorums_only: null;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -2418,6 +2449,9 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_status: "identity",
   dashpay_sync_now: "identity",
   dashpay_sync_status: "identity",
+  quorum_source: "identity",
+  trusted_quorums_only: "identity",
+  set_trusted_quorums_only: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -2456,6 +2490,7 @@ export const COMMANDS: Record<CommandName, string> = {
 export const ERROR_CODES: readonly ErrorCode[] = [
   "app.fixture_mode",
   "app.not_selftest",
+  "app.not_developer_build",
   "app.selftest",
   "app.data_dir",
   "app.unknown_handle",
