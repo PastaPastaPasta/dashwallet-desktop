@@ -36,13 +36,16 @@ extension View {
 #if canImport(GtkBackend)
     @MainActor
     enum GtkAccessibleNames {
-        static func role(of widget: UnsafeMutablePointer<GtkWidget>) -> UInt32 {
+        /// A role's raw value: `UInt32` on Linux, `Int32` on Windows (MSVC's C enums are signed).
+        typealias Role = GtkAccessibleRole.RawValue
+
+        static func role(of widget: UnsafeMutablePointer<GtkWidget>) -> Role {
             gtk_accessible_get_accessible_role(OpaquePointer(widget)).rawValue
         }
 
         /// `widget` or its first descendant (depth first) whose role is in `roles`.
         static func firstWidget(
-            in widget: UnsafeMutablePointer<GtkWidget>, roles: Set<UInt32>
+            in widget: UnsafeMutablePointer<GtkWidget>, roles: Set<Role>
         ) -> UnsafeMutablePointer<GtkWidget>? {
             if roles.contains(role(of: widget)) { return widget }
             var child = gtk_widget_get_first_child(widget)
