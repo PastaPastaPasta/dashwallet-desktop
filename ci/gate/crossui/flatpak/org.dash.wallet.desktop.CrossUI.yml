@@ -1,0 +1,30 @@
+# Gate G-UI, U7 (Linux): a Flatpak of SwiftCrossUI's dash-wallet. It repacks the release tarball
+# from ci/gate/crossui/linux-package.sh (Swift runtime linked statically; GTK 4 from the runtime)
+# rather than building from source: the gate measures packaging and launch, and a source build
+# would need a Swift SDK extension that Flathub does not ship. Built by linux-flatpak.sh.
+app-id: org.dash.wallet.desktop.CrossUI
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: dash-wallet
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+modules:
+  - name: dash-wallet
+    buildsystem: simple
+    build-commands:
+      # The binary looks for its resource bundles next to itself, so it keeps the tarball's layout.
+      - mkdir -p /app/lib/dash-wallet /app/bin
+      - cp -R . /app/lib/dash-wallet/
+      - install -m 755 dash-wallet.sh /app/bin/dash-wallet
+    sources:
+      - type: archive
+        path: dash-wallet-linux-x86_64.tar.gz
+      - type: script
+        dest-filename: dash-wallet.sh
+        commands:
+          - exec /app/lib/dash-wallet/dash-wallet "$@"
