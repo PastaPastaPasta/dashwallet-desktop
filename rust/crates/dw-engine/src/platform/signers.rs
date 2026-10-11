@@ -32,6 +32,7 @@
 //! that must not use such a result ("Lock to cancel") fences at its own
 //! commit point under an E0-04 lease, not here.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,7 +41,7 @@ use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::signer::Signer;
-use dpp::identity::{IdentityPublicKey, KeyType};
+use dpp::identity::{IdentityPublicKey, KeyID, KeyType};
 use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
@@ -77,12 +78,19 @@ fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineE
 /// signed, the check `dash_sdk_sign_with_mnemonic_resolver_and_path` makes
 /// with `expected_key_data`. ECDSA keys only, as the resolver
 /// (`resolver_supports_key_type`); identity keys sign no address witness.
+///
+/// A flow narrows it to the key ids its transition signs with
+/// ([`Self::only_keys`]): any other key, the master included, is refused
+/// before the vault is asked, and `can_sign_with` answers `false`, so the
+/// library's key choice cannot fall on it.
 #[derive(Debug, Clone)]
 pub struct VaultIdentitySigner {
     signer: VaultSigner,
     identity_indices: Vec<u32>,
     /// Mode B: the call permit's count of released signatures (§2a.3).
     count: Option<Arc<SignatureCount>>,
+    /// `None`: every key of the identities.
+    keys: Option<BTreeSet<KeyID>>,
 }
 
 impl VaultIdentitySigner {
@@ -97,19 +105,32 @@ impl VaultIdentitySigner {
             signer,
             identity_indices: identity_indices.into_iter().collect(),
             count: None,
+            keys: None,
         })
+    }
+
+    /// Signs with the keys `ids` only (DP2-02: a flow's transition names
+    /// its keys).
+    pub(crate) fn only_keys(mut self, ids: impl IntoIterator<Item = KeyID>) -> Self {
+        self.keys = Some(ids.into_iter().collect());
+        self
+    }
+
+    /// The scoped vault signer, which `keys_policy::derive_keys` derives
+    /// public keys with; `None` once [`Self::only_keys`] narrowed it, so the
+    /// narrowing cannot be stepped around.
+    pub(crate) fn vault_signer(&self) -> Option<&VaultSigner> {
+        self.keys.is_none().then_some(&self.signer)
+    }
+
+    fn allowed(&self, key: &IdentityPublicKey) -> bool {
+        self.keys.as_ref().is_none_or(|ids| ids.contains(&key.id()))
     }
 
     /// Reports each released signature, and a `Locked` refusal, to `count`.
     pub(crate) fn counting(mut self, count: Arc<SignatureCount>) -> Self {
         self.count = Some(count);
         self
-    }
-
-    /// The vault signer, for deriving the identity's public keys
-    /// (`keys_policy::derive_keys`).
-    pub(crate) fn vault_signer(&self) -> &VaultSigner {
-        &self.signer
     }
 
     /// The slot `keys_policy` derives the key at.
@@ -136,6 +157,12 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
             return Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
                 InvalidIdentityPublicKeyTypeError::new(key.key_type()),
             ));
+        }
+        if !self.allowed(key) {
+            return Err(ProtocolError::ExternalSignerError(format!(
+                "key {} is not a key this flow signs with",
+                key.id()
+            )));
         }
         // Counted before the vault is asked (E0-04 review M-1): refused
         // once the call permit ended.
@@ -198,6 +225,7 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
     /// the call permit ended it answers `false` without asking the vault.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
+            && self.allowed(key)
             && !self.count.as_ref().is_some_and(|c| c.closed())
             && self.identity_indices.iter().any(|&i| {
                 self.slot(i, key).is_some_and(|path| {

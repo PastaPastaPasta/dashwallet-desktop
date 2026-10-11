@@ -5,10 +5,12 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::contacts_model::identifier;
 use super::dashpay::{BearerSecret, DashPay, stub};
 use super::errors::{ContactError, PlatformError};
 use super::payments::PaymentLock;
 use super::profile::Profile;
+use super::requests::{self, Pair, SdkRequests};
 
 /// How a user relates to one of the wallet's identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,15 +119,21 @@ pub enum PublishState {
     DeferredUntilTwoContacts,
 }
 
+/// Whether `identity` may send `contact` a request (m4 §2.4), before any
+/// prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Eligibility {
     Ok,
+    /// The identity lacks its own DashPay keys: "Enable DashPay keys".
     NoDashPayKeys,
     IsSelf,
     AlreadyContact,
     PendingOutgoing,
+    /// Their request is in: accept it instead.
     PendingIncoming,
+    /// The contact has no key a request can be encrypted to (DP2-02).
+    ContactCannotReceive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,16 +225,34 @@ impl DashPay {
     }
 }
 
-#[expect(unused_variables, reason = "stubs until DP2-02…DP2-04")]
 impl DashPay {
+    /// Whether `identity` may send `contact` a request, before any prompt
+    /// or grant (DP2-02, `requests.rs`): its own state first (`IsSelf`,
+    /// `AlreadyContact`, `PendingOutgoing`, `PendingIncoming`, then
+    /// `NoDashPayKeys` for its own keys), then the contact's keys on
+    /// Platform (`ContactCannotReceive`; an unknown contact is
+    /// `identity.not_found`).
     pub async fn eligibility(
         &self,
         identity: String,
         contact: String,
     ) -> Result<Eligibility, ContactError> {
-        stub("DashPay.eligibility")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |_, manager, wallet| async move {
+            let pair = Pair::parse(wallet_id, &identity, &contact)?;
+            requests::eligibility(&SdkRequests(manager.sdk_arc()), &wallet, pair).await
+        })
+        .await
     }
 
+    /// Sends `identity`'s contact request to `to` (m4 §2.4). Refused first,
+    /// leaving the grant and the scan for a retry: an ineligible target
+    /// (`contact.ineligible{reason}`), a scan whose name was shown on the
+    /// fallback's word while writes wait for SPV
+    /// (`platform.context_unavailable`), credits below the quote
+    /// (`platform.insufficient_credits`), and a grant or lease that cannot
+    /// cover it. `grant` is a `PlatformOp` grant or a `ContactRequest`
+    /// lease; the request is signed with the document key alone.
     pub async fn send_request(
         &self,
         identity: String,
@@ -234,26 +260,61 @@ impl DashPay {
         scan: Option<String>,
         grant: String,
     ) -> Result<RequestOutcome, ContactError> {
-        stub("DashPay.send_request")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkRequests(manager.sdk_arc());
+            requests::send(
+                &net,
+                &session,
+                &wallet,
+                wallet_id,
+                (identity, to, scan),
+                grant,
+            )
+            .await
+        })
+        .await
     }
 
+    /// Accepts `from`'s request: `Established`. `grant` is a `PlatformOp`
+    /// grant or an `Accept` or `AcceptAndPay` lease, whose Spend part the
+    /// payment's `prepare` uses next.
     pub async fn accept_request(
         &self,
         identity: String,
         from: String,
         grant: String,
     ) -> Result<RequestOutcome, ContactError> {
-        stub("DashPay.accept_request")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let pair = Pair::parse(wallet_id, &identity, &from)?;
+            let net = SdkRequests(manager.sdk_arc());
+            requests::accept(&net, &session, &wallet, pair, grant).await
+        })
+        .await
     }
 
+    /// Hides `contact`'s requests from `identity`, locally (m4 §2.4).
     pub async fn ignore(&self, identity: String, contact: String) -> Result<(), ContactError> {
-        stub("DashPay.ignore")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |_, _, wallet| async move {
+            let pair = Pair::parse(wallet_id, &identity, &contact)?;
+            requests::set_ignored(&wallet, pair, true).await
+        })
+        .await
     }
 
+    /// Undoes `ignore`; a contact not ignored is no error.
     pub async fn unignore(&self, identity: String, contact: String) -> Result<(), ContactError> {
-        stub("DashPay.unignore")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |_, _, wallet| async move {
+            let pair = Pair::parse(wallet_id, &identity, &contact)?;
+            requests::set_ignored(&wallet, pair, false).await
+        })
+        .await
     }
 
+    #[expect(unused_variables, reason = "stub until DP2-04")]
     pub async fn set_private_details(
         &self,
         identity: String,
@@ -264,11 +325,21 @@ impl DashPay {
         stub("DashPay.set_private_details")
     }
 
+    /// Adds the DashPay keys `identity` lacks on Platform (F9); nothing
+    /// missing is `Ok` with nothing sent. `grant` is a `PlatformOp` grant or
+    /// an `EnableDashPayKeys` lease; the update is signed by the master key
+    /// and the added keys alone.
     pub async fn enable_dashpay_keys(
         &self,
         identity: String,
         grant: String,
     ) -> Result<(), ContactError> {
-        stub("DashPay.enable_dashpay_keys")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let identity = identifier(&identity)?;
+            let net = SdkRequests(manager.sdk_arc());
+            requests::enable_keys(&net, &session, &wallet, wallet_id, identity, grant).await
+        })
+        .await
     }
 }

@@ -2774,7 +2774,7 @@ impl RegistrationLib for PwLib {
         // own signed record, which no signature here can contradict.
         let funding_signer = permit.lease().uncounted_funding_signer()?;
         let keys = super::keys_policy::derive_keys(
-            identity_signer.vault_signer(),
+            identity_signer.vault_signer().expect("not narrowed"),
             identity_index,
             &super::keys_policy::registration_specs(),
         )
