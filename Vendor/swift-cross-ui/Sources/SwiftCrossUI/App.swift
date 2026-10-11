@@ -198,19 +198,19 @@ func swiftBundlerMetadataJSON(inExecutableAt url: URL) throws -> Data? {
     guard let file = try? FileHandle(forReadingFrom: url) else {
         throw SwiftBundlerMetadataError.failedToReadExecutable
     }
-    defer { try? file.close() }
-    let size = try file.seekToEnd()
+    // The non-throwing FileHandle calls: the throwing ones need macOS 10.15.4, above the package's
+    // deployment target.
+    defer { file.closeFile() }
+    let size = file.seekToEndOfFile()
     guard size >= 16 else { return nil }
-    try file.seek(toOffset: size - 16)
-    guard let trailer = try file.read(upToCount: 16), trailer.count == 16,
-        trailer.suffix(8).elementsEqual("SBUNMETA".utf8)
-    else { return nil }
+    file.seek(toFileOffset: size - 16)
+    let trailer = file.readData(ofLength: 16)
+    guard trailer.count == 16, trailer.suffix(8).elementsEqual("SBUNMETA".utf8) else { return nil }
     let jsonLength = trailer.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
     guard jsonLength <= size - 16 else { throw SwiftBundlerMetadataError.failedToReadExecutable }
-    try file.seek(toOffset: size - 16 - jsonLength)
-    guard let json = try file.read(upToCount: Int(jsonLength)), json.count == jsonLength else {
-        throw SwiftBundlerMetadataError.failedToReadExecutable
-    }
+    file.seek(toFileOffset: size - 16 - jsonLength)
+    let json = file.readData(ofLength: Int(jsonLength))
+    guard json.count == jsonLength else { throw SwiftBundlerMetadataError.failedToReadExecutable }
     return json
 }
 
