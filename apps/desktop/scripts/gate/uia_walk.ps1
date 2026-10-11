@@ -56,6 +56,10 @@ function Info($e) {
         name      = $c.Name
         id        = $c.AutomationId
         offscreen = $c.IsOffscreen
+        # On screen and with a box: WebView2 also exposes its hidden browser views (an 'App bar',
+        # caption buttons, alerts) that are not offscreen but have an empty box. AT-SPI's
+        # 'showing' state is the Linux walk's equivalent.
+        shown     = -not $c.IsOffscreen -and -not $r.IsEmpty
         enabled   = $c.IsEnabled
         focusable = $c.IsKeyboardFocusable
         password  = $c.IsPassword
@@ -75,7 +79,7 @@ function Walk($root) {
         $pair = $stack.Pop()
         $e = $pair[0]; $depth = $pair[1]
         # An element that vanished mid-walk is recorded as such; its children are still walked.
-        try { [void]$out.Add(@($depth, (Info $e))) } catch { [void]$out.Add(@($depth, [ordered]@{ type = 'Unreadable'; name = "$($_.Exception.Message)"; id = ''; rect = ''; element = $e })) }
+        try { [void]$out.Add(@($depth, (Info $e))) } catch { [void]$out.Add(@($depth, [ordered]@{ type = 'Unreadable'; name = "$($_.Exception.Message)"; id = ''; rect = ''; shown = $false; element = $e })) }
         $kids = New-Object System.Collections.ArrayList
         try {
             $child = $walker.GetFirstChild($e)
@@ -100,19 +104,21 @@ function Dump([string] $Screen) {
         ('  ' * $n[0]) + "[$($i.type)/$($i.localized)] '$($i.name)' id=$($i.id) $($i.rect)$(if ($i.offscreen) { ' offscreen' })$(if ($i.password) { ' password' }) {$((Patterns $i.element) -join ',')}"
     }
     $lines | Set-Content -Encoding UTF8 (Join-Path $OutDir "uia-$Screen.txt")
-    $items = @($nodes | Where-Object { ($_[1].type -in $interactiveTypes) -and -not $_[1].offscreen } | ForEach-Object { $_[1] })
+    $items = @($nodes | Where-Object { ($_[1].type -in $interactiveTypes) -and $_[1].shown } | ForEach-Object { $_[1] })
+    $hidden = @($nodes | Where-Object { ($_[1].type -in $interactiveTypes) -and -not $_[1].shown }).Count
     $unnamed = @($items | Where-Object { -not $_.name.Trim() })
     $summary[$Screen] = [ordered]@{
         nodes            = $nodes.Count
         interactive      = $items.Count
         unnamed          = $unnamed.Count
+        hiddenSkipped    = $hidden
         unnamedDetail    = @($unnamed | ForEach-Object { "$($_.type) $($_.rect) id=$($_.id)" })
         interactiveNames = @($items | ForEach-Object { "$($_.type): $($_.name)" } | Sort-Object -Unique | Select-Object -First 80)
     }
-    Write-Host "== dumped $($nodes.Count) nodes to uia-$Screen.txt ($($items.Count) interactive, $($unnamed.Count) unnamed)"
+    Write-Host "== dumped $($nodes.Count) nodes to uia-$Screen.txt ($($items.Count) interactive, $($unnamed.Count) unnamed, $hidden hidden skipped)"
 }
 
-# The first on-screen element matching the predicate, polling until the timeout.
+# The first shown element matching the predicate, polling until the timeout.
 # Scriptblocks see variables by dynamic scope: callers pass closures (GetNewClosure), and the
 # parameter names differ, so a predicate never resolves a name to this function's own variables.
 function Wait-For([scriptblock] $Match, [int] $Seconds = 15) {
@@ -120,14 +126,14 @@ function Wait-For([scriptblock] $Match, [int] $Seconds = 15) {
     do {
         $win = Find-Window
         if ($null -ne $win) {
-            foreach ($n in (Walk $win)) { $i = $n[1]; if (-not $i.offscreen -and (& $Match $i)) { return $i } }
+            foreach ($n in (Walk $win)) { $i = $n[1]; if ($i.shown -and (& $Match $i)) { return $i } }
         }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
     return $null
 }
 
-# Invokes the first on-screen element that matches and supports Invoke (a list item that wraps a
+# Invokes the first shown element that matches and supports Invoke (a list item that wraps a
 # button shares its name but has no Invoke pattern).
 function Press([scriptblock] $Want, [string] $Label) {
     $invokable = $AE::IsInvokePatternAvailableProperty

@@ -71,16 +71,29 @@ function Start-App([string] $Exe, [string[]] $Arguments, [string] $Name) {
     return $p
 }
 
-# Whether the app's lock screen (a named passphrase field) is showing, through UI Automation.
-function Lock-Screen-Shown([int] $ProcessId) {
+# Waits up to $Seconds for a shown element of the app (control type, exact name). Walks the raw
+# view as uia_walk.ps1 does: the managed FindFirst does not reach into WebView2's content.
+function Wait-Shown([int] $ProcessId, [System.Windows.Automation.ControlType] $Type, [string] $Name, [int] $Seconds) {
     $AE = [System.Windows.Automation.AutomationElement]
-    $win = $AE::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $ProcessId)))
-    if ($null -eq $win) { return $false }
-    $field = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
-        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'Passphrase')))
-    return $null -ne $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $field)
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $win = $AE::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,
+            (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $ProcessId)))
+        $stack = New-Object System.Collections.Stack
+        if ($null -ne $win) { $stack.Push($win) }
+        while ($stack.Count -gt 0) {
+            $e = $stack.Pop()
+            try {
+                $c = $e.Current
+                if ($c.ControlType -eq $Type -and $c.Name -eq $Name -and -not $c.IsOffscreen -and -not $c.BoundingRectangle.IsEmpty) { return $true }
+                $child = $walker.GetFirstChild($e)
+                while ($null -ne $child) { $stack.Push($child); $child = $walker.GetNextSibling($child) }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
 }
 
 function Wait-Window($Process, [int] $Seconds) {
@@ -192,7 +205,7 @@ if ($installed) {
     $u2.windowSeconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     Start-Sleep -Seconds 10
     Shot $p (Join-Path $shotDir 'windows-wallet-locked.png')
-    $u2.lockScreenShown = Lock-Screen-Shown $p.Id
+    $u2.lockScreenShown = Wait-Shown $p.Id ([System.Windows.Automation.ControlType]::Edit) 'Passphrase' 60
     if (-not $u2.lockScreenShown) { Fail 'U2: the wallet did not open on its lock screen' }
     $p.Refresh()
     [Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
@@ -204,8 +217,9 @@ if ($installed) {
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 20
     Shot $p (Join-Path $shotDir 'windows-wallet-overview.png')
-    $u2.unlocked = -not (Lock-Screen-Shown $p.Id)
-    if (-not $u2.unlocked) { Fail 'U2: the passphrase did not unlock the wallet (the lock screen is still up)' }
+    # Unlocked means the wallet's toolbar is up, not merely that the lock screen is gone.
+    $u2.unlocked = Wait-Shown $p.Id ([System.Windows.Automation.ControlType]::Button) 'Lock wallet' 60
+    if (-not $u2.unlocked) { Fail "U2: the passphrase did not unlock the wallet (no 'Lock wallet' button)" }
     while (((Get-Date) - $t0).TotalSeconds -lt $RunSeconds -and -not $p.HasExited) {
         $sample = Tree-Memory $p.Id
         $sample.t = [int]((Get-Date) - $t0).TotalSeconds
