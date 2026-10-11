@@ -33,10 +33,13 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// `vault` is the production `VaultConfig::default()` except in tests
+    /// (an in-memory OS store, cheap KDF parameters).
     pub fn new<R: Runtime>(
         app: &AppHandle<R>,
         launch: LaunchOptions,
         started: Instant,
+        vault: VaultConfig,
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
     ) -> Result<Self, AppError> {
         let engine = if launch.fixture {
@@ -50,7 +53,7 @@ impl AppState {
                 EngineConfig {
                     data_root,
                     worker_threads: None,
-                    vault: VaultConfig::default(),
+                    vault,
                 },
                 Arc::new(TauriSink::new(app.clone())?),
             )?)

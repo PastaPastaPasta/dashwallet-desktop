@@ -12,6 +12,8 @@ pub mod coverage;
 pub mod dto;
 pub mod error;
 mod ipc;
+#[cfg(test)]
+mod ipc_tests;
 pub mod launch;
 pub mod state;
 
@@ -173,6 +175,15 @@ pub fn run() {
 
 /// The app minus its context, so tests can build it on the mock runtime.
 pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Builder<R> {
+    builder_with_vault(launch, started, dw_vault::VaultConfig::default())
+}
+
+/// [`builder`] with the vault's configuration (tests: an in-memory OS store).
+pub fn builder_with_vault<R: Runtime>(
+    launch: LaunchOptions,
+    started: Instant,
+    vault: dw_vault::VaultConfig,
+) -> tauri::Builder<R> {
     tauri::Builder::<R>::new()
         .plugin(navigation_guard())
         // Start-up breakdown for U5, next to the renderer's own marks (`startup_mark`).
@@ -190,7 +201,7 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
             let window_size = launch.window_size;
             let title = window_title(&launch.network);
             let handle = app.handle();
-            let state = AppState::new(handle, launch, started, || {
+            let state = AppState::new(handle, launch, started, vault, || {
                 handle
                     .path()
                     .app_data_dir()
@@ -252,9 +263,13 @@ mod tests {
             fixture: true,
             ..LaunchOptions::default()
         };
-        let state = AppState::new(app.handle(), opts, Instant::now(), || {
-            unreachable!("no data dir in fixture mode")
-        })
+        let state = AppState::new(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("no data dir in fixture mode"),
+        )
         .unwrap();
         assert!(state.engine.is_none());
     }
@@ -262,15 +277,19 @@ mod tests {
     #[test]
     fn engine_mode_opens_the_data_root() {
         let app = tauri::test::mock_app();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let root = dir.path().join("data");
         let opts = LaunchOptions {
             data_dir: Some(root.clone()),
             ..LaunchOptions::default()
         };
-        let state = AppState::new(app.handle(), opts, Instant::now(), || {
-            unreachable!("--datadir given")
-        })
+        let state = AppState::new(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
         .unwrap();
         assert_eq!(state.engine.as_ref().unwrap().config().data_root, root);
         assert!(root.is_dir());
