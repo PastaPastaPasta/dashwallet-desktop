@@ -194,10 +194,11 @@ pub(crate) struct Spendable {
     /// Every coin of the sources, user-locked ones too: the library does
     /// not know the engine's locks, so the fee bound counts them all.
     pub(crate) inputs: usize,
-    /// Coins of the sources the engine keeps from automatic selection (a
-    /// user's or the dust protection's lock, a send's reservation). The
-    /// pinned asset-lock builder selects without them, so a funding with
-    /// any present is refused (Sol r1 R1-07).
+    /// Coins of the sources the engine holds back but the pinned asset-lock
+    /// builder would select (a user's or the dust protection's lock, a
+    /// send's reservation: `held_funding_coins`), so a funding with any
+    /// present is refused (Sol r1 R1-07). A tracked lock's inputs are not
+    /// among them: the library reserves those itself.
     pub(crate) protected: usize,
 }
 
@@ -1183,9 +1184,8 @@ fn next_index(ev: &Evidence) -> u32 {
 /// the lock's [`LockInfo::known_index`]: a lock whose index is not known is
 /// no row's by index. A lock tracked as `built` releases the coin fence of
 /// the funding call of that index: its inputs read reserved now. The
-/// outpoint goes to the
-/// `KeysPrepared` row it funds (§3.4 Restore rule 3), in a job of the
-/// wallet's actor. Returns the draft moved to `FundingSent`.
+/// outpoint goes to the `KeysPrepared` row it funds (§3.4 Restore rule 3),
+/// in a job of the wallet's actor. Returns the draft moved to `FundingSent`.
 pub(crate) fn lock_tracked(
     flows: &Arc<Flows>,
     appdb: &Arc<AppDb>,

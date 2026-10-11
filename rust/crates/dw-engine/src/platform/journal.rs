@@ -178,9 +178,8 @@ pub(crate) struct Classified {
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
     /// Registration locks of account 0 written (DP1-02's funding key):
-    /// outpoint and identity index, when the index is known
-    /// (`LockInfo::known_index`).
-    /// (outpoint, known identity index, tracked as `Built`).
+    /// outpoint, identity index when known (`LockInfo::known_index`), and
+    /// whether it is tracked as `Built`.
     registration_locks: Vec<(OutPoint, Option<u32>, bool)>,
     /// Contact and payment events.
     events: Vec<Event>,

@@ -329,8 +329,8 @@ decided where the rows leave room:
   call meanwhile), the funding and step markers, released-signature counting, `DispatchResolved` for a flow's steps,
   and the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
   `resume_registration` or "Finish transfers". The Funding cap holds per lock: a host lease passed by id that funds a
-  second registration is charged by P2b's permits, not here. `register_name` takes a vault grant only; the flow's
-  name step runs under its own lease, and P2b's `register_name` under a host lease replaces that.
+  second registration is charged by P2b's permits, not here. `register_name` accepts a vault grant or a lease id
+  (§1); the flow's name step runs under its own lease through `register_name_for_flow`.
 
 ### 2.3 Names
 

@@ -2308,7 +2308,7 @@ fn an_untracked_locks_reservation_does_not_block_the_next_start() {
 /// R3-01, DEC-179: the lock's untracking frees its inputs and no other
 /// operation's reservation, of another coin or of the same one.
 #[test]
-fn freeing_an_untracked_locks_inputs_keeps_other_reservations() {
+fn an_untracked_lock_frees_its_inputs_and_no_other_reservation() {
     let f = fixture(false);
     let (wallet, coin) = f.coin();
     let (_, other) = f.coin_at(1);
@@ -2343,7 +2343,7 @@ fn untrack(f: &Fixture, wallet: &Arc<platform_wallet::PlatformWallet>, lock: Out
 /// two by pausing the send's selection before the funding's fence; here the
 /// send is prepared first and the library then tracks a lock of its coin.)
 #[test]
-fn an_untracked_locks_cleanup_keeps_a_prepared_sends_claim_on_the_same_coin() {
+fn a_prepared_send_keeps_its_coin_through_a_locks_untracking() {
     let f = fixture(false);
     let (wallet, coin) = f.coin();
     let draft = f.session.new_tx_draft(f.wallet).unwrap();
