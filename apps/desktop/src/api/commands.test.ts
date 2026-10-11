@@ -76,7 +76,7 @@ beforeEach(() => {
   mockIPC((name, payload) => {
     calls.push([name, payload]);
     if (name === "lock_status") {
-      const e: AppError = { code: "app.network_not_open", message: "no network is open", data: null };
+      const e: AppError = { code: "network_not_open", message: "no network is open", data: null };
       throw e;
     }
     const handler = fixture[name as CommandName] as ((a: unknown) => unknown) | undefined;
@@ -92,9 +92,9 @@ afterEach(() => {
 
 describe("generated commands", () => {
   it("reach one command per facade with camelCase arguments", async () => {
-    expect((await cmd.openNetwork("regtest")).network.dirName).toBe("regtest");
+    expect((await cmd.openNetwork("regtest", null)).network.dirName).toBe("regtest");
     expect((await cmd.createVault("pw")).state).toBe("unlocked");
-    expect((await cmd.createVault()).state).toBe("unencrypted");
+    expect((await cmd.createVault(null)).state).toBe("unencrypted");
     expect((await cmd.createWallet(12)).mnemonic.split(" ")).toHaveLength(12);
     const draft = await cmd.newTxDraft(WALLET);
     await cmd.draftSetRecipients(draft, [
@@ -106,7 +106,7 @@ describe("generated commands", () => {
     expect(await cmd.generateMnemonic(24, "english")).toBe("english:24");
     expect((await cmd.checkUsername("Alice")).normalized).toBe("alice");
 
-    // Trailing nullable arguments are sent as null when left out.
+    // Every argument is sent, `null` included.
     expect(calls[0]).toEqual(["open_network", { network: "regtest", settings: null }]);
     expect(calls[2]).toEqual(["create_vault", { passphrase: null }]);
     expect(calls).toContainEqual(["new_tx_draft", { walletId: WALLET }]);
@@ -118,7 +118,7 @@ describe("generated commands", () => {
       () => expect.unreachable(),
       (e: unknown) => e,
     )) as AppError;
-    expect(e.code).toBe("app.network_not_open");
+    expect(e.code).toBe("network_not_open");
     expect(cmd.ERROR_CODES).toContain(e.code);
   });
 
@@ -130,7 +130,7 @@ describe("generated commands", () => {
       .sort();
     expect(wrappers).toEqual(Object.keys(cmd.COMMANDS).map(camel).sort());
     expect(new Set(Object.values(cmd.COMMANDS))).toEqual(
-      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console"]),
+      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units"]),
     );
   });
 });

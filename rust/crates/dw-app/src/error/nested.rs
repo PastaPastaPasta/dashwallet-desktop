@@ -7,10 +7,13 @@
 //! domain's `From` is one exhaustive `match`; `EngineError`'s `From`
 //! delegates to it.
 //!
-//! dw-ffi also has a few codes that no failure variant produces: it maps
-//! `VaultError` to `compat.vault_locked`, `psbt.vault_locked`, … for the
-//! calls that need it. A blanket `From` cannot know the call, so those
-//! refusals keep their `vault.*` codes here.
+//! dw-ffi also has per-call spellings that no failure variant produces: it
+//! maps `VaultError` to `compat.vault_locked`, `psbt.vault_locked`, … for
+//! the calls that need them. A blanket `From` cannot know the call, so here
+//! a failure keeps the code of the variant the engine returned (D13): a
+//! vault refusal is `vault.*`, and `signPsbt`'s locked vault or bad grant,
+//! which the engine reports as `SendFailure`, is `send.vault_locked` /
+//! `send.grant_invalid`.
 
 use dw_console::ConsoleFailure;
 use dw_engine::{

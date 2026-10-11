@@ -388,10 +388,13 @@ fn secret_bytes(s: Option<String>) -> Option<Zeroizing<Vec<u8>>> {
 }
 
 commands! {
-    /// dash-qt "Backup Wallet": writes a `.dwbackup` of the wallet to
-    /// `destPath` (never over an existing file). `backupPassphrase` wraps
-    /// the data key in the file; without one, the file opens only with this
-    /// vault's passphrase. Watch-only wallets have nothing to back up.
+    /// dash-qt "Backup Wallet" (QT-110): writes a `.dwbackup` of the wallet
+    /// to `destPath` (never over an existing file). Encrypted vault: the
+    /// file is wrapped with the vault's passphrase slot and needs the vault
+    /// unlocked; `backupPassphrase` must be `null` (`invalid_argument`
+    /// otherwise). Unencrypted vault: `backupPassphrase` is required
+    /// (`backup.passphrase_required`), must not be empty, and wraps the
+    /// file. Watch-only wallets have nothing to back up (`not_implemented`).
     #[facade("NetworkSession::backup_wallet")]
     fn backup_wallet(
         state,
@@ -410,7 +413,8 @@ commands! {
 
     /// Restores the wallets of a `.dwbackup`: verifies it, stores each
     /// wallet's secrets under this vault's key and registers it. Returns
-    /// the wallet ids.
+    /// the wallet ids. `passphrase` is the one that wrapped the file (the
+    /// backing-up vault's passphrase, or its backup passphrase).
     #[facade("NetworkSession::restore_backup")]
     fn restore_backup(state, path: String, passphrase: Option<String>) -> Vec<String> {
         let passphrase = secret_bytes(passphrase);
@@ -438,7 +442,13 @@ commands! {
     /// How many automatic backups are kept per wallet, and where.
     #[facade("NetworkSession::backup_policy")]
     fn backup_policy(state) -> BackupPolicyInfo {
-        Ok(state.session().await?.backup_policy()?.into())
+        // A settings read through the app database's single connection,
+        // which a long write may hold.
+        let session = state.session().await?;
+        let policy = tokio::task::spawn_blocking(move || session.backup_policy())
+            .await
+            .map_err(dw_engine::EngineError::from)??;
+        Ok(policy.into())
     }
 
     /// Sets how many automatic backups to keep per wallet (0..=10) and
@@ -452,6 +462,9 @@ commands! {
     /// Decrypts nothing and opens no session.
     #[facade("dw_engine::backup::read_header")]
     fn read_backup_header(state, path: String) -> BackupFileHeader {
+        if path.is_empty() {
+            return Err(AppError::invalid_argument("empty path"));
+        }
         let path = PathBuf::from(path);
         let header = tokio::task::spawn_blocking(move || dw_engine::backup::read_header(&path))
             .await

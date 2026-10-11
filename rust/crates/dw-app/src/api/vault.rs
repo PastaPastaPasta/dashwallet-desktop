@@ -31,7 +31,7 @@ use crate::state::parse_wallet_id;
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "NetworkSession::lock_vault_sync",
-        "internal: the synchronous lock for the console and the relock timer; `lock` is async and awaits the lease drain",
+        "internal: superseded by `lock` (`lock_vault`, async, awaits the lease drain); dw-ffi's synchronous `Vault::lock` maps to it for the frozen Swift shells, and the console and the relock timer use it",
     ),
     (
         "NetworkSession::masternode_keys",
@@ -43,7 +43,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::with_revealed_seed",
-        "deferred (MG): the masternode key derivation runs inside the engine under a reveal grant",
+        "internal: a closure over the seed for the engine's own key derivations (masternode keys, MG), never a host call",
     ),
     (
         "Vault::open",
@@ -143,7 +143,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::has_wallet_secret",
-        "internal: `WalletSummary.hasMnemonic` and `LockStatus.walletsWithSecrets` report it",
+        "internal: `WalletSummary.watchOnly` and `LockStatus.walletsWithSecrets` report it",
     ),
     (
         "Vault::has_wallet_mnemonic",
@@ -624,8 +624,9 @@ commands! {
         wallet_id: Option<String>,
         credential: CredentialSpec
     ) -> AuthGrant {
-        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        // The secret first: an early return must not drop it unwrapped.
         let credential = OwnedCredential::from(credential);
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purpose = GrantPurpose::from(purpose);
         let session = state.session().await?;
         let grant = session
@@ -651,8 +652,9 @@ commands! {
         wallet_id: Option<String>,
         credential: CredentialSpec
     ) -> Vec<AuthGrant> {
-        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
+        // The secret first: an early return must not drop it unwrapped.
         let credential = OwnedCredential::from(credential);
+        let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purposes: Vec<GrantPurpose> = purposes.into_iter().map(Into::into).collect();
         let session = state.session().await?;
         let grants = session

@@ -45,7 +45,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "NetworkSession::rebind_lease",
-        "internal: takes the engine's owning `Lease` handle for the engine's own flow code",
+        "internal: takes the engine's owning `Lease`, which a host never holds (`beginFlow` returns only its id); a host recovers a `needsGrant` lease with `endFlow` and `beginFlow` (m4 §1)",
     ),
 ];
 

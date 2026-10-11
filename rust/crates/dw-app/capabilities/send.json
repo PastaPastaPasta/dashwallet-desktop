@@ -20,7 +20,6 @@
     "allow-draft-broadcast",
     "allow-draft-abandon",
     "allow-prepared-summary",
-    "allow-prepared-raw",
     "allow-draft-create-unsigned",
     "allow-analyze-psbt",
     "allow-sign-psbt",

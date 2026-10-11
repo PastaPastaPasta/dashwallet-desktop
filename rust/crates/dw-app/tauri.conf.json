@@ -48,7 +48,8 @@
         "coinjoin",
         "identity",
         "social",
-        "console"
+        "console",
+        "units"
       ]
     },
     "withGlobalTauri": false

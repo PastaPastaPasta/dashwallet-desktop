@@ -2,9 +2,9 @@
 //! avatars (`DashPay`, DP2–DP4).
 //!
 //! Every command takes the wallet id first and acts on one of the wallet's
-//! identities (Base58). The writes that cost credits take the id of a lease
-//! (`beginFlow`, in the identity domain) as `lease`, which the engine calls
-//! the `grant` of the call.
+//! identities (Base58). The writes that cost credits take a `grant`: a lease
+//! id (`beginFlow`, in the identity domain) or a vault grant id, as every
+//! DashPay write does (m4 §1).
 
 mod contacts;
 mod events;
@@ -75,7 +75,7 @@ commands! {
         Ok(dashpay.eligibility(identity, contact).await?.into())
     }
 
-    /// Sends a contact request to `to` under `lease` (a `contactRequest`
+    /// Sends a contact request to `to` under `grant` (a `contactRequest`
     /// flow). `scan` is the proof id of `dashpayVerifyScanned`, when the
     /// request answers a scanned code.
     #[facade("DashPay::send_request")]
@@ -85,13 +85,13 @@ commands! {
         identity: String,
         to: String,
         scan: Option<String>,
-        lease: String,
+        grant: String,
     ) -> ContactRequestOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.send_request(identity, to, scan, lease).await?.into())
+        Ok(dashpay.send_request(identity, to, scan, grant).await?.into())
     }
 
-    /// Accepts the request `from` sent, under `lease` (an `accept` or
+    /// Accepts the request `from` sent, under `grant` (an `accept` or
     /// `acceptAndPay` flow).
     #[facade("DashPay::accept_request")]
     fn dashpay_accept_request(
@@ -99,10 +99,10 @@ commands! {
         wallet_id: String,
         identity: String,
         from: String,
-        lease: String,
+        grant: String,
     ) -> ContactRequestOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.accept_request(identity, from, lease).await?.into())
+        Ok(dashpay.accept_request(identity, from, grant).await?.into())
     }
 
     /// Ignores `contact` (moves it to the hidden section).
@@ -130,7 +130,7 @@ commands! {
     }
 
     /// Sets the alias, note and hidden flag only `identity` sees. With a
-    /// `lease` (a `privateDetails` flow) they are published; the result says
+    /// `grant` (a `privateDetails` flow) they are published; the result says
     /// whether they were.
     #[facade("DashPay::set_private_details")]
     fn dashpay_set_private_details(
@@ -139,21 +139,21 @@ commands! {
         identity: String,
         contact: String,
         details: PrivateContactDetails,
-        lease: Option<String>,
+        grant: Option<String>,
     ) -> PublishStateName {
         let dashpay = state.dashpay(&wallet_id).await?;
         let published = dashpay
-            .set_private_details(identity, contact, details.into(), lease)
+            .set_private_details(identity, contact, details.into(), grant)
             .await?;
         Ok(published.into())
     }
 
-    /// Adds the DashPay keys to `identity`, under `lease` (an
+    /// Adds the DashPay keys to `identity`, under `grant` (an
     /// `enableDashPayKeys` flow).
     #[facade("DashPay::enable_dashpay_keys")]
-    fn dashpay_enable_keys(state, wallet_id: String, identity: String, lease: String) -> () {
+    fn dashpay_enable_keys(state, wallet_id: String, identity: String, grant: String) -> () {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.enable_dashpay_keys(identity, lease).await?)
+        Ok(dashpay.enable_dashpay_keys(identity, grant).await?)
     }
 
     /// The user link of `identity`, which others scan or paste to add it.
@@ -276,7 +276,7 @@ commands! {
         Ok(dashpay.profile_limits()?.into())
     }
 
-    /// Publishes the whole new profile under `lease` (a `profileEdit`
+    /// Publishes the whole new profile under `grant` (a `profileEdit`
     /// flow); `null` fields are cleared.
     #[facade("DashPay::update_profile")]
     fn dashpay_update_profile(
@@ -284,10 +284,10 @@ commands! {
         wallet_id: String,
         identity: String,
         edit: ProfileEditArgs,
-        lease: String,
+        grant: String,
     ) -> () {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.update_profile(identity, edit.into(), lease).await?)
+        Ok(dashpay.update_profile(identity, edit.into(), grant).await?)
     }
 
     /// Turns a file, URL or Gravatar into an avatar candidate. The engine

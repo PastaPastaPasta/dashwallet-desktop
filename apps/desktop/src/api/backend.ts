@@ -55,7 +55,10 @@ export function hasCode(e: unknown, code: ErrorCode): e is AppError {
 /** Seconds the vault asks to wait before the next attempt (`vault.throttled`,
  * `vault.wrong_passphrase`); 0 when it asks for none. */
 export function retryAfterSecs(e: unknown): number {
-  return isAppError(e) && e.data?.kind === "retryAfter" ? e.data.secs : 0;
+  if (!isAppError(e)) return 0;
+  if (e.data?.kind === "retryAfter") return e.data.secs;
+  if (e.data?.kind === "wrongPassphrase") return e.data.retryAfterSecs ?? 0;
+  return 0;
 }
 
 /** Display text for anything a backend call or a query may throw. */

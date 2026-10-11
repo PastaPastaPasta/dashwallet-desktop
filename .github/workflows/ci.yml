@@ -105,6 +105,8 @@ jobs:
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
       - name: Regenerate the Tauri bindings and check them in
+        # Also after a failed test step (stale bindings fail it): the diff shows what changed.
+        if: ${{ !cancelled() }}
         run: |
           DW_UPDATE_BINDINGS=1 cargo test -p dw-app --lib --locked -- codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current
           cd ..

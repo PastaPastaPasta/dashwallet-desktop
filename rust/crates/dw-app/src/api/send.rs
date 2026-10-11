@@ -1,18 +1,19 @@
 //! Sending: drafts, prepared transactions, PSBTs, coins and fees, and the
 //! `dash:` payment URI helpers.
 //!
-//! A `TxDraft` lives in `state.drafts` and crosses as a `u64` handle
+//! A `TxDraft` lives in `state.sends` and crosses as a `u64` handle
 //! (`new_tx_draft`); every draft command names it as `draft`. `draft_prepare`
 //! signs and reserves the inputs, stores the `PreparedTx` with the id of its
-//! draft in `state.prepared` and returns its handle; `draft_broadcast` and
-//! `draft_abandon` take that handle and refuse one that belongs to another
-//! draft. `close_draft` drops a draft and its prepared transactions;
-//! closing the network drops them all. A pending prepared transaction that
-//! is dropped releases its inputs (the engine's `Drop`); one whose
-//! broadcast outcome is unknown keeps them reserved, by design.
+//! draft and returns its handle; `draft_broadcast` and `draft_abandon` take
+//! that handle and refuse one that belongs to another draft. `close_draft`
+//! drops a draft and its prepared transactions; closing the network drops
+//! them all. A pending prepared transaction that is dropped releases its
+//! inputs (the engine's `Drop`); one whose broadcast outcome is unknown
+//! keeps them reserved, by design. The signed bytes never cross: they leave
+//! the process only through `draft_broadcast` (the dispatch fence, E0-04 §2).
 //!
 //! PSBTs cross as base64 strings (`dw_psbt::parse` also tolerates
-//! surrounding whitespace), raw transactions as lower-case hex, txids and
+//! surrounding whitespace), txids and
 //! outpoint txids as lower-case hex, amounts as duffs.
 
 mod coins;
@@ -21,7 +22,7 @@ mod uri;
 
 use std::sync::Arc;
 
-use dw_engine::{EngineError, PreparedTx, PsbtFailure, TxDraft};
+use dw_engine::{EngineError, PreparedTx, PsbtFailure, SendFailure, TxDraft};
 
 use self::coins::{CoinSelectionSummary, FeePolicy, OutPoint, Utxo, UtxoFilter};
 use self::draft::{
@@ -33,22 +34,41 @@ use crate::error::AppError;
 use crate::ipc::commands;
 use crate::state::{AppState, parse_wallet_id};
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
+    "PreparedTx::raw",
+    "internal: signed bytes leave the process only through the dispatch fence's hand-off \
+     (`draftBroadcast`, E0-04 §2), so a lock can still promise nothing was sent; dw-ffi \
+     does not expose it either",
+)];
 
 /// The draft behind a handle.
 fn draft_of(state: &AppState, draft: u64) -> Result<Arc<TxDraft>, AppError> {
-    state.drafts.get(draft)
+    state.sends.draft(draft)
 }
 
 /// The prepared transaction behind a handle, which must be one of `draft`'s.
 fn prepared_of(state: &AppState, draft: u64, prepared: u64) -> Result<Arc<PreparedTx>, AppError> {
-    let (owner, tx) = state.prepared.get(prepared)?;
+    let (owner, tx) = state.sends.prepared(prepared)?;
     if owner != draft {
         return Err(AppError::invalid_argument(format!(
             "prepared transaction {prepared} belongs to draft {owner}, not draft {draft}"
         )));
     }
     Ok(tx)
+}
+
+/// Whether a failed first broadcast released the transaction (the engine's
+/// `settle`): it can never be sent, so its handle is dropped.
+fn released(e: &EngineError) -> bool {
+    matches!(
+        e,
+        EngineError::Send(
+            SendFailure::NoPeers
+                | SendFailure::BroadcastRejected { .. }
+                | SendFailure::PreparedTxSpent
+                | SendFailure::Cancelled
+        )
+    )
 }
 
 /// A PSBT argument: base64 text (`dw_psbt::parse` also reads binary, which a
@@ -64,8 +84,9 @@ commands! {
     #[facade("NetworkSession::new_tx_draft")]
     fn new_tx_draft(state, wallet_id: String) -> u64 {
         let id = parse_wallet_id(&wallet_id)?;
-        let draft = state.session().await?.new_tx_draft(id)?;
-        state.drafts.insert(draft)
+        let (session, epoch) = state.session_and_epoch().await?;
+        let draft = session.new_tx_draft(id)?;
+        state.sends.insert_draft(epoch, draft)
     }
 
     /// Drops a draft and every prepared transaction made from it. A pending
@@ -74,9 +95,7 @@ commands! {
     /// handle was not open.
     #[facade()]
     fn close_draft(state, draft: u64) -> bool {
-        let open = state.drafts.remove(draft).is_some();
-        state.prepared.remove_where(|(owner, _)| *owner == draft);
-        Ok(open)
+        Ok(state.sends.close_draft(draft))
     }
 
     /// The spendable amount of `source` for dash-qt's "Use available
@@ -130,26 +149,36 @@ commands! {
     /// Selects coins, builds, signs through the vault with a `Spend` grant
     /// (or a lease) that caps what leaves the wallet, and reserves the
     /// inputs. Never broadcasts. Returns the prepared transaction's handle
-    /// and its summary.
+    /// and its summary. When the draft was closed (or the network switched)
+    /// meanwhile, the transaction is dropped, its inputs are released, and
+    /// the call fails with `app.unknown_handle`.
     #[facade("TxDraft::prepare", "PreparedTx::summary")]
     fn draft_prepare(state, draft: u64, grant_id: String) -> PreparedTxHandle {
-        let prepared = draft_of(&state, draft)?.prepare(grant_id).await?;
+        let d = draft_of(&state, draft)?;
+        state.sends.room_for_prepared()?;
+        let prepared = d.prepare(grant_id).await?;
         let summary = PreparedTxSummary::from(prepared.summary().clone());
-        let handle = state.prepared.insert((draft, prepared))?;
+        let handle = state.sends.insert_prepared(draft, prepared)?;
         Ok(PreparedTxHandle { handle, summary })
     }
 
     /// Announces a prepared transaction and waits for the network's
     /// acceptance (up to about a minute on SPV). The handle is dropped once
-    /// the network accepted it; after `send.broadcast_unknown` it stays, so
-    /// the call can be repeated.
+    /// the network accepted it, and after a failure that released the
+    /// transaction (`send.no_peers`, `send.broadcast_rejected`,
+    /// `send.cancelled`, …: prepare again). It stays while the transaction is
+    /// still held: after `send.broadcast_unknown`, or a failure before
+    /// dispatch, so the call can be repeated.
     #[facade("TxDraft::broadcast")]
     fn draft_broadcast(state, draft: u64, prepared: u64) -> BroadcastOutcome {
         let d = draft_of(&state, draft)?;
         let tx = prepared_of(&state, draft, prepared)?;
-        let outcome = d.broadcast(tx).await?;
-        state.prepared.remove(prepared);
-        Ok(outcome.into())
+        let first = state.sends.start_broadcast(prepared);
+        let result = d.broadcast(tx).await;
+        if result.is_ok() || (first && result.as_ref().is_err_and(released)) {
+            state.sends.remove_prepared(prepared);
+        }
+        Ok(result?.into())
     }
 
     /// Discards a prepared transaction and releases its reserved inputs;
@@ -161,23 +190,15 @@ commands! {
         let d = draft_of(&state, draft)?;
         let tx = prepared_of(&state, draft, prepared)?;
         d.abandon(tx).await?;
-        state.prepared.remove(prepared);
+        state.sends.remove_prepared(prepared);
         Ok(())
     }
 
     /// The summary of a prepared transaction.
     #[facade("PreparedTx::summary")]
     fn prepared_summary(state, prepared: u64) -> PreparedTxSummary {
-        let (_, tx) = state.prepared.get(prepared)?;
+        let (_, tx) = state.sends.prepared(prepared)?;
         Ok(tx.summary().clone().into())
-    }
-
-    /// The signed transaction, consensus-encoded as lower-case hex; `null`
-    /// once the engine released it.
-    #[facade("PreparedTx::raw")]
-    fn prepared_raw(state, prepared: u64) -> Option<String> {
-        let (_, tx) = state.prepared.get(prepared)?;
-        Ok(tx.raw().map(hex::encode))
     }
 
     /// dash-qt "Create Unsigned" (QT-076/077): the draft as a base64 PSBT

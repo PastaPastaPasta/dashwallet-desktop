@@ -604,13 +604,18 @@ commands! {
         Ok(state.session().await?.set_coinjoin_settings(settings.into()).await?)
     }
 
-    /// The wallet's mixing status (QT-041..050): an in-memory read of the
-    /// status the engine refreshes once a second; re-query on `coinjoin`
-    /// events.
+    /// The wallet's mixing status (QT-041..050): the status the engine
+    /// refreshes once a second; re-query on `coinjoin` events.
     #[facade("NetworkSession::coinjoin_status")]
     fn coinjoin_status(state, wallet_id: String) -> CoinJoinStatus {
         let id = parse_wallet_id(&wallet_id)?;
-        Ok(state.session().await?.coinjoin_status(id)?.into())
+        let session = state.session().await?;
+        // Before the first refresh the engine computes it on the spot,
+        // blocking the calling thread for the wallet's whole coin view.
+        let status = tokio::task::spawn_blocking(move || session.coinjoin_status(id))
+            .await
+            .map_err(dw_engine::EngineError::from)??;
+        Ok(status.into())
     }
 
     /// "Start CoinJoin" for one wallet. Needs the vault unencrypted, unlocked
