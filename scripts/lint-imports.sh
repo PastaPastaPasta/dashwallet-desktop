@@ -43,7 +43,8 @@ allowed_for() {
     # Observation: the window state (CrossAppState) is @Observable.
     CrossUI)                 echo "Foundation Observation SwiftCrossUI DashUICross DesignTokens WalletFeatures WalletRuntime PlatformServicesDesktop" ;;
     # Native backends: the quit hook (engine shutdown) and the GTK application name.
-    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesDesktop DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit" ;;
+    # WinSDK: the gate probe's process CPU time (GetProcessTimes) on Windows.
+    DashWalletCross)         echo "Foundation SwiftCrossUI DefaultBackend CrossUI DashUICross WalletDemo WalletFeatures WalletRuntime PlatformServices PlatformServicesDesktop DesignTokens GtkBackend Gtk CGtk AppKitBackend AppKit WinSDK" ;;
     RepoChecksTests)         echo "Foundation Testing" ;;
     # Unit tests of the vendored SwiftCrossUI's patches (Vendor/PATCHES.md); Observation for
     # the @Observable models the view-graph tests observe.
