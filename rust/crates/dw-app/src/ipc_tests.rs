@@ -183,3 +183,120 @@ fn the_binding_refuses_with_app_codes() {
     assert!(e.is_string(), "{e}");
     assert!(demo.ok("startup_mark", json!({ "mark": "test" })).is_u64());
 }
+
+/// A representative command of each facade, through the IPC handler: the
+/// free functions, `Vault`, `NetworkSession`, `TxDraft`, `PreparedTx` and
+/// `DashPay`.
+#[test]
+fn a_command_of_every_facade_over_ipc() {
+    let demo = Demo::new();
+    // Free functions; they need no session.
+    let phrase = demo.ok(
+        "generate_mnemonic",
+        json!({ "wordCount": 12, "language": "english" }),
+    );
+    let phrase = phrase.as_str().unwrap().to_owned();
+    assert_eq!(phrase.split(' ').count(), 12);
+    let check = demo.ok("check_mnemonic", json!({ "phrase": phrase }));
+    assert_eq!(check["checksum"], "valid", "{check}");
+    assert_eq!(check["language"], "english", "{check}");
+    assert!(demo.ok("fee_policy", json!({}))["minRelayPerKb"].is_u64());
+    assert_eq!(
+        demo.ok("check_username", json!({ "label": "alice" }))["valid"],
+        true
+    );
+    assert_eq!(
+        demo.ok(
+            "is_coinjoin_internal",
+            json!({ "txType": "coinJoinMixing" })
+        ),
+        true
+    );
+    let missing = demo.call(
+        "read_backup_header",
+        json!({ "path": "/nonexistent/dw-e0-13.backup" }),
+    );
+    assert_app_error(&missing.unwrap_err());
+
+    demo.open();
+
+    // Vault
+    let vault = demo.ok("create_vault", json!({ "passphrase": "correct horse" }));
+    assert_eq!(vault["encrypted"], true, "{vault}");
+
+    // NetworkSession
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet = created["walletId"].as_str().unwrap().to_owned();
+    assert_eq!(created["mnemonic"].as_str().unwrap().split(' ').count(), 12);
+    let wallets = demo.ok("list_wallets", json!({}));
+    assert_eq!(wallets.as_array().unwrap().len(), 1, "{wallets}");
+    let address = demo.ok("current_receive_address", json!({ "walletId": wallet }));
+    assert!(address["address"].is_string(), "{address}");
+
+    // TxDraft, by handle
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet }));
+    assert_eq!(
+        demo.ok("draft_wallet_id", json!({ "draft": draft })),
+        wallet
+    );
+    demo.ok(
+        "draft_set_recipients",
+        json!({ "draft": draft, "recipients": [{
+            "address": address["address"],
+            "amount": 100_000,
+            "subtractFeeFromAmount": false,
+            "label": null,
+            "message": null,
+        }] }),
+    );
+    // An empty wallet cannot fund it: an engine code, not a panic.
+    assert_app_error(
+        &demo
+            .call("draft_estimate", json!({ "draft": draft }))
+            .unwrap_err(),
+    );
+    assert_eq!(demo.ok("close_draft", json!({ "draft": draft })), true);
+    demo.err(
+        "draft_wallet_id",
+        json!({ "draft": draft }),
+        "app.unknown_handle",
+    );
+
+    // PreparedTx: only `draft_prepare` makes one, which needs funds; an
+    // unknown handle is refused by the table.
+    demo.err(
+        "prepared_summary",
+        json!({ "prepared": 1 }),
+        "app.unknown_handle",
+    );
+
+    // NetworkSession::run_on_engine, through the console.
+    let help = demo.ok(
+        "console_execute",
+        json!({ "walletId": null, "line": "help", "grantId": null }),
+    );
+    assert_eq!(help["isJson"], false, "{help}");
+    demo.err(
+        "console_execute",
+        json!({ "line": "getbalance(\"" }),
+        "console.parse_error",
+    );
+    let redacted = demo.ok(
+        "console_redact",
+        json!({ "line": "walletpassphrase \"secret\" 60" }),
+    );
+    assert!(!redacted.as_str().unwrap().contains("secret"), "{redacted}");
+
+    // DashPay, of the new wallet; local state only (no Platform here).
+    assert_eq!(
+        demo.ok("identities", json!({ "walletId": wallet })),
+        json!([])
+    );
+    // The engine's own refusal crosses with its code and typed data.
+    let e = demo.err(
+        "dashpay_status",
+        json!({ "walletId": wallet }),
+        "platform.not_implemented",
+    );
+    assert_eq!(e["data"]["kind"], "call", "{e}");
+}
