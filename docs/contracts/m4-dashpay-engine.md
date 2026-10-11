@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 9
+Contract-Version: 10
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, and E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, and DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -83,7 +83,7 @@ type is `pub(crate)`.
 | Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links, activity cursors: opaque `String` ids the engine issued, each 1–64 characters of `[0-9a-z_-]` (`dwcli dashpay session` checks them by that form), as is the `<id>` of a funding step id (`registration/<id>/funding`, `topup/<id>/funding`). |
 | Amounts | Duffs and credits are `u64`; the field name or doc says which. |
 | Every call returns `Result` | Including the in-memory reads DASHPAY §3.6 sketched without one (`status`, `identities`, `contacts`, …) and `check_username`. A stub has to return `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`. |
-| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). Paged or unbounded reads (`events`, `registrations`) are async. |
+| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). The contacts read model (DP2-01) reads the library's memory on each call instead, under a non-blocking read lock, and keeps the result as a snapshot that answers only while a writer holds that lock (§2.4). Paged or unbounded reads (`events`, `registrations`) are async. |
 | Static tables before Platform answers | `profile_limits` returns the built-in 25 / 140 until the DashPay contract is fetched; `cost_table` returns the fee table of the SDK's current protocol version. Neither waits for the network. |
 | Grants and leases | `grant: String` is either a grant id from `Vault.authorize` or a lease id from `NetworkSession.begin_flow` (§2.11). The purposes, caps and budgets are E0-04's (DASHPAY §2.6). A flow that spans calls ("Accept and pay": `accept_request`, then the payment's `TxDraft.prepare`, §2.3) redeems its grants once with `begin_flow`, from one credential prompt, and passes the lease id to each call, so the 120 s grant lifetime cannot run out between them; `end_flow` releases it. **A lease id is accepted only by a call of the lease's own wallet, and only for a purpose the lease carries**: another wallet's lease is `platform.grant_invalid`, and a lease without the purpose the call needs (a `ProfileEdit` lease passed to `top_up`) is `platform.needs_grant{purpose}`. The idle reaper ends a vault-key lease after **10 minutes** with no call, no permit and no running flow task; an own-key lease's key is dropped at its `key_until` (the flow then needs a grant again), so a host that abandons a sheet leaks nothing. Every write's quote says what to authorize (`grant: GrantRequest`, or `grant_request(identity, action)`), and the engine charges no more than it quoted. |
 | Records | Derive `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. The exceptions are inputs that carry private data, which derive `Deserialize` only: `AvatarSource` (the Gravatar e-mail). Enums with data are internally tagged with `kind` and snake-case names; unit enums serialize as snake-case strings. Byte payloads (`AvatarSource::File.bytes`, `AvatarImage.png`) serialize as standard base64 strings, never as number arrays. |
@@ -182,8 +182,9 @@ status 1.
 ## 2. Calls
 
 Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and
-`discover_identities` (§2.1), and DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
-`register_name`, `set_main_name`, `main_name`). Kind is `sync`, `async` or `free, pure` (§1).
+`discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
+`register_name`, `set_main_name`, `main_name`), and DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
+`pending_setup_count`). Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -227,9 +228,9 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `contacts(identity, q)` | sync | The sections asked for (empty = all), sorted, filtered by `text`. | `ContactError` |
-| `contact(identity, contact)` | sync | One contact with profile, private details, publish state and payment lock; `None` if unknown. | `ContactError` |
-| `pending_setup_count()` | sync | Contacts waiting for an unlock to finish their crypto ("Unlock to finish setting up N contacts"). | `ContactError` |
+| `contacts(identity, q)` | sync | The sections asked for (empty = all; each once, in the query's order), sorted, filtered by `text`. From the library's memory: the identity's sent and incoming requests, established contacts, ignored senders, cached contact profiles and deferred contact-crypto queue, and the Core wallet's DashPay accounts. One relation per contact, by precedence: `Contact`, then `Ignored`, then `PendingIncoming`, then `PendingOutgoing` (ignoring a contact's identity leaves the contact). Sections: `Requests` (incoming), `Contacts`, `Pending` (outgoing), `Hidden` (contacts with `hidden` set, and ignored senders, which un-ignore from there). `channel`: `NotEstablished` unless a contact; `Broken` as the library flags it; `SetupPending` while an account op (`RegisterReceiving`, `RegisterExternal`) is queued, or while the account that pays the contact is missing or was not built from the contact's current request, which the library builds or rebuilds with the signer; else `Ready`. `since` is the request a row rests on (for a contact the later of the two), `last_activity_at` the latest of that and its DashPay payments' block times (unconfirmed and failed payments do not count), all UNIX seconds from authoritative times only (DEC-114), so a restore that replays the same contacts sorts them the same way; ignored senders have neither. Declared residual: the library replaces a contact's request in place when either side rotates its key, so `since` and that request's time then show the rotation. Requests and Pending are newest first whatever `sort`; Contacts and Hidden follow it: `DisplayName` by the shown name (the first non-blank of alias, display name and username, else the id; case-folded), `Username` with known usernames first, `DateAdded` and `LastActivity` newest first with unknown times last; ties by id. `text` (trimmed; blank filters nothing) matches the username, display name or alias case-insensitively, or, from four characters, the start of the id. `display_name` is the cached contact profile's. `username` is the contact's DPNS name (of the first ten domains Platform returns for the contact, those whose owner and `records.identity` are the contact, the first by normalized label), fetched in the background, one contact at a time with a 30 s limit each, and kept in memory for an hour (a failure retries after a minute): a read never waits for it, and a name that lands or changes signals `Platform{Contacts}` for the identities that showed it. `unverified` (§5): the contact's `profile` if one is shown, its `dpns_label` if a username is shown (the record of that spelling as the contact's), and each `contact_request` the relation rests on (none for an ignored sender), each by the content shown (DEC-183). A contact's identity has no record of its own: its verified requests bind the keys and the xpub the channel uses. The library keeps no contact usernames, so the engine reports each one as a fetch lands it to E0-10b's re-fetch, which verifies the names shown; a fetch that finds the name gone withdraws it, and one no longer shown for another reason (a forgotten wallet, a dropped relation) stays listed for the session, where at worst it is re-fetched while unverified. While any writer holds the wallet's state (a sync pass, SPV processing a block) the last snapshot answers with `updating: true` (none yet: empty sections, and an identity it lacks is no error); once the writer is done the engine rebuilds the snapshot and signals `Platform{Contacts}` for each of the wallet's identities (`Identities` when it has none). Reads write nothing and make no news: catch-up silence is the tap's (DEC-125/135/139). Re-query on `Platform{Contacts}`, `Identities` and `Payments`, and on the wallet's `HistoryChanged`: a block that mines an already-confirmed (InstantSend) payment moves `last_activity_at` with no Platform change. **Implemented (DP2-01).** | `ContactError` (`identity.not_found` on a live read of an identity the wallet lacks; `invalid_argument` for an id that is not Base58) |
+| `contact(identity, contact)` | sync | One contact in any relation, as in `contacts`, with its profile, private details and both request times; `None` if unknown. While a writer holds the state and the snapshot lacks the identity, `platform.unavailable` (not "unknown"): re-query on the `Platform{Contacts}` that follows. `publish_state` is `DeferredUntilTwoContacts` for a contact while the identity has fewer than two, else `Local`: whether a `contactInfo` was published is DP2-04's to record. `payment_lock` is `None` until DP3-01. **Implemented (DP2-01).** | `ContactError` (as `contacts`; `platform.unavailable` as above) |
+| `pending_setup_count()` | sync | Over every identity of the wallet: contacts whose channel is `SetupPending`, and requests with a queued auto-accept ("Unlock to finish setting up N contacts"). From the last snapshot while a writer holds the state; `platform.unavailable` with none yet. Re-query on `Platform{Contacts}` for any of the wallet's identities and on `Identities`. **Implemented (DP2-01).** | `ContactError` |
 | `eligibility(identity, contact)` | async | Before any prompt: `Ok`, `NoDashPayKeys`, `IsSelf`, `AlreadyContact`, `PendingOutgoing`, `PendingIncoming`. | `ContactError` |
 | `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is `ScannedContact.scan` when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_from_qr`). A scan id is single-use and lives for the session; a stale id or an expired proof is `contact.scan_expired`. An ineligible target is `contact.ineligible{reason}` with the `eligibility` answer. | `ContactError` |
 | `accept_request(identity, from, grant)` | async | Sends the reverse request. | `ContactError` |
@@ -317,7 +318,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 77aae1157f5a188e9f9142ef84a1cbd30351b1c834dc43902a044b38f9d42664 version: 9 -->
+<!-- surface-sha256: 4e66f3cca4fbd147c571b7a2ab091fbd95b5badac2f9ecf77a7c5ae993fa9148 version: 10 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -356,6 +357,7 @@ pub enum ContactSort {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactsPage {
     pub sections: Vec<ContactSectionPage>,
+    pub updating: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactSectionPage {
@@ -435,6 +437,8 @@ impl DashPay {
     pub fn contacts(&self, identity: String, q: ContactQuery) -> Result<ContactsPage, ContactError>;
     pub fn contact(&self, identity: String, contact: String) -> Result<Option<ContactDetail>, ContactError>;
     pub fn pending_setup_count(&self) -> Result<u32, ContactError>;
+}
+impl DashPay {
     pub async fn eligibility(&self, identity: String, contact: String) -> Result<Eligibility, ContactError>;
     pub async fn send_request(&self, identity: String, to: String, scan: Option<String>, grant: String) -> Result<RequestOutcome, ContactError>;
     pub async fn accept_request(&self, identity: String, from: String, grant: String) -> Result<RequestOutcome, ContactError>;
@@ -1438,7 +1442,7 @@ The shapes are in §3. What they mean, where the name does not say:
   current. An identity's balance is not covered. Absence fails closed: data the library keeps in memory after
   a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
   is unverified if its identity, its shown profile or any name in its `names` is (a hidden contested or pending name
-  does not count). Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
+  does not count); a `ContactSummary` as §2.4 `contacts` lists. Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
   keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
   `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
   `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
@@ -1726,3 +1730,12 @@ renames or reshapes them takes the next version bump:
     verifies contacts' cached profiles and the contact labels the read model reports (`Provenance::show_label`); a
     contact's identity has no record class. An `IdentitySummary`'s flag covers the names it shows, and an
     installation holding wallets from before E0-10b starts latched (migration `trust_digest`).
+
+**From DP2-01** (version 10):
+
+37. **The contacts read model** (§2.4). `ContactsPage` gains `updating: bool`: while a writer holds the wallet's
+    state the last snapshot answers, and with none yet the page is empty, so the UI shows "updating", not "no
+    contacts". `contact` and `pending_setup_count` are `platform.unavailable` then. Hosts re-query on
+    `Platform{Contacts}`, `Identities`, `Payments` and the wallet's `HistoryChanged`. Rows flag `unverified` from the
+    shown profile, the shown username (reported to the re-fetch with `Provenance::show_label`) and the requests the
+    relation rests on, by content (item 36).

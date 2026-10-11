@@ -832,6 +832,7 @@ retry forever nor count towards `registration.in_progress`, so a new registratio
 | `asset_locks` | `Registration{draft}` | — |
 | `dashpay_payments_overlay` | `Payments{identity}` | "Received … from @alice", unless it is catch-up |
 | `account_registrations` (contact accounts) | `Contacts{identity}` | — |
+| `pending_contact_crypto_added` / `_cleared` (account builds, auto-accept) | `Contacts{identity}` of the owner | — |
 | `dpns_name_states` | `Names` | — |
 
 While the trusted fallback is in use (§2.2), the tap also writes every entity a changeset touches to

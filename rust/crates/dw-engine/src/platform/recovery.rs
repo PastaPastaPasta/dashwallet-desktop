@@ -70,7 +70,7 @@ use dw_vault::{GrantKind, KeyHold, ScanKey, Vault, VaultError};
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::manager::startup::DEFAULT_STARTUP_BUDGET;
 use platform_wallet::wallet::identity::network::IdentityDiscoveryOptions;
-use platform_wallet::{DpnsNameInfo, PlatformWalletInfo};
+use platform_wallet::{DashPayProfile, DpnsNameInfo, PlatformWalletInfo};
 use tokio::sync::watch;
 
 use super::VaultScanKey;
@@ -432,19 +432,25 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
                 balance: Some(m.identity.balance()),
                 has_dashpay_keys: missing_dashpay_purposes(m.identity.public_keys().values())
                     .is_empty(),
-                profile: m.dashpay().profile.as_ref().map(|p| Profile {
-                    display_name: p.display_name.clone(),
-                    public_message: p.public_message.clone().or_else(|| p.bio.clone()),
-                    avatar_url: p.avatar_url.clone(),
-                    avatar_hash: p.avatar_hash.map(hex::encode),
-                    avatar_fingerprint: p.avatar_fingerprint.map(hex::encode),
-                    updated_at: None,
-                }),
+                profile: m.dashpay().profile.as_ref().map(profile_of),
                 entities: identity_and_profile(m).iter().map(Held::entity).collect(),
                 owner: m.identity.id(),
             })
         })
         .collect()
+}
+
+/// The facade's form of a stored DashPay profile (an identity's own, or a
+/// contact's).
+pub(super) fn profile_of(p: &DashPayProfile) -> Profile {
+    Profile {
+        display_name: p.display_name.clone(),
+        public_message: p.public_message.clone().or_else(|| p.bio.clone()),
+        avatar_url: p.avatar_url.clone(),
+        avatar_hash: p.avatar_hash.map(hex::encode),
+        avatar_fingerprint: p.avatar_fingerprint.map(hex::encode),
+        updated_at: None,
+    }
 }
 
 impl NetworkSession {
