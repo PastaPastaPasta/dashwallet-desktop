@@ -69,7 +69,7 @@ StepView { draft: i64, key: FundingKey, status: Option<DispatchState>,
 
 | claim | when |
 |---|---|
-| `None` | status ∈ {None, NotSent}; or `dead` ≠ ∅, `signed` = ∅ and `durable_record`, any status (C4) |
+| `None` | status ∈ {None, NotSent}; P2b derives `NotSent` for C4's step (Q13) |
 | `Exact(T)` | status ∈ {WillBeSent, MaybeSent, Sent}, `signed` = T ≠ ∅ |
 | `Unknown` | status ∈ {WillBeSent, MaybeSent, Sent}, `signed` = ∅ |
 
@@ -83,7 +83,9 @@ in flight, or an unflagged marker.
 flagged step with tombstones neither is its money: PA-2 recorded every lock its one signing call
 built, all are in `dead` and conflict with the ChainLocked self-spend, and I12 forbids another
 call. Read as `Unknown`, it would freeze the row as `Contested` (§3.4), and P2b attributes the
-row only once it funds an identity: a cycle.
+row only once it funds an identity: a cycle. Under Q13 P2b derives this reading itself: a
+flagged step with tombstones whose marker is not `Sent` reads `NotSent`, and DP1-02 reads P2b's
+status with no override.
 
 **Wallet removal keeps the steps** (P2b 5a1e3ab, `dw-appdb` probe): `remove_wallet` deletes the
 rows and `erase_wallet` only DEC-160's compactable artifacts, so every step whose claim isn't
