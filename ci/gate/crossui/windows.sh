@@ -7,6 +7,8 @@
 #   U7  the same archive unpacks and launches
 # Runs in Git Bash; the launches go through windows-run.ps1 (pwsh). GateProbe's hooks unlock the
 # vault and open a transaction's details (no AT-SPI here).
+# With DWD_CROSS_BACKEND=gtk (swiftcrossui.sh --backend gtk) the app is built on GtkBackend with
+# gvsbuild's GTK 4 (MSVC), whose DLLs go into the archive, instead of WinUIBackend.
 set -euo pipefail
 : "${GATE_ROOT:?}" "${GATE_OUT:?}" "${GATE_WORK:?}" "${GATE_WALLET:?}" "${GATE_PASSPHRASE_FILE:?}"
 cd "$GATE_ROOT"
@@ -16,6 +18,20 @@ results="$OUT/results.txt"
 result() { echo "$*" | tee -a "$results"; }
 win() { cygpath -w "$1"; }
 
+backend=winui
+if [[ "${DWD_CROSS_BACKEND:-}" == gtk ]]; then
+  backend=gtk
+  # gvsbuild's GTK 4 release, unpacked at the prefix its .pc files name.
+  gtk_zip="$GATE_WORK/GTK4_Gvsbuild_2026.8.0_x64.zip"
+  curl -fsSL -o "$gtk_zip" https://github.com/wingtk/gvsbuild/releases/download/2026.8.0/GTK4_Gvsbuild_2026.8.0_x64.zip
+  echo "1f95a92d037f5292da05e6ab1037032ff21ddb7b20d4ac8e83e3674c864c07b0  $gtk_zip" | sha256sum -c -
+  gtk_prefix=/c/gtk-build/gtk/x64/release
+  mkdir -p "$gtk_prefix"
+  7z x -y -bd -o"$(win "$gtk_prefix")" "$(win "$gtk_zip")" >/dev/null
+  export PKG_CONFIG_PATH="$(win "$gtk_prefix/lib/pkgconfig")"
+  export PATH="$gtk_prefix/bin:$PATH"
+  result "GTK: gvsbuild 2026.8.0, GTK $(pkgconf --modversion gtk4)"
+else
 # WinUIBackend needs the Windows App Runtime 1.5 (as in ci.yml's windows-swift job, same pin).
 pwsh -NoProfile -Command '
   $url = "https://download.microsoft.com/download/4f5a8b87-f017-485d-8cf7-c16e82671dbe/WindowsAppRuntimeInstall-x64.exe"
@@ -30,6 +46,7 @@ pwsh -NoProfile -Command '
   }
   & $installer --quiet --force
   if ($LASTEXITCODE -ne 0) { throw "Windows App Runtime installer exited with $LASTEXITCODE" }'
+fi
 
 # --- build (release, WinUIBackend) ---
 t0=$(date +%s)
@@ -38,7 +55,7 @@ t1=$(date +%s)
 swift build -c release --product dash-wallet
 t2=$(date +%s)
 bin_dir=$(swift build -c release --show-bin-path)
-result "build: core $((t1 - t0)) s, swift $((t2 - t1)) s (release)"
+result "build ($backend): core $((t1 - t0)) s, swift $((t2 - t1)) s (release)"
 # The main thread's stack reserve from the PE header (Package.swift links /STACK:8388608).
 stack=$(python -c 'import struct, sys; d = open(sys.argv[1], "rb").read(); pe = struct.unpack_from("<I", d, 0x3C)[0]; print(struct.unpack_from("<Q", d, pe + 24 + 72)[0])' "$(win "$bin_dir/dash-wallet.exe")")
 result "stack reserve: $stack bytes"
@@ -52,7 +69,14 @@ cp "$bin_dir/dash-wallet.exe" "$stage/"
 cp "$bin_dir"/*.dll "$stage/" 2>/dev/null || true
 for bundle in "$bin_dir"/*.resources; do [[ -e "$bundle" ]] && cp -R "$bundle" "$stage/"; done
 cp "$runtime_dir"/*.dll "$stage/"
-zip="$OUT/dash-wallet-windows-x86_64.zip"
+if [[ $backend == gtk ]]; then
+  cp "$gtk_prefix"/bin/*.dll "$stage/"
+  mkdir -p "$stage/share/glib-2.0"
+  cp -R "$gtk_prefix/share/glib-2.0/schemas" "$stage/share/glib-2.0/"
+  zip="$OUT/dash-wallet-windows-gtk-x86_64.zip"
+else
+  zip="$OUT/dash-wallet-windows-x86_64.zip"
+fi
 pwsh -NoProfile -Command "Compress-Archive -Path '$(win "$stage")' -DestinationPath '$(win "$zip")' -Force"
 unpacked="$GATE_WORK/unpacked"
 rm -rf "$unpacked"

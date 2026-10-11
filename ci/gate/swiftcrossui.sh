@@ -18,7 +18,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 : "${GATE_OS:?}" "${GATE_OUT:?}"
-(($# == 0)) || { echo "swiftcrossui.sh takes no arguments" >&2; exit 2; }
+# --backend gtk (Windows): GtkBackend instead of WinUIBackend, the fallback when WinUIBackend fails
+# U4 (Vendor/PATCHES.md P14).
+case "$*" in
+  "") ;;
+  "--backend gtk") [[ "$GATE_OS" == windows ]] || { echo "--backend gtk is for Windows" >&2; exit 2; }
+    export DWD_CROSS_BACKEND=gtk ;;
+  *) echo "usage: swiftcrossui.sh [--backend gtk]" >&2; exit 2 ;;
+esac
 
 export GATE_ROOT="$ROOT"
 temp="${RUNNER_TEMP:-$ROOT/.gate}"
