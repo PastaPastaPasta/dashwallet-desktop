@@ -7,6 +7,24 @@
   ],
   "local": true,
   "permissions": [
-    "allow-sync-status"
+    "allow-sync-status",
+    "allow-peers",
+    "allow-rotate-peers",
+    "allow-rescan",
+    "allow-rescan-progress",
+    "allow-cancel-rescan",
+    "allow-node-info",
+    "allow-warnings",
+    "allow-reset-chain-data",
+    "allow-set-birth-height",
+    "allow-start-spv",
+    "allow-stop-spv",
+    "allow-spv-running",
+    "allow-spv-state",
+    "allow-dashpay-startup",
+    "allow-dashpay-sync-soon",
+    "allow-platform-loops",
+    "allow-set-platform-cadence",
+    "allow-platform-status"
   ]
 }
