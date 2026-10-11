@@ -12,7 +12,9 @@ use dashcore::sml::llmq_entry_verification::{
     LLMQEntryVerificationSkipStatus, LLMQEntryVerificationStatus,
 };
 use dashcore::sml::quorum_validation_error::QuorumValidationError;
-use dpp::identity::{IdentityPublicKey, KeyID};
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dpp::identity::{IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::prelude::Identifier;
 use dw_appdb::AppDb;
 use platform_wallet::ContactRequest;
@@ -472,7 +474,7 @@ struct FakeRefetch {
     keys: BTreeMap<KeyID, IdentityPublicKey>,
     profile: ShownProfile,
     owner: Identifier,
-    request: ContactRequest,
+    requests: Vec<ContactRequest>,
     /// The quorum each kind's proof cites.
     quorum: HashMap<&'static str, Quorum>,
 }
@@ -505,17 +507,19 @@ impl Refetcher for FakeRefetch {
         let r = self.prove(kind::DPNS_LABEL).map(|()| Some(self.owner));
         Box::pin(async move { r })
     }
-    fn contact_request(
+    fn contact_requests(
         &self,
         sender: Identifier,
         recipient: Identifier,
         created_at: u64,
-    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>> {
-        let r = &self.request;
-        let found = (r.sender_id, r.recipient_id, r.created_at) == (sender, recipient, created_at);
-        let r = self
-            .prove(kind::CONTACT_REQUEST)
-            .map(|()| found.then(|| self.request.clone()));
+    ) -> BoxFuture<Result<Vec<ContactRequest>, PlatformError>> {
+        let found = (self.requests.iter())
+            .filter(|r| {
+                (r.sender_id, r.recipient_id, r.created_at) == (sender, recipient, created_at)
+            })
+            .cloned()
+            .collect();
+        let r = self.prove(kind::CONTACT_REQUEST).map(|()| found);
         Box::pin(async move { r })
     }
 }
@@ -554,7 +558,14 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             ..Default::default()
         },
         owner: alice,
-        request: request(7, 8, 1_700_000_000_123),
+        // Two requests of one pair in one block: either verifies.
+        requests: vec![
+            ContactRequest {
+                account_reference: 4,
+                ..request(7, 8, 1_700_000_000_123)
+            },
+            request(7, 8, 1_700_000_000_123),
+        ],
         quorum: HashMap::from([
             (kind::IDENTITY, A),
             (kind::PROFILE, A),
@@ -799,7 +810,7 @@ async fn a_replaced_entity_reads_unverified_until_its_new_content_verifies() {
         keys: BTreeMap::new(),
         profile: shown(name),
         owner: alice,
-        request: request(7, 8, 1),
+        requests: Vec::new(),
         quorum: HashMap::from([(kind::PROFILE, quorum)]),
     };
     let unverified = |name: &str| r.provenance.is_unverified(&held(name).entity());
@@ -914,10 +925,46 @@ fn the_digest_covers_the_content_and_names_its_version() {
         .unwrap()
     };
     assert_ne!(label("a11ce", 7), label("a11ce", 8), "the owner");
-    let empty = Held::Identity {
-        id: alice,
-        keys: BTreeMap::new(),
+    let identity = |keys: &[IdentityPublicKey]| {
+        let keys = keys.iter().map(|k| (k.id(), k.clone())).collect();
+        Held::Identity { id: alice, keys }.entity().digest.unwrap()
+    };
+    let v0 = |id: KeyID| IdentityPublicKeyV0 {
+        id,
+        purpose: Purpose::AUTHENTICATION,
+        security_level: SecurityLevel::MASTER,
+        contract_bounds: None,
+        key_type: KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![2; 33].into(),
+        disabled_at: None,
+    };
+    let key = |id: KeyID| IdentityPublicKey::V0(v0(id));
+    let edit = |f: fn(&mut IdentityPublicKeyV0)| {
+        let mut k = v0(0);
+        f(&mut k);
+        IdentityPublicKey::V0(k)
+    };
+    let d = identity(&[key(0)]);
+    assert_eq!(d, identity(&[key(0)]));
+    assert_ne!(d, identity(&[]), "a key removed");
+    assert_ne!(d, identity(&[key(0), key(1)]), "a key added");
+    for changed in [
+        edit(|k| k.disabled_at = Some(1)),
+        edit(|k| k.data = vec![3; 33].into()),
+        edit(|k| k.purpose = Purpose::TRANSFER),
+        edit(|k| k.security_level = SecurityLevel::HIGH),
+        edit(|k| k.read_only = true),
+    ] {
+        assert_ne!(identity(std::slice::from_ref(&changed)), d, "{changed:?}");
     }
-    .entity();
-    assert!(empty.digest.is_some());
+    let refiled = Held::Identity {
+        id: alice,
+        keys: BTreeMap::from([(5, key(0))]),
+    };
+    assert_ne!(
+        refiled.entity().digest.unwrap(),
+        d,
+        "filed under another id"
+    );
 }

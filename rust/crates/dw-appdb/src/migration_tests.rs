@@ -632,7 +632,7 @@ fn verification_records_without_a_digest_verify_nothing() {
             .run(&mut conn)
             .unwrap();
         conn.execute(
-            "INSERT INTO dp_trust_verified (kind, key, verified_at) VALUES ('identity', 'x', 7)",
+            "INSERT INTO dp_trust_verified (kind, key, verified_at) VALUES ('identity', 'x', 9)",
             [],
         )
         .unwrap();
@@ -653,6 +653,13 @@ fn verification_records_without_a_digest_verify_nothing() {
         db.verified_entities().unwrap(),
         vec![("identity".into(), "x".into(), "v1:aa".into())]
     );
+    let at: i64 = db
+        .conn()
+        .query_row("SELECT verified_at FROM dp_trust_verified", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(at, 8, "the old row's time does not carry over");
 }
 
 /// `delete_wallet` lists its tables; the export finds them by their

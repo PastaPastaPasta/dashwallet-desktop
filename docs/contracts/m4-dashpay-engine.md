@@ -1432,7 +1432,8 @@ The shapes are in §3. What they mean, where the name does not say:
   the entity's canonical bytes as verified, naming its encoding version (`v1:` and a SHA-256), and data counts as
   verified only while the digest of what the library holds now equals it. An entity the library replaced after it
   verified (from any source, the fallback included) reads as unverified until a fetch of the new content verifies;
-  records written before the digest existed verify nothing. Absence fails closed: data the library keeps in memory after
+  records written before the digest existed verify nothing. A record says that this content verified, not that it is
+  current. An identity's balance is not covered. Absence fails closed: data the library keeps in memory after
   a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
   is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
   unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in

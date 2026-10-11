@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use dpp::identity::Identity;
+use dpp::identity::accessors::IdentityGettersV0;
+use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::v0::IdentityV0;
+use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
@@ -923,11 +926,30 @@ fn a_refused_store_leaves_a_discovered_identity_unverified() {
     assert_eq!(identity.kind, super::provenance::kind::IDENTITY);
     provenance.record_verified(&identity).unwrap();
     assert_eq!(unverified(), vec![(base58(ALICE), false)]);
-    let other_content = super::provenance::Entity {
-        digest: Some("v1:00".into()),
-        ..identity
-    };
-    provenance.record_verified(&other_content).unwrap();
+
+    // The library replaces the identity's keys (from any source): the
+    // record no longer vouches for what is shown.
+    let manager = s.manager().unwrap();
+    engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        let managed = (info.identity_manager)
+            .managed_identity_mut(&Identifier::new(ALICE))
+            .unwrap();
+        let key = IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::MASTER,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![2; 33].into(),
+            disabled_at: None,
+        };
+        let keys = managed.identity.public_keys_mut();
+        assert!(keys.insert(0, IdentityPublicKey::V0(key)).is_none());
+    });
     assert_eq!(
         unverified(),
         vec![(base58(ALICE), true)],

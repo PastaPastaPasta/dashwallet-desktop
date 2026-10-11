@@ -126,7 +126,14 @@ counts the record only when the digests are equal. So an entity the library repl
 source, reads as unverified, and a replacement served only through the fallback never reads as verified; the
 re-fetch verifies new content and its record replaces the old one. Rows written before the column existed have no
 digest and verify nothing. Nothing clears records on change: the comparison is the whole mechanism. A change to the
-encoding takes the next version, and records of the old one read as unverified until re-verified.
+encoding takes the next version, and records of the old one read as unverified until re-verified. Identity keys are
+encoded by dpp (bincode), so a dpp release that changes that layout has the same effect.
+
+What a record means: this exact content verified at some time, not that it is current. Content that verified once
+and comes back later (a rollback served through the fallback) reads as verified again; DEC-183 accepts that. The
+identity's balance is outside provenance (`identity` covers the identity and its keys). Known limit: platform-wallet
+stores a sent request without the `autoAcceptProof` its document carries, and does not re-ingest it, so a request
+sent from a QR with auto-accept never verifies (fails closed); an upstream fix belongs to platform-wallet.
 
 ## 5. Re-fetching unverified entities after sync
 

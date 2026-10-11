@@ -133,27 +133,47 @@ impl Held {
                 }
             }
             Self::Profile { id, shown } => {
+                // Every field named: a new one fails to build until encoded.
+                let ShownProfile {
+                    display_name,
+                    public_message,
+                    avatar_url,
+                    avatar_hash,
+                    avatar_fingerprint,
+                } = shown;
                 c.id(id)
-                    .opt(shown.display_name.as_deref().map(str::as_bytes))
-                    .opt(shown.public_message.as_deref().map(str::as_bytes))
-                    .opt(shown.avatar_url.as_deref().map(str::as_bytes))
-                    .opt(shown.avatar_hash.as_ref().map(|h| &h[..]))
-                    .opt(shown.avatar_fingerprint.as_ref().map(|f| &f[..]));
+                    .opt(display_name.as_deref().map(str::as_bytes))
+                    .opt(public_message.as_deref().map(str::as_bytes))
+                    .opt(avatar_url.as_deref().map(str::as_bytes))
+                    .opt(avatar_hash.as_ref().map(|h| &h[..]))
+                    .opt(avatar_fingerprint.as_ref().map(|f| &f[..]));
             }
             Self::Label { label, owner } => {
                 c.bytes(label.as_bytes()).id(owner);
             }
             Self::ContactRequest(r) => {
-                c.id(&r.sender_id)
-                    .id(&r.recipient_id)
-                    .u64(r.sender_key_index.into())
-                    .u64(r.recipient_key_index.into())
-                    .u64(r.account_reference.into())
-                    .opt(r.encrypted_account_label.as_deref())
-                    .bytes(&r.encrypted_public_key)
-                    .opt(r.auto_accept_proof.as_deref())
-                    .u64(r.core_height_created_at.into())
-                    .u64(r.created_at);
+                let ContactRequest {
+                    sender_id,
+                    recipient_id,
+                    sender_key_index,
+                    recipient_key_index,
+                    account_reference,
+                    encrypted_account_label,
+                    encrypted_public_key,
+                    auto_accept_proof,
+                    core_height_created_at,
+                    created_at,
+                } = r;
+                c.id(sender_id)
+                    .id(recipient_id)
+                    .u64((*sender_key_index).into())
+                    .u64((*recipient_key_index).into())
+                    .u64((*account_reference).into())
+                    .opt(encrypted_account_label.as_deref())
+                    .bytes(encrypted_public_key)
+                    .opt(auto_accept_proof.as_deref())
+                    .u64((*core_height_created_at).into())
+                    .u64(*created_at);
             }
         }
         Some(c.finish())
@@ -175,6 +195,8 @@ impl Held {
 
 /// The digest encoding (DEC-183); a change to [`Canon`] or to a field set
 /// takes the next version, and records of the old one read as unverified.
+/// Identity keys are encoded by dpp: a dpp release that changes their
+/// bincode layout has the same effect (fails closed until re-fetched).
 const DIGEST_VERSION: &str = "v1";
 
 /// The canonical bytes of an entity: a domain tag and the kind, then each
@@ -234,14 +256,14 @@ pub(super) trait Refetcher: Send + Sync {
     ) -> BoxFuture<Result<Option<BTreeMap<KeyID, IdentityPublicKey>>, PlatformError>>;
     fn profile(&self, id: Identifier) -> BoxFuture<Result<Option<ShownProfile>, PlatformError>>;
     fn dpns_owner(&self, label: String) -> BoxFuture<Result<Option<Identifier>, PlatformError>>;
-    /// The `contactRequest` document from `sender` to `recipient` created at
-    /// `created_at`, read as the library reads it.
-    fn contact_request(
+    /// The `contactRequest` documents from `sender` to `recipient` created at
+    /// `created_at`, read as the library reads them.
+    fn contact_requests(
         &self,
         sender: Identifier,
         recipient: Identifier,
         created_at: u64,
-    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>>;
+    ) -> BoxFuture<Result<Vec<ContactRequest>, PlatformError>>;
 }
 
 /// Re-fetches one entity in its own scope: whether the fetch used only
@@ -262,8 +284,8 @@ pub(super) async fn reverify(h: &Held, fetch: &dyn Refetcher) -> bool {
                 ok(fetch.dpns_owner(label.clone()).await) == Some(*owner)
             }
             Held::ContactRequest(r) => {
-                let fetched = fetch.contact_request(r.sender_id, r.recipient_id, r.created_at);
-                ok(fetched.await).as_ref() == Some(r)
+                let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
+                ok(fetched.await.map(Some)).is_some_and(|all| all.contains(r))
             }
         }
     })
@@ -315,7 +337,9 @@ fn requests_of(m: &ManagedIdentity) -> impl Iterator<Item = Held> + '_ {
 }
 
 /// The entities of `info` the read models would show as unverified, each
-/// once.
+/// once. A record key held twice with different content (two wallets'
+/// copies of one request) is re-fetched as its first copy only; the other
+/// stays unverified.
 fn unverified_of(
     info: &PlatformWalletInfo,
     id: &WalletId,
@@ -427,19 +451,20 @@ impl Refetcher for SdkRefetcher {
         })
     }
 
-    fn contact_request(
+    fn contact_requests(
         &self,
         sender: Identifier,
         recipient: Identifier,
         created_at: u64,
-    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>> {
+    ) -> BoxFuture<Result<Vec<ContactRequest>, PlatformError>> {
         let this = SdkRefetcher(Arc::clone(&self.0));
         Box::pin(async move {
-            let docs = this.contact_requests(sender, recipient).await?;
+            let docs = this.pair_documents(sender, recipient).await?;
             Ok(docs
                 .iter()
                 .filter(|doc| doc.created_at() == Some(created_at))
-                .find_map(request_from_document))
+                .filter_map(request_from_document)
+                .collect())
         })
     }
 }
@@ -447,7 +472,7 @@ impl Refetcher for SdkRefetcher {
 impl SdkRefetcher {
     /// The `contactRequest` documents from `sender` to `recipient`
     /// (`ownerIdUserId` index; a pair holds one per account reference).
-    async fn contact_requests(
+    async fn pair_documents(
         &self,
         sender: Identifier,
         recipient: Identifier,
@@ -533,7 +558,7 @@ impl NetworkSession {
         // Held across the writes: the library cannot change what is recorded.
         let wm = wm.read().await;
         let records = confirmed(&verified, &held_unverified(&wm, &live.provenance));
-        let written = records.len();
+        let written = records.iter().filter(|e| e.digest.is_some()).count();
         let provenance = Arc::clone(&live.provenance);
         tokio::task::spawn_blocking(move || {
             for entity in records {
