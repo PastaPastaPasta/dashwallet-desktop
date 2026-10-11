@@ -4,7 +4,7 @@
 //! [`repair`] resolves a step as Repair does. A resolved step's view is set
 //! through [`Views`] only where the ledger's rules are the subject.
 
-use super::r8::{reopen, start, unlanded};
+use super::r8::{Marker, reopen, start, unlanded};
 use super::*;
 use crate::platform::lease::mode_b::FundingStepView;
 use crate::platform::registration_ledger::test_views::Views;
@@ -52,71 +52,68 @@ fn lock_on_a_coin(f: &Fixture, lib: &Fake) {
 /// sent and then recorded ChainLocked. P2b reads the step `NotSent`, its
 /// signed locks tombstoned.
 fn repair(f: &Fixture, draft: i64) {
+    f.engine.block_on(repair_on(&f.session, f.wallet, draft));
+}
+
+async fn repair_on(s: &Arc<NetworkSession>, wallet_id: WalletId, draft: i64) {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
     use key_wallet::managed_account::transaction_record::{
         InputDetail, TransactionDirection, TransactionRecord,
     };
     use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
-    let (s, step) = (&f.session, flow::funding_step(draft));
-    let spend = f
-        .engine
-        .block_on(s.stuck_funding_draft(f.wallet, &step))
-        .unwrap();
+    let step = flow::funding_step(draft);
+    let spend = s.stuck_funding_draft(wallet_id, &step).await.unwrap();
     let seam = Arc::new(SelfSpendSeam::default());
     *spend.broadcaster.lock().unwrap() = Some(seam.clone());
     let grant = (s.vault())
         .authorize(
             GrantPurpose::Spend { max_duffs: 10_000 },
-            Some(&f.wallet.0),
+            Some(&wallet_id.0),
             Credential::None,
         )
         .unwrap()
         .id;
-    f.engine
-        .block_on(s.send_self_spend(&spend, &step, grant))
-        .unwrap();
+    s.send_self_spend(&spend, &step, grant).await.unwrap();
     let tx = seam
         .0
         .lock()
         .unwrap()
         .take()
         .expect("the self-spend was sent");
-    let wallet = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
-    f.engine.block_on(async {
-        let address = (wallet.core())
-            .next_receive_address_for_account(0)
-            .await
-            .unwrap();
-        let record = TransactionRecord::new(
-            tx,
-            AccountType::Standard {
-                index: 0,
-                standard_account_type: StandardAccountType::BIP44Account,
-            },
-            TransactionContext::InChainLockedBlock(BlockInfo::new(
-                2,
-                dashcore::BlockHash::all_zeros(),
-                0,
-            )),
-            TransactionType::Standard,
-            TransactionDirection::Internal,
-            vec![InputDetail {
-                index: 0,
-                value: COIN,
-                address,
-            }],
-            Vec::new(),
+    let wallet = s.wallet(&wallet_id).await.unwrap();
+    let address = (wallet.core())
+        .next_receive_address_for_account(0)
+        .await
+        .unwrap();
+    let record = TransactionRecord::new(
+        tx,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InChainLockedBlock(BlockInfo::new(
+            2,
+            dashcore::BlockHash::all_zeros(),
             0,
-        );
-        (wallet.state_mut().await.core_wallet.accounts)
-            .standard_bip44_accounts
-            .get_mut(&0)
-            .expect("BIP44 account 0")
-            .transactions_mut()
-            .insert(record.txid, record);
-    });
-    assert!(f.engine.block_on(s.leases.refresh_funding(f.wallet)));
+        )),
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        vec![InputDetail {
+            index: 0,
+            value: COIN,
+            address,
+        }],
+        Vec::new(),
+        0,
+    );
+    (wallet.state_mut().await.core_wallet.accounts)
+        .standard_bip44_accounts
+        .get_mut(&0)
+        .expect("BIP44 account 0")
+        .transactions_mut()
+        .insert(record.txid, record);
+    assert!(s.leases.refresh_funding(wallet_id).await);
 }
 
 /// Gives `draft` (at `KeysPrepared`) the outpoint `lock` at `FundingSent`,
@@ -552,30 +549,30 @@ fn c4_a_tombstoned_step_does_not_contest_an_unattributed_lock() {
     assert_eq!(f.row(a).error.as_deref(), Some(funding_cancelled()));
 }
 
-/// Item 1's flagged variant, C5: R8-01's lost record under a schema-6
-/// flagged marker reads `NotSent` after the reopen; nothing more is funded,
-/// and A closes `Cancelled(funding_cancelled)` (Q14), so discard and a new
-/// start are allowed.
+/// Item 1's flagged variant under P2b r6: R8-01's lost record under a
+/// flagged marker whose call released its funding signature reads
+/// `MaybeSent` after the reopen (E0-04 §2a.7: a lock may have been sent
+/// with no store of it), so the step stays `Unknown`: A is `Awaiting`
+/// (`FundingUnknown`), discard and a new start are refused, and nothing
+/// more is funded. (C5's `NotSent` needs no release: `r8_01_pa2`.)
 #[test]
-fn r8_01_a_flagged_marker_without_a_record_closes_its_row() {
+fn r8_01_a_released_marker_without_a_record_stays_unknown() {
     let mut f = fixture(false);
-    let (draft, _) = unlanded(&mut f, true);
-    let steps = f
-        .session
-        .leases
-        .registration_funding_steps(f.wallet)
-        .unwrap();
-    assert_eq!(
-        (steps[0].status, steps[0].durable_record),
-        (Some(DispatchState::NotSent), true)
-    );
+    let (draft, _) = unlanded(&mut f, Marker::Released);
     let lib = f.fake();
     f.drive(&lib, draft, Some(f.lease()), false);
-    assert_eq!(f.row(draft).error.as_deref(), Some(funding_cancelled()));
-    assert!(!f.status(&lib, draft).funds_committed);
+    let status = f.status(&lib, draft);
+    assert!(status.funds_committed);
+    assert_eq!(status.waiting, Some(RegistrationWait::FundingUnknown));
     assert_eq!(lib.counts().0, 0);
-    f.discard(&lib, draft).unwrap();
-    assert!(start(&f, &lib).is_ok());
+    assert_eq!(
+        f.discard(&lib, draft).unwrap_err().code(),
+        "invalid_argument"
+    );
+    assert!(matches!(
+        start(&f, &lib),
+        Err(RegistrationError::InProgress { draft: d }) if d == draft.to_string()
+    ));
 }
 
 /// Item 2, OD-02, the part this build runs: an unflagged marker with no
@@ -586,7 +583,7 @@ fn r8_01_a_flagged_marker_without_a_record_closes_its_row() {
 #[test]
 fn od_02_an_unflagged_recordless_marker_stays_unknown() {
     let mut f = fixture(false);
-    let (draft, _) = unlanded(&mut f, false);
+    let (draft, _) = unlanded(&mut f, Marker::Unflagged);
     let steps = f
         .session
         .leases
@@ -1146,4 +1143,43 @@ fn d15_a_closed_signer_stays_closed_after_its_holder_is_discarded() {
     );
     resume_refused(&f, &lib, a2);
     assert!(start(&f, &lib).is_ok());
+}
+
+/// §3.2 `cancelled(S)` after the call: Repair resolves A's step after the
+/// call's permit ended and before the flow reads its ledger (Repair refuses
+/// only while the call runs). The call reports a rejection (`NotSent`),
+/// which alone would make the row retryable (H12); the flow reads the step
+/// cancelled instead, never funds again, and its next step closes A
+/// `Cancelled(funding_cancelled)`.
+#[test]
+fn a_step_repaired_after_its_call_closes_the_row() {
+    let f = fixture(false);
+    let fake = f.fake();
+    fake.w().fund_script = Some(FundScript::Rejected);
+    fake.w().proof_arrives = false;
+    lock_on_a_coin(&f, &fake);
+    let a = f.insert(core_row(PLAIN));
+    let lib = Hooked::new(&fake);
+    let (session, wallet, called) = (Arc::clone(&f.session), f.wallet, Arc::clone(&fake));
+    *lib.before_locks.lock().unwrap() = Some(Box::new(move || {
+        if called.counts().0 == 0 {
+            return false;
+        }
+        // Repair, on a thread of its own: this hook runs inside the
+        // flow's read.
+        let (handle, session) = (tokio::runtime::Handle::current(), Arc::clone(&session));
+        std::thread::spawn(move || handle.block_on(repair_on(&session, wallet, a)))
+            .join()
+            .unwrap();
+        true
+    }));
+    run_once(&f, &lib, a).unwrap();
+    let row = f.row(a);
+    assert_eq!(
+        (flow::outpoint_of(&row), row.error.as_deref(), row.retryable),
+        (None, Some(funding_cancelled()), false)
+    );
+    assert!(!f.status(&fake, a).funds_committed);
+    assert_eq!(fake.counts().0, 1, "a cancelled step was called again");
+    assert!(start(&f, &fake).is_ok());
 }

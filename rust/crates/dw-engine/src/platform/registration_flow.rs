@@ -1930,11 +1930,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         if ledger.claim_of(row.id) != StepClaim::None {
             return self.maybe_sent().await;
         }
-        // `cancelled(S)` (§3.2): Repair resolved the step under the call
-        // (P2b refused it `StepCancelled`), or its flagged marker stands
-        // with nothing signed recorded, so nothing was sent (C5). It is
-        // never called again whatever the call returned; the next step,
-        // the call over, closes the row (§3.3 row 8).
+        // `cancelled(S)` (§3.2): Repair resolved the step once its call's
+        // permit ended (Repair refuses while it runs), or P2b refused the
+        // call `StepCancelled`. It is never called again whatever the call
+        // returned (a rejection alone would make the row retryable, H12);
+        // the next step, the call over, closes the row (§3.3 row 8).
         if ledger.step_cancelled(row.id) {
             return Ok(Step::Again);
         }
@@ -2729,6 +2729,12 @@ impl RegistrationLib for PwLib {
     ) -> Result<String, PlatformError> {
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
         let identity_signer = lease.identity_signer(&[identity_index])?;
+        // Uncounted, and no funding release recorded (E0-04 §2a.7): this
+        // call builds no lock. The library resumes the tracked one, which
+        // `create_identity` passes only with a proof, so nothing is sent,
+        // and the funding key signs only the transition's asset lock proof
+        // (the credit output's key). The step's status rests on that lock's
+        // own signed record, which no signature here can contradict.
         let funding_signer = lease.uncounted_funding_signer()?;
         let keys = super::keys_policy::derive_keys(
             identity_signer.vault_signer(),

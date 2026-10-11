@@ -561,12 +561,12 @@ fn run_once(f: &Fixture, lib: &impl RegistrationLib, draft: i64) -> Result<(), P
 /// error and the flow's read, at index 0 (where a proved lock's index says
 /// nothing), and its outpoint never reached the row. With P2b's signed
 /// record the row takes it after the call, and the registration ends.
-/// Without one (the record never written: the fake breaks PA-2) it used to
-/// wedge (DP1-02 §10 R8-01: `Unknown`, the lock `Contested`, new starts
-/// waiting). PA-2 closes it: P2b reads the flagged step `NotSent`, so it
-/// is cancelled and the row closes `Cancelled(funding_cancelled)`; the lock
-/// goes to one recovery row, never to the closed one (D15), and new starts
-/// are allowed.
+/// Without one (the record never written: the fake breaks PA-2, as no
+/// stored lock can) the call released its funding signature, so P2b r6
+/// reads the step `MaybeSent` (E0-04 §2a.7): the safe reading, `Unknown`.
+/// The row fails `broadcast_unknown` and waits `FundingUnknown`, the lock
+/// is `Contested` (no row takes it), new starts wait, and nothing is funded
+/// again.
 #[test]
 fn review_r6_own_lock_proof_race_must_not_wedge() {
     for unsigned in [false, true] {
@@ -587,10 +587,7 @@ fn review_r6_own_lock_proof_race_must_not_wedge() {
             false => assert_eq!(flow::outpoint_of(&after_call), Some(lock)),
             true => assert_eq!(
                 (flow::outpoint_of(&after_call), after_call.error.as_deref()),
-                (
-                    None,
-                    Some(crate::platform::registration_ledger::funding_cancelled())
-                )
+                (None, Some("platform.broadcast_unknown"))
             ),
         }
         let report = f
@@ -603,8 +600,7 @@ fn review_r6_own_lock_proof_race_must_not_wedge() {
             ))
             .unwrap();
         let original = f.row(draft);
-        let rows = if unsigned { 2 } else { 1 };
-        assert_eq!(f.rows().len(), rows, "{report:?}");
+        assert_eq!(f.rows().len(), 1, "{report:?}");
         let start = f.engine.block_on(registration::start(
             &f.session,
             f.wallet,
@@ -614,10 +610,16 @@ fn review_r6_own_lock_proof_race_must_not_wedge() {
         ));
         if unsigned {
             assert_eq!(flow::outpoint_of(&original), None);
-            let holders = held_by(&f, lock);
-            assert_eq!(holders.len(), 1, "{:?}", f.rows());
-            assert_ne!(holders, [draft]);
-            assert!(start.is_ok(), "the wallet stayed blocked: {start:?}");
+            assert!(held_by(&f, lock).is_empty(), "{:?}", f.rows());
+            assert!(report.still_pending > 0, "{report:?}");
+            assert_eq!(
+                f.status(&fake, draft).waiting,
+                Some(RegistrationWait::FundingUnknown)
+            );
+            assert!(
+                matches!(start, Err(RegistrationError::InProgress { draft: ref d }) if *d == draft.to_string()),
+                "{start:?}"
+            );
             assert_eq!(fake.counts().0, 1);
             continue;
         }

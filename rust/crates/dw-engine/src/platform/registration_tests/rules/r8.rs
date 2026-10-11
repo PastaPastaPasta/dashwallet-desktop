@@ -10,20 +10,36 @@ pub(super) fn reopen(f: &mut Fixture) {
     reopen_with(f, None);
 }
 
+/// How R8-01's lost record leaves the step's marker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Marker {
+    /// An older build's marker, which never had PA-2's guarantee: `Unknown`
+    /// (OD-02).
+    Unflagged,
+    /// A flagged marker whose call released its funding signature (P2b's
+    /// `funding_release` row, schema 7): a lock may have been sent with no
+    /// store of it, so `MaybeSent` for good (E0-04 §2a.7, P2b r6 R6-01).
+    Released,
+    /// A flagged marker with no release, as a kill before the call's first
+    /// signature leaves it: nothing was signed, so `NotSent` (C5).
+    Unreleased,
+}
+
 /// Sol r8 R8-01's state: a funding call signed its lock, the row's outpoint
 /// record failed, the process restarted, and the step's `signed_lock`
 /// record is gone. PA-2 now stops the process before a lock is sent
-/// without its record, so the journal is rewritten to what is left: with
-/// `flagged`, a schema-6 marker (the process stopped before the record, so
-/// nothing was sent: P2b reads it `NotSent`, C5); without, an older build's
-/// marker, which never had that guarantee: `Unknown` (OD-02).
-pub(super) fn unlanded(f: &mut Fixture, flagged: bool) -> (i64, OutPoint) {
+/// without its record, so the journal is rewritten to what `marker` says
+/// is left.
+pub(super) fn unlanded(f: &mut Fixture, marker: Marker) -> (i64, OutPoint) {
     let (_, draft, original) = lock_record_failed(f);
     let conn = rusqlite::Connection::open(f.session.data_dir().join("dispatch.sqlite")).unwrap();
     conn.execute_batch("DELETE FROM signed_lock;").unwrap();
-    if !flagged {
-        conn.execute_batch("UPDATE funding_marker SET durable_record = 0;")
-            .unwrap();
+    match marker {
+        Marker::Unflagged => conn
+            .execute_batch("UPDATE funding_marker SET durable_record = 0;")
+            .unwrap(),
+        Marker::Released => {}
+        Marker::Unreleased => conn.execute_batch("DELETE FROM funding_release;").unwrap(),
     }
     drop(conn);
     reopen(f);
@@ -32,7 +48,7 @@ pub(super) fn unlanded(f: &mut Fixture, flagged: bool) -> (i64, OutPoint) {
         .leases
         .registration_funding_steps(f.wallet)
         .unwrap();
-    let status = if flagged {
+    let status = if marker == Marker::Unreleased {
         DispatchState::NotSent
     } else {
         DispatchState::MaybeSent
@@ -45,7 +61,7 @@ pub(super) fn unlanded(f: &mut Fixture, flagged: bool) -> (i64, OutPoint) {
             steps[0].signed.len(),
             steps[0].durable_record
         ),
-        (draft, Some(status), 0, flagged)
+        (draft, Some(status), 0, marker != Marker::Unflagged)
     );
     (draft, original)
 }
@@ -67,7 +83,7 @@ pub(super) fn start(f: &Fixture, lib: &Arc<Fake>) -> Result<String, Registration
 #[test]
 fn r8_01a_an_unknown_step_blocks_discard_a_second_start_and_a_second_build() {
     let mut f = fixture(false);
-    let (draft, _) = unlanded(&mut f, false);
+    let (draft, _) = unlanded(&mut f, Marker::Unflagged);
     // The restart lost the unpersisted lock too.
     let lib = f.fake();
     let status = f.status(&lib, draft);
@@ -98,7 +114,7 @@ fn r8_01a_an_unknown_step_blocks_discard_a_second_start_and_a_second_build() {
 #[test]
 fn r8_01b_an_unknown_step_contests_the_locks_finish_could_substitute() {
     let mut f = fixture(false);
-    let (draft, original) = unlanded(&mut f, false);
+    let (draft, original) = unlanded(&mut f, Marker::Unflagged);
     let lib = f.fake();
     let other = OutPoint::new(Txid::from_byte_array([99; 32]), 0);
     lib.w()
@@ -119,15 +135,15 @@ fn r8_01b_an_unknown_step_contests_the_locks_finish_could_substitute() {
     assert_eq!(f.rows().len(), 1, "a recovery row for a contested lock");
 }
 
-/// PA-2 (§9, §13): P2b reads a flagged marked step with no signed record
-/// and no running call `NotSent`, so R8-01's step is no longer `Unknown`:
-/// it is cancelled and the row closes `Cancelled(funding_cancelled)` (C5,
+/// PA-2 (§9, §13): P2b reads a flagged marked step with no release, no
+/// signed record and no running call `NotSent` (a kill before the call's
+/// first signature), so the step is not `Unknown`: it is cancelled and the row closes `Cancelled(funding_cancelled)` (C5,
 /// Q14). A lock at its index back from the chain is `Free`, and the closed
 /// row takes none (D15): it goes to a recovery row.
 #[test]
 fn r8_01_pa2_resolves_an_unknown_step() {
     let mut f = fixture(false);
-    let (draft, original) = unlanded(&mut f, true);
+    let (draft, original) = unlanded(&mut f, Marker::Unreleased);
     assert_eq!(
         f.session
             .leases
@@ -345,7 +361,7 @@ fn a_copy_with_another_funding_key_does_not_inherit_an_orphan_step() {
                 .await
                 .unwrap();
             permit.funding_signer().unwrap();
-            permit.signatures().note_signed(sighash);
+            permit.note_signed(sighash);
             f.session.leases.record_signed_locks(
                 f.wallet,
                 &[StoredLock {

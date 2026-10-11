@@ -628,7 +628,7 @@ impl RegistrationLib for Fake {
             }
             FundScript::LostUntracked => {
                 // Signed, then lost with the wallet closing under the call.
-                permit.signatures().note_signed([0xfe; 32]);
+                permit.note_signed([0xfe; 32]);
                 return Err(FundError::Failed(PlatformError::Unavailable));
             }
             _ => {}
@@ -638,7 +638,7 @@ impl RegistrationLib for Fake {
         // the persister takes it, then the tap reports it.
         let outpoint = self.lock_at(index, LockStatus::Built);
         let sighash = outpoint.txid.to_byte_array();
-        permit.signatures().note_signed(sighash);
+        permit.note_signed(sighash);
         if !self.w().skip_signed {
             let session = self.session.upgrade().expect("the fixture's session");
             session.leases.record_signed_locks(
@@ -1480,14 +1480,15 @@ fn funding_failures_follow_the_tracked_row() {
 }
 
 /// A funding call that signed and failed before the library stored its
-/// lock (the wallet closing under the call): under PA-2 the library sends
-/// no lock before its record, so the step's flagged marker, with nothing
-/// signed recorded, reads `NotSent` and the step is cancelled (C5). The
-/// row closes `Cancelled(funding_cancelled)`, never `broadcast_unknown`:
-/// nothing is committed, discard and a new registration are allowed, and
-/// a lock at its index later is no longer the row's (D15).
+/// lock (the wallet closing under the call): its funding signature was
+/// released, so P2b's `funding_release` row stands and, with no lock
+/// recorded, the step reads `MaybeSent` (E0-04 §2a.7, P2b r6 R6-01): a lock
+/// may have reached a broadcaster no store of it passed. The row waits
+/// `FundingUnknown`, its funds committed: discard and a new registration
+/// are refused, the step is never called again, and a lock at its index
+/// later is no row's (`Contested`).
 #[test]
-fn a_signature_lost_before_its_store_cancels_the_step() {
+fn a_signature_lost_before_its_store_leaves_the_step_maybe_sent() {
     let f = fixture(false);
     let lib = f.fake();
     lib.w().fund_script = Some(FundScript::LostUntracked);
@@ -1508,24 +1509,22 @@ fn a_signature_lost_before_its_store_cancels_the_step() {
             .collect::<Vec<_>>(),
         vec![(
             draft,
-            Some(crate::platform::DispatchState::NotSent),
+            Some(crate::platform::DispatchState::MaybeSent),
             0,
             true
         )]
     );
     let row = f.row(draft);
     assert_eq!(phase(&row), Phase::KeysPrepared);
-    assert_eq!(
-        (row.error.as_deref(), row.retryable),
-        (Some("registration.funding_cancelled"), false)
-    );
     let index = row.identity_index.unwrap();
     assert_eq!(index, 1);
-    assert!(!f.status(&lib, draft).funds_committed);
-    assert_eq!(lib.counts(), (1, 0), "the cancelled step was called again");
+    let status = f.status(&lib, draft);
+    assert!(status.funds_committed);
+    assert_eq!(status.waiting, Some(RegistrationWait::FundingUnknown));
+    assert_eq!(lib.counts(), (1, 0), "the step was called again");
 
-    // A lock shows up at the index (a restore's reconstruction): the
-    // closed row takes none, through the tap or "Finish transfers".
+    // A lock shows up at the index (a restore's reconstruction): it may be
+    // the call's or another device's, so the row takes none.
     let lock = lib.lock_at(index, LockStatus::ChainLocked);
     let moved = flow::lock_tracked(
         &f.session.platform.registrations,
@@ -1536,7 +1535,8 @@ fn a_signature_lost_before_its_store_cancels_the_step() {
     )
     .unwrap();
     assert_ne!(moved, Some(draft));
-    f.engine
+    let report = f
+        .engine
         .block_on(registration::finish(
             &f.session,
             f.wallet,
@@ -1544,17 +1544,24 @@ fn a_signature_lost_before_its_store_cancels_the_step() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
+    assert!(report.still_pending > 0, "{report:?}");
     assert_eq!(flow::outpoint_of(&f.row(draft)), None);
-    f.discard(&lib, draft).unwrap();
-    f.engine
-        .block_on(registration::start(
-            &f.session,
-            f.wallet,
-            Arc::clone(&lib),
-            request("erin2"),
-            f.grant(COIN, 10 * COIN * 1000, Credential::None),
-        ))
-        .unwrap();
+    assert_eq!(lib.counts(), (1, 0), "the step was called again");
+    assert_eq!(
+        f.discard(&lib, draft).unwrap_err().code(),
+        "invalid_argument"
+    );
+    let started = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        request("erin2"),
+        f.grant(COIN, 10 * COIN * 1000, Credential::None),
+    ));
+    assert!(
+        matches!(started, Err(RegistrationError::InProgress { draft: ref d }) if *d == draft.to_string()),
+        "{started:?}"
+    );
 }
 
 #[test]
@@ -1787,7 +1794,7 @@ fn the_proof_wait_resends_no_lock_before_its_record_is_durable() {
         .unwrap();
     // As `Fake::fund` signs: the lock's sighash is its txid's bytes.
     let sighash = lock.txid.to_byte_array();
-    call.signatures().note_signed(sighash);
+    call.note_signed(sighash);
     f.drive(&lib, draft, None, false);
     assert!(lib.w().waits.is_empty(), "sent again before its record");
     f.session.leases.record_signed_locks(
@@ -2770,7 +2777,7 @@ fn a_tapped_built_lock_frees_the_fence_before_its_call_returns() {
     f.engine.block_on(async {
         let call = permit(&lib, &lease, draft, 0).await.unwrap();
         // The call's funding signer released a signature.
-        call.signatures().note_signed([0xe3; 32]);
+        call.note_signed([0xe3; 32]);
         // The persister's `note_signed` records it as the step's own
         // before the store (§2a.6): the tap gives a calling row only its
         // own lock (DP1-02 §3.4).
