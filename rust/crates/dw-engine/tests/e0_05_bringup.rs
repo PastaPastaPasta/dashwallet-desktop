@@ -6,7 +6,7 @@
 use std::net::TcpListener;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dw_engine::{
@@ -27,6 +27,20 @@ const PASSPHRASE: &[u8] = b"correct horse battery staple";
 const RESTORE_BUDGET: Duration = Duration::from_secs(20);
 /// The acceptance bound past the budget for SPV's start (ROADMAP E0-05).
 const SPV_SLACK: Duration = Duration::from_secs(1);
+
+/// Held by every test for its whole run. The tests assert wall-clock bounds
+/// (SPV starts within the budget + 1 s, ROADMAP E0-05), and a bring-up that
+/// competes with the other tests' bring-ups for CPU misses them on a loaded
+/// machine, so the file's tests run one at a time whatever the caller's
+/// `--test-threads`. A failing test poisons the lock; the next one takes it
+/// anyway.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Events with the instant they arrived.
 #[derive(Default)]
@@ -195,6 +209,7 @@ impl Fixture {
 /// budget + 1 s; then the loops run.
 #[test]
 fn start_spv_returns_at_once_and_spv_starts_after_the_bring_up() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let id = f.create_wallet();
     let (took, called) = f.start_spv();
@@ -279,6 +294,7 @@ fn start_spv_returns_at_once_and_spv_starts_after_the_bring_up() {
 /// within budget + 1 s.
 #[test]
 fn a_restored_wallet_gets_the_full_budget() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let id = f.import(ABANDON_12);
     let (took, called) = f.start_spv();
@@ -303,6 +319,7 @@ fn a_restored_wallet_gets_the_full_budget() {
 /// marker removed, and the databases free to open again.
 #[test]
 fn closing_during_the_bring_up_is_clean() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let id = f.import(ABANDON_12);
     f.start_spv();
@@ -360,6 +377,7 @@ fn closing_during_the_bring_up_is_clean() {
 /// again.
 #[test]
 fn stop_spv_cancels_the_bring_up() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let id = f.import(ABANDON_12);
     f.start_spv();
@@ -390,6 +408,7 @@ fn stop_spv_cancels_the_bring_up() {
 /// it again with keys.
 #[test]
 fn a_locked_vault_defers_the_bring_up_to_the_unlock() {
+    let _serial = serial();
     let f = Fixture::new(true);
     let id = f.create_wallet();
     f.session.lock_vault_sync().unwrap();
@@ -430,6 +449,7 @@ fn a_locked_vault_defers_the_bring_up_to_the_unlock() {
 /// lock) and SPV starts right away.
 #[test]
 fn a_lock_drops_a_running_bring_up() {
+    let _serial = serial();
     let f = Fixture::new(true);
     let id = f.import(ABANDON_12);
     let (_, called) = f.start_spv();
@@ -457,6 +477,7 @@ fn a_lock_drops_a_running_bring_up() {
 /// for.
 #[test]
 fn a_watch_only_wallet_is_read_only() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let secret = dw_vault::mnemonic::derive_secret(ABANDON_12.as_bytes(), b"", false).unwrap();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
@@ -490,6 +511,7 @@ fn a_watch_only_wallet_is_read_only() {
 /// A wallet added while SPV runs gets its bring-up without holding SPV.
 #[test]
 fn a_wallet_added_while_running_is_brought_up() {
+    let _serial = serial();
     let f = Fixture::new(false);
     f.start_spv();
     f.rec
@@ -510,6 +532,7 @@ fn a_wallet_added_while_running_is_brought_up() {
 /// resolved): SPV starts at once instead of after the budget.
 #[test]
 fn removing_a_wallet_ends_its_bring_up() {
+    let _serial = serial();
     let f = Fixture::new(false);
     let id = f.import(ABANDON_12);
     let (_, called) = f.start_spv();
@@ -625,6 +648,7 @@ fn held_key_read() -> (Fixture, Arc<BarrierStore>, WalletId) {
 /// paused.
 #[test]
 fn close_waits_for_a_bring_up_key_read() {
+    let _serial = serial();
     let (f, store, _) = held_key_read();
     f.start_spv();
     store.wait_entered();
@@ -656,6 +680,7 @@ fn close_waits_for_a_bring_up_key_read() {
 /// M2 for `stop_spv`: it returns only once the key read has ended.
 #[test]
 fn stop_spv_waits_for_a_bring_up_key_read() {
+    let _serial = serial();
     let (f, store, _) = held_key_read();
     f.start_spv();
     store.wait_entered();
@@ -682,6 +707,7 @@ fn stop_spv_waits_for_a_bring_up_key_read() {
 /// unclean, so the open-session marker stays.
 #[test]
 fn close_reports_a_key_read_it_could_not_wait_for() {
+    let _serial = serial();
     let (f, store, _) = held_key_read();
     f.start_spv();
     store.wait_entered();
@@ -717,6 +743,7 @@ fn close_reports_a_key_read_it_could_not_wait_for() {
 /// as the read was held.
 #[test]
 fn a_held_key_read_does_not_hold_spv_past_the_budget() {
+    let _serial = serial();
     let (f, store, id) = held_key_read();
     let (_, called) = f.start_spv();
     store.wait_entered();
