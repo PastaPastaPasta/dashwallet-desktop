@@ -1,0 +1,16 @@
+build+bundle: 159 s; bundle 34591888 bytes
+            ID: org.dash.wallet.desktop.CrossUI
+           Ref: app/org.dash.wallet.desktop.CrossUI/x86_64/master
+          Arch: x86_64
+        Branch: master
+        Origin: crossui-origin
+    Collection: 
+  Installation: system
+     Installed: 138.5?MB
+       Runtime: org.gnome.Platform/x86_64/47
+           Sdk: org.gnome.Sdk/x86_64/47
+  
+        Commit: 826c2be0b172c6a39ba2f8a0c7b991e4bac4c399659ca5a0821a97c80d98830b
+       Subject: Export org.dash.wallet.desktop.CrossUI
+          Date: 2026-10-11 03:48:08 +0000
+launch: ok (overview-paint)

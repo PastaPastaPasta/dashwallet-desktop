@@ -1,0 +1,380 @@
+{
+ "uptimeStart": "5.44 4.55 3.65",
+ "u5-start": {
+  "seconds": {
+   "demo-first-paint": {
+    "n": 10,
+    "min": 0.342,
+    "median": 0.346,
+    "p95": 1.352,
+    "max": 1.352
+   },
+   "demo-overview-paint": {
+    "n": 10,
+    "min": 1.504,
+    "median": 1.529,
+    "p95": 3.198,
+    "max": 3.198
+   },
+   "live-lock-paint": {
+    "n": 10,
+    "min": 3.94,
+    "median": 3.95,
+    "p95": 4.277,
+    "max": 4.277
+   },
+   "live-unlock-to-overview": {
+    "n": 10,
+    "min": 1.452,
+    "median": 1.457,
+    "p95": 1.531,
+    "max": 1.531
+   }
+  },
+  "raw": {
+   "demo-first-paint": [
+    1.352158794999923,
+    0.35817907500040747,
+    0.34880578199999945,
+    0.3455796650000593,
+    0.3520247940000445,
+    0.34687342699999135,
+    0.3442728589998296,
+    0.3427470930000709,
+    0.3426715270002205,
+    0.3423933369999759
+   ],
+   "demo-overview-paint": [
+    3.198418794999725,
+    1.5846000750002531,
+    1.5449697819999528,
+    1.5459196649999285,
+    1.5361207939999986,
+    1.522504427000058,
+    1.511405859000206,
+    1.503849093000099,
+    1.5224405270000716,
+    1.5063433370000894
+   ],
+   "live-lock-paint": [
+    4.277026844999909,
+    4.012384315999952,
+    3.9438513279997096,
+    3.952280815999984,
+    3.9482094009999855,
+    3.939710734000073,
+    3.9437422550004158,
+    3.9516203180000957,
+    3.940504085000157,
+    3.990445302000353
+   ],
+   "live-unlock-to-overview": [
+    1.531144999999924,
+    1.4602340000001277,
+    1.4542019999998956,
+    1.456485000000157,
+    1.4521230000000287,
+    1.4558360000000903,
+    1.4572920000000522,
+    1.4677019999999175,
+    1.4525770000000193,
+    1.4655179999999746
+   ]
+  },
+  "cpuSeconds": {
+   "demo-first-paint": {
+    "n": 10,
+    "min": 0.354,
+    "median": 0.359,
+    "p95": 1.068,
+    "max": 1.068
+   },
+   "demo-overview-paint": {
+    "n": 10,
+    "min": 1.516,
+    "median": 1.542,
+    "p95": 2.902,
+    "max": 2.902
+   },
+   "live-lock-paint": {
+    "n": 10,
+    "min": 3.658,
+    "median": 3.681,
+    "p95": 4.073,
+    "max": 4.073
+   }
+  },
+  "closeToExitSeconds": [
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26,
+   0.03,
+   0.26
+  ],
+  "uptime": "2.09 3.71 3.42"
+ },
+ "uptimeEnd": "0.01 0.16 0.87",
+ "u5-history": {
+  "totalMs": {
+   "n": 15,
+   "min": 4057.856,
+   "median": 7482.443,
+   "p95": 21597.681,
+   "max": 21597.681
+  },
+  "ffiMs200": {
+   "n": 15,
+   "min": 100.297,
+   "median": 100.38,
+   "p95": 150.735,
+   "max": 150.735
+  },
+  "ffiMs1": {
+   "n": 15,
+   "min": 100.308,
+   "median": 100.376,
+   "p95": 150.549,
+   "max": 150.549
+  },
+  "cpuMs200": {
+   "n": 15,
+   "min": 4040.391,
+   "median": 7509.321,
+   "p95": 21658.277,
+   "max": 21658.277
+  },
+  "cpuMs1": {
+   "n": 15,
+   "min": 86.503,
+   "median": 87.709,
+   "p95": 107.033,
+   "max": 107.033
+  },
+  "raw": {
+   "totalMs": [
+    4082.105,
+    5352.63,
+    7482.443,
+    11949.044,
+    21597.681,
+    4108.704,
+    5687.217,
+    7969.256,
+    10057.008,
+    20512.967,
+    4057.856,
+    5260.675,
+    7198.497,
+    10195.637,
+    14169.438
+   ],
+   "ffiMs200": [
+    100.594,
+    100.43,
+    100.336,
+    100.314,
+    104.116,
+    100.599,
+    100.468,
+    100.313,
+    100.297,
+    103.783,
+    150.735,
+    100.3,
+    100.38,
+    100.318,
+    100.299
+   ],
+   "ffiMs1": [
+    100.36,
+    100.361,
+    100.363,
+    100.401,
+    100.376,
+    150.549,
+    100.329,
+    100.385,
+    100.359,
+    100.383,
+    100.308,
+    100.359,
+    100.395,
+    100.393,
+    100.396
+   ]
+  },
+  "uptime": "0.78 1.89 2.70"
+ },
+ "u5-pss": {
+  "demo": [
+   {
+    "Rss": 287.3,
+    "Pss": 260.0,
+    "Pss_Anon": 161.8,
+    "Pss_File": 94.7
+   },
+   {
+    "Rss": 285.6,
+    "Pss": 258.5,
+    "Pss_Anon": 160.5,
+    "Pss_File": 94.6
+   },
+   {
+    "Rss": 292.9,
+    "Pss": 265.6,
+    "Pss_Anon": 167.3,
+    "Pss_File": 94.8
+   }
+  ],
+  "samples": [
+   {
+    "overview": {
+     "Rss": 564.4,
+     "Pss": 536.6,
+     "Pss_Anon": 406.4,
+     "Pss_File": 126.6
+    },
+    "transactions": {
+     "Rss": 910.0,
+     "Pss": 882.2,
+     "Pss_Anon": 752.1,
+     "Pss_File": 126.6
+    },
+    "idleCpuPercent": 0.4
+   },
+   {
+    "overview": {
+     "Rss": 536.2,
+     "Pss": 508.4,
+     "Pss_Anon": 378.2,
+     "Pss_File": 126.6
+    },
+    "transactions": {
+     "Rss": 874.2,
+     "Pss": 846.3,
+     "Pss_Anon": 716.1,
+     "Pss_File": 126.7
+    },
+    "idleCpuPercent": 0.3
+   },
+   {
+    "overview": {
+     "Rss": 571.7,
+     "Pss": 543.9,
+     "Pss_Anon": 413.7,
+     "Pss_File": 126.7
+    },
+    "transactions": {
+     "Rss": 909.8,
+     "Pss": 882.0,
+     "Pss_Anon": 751.8,
+     "Pss_File": 126.7
+    },
+    "idleCpuPercent": 0.3
+   }
+  ],
+  "idleSeconds": 30,
+  "uptime": "0.20 0.44 1.54"
+ },
+ "u1": {
+  "balanceDuffs": 20601436392896,
+  "shownBalance": [
+   "206\u2009014.36392896",
+   "206\u2009014.36392896",
+   "206\u2009014.36392896"
+  ],
+  "appRows": 200,
+  "dwcliRows": 200,
+  "mismatches": []
+ },
+ "u3-fonts": {
+  "light": [
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+  ],
+  "dark": [
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+   "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+  ]
+ },
+ "u4-naming": {
+  "light-unlock": {
+   "nodes": 237,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-overview": {
+   "nodes": 1285,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-transactions": {
+   "nodes": 6430,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-detail": {
+   "nodes": 6732,
+   "interactive": 139,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-unlock": {
+   "nodes": 237,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-overview": {
+   "nodes": 1285,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-transactions": {
+   "nodes": 6430,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-detail": {
+   "nodes": 6732,
+   "interactive": 139,
+   "unnamed": 0,
+   "unnamedRoles": []
+  }
+ },
+ "u4-keys": {
+  "lockFocus": null,
+  "lockTabs": [],
+  "unlockNeeded": "Tab to Unlock + Space"
+ }
+}

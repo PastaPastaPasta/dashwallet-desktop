@@ -1,0 +1,22 @@
+gate-mark main 397869.954153 cpu=0.053
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 397871.137692 cpu=0.438
+gate-mark lock-paint 397889.565565 cpu=10.864
+gate-mark unlock-requested 397889.565929 cpu=10.864
+
+thread '<unnamed>' (112814) panicked at crates/dw-engine/src/platform/lease/session.rs:348:20:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+gate-mark sync-overlay-paint 397891.830029 cpu=12.562
+gate-mark sync-overlay-hide 397891.830383 cpu=12.562
+gate-mark transactions-paint 397902.714299 rows=100 cpu=23.327
+gate-mark history-render 397919.899232 limit=200 round=0 rows=200 ffiMs=660.461 renderMs=14199.084 totalMs=14859.545 cpuMs=13917.889 cpu=39.481
+gate-mark history-render 397960.254843 limit=200 round=1 rows=200 ffiMs=654.737 renderMs=31077.822 totalMs=31732.559 cpuMs=30632.991 cpu=78.239
+gate-mark history-render 398008.915905 limit=200 round=2 rows=200 ffiMs=402.307 renderMs=33193.566 totalMs=33595.873 cpuMs=32458.827 cpu=125.163
+gate-mark history-ffi 398026.869312 limit=1 round=0 ffiMs=655.597 cpuMs=303.249 cpu=142.477
+gate-mark history-ffi 398032.315124 limit=1 round=1 ffiMs=301.257 cpuMs=247.533 cpu=142.756
+gate-mark history-ffi 398038.006052 limit=1 round=2 ffiMs=554.572 cpuMs=390.711 cpu=143.178
+gate-mark history-bench-done 398038.006243 cpu=143.178
+dash-wallet: shutting the engine down
+dash-wallet: engine shut down

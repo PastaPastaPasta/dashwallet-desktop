@@ -1,0 +1,18 @@
+# History bench, GTK_A11Y unset vs GTK_A11Y=none: one launch each, 3 rounds, agentbox (perf/bench-ab.sh).
+# renderMs=timeout: the 200 rows were not drawn within 120 s; the process CPU (cpu=) at each mark compares the two.
+== a11y
+gate-mark history-render 394497.802132 limit=200 round=0 rows=200 ffiMs=541.926 renderMs=34435.975 totalMs=34977.902 cpuMs=21490.132 cpu=80.659
+gate-mark history-render 394582.504168 limit=200 round=1 rows=200 ffiMs=882.669 renderMs=timeout cpu=130.417
+gate-mark history-render 394678.676637 limit=200 round=2 rows=200 ffiMs=607.731 renderMs=timeout cpu=197.188
+gate-mark history-ffi 394708.569361 limit=1 round=0 ffiMs=453.812 cpuMs=415.757 cpu=218.000
+gate-mark history-ffi 394713.992972 limit=1 round=1 ffiMs=301.487 cpuMs=263.946 cpu=218.297
+gate-mark history-ffi 394716.964157 limit=1 round=2 ffiMs=402.357 cpuMs=366.575 cpu=219.434
+gate-mark history-bench-done 394716.964357 cpu=219.434
+== noa11y
+gate-mark history-render 394089.429694 limit=200 round=0 rows=200 ffiMs=1607.595 renderMs=timeout cpu=88.775
+gate-mark history-render 394206.413946 limit=200 round=1 rows=200 ffiMs=2403.232 renderMs=timeout cpu=139.570
+gate-mark history-render 394324.670612 limit=200 round=2 rows=200 ffiMs=552.800 renderMs=timeout cpu=203.191
+gate-mark history-ffi 394353.603492 limit=1 round=0 ffiMs=602.538 cpuMs=381.859 cpu=223.711
+gate-mark history-ffi 394359.233528 limit=1 round=1 ffiMs=502.262 cpuMs=283.069 cpu=224.026
+gate-mark history-ffi 394365.020377 limit=1 round=2 ffiMs=663.687 cpuMs=429.366 cpu=224.489
+gate-mark history-bench-done 394365.020551 cpu=224.489
