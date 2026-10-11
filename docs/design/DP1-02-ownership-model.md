@@ -73,10 +73,13 @@ StepView { draft: i64, key: FundingKey, status: Option<DispatchState>,
 | `Exact(T)` | status ∈ {WillBeSent, MaybeSent, Sent}, `signed` = T ≠ ∅ |
 | `Unknown` | status ∈ {WillBeSent, MaybeSent, Sent}, `signed` = ∅ |
 
-P2b applies OD-01 and OD-02 inside `status`. A flagged marker with no durable record and no
-running call reads `NotSent`, but stands, so F7 still vetoes its step (C5). An unflagged one
-reads `Unknown` (§8.1). So `Unknown` means one of: a call before its record, a `NotSent` write
-in flight, or an unflagged marker.
+P2b applies OD-01 and OD-02 inside `status`. A flagged marker with no `funding_release` row
+(schema 7, E0-04 §2a.7), no durable record and no running call reads `NotSent`, but stands, so
+F7 still vetoes its step (C5). One whose call released a funding signature and recorded no lock
+reads `MaybeSent` for good (P2b r6 R6-01: a lock may have reached a broadcaster no store of it
+passed), and an unflagged one reads `Unknown` (§8.1). So `Unknown` means one of: a call before
+its record, a `NotSent` write in flight, a released call with no recorded lock, or an unflagged
+marker.
 
 **C4.** P2b re-reads a resolved step `MaybeSent` while any unattributed registration row stands
 (`markerless_unattributed_row`, L-2), and `Sent` once a re-keyed row matches its key. For a
@@ -100,7 +103,7 @@ them with no rows. Today a resolved step's tombstones go; PA-3 must keep them (�
   o with an identity.
 - **`cancelled(S)`**: S is in the view and its claim is `None`. Either Repair resolved it (P2b's
   policy: a new draft, never the old step, L-2), or after a restart its flagged marker proves
-  nothing was signed but still stands (C5). S is never called again.
+  nothing was signed (no `funding_release` row) but still stands (C5). S is never called again.
 - **`calling(r)`**: r's in-call flag. `enter_funding` (`:2084`) sets it in an actor job before
   P2b marks the call, and the guard clears it after the post-call writes (`:2202`).
 - **`open(r)`**: r is readable CoreBalance, has an index, no `live` outpoint and no identity.
@@ -338,7 +341,7 @@ false, `Settled` and Done true. An `Unknown` hold reads `RegistrationWait::Fundi
 | `Awaiting`, `Exact`, lock present / consumed | the run, the tap or Finish attaches it / (a), once discovery reports the identity |
 | `Closed` or no row, `Exact`, lock present / consumed | Finish → `Recovery` → identity / settles in place |
 | `Awaiting`/`Closed`, `Exact`, lock away | it returns, or Repair → `NotSent` (P2b residual: `LockInputsSpent`) |
-| `Awaiting`, `Unknown`, `durable_record` | transient: the call ends `Exact` or `NotSent`; after a restart, `None` and the row closes (C5, §8.1) |
+| `Awaiting`, `Unknown`, `durable_record` | in a call: it ends `Exact` or `NotSent`. After it, with no release row: `None` and the row closes (C5); with one: none (§8.1, Q15) |
 | `Awaiting`, `Unknown`, unflagged marker | none (§8.1) |
 | `Contested` | freed when no `Unknown` step stands (C4 removes the persistent one) |
 | `Parked`; a `Step(S)` lock whose `row_of(S)` is unreadable | a build that reads the row (DEC-173) |
@@ -369,6 +372,14 @@ log flags it, and a fresh profile is the developer's way out. The release must s
 DP1-02 together at schema ≥ 6 (Q11); a release at 3–5 makes this a product wedge needing a user
 Release (rev1's rejected fallback). No cheaper sound exit exists: a missing record proves nothing
 for an unflagged writer, and F4 leaves Repair nothing to conflict with.
+
+**Released markers with no recorded lock (P2b r6).** A flagged marker whose call released a
+funding signature and recorded no lock reads `MaybeSent` for good (E0-04 §2a.7): the vault
+locked mid-build, the library's build failing after signing, or the wallet leaving the
+library's manager between the signing and the store. Repair refuses it (`NoKnownLock`). Its row
+is `Awaiting` like an unflagged one's, so the same wedge follows (discard and `start` refused, a
+lock at its index `Contested`), and here a shipped build can reach it. P2b's stated exit, "the
+user starts a new draft", needs `start` to pass such a step, which I6 forbids today: Q15.
 
 ## 9. P2b asks
 
@@ -424,7 +435,7 @@ for an unflagged writer, and F4 leaves Repair nothing to conflict with.
 | C2 (rev1 check) a row holds a lock that can't land | `live`, row 8, §5.2b |
 | C3 (rev1 check) a non-heir copy funds on an orphan's slot | `index_owner`'s step arm; `next_index`. By F10 a real copy at the index is the heir |
 | C4 (rev2, P2b WIP) an unattributed row retracts a resolved step; `Contested` freezes the row for ever | §3.1's tombstone claim; `StepCancelled` required |
-| C5 (rev2, P2b WIP) a flagged recordless marker reads `NotSent` but stays vetoed | `cancelled` covers it: the row closes (§8.1); Q14 |
+| C5 (rev2, P2b WIP) a flagged recordless marker reads `NotSent` but stays vetoed | `cancelled` covers it: the row closes (§8.1); Q14. P2b r6: only with no release row; a released one reads `MaybeSent` (Q15) |
 | Closure rebound (rev2 check, Sol design r2) a coded row reads `Awaiting`/`Funded` again after a restart or a holder's discard | D15: `row_of` excludes cancel-coded rows; returning value goes to `Recovery` or settles in place |
 
 ## 11. Test plan
@@ -451,8 +462,10 @@ cancel-coded row is again `row_of` (D15); and rev1's rejected rules. Run it unde
 These run in `registration_tests` with the real `LeaseTable`, dispatch and appdb SQLite, and the
 Fake library, which counts `fund` and `register_identity` calls.
 
-1. **R8-01a/b** (rev1 items 1–2). Add a schema-6 flagged-marker variant: after a reopen it reads
-   `NotSent`, nothing is funded, and A closes as `Cancelled(funding_cancelled)` (C5, Q14).
+1. **R8-01a/b** (rev1 items 1–2). Add schema-7 flagged-marker variants. With no release row,
+   after a reopen it reads `NotSent`, nothing is funded, and A closes as
+   `Cancelled(funding_cancelled)` (C5, Q14). With one, it reads `MaybeSent`: A is `Awaiting`
+   (`FundingUnknown`), discard and `start` are refused, nothing is funded (P2b r6, Q15).
 2. **OD-02.** Open the r8 probe's real pre-6 dispatch DB with the new build. A is `Awaiting`
    (`FundingUnknown`), discard and `start` are refused, nothing is funded, and T2 stays unheld.
 3. **OD-01** (P2b's test, a dependency): Sol's blocked-record resume race, zero broadcasts.
@@ -510,7 +523,8 @@ Traps: sign through the Fake's `fund` (a record needs a running call); the Fake'
 - **Q9. Route PA-3 retention across `erase_wallet` to P2b?** Without it, restoring a backup
   taken before a closure gives a `Funded` row with no end.
 - **Q10. Route `StepCancelled` to P2b as required (C4)?**
-- **Q11. Make §8.1's release order a gate?** P2b and DP1-02 ship together at schema ≥ 6.
+- **Q11. Make §8.1's release order a gate?** P2b and DP1-02 ship together at schema ≥ 6
+  (≥ 7 since P2b r6, DEC-191).
   Otherwise, rule on a Release for schema 3–5 markers.
 - **Q12. Attach waits for discovery (§5.2a).** `find_identity` gives the id, not the key index.
   The residual is an identity outside discovery's gap, which DP1-05 can't see either. Accept?
@@ -520,6 +534,12 @@ Traps: sign through the Fake's `fund` (a record needs a running call); the Fake'
 - **Q14. C5: close, or retry the same step?** Today the row closes and the user starts a new
   draft (nothing was paid). Alternatively P2b's permit supersedes a flagged marker with nothing
   signed and no running call before marking anew; then `cancelled` narrows to `dead` ≠ ∅.
+- **Q15. A released step with no recorded lock (P2b r6).** It reads `MaybeSent` for good and
+  wedges the wallet's registrations (§8.1). Either keep the wedge (fail closed: no second lock
+  while one may be out), or let `start` pass such a step: its row stays `Awaiting`, committed and
+  not discardable, a lock at its index stays `Contested`, and the new draft takes a fresh index
+  with its own exactly attributed lock, at the cost of possibly paying twice. The code keeps the
+  wedge until ruled.
 
 ## 13. Manager rulings
 
@@ -544,7 +564,7 @@ attempt doesn't resurrect them.
 
 - **Q8: approved.** The row holding a contended lock keeps the value. The signer that doesn't hold it closes as `Cancelled(funded_elsewhere)` (§5.2c).
 - **Q9, Q10: routed to P2b as required.** Tombstones survive `erase_wallet`. The funding permit refuses any step with tombstones (`StepCancelled`), and E0-04's H12 gets the matching exception.
-- **Q11: a release gate.** P2b and DP1-02 ship in the same release at dispatch schema ≥ 6. No release ships one without the other. This is recorded in the program's decision log.
+- **Q11: a release gate.** P2b and DP1-02 ship in the same release at dispatch schema ≥ 6 (≥ 7 since P2b r6, DEC-191). No release ships one without the other. This is recorded in the program's decision log.
 - **Q12: accepted as a residual.** An identity outside discovery's gap leaves the row waiting with `RegistrationWait::Network`. The UI explains it, and widening discovery is a BACKLOG item.
 - **Q13: P2b derives C4's reading.** One source of truth. P2b's status for a flagged step with tombstones and no signed lock is resolved, and DP1-02 reads it rather than overriding P2b. P2b's gate and events agree with it by construction.
 - **Q14: close the row** (`Cancelled(funding_cancelled)`), as rev2 has it. P2b doesn't replace stale markers.

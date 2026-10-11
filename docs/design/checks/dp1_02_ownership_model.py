@@ -19,7 +19,8 @@ reconcile, the tap, Finish, Repair, proofs, reconstruction, discovery; no
 user decision) reaches "nothing outstanding" (no call, no outstanding step,
 every live lock consumed, no row holding unconsumed or voided value, every
 Cancelled row closed with its code), and every state that cannot is one of section
-8.1's (an Unknown step on an unflagged marker); and a few reachability
+8.1's (an Unknown step on an unflagged marker, or on a flagged one whose call
+released a signature and recorded no lock: P2b r6, Q15); and a few reachability
 witnesses for rev2's new paths. Part 2 runs each rule the design rejects and
 requires the check to fail. A scenario that outgrows MAX_STATES stops the
 run with "BOUND HIT" and exit 2, never a silent pass.
@@ -42,7 +43,8 @@ What is modelled:
 - Claims (3.1): Exact, Unknown, None; C4 (a flagged step with tombstones
   and no signed lock reads None whatever P2b re-reads; P2b re-reads a
   resolved step MaybeSent while an unattributed lock stands, Q13) and C5 (a
-  flagged marker with no record and no running call reads None and stands).
+  flagged marker with no release, no record and no running call reads None
+  and stands; P2b r6: a released one with no record reads Unknown, Q15).
 - Locks: each step's own lock T<draft><n> (T1 = TA1, T3 = TB1) and the
   foreign T2 (rebuilt from the chain at index 0, so untrusted and
   unattributed; Q6 may give it the other amount): stored (may be on the
@@ -137,6 +139,7 @@ class Step(NamedTuple):
     dsigned: frozenset = frozenset()  # the durable signed record
     deadv: frozenset = frozenset()  # tombstones (PA-3, OD-06)
     durable_record: bool = False  # OD-02: the marker was written under PA-2
+    released: bool = False  # P2b r6: the call's funding_release row (durable, before signing)
 
 
 class St(NamedTuple):
@@ -271,8 +274,8 @@ class Ledger:
             return None
         if S.signed:
             return "Exact"
-        if S.durable_record and S.draft not in self.running:
-            return None  # OD-02: a flagged marker with no record and no running call (C5)
+        if S.durable_record and not S.released and S.draft not in self.running:
+            return None  # OD-02: a flagged marker with no release, no record, no running call (C5)
         if "unknown-unclaimed" in self.m:  # R8-01
             return None
         return "Unknown"
@@ -679,14 +682,16 @@ def call_steps(s: St, cfg: Cfg, d: str, ph: str) -> Iterator[tuple]:
         name = f"T{d}{S.gen}"
         s1 = set_lock(s, Lock(name, signer=d, lkey=S.lin, duffs=S.duffs))
         one = frozenset([name])
+        # P2b r6: the release row is durable before the first signature.
+        R = rp(S, released=cfg.pa2)
         yield (f"call {d}: signs {name}, record durable",
-               set_call(set_step(s1, rp(S, signed=one, dsigned=one)), d, "signed"), True, [])
+               set_call(set_step(s1, rp(R, signed=one, dsigned=one)), d, "signed"), True, [])
         if cfg.pa2:
             yield (f"call {d}: signs {name}, record write fails: process stops (PA-2)",
-                   restart(set_step(s1, rp(S, signed=one))), True, [])
+                   restart(set_step(s1, rp(R, signed=one))), True, [])
         else:
             yield (f"call {d}: signs {name}, record write fails (logged)",
-                   set_call(set_step(s1, rp(S, signed=one)), d, "signed"), True, [])
+                   set_call(set_step(s1, rp(R, signed=one)), d, "signed"), True, [])
         yield from end_with_notsent(s, d, f"call {d}: refused before signing")
     elif ph == "signed":
         name = next(iter(S.signed | S.dsigned), f"T{d}{S.gen}")
@@ -936,11 +941,14 @@ def goal(s: St, cfg: Cfg) -> bool:
 
 
 def unflagged_unknown(s: St, cfg: Cfg) -> bool:
-    """Section 8.1: an Unknown step on an unflagged marker, no call running,
-    whose money no row holds as a lock that can still land."""
+    """Section 8.1: an Unknown step on an unflagged marker, or on a flagged
+    one whose call released a signature and recorded no lock (P2b r6, Q15:
+    the wedge is kept until ruled), no call running, whose money no row
+    holds as a lock that can still land."""
     led = ledger(s, ref(cfg))
     return any(
-        led.outstanding(S) and led.claim(S) == "Unknown" and not S.durable_record
+        led.outstanding(S) and led.claim(S) == "Unknown"
+        and (not S.durable_record or S.released)
         and S.draft not in led.running
         and not any(t in led.holder_of and not led.locks[t].dead
                     for t in led.own(S) if t in led.locks)
@@ -1140,6 +1148,11 @@ def witnesses(name: str, r: dict, cfg: Cfg) -> list:
                         and any(S.draft == "A" and x.consumed for S in s.steps for x in s.locks
                                 if x.signer == "A") for s in st)))
     if name == "fund (flagged)":
+        out.append(("P2b r6: a released recordless marker after a restart stays Unknown",
+                    any(s.restarted and (S := step_of(s, "A")) is not None and S.released
+                        and S.st == "M" and not S.dsigned
+                        and ledger(s, Cfg(pa2=True)).claim(S) == "Unknown"
+                        for s in st)))
         out.append(("C5: a flagged recordless marker after a restart closes its row "
                     "(Cancelled funding_cancelled, code written)",
                     any(s.restarted and row_of_id(s, "A") is not None
@@ -1200,7 +1213,7 @@ def main() -> int:
             live = [v for v in r["found"] if v.startswith("L: ")]
             what = ("every state reaches nothing outstanding" if not r["stuck"] else
                     f"the {len(r['stuck'])} stuck states are all section 8.1's "
-                    f"unflagged-Unknown states (of {len(r['pred'])} such states)")
+                    f"Unknown wedge states (Q15 included) (of {len(r['pred'])} such states)")
             check(not live, f"[{name}] liveness: {what}")
             for desc, reached in witnesses(name, r, cfg):
                 check(reached, f"[{name}] reached: {desc}")
