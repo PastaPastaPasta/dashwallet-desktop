@@ -21,6 +21,7 @@ open class GObject: GObjectRepresentable {
         // disconnect all GTK signal handlers before releasing the object
         // to prevent callbacks firing on deallocated Swift wrapper instances.
         for (id, _) in signals {
+            // dashwallet-desktop patch P15: gulong is UInt32 on Windows (LLP64).
             g_signal_handler_disconnect(gobjectPointer, gulong(id))
         }
 
@@ -205,6 +206,7 @@ open class GObject: GObjectRepresentable {
             return
         }
 
+        // dashwallet-desktop patch P15: gulong is UInt32 on Windows (LLP64).
         g_signal_handler_block(gobjectPointer, gulong(signalID))
         block()
         g_signal_handler_unblock(gobjectPointer, gulong(signalID))
