@@ -143,7 +143,7 @@ pub fn run() {
         eprintln!("dw-app: startup before-run {ms}");
     }
     let launch = match launch::parse(std::env::args().skip(1)) {
-        Ok(ParseOutcome::Run(o)) => o,
+        Ok(ParseOutcome::Run(o)) => *o,
         Ok(ParseOutcome::Help) => {
             println!("{}", launch::USAGE);
             return;
