@@ -1,8 +1,8 @@
 //! Re-fetching unverified Platform data once SPV has synced (DASHPAY §2.2,
 //! DEC-125; E0-10b design §5). Once the fallback latch is set, an entity the
 //! read models show is unverified until one of its fetches verifies against
-//! SPV-held quorum keys. This task re-fetches the identities, profiles and
-//! DPNS labels the library holds, each in its own trust scope, and records
+//! SPV-held quorum keys. This task re-fetches the identities, profiles,
+//! DPNS labels and contact requests the library holds, each in its own trust scope, and records
 //! those whose fetch verified and matches what the library holds. A
 //! verified fetch that differs records nothing: the library's own sync
 //! replaces the data, and a later run records it. The record is written
@@ -22,16 +22,18 @@ use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::util::strings::convert_to_homograph_safe_chars;
-use platform_wallet::PlatformWalletInfo;
 use platform_wallet::key_wallet_manager::WalletManager;
 use platform_wallet::wallet::identity::DashPayProfile;
+use platform_wallet::{ContactRequest, PlatformWalletInfo};
 
 use super::errors::PlatformError;
-use super::provenance::{Provenance, kind};
+use super::provenance::{Provenance, contact_request_key, kind};
 use super::recovery::owned_names;
 use super::trust::{self, BoxFuture};
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// The most `contactRequest` documents read for one sender and recipient.
+const CONTACT_REQUESTS_PER_PAIR: u32 = 100;
 /// How often the task looks again after a run.
 const RETRY_EVERY: Duration = Duration::from_secs(600);
 /// platform-wallet drops an avatar URL it would not fetch (`profile.rs`,
@@ -100,6 +102,8 @@ pub(super) enum Held {
         label: String,
         owner: Identifier,
     },
+    /// A sent or received request, as the library holds it.
+    ContactRequest(ContactRequest),
 }
 
 impl Held {
@@ -109,6 +113,10 @@ impl Held {
             Self::Identity { id, .. } => (kind::IDENTITY, id.to_string(Encoding::Base58)),
             Self::Profile { id, .. } => (kind::PROFILE, id.to_string(Encoding::Base58)),
             Self::Label { label, .. } => (kind::DPNS_LABEL, label.clone()),
+            Self::ContactRequest(r) => (
+                kind::CONTACT_REQUEST,
+                contact_request_key(&r.sender_id, &r.recipient_id, r.created_at),
+            ),
         }
     }
 }
@@ -121,6 +129,14 @@ pub(super) trait Refetcher: Send + Sync {
     ) -> BoxFuture<Result<Option<BTreeMap<KeyID, IdentityPublicKey>>, PlatformError>>;
     fn profile(&self, id: Identifier) -> BoxFuture<Result<Option<ShownProfile>, PlatformError>>;
     fn dpns_owner(&self, label: String) -> BoxFuture<Result<Option<Identifier>, PlatformError>>;
+    /// The `contactRequest` document from `sender` to `recipient` created at
+    /// `created_at`, read as the library reads it.
+    fn contact_request(
+        &self,
+        sender: Identifier,
+        recipient: Identifier,
+        created_at: u64,
+    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>>;
 }
 
 /// Re-fetches one entity in its own scope: whether the fetch used only
@@ -139,6 +155,10 @@ pub(super) async fn reverify(h: &Held, fetch: &dyn Refetcher) -> bool {
             Held::Profile { id, shown } => ok(fetch.profile(*id).await).as_ref() == Some(shown),
             Held::Label { label, owner } => {
                 ok(fetch.dpns_owner(label.clone()).await) == Some(*owner)
+            }
+            Held::ContactRequest(r) => {
+                let fetched = fetch.contact_request(r.sender_id, r.recipient_id, r.created_at);
+                ok(fetched.await).as_ref() == Some(r)
             }
         }
     })
@@ -189,8 +209,38 @@ fn unverified_of(
                 owner: identity,
             });
         }
+        let dp = m.dashpay();
+        let established = dp.established_contacts().values();
+        let requests = (dp.sent_contact_requests().values())
+            .chain(dp.incoming_contact_requests().values())
+            .chain(established.flat_map(|c| [&c.outgoing_request, &c.incoming_request]));
+        for r in requests {
+            push(Held::ContactRequest(r.clone()));
+        }
     }
     held
+}
+
+/// A `contactRequest` document as platform-wallet reads it
+/// (`parse_contact_request_doc`); `None` without a required field.
+fn request_from_document(doc: &Document) -> Option<ContactRequest> {
+    let props = doc.properties();
+    let int = |key: &str| props.get(key).and_then(|v| v.to_integer::<u32>().ok());
+    let bytes = |key: &str| props.get(key).and_then(|v| v.to_binary_bytes().ok());
+    let recipient = props.get("toUserId")?.to_identifier().ok()?;
+    let mut request = ContactRequest::new(
+        doc.owner_id(),
+        recipient,
+        int("senderKeyIndex")?,
+        int("recipientKeyIndex")?,
+        int("accountReference")?,
+        bytes("encryptedPublicKey")?,
+        doc.created_at_core_block_height().unwrap_or(0),
+        doc.created_at().unwrap_or(0),
+    );
+    request.auto_accept_proof = bytes("autoAcceptProof");
+    request.encrypted_account_label = bytes("encryptedAccountLabel");
+    Some(request)
 }
 
 /// The SDK's fetches.
@@ -262,6 +312,49 @@ impl Refetcher for SdkRefetcher {
                 identity.1.to_identifier().ok()
             }))
         })
+    }
+
+    fn contact_request(
+        &self,
+        sender: Identifier,
+        recipient: Identifier,
+        created_at: u64,
+    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>> {
+        let this = SdkRefetcher(Arc::clone(&self.0));
+        Box::pin(async move {
+            let docs = this.contact_requests(sender, recipient).await?;
+            Ok(docs
+                .iter()
+                .filter(|doc| doc.created_at() == Some(created_at))
+                .find_map(request_from_document))
+        })
+    }
+}
+
+impl SdkRefetcher {
+    /// The `contactRequest` documents from `sender` to `recipient`
+    /// (`ownerIdUserId` index; a pair holds one per account reference).
+    async fn contact_requests(
+        &self,
+        sender: Identifier,
+        recipient: Identifier,
+    ) -> Result<Vec<Document>, PlatformError> {
+        let contract = load_system_data_contract(SystemDataContract::Dashpay, self.0.version())
+            .map_err(|e| PlatformError::Internal {
+                detail: format!("DashPay contract: {e}"),
+            })?;
+        let equal = |field: &str, id: Identifier| dash_sdk::drive::query::WhereClause {
+            field: field.to_string(),
+            operator: dash_sdk::drive::query::WhereOperator::Equal,
+            value: Value::Identifier(id.to_buffer()),
+        };
+        let mut query = DocumentQuery::new(Arc::new(contract), "contactRequest")
+            .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
+            .with_where(equal("$ownerId", sender))
+            .with_where(equal("toUserId", recipient));
+        query.limit = CONTACT_REQUESTS_PER_PAIR;
+        let docs = Document::fetch_many(&self.0, query).await?;
+        Ok(docs.into_values().flatten().collect())
     }
 }
 
@@ -396,6 +489,43 @@ mod tests {
         let hash_as_bytes =
             ShownProfile::from_document(&doc(&[("avatarHash", Value::Bytes(vec![3; 32]))]));
         assert_eq!(hash_as_bytes.unwrap().avatar_hash, Some([3; 32]));
+    }
+
+    #[test]
+    fn a_contact_request_document_reads_as_the_library_reads_it() {
+        let (sender, recipient) = (Identifier::new([7; 32]), Identifier::new([8; 32]));
+        let mut d = doc(&[
+            ("toUserId", Value::Identifier(recipient.to_buffer())),
+            ("senderKeyIndex", Value::U32(1)),
+            ("recipientKeyIndex", Value::U32(2)),
+            ("accountReference", Value::U32(3)),
+            ("encryptedPublicKey", Value::Bytes(vec![4; 96])),
+            ("autoAcceptProof", Value::Bytes(vec![5; 38])),
+        ]);
+        let Document::V0(v0) = &mut d;
+        v0.owner_id = sender;
+        v0.created_at = Some(1_700_000_000_123);
+        v0.created_at_core_block_height = Some(900);
+        let mut want = ContactRequest::new(
+            sender,
+            recipient,
+            1,
+            2,
+            3,
+            vec![4; 96],
+            900,
+            1_700_000_000_123,
+        );
+        want.auto_accept_proof = Some(vec![5; 38]);
+        assert_eq!(request_from_document(&d), Some(want));
+
+        let Document::V0(v0) = &mut d;
+        v0.properties.remove("encryptedPublicKey");
+        assert_eq!(
+            request_from_document(&d),
+            None,
+            "a required field is missing"
+        );
     }
 
     #[test]

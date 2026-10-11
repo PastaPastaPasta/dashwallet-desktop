@@ -26,6 +26,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use dpp::platform_value::string_encoding::Encoding;
+use dpp::prelude::Identifier;
 use dw_appdb::AppDb;
 
 use super::runtime::guard;
@@ -43,12 +45,24 @@ pub(crate) mod kind {
     pub(crate) const PROFILE: &str = "profile";
     /// A DPNS label; the key is the homograph-normalized label.
     pub(crate) const DPNS_LABEL: &str = "dpns_label";
-    /// A contact request; the key is `sender:recipient:$createdAt`.
-    #[expect(dead_code, reason = "DP2's contact read models check it")]
+    /// A contact request; the key is [`super::contact_request_key`].
     pub(crate) const CONTACT_REQUEST: &str = "contact_request";
     /// A DashPay payment; the key is the txid.
     #[expect(dead_code, reason = "DP3-04's money-move gate checks it")]
     pub(crate) const PAYMENT: &str = "payment";
+}
+
+/// The `dp_trust_verified` key of a contact request: the sender's and the
+/// recipient's Base58 ids and its `$createdAt` in ms, joined by `:` (the
+/// library's `ContactRequest` carries no document id). The contacts read
+/// model checks it; E0-10b writes it.
+pub(crate) fn contact_request_key(
+    sender: &Identifier,
+    recipient: &Identifier,
+    created_at: u64,
+) -> String {
+    let b58 = |id: &Identifier| id.to_string(Encoding::Base58);
+    format!("{}:{}:{created_at}", b58(sender), b58(recipient))
 }
 
 /// The session's provenance: the fallback latch and the verified records.

@@ -126,7 +126,8 @@ unverified (the kinds with consumers today):
 |---|---|---|
 | `identity` | `Identity::fetch` | it verified and its public keys equal the library's |
 | `profile` | the DashPay `profile` document of the identity | it verified and the fields shown equal the library's |
-| `dpns_label` | `Sdk::resolve_dpns_name` | it verified and resolves to the identity holding it |
+| `dpns_label` | the DPNS `domain` document of the label | it verified and resolves to the identity holding it |
+| `contact_request` | the DashPay `contactRequest` documents from sender to recipient (`ownerIdUserId` index), the one with the held `$createdAt` | it verified and every field the library holds is equal (as `parse_contact_request_doc` reads it) |
 
 A verified fetch that differs from what the library holds records nothing: the library's own sync replaces the data,
 and the next run records it. The task runs at the sync transition and then every 10 minutes while the session is open
@@ -135,8 +136,12 @@ record, not across the network fetches, and stops when the session closes. Recor
 manager's read lock, and only for entities the library still holds unchanged and unverified at that point.
 
 The DPNS re-fetch queries the `domain` document (`normalizedParentDomainName = "dash"`, `normalizedLabel = label`) and
-takes `records.identity`, as the SDK's `resolve_dpns_name` does, without re-normalizing the already normalized label. `contact_request` and `payment` records are left to their consumers (DP2's read
-models, DP3-04's gate), which re-fetch through the same `scoped`.
+takes `records.identity`, as the SDK's `resolve_dpns_name` does, without re-normalizing the already normalized label.
+
+A `contact_request` record is keyed `sender:recipient:$createdAt` (Base58 ids, milliseconds;
+`provenance::contact_request_key`, m4 §5), the key DP2-01's contacts read model checks. The task covers the sent,
+received and established requests the library holds. `payment` records are left to DP3-04's gate, which re-fetches
+through the same `scoped`.
 
 In the degraded mode this works the same way: with #1150 the Platform quorums are `Verified` on first ask, so most
 re-fetches record.
@@ -171,5 +176,6 @@ the same value without a wallet.
 | §4 | a scope records only when every lookup was SPV-verified; no lookup records nothing; nested scopes add up |
 | §5 | the post-sync re-fetch records equal, verified entities and skips differing ones |
 | §5 | a record needs the entity unchanged at write time; profile documents parse as the library caches them |
+| §5 | a verified, equal contact request records under DP2-01's key; a differing or absent one records nothing; `contactRequest` documents parse as the library reads them |
 | lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

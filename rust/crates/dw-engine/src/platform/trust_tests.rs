@@ -15,9 +15,10 @@ use dashcore::sml::quorum_validation_error::QuorumValidationError;
 use dpp::identity::{IdentityPublicKey, KeyID};
 use dpp::prelude::Identifier;
 use dw_appdb::AppDb;
+use platform_wallet::ContactRequest;
 
 use super::errors::PlatformError;
-use super::provenance::{Provenance, kind};
+use super::provenance::{Provenance, contact_request_key, kind};
 use super::reverify::{Held, Refetcher, ShownProfile, confirmed, reverify};
 use super::startup::QuorumSource;
 use super::trust::{
@@ -464,6 +465,7 @@ struct FakeRefetch {
     keys: BTreeMap<KeyID, IdentityPublicKey>,
     profile: ShownProfile,
     owner: Identifier,
+    request: ContactRequest,
     /// The quorum each kind's proof cites.
     quorum: HashMap<&'static str, Quorum>,
 }
@@ -496,6 +498,32 @@ impl Refetcher for FakeRefetch {
         let r = self.prove(kind::DPNS_LABEL).map(|()| Some(self.owner));
         Box::pin(async move { r })
     }
+    fn contact_request(
+        &self,
+        sender: Identifier,
+        recipient: Identifier,
+        created_at: u64,
+    ) -> BoxFuture<Result<Option<ContactRequest>, PlatformError>> {
+        let r = &self.request;
+        let found = (r.sender_id, r.recipient_id, r.created_at) == (sender, recipient, created_at);
+        let r = self
+            .prove(kind::CONTACT_REQUEST)
+            .map(|()| found.then(|| self.request.clone()));
+        Box::pin(async move { r })
+    }
+}
+
+fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
+    ContactRequest::new(
+        Identifier::new([sender; 32]),
+        Identifier::new([recipient; 32]),
+        1,
+        2,
+        3,
+        vec![4; 96],
+        900,
+        created_at,
+    )
 }
 
 /// Design §5: after sync, a re-fetch records what verified and matches, and
@@ -519,10 +547,12 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             ..Default::default()
         },
         owner: alice,
+        request: request(7, 8, 1_700_000_000_123),
         quorum: HashMap::from([
             (kind::IDENTITY, A),
             (kind::PROFILE, A),
             (kind::DPNS_LABEL, B),
+            (kind::CONTACT_REQUEST, A),
         ]),
     };
     let held = vec![
@@ -535,6 +565,12 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             label: "a11ce".into(),
             owner: alice,
         },
+        Held::ContactRequest(request(7, 8, 1_700_000_000_123)),
+        Held::ContactRequest(ContactRequest {
+            encrypted_public_key: vec![5; 96],
+            ..request(7, 8, 1_700_000_000_123)
+        }),
+        Held::ContactRequest(request(7, 8, 1_700_000_000_999)),
     ];
     let verified = tokio::spawn(async move {
         let mut verified = Vec::new();
@@ -547,9 +583,43 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
     .unwrap();
     assert_eq!(
         verified,
-        [true, false, false],
-        "the profile differs and the label came through the fallback"
+        [true, false, false, true, false, false],
+        "the profile differs, the label came through the fallback, the second \
+         request's key differs and the third is not on Platform"
     );
+}
+
+/// DP2-01's rows look up contact requests by m4 §5's key:
+/// `sender:recipient:$createdAt`, Base58 ids and milliseconds. The record a
+/// verified request writes is exactly that key.
+#[test]
+fn a_verified_contact_request_records_the_contacts_model_key() {
+    let held = Held::ContactRequest(request(7, 8, 1_700_000_000_123));
+    let b58 = |b: u8| {
+        Identifier::new([b; 32]).to_string(dpp::platform_value::string_encoding::Encoding::Base58)
+    };
+    let key = format!("{}:{}:1700000000123", b58(7), b58(8));
+    assert_eq!(
+        key,
+        contact_request_key(
+            &Identifier::new([7; 32]),
+            &Identifier::new([8; 32]),
+            1_700_000_000_123
+        )
+    );
+    assert_eq!(
+        confirmed(&[&held], std::slice::from_ref(&held)),
+        vec![(kind::CONTACT_REQUEST, key.clone())]
+    );
+
+    let r = rig(TrustMode::Degraded);
+    r.trusted.set(A, REAL); // the fallback sets the latch
+    r.lookup(A).unwrap();
+    assert!(r.provenance.is_unverified(kind::CONTACT_REQUEST, &key));
+    r.provenance
+        .record_verified(kind::CONTACT_REQUEST, &key)
+        .unwrap();
+    assert!(!r.provenance.is_unverified(kind::CONTACT_REQUEST, &key));
 }
 
 /// Design §5: a verified fetch is recorded only if the library still holds
