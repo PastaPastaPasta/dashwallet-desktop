@@ -2,7 +2,8 @@
 //! scripted Platform ([`FakeRequests`]): eligibility, ignore and unignore,
 //! the refusals before a grant is redeemed, the keys each flow signs with,
 //! "Accept and pay" across a slow accept, the key upgrade, and a write that
-//! failed but landed.
+//! failed but landed. The testnet round trip is `t2_testnet_requests`
+//! (ignored).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,6 +16,7 @@ use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
+use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_vault::{Credential, GrantPurpose};
 use platform_wallet::{AutoAcceptProofSource, ContactRequest, EstablishedContact, PlatformWallet};
@@ -28,6 +30,7 @@ use super::super::journal_tests::{
 };
 use super::super::keys_policy::{derive_keys, registration_specs};
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
+use super::super::startup::SyncLoop;
 use super::*;
 use crate::{Engine, EventSink, NetworkSession, WalletId};
 
@@ -879,4 +882,219 @@ fn a_write_waits_for_the_identity_write_lock() {
     drop(held);
     assert!(f.engine.block_on(sending).unwrap().is_ok());
     assert_eq!(f.net.writes(), 1);
+}
+
+/// The dashpay sync passes `dp` has seen finish.
+fn passes(dp: &crate::platform::DashPay) -> Option<u64> {
+    let status = dp.sync_status().ok()?;
+    let pass = status
+        .loops
+        .iter()
+        .find(|l| l.sync_loop == SyncLoop::DashPaySync)?;
+    pass.last_run_at
+}
+
+fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed() < timeout, "no {what} within {timeout:?}");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// DP2-02's acceptance on the public testnet (T2), with wallets A and C of
+/// the fixture (DW_DP202_TESTNET_FIXTURE: `A.mnemonic`, `C.mnemonic`).
+/// C's identity was registered without DashPay keys: the first run enables
+/// them (charged ≤ quote, measured as the proved balance before less after,
+/// DEC-195), sends A a request, A ignores and unignores C, accepts, and both
+/// see the contact within 2 passes. Later runs find the keys and the
+/// contact there: the upgrade is "already enabled: Ok, nothing sent", and
+/// the contact is checked both ways. Prints the T2 numbers.
+#[test]
+#[ignore = "public testnet; set DW_DP202_TESTNET_FIXTURE"]
+fn t2_testnet_requests() {
+    use super::super::recovery_tests;
+    use crate::{DashNetwork, ImportOptions, SessionOptions};
+    use zeroize::Zeroizing;
+
+    let fixture = std::path::PathBuf::from(
+        std::env::var("DW_DP202_TESTNET_FIXTURE").expect("DW_DP202_TESTNET_FIXTURE"),
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("fixture.json")).unwrap()).unwrap();
+    let birth = meta["funding"]["birth_height_hint"].as_u64().unwrap() as u32;
+    let a_id = meta["A"]["identity_id"].as_str().unwrap().to_owned();
+
+    let dir = dw_testutil::private_tempdir();
+    let engine = recovery_tests::engine(dir.path());
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Testnet, SessionOptions::default()))
+        .unwrap();
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let import = |who: &str| {
+        let phrase = Zeroizing::new(
+            std::fs::read_to_string(fixture.join(format!("{who}.mnemonic"))).unwrap(),
+        );
+        let options = ImportOptions {
+            birth_height: Some(birth),
+            ..ImportOptions::default()
+        };
+        let words = Zeroizing::new(phrase.trim().as_bytes().to_vec());
+        engine
+            .block_on(s.import_wallet(words, Zeroizing::new(Vec::new()), options))
+            .unwrap()
+    };
+    let (a, c) = (import("A"), import("C"));
+    engine.block_on(s.start_spv()).unwrap();
+    let (dp_a, dp_c) = (s.dashpay(a), s.dashpay(c));
+    let mut c_id = String::new();
+    wait_until("C's identity", Duration::from_secs(180), || {
+        let found = dp_c.identities().unwrap_or_default();
+        found.first().map(|i| c_id = i.identity.clone()).is_some()
+    });
+    wait_until("A's identity", Duration::from_secs(180), || {
+        dp_a.identities()
+            .is_ok_and(|ids| ids.iter().any(|i| i.identity == a_id))
+    });
+    eprintln!("C is {c_id}");
+    // A fresh engine learns each wallet's requests and contacts in its
+    // first DashPay pass.
+    wait_until(
+        "a DashPay pass of A and C",
+        Duration::from_secs(180),
+        || passes(&dp_a).is_some() && passes(&dp_c).is_some(),
+    );
+
+    let grant = |wallet: WalletId, max_credits: u64| platform_grant(&s, wallet, max_credits);
+    let unused = |wallet: WalletId, grant: &str| grant_unused(&s, wallet, grant);
+    let net = SdkRequests(s.manager().unwrap().sdk_arc());
+    let balance = |id: &str| {
+        let id = Identifier::from_string(id, Encoding::Base58).unwrap();
+        engine.block_on(net.balance(id)).unwrap().unwrap()
+    };
+    let charged = |what: &str, quote: u64, before: u64, after: u64| {
+        let charged = before.checked_sub(after).expect("the balance grew");
+        eprintln!("T2 {what}: quote {quote} before {before} after {after} charged {charged}");
+        assert!(
+            charged <= quote,
+            "{what} charged {charged} over its quote {quote}"
+        );
+        assert!(charged > 0, "{what} charged nothing");
+    };
+    let eligibility = |dp: &crate::platform::DashPay, me: &str, them: &str| {
+        engine
+            .block_on(dp.eligibility(me.into(), them.into()))
+            .unwrap()
+    };
+
+    // 1. The key upgrade, refused before any prompt until it is done.
+    if eligibility(&dp_c, &c_id, &a_id) == Eligibility::NoDashPayKeys {
+        let before = balance(&c_id);
+        let g = grant(c, KEY_UPDATE_CREDITS);
+        engine
+            .block_on(dp_c.enable_dashpay_keys(c_id.clone(), g.clone()))
+            .unwrap();
+        charged(
+            "enable_dashpay_keys",
+            KEY_UPDATE_CREDITS,
+            before,
+            balance(&c_id),
+        );
+        assert!(!unused(c, &g));
+    }
+    let before = balance(&c_id);
+    let g = grant(c, KEY_UPDATE_CREDITS);
+    engine
+        .block_on(dp_c.enable_dashpay_keys(c_id.clone(), g.clone()))
+        .unwrap();
+    assert!(unused(c, &g), "already enabled: Ok, nothing sent");
+    assert_eq!(balance(&c_id), before);
+    eprintln!("T2 enable_dashpay_keys again: already enabled, nothing sent");
+
+    match eligibility(&dp_c, &c_id, &a_id) {
+        Eligibility::AlreadyContact => {
+            assert_eq!(
+                eligibility(&dp_a, &a_id, &c_id),
+                Eligibility::AlreadyContact
+            );
+            eprintln!("T2 rerun: C and A are contacts both ways; nothing sent");
+            return;
+        }
+        Eligibility::Ok => {}
+        other => panic!("C → A is {other:?}: finish or reset the fixture by hand"),
+    }
+
+    // 2. C asks A.
+    let before = balance(&c_id);
+    let sent = engine
+        .block_on(dp_c.send_request(
+            c_id.clone(),
+            a_id.clone(),
+            None,
+            grant(c, CONTACT_REQUEST_CREDITS),
+        ))
+        .unwrap();
+    charged(
+        "send_request",
+        CONTACT_REQUEST_CREDITS,
+        before,
+        balance(&c_id),
+    );
+    assert!(matches!(sent, RequestOutcome::Pending { .. }), "{sent:?}");
+    assert_eq!(
+        eligibility(&dp_c, &c_id, &a_id),
+        Eligibility::PendingOutgoing
+    );
+
+    // 3. A sees it, ignores C, unignores, and sees it again.
+    wait_until("C's request at A", Duration::from_secs(300), || {
+        eligibility(&dp_a, &a_id, &c_id) == Eligibility::PendingIncoming
+    });
+    engine
+        .block_on(dp_a.ignore(a_id.clone(), c_id.clone()))
+        .unwrap();
+    assert_eq!(eligibility(&dp_a, &a_id, &c_id), Eligibility::Ok);
+    engine
+        .block_on(dp_a.unignore(a_id.clone(), c_id.clone()))
+        .unwrap();
+    wait_until("C's request at A again", Duration::from_secs(300), || {
+        eligibility(&dp_a, &a_id, &c_id) == Eligibility::PendingIncoming
+    });
+
+    // 4. A accepts; both see the contact within 2 passes.
+    let before = balance(&a_id);
+    let accepted = engine
+        .block_on(dp_a.accept_request(
+            a_id.clone(),
+            c_id.clone(),
+            grant(a, CONTACT_REQUEST_CREDITS),
+        ))
+        .unwrap();
+    charged(
+        "accept_request",
+        CONTACT_REQUEST_CREDITS,
+        before,
+        balance(&a_id),
+    );
+    assert!(
+        matches!(accepted, RequestOutcome::Established { .. }),
+        "{accepted:?}"
+    );
+    let start = (passes(&dp_a), passes(&dp_c));
+    let mut seen = (0, 0);
+    let mut last = start;
+    wait_until("the contact at A and C", Duration::from_secs(300), || {
+        let now = (passes(&dp_a), passes(&dp_c));
+        seen.0 += usize::from(now.0 != last.0);
+        seen.1 += usize::from(now.1 != last.1);
+        last = now;
+        assert!(
+            seen.0 <= 2 && seen.1 <= 2,
+            "not established within 2 passes"
+        );
+        eligibility(&dp_a, &a_id, &c_id) == Eligibility::AlreadyContact
+            && eligibility(&dp_c, &c_id, &a_id) == Eligibility::AlreadyContact
+    });
+    eprintln!("T2 established after {seen:?} passes (A, C)");
+    engine.block_on(engine.shutdown()).unwrap();
 }
