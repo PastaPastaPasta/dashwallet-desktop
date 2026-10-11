@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { Backend } from "./api/backend";
-import { bridgeSignals } from "./api/events";
+import { bridgeEvents } from "./api/events";
 import { FixtureBackend, type FixtureVariant } from "./api/fixture";
 import { BackendContext } from "./api/queries";
 import { inTauri, TauriBackend } from "./api/tauri";
@@ -44,7 +44,7 @@ async function boot() {
     // Engine data changes only when a signal says so: no polling, no refetch on focus.
     defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
   });
-  await bridgeSignals(backend, client);
+  await bridgeEvents(backend, client);
   exposeSelftest(backend, client);
 
   createRoot(document.getElementById("root")!).render(

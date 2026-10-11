@@ -30,16 +30,16 @@ export const keys = {
 };
 
 /** Opens the network; its lock status seeds `lockStatus`, so the shell never renders
- * one frame unlocked before the lock state is known. */
+ * one frame unlocked before the lock state is known. Resolves to the lock status. */
 export function useOpenNetwork() {
   const b = useBackend();
   const client = useQueryClient();
   return useQuery({
     queryKey: keys.network,
     queryFn: async () => {
-      const status = await b.openNetwork();
-      client.setQueryData(keys.lockStatus, status);
-      return status;
+      const { lock } = await b.openNetwork();
+      client.setQueryData(keys.lockStatus, lock);
+      return lock;
     },
   });
 }
