@@ -112,6 +112,13 @@ pub struct RegistrationStatus {
     pub contest_ends_at: Option<u64>,
     /// Set when `phase` is `Failed`.
     pub failure: Option<RegistrationFailure>,
+    /// The code the name step ended with when the identity was registered
+    /// but its name was not (`name.taken`, `name.contest_open`, …): the
+    /// flow still ends `Done`, and the identity claims a name with
+    /// `register_name`.
+    pub name_failure: Option<String>,
+    /// The same for the initial profile, which `update_profile` publishes.
+    pub profile_failure: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -417,13 +424,16 @@ pub(crate) async fn quote<L: RegistrationLib>(
 }
 
 /// A row that counts towards `registration.in_progress`: one that runs or
-/// can be resumed, or whose funds are committed. A flow that failed for
-/// good with nothing committed (an invitation row restored here, a newer
-/// build's row) does not.
+/// can be resumed, or whose funds are committed and have no identity yet.
+/// A flow that failed for good with nothing committed (an invitation row
+/// restored here, a newer build's row) does not, and neither does one
+/// whose identity exists: its funds are that identity's (MJ-1).
 fn in_progress(row: &RegistrationRow, ev: &flow::Evidence) -> bool {
     match flow::failure_of(row) {
         None => row.phase != Phase::Done.as_str(),
-        Some((_, retryable)) => retryable || flow::funds_committed(row, ev, false),
+        Some((_, retryable)) => {
+            retryable || (row.identity.is_none() && flow::funds_committed(row, ev, false))
+        }
     }
 }
 
@@ -647,6 +657,8 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             // DP1-04 seam: the contest's end from the vote poll.
             contest_ends_at: None,
             failure,
+            name_failure: row.name_error.clone(),
+            profile_failure: row.profile_error.clone(),
             created_at: row.created_at,
             updated_at: row.updated_at,
         });
@@ -861,7 +873,6 @@ pub(crate) async fn finish<L: RegistrationLib>(
     grant: String,
 ) -> Result<FinishReport, RegistrationError> {
     let lease = authority(session, wallet, &grant).await?;
-    let flows = &session.platform.registrations;
     let mut report = FinishReport {
         resumed: 0,
         completed: 0,
@@ -887,24 +898,56 @@ pub(crate) async fn finish<L: RegistrationLib>(
         if row.error.is_some() && !flow::resumable(row, &ev) {
             continue;
         }
-        let Some(claim) = flows.claim(session, (wallet, row.id)).await? else {
-            report.still_pending += 1;
-            continue;
-        };
-        if clear_failure(session, &claim, wallet, lib).await?.is_err() {
-            continue;
-        }
-        report.resumed += 1;
-        let driver = flow::Driver::new(session, lib, &claim, Some(lease.clone()), false);
-        driver.run().await?;
-        let done = registration_row(session, wallet, &row.id.to_string())
-            .await
-            .is_ok_and(|r| r.error.is_none() && r.phase == Phase::Done.as_str());
-        if done {
-            report.completed += 1;
-        } else {
-            report.still_pending += 1;
+        // One row's storage failure leaves it pending and the others run.
+        match finish_row(session, wallet, lib, &lease, row.id).await {
+            Ok(Finished::Skipped) => {}
+            Ok(Finished::Held) => report.still_pending += 1,
+            Ok(Finished::Ran { done }) => {
+                report.resumed += 1;
+                if done {
+                    report.completed += 1;
+                } else {
+                    report.still_pending += 1;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(draft = row.id, error = %e, "Finish transfers could not run a registration");
+                report.still_pending += 1;
+            }
         }
     }
     Ok(report)
+}
+
+/// What "Finish transfers" did with one funded row.
+enum Finished {
+    /// Another claim holds it.
+    Held,
+    /// It failed for good: not run.
+    Skipped,
+    Ran {
+        done: bool,
+    },
+}
+
+async fn finish_row<L: RegistrationLib>(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &L,
+    lease: &Lease,
+    draft: i64,
+) -> Result<Finished, RegistrationError> {
+    let flows = &session.platform.registrations;
+    let Some(claim) = flows.claim(session, (wallet, draft)).await? else {
+        return Ok(Finished::Held);
+    };
+    if clear_failure(session, &claim, wallet, lib).await?.is_err() {
+        return Ok(Finished::Skipped);
+    }
+    let driver = flow::Driver::new(session, lib, &claim, Some(lease.clone()), false);
+    driver.run().await?;
+    let done = registration_row(session, wallet, &draft.to_string())
+        .await
+        .is_ok_and(|r| r.error.is_none() && r.phase == Phase::Done.as_str());
+    Ok(Finished::Ran { done })
 }

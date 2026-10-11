@@ -60,6 +60,11 @@ pub struct RegistrationRow {
     /// The failure code; set exactly when the flow failed.
     pub error: Option<String>,
     pub retryable: bool,
+    /// Why the name step ended without the name, on a flow whose identity
+    /// exists (it settles: the flow ends `Done`).
+    pub name_error: Option<String>,
+    /// Why the initial profile was not published, the same way.
+    pub profile_error: Option<String>,
     /// The generation of the claim that holds the row
     /// ([`AppDb::claim_registration`]).
     pub owner: u64,
@@ -94,6 +99,10 @@ pub struct RegistrationChange {
     /// The library dropped the lock before it reached the wire (a
     /// definitive rejection): the flow is unfunded again.
     pub clear_outpoint: bool,
+    /// Records why the name step ended without the name.
+    pub name_error: Option<String>,
+    /// Records why the initial profile was not published.
+    pub profile_error: Option<String>,
 }
 
 /// How a compare-and-set update ended.
@@ -109,7 +118,8 @@ pub enum RegistrationUpdate {
 }
 
 const COLUMNS: &str = "id, identity_index, identity, label, temp_label, funding, initial_profile,
-     asset_lock_outpoint, phase, error, retryable, owner, created_at, updated_at";
+     asset_lock_outpoint, phase, error, retryable, owner, created_at, updated_at, name_error,
+     profile_error";
 
 fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
     Ok(RegistrationRow {
@@ -127,6 +137,8 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
         owner: r.get::<_, i64>(11)? as u64,
         created_at: r.get::<_, i64>(12)? as u64,
         updated_at: r.get::<_, i64>(13)? as u64,
+        name_error: r.get(14)?,
+        profile_error: r.get(15)?,
     })
 }
 
@@ -292,6 +304,8 @@ impl AppDb {
                  error = CASE WHEN ?8 THEN ?9 ELSE error END,
                  retryable = CASE WHEN ?8 THEN ?10 ELSE retryable END,
                  initial_profile = CASE WHEN ?11 THEN NULL ELSE initial_profile END,
+                 name_error = COALESCE(?16, name_error),
+                 profile_error = COALESCE(?17, profile_error),
                  updated_at = ?12
              WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13
                  AND owner = ?15",
@@ -311,6 +325,8 @@ impl AppDb {
                 failed,
                 change.clear_outpoint,
                 owner as i64,
+                change.name_error,
+                change.profile_error,
             ],
         );
         match written {

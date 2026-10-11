@@ -213,7 +213,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
 **Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`; Sol r2,
-DEC-173).** What the bodies
+DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`).** What the bodies
 decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
@@ -242,7 +242,8 @@ decided where the rows leave room:
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
 - **In progress.** `registration.in_progress` while another row is neither `Done` nor failed for good; a failed row
-  counts while it is retryable or its funds are committed. A row this build cannot run reads as failed, not
+  counts while it is retryable, or while its funds are committed and it has no identity yet (an identity's funds are
+  its own: a row an earlier build failed after its identity no longer counts). A row this build cannot run reads as failed, not
   retryable: a `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an
   `Invitation` row is `invitation.invalid` (until DP5-02 the invitation-claim path does not exist;
   `start_registration` refuses `Invitation` funding with `platform.not_implemented`), and `FaucetAssetLock` is
@@ -264,7 +265,23 @@ decided where the rows leave room:
   the wallet closing under the call) is `MaybeSent`: a row whose outpoint the tap wrote stays funded and waits for the
   `ChainLock`; one without fails `platform.broadcast_unknown`, not retryable. Both count as in progress and refuse
   discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap hands the
-  lock to it (the row resumes at `FundingSent`, no second row).
+  lock to it (the row resumes at `FundingSent`, no second row). After the call the flow takes its own lock even
+  where the tap's write did not land: the registration lock tracked now that was not before the call, at the row's
+  index, for its amount, that no row holds (the fence and the in-progress gate let no other funding run meanwhile),
+  at index 0 too, where a `Broadcast` lock's index alone says nothing. The row's record of it is retried; one that
+  still fails ends the run with `storage`, the row unfailed at `KeysPrepared` and its index, so it counts as in
+  progress, funds nothing again (its index is taken by an unattributed lock: it waits at `ChainLock`), and "Finish
+  transfers" gives it that lock. A definite rejection after the tap scheduled the automatic backup unschedules it, so
+  the retry that funds schedules it again.
+- **Settled after the identity.** Once the identity exists the flow cannot fail for good: its funds are spent. A name
+  step that fails for good (`name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, or a Platform error
+  that is no wait or park) records the code in `name_failure` and the flow goes on to the profile; a profile step
+  that fails so records it in `profile_failure`; either way the row ends `Done`, and counts as in progress no longer.
+  Claiming a name for the identity is the names flow's (`register_name`), publishing the profile `update_profile`'s.
+  Waits and parks stay the step's own. The profile step reads Platform's profile first, as Platform keeps one profile
+  document per identity: one that says what the row's does (the fields the row leaves out are not compared) counts as
+  published, a different one is revised under `update_profile`'s rules (the fields the row sets replace), and without
+  one the profile is created. A step killed after the put therefore resumes to the same profile.
 - **Indexes.** A flow takes its identity index after the sync hold, one past every index the wallet's identities,
   tracked registration locks and rows use, chosen from the rows read in the write's own job of the wallet's
   registration actor, so no two flows take one index. The hold (Restore rule 1)
@@ -318,7 +335,8 @@ decided where the rows leave room:
   `still_pending`. While the funding hold lasts (the indexes the seed uses are not known yet) it adopts none and counts them `still_pending`. It
   then runs each row funded by evidence (an outpoint, or a funded phase) once under the grant, without waiting for a
   proof; a `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone:
-  the grant's lease keeps its key for the other rows. `resumed` counts the rows it ran.
+  the grant's lease keeps its key for the other rows. `resumed` counts the rows it ran. A row whose run fails (a
+  `storage` error) is logged and counted in `still_pending`; the other rows run on.
 - **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
   `platform.feature_off{feature: "faucet"}`.
 - **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, `Sync` before
@@ -1259,6 +1277,8 @@ pub struct RegistrationStatus {
     pub funds_committed: bool,
     pub contest_ends_at: Option<u64>,
     pub failure: Option<RegistrationFailure>,
+    pub name_failure: Option<String>,
+    pub profile_failure: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -1612,6 +1632,9 @@ The shapes are in §3. What they mean, where the name does not say:
     discard is refused ("Funds committed — finishing", F2).
   - `contest_ends_at` while `Contested`; `failure` when `Failed`: the phase it stopped in, the code, `retryable`, and
     `needed`/`available` for the `*funding_insufficient*` and `insufficient_credits` codes.
+  - `name_failure` and `profile_failure`: the code a name or initial-profile step ended with after the identity was
+    registered (§2.2 "Settled after the identity"), on a `Done` row. The UI offers `register_name` for the identity,
+    or the profile edit.
 - **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id),
   `ExistingIdentity{identity}` (the id goes to the row's `identity` column), and `FaucetAssetLock{key, proof}` for
   developer builds:

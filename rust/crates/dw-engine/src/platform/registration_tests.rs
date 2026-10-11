@@ -3,7 +3,7 @@
 //! and cap, restore adoption, the funding failures (H12), discard and
 //! "Finish transfers".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,6 +139,7 @@ impl Fixture {
             self.appdb(),
             self.wallet,
             Arc::clone(&self.session.platform.registrations),
+            Arc::downgrade(&self.session),
         ))
     }
 
@@ -411,7 +412,16 @@ struct World {
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
-    profiles: BTreeSet<String>,
+    /// Platform's profile documents, one per identity.
+    profiles: BTreeMap<String, ProfileRecord>,
+    /// `register_name` fails with this (MJ-1).
+    name_error: Option<NameError>,
+    /// Publishing a profile fails with this (MJ-1).
+    profile_error: Option<PlatformError>,
+    /// The tap does not record the funding's lock: the library's store, or
+    /// the tap's own write, failed (MN-1).
+    skip_tap: bool,
+    profile_updates: u32,
     spendable: Spendable,
     funds: u32,
     identity_creates: u32,
@@ -429,17 +439,25 @@ struct Fake {
     appdb: Arc<AppDb>,
     wallet: WalletId,
     flows: Arc<flow::Flows>,
+    /// For the tap's `on_funded`, as the session wires it.
+    session: std::sync::Weak<NetworkSession>,
     ready: AtomicBool,
     hung: AtomicBool,
     w: Mutex<World>,
 }
 
 impl Fake {
-    fn new(appdb: Arc<AppDb>, wallet: WalletId, flows: Arc<flow::Flows>) -> Self {
+    fn new(
+        appdb: Arc<AppDb>,
+        wallet: WalletId,
+        flows: Arc<flow::Flows>,
+        session: std::sync::Weak<NetworkSession>,
+    ) -> Self {
         Self {
             appdb,
             wallet,
             flows,
+            session,
             ready: AtomicBool::new(true),
             hung: AtomicBool::new(false),
             w: Mutex::new(World {
@@ -498,6 +516,16 @@ impl Fake {
     }
 }
 
+/// What Platform keeps of a published profile.
+fn published(profile: &ProfileRecord) -> ProfileRecord {
+    ProfileRecord {
+        display_name: profile.display_name.clone(),
+        public_message: profile.public_message.clone(),
+        avatar_url: profile.avatar_url.clone(),
+        ..ProfileRecord::default()
+    }
+}
+
 impl RegistrationLib for Fake {
     async fn tracked_locks(&self) -> Vec<LockInfo> {
         self.w().locks.clone()
@@ -533,15 +561,21 @@ impl RegistrationLib for Fake {
         }
         // Tracked as Built, stored through the tap before the broadcast.
         let outpoint = self.lock_at(index, LockStatus::Built);
-        flow::lock_tracked(
-            &self.flows,
-            &self.appdb,
-            self.wallet,
-            outpoint,
-            Some(index),
-            false,
-        )
-        .unwrap();
+        if !self.w().skip_tap {
+            let funded = flow::lock_tracked(
+                &self.flows,
+                &self.appdb,
+                self.wallet,
+                outpoint,
+                Some(index),
+                false,
+            )
+            .unwrap();
+            // The tap's `on_funded`, as the session wires it.
+            if let (Some(draft), Some(session)) = (funded, self.session.upgrade()) {
+                flow::backup_once(&session, self.wallet, draft);
+            }
+        }
         self.maybe_hang(Call::Fund, When::Tracked).await;
         let result = match script {
             FundScript::Ok => {
@@ -631,6 +665,10 @@ impl RegistrationLib for Fake {
             .available(super::flows::BudgetPurpose::Credits)
             .map_err(PlatformError::from)?;
         self.maybe_hang(Call::RegisterName, When::Before).await;
+        let failure = self.w().name_error.clone();
+        if let Some(e) = failure {
+            return Err(e);
+        }
         let contested = self.w().contested.contains(label);
         {
             let mut w = self.w();
@@ -647,17 +685,68 @@ impl RegistrationLib for Fake {
         })
     }
 
+    async fn platform_profile(
+        &self,
+        identity: &str,
+    ) -> Result<Option<ProfileRecord>, PlatformError> {
+        Ok(self.w().profiles.get(identity).cloned())
+    }
+
     async fn create_profile(
         &self,
         identity: &str,
         _: u32,
-        _: &ProfileRecord,
+        profile: &ProfileRecord,
         lease: &Lease,
     ) -> Result<(), PlatformError> {
         lease.available(super::flows::BudgetPurpose::Credits)?;
         self.maybe_hang(Call::CreateProfile, When::Before).await;
-        self.w().profiles.insert(identity.to_owned());
+        {
+            let mut w = self.w();
+            if let Some(e) = w.profile_error.clone() {
+                return Err(e);
+            }
+            // Platform's unique `$ownerId` index: one profile document.
+            if w.profiles.contains_key(identity) {
+                return Err(PlatformError::Internal {
+                    detail: "duplicate unique index $ownerId".into(),
+                });
+            }
+            w.profiles.insert(identity.to_owned(), published(profile));
+        }
         self.maybe_hang(Call::CreateProfile, When::After).await;
+        Ok(())
+    }
+
+    async fn update_profile(
+        &self,
+        identity: &str,
+        _: u32,
+        profile: &ProfileRecord,
+        lease: &Lease,
+    ) -> Result<(), PlatformError> {
+        lease.available(super::flows::BudgetPurpose::Credits)?;
+        let mut w = self.w();
+        if let Some(e) = w.profile_error.clone() {
+            return Err(e);
+        }
+        let Some(current) = w.profiles.get_mut(identity) else {
+            return Err(PlatformError::Internal {
+                detail: "no profile to update".into(),
+            });
+        };
+        // The library's merge: the fields given replace, the others stay.
+        let new = published(profile);
+        for (field, value) in [
+            (&mut current.display_name, new.display_name),
+            (&mut current.public_message, new.public_message),
+            (&mut current.avatar_url, new.avatar_url),
+        ] {
+            if value.is_some() {
+                *field = value;
+            }
+        }
+        w.profile_updates += 1;
         Ok(())
     }
 
@@ -715,6 +804,12 @@ fn a_kill_at_any_transition_resumes_to_one_registration() {
         assert_eq!(
             (phase(&row), row.error.as_deref()),
             (Phase::Done, None),
+            "{call:?} {when:?}"
+        );
+        // Platform's profile is not created twice (MN-3).
+        assert_eq!(
+            (row.name_error.as_deref(), row.profile_error.as_deref()),
+            (None, None),
             "{call:?} {when:?}"
         );
         let w = lib.w();
@@ -2544,4 +2639,343 @@ fn an_unreadable_row_without_an_index_parks_no_indexed_lock() {
         .any(|r| r.asset_lock_outpoint.as_deref() == Some(flow::canonical(lock).as_str()));
     assert!(held, "the indexed lock stayed parked: {:?}", f.rows());
     assert!(!f.status(&lib, draft).funds_committed);
+}
+
+/// MJ-1: once the identity exists, a name step that fails for good
+/// settles the row: `Done`, the name's failure recorded for the names flow,
+/// the profile still published, and no later registration blocked.
+#[test]
+fn a_failed_name_after_the_identity_settles_the_row() {
+    let cases = [
+        NameError::Taken,
+        NameError::ContestOpen,
+        NameError::Locked,
+        NameError::Invalid { rules: vec![] },
+    ];
+    for error in cases {
+        let f = fixture(false);
+        let lib = f.fake();
+        // The name is taken while the flow waits for its proof.
+        lib.w().fund_script = Some(FundScript::IsTimeout);
+        lib.w().proof_arrives = false;
+        let draft = f.insert(core_row(PLAIN));
+        f.drive(&lib, draft, Some(f.lease()), false);
+        assert_eq!(phase(&f.row(draft)), Phase::ProofWaiting, "{error:?}");
+        let code = error.code();
+        lib.w().name_error = Some(error);
+        lib.w().proof_arrives = true;
+        f.drive(&lib, draft, Some(f.lease()), true);
+        let row = f.row(draft);
+        assert_eq!(
+            (phase(&row), row.error.as_deref()),
+            (Phase::Done, None),
+            "{code}"
+        );
+        assert_eq!(row.name_error.as_deref(), Some(code));
+        assert!(row.identity.is_some());
+        assert!(lib.w().names.is_empty());
+        assert_eq!(
+            lib.w().profiles.len(),
+            1,
+            "{code}: the profile is published"
+        );
+        let status = f.status(&lib, draft);
+        assert_eq!(status.phase, RegistrationPhase::Done, "{code}");
+        assert_eq!(
+            (
+                status.name_failure.as_deref(),
+                status.profile_failure.as_deref()
+            ),
+            (Some(code), None)
+        );
+        let start = f.engine.block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request("erin2"),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ));
+        assert!(start.is_ok(), "{code}: {start:?}");
+    }
+}
+
+/// MJ-1: a profile Platform refuses for good after the identity settles
+/// the row too, with the name registered.
+#[test]
+fn a_failed_profile_after_the_identity_settles_the_row() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().profile_error = Some(PlatformError::InvalidArgument {
+        detail: "display name too long".into(),
+    });
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), true);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.error.as_deref()), (Phase::Done, None));
+    assert_eq!(
+        (row.name_error.as_deref(), row.profile_error.as_deref()),
+        (None, Some("invalid_argument"))
+    );
+    assert_eq!(lib.w().names.len(), 1);
+    assert!(lib.w().profiles.is_empty());
+    let status = f.status(&lib, draft);
+    assert_eq!(status.profile_failure.as_deref(), Some("invalid_argument"));
+    let start = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        request("erin2"),
+        f.grant(COIN, 10 * COIN * 1000, Credential::None),
+    ));
+    assert!(start.is_ok(), "{start:?}");
+}
+
+/// MJ-1: a row an earlier build failed for good after its identity (the
+/// wedge) no longer counts as in progress.
+#[test]
+fn a_failed_row_with_an_identity_is_not_in_progress() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().identities.push((0, "earlier".into()));
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(0);
+    row.identity = Some("earlier".into());
+    row.phase = Phase::NameRequested.as_str().into();
+    let draft = f.insert(row);
+    f.appdb()
+        .update_registration(
+            &f.wallet.to_string(),
+            draft,
+            0,
+            Phase::NameRequested.as_str(),
+            false,
+            &RegistrationChange {
+                failure: Some(Some(("name.taken".into(), false))),
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(f.status(&lib, draft).phase, RegistrationPhase::Failed);
+    let start = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        request("erin2"),
+        f.grant(COIN, 10 * COIN * 1000, Credential::None),
+    ));
+    assert!(start.is_ok(), "{start:?}");
+}
+
+/// MN-1: the funding call's own lock reaches its row though its outpoint
+/// never did (the tap's write failed), at index 0 too, where the index
+/// alone cannot say whose a `Broadcast` lock is; then Finish has nothing
+/// left to adopt.
+#[test]
+fn an_untapped_index_zero_lock_is_its_calls_own() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    lib.w().skip_tap = true;
+    lib.w().proof_arrives = false;
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(row.identity_index, Some(0));
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::ProofWaiting, None)
+    );
+    let lock = lib.w().locks[0].outpoint;
+    assert_eq!(flow::outpoint_of(&row), Some(lock));
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    // The row's own run resumes, still waiting for the ChainLock; no row is
+    // made for its lock.
+    assert_eq!((report.resumed, report.still_pending), (1, 1), "{report:?}");
+    let rows = f.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(flow::outpoint_of(&rows[0]), Some(lock));
+}
+
+/// MN-1 control: at index 1 the index says it as well.
+#[test]
+fn an_untapped_index_one_lock_is_its_calls_own() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    lib.w().skip_tap = true;
+    lib.w().proof_arrives = false;
+    lib.w().identities.push((0, "earlier".into()));
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(row.identity_index, Some(1));
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::ProofWaiting, None)
+    );
+    assert_eq!(flow::outpoint_of(&row), Some(lib.w().locks[0].outpoint));
+}
+
+/// MN-1: the lock's record is retried; one that never lands ends the run
+/// as a storage error with the row still bound to its index, unfailed, so
+/// it funds nothing again and Finish hands it its own lock.
+#[test]
+fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
+    let f = fixture(false);
+    let flows = &f.session.platform.registrations;
+    // Two faults: the third try lands.
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    lib.w().skip_tap = true;
+    lib.w().proof_arrives = false;
+    let draft = f.insert(core_row(PLAIN));
+    flows.fail_lock_writes((f.wallet, draft), 2);
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::ProofWaiting, None)
+    );
+    assert_eq!(flow::outpoint_of(&row), Some(lib.w().locks[0].outpoint));
+
+    // Three: the run fails as storage.
+    let f = fixture(false);
+    let flows = &f.session.platform.registrations;
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    lib.w().skip_tap = true;
+    lib.w().proof_arrives = false;
+    let draft = f.insert(core_row(PLAIN));
+    flows.fail_lock_writes((f.wallet, draft), 3);
+    let lease = f.lease();
+    let run = f.engine.block_on(async {
+        let claim = flows
+            .claim(&f.session, (f.wallet, draft))
+            .await
+            .unwrap()
+            .expect("the flow is free");
+        Driver::new(&f.session, &*lib, &claim, Some(lease), false)
+            .run()
+            .await
+    });
+    assert_eq!(run.unwrap_err().code(), "storage");
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref(), row.identity_index),
+        (Phase::KeysPrepared, None, Some(0))
+    );
+    assert_eq!(row.asset_lock_outpoint, None);
+    let lock = lib.w().locks[0].outpoint;
+    // Still in progress: no second registration, and its own run funds
+    // nothing again.
+    let start = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        request("erin2"),
+        f.grant(COIN, 10 * COIN * 1000, Credential::None),
+    ));
+    assert_eq!(start, Err(RegistrationError::InProgress));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    assert_eq!(lib.counts(), (1, 0));
+    // Finish attributes the lock to this row; a resume completes it.
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    let rows = f.rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].id, draft);
+    assert_eq!(flow::outpoint_of(&rows[0]), Some(lock));
+    lib.w().proof_arrives = true;
+    resume(
+        &f,
+        &lib,
+        draft,
+        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    );
+    f.settle(draft);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    assert_eq!(f.rows().len(), 1);
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// MN-2: a funding definitely rejected after its tap scheduled the backup
+/// unschedules it; the retry that funds schedules it again.
+#[test]
+fn a_retried_funding_schedules_the_backup_again() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::Rejected);
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let flows = &f.session.platform.registrations;
+    let state = flows.get((f.wallet, draft));
+    assert_eq!((state.backups, state.backed_up), (1, false));
+    lib.w().fund_script = Some(FundScript::Ok);
+    resume(
+        &f,
+        &lib,
+        draft,
+        Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+    );
+    f.settle(draft);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    let state = flows.get((f.wallet, draft));
+    assert_eq!((state.backups, state.backed_up), (2, true));
+}
+
+/// MN-3: the profile step reads Platform first. A profile that says what
+/// the row's does is published; a different one is updated, keeping the
+/// fields the row leaves out.
+#[test]
+fn the_profile_step_reads_platform_first() {
+    // The identity index 0's lock builds.
+    let lock = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let id = flow::b58(&flow::identity_for(lock));
+    let alice = ProfileRecord {
+        display_name: Some("Alice".into()),
+        ..ProfileRecord::default()
+    };
+    let older = ProfileRecord {
+        display_name: Some("Old".into()),
+        public_message: Some("hi".into()),
+        ..ProfileRecord::default()
+    };
+    for (on_platform, updates) in [(alice.clone(), 0), (older, 1)] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().profiles.insert(id.clone(), on_platform.clone());
+        let draft = f.insert(core_row(PLAIN));
+        f.drive(&lib, draft, Some(f.lease()), true);
+        let row = f.row(draft);
+        assert_eq!(row.identity.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            (
+                phase(&row),
+                row.error.as_deref(),
+                row.profile_error.as_deref()
+            ),
+            (Phase::Done, None, None),
+            "{on_platform:?}"
+        );
+        let w = lib.w();
+        assert_eq!(w.profile_updates, updates, "{on_platform:?}");
+        let published = &w.profiles[&id];
+        assert_eq!(published.display_name.as_deref(), Some("Alice"));
+        assert_eq!(published.public_message, on_platform.public_message);
+    }
 }

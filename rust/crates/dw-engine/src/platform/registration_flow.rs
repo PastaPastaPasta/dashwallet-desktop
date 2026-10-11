@@ -101,6 +101,10 @@ pub(crate) const REBROADCAST_WAIT: Duration = Duration::from_secs(5);
 /// steps again (the run keeps its lease, §2.6's one prompt).
 const SYNC_POLL: Duration = Duration::from_secs(5);
 const NETWORK_RETRY_MIN: Duration = Duration::from_secs(2);
+/// A lock's outpoint is written this many times before the run gives up
+/// with the storage error, backing off by this much more each time.
+const LOCK_WRITE_TRIES: u32 = 3;
+const LOCK_WRITE_RETRY: Duration = Duration::from_millis(100);
 const NETWORK_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Mode B's worst-case funding fee (E0-04 §2a.3): spending every
@@ -275,9 +279,25 @@ pub(crate) trait RegistrationLib: Send + Sync {
         label: &str,
         lease: &Lease,
     ) -> impl Future<Output = Result<NameOutcome, NameError>> + Send;
-    /// Creates the identity's DashPay profile, or does nothing if it has
-    /// one.
+    /// The identity's DashPay profile as Platform has it (its display name,
+    /// public message and avatar URL), `None` if it has none.
+    fn platform_profile(
+        &self,
+        identity: &str,
+    ) -> impl Future<Output = Result<Option<ProfileRecord>, PlatformError>> + Send;
+    /// Creates the identity's DashPay profile document. Platform refuses a
+    /// second one (the profile's unique `$ownerId` index), so the step asks
+    /// [`Self::platform_profile`] first.
     fn create_profile(
+        &self,
+        identity: &str,
+        identity_index: u32,
+        profile: &ProfileRecord,
+        lease: &Lease,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// Revises the profile Platform has: the fields `profile` sets replace
+    /// its own, the others stay (the library's read-modify-write update).
+    fn update_profile(
         &self,
         identity: &str,
         identity_index: u32,
@@ -316,6 +336,13 @@ pub(crate) struct FlowState {
     /// The automatic backup of `FundingSent` was scheduled.
     pub(crate) backed_up: bool,
     pub(crate) task: Option<tokio::task::AbortHandle>,
+    /// The next this many lock records of the run fail (a test's storage
+    /// fault).
+    #[cfg(test)]
+    lock_write_faults: u32,
+    /// Automatic backups scheduled for the flow (a test's count).
+    #[cfg(test)]
+    pub(crate) backups: u32,
 }
 
 impl FlowState {
@@ -709,6 +736,12 @@ impl Flows {
     fn release_built(&self, wallet: WalletId, index: u32) {
         self.take_fence(wallet, |h| h.index == index);
     }
+
+    /// Fails the next `n` lock records of `key`'s run with a storage error.
+    #[cfg(test)]
+    pub(crate) fn fail_lock_writes(&self, key: (WalletId, i64), n: u32) {
+        self.with(key, |s| s.lock_write_faults = n);
+    }
 }
 
 /// Runs `f` with the app database and the flows on `wallet`'s registration
@@ -961,6 +994,31 @@ impl Evidence {
         }
     }
 
+    /// The lock a funding call at `index` for `lock_duffs` built, read after
+    /// the call: the one registration lock tracked now and not `before` it,
+    /// for that index and amount, that no row holds. The fence and the
+    /// in-progress gate let no other funding of the wallet run meanwhile, so
+    /// it is the call's own even where its index alone cannot say so (0
+    /// past `Built`) and its outpoint never reached the row (MN-1). Two
+    /// such locks say nothing.
+    fn built_by_the_call(
+        &self,
+        before: &[OutPoint],
+        index: u32,
+        lock_duffs: u64,
+    ) -> Option<&LockInfo> {
+        let mut new = self.locks.iter().filter(|l| {
+            l.funds_registration()
+                && !before.contains(&l.outpoint)
+                && !self.held(l.outpoint)
+                && l.identity_index == index
+                && l.amount == lock_duffs
+                && l.status != LockStatus::Consumed
+        });
+        let lock = new.next()?;
+        new.next().is_none().then_some(lock)
+    }
+
     /// Registration locks no row holds. A row this build cannot read holds
     /// the lock built for its index too, so that lock is never handed to
     /// another row (DEC-171 (3)).
@@ -1200,13 +1258,26 @@ pub(crate) fn lock_tracked(
     if built {
         flows.release_built(wallet, index);
     }
-    let (db, job_flows) = (Arc::clone(appdb), Arc::clone(flows));
     let now = crate::events::unix_now();
-    flows
-        .act_blocking(wallet, move || {
-            note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
-        })
-        .unwrap_or(Ok(None))
+    // A failed write is tried again (it reads the row afresh, so a retry
+    // never writes twice). One that keeps failing leaves the lock to the
+    // funding call, which attributes it when the call ends (MN-1).
+    let mut tries = 1;
+    loop {
+        let (db, job_flows) = (Arc::clone(appdb), Arc::clone(flows));
+        let noted = flows
+            .act_blocking(wallet, move || {
+                note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
+            })
+            .unwrap_or(Ok(None));
+        match noted {
+            Err(e) if tries < LOCK_WRITE_TRIES => {
+                tracing::warn!(error = %e, "retrying a registration lock's record");
+                tries += 1;
+            }
+            noted => return noted,
+        }
+    }
 }
 
 /// [`lock_tracked`]'s write, on the actor: the row at `index` the lock
@@ -1635,6 +1706,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Phase::FundingSent | Phase::ProofWaiting => self.create_identity(row, phase).await,
             Phase::IdentityRegistered if row.label.is_empty() => self.profile(row).await,
             Phase::IdentityRegistered => self.to_phase(row, Phase::NameRequested).await,
+            // The name step settled without the name (MJ-1): the profile next.
+            Phase::NameRequested if row.name_error.is_some() => self.profile(row).await,
             Phase::NameRequested => self.names(row).await,
             Phase::NameRegistered | Phase::Contested => self.profile(row).await,
             Phase::ProfileCreated => self.to_phase(row, Phase::Done).await,
@@ -1743,23 +1816,53 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     }
 
     /// Records the flow's lock: the outpoint and `phase`, then the
-    /// automatic backup of §3.4 Restore rule 4.
+    /// automatic backup of §3.4 Restore rule 4. A failed write is retried;
+    /// one that keeps failing ends the run as a storage error, the row
+    /// unfailed at its index, where resume and "Finish transfers" find the
+    /// lock again (MN-1).
+    /// A storage fault a test set for the next lock record.
+    #[cfg(test)]
+    fn lock_write_fault(&self) -> Option<PlatformError> {
+        self.flows()
+            .with_held(self.claim, |s| {
+                s.lock_write_faults = s.lock_write_faults.checked_sub(1)?;
+                Some(PlatformError::Storage {
+                    detail: "a test's fault".into(),
+                })
+            })
+            .flatten()
+    }
+
     async fn record_lock(
         &self,
         row: &RegistrationRow,
         outpoint: OutPoint,
         phase: Phase,
     ) -> Result<Step, PlatformError> {
-        let step = self
-            .advance(
-                row,
-                RegistrationChange {
-                    phase: Some(phase.as_str().into()),
-                    outpoint: Some(canonical(outpoint)),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let change = RegistrationChange {
+            phase: Some(phase.as_str().into()),
+            outpoint: Some(canonical(outpoint)),
+            ..Default::default()
+        };
+        let mut tries = 1;
+        let step = loop {
+            #[cfg(test)]
+            let written = match self.lock_write_fault() {
+                Some(e) => Err(e),
+                None => self.advance(row, change.clone()).await,
+            };
+            #[cfg(not(test))]
+            let written = self.advance(row, change.clone()).await;
+            match written {
+                Ok(step) => break step,
+                Err(e) if tries < LOCK_WRITE_TRIES => {
+                    tracing::warn!(draft = row.id, error = %e, "retrying the lock's record");
+                    tokio::time::sleep(LOCK_WRITE_RETRY * tries).await;
+                    tries += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        };
         backup_once(self.session, self.wallet, row.id);
         Ok(step)
     }
@@ -1879,6 +1982,17 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             s.is_until = Some(Instant::now() + IS_WINDOW);
             s.wait = Some(RegistrationWait::InstantSend);
         });
+        // The registration locks before the call: one tracked after it that
+        // was not is the call's own, whether or not its outpoint reached
+        // the row (MN-1).
+        let before: Vec<OutPoint> = self
+            .lib
+            .tracked_locks()
+            .await
+            .iter()
+            .filter(|l| l.funds_registration())
+            .map(|l| l.outpoint)
+            .collect();
         let funded = lease
             .scope_step(Some(funding_step(row.id)), async {
                 let call = lease
@@ -1899,7 +2013,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let current = self.row().await?;
         let ev = self.evidence().await?;
         let tracked = match &current {
-            Some(r) => ev.lock_of(r),
+            Some(r) => ev
+                .lock_of(r)
+                .or_else(|| ev.built_by_the_call(&before, index, lock_duffs)),
             None => None,
         }
         .map(|l| l.outpoint);
@@ -1937,7 +2053,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
 
     /// Moves a flow whose lock never reached the wire back to
     /// `KeysPrepared`, retryable, clearing the outpoint the tap may have
-    /// recorded while the lock was tracked.
+    /// recorded while the lock was tracked. The automatic backup taken for
+    /// that lock no longer holds the flow's funding: the next lock's is
+    /// scheduled again (MN-2).
     async fn unfund(&self, code: &'static str) -> Result<Step, PlatformError> {
         let Some(row) = self.row().await? else {
             return Ok(Step::Stop);
@@ -1951,7 +2069,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             failure: Some(Some((code.into(), true))),
             ..Default::default()
         };
-        self.write(&row, change).await?;
+        if self.write(&row, change).await? == Written::Applied {
+            self.flows().with_held(self.claim, |s| s.backed_up = false);
+        }
         Ok(Step::Stop)
     }
 
@@ -2105,6 +2225,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     }
 
     /// NameRequested → NameRegistered | Contested, then the temporary name.
+    /// The identity exists, so a name that fails settles the step (MJ-1):
+    /// its code goes to `name_error` and the flow goes on to the profile;
+    /// the identity claims a name through DP1-03's `register_name`.
     async fn names(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
         let Some(identity) = row.identity.as_deref() else {
             return Ok(Step::Fail(internal(), false));
@@ -2116,8 +2239,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
-        match self.lib.register_name(identity, &row.label, &lease).await {
-            Ok(NameOutcome::Registered) => self.to_phase(row, Phase::NameRegistered).await,
+        let failed = match self.lib.register_name(identity, &row.label, &lease).await {
+            Ok(NameOutcome::Registered) => return self.to_phase(row, Phase::NameRegistered).await,
             Ok(NameOutcome::ContestStarted { .. }) => {
                 if let Some(temp) = row.temp_label.as_deref() {
                     match self.lib.register_name(identity, temp, &lease).await {
@@ -2134,16 +2257,25 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                         Err(e) => tracing::info!(draft = row.id, "no temporary name: {e}"),
                     }
                 }
-                self.to_phase(row, Phase::Contested).await
+                return self.to_phase(row, Phase::Contested).await;
             }
-            Err(NameError::Platform(e)) => Ok(self.failed(&e)),
-            // Taken, locked, a closed contest: the identity exists, and the
-            // user picks another name with `register_name`.
-            Err(e) => Ok(Step::Fail(e.code(), false)),
-        }
+            Err(NameError::Platform(e)) => self.failed(&e),
+            // Taken, locked, a contest open, an invalid label.
+            Err(e) => Step::Fail(e.code(), false),
+        };
+        self.settle(row, failed, |code| RegistrationChange {
+            name_error: Some(code.into()),
+            ..Default::default()
+        })
+        .await
     }
 
-    /// The initial profile, if any, then Done.
+    /// The initial profile, if any, then Done. Idempotent against Platform
+    /// (MN-3), which refuses a second profile document: one Platform has
+    /// that already says what the row's does counts as published, a
+    /// different one is revised under the update rules. A failure settles
+    /// the step (MJ-1): the flow ends `Done` with its code in
+    /// `profile_error`.
     async fn profile(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
         let Some(text) = row.initial_profile.as_deref() else {
             return self.to_phase(row, Phase::Done).await;
@@ -2154,6 +2286,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let (Some(identity), Some(index)) = (row.identity.as_deref(), row.identity_index) else {
             return Ok(Step::Fail(internal(), false));
         };
+        let settled = |code: &'static str| RegistrationChange {
+            phase: Some(Phase::Done.as_str().into()),
+            profile_error: Some(code.into()),
+            ..Default::default()
+        };
+        let existing = match self.lib.platform_profile(identity).await {
+            Ok(existing) => existing,
+            Err(e) => return self.settle(row, self.failed(&e), settled).await,
+        };
+        if existing.as_ref().is_some_and(|p| profile_says(p, &profile)) {
+            return self.profile_created(row).await;
+        }
         let Some(lease) = self.lease() else {
             return Ok(Step::Park(self.authority_wait()));
         };
@@ -2161,25 +2305,64 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
-        match self
-            .lib
-            .create_profile(identity, index, &profile, &lease)
-            .await
-        {
-            Ok(()) => {
-                self.advance(
-                    row,
-                    RegistrationChange {
-                        phase: Some(Phase::ProfileCreated.as_str().into()),
-                        clear_initial_profile: true,
-                        ..Default::default()
-                    },
-                )
-                .await
+        let put = match existing {
+            None => {
+                self.lib
+                    .create_profile(identity, index, &profile, &lease)
+                    .await
             }
-            Err(e) => Ok(self.failed(&e)),
+            Some(_) => {
+                self.lib
+                    .update_profile(identity, index, &profile, &lease)
+                    .await
+            }
+        };
+        match put {
+            Ok(()) => self.profile_created(row).await,
+            Err(e) => self.settle(row, self.failed(&e), settled).await,
         }
     }
+
+    async fn profile_created(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
+        self.advance(
+            row,
+            RegistrationChange {
+                phase: Some(Phase::ProfileCreated.as_str().into()),
+                clear_initial_profile: true,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// A step after the identity exists ended with `step`. A failure
+    /// settles it (MJ-1): the identity's funds are spent, so nothing holds
+    /// the flow; `settle` records the code and the flow goes on. A wait or
+    /// a park is the step's own.
+    async fn settle(
+        &self,
+        row: &RegistrationRow,
+        step: Step,
+        settle: impl FnOnce(&'static str) -> RegistrationChange,
+    ) -> Result<Step, PlatformError> {
+        match step {
+            Step::Fail(code, _) => {
+                tracing::info!(draft = row.id, phase = %row.phase, code, "registration step settled");
+                self.advance(row, settle(code)).await
+            }
+            step => Ok(step),
+        }
+    }
+}
+
+/// Platform's profile already says what `wanted` sets; the fields `wanted`
+/// leaves out are not compared (an update would leave them as they are).
+fn profile_says(platform: &ProfileRecord, wanted: &ProfileRecord) -> bool {
+    let says =
+        |wanted: &Option<String>, platform: &Option<String>| wanted.is_none() || wanted == platform;
+    says(&wanted.display_name, &platform.display_name)
+        && says(&wanted.public_message, &platform.public_message)
+        && says(&wanted.avatar_url, &platform.avatar_url)
 }
 
 /// `Registration{draft}` for hosts that show the row (DASHPAY §3.5).
@@ -2250,7 +2433,12 @@ pub(crate) fn spawn<L: RegistrationLib + 'static>(
 /// (§3.4 Restore rule 4), once per flow and process.
 pub(crate) fn backup_once(session: &Arc<NetworkSession>, wallet: WalletId, draft: i64) {
     let first = session.platform.registrations.with((wallet, draft), |s| {
-        !std::mem::replace(&mut s.backed_up, true)
+        let first = !std::mem::replace(&mut s.backed_up, true);
+        #[cfg(test)]
+        if first {
+            s.backups += 1;
+        }
+        first
     });
     if first {
         session.schedule_automatic_backup(wallet);
@@ -2317,6 +2505,34 @@ fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
         | E::TransactionBuild(_)) => FundError::NotSent(e.into()),
         e => FundError::Failed(e.into()),
     }
+}
+
+/// The fields of `profile` the library publishes. Avatar bytes are DP4-02's;
+/// a registration's profile names its avatar by URL only.
+fn profile_update(profile: &ProfileRecord) -> platform_wallet::wallet::identity::ProfileUpdate {
+    platform_wallet::wallet::identity::ProfileUpdate {
+        display_name: profile.display_name.clone(),
+        public_message: profile.public_message.clone(),
+        avatar_url: profile.avatar_url.clone(),
+        avatar_bytes: None,
+    }
+}
+
+/// The DashPay system contract at the SDK's platform version, parsed once.
+fn dashpay_contract(sdk: &dash_sdk::Sdk) -> Result<Arc<dpp::prelude::DataContract>, PlatformError> {
+    static CONTRACT: std::sync::OnceLock<Arc<dpp::prelude::DataContract>> =
+        std::sync::OnceLock::new();
+    if let Some(contract) = CONTRACT.get() {
+        return Ok(Arc::clone(contract));
+    }
+    let contract = dpp::system_data_contracts::load_system_data_contract(
+        dpp::system_data_contracts::SystemDataContract::Dashpay,
+        sdk.version(),
+    )
+    .map_err(|e| PlatformError::Internal {
+        detail: format!("the DashPay contract: {e}"),
+    })?;
+    Ok(Arc::clone(CONTRACT.get_or_init(|| Arc::new(contract))))
 }
 
 /// What a funding may spend of the engine's coin view. `protected` counts
@@ -2553,6 +2769,44 @@ impl RegistrationLib for PwLib {
         .await
     }
 
+    async fn platform_profile(
+        &self,
+        identity: &str,
+    ) -> Result<Option<ProfileRecord>, PlatformError> {
+        use dash_sdk::drive::query::{WhereClause, WhereOperator};
+        use dash_sdk::platform::{DocumentQuery, FetchMany};
+        use dpp::document::{Document, DocumentV0Getters};
+        let id = parse_identity(identity)?;
+        let query = DocumentQuery::new(dashpay_contract(&self.sdk)?, "profile")
+            .map_err(|e| PlatformError::Internal {
+                detail: format!("the profile query: {e}"),
+            })?
+            .with_where(WhereClause {
+                field: "$ownerId".into(),
+                operator: WhereOperator::Equal,
+                value: dpp::platform_value::platform_value!(id),
+            })
+            .with_limit(1);
+        let documents = Document::fetch_many(&self.sdk, query).await?;
+        let Some(document) = documents.into_values().flatten().next() else {
+            return Ok(None);
+        };
+        let text = |key: &str| {
+            document
+                .properties()
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        Ok(Some(ProfileRecord {
+            display_name: text("displayName"),
+            public_message: text("publicMessage"),
+            avatar_url: text("avatarUrl"),
+            ..ProfileRecord::default()
+        }))
+    }
+
     async fn create_profile(
         &self,
         identity: &str,
@@ -2561,30 +2815,28 @@ impl RegistrationLib for PwLib {
         lease: &Lease,
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
-        let has_profile = {
-            let state = self.wallet.state().await;
-            state
-                .identity_manager
-                .managed_identity(&id)
-                .is_some_and(|m| m.dashpay().profile.is_some())
-        };
-        if has_profile {
-            return Ok(());
-        }
         let signer = lease.identity_signer(&[identity_index])?;
         self.wallet
             .identity()
             .dashpay()
-            .create_profile_with_external_signer(
-                &id,
-                platform_wallet::wallet::identity::ProfileUpdate {
-                    display_name: profile.display_name.clone(),
-                    public_message: profile.public_message.clone(),
-                    avatar_url: profile.avatar_url.clone(),
-                    avatar_bytes: None,
-                },
-                &signer,
-            )
+            .create_profile_with_external_signer(&id, profile_update(profile), &signer)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_profile(
+        &self,
+        identity: &str,
+        identity_index: u32,
+        profile: &ProfileRecord,
+        lease: &Lease,
+    ) -> Result<(), PlatformError> {
+        let id = parse_identity(identity)?;
+        let signer = lease.identity_signer(&[identity_index])?;
+        self.wallet
+            .identity()
+            .dashpay()
+            .update_profile_with_external_signer(&id, profile_update(profile), &signer)
             .await?;
         Ok(())
     }
