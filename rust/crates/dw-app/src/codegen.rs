@@ -13,7 +13,7 @@ use ts_rs::{Config, TS};
 
 use crate::bridge::{AppEvent, EVENT, MAX_TXIDS};
 use crate::error::{AppError, ErrorCode};
-use crate::ipc::{Imports, TypeSpec};
+use crate::ipc::{Exports, Imports, TypeSpec};
 
 /// The generated directory, from this crate's manifest directory.
 pub fn generated_dir() -> PathBuf {
@@ -29,20 +29,20 @@ fn config(dir: &Path) -> Config {
 /// Writes every binding into `dir`.
 pub fn write_bindings(dir: &Path) -> Result<(), String> {
     let cfg = config(dir);
-    let mut imports = Imports::new();
+    let mut exports = Exports::default();
     let specs = crate::api::specs();
     let types = specs
         .iter()
         .flat_map(|(_, s)| s.args.iter().map(|(_, t)| *t).chain([s.ret]))
         .chain([TypeSpec::of::<AppEvent>(), TypeSpec::of::<AppError>()]);
     for t in types {
-        t.export(&cfg, &mut imports).map_err(|e| e.to_string())?;
+        t.export(&cfg, &mut exports)?;
     }
     // Re-exported for the renderer's error handling; written with `AppError`.
     if let Some(path) = ErrorCode::output_path() {
-        imports.insert(ErrorCode::ident(&cfg), path);
+        exports.imports.insert(ErrorCode::ident(&cfg), path);
     }
-    let ts = commands_ts(&cfg, &imports);
+    let ts = commands_ts(&cfg, &exports.imports);
     std::fs::write(dir.join("commands.ts"), ts).map_err(|e| e.to_string())
 }
 
@@ -227,6 +227,40 @@ pub(crate) mod tests {
             read_dir_sorted(fresh.path()),
             "apps/desktop/src/api/generated is stale; run DW_UPDATE_BINDINGS=1 cargo test -p dw-app bindings"
         );
+    }
+
+    /// Two Rust types of one TypeScript name are refused, not overwritten.
+    #[test]
+    fn a_type_name_clash_is_refused() {
+        #[allow(dead_code)]
+        mod a {
+            #[derive(ts_rs::TS)]
+            pub struct Clash {
+                pub x: u8,
+            }
+        }
+        #[allow(dead_code)]
+        mod b {
+            #[derive(ts_rs::TS)]
+            pub struct Clash {
+                pub y: String,
+            }
+            #[derive(ts_rs::TS)]
+            pub struct Holder {
+                pub inner: Option<Clash>,
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config(dir.path());
+        let mut exports = Exports::default();
+        TypeSpec::of::<a::Clash>().export(&cfg, &mut exports).unwrap();
+        // The same type again is fine.
+        TypeSpec::of::<a::Clash>().export(&cfg, &mut exports).unwrap();
+        // Reached as a dependency, not only at the signature's level.
+        let e = TypeSpec::of::<b::Holder>()
+            .export(&cfg, &mut exports)
+            .unwrap_err();
+        assert!(e.contains("Clash.ts"), "{e}");
     }
 
     #[test]

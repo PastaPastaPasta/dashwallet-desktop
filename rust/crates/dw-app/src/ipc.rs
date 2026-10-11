@@ -30,7 +30,7 @@
 //! is async: Tauri runs sync commands on the main thread, and no engine call
 //! may block it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use ts_rs::{Config, TS, TypeVisitor};
@@ -52,12 +52,25 @@ pub struct CommandSpec {
 #[derive(Clone, Copy)]
 pub struct TypeSpec {
     name: fn(&Config) -> String,
-    export: fn(&Config, &mut Imports) -> Result<(), ts_rs::ExportError>,
+    export: fn(&Config, &mut Exports) -> Result<(), String>,
 }
 
 /// TypeScript identifier → file (relative to the generated directory) of
 /// every named type a signature mentions.
 pub type Imports = BTreeMap<String, PathBuf>;
+
+/// What an export run has written so far.
+#[derive(Default)]
+pub struct Exports {
+    /// The names signatures mention (`commands.ts` imports them).
+    pub imports: Imports,
+    /// Every named type reached, by output file, with its declaration and
+    /// Rust name: ts-rs writes one file per TypeScript name, so two Rust
+    /// types of one name would overwrite each other silently. (Distinct
+    /// types may share a file when they declare the same thing, as ts-rs's
+    /// `serde_json::Value` shadow does.)
+    files: HashMap<PathBuf, (String, &'static str)>,
+}
 
 impl TypeSpec {
     pub fn of<T: TS + 'static>() -> Self {
@@ -74,38 +87,61 @@ impl TypeSpec {
 
     /// Writes the type's declaration and its dependencies' into the
     /// config's directory, and records the names a signature must import.
-    pub fn export(&self, cfg: &Config, imports: &mut Imports) -> Result<(), ts_rs::ExportError> {
-        (self.export)(cfg, imports)
+    /// Fails when another Rust type already took one of the files.
+    pub fn export(&self, cfg: &Config, exports: &mut Exports) -> Result<(), String> {
+        (self.export)(cfg, exports)
     }
 }
 
 /// Exports `T` (and, through its generic arguments, the `X` of `Option<X>`
 /// and `Vec<X>`) with all dependencies.
-fn export_with_imports<T: TS + 'static>(
-    cfg: &Config,
-    imports: &mut Imports,
-) -> Result<(), ts_rs::ExportError> {
+fn export_with_imports<T: TS + 'static>(cfg: &Config, exports: &mut Exports) -> Result<(), String> {
     struct Visit<'a> {
         cfg: &'a Config,
-        imports: &'a mut Imports,
-        result: Result<(), ts_rs::ExportError>,
+        exports: &'a mut Exports,
+        /// Named types are recorded in `imports` only at the signature's level.
+        top: bool,
+        result: Result<(), String>,
     }
     impl TypeVisitor for Visit<'_> {
         fn visit<U: TS + 'static + ?Sized>(&mut self) {
-            if let Some(path) = U::output_path() {
-                self.imports.insert(U::ident(self.cfg), path);
-                if self.result.is_ok() {
-                    self.result = U::export_all(self.cfg);
-                }
-            } else {
+            let Some(path) = U::output_path() else {
                 // A wrapper (`Option`, `Vec`, `Box`): its arguments are what is named.
                 U::visit_generics(self);
+                return;
+            };
+            if self.top {
+                self.exports.imports.insert(U::ident(self.cfg), path.clone());
             }
+            let decl = U::decl(self.cfg);
+            let rust = std::any::type_name::<U>();
+            match self.exports.files.get(&path) {
+                Some((seen, _)) if *seen == decl => return,
+                Some((_, other)) => {
+                    if self.result.is_ok() {
+                        self.result = Err(format!(
+                            "{rust} and {other} are both {}",
+                            path.display()
+                        ));
+                    }
+                    return;
+                }
+                None => {
+                    self.exports.files.insert(path, (decl, rust));
+                }
+            }
+            if self.result.is_ok() {
+                self.result = U::export(self.cfg).map_err(|e| e.to_string());
+            }
+            let top = std::mem::replace(&mut self.top, false);
+            U::visit_dependencies(self);
+            self.top = top;
         }
     }
     let mut visit = Visit {
         cfg,
-        imports,
+        exports,
+        top: true,
         result: Ok(()),
     };
     visit.visit::<T>();
