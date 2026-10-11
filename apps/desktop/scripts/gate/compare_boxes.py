@@ -15,6 +15,7 @@ verdict over every box.
 """
 
 import argparse
+import collections
 import json
 import sys
 
@@ -29,6 +30,14 @@ def boxes(report):
             seen[b["id"]] = n + 1
             out[(screen, b["id"] if n == 0 else f'{b["id"]}#{n}')] = b
     return out
+
+
+def patterns(over, base_name, name):
+    """The most common (dx, dy, dw, dh) among the boxes over tolerance, rounded to 0.5 px. One
+    cause moving many boxes (a scroll bar narrowing a pane) shows as a few patterns."""
+    count = collections.Counter(
+        tuple(round((o[name][k] - o[base_name][k]) * 2) / 2 for k in ("x", "y", "w", "h")) for o in over)
+    return [{"dxdydwdh": list(p), "boxes": n} for p, n in count.most_common(8)]
 
 
 def main():
@@ -83,6 +92,7 @@ def main():
             "missingHere": sorted(f"{k[0]}:{k[1]}" for k in missing)[:10],
             "worst": sorted(over, key=lambda o: -o["delta"])[:10],
             "textRuns": sorted(runs_over, key=lambda o: -o["delta"])[:10],
+            "overPatterns": patterns(over, base_name, name),
         }
     summary["pass"] = ok
     summary["passAllBoxes"] = ok_all
