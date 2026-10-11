@@ -9,7 +9,8 @@
 import DesignTokens
 import SwiftCrossUI
 
-/// Semantic colour roles (UX-SPEC §2.1).
+/// Semantic colour roles (UX-SPEC §2.1), with the WCAG AA variants of §2.1a (DEC-36) wherever
+/// text sits on or is drawn in the role.
 public enum CrossRole {
     /// Window and page background (iOS `dw_secondaryBackground`): #F7F7F7 / #141519.
     public static let canvas = DashColor.App.secondaryBackgroundColor
@@ -20,18 +21,18 @@ public enum CrossRole {
     /// The sidebar column on Linux/Windows.
     public static let sidebar = DashColor.App.secondaryBackgroundColor
     /// Balance hero band and lock screen.
-    public static let hero = DashColor.App.dashNavigationBarBlueColor
+    public static let hero = DashColor.RoleAA.hero
     /// Primary buttons, selection, links, focus, switches on.
-    public static let accent = DashColor.blue
+    public static let accent = DashColor.RoleAA.accent
     /// Hovered or selected rows, info badges, detail chips.
     public static let accentTint = DashColor.blueAlpha10
     /// A selected row under the pointer.
     public static let accentTintStrong = DashColor.blueAlpha20
     public static let textPrimary = DashColor.primaryText
     public static let textSecondary = DashColor.secondaryText
-    public static let textTertiary = DashColor.tertiaryText
+    public static let textTertiary = DashColor.RoleAA.textTertiary
     public static let textOnHero = DashColor.whiteText
-    public static let textLink = DashColor.blueText
+    public static let textLink = DashColor.RoleAA.textLink
     public static let separator = DashColor.App.separatorLineColor
     public static let fieldFill = DashColor.textFieldCryptoAddressBackground
     public static let fieldStroke = DashColor.buttonStrokeGrayStroke
@@ -39,7 +40,9 @@ public enum CrossRole {
     public static let successTint = DashColor.greenAlpha10
     public static let danger = DashColor.red
     public static let dangerTint = DashColor.redAlpha10
-    public static let warning = DashColor.orange
+    public static let warning = DashColor.RoleAA.warning
+    /// The non-mainnet network capsule, under white text.
+    public static let networkCapsule = DashColor.RoleAA.networkCapsule
     public static let warningTint = DashColor.orangeAlpha10
     public static let caution = DashColor.yellow
     public static let neutralTint = DashColor.gray300Alpha20
@@ -55,11 +58,11 @@ public enum CrossRole {
     public static let white = DashColor.white
 }
 
-/// Opacities used with `white` on the hero (UX-SPEC §2.1 notes).
+/// Opacities used with `white` on the hero (UX-SPEC §2.1 notes, §2.1a).
 public enum CrossOpacity {
-    public static let heroCard = 0.12
+    public static let heroCard = DashOpacityAA.heroCard
     public static let heroDivider = 0.18
-    public static let heroSecondaryText = 0.7
+    public static let heroSecondaryText = DashOpacityAA.heroSecondaryText
     public static let heroHint = 0.5
     /// Disabled shortcut items (C6).
     public static let disabled = 0.4

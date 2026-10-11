@@ -14,8 +14,19 @@ struct CrossTokenTests {
         #expect(CrossRole.canvas.dark.hex == "#141519")
         #expect(CrossRole.card.light.hex == "#FFFFFF")
         #expect(CrossRole.card.dark.hex == "#1E1F24")
-        #expect(CrossRole.accent.light.hex == "#008DE4")
-        #expect(CrossRole.accent.dark.hex == "#008DE4")
+    }
+
+    @Test("the text roles are the WCAG AA variants (UX-SPEC §2.1a, DEC-36)")
+    func aaVariants() {
+        #expect(CrossRole.accent.light.hex == "#006FC3")
+        #expect(CrossRole.accent.dark.hex == "#006FC3")
+        #expect(CrossRole.hero == DashColor.RoleAA.hero)
+        #expect(CrossRole.textLink == DashColor.RoleAA.textLink)
+        #expect(CrossRole.textTertiary == DashColor.RoleAA.textTertiary)
+        #expect(CrossRole.warning == DashColor.RoleAA.warning)
+        #expect(CrossRole.networkCapsule == DashColor.RoleAA.networkCapsule)
+        #expect(CrossOpacity.heroCard == DashOpacityAA.heroCard)
+        #expect(CrossOpacity.heroSecondaryText == DashOpacityAA.heroSecondaryText)
     }
 
     @Test("no role is purple or violet")
@@ -23,7 +34,7 @@ struct CrossTokenTests {
         let roles: [DashColor] = [
             CrossRole.canvas, CrossRole.card, CrossRole.cardRaised, CrossRole.hero, CrossRole.accent,
             CrossRole.accentTint, CrossRole.textLink, CrossRole.success, CrossRole.danger, CrossRole.warning,
-            CrossRole.caution, CrossRole.overlay, CrossRole.switchOn,
+            CrossRole.caution, CrossRole.overlay, CrossRole.switchOn, CrossRole.networkCapsule,
         ]
         for role in roles {
             for color in [role.light, role.dark] where color.hsv.saturation > 0.2 {

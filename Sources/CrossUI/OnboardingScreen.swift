@@ -255,7 +255,7 @@ struct LockScreen: View {
             Text(L10n.Lock.title).dashFont(.title2).foregroundColor(CrossRole.textOnHero.color)
             Text(L10n.Lock.prompt)
                 .dashFont(.subhead)
-                .foregroundColor(CrossRole.white.opacity(0.8).color)
+                .foregroundColor(CrossRole.white.opacity(CrossOpacity.heroSecondaryText).color)
             VStack(alignment: .leading, spacing: Int(DashSpacing.s)) {
                 SecureField(CrossStrings.walletPassphrase, text: $passphrase)
                     .accessibilityLabel(CrossStrings.passphrase)

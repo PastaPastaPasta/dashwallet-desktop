@@ -317,7 +317,7 @@ public struct NetworkCapsule: View {
             .fixedSize()
             .padding(.horizontal, points(DashSpacing.sm))
             .padding(.vertical, points(DashSpacing.xxxs) + 1)
-            .background(Capsule().fill(CrossRole.warning.opacity(0.9).color))
+            .background(Capsule().fill(CrossRole.networkCapsule.opacity(DashOpacityAA.networkCapsule).color))
     }
 }
 

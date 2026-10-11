@@ -40,7 +40,7 @@ public enum DashButtonStyle: Sendable, Hashable, CaseIterable {
         // adaptive text colours instead.
         case .tintedGray: enabled ? CrossRole.textPrimary : CrossRole.textTertiary
         case .strokeGray: enabled ? CrossRole.textPrimary : CrossRole.textTertiary
-        case .plainBlue: enabled ? .buttonPlainBlueContent : CrossRole.textTertiary
+        case .plainBlue: enabled ? CrossRole.textLink : CrossRole.textTertiary
         case .plainRed: enabled ? .buttonPlainRedContent : CrossRole.textTertiary
         case .filledWhite: enabled ? .buttonFilledWhiteContent : .buttonFilledWhiteContentDisabled
         case .tintedWhite: enabled ? .buttonTintedWhiteContent : .buttonTintedWhiteContentDisabled
