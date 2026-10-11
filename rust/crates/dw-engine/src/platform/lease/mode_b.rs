@@ -483,10 +483,6 @@ pub enum FundingBlock {
 
 /// A registration funding step as DP1-02 reads it
 /// ([`LeaseTable::registration_funding_steps`], PA-1).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FundingStepView {
     /// The draft it funds: `registration/<draft>/funding`.
@@ -511,10 +507,6 @@ pub(crate) struct FundingStepView {
 
 /// The dispatch journal is not read (not loaded, unopenable, a newer
 /// schema): which steps are claimed is unknown.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FundingStepsUnavailable;
 
@@ -1330,6 +1322,10 @@ impl LeaseTable {
     /// `signed_lock` write runs is here already: the library's store waits
     /// for that write, and the process stops if it fails (§2a.7). A
     /// rejected broadcast leaves its txid here.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02 attributes its rows by it")
+    )]
     pub(crate) fn signed_lock_txids(&self, wallet: WalletId, step: &str) -> Vec<Txid> {
         self.with_j(|i, _| {
             i.fence
@@ -1345,10 +1341,6 @@ impl LeaseTable {
     /// a caller that resumes a row itself (DP1-02's outpoint calls) must
     /// not resume it while this is `Some`, as P2b's own pass does not
     /// ([`unrecorded_signer`]).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02's resume calls gate on it")
-    )]
     pub(crate) fn unrecorded_signer_of(
         &self,
         wallet: WalletId,
@@ -1406,10 +1398,6 @@ impl LeaseTable {
     /// be read (a funding type or a draft id this build does not know): an
     /// empty or partial list would read a claimed step unclaimed (review
     /// Opus O-3, P2b r5 validator).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-    )]
     pub(crate) fn registration_funding_steps(
         &self,
         wallet: WalletId,

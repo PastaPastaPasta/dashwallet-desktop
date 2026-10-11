@@ -144,9 +144,11 @@ impl From<IdentityError> for PlatformError {
 /// `invitation.*` refusals of invitation funding.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistrationError {
-    /// Another registration flow is running.
-    #[error("a registration is in progress")]
-    InProgress,
+    /// Another registration is in progress (DP1-02 §5.3): `draft` names
+    /// the row that blocks, or `registration/<n>/funding` for a funding step
+    /// whose row is gone (an orphan, Q7).
+    #[error("registration {draft} is in progress")]
+    InProgress { draft: String },
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
     /// The wallet has coins it keeps from automatic selection (locked by
@@ -168,6 +170,20 @@ pub enum RegistrationError {
     /// as written for the build that can read it.
     #[error("the registration was written by a newer version")]
     Unsupported,
+    /// A row's failure, never returned by a call: another registration
+    /// holds the lock this one's funding step signed (a restored copy), so
+    /// this one is closed for good and never funds that intent again. It
+    /// can be discarded; a new registration starts afresh (DP1-02 §3.3
+    /// row 7).
+    #[error("another registration holds this registration's funding")]
+    FundedElsewhere,
+    /// A row's failure, never returned by a call: its funding was cancelled
+    /// (Repair's ChainLocked self-spend took its lock's inputs, or nothing
+    /// was signed before a restart) and its step is never called again.
+    /// Nothing is committed; it can be discarded, and a new registration
+    /// starts afresh (DP1-02 §3.3 row 8).
+    #[error("the registration's funding was cancelled")]
+    FundingCancelled,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -179,13 +195,15 @@ pub enum RegistrationError {
 impl RegistrationError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::InProgress => "registration.in_progress",
+            Self::InProgress { .. } => "registration.in_progress",
             Self::FundingInsufficient { .. } => "registration.funding_insufficient",
             Self::CoinsLocked => "registration.coins_locked",
             Self::IslockTimeout => "registration.islock_timeout",
             Self::Recoverable { .. } => "registration.recoverable",
             Self::AlreadyHasUsername => "registration.already_has_username",
             Self::Unsupported => "registration.unsupported",
+            Self::FundedElsewhere => "registration.funded_elsewhere",
+            Self::FundingCancelled => "registration.funding_cancelled",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),

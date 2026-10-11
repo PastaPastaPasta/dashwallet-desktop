@@ -921,10 +921,6 @@ impl Lease {
     /// ([`CallPermit::funding_signer`](super::CallPermit::funding_signer)):
     /// one this one signed for would end `Cancelled`, and its step would
     /// read `NotSent` over a lock that may be on the wire.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02's FromExistingAssetLock registration")
-    )]
     pub(crate) fn uncounted_funding_signer(&self) -> Result<VaultSigner, LeaseError> {
         self.signer(
             BudgetPurpose::Funding,

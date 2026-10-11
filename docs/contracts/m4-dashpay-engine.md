@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 11
+Contract-Version: 13
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -206,15 +206,17 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 |---|---|---|---|
 | `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
 | `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
-| `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5). | `RegistrationError` |
+| `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
-| `discard_registration(draft)` | async | Allowed only when the registration's funding reads `NotSent` or `None`; otherwise `invalid_argument`. That implies `!funds_committed`, and it also refuses a live `Unsent`, whose flow is still building. This is one of the engine's funding gates, which read an asset lock's `None` with the tracked-row check (§4.1). The journal decides, whatever the phase. | `RegistrationError` |
+| `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). | `RegistrationError` |
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
 **Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`; Sol r2,
-DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`).** What the bodies
-decided where the rows leave room:
+DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`; DP1-02's ownership
+model, version 12 for `RegistrationError::InProgress { draft }` and `RegistrationWait::FundingUnknown`; its rev2,
+version 13 for the row failures `registration.funded_elsewhere` and `registration.funding_cancelled`).** What the
+bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
   wallet locks, raised when the credits below need more. The fee is E0-04's `fee_bound_worst` over every spendable
@@ -241,18 +243,54 @@ decided where the rows leave room:
 - **Signers.** Identity creation from the tracked lock signs with the lock's one-time key, the `PlatformFunding`
   signer: a grant that resumes a flow before `IdentityRegistered` needs `max_duffs > 0` (the quote's grant does). It
   spends nothing.
-- **In progress.** `registration.in_progress` while another row is neither `Done` nor failed for good; a failed row
-  counts while it is retryable, or while its funds are committed and it has no identity yet (an identity's funds are
-  its own: a row an earlier build failed after its identity no longer counts). A row this build cannot run reads as failed, not
-  retryable: a `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an
+- **The registration ledger (DP1-02 ownership model, rev2).** Every decision about which registration lock is
+  whose, and every gate, reads one ledger of the wallet, built in one job of its registration actor: the rows, the
+  library's tracked locks and identities, the drafts whose funding call runs, and P2b's funding steps (each
+  `registration/<n>/funding` step with its key, status, the active attempt's signed txids, the resolved attempts'
+  tombstones and whether its marker was written under the durable-record gate, in one read of the lease table). A
+  journal that cannot be read fails the decision closed (`storage`, nothing written). A step's claim is `None` (never
+  marked, resolved `NotSent`, or resolved with tombstones under a durable record), `Exact` (its calls signed these
+  txids) or `Unknown` (marked and possibly sent, with no txid known); `Unknown` is never read as "no funding". A
+  recorded outpoint whose txid is a tombstone is voided: a row's live outpoint is its recorded one unless voided. A
+  lock is consumed when it is tracked `Consumed`, its identity is discovered, or a row holds it with an identity. A
+  step's signer is its draft's row, or, once that row is gone, its heir: the oldest readable Core-balance row at the
+  step's index with no live outpoint, no identity and no step of its own whose funding key (registration, index,
+  account 0) is exactly the marker's. The step's holder is the row whose live outpoint is a lock the step signed; its
+  row is the holder, else the signer. A step is outstanding until its claim is `None` or every lock it signed is
+  consumed and held, or consumed with no open row of the step left to receive the identity; with no row it is an
+  orphan. A row is `Funded` (it holds a live lock not consumed), `Awaiting` (an outstanding step, and it is open: no
+  live lock, no identity), `Closed` (an outstanding step it is no longer open for), `Settled` (its identity exists, or
+  its live lock is consumed, nothing outstanding), `Cancelled` (open, no outstanding step, its funding call not
+  running, and another row holds its step's lock (`registration.funded_elsewhere`), or it records a voided outpoint
+  or its step's claim is `None` while the marker stands (`registration.funding_cancelled`), or it already failed with
+  that code) or `Unfunded`; a row this build cannot read is committed when it records an outpoint or identity, has a
+  step, or a lock no row holds may be its. A lock no row holds live and not consumed is `Dead` when it is a tombstone
+  or a non-outstanding step signed it, `Step` while an outstanding step signed it, `Parked` while a row this build
+  cannot read may own it (DEC-173 (2)), `Contested` while an `Unknown` step with no lock of its own may have built it
+  (its index, or a lost one, unless its amount differs from the step's row's), else `Free`. A `Step` lock may go only
+  to its step's row while that row is open, its funding call running or not, else (that row gone, or readable and not
+  open) to a recovery row; a `Free` lock to an open `Unfunded` row whose funding call does not run, or a recovery row;
+  no other lock to anyone. A row is committed while `Funded`, `Awaiting` or `Closed`, or while its funding call runs;
+  the gates read that. `RegistrationStatus.funds_committed` keeps E0-04 §16.5's meaning: committed, or a Core-balance
+  row that holds or held a lock (an outpoint, an identity, a phase past funding), so a `Settled` or `Done` row still
+  reads `true`; a `Cancelled` row reads `false`. Terminal evidence is written by the run for its own row at the top of
+  `KeysPrepared`, `FundingSent` and `ProofWaiting`, and by "Finish transfers" for every row, never while the row's
+  funding call runs: a consumed lock the row's step signed, held by no row, goes to the open row with the identity
+  discovery reports for it (outpoint, identity, the identity's index, phase `IdentityRegistered`, the failure
+  cleared; no funding and no identity creation follow), and until discovery reports it the row waits at `Network`; a
+  voided outpoint is cleared (back to `KeysPrepared`), the exact tombstone only; a `Cancelled` row is failed with its
+  code, not retryable, and its automatic backup is taken again. The rest of this section names what each path does
+  with the ledger.
+- **In progress.** `registration.in_progress { draft }` names what blocks a new registration: a row with no failure
+  that is not `Done`, a retryable failed row, or a committed row that is not `Done`, never a `Cancelled` one (a row
+  this build cannot read while committed); else an orphan funding step (`draft` is then `registration/<n>/funding`).
+  A `Cancelled` row is discarded, never resumed: to register again the user starts a new registration. A row this build cannot run reads as failed, not retryable: a
+  `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an
   `Invitation` row is `invitation.invalid` (until DP5-02 the invitation-claim path does not exist;
   `start_registration` refuses `Invitation` funding with `platform.not_implemented`), and `FaucetAssetLock` is
   `platform.feature_off`. The failure is derived when read, never written: an unknown row is never funded, advanced
-  or deleted (`discard_registration` refuses it), and stays as written for the build that can read it. Unknown means
-  committed: its `funds_committed` is `true`, and it counts as in progress, whenever a lock or proof exists for it (an
-  outpoint, an identity, or a tracked lock that is its own, or a registration lock no row holds whose index the
-  library lost, which may be its own: DEC-173 (2)); without one it stops counting. Every encoding of the
-  row, the profile included, is read before anything is funded.
+  or deleted (`discard_registration` refuses it), and stays as written for the build that can read it. Every
+  encoding of the row, the profile included, is read before anything is funded.
 - **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
   uncontested (`invalid_argument`). An `initial_profile` naming an avatar candidate is `invalid_argument` until
   DP4-02's `prepare_avatar`.
@@ -261,28 +299,19 @@ decided where the rows leave room:
   records the sighash of every signature. When the library stores the lock it built (`Built`, through the changeset
   tap, which writes the outpoint to the row: §3.4 Restore rule 3), before the broadcaster sees it, the engine checks
   each input against those sighashes and journals the lock's txid and inputs as the funding step's `signed_lock`
-  before the persister takes it. That record is exact provenance: durable across a restart, whatever the lock's
-  status, index or amount says, and never matched by another device's lock on the seed. **One ownership rule** decides
-  every path that gives a row a lock (the run, the call's outcome, the index and identity restore, the tap and
-  "Finish transfers"), exclusive both ways: a lock in any row's `signed_lock` is that row's alone, and a row whose
-  call signed a lock is reserved for it, taking no other lock even while its own is away, until its lock returns
-  (the row takes it) or P2b resolves the step `NotSent` (its signed inputs spent by a ChainLocked conflict). Such a
-  row reads `MaybeSent`, so it counts as in progress and refuses discard, and it waits at `ChainLock`. Only a row
-  with no signed provenance takes an unsigned lock. After the call a tracked lock that is the row's (its outpoint's,
-  its signed lock, or an unheld unsigned lock whose known index is the row's) means committed (the row moves on to
-  it). With none, the step's status decides: a refusal
-  before the call (the permit's, or the coin check's) funds nothing and fails with its code; a failure before the
-  library released a signature is `NotSent`, and the row goes back to `KeysPrepared`, retryable, with the library's
-  code. Anything after a signature is `MaybeSent`, a rejected broadcast included (the pin cannot tell a rejection
-  that may yet be relayed: E0-04 review M-2), and so is any other failure with no tracked row (a lock the library
-  untracked as swept, the wallet closing under the call): a row whose outpoint the tap wrote stays funded and waits
-  for the `ChainLock`; one without fails `platform.broadcast_unknown`, not retryable. Both count as in progress and
-  refuse discard; `resume_registration` refuses the failed one until the lock is tracked again, and then the tap
-  hands the lock to it (the row resumes at `FundingSent`, no second row), or "Finish transfers" settles it (below).
-  The row's record of its signed lock, and the tap's, are retried; one that still fails ends the run with `storage`,
-  the row unfailed at `KeysPrepared` and its index. It reads committed, so it counts as in progress, refuses discard
-  and funds nothing again; its next run, in this process or after a restart, takes the lock by its signed record. An
-  unsigned lock whose index is lost is a row's only by "Finish transfers", and only a row with no signed provenance.
+  before the persister takes it. Before the call an `Awaiting` row records its own step's lock if it is tracked, and
+  otherwise fails `platform.broadcast_unknown`, not retryable, funding nothing; a `Closed` row fails the same way; a
+  `Cancelled` row stops; an `Unfunded` row checks its index (below), then funds. After the call a fresh ledger
+  decides, never the call's result alone: the row's live outpoint, when the step signed it (the tap or "Finish
+  transfers" wrote it), or else its own step's tracked lock is recorded (`ProofWaiting` after an InstantSend
+  timeout); an `Ok` naming a lock the step did not sign is logged and never recorded. Without one, a step whose
+  claim is `Exact` or `Unknown` fails the row `platform.broadcast_unknown`; only a `None` claim reads the call's
+  error: a `NotSent` (P2b's `NotSent` row superseded the marker; nothing was signed) sends the row back to
+  `KeysPrepared`, retryable, with the library's code, a refusal before the call fails with the refusal's code, and
+  anything else fails `platform.broadcast_unknown`. Such a row counts as in progress and refuses discard while it is
+  `Awaiting`; the tap or "Finish transfers" gives it its step's lock when it is back (the row resumes at
+  `FundingSent`, no second row). The row's record of its lock, and the tap's, are retried; one that still fails ends
+  the run with `storage`, the row unfailed at `KeysPrepared` and its index, `Awaiting` its signed lock.
 - **Settled after the identity.** Once the identity exists the flow cannot fail for good: its funds are spent. A name
   step settles only on a refusal positively identified as one a retry would meet again, from an explicit list:
   `name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, `name.unavailable_for_invite`, and for either
@@ -316,22 +345,13 @@ decided where the rows leave room:
   owns what is at its index only by its own lock: a lock whose known index is the row's and that no row holds or
   signed, and the identity derived from that lock's outpoint. An identity at the index derived from a lock another
   row holds or signed, or one another row holds, sends a flow that is not yet funded to a new index; so does another
-  row at the index that is funded, reserved for its signed lock, or older. A row reserved for its signed lock never
-  moves: its step's key is that index. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
-  registration lock no row holds whose index is unknown) stops the flow before funding, waiting at `ChainLock`.
-  A lock a row's funding call signed is that row's (its `signed_lock`, above), whatever its index. "Finish transfers"
-  gives it to that row; it gives an unsigned lock to the oldest row it can fund that waits for one and has no signed
-  provenance, a row whose funding call ended `platform.broadcast_unknown` without signing included, which takes the
-  lock and resumes at `FundingSent` rather than a new row being made beside it. A row reserved for its signed lock
-  takes none and counts in `still_pending`. A signed lock its row cannot take (a row an earlier build gave another
-  lock while its own was away) goes to no other row, new or waiting: it counts in `still_pending` while it is
-  unspent. A row's own run never adopts an unsigned lock whose index is lost, whatever its amount (it may be another
-  device's on the seed: ownership needs exact provenance). While a funding call of the wallet runs, Finish
-  gives that call's row nothing, and gives away no lock on its way (`Built`, `Broadcast`) whose index is lost, which
-  may be that call's own, and counts it in `still_pending`. A row Finish would give a lock reads `MaybeSent` until it
-  does, so it is committed and discard refuses it. An identity
-  with no lock to prove it is never adopted; the row waits until it is discarded (`register_name` then names the
-  identity).
+  row at the index that holds a lock or identity, is committed, or is older. Anything the flow cannot attribute (an
+  identity at the index whose lock is `Contested` or `Parked`, or that no lock proves, a `Free`, `Contested` or
+  `Parked` lock whose index is unknown, another draft's outstanding step at the index) stops the flow before
+  funding, waiting at `ChainLock`; another draft's step at the index that is no longer outstanding (settled or
+  cancelled) sends it to a new index. New indexes skip the key index of every step in the ledger, standing, settled
+  or cancelled, so no row funds at another draft's step index. An identity with no lock to prove it is never adopted; the row waits until it is discarded
+  (`register_name` then names the identity).
 - **Waits.** A running flow waits for the sync, for the network (backing off to 60 s), for its proof and for a lock
   the library untracked to be tracked again, in its own task, keeping its lease, so one grant carries it through.
   The `ChainLock` wait has no limit, in bounded waits (the library's own unbounded wait gives up after 180 s). An own
@@ -350,35 +370,36 @@ decided where the rows leave room:
   after a newer one, and an unloaded wallet's flows are forgotten in a job, so a claim sent before the unload is
   forgotten with them. A run whose generation was taken stops at its next write or at its funding call. Evidence the library reports (the
   changeset tap's outpoint, and "Finish transfers" giving a stranded lock to a waiting row or to a new row) is read
-  and written in one job, under the owner read with it. The tap's lock goes to the row whose funding call runs, else
-  to the row at its index; not while a row this build cannot read, with no outpoint or identity and past `Draft`
-  as far as it reads, sits at that index. A row this build cannot read
-  holds the lock built for its index, which is never given to another row. `resume_registration` asks the running
+  and written in one job, under the owner read with it. The tap's lock goes, among the rows at its known index with
+  no lock that the ledger lets take it, to the row whose funding call runs, else to the oldest. `resume_registration` asks the running
   flow to take its grant rather than start another run.
-- **`discard_registration`** takes the flow's claim between library calls: a call running refuses it, and so do
-  committed funds and a row this build cannot read, and then the flow runs on from its row as it is (a run it stopped
+- **`discard_registration`** takes the flow's claim between library calls: a call running refuses it, and so do a
+  row the ledger reads committed and a row this build cannot read, and then the flow runs on from its row as it is (a run it stopped
   starts again). It never waits for a run. A funding call's outcome is written before the call counts as ended. The
   row is deleted only under the claim and while its phase and outpoint are the ones the decision read.
-- **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed, that no row
-  holds and whose identity the wallet does not have, each by the one ownership rule (§2.2 Funding failures): a lock a
-  row's funding call signed into that row and no other; an unsigned lock into the `KeysPrepared` row at its index
-  when the index is known (live or failed with nothing committed), a lock whose index is unknown into the oldest
-  `KeysPrepared` row without a lock whose amount it covers (one whose funding call ended
-  `platform.broadcast_unknown` included; not one whose funding call runs), never a row reserved for its own signed
-  lock, else a new row with label `""` at a fresh index, which skips the name step. A row reserved for its signed
-  lock, and a signed lock its row cannot take, count in `still_pending`. A lock stays where it is while a row this build cannot read may own it (DEC-173 (2)):
-  one with no outpoint or identity, past `Draft` as far as it reads, at the lock's index, or anywhere once the lock's
-  index is unknown. Such a lock counts as that row's possible funding; one whose index is unknown also counts in
-  `still_pending`. While the funding hold lasts (the indexes the seed uses are not known yet) it adopts none and counts them `still_pending`. It
+- **`finish_asset_locks`** first writes the ledger's terminal evidence for every row (above), then, on a fresh
+  ledger, gives every tracked registration lock of account 0 that no row holds and that is not consumed a row, as the
+  ledger lets it: a `Step` lock to its step's row while that row is open, its funding call running or not, else to a
+  recovery row when that row is gone or readable and not open; a `Free` lock to the row at its known index, else
+  (index unknown) to the oldest `Unfunded` row waiting for a lock (no failure, or a retryable one) whose amount it
+  covers, else to a recovery row. A recovery row is a new row with label `""` at a fresh index, which skips the name
+  step; it is only ever made for unspent value (a consumed lock settles its step instead). A `Parked`, `Contested` or
+  `Dead` lock goes nowhere. `still_pending` starts from the ledger read after these writes: the outstanding steps no
+  row holds a lock of, plus the `Parked`, `Contested` and `Free` locks (an `Unknown` step and a lock it contests
+  count as two). While the funding hold lasts (the indexes the seed uses are not known yet) it writes nothing and
+  reports the same count. It
   then runs each row funded by evidence (an outpoint, or a funded phase) once under the grant, without waiting for a
   proof; a `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone:
   the grant's lease keeps its key for the other rows. `resumed` counts the rows it ran. A row whose run fails (a
   `storage` error) is logged and counted in `resumed` and `still_pending`; the other rows run on.
 - **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
   `platform.feature_off{feature: "faucet"}`.
-- **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, `Sync` before
-  funding while the hold lasts, `ChainLock` for a lock without a proof, otherwise `Unlock` or `Authorize` by the vault's
-  state. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
+- **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, for an
+  `Awaiting` row (failed or not) `FundingUnknown` when a step of its is `Unknown`, `Network` while discovery has not
+  reported the identity its step's consumed lock created, and `ChainLock` otherwise, `Sync`
+  before funding while the hold lasts, `ChainLock` for a lock without a proof or evidence it cannot attribute,
+  otherwise `Unlock` or `Authorize` by the vault's state. An orphan step's entry waits the same way and is read-only:
+  `resume_registration` and `discard_registration` refuse its draft. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
 - **`contest_ends_at`** stays `None` until DP1-04's vote poll.
 - **On E0-04.P2b (Mode B):** the funding step runs under P2b's funding call permit, which charges the Funding budget
   (the cap is also checked before the call), writes the funding marker, counts released signatures and records the
@@ -744,13 +765,15 @@ impl IdentityError {
 impl From<IdentityError> for PlatformError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistrationError {
-    InProgress,
+    InProgress { draft: String },
     FundingInsufficient { needed: u64, available: u64 },
     CoinsLocked,
     IslockTimeout,
     Recoverable { draft: String },
     AlreadyHasUsername,
     Unsupported,
+    FundedElsewhere,
+    FundingCancelled,
     Name(NameError),
     Invitation(InvitationError),
     Platform(PlatformError),
@@ -1344,6 +1367,7 @@ pub enum RegistrationWait {
     InstantSend,
     ChainLock,
     Network,
+    FundingUnknown,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationFailure {
@@ -1455,7 +1479,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 |---|---|
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |

@@ -657,11 +657,13 @@ fn invitation_params(e: &InvitationError) -> Value {
 fn registration_params(e: &RegistrationError) -> Value {
     use RegistrationError as R;
     match e {
-        R::InProgress
-        | R::IslockTimeout
+        R::IslockTimeout
         | R::AlreadyHasUsername
         | R::Unsupported
+        | R::FundedElsewhere
+        | R::FundingCancelled
         | R::CoinsLocked => json!({}),
+        R::InProgress { draft } => json!({"draft": draft}),
         R::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }

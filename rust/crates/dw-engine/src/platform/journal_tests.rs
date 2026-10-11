@@ -690,7 +690,8 @@ fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
     }));
     let _ = h.tap.registrations.set(Arc::default());
     // The session's lease table, whose signed-lock records the tap gives a
-    // lock by (none here); without one the tap gives none.
+    // lock by (none here); without one, or with its journal unread, the
+    // tap gives none.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let leases = super::lease::LeaseTable::new(
         DashNetwork::Regtest,
@@ -698,6 +699,17 @@ fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
         rt.handle().clone(),
         super::lease::LeaseConfig::default(),
         0,
+    );
+    // Its dispatch journal is read and empty: PA-1 answers, with no step.
+    let dw_appdb::dispatch::JournalOpen::Ready(journal) =
+        dw_appdb::dispatch::DispatchJournal::open_in_memory(1).unwrap()
+    else {
+        panic!("a fresh journal is ready")
+    };
+    leases.load_journal(
+        Some(Arc::new(journal) as Arc<dyn super::lease::fence::JournalBackend>),
+        Vec::new(),
+        Vec::new(),
     );
     h.tap.watch_locks(&leases);
     let entry = |op: OutPoint, funding_type: T, account_index: u32, identity_index: u32| {

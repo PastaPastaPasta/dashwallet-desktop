@@ -177,9 +177,9 @@ pub(crate) struct Classified {
     /// for the provenance check before the persister takes them (§2a.6,
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
-    /// Registration locks of account 0 written (DP1-02's funding key):
-    /// outpoint, and identity index when known (`LockInfo::known_index`).
-    registration_locks: Vec<(OutPoint, Option<u32>)>,
+    /// Registration locks of account 0 written, as the registration
+    /// ledger reads them (DP1-02 §6).
+    registration_locks: Vec<super::registration_flow::LockInfo>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -285,10 +285,13 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                     e.funding_type == platform_wallet::AssetLockFundingType::IdentityRegistration
                         && e.account_index == 0
                 })
-                .map(|e| {
-                    use super::registration_flow::{known_index, lock_status};
-                    let index = known_index(lock_status(&e.status), e.identity_index);
-                    (e.out_point, index)
+                .map(|e| super::registration_flow::LockInfo {
+                    outpoint: e.out_point,
+                    registration: true,
+                    identity_index: e.identity_index,
+                    account: e.account_index,
+                    amount: e.amount_duffs,
+                    status: super::registration_flow::lock_status(&e.status),
                 }),
         );
     }
@@ -536,14 +539,13 @@ impl ChangesetTap {
         // "Finish transfers" (fail closed).
         match (self.registrations.get(), self.table()) {
             (Some(flows), Some(leases)) => {
-                for (outpoint, index) in locks {
+                for lock in locks {
                     let tracked = super::registration_flow::lock_tracked(
                         flows,
                         &self.appdb,
                         &leases,
                         id,
-                        outpoint,
-                        index,
+                        lock,
                     );
                     match tracked {
                         Ok(Some(draft)) => {

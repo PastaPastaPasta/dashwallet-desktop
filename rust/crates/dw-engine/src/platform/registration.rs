@@ -16,6 +16,7 @@ use super::flows::{BudgetPurpose, FlowKind, GrantRequest, LeaseStateView};
 use super::lease::Lease;
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
+use super::registration_ledger::{Ledger, Standing};
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -155,6 +156,10 @@ pub enum RegistrationWait {
     ChainLock,
     /// Platform or the peers are unreachable; retried on reconnect.
     Network,
+    /// A funding call of the flow may have sent a lock this device cannot
+    /// name (its signed record was lost): the flow waits until the lock is
+    /// tracked or the funding is resolved unsent (DP1-02 §8, Q4).
+    FundingUnknown,
 }
 
 /// Why a flow is `Failed`, with the parameters its code carries.
@@ -423,45 +428,13 @@ pub(crate) async fn quote<L: RegistrationLib>(
     })
 }
 
-/// A row that counts towards `registration.in_progress`: one that runs or
-/// can be resumed, or whose funds are committed. A flow that failed for
-/// good with nothing committed (an invitation row restored here, a newer
-/// build's row) does not, and neither does a [`settled`] one.
-fn in_progress(row: &RegistrationRow, ev: &flow::Evidence) -> bool {
-    match flow::failure_of(row) {
-        None => row.phase != Phase::Done.as_str(),
-        Some((_, retryable)) => {
-            retryable || (!settled(row) && flow::funds_committed(row, ev, false))
-        }
-    }
-}
-
-/// A row an earlier build failed for good after its identity existed: its
-/// funds are that identity's, so it holds nothing and may be discarded
-/// (MJ-1; this build settles such a step `Done`). A row this build cannot
-/// read is never settled by it (DEC-171 (3)).
-fn settled(row: &RegistrationRow) -> bool {
-    row.identity.is_some()
-        && !flow::is_unsupported(row)
-        && flow::failure_of(row).is_some_and(|(_, retryable)| !retryable)
-}
-
-fn any_in_progress(ev: &flow::Evidence) -> bool {
-    ev.rows().iter().any(|r| in_progress(r, ev))
-}
-
-/// The wallet's evidence for the funding gates.
-async fn evidence<L: RegistrationLib>(
+/// The wallet's registration ledger (DP1-02 §5), for the gates.
+async fn ledger<L: RegistrationLib>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &L,
-) -> Result<flow::Evidence, PlatformError> {
-    Ok(flow::Evidence::new(
-        lib.tracked_locks().await,
-        lib.identities().await,
-        registration_rows(session, wallet).await?,
-    )
-    .with_signed(&session.leases, wallet))
+) -> Result<Ledger, PlatformError> {
+    Ledger::load(session, wallet, lib).await
 }
 
 /// The Funding cap `grant` gives, read without redeeming it: a refused
@@ -522,11 +495,14 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     // Checked here so a refused start keeps its grant, and again with the
     // insert, in the one job of the wallet's actor (DEC-173).
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
-    let rows = registration_rows(session, wallet).await?;
-    let ev = flow::Evidence::new(locks.clone(), identities.clone(), rows)
-        .with_signed(&session.leases, wallet);
-    if any_in_progress(&ev) {
-        return Err(RegistrationError::InProgress);
+    let leases = Arc::clone(&session.leases);
+    let (l, i) = (locks.clone(), identities.clone());
+    let blocking = flow::ledger_op(session, wallet, move |db, flows| {
+        Ok(Ledger::read(db, flows, &leases, wallet, l, i)?.blocking())
+    })
+    .await?;
+    if let Some(draft) = blocking {
+        return Err(RegistrationError::InProgress { draft });
     }
     if let Funding::CoreBalance { lock_duffs } = plan.funding {
         // The same checks the funding step makes, before a row exists.
@@ -563,30 +539,21 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     let wallet_text = wallet.to_string();
     let now = crate::events::unix_now();
     let leases = Arc::clone(&session.leases);
-    let draft = flow::rows_op(session, wallet, move |db, _| {
-        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&wallet_text)?)
-            .with_signed(&leases, wallet);
-        if any_in_progress(&ev) {
-            return Ok(None);
+    let draft = flow::ledger_op(session, wallet, move |db, flows| {
+        let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
+        if let Some(draft) = ledger.blocking() {
+            return Ok(Err(draft));
         }
-        db.insert_registration(&wallet_text, &row, now).map(Some)
+        db.insert_registration(&wallet_text, &row, now)
+            .map(Ok)
+            .map_err(flow::db_error)
     })
     .await?
-    .ok_or(RegistrationError::InProgress)?;
+    .map_err(|draft| RegistrationError::InProgress { draft })?;
     tracing::info!(draft, "registration started");
     flow::signal(session, wallet, draft);
     flow::start_run(session, wallet, lib, draft, Some(lease)).await?;
     Ok(draft.to_string())
-}
-
-async fn registration_rows(
-    session: &NetworkSession,
-    wallet: WalletId,
-) -> Result<Vec<RegistrationRow>, PlatformError> {
-    let wallet = wallet.to_string();
-    Ok(session
-        .appdb_op(move |db| db.registration_rows(&wallet))
-        .await?)
 }
 
 async fn registration_row(
@@ -608,10 +575,10 @@ pub(crate) async fn statuses<L: RegistrationLib>(
     wallet: WalletId,
     lib: &L,
 ) -> Result<Vec<RegistrationStatus>, RegistrationError> {
-    let ev = evidence(session, wallet, lib).await?;
+    let ledger = ledger(session, wallet, lib).await?;
     let mut spendable = None;
     let mut out = Vec::new();
-    for row in ev.rows() {
+    for row in ledger.rows() {
         let state = session.platform.registrations.get((wallet, row.id));
         let phase = Phase::parse(&row.phase);
         let failure = match flow::failure_of(row) {
@@ -645,10 +612,13 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             }
             None => None,
         };
+        // An `Awaiting` row waits for its step's lock, failed or not (D5).
+        let awaiting = ledger.standing(row) == Standing::Awaiting;
         let waiting = match (&failure, phase) {
-            (Some(_), _) | (None, Some(Phase::Done)) => None,
+            (Some(_), _) if !awaiting => None,
+            (None, Some(Phase::Done)) => None,
             _ if state.running() => state.wait,
-            _ => Some(idle_wait(session, lib, row, phase, &ev)),
+            _ => Some(idle_wait(session, lib, row, phase, &ledger)),
         };
         out.push(RegistrationStatus {
             draft: row.id.to_string(),
@@ -666,7 +636,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 .lease
                 .as_ref()
                 .is_some_and(|held| flow::holds_own_key(&held.0)),
-            funds_committed: flow::funds_committed(row, &ev, state.in_call),
+            funds_committed: ledger.funds_committed(row),
             // DP1-04 seam: the contest's end from the vote poll.
             contest_ends_at: None,
             failure,
@@ -674,6 +644,31 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             profile_failure: row.profile_error.clone(),
             created_at: row.created_at,
             updated_at: row.updated_at,
+        });
+    }
+    // Q7: a funding step whose row is gone, read-only (no resume, no
+    // discard), until its lock is attributed or it resolves.
+    for (draft, unknown) in ledger.orphans() {
+        out.push(RegistrationStatus {
+            draft: flow::funding_step(draft),
+            phase: RegistrationPhase::KeysPrepared,
+            label: String::new(),
+            temporary_label: None,
+            identity: None,
+            txid: ledger.orphan_txid(draft).map(|t| t.to_string()),
+            waiting: Some(if unknown {
+                RegistrationWait::FundingUnknown
+            } else {
+                RegistrationWait::ChainLock
+            }),
+            holds_key: false,
+            funds_committed: true,
+            contest_ends_at: None,
+            failure: None,
+            name_failure: None,
+            profile_failure: None,
+            created_at: 0,
+            updated_at: 0,
         });
     }
     Ok(out)
@@ -687,18 +682,29 @@ fn idle_wait<L: RegistrationLib>(
     lib: &L,
     row: &RegistrationRow,
     phase: Option<Phase>,
-    ev: &flow::Evidence,
+    ledger: &Ledger,
 ) -> RegistrationWait {
+    // A step of the row's is outstanding and its lock is not here (D5).
+    if ledger.standing(row) == Standing::Awaiting {
+        return if ledger.funding_unknown(row) {
+            RegistrationWait::FundingUnknown
+        } else if ledger.awaits_discovery(row) {
+            // §5.2a: its consumed lock's identity is not discovered yet.
+            RegistrationWait::Network
+        } else {
+            RegistrationWait::ChainLock
+        };
+    }
     let unfunded = phase.is_some_and(Phase::unfunded) && row.identity.is_none();
     if unfunded && let Some(hold) = lib.funding_hold() {
         return hold;
     }
-    if unfunded && row.asset_lock_outpoint.is_none() && ev.unattributed(row) {
+    if unfunded && ledger.live(row).is_none() && ledger.unattributed(row) {
         return RegistrationWait::ChainLock;
     }
     let proofless = matches!(phase, Some(Phase::FundingSent | Phase::ProofWaiting))
         && flow::outpoint_of(row)
-            .and_then(|op| ev.locks.iter().find(|l| l.outpoint == op))
+            .and_then(|op| ledger.locks().iter().find(|l| l.outpoint == op))
             .is_none_or(|l| !l.status.has_proof() && l.status != flow::LockStatus::Consumed);
     if proofless {
         return RegistrationWait::ChainLock;
@@ -719,23 +725,23 @@ async fn clear_failure<L: RegistrationLib>(
     let (w, id, owner) = (wallet.to_string(), claim.draft(), claim.owner());
     let now = crate::events::unix_now();
     let leases = Arc::clone(&session.leases);
-    flow::rows_op(session, wallet, move |db, _| {
-        let ev = flow::Evidence::new(locks, identities, db.registration_rows(&w)?)
-            .with_signed(&leases, wallet);
-        let Some(row) = ev.rows().iter().find(|r| r.id == id) else {
+    flow::ledger_op(session, wallet, move |db, flows| {
+        let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
+        let Some(row) = ledger.rows().iter().find(|r| r.id == id) else {
             return Ok(Err("unknown draft".into()));
         };
         let Some(code) = row.error.as_deref() else {
             return Ok(Ok(()));
         };
-        if !flow::resumable(row, &ev) {
+        if !ledger.resumable(row) {
             return Ok(Err(format!("registration {id} failed for good ({code})")));
         }
         let change = RegistrationChange {
             failure: Some(None),
             ..Default::default()
         };
-        db.update_registration(&w, id, owner, &row.phase, true, &change, now)?;
+        db.update_registration(&w, id, owner, &row.phase, true, &change, now)
+            .map_err(flow::db_error)?;
         Ok(Ok(()))
     })
     .await
@@ -807,22 +813,6 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     Ok(())
 }
 
-/// Why a discard of `row` is refused, if it is.
-fn discard_refused(
-    row: &RegistrationRow,
-    ev: &flow::Evidence,
-    in_call: bool,
-) -> Option<&'static str> {
-    if flow::is_unsupported(row) {
-        // DEC-171 (3): what this build cannot read, it does not delete.
-        return Some("the registration was written by a newer version");
-    }
-    if settled(row) {
-        return None;
-    }
-    flow::funds_committed(row, ev, in_call).then_some("the registration's funds are committed")
-}
-
 pub(crate) async fn discard<L: RegistrationLib + 'static>(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -833,8 +823,11 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     let key = (wallet, row.id);
     let flows = &session.platform.registrations;
     // Judged first without the flow, so a refusal leaves its run alone.
-    let ev = evidence(session, wallet, &*lib).await?;
-    if let Some(why) = discard_refused(&row, &ev, flows.get(key).in_call) {
+    let ledger = ledger(session, wallet, &*lib).await?;
+    let Some(current) = ledger.rows().iter().find(|r| r.id == row.id) else {
+        return Err(invalid("unknown draft"));
+    };
+    if let Some(why) = ledger.discard_refused(current) {
         return Err(invalid(why));
     }
     // Then with the flow taken from its run (DEC-171): no call of it starts
@@ -846,17 +839,20 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let (w, id, owner) = (wallet.to_string(), row.id, claim.owner());
     let leases = Arc::clone(&session.leases);
-    let decided = flow::rows_op(session, wallet, move |db, flows| {
-        let rows = db.registration_rows(&w)?;
-        let Some(row) = rows.iter().find(|r| r.id == id).cloned() else {
+    let decided = flow::ledger_op(session, wallet, move |db, flows| {
+        let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
+        let Some(row) = ledger.rows().iter().find(|r| r.id == id).cloned() else {
             return Ok(Err("unknown draft"));
         };
-        let ev = flow::Evidence::new(locks, identities, rows).with_signed(&leases, wallet);
-        if let Some(why) = discard_refused(&row, &ev, false) {
+        // The claim taken holds no call: the run it took has none running.
+        if let Some(why) = ledger.discard_refused(&row) {
             return Ok(Err(why));
         }
         let outpoint = row.asset_lock_outpoint.as_deref();
-        if !db.delete_registration(&w, id, owner, &row.phase, outpoint)? {
+        if !db
+            .delete_registration(&w, id, owner, &row.phase, outpoint)
+            .map_err(flow::db_error)?
+        {
             return Ok(Err("the registration changed meanwhile"));
         }
         flows.forget(key);
@@ -900,12 +896,17 @@ pub(crate) async fn finish<L: RegistrationLib>(
     let held = lib.funding_hold().is_some();
     let now = crate::events::unix_now();
     let leases = Arc::clone(&session.leases);
-    report.still_pending += flow::rows_op(session, wallet, move |db, flows| {
+    let (pending, closed) = flow::ledger_op(session, wallet, move |db, flows| {
         flow::import_stranded(db, flows, &leases, wallet, locks, identities, held, now)
     })
     .await?;
-    let ev = evidence(session, wallet, lib).await?;
-    for row in ev.rows() {
+    report.still_pending += pending;
+    for draft in closed {
+        flow::backup_again(session, wallet, draft);
+        flow::signal(session, wallet, draft);
+    }
+    let ledger = ledger(session, wallet, lib).await?;
+    for row in ledger.rows() {
         // DEC-171 (4): funded by its evidence, whatever its phase says.
         let Ok((phase, _)) = flow::interpret(row) else {
             continue;
@@ -914,7 +915,7 @@ pub(crate) async fn finish<L: RegistrationLib>(
         if !funded || phase == Phase::Done {
             continue;
         }
-        if row.error.is_some() && !flow::resumable(row, &ev) {
+        if row.error.is_some() && !ledger.resumable(row) {
             continue;
         }
         // One row's storage failure leaves it pending and the others run.

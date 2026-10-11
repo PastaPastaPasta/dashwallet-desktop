@@ -115,6 +115,7 @@ const NOT_FACADE: &[&str] = &[
     "reverify.rs",
     "names_tests.rs",
     "registration_flow.rs",
+    "registration_ledger.rs",
     "registration_rows.rs",
     "registration_tests",
     "registration_tests.rs",
@@ -815,7 +816,7 @@ fn error_codes_match_the_contract() {
         &enums,
         "RegistrationError",
         &[
-            RegistrationError::InProgress,
+            RegistrationError::InProgress { draft: s() },
             RegistrationError::FundingInsufficient {
                 needed: 0,
                 available: 0,
@@ -825,6 +826,8 @@ fn error_codes_match_the_contract() {
             RegistrationError::Recoverable { draft: s() },
             RegistrationError::AlreadyHasUsername,
             RegistrationError::Unsupported,
+            RegistrationError::FundedElsewhere,
+            RegistrationError::FundingCancelled,
         ],
         RegistrationError::code,
     );

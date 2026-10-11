@@ -32,6 +32,7 @@ mod recovery;
 mod recovery_tests;
 mod registration;
 pub(crate) mod registration_flow;
+pub(crate) mod registration_ledger;
 mod registration_rows;
 #[cfg(test)]
 mod registration_tests;

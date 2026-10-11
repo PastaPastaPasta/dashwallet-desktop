@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 
 use super::errors::{NameError, PlatformError, RegistrationError};
 use super::flows::FlowKind;
+use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::names::NameOutcome;
 use super::registration::{
@@ -292,11 +293,15 @@ impl Fixture {
     /// A process restart as the rows see it: the flow's task and every
     /// in-memory state of it are gone; app.sqlite stays.
     fn kill(&self, draft: i64) {
-        self.session
-            .platform
-            .registrations
-            .forget((self.wallet, draft));
+        let registrations = &self.session.platform.registrations;
+        let task = registrations.get((self.wallet, draft)).task;
+        registrations.forget((self.wallet, draft));
         eventually("the killed flow is gone", || !self.running(draft));
+        // A restart ends its library calls too: their permits end as they
+        // would with the process (the aborted task drops them).
+        eventually("the killed flow's calls ended", || {
+            task.as_ref().is_none_or(|t| t.is_finished())
+        });
     }
 
     fn statuses(&self, lib: &Fake) -> Vec<registration::RegistrationStatus> {
@@ -428,6 +433,9 @@ struct World {
     /// failed and the process restarted, or the journal was not ready
     /// (E0-04 §2a.6).
     skip_signed: bool,
+    /// The input the funding's lock spends: a real coin of the wallet, for
+    /// Repair's self-spend to take (else a made-up one).
+    lock_input: Option<OutPoint>,
     profile_updates: u32,
     spendable: Spendable,
     funds: u32,
@@ -441,6 +449,22 @@ struct World {
     waits: Vec<Duration>,
 }
 
+/// The tap's report of the lock `outpoint`, as the journal builds it: its
+/// index known (`Built`), or lost (index 0, past `Built`).
+fn tapped(outpoint: OutPoint, index: Option<u32>) -> LockInfo {
+    LockInfo {
+        outpoint,
+        registration: true,
+        identity_index: index.unwrap_or(0),
+        account: 0,
+        amount: flow::LOCK_DUFFS,
+        status: match index {
+            Some(_) => LockStatus::Built,
+            None => LockStatus::Broadcast,
+        },
+    }
+}
+
 /// platform-wallet as the flow sees it, scripted.
 struct Fake {
     appdb: Arc<AppDb>,
@@ -450,6 +474,13 @@ struct Fake {
     session: std::sync::Weak<NetworkSession>,
     ready: AtomicBool,
     hung: AtomicBool,
+    /// `funding_permit` waits while set, before P2b marks the step: the
+    /// window between `enter_funding` and the marker (OD-05). Sets `hung`.
+    permit_hold: AtomicBool,
+    /// `spendable` waits while set: the window between the funding step's
+    /// ledger read (the row `Unfunded` at a free index) and `enter_funding`.
+    /// Sets `hung`.
+    spendable_hold: AtomicBool,
     w: Mutex<World>,
 }
 
@@ -467,6 +498,8 @@ impl Fake {
             session,
             ready: AtomicBool::new(true),
             hung: AtomicBool::new(false),
+            permit_hold: AtomicBool::new(false),
+            spendable_hold: AtomicBool::new(false),
             w: Mutex::new(World {
                 spendable: Spendable {
                     duffs: COIN,
@@ -543,6 +576,12 @@ impl RegistrationLib for Fake {
     }
 
     async fn spendable(&self) -> Result<Spendable, PlatformError> {
+        if self.spendable_hold.load(Ordering::SeqCst) {
+            self.hung.store(true, Ordering::SeqCst);
+            while self.spendable_hold.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         Ok(self.w().spendable)
     }
 
@@ -557,6 +596,12 @@ impl RegistrationLib for Fake {
         key: FundingKey,
         lock_duffs: u64,
     ) -> Result<CallPermit, FundError> {
+        if self.permit_hold.load(Ordering::SeqCst) {
+            self.hung.store(true, Ordering::SeqCst);
+            while self.permit_hold.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         let session = self.session.upgrade().expect("the fixture's session");
         let fence = session
             .coin_fence(self.wallet)
@@ -600,8 +645,13 @@ impl RegistrationLib for Fake {
                 self.wallet,
                 &[StoredLock {
                     txid: outpoint.txid,
-                    inputs: vec![OutPoint::new(Txid::from_byte_array([0x77; 32]), index)],
+                    inputs: vec![
+                        self.w()
+                            .lock_input
+                            .unwrap_or(OutPoint::new(Txid::from_byte_array([0x77; 32]), index)),
+                    ],
                     sighashes: Some(vec![sighash]),
+                    built: true,
                 }],
             );
         }
@@ -612,8 +662,7 @@ impl RegistrationLib for Fake {
                 &self.appdb,
                 &session.leases,
                 self.wallet,
-                outpoint,
-                Some(index),
+                tapped(outpoint, Some(index)),
             )
             .unwrap();
             // The tap's `on_funded`, as the session wires it.
@@ -651,6 +700,46 @@ impl RegistrationLib for Fake {
         result
     }
 
+    async fn tracked_row(&self, outpoint: OutPoint) -> Option<TrackedRow> {
+        let lock = self
+            .w()
+            .locks
+            .iter()
+            .find(|l| l.outpoint == outpoint)?
+            .clone();
+        let key = FundingKey {
+            funding_type: if lock.registration {
+                platform_wallet::AssetLockFundingType::IdentityRegistration
+            } else {
+                platform_wallet::AssetLockFundingType::IdentityTopUp
+            },
+            identity_index: lock.identity_index,
+            account: lock.account,
+        };
+        let status = match lock.status {
+            LockStatus::Built => TrackedStatus::Built,
+            LockStatus::Broadcast => TrackedStatus::Broadcast,
+            LockStatus::InstantSendLocked => TrackedStatus::InstantSendLocked,
+            LockStatus::ChainLocked => TrackedStatus::ChainLocked,
+            LockStatus::Consumed => TrackedStatus::Consumed,
+            LockStatus::RecoveredFromChain => TrackedStatus::RecoveredFromChain,
+        };
+        // As `fund` signs it: one input, its sighash the txid's bytes.
+        Some(TrackedRow {
+            txid: outpoint.txid,
+            key,
+            status,
+            inputs: vec![self.w().lock_input.unwrap_or(OutPoint::new(
+                Txid::from_byte_array([0x77; 32]),
+                lock.identity_index,
+            ))],
+            trusted: index_trusted(&key, status),
+            sighashes: status
+                .pending()
+                .then(|| vec![outpoint.txid.to_byte_array()]),
+        })
+    }
+
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
         self.w().waits.push(timeout);
         self.maybe_hang(Call::WaitProof, When::Before).await;
@@ -683,7 +772,7 @@ impl RegistrationLib for Fake {
         // The proof is signed with the lock's one-time key: the funding
         // signer, as `PwLib` asks.
         lease.identity_signer(&[index])?;
-        lease.funding_signer()?;
+        lease.uncounted_funding_signer()?;
         self.maybe_hang(Call::RegisterIdentity, When::Before).await;
         let id = flow::b58(&flow::identity_for(outpoint));
         {
@@ -807,14 +896,133 @@ impl RegistrationLib for Fake {
     }
 }
 
+/// A kill inside the funding call before its signature: the step's marker
+/// stands and P2b has no `NotSent` row for it (the in-process resolution
+/// did not land), so the step is `Unknown` (DP1-02 §3.1) and the row waits,
+/// funding nothing, until PA-2 resolves it (§8: without PA-2 a wedge).
+/// A restart: the session closes and opens again, and P2b derives its
+/// funding statuses from what is durable. With `journal`, the dispatch
+/// journal is that copy, as a crash left it.
+fn reopen_with(f: &mut Fixture, journal: Option<&std::path::Path>) {
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    if let Some(journal) = journal {
+        let path = f.session.data_dir().join("dispatch.sqlite");
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+        std::fs::copy(journal, &path).unwrap();
+    }
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(
+            DashNetwork::Regtest,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.session.leases.refresh_funding(f.wallet))
+    );
+}
+
+/// The process dies while the run's funding call waits before its
+/// signature: its marker is durable, and no permit's end runs. Returns the
+/// library of the new session and the row, after one run.
+fn crash_before_the_funding_signature(f: &mut Fixture) -> (Arc<Fake>, i64) {
+    let lib = f.fake();
+    lib.hang_at(Call::Fund, When::Before);
+    let draft = f.insert(core_row(PLAIN));
+    f.spawn(&lib, draft, Some(f.lease()));
+    eventually("the funding call runs", || lib.hung.load(Ordering::SeqCst));
+    let crashed = f._dir.path().join("crashed-dispatch.sqlite");
+    rusqlite::Connection::open(f.session.data_dir().join("dispatch.sqlite"))
+        .unwrap()
+        .execute("VACUUM INTO ?1", [crashed.to_str().unwrap()])
+        .unwrap();
+    f.kill(draft);
+    reopen_with(f, Some(&crashed));
+    let lib = f.fake();
+    f.drive(&lib, draft, Some(f.lease()), true);
+    (lib, draft)
+}
+
+/// A flow aborted in a live process before its funding signature: the
+/// permit's end resolves the unsigned step `NotSent` and drops its marker
+/// (H12), so the run calls the same step again and completes.
+#[test]
+fn a_flow_aborted_before_the_funding_signature_retries_its_step() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.hang_at(Call::Fund, When::Before);
+    let draft = f.insert(core_row(PLAIN));
+    f.spawn(&lib, draft, Some(f.lease()));
+    eventually("the funding call runs", || lib.hung.load(Ordering::SeqCst));
+    f.kill(draft);
+    lib.w().hang = None;
+    f.drive(&lib, draft, Some(f.lease()), true);
+    let row = f.row(draft);
+    assert_eq!((phase(&row), row.error), (Phase::Done, None));
+    assert_eq!(lib.counts().0, 1);
+}
+
+/// DP1-02 §11.2 item 12, C5 (§8.1, Q14): under PA-2 and OD-02 the flagged
+/// marker with no durable record and no running call reads `NotSent` but
+/// stands, so its step is cancelled: the row closes
+/// `Cancelled(funding_cancelled)`, nothing is committed, a new start is
+/// allowed, and the step is never called again.
+#[test]
+fn a_crash_before_the_funding_signature_closes_its_row() {
+    let mut f = fixture(false);
+    let (lib, draft) = crash_before_the_funding_signature(&mut f);
+    let steps = f
+        .session
+        .leases
+        .registration_funding_steps(f.wallet)
+        .unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|s| (s.draft, s.status, s.durable_record))
+            .collect::<Vec<_>>(),
+        [(draft, Some(crate::platform::DispatchState::NotSent), true)]
+    );
+    let row = f.row(draft);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (Some("registration.funding_cancelled"), false)
+    );
+    let status = f.status(&lib, draft);
+    assert!(!status.funds_committed);
+    assert_eq!(lib.counts(), (0, 0), "the cancelled step was called again");
+    f.engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request("afterc5"),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+}
+
 /// Every transition, killed before the library acted, mid-funding and
 /// after it acted: the restarted flow ends registered, with one lock, one
 /// identity, one name and one profile.
 #[test]
 fn a_kill_at_any_transition_resumes_to_one_registration() {
     let f = fixture(false);
+    // (Fund, Before): `a_crash_before_the_funding_signature_closes_its_row`
+    // and `a_flow_aborted_before_the_funding_signature_retries_its_step`.
     let points = [
-        (Call::Fund, When::Before),
         (Call::Fund, When::Tracked),
         (Call::Fund, When::After),
         (Call::WaitProof, When::Before),
@@ -931,7 +1139,10 @@ fn a_second_registration_waits_for_the_first() {
     eventually("the sync hold", || {
         f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
     });
-    assert_eq!(start("bob2"), Err(RegistrationError::InProgress));
+    assert!(matches!(
+        start("bob2"),
+        Err(RegistrationError::InProgress { draft: d }) if d == draft.to_string()
+    ));
     // Parked before funding: the sync hold (Restore rule 1).
     let status = f.status(&lib, draft);
     assert_eq!(status.phase, RegistrationPhase::Draft);
@@ -1268,13 +1479,15 @@ fn funding_failures_follow_the_tracked_row() {
     }
 }
 
-/// A funding that failed with an unknown outcome before any row was
-/// tracked (the wallet closing under the call) is MaybeSent: the row fails
-/// `broadcast_unknown`, and discard, a retry and a new registration wait
-/// for evidence; the lock tracked later (a restore's reconstruction,
-/// through the tap) resumes it.
+/// A funding call that signed and failed before the library stored its
+/// lock (the wallet closing under the call): under PA-2 the library sends
+/// no lock before its record, so the step's flagged marker, with nothing
+/// signed recorded, reads `NotSent` and the step is cancelled (C5). The
+/// row closes `Cancelled(funding_cancelled)`, never `broadcast_unknown`:
+/// nothing is committed, discard and a new registration are allowed, and
+/// a lock at its index later is no longer the row's (D15).
 #[test]
-fn an_unbacked_funding_is_maybe_sent_until_its_lock_is_tracked() {
+fn a_signature_lost_before_its_store_cancels_the_step() {
     let f = fixture(false);
     let lib = f.fake();
     lib.w().fund_script = Some(FundScript::LostUntracked);
@@ -1283,64 +1496,65 @@ fn an_unbacked_funding_is_maybe_sent_until_its_lock_is_tracked() {
     lib.w().identities.push((0, "earlier".into()));
     let draft = f.insert(core_row(PLAIN));
     f.drive(&lib, draft, Some(f.lease()), true);
+    let steps = f
+        .session
+        .leases
+        .registration_funding_steps(f.wallet)
+        .unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|s| (s.draft, s.status, s.signed.len(), s.durable_record))
+            .collect::<Vec<_>>(),
+        vec![(
+            draft,
+            Some(crate::platform::DispatchState::NotSent),
+            0,
+            true
+        )]
+    );
     let row = f.row(draft);
     assert_eq!(phase(&row), Phase::KeysPrepared);
     assert_eq!(
         (row.error.as_deref(), row.retryable),
-        (Some(flow::broadcast_unknown()), false)
+        (Some("registration.funding_cancelled"), false)
     );
     let index = row.identity_index.unwrap();
     assert_eq!(index, 1);
-    let status = f.status(&lib, draft);
-    assert!(status.funds_committed);
-    assert_eq!(status.phase, RegistrationPhase::Failed);
-    let discard = f.discard(&lib, draft);
-    assert_eq!(discard.unwrap_err().code(), "invalid_argument");
-    let resume = f.engine.block_on(registration::resume(
-        &f.session,
-        f.wallet,
-        Arc::clone(&lib),
-        &draft.to_string(),
-        Some(f.grant(COIN, COIN, Credential::None)),
-    ));
-    assert_eq!(resume.unwrap_err().code(), "invalid_argument");
-    // A new registration waits for it too.
-    let start = f.engine.block_on(registration::start(
-        &f.session,
-        f.wallet,
-        Arc::clone(&lib),
-        request("erin2"),
-        f.grant(COIN, 10 * COIN * 1000, Credential::None),
-    ));
-    assert_eq!(start, Err(RegistrationError::InProgress));
+    assert!(!f.status(&lib, draft).funds_committed);
+    assert_eq!(lib.counts(), (1, 0), "the cancelled step was called again");
 
-    // The lock shows up (the restore's reconstruction): positive evidence,
-    // and the tap hands it to the row.
+    // A lock shows up at the index (a restore's reconstruction): the
+    // closed row takes none, through the tap or "Finish transfers".
     let lock = lib.lock_at(index, LockStatus::ChainLocked);
     let moved = flow::lock_tracked(
         &f.session.platform.registrations,
         &f.appdb(),
         &f.session.leases,
         f.wallet,
-        lock,
-        Some(index),
+        tapped(lock, Some(index)),
     )
     .unwrap();
-    assert_eq!(moved, Some(draft));
-    let row = f.row(draft);
-    assert_eq!((phase(&row), row.error), (Phase::FundingSent, None));
+    assert_ne!(moved, Some(draft));
     f.engine
-        .block_on(registration::resume(
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert_eq!(flow::outpoint_of(&f.row(draft)), None);
+    f.discard(&lib, draft).unwrap();
+    f.engine
+        .block_on(registration::start(
             &f.session,
             f.wallet,
             Arc::clone(&lib),
-            &draft.to_string(),
-            Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+            request("erin2"),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
-    f.settle(draft);
-    assert_eq!(phase(&f.row(draft)), Phase::Done);
-    assert_eq!(lib.counts(), (1, 1));
 }
 
 #[test]
@@ -1554,6 +1768,40 @@ fn the_chainlock_wait_is_bounded_and_survives_a_refused_discard() {
     f.settle(draft);
     assert_eq!(phase(&f.row(draft)), Phase::Done);
     assert_eq!(lib.counts(), (0, 1));
+}
+
+/// P2b's resume gate (E0-04 §2a.7): the proof wait never broadcasts again
+/// a `Built` lock whose signature a funding call of this process released
+/// before its record is durable. Once the record lands, it does.
+#[test]
+fn the_proof_wait_resends_no_lock_before_its_record_is_durable() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let draft = adopted_lock_row(&f, &lib, 1, LockStatus::Built);
+    let lock = lib.w().locks[0].outpoint;
+    let other = prepared(&f, 2);
+    let key = super::lease::DraftKey::registration(other, 2).key;
+    let call = f
+        .engine
+        .block_on(lib.funding_permit(&f.lease(), flow::funding_step(other), key, flow::LOCK_DUFFS))
+        .unwrap();
+    // As `Fake::fund` signs: the lock's sighash is its txid's bytes.
+    let sighash = lock.txid.to_byte_array();
+    call.signatures().note_signed(sighash);
+    f.drive(&lib, draft, None, false);
+    assert!(lib.w().waits.is_empty(), "sent again before its record");
+    f.session.leases.record_signed_locks(
+        f.wallet,
+        &[StoredLock {
+            txid: lock.txid,
+            inputs: vec![OutPoint::new(Txid::from_byte_array([0x77; 32]), 1)],
+            sighashes: Some(vec![sighash]),
+            built: true,
+        }],
+    );
+    f.drive(&lib, draft, None, false);
+    assert_eq!(lib.w().waits, vec![flow::REBROADCAST_WAIT]);
+    call.finish(false);
 }
 
 /// A grant given to a flow that waits keyless reaches its run: it signs
@@ -2048,7 +2296,7 @@ fn real_spendable_excludes_a_manually_locked_coin() {
 
     // Why: the builder spends the locked coin (offline build only).
     let lease = f.lease();
-    let signer = lease.funding_signer().unwrap();
+    let signer = lease.uncounted_funding_signer().unwrap();
     let (tx, _) = f
         .engine
         .block_on(wallet.asset_locks().build_asset_lock_transaction(
@@ -2189,7 +2437,7 @@ fn tap_evidence_cannot_land_inside_an_index_reassignment() {
             f.wallet,
         );
         std::thread::spawn(move || {
-            flow::lock_tracked(&flows, &appdb, &leases, wallet, lock, Some(7))
+            flow::lock_tracked(&flows, &appdb, &leases, wallet, tapped(lock, Some(7)))
         })
     };
     on_pause.recv().unwrap();
@@ -2455,8 +2703,7 @@ fn track_built(
             &f.appdb(),
             &f.session.leases,
             f.wallet,
-            lock,
-            Some(1),
+            tapped(lock, Some(1)),
         )
         .unwrap();
     });
@@ -2524,6 +2771,18 @@ fn a_tapped_built_lock_frees_the_fence_before_its_call_returns() {
         let call = permit(&lib, &lease, draft, 0).await.unwrap();
         // The call's funding signer released a signature.
         call.signatures().note_signed([0xe3; 32]);
+        // The persister's `note_signed` records it as the step's own
+        // before the store (§2a.6): the tap gives a calling row only its
+        // own lock (DP1-02 §3.4).
+        f.session.leases.record_signed_locks(
+            f.wallet,
+            &[StoredLock {
+                txid: lock.txid,
+                inputs: vec![coin],
+                sighashes: Some(vec![[0xe3; 32]]),
+                built: true,
+            }],
+        );
         let mut tracked = built_lock(lock, coin);
         tracked.identity_index = 0;
         let reader = track_and_tap(&f, &wallet, tracked).await;
@@ -2946,7 +3205,7 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
             request("erin2"),
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ));
-        assert_eq!(start, Err(RegistrationError::InProgress));
+        assert!(matches!(start, Err(RegistrationError::InProgress { .. })));
         // A restart: the flow's memory is gone, P2b's record is not.
         f.kill(draft);
         if via_finish {
@@ -3032,8 +3291,7 @@ fn the_taps_lock_record_is_retried() {
             &f.appdb(),
             &f.session.leases,
             f.wallet,
-            lock,
-            Some(1),
+            tapped(lock, Some(1)),
         );
         match recorded {
             true => {
@@ -3097,27 +3355,58 @@ fn only_a_signed_lock_whose_index_is_lost_is_the_rows() {
         amount: flow::LOCK_DUFFS,
         status,
     };
+    let ledger = |status, steps| {
+        crate::platform::registration_ledger::Ledger::new(
+            vec![lock(status)],
+            vec![],
+            vec![row.clone()],
+            steps,
+            vec![],
+        )
+    };
+    let step = |draft, index| crate::platform::lease::mode_b::FundingStepView {
+        draft,
+        key: FundingKey {
+            funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+            identity_index: index,
+            account: 0,
+        },
+        status: Some(crate::platform::DispatchState::WillBeSent),
+        signed: vec![Txid::from_byte_array([9; 32])],
+        dead: vec![],
+        durable_record: false,
+        recording: false,
+    };
+    use crate::platform::registration_ledger::IndexOwner;
     for status in [
         LockStatus::Broadcast,
         LockStatus::InstantSendLocked,
         LockStatus::ChainLocked,
         LockStatus::RecoveredFromChain,
     ] {
-        let unsigned = flow::Evidence::new(vec![lock(status)], vec![], vec![row.clone()]);
-        assert_eq!(unsigned.lock_of(&row), None, "{status:?}");
-        let signed = unsigned.signed(vec![(draft, Txid::from_byte_array([9; 32]))]);
+        let unsigned = ledger(status, vec![]);
+        assert_eq!(unsigned.own_lock(&row), None, "{status:?}");
+        assert_ne!(
+            unsigned.index_owner(&row, 0),
+            IndexOwner::Lock(lock(status).outpoint),
+            "{status:?}"
+        );
+        let signed = ledger(status, vec![step(draft, 0)]);
         assert_eq!(
-            signed.lock_of(&row).map(|l| l.outpoint),
+            signed.own_lock(&row).map(|l| l.outpoint),
             Some(lock(status).outpoint),
             "{status:?}"
         );
-        // Another row's signed lock is never this one's.
-        let other = flow::Evidence::new(vec![lock(status)], vec![], vec![row.clone()])
-            .signed(vec![(draft + 1, Txid::from_byte_array([9; 32]))]);
-        assert_eq!(other.lock_of(&row), None, "{status:?}");
+        // Another row's signed lock is never this one's (its key is not
+        // this row's, so the row is not its heir).
+        let other = ledger(status, vec![step(draft + 1, 5)]);
+        assert_eq!(other.own_lock(&row), None, "{status:?}");
     }
-    let built = flow::Evidence::new(vec![lock(LockStatus::Built)], vec![], vec![row.clone()]);
-    assert!(built.lock_of(&row).is_some());
+    let built = ledger(LockStatus::Built, vec![]);
+    assert_eq!(
+        built.index_owner(&row, 0),
+        IndexOwner::Lock(lock(LockStatus::Built).outpoint)
+    );
 }
 
 /// MN-2 on P2b: a lock rejected after the call signed it may still be out
@@ -3260,11 +3549,12 @@ fn a_refused_put_whose_profile_landed_is_published() {
     assert_eq!(lib.w().profiles.len(), 1);
 }
 
-/// MN-1: "Finish transfers" leaves the lock a running funding call signed
-/// (untapped, its index lost) to that call, and counts it pending; the
-/// row's run after a restart takes it by P2b's record. Never a second row.
+/// MN-1, OD-05 (DP1-02 rev2 §5.1): "Finish transfers" gives the lock a
+/// running funding call signed (untapped) to that call's row, calling or
+/// not, never to `Recovery`; the row's run after a restart goes on with it.
+/// Never a second row.
 #[test]
-fn finish_leaves_a_running_calls_lock_to_it() {
+fn finish_gives_a_running_calls_lock_to_its_row() {
     let f = fixture(false);
     let lib = f.fake();
     lib.w().fund_script = Some(FundScript::IsTimeout);
@@ -3284,15 +3574,14 @@ fn finish_leaves_a_running_calls_lock_to_it() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
-    assert_eq!(report.resumed, 0, "{report:?}");
-    assert!(report.still_pending >= 1, "{report:?}");
+    let lock = lib.w().locks[0].outpoint;
+    // The import leaves nothing pending; the row's run is held by its call.
+    assert_eq!((report.resumed, report.still_pending), (0, 1), "{report:?}");
     assert_eq!(f.rows().len(), 1, "Finish made a row for the call's lock");
-    assert_eq!(f.row(draft).asset_lock_outpoint, None);
-    // The process dies in the call: the row's run takes the lock its call
-    // signed.
+    assert_eq!(flow::outpoint_of(&f.row(draft)), Some(lock));
+    // The process dies in the call: the row's run goes on with its lock.
     f.kill(draft);
     lib.w().hang = None;
-    let lock = lib.w().locks[0].outpoint;
     f.drive(&lib, draft, Some(f.lease()), true);
     let rows = f.rows();
     assert_eq!(rows.len(), 1);
@@ -3361,4 +3650,5 @@ fn an_unsigned_lock_waits_for_finish() {
     }
 }
 
+mod ledger;
 mod rules;
