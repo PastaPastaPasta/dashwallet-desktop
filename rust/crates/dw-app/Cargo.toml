@@ -29,6 +29,7 @@ dw-coinjoin = { workspace = true }
 dw-engine = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
+dw-units = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 hex = { workspace = true }

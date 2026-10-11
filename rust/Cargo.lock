@@ -2249,6 +2249,7 @@ dependencies = [
  "dw-message",
  "dw-psbt",
  "dw-testutil",
+ "dw-units",
  "dw-uri",
  "dw-vault",
  "hex",

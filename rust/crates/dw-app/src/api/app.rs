@@ -122,6 +122,7 @@ fn bench_rows(rows: u32) -> HistoryRows {
                     address: Some("yNBLvUCmZq3K8v4eusVmKavEj2XrPoQe1x".into()),
                     label: (i % 5 == 0).then(|| "Coffee refund".into()),
                     counts_toward_balance: true,
+                    involves_watch_only: false,
                 }
             })
             .collect(),

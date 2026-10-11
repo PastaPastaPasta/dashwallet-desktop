@@ -8,6 +8,13 @@
   "local": true,
   "permissions": [
     "allow-history-page",
-    "allow-tx-detail"
+    "allow-tx-detail",
+    "allow-tx-detail-extras",
+    "allow-abandon-transaction",
+    "allow-resend-transaction",
+    "allow-drop-unconfirmed",
+    "allow-export-history-csv",
+    "allow-tx-notices",
+    "allow-is-coinjoin-internal"
   ]
 }
