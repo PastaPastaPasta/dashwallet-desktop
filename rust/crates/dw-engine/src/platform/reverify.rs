@@ -333,9 +333,10 @@ pub(super) fn confirmed(verified: &[&Held], current: &[Held]) -> Vec<Entity> {
         .collect()
 }
 
-/// What an identity summary shows of `m` (`recovery::summaries`): the
-/// identity and its keys, its profile, the names it owns.
-pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Held> {
+/// The identity of `m` and its keys, and its profile: what an identity
+/// summary shows besides its names (`recovery::summaries` adds the names it
+/// shows, Opus-high M2).
+pub(super) fn identity_and_profile(m: &ManagedIdentity) -> Vec<Held> {
     let identity = m.identity.id();
     let mut held = vec![Held::Identity {
         id: identity,
@@ -347,6 +348,15 @@ pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Hel
             shown: ShownProfile::of(p),
         });
     }
+    held
+}
+
+/// What the re-fetch walks for `m`: [`identity_and_profile`] and every name
+/// the library holds for it, a hidden one (a contest, a pending write)
+/// included: it verifies once Platform has its domain.
+pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Held> {
+    let identity = m.identity.id();
+    let mut held = identity_and_profile(m);
     for (label, _) in owned_names(identity, &m.dpns_names, &info.dpns_name_states) {
         held.push(Held::label(&label, identity));
     }

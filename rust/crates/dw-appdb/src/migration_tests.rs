@@ -196,7 +196,7 @@ fn shipped_migrations_are_unchanged() {
 const CHECKSUM_INITIAL: u64 = 15039092102494657885;
 const CHECKSUM_DASHPAY: u64 = 11805424486264248187;
 const CHECKSUM_TRUST: u64 = 11010845116850883893;
-const CHECKSUM_TRUST_DIGEST: u64 = 10646883564895086601;
+const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -660,6 +660,43 @@ fn verification_records_without_a_digest_verify_nothing() {
         })
         .unwrap();
     assert_eq!(at, 8, "the old row's time does not carry over");
+}
+
+/// Opus-high M1: a database that already holds wallets when `trust_digest`
+/// runs was written by a build that never set the fallback latch; it comes
+/// out latched. One without wallets does not.
+#[test]
+fn an_installation_with_wallets_starts_latched() {
+    let latch = |db: &AppDb| {
+        db.setting(crate::GLOBAL_SCOPE, "trust.fallback_used_at")
+            .unwrap()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let at_trust = |name: &str, wallet: bool| {
+        let path = dir.path().join(name);
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(TRUST as i32))
+            .run(&mut conn)
+            .unwrap();
+        if wallet {
+            conn.execute(
+                "INSERT INTO wallets (wallet_id, name, created_at) VALUES ('aa', 'w', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        AppDb::open(&path).unwrap()
+    };
+    let upgraded = at_trust("with-wallet.sqlite", true);
+    let at: u64 = latch(&upgraded).expect("latched").parse().unwrap();
+    assert!(at > 1_700_000_000, "{at}: UNIX seconds");
+    assert_eq!(latch(&at_trust("empty.sqlite", false)), None);
+    assert_eq!(
+        latch(&AppDb::open(&dir.path().join("fresh.sqlite")).unwrap()),
+        None
+    );
 }
 
 /// `delete_wallet` lists its tables; the export finds them by their

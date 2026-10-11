@@ -125,7 +125,8 @@ tagged; identity keys in their platform serialization). Readers (`recovery::summ
 counts the record only when the digests are equal. So an entity the library replaced after it verified, from any
 source, reads as unverified, and a replacement served only through the fallback never reads as verified; the
 re-fetch verifies new content and its record replaces the old one. Rows written before the column existed have no
-digest and verify nothing. Nothing clears records on change: the comparison is the whole mechanism. A change to the
+digest and verify nothing. An `IdentitySummary` counts its identity, its profile and the names it shows
+(`shown_names`): a contested or pending name it hides does not make it unverified (Opus-high M2). Nothing clears records on change: the comparison is the whole mechanism. A change to the
 encoding takes the next version, and records of the old one read as unverified until re-verified. Identity keys are
 encoded by dpp (bincode), so a dpp release that changes that layout has the same effect.
 
@@ -145,6 +146,10 @@ sent from a QR with auto-accept never verifies (fails closed); an upstream fix b
 `docs/research/dashpay/platform-wallet-sent-auto-accept-proof.md`).
 
 ## 5. Re-fetching unverified entities after sync
+
+Builds before E0-10b served every proof with the trusted service's quorum keys and never set the latch. The
+`trust_digest` migration therefore sets it when the database already holds wallets, so their data starts unverified
+and this task re-fetches it (Opus-high M1). A fresh database is left alone; the first fallback use latches it.
 
 Once the latch is set and masternode sync completes, a session task re-fetches what the read models show as
 unverified (the kinds with consumers today):
@@ -223,6 +228,10 @@ the same value without a wallet.
 | §5 (Sol r1 R2) | the record step counts only writes that reached app.sqlite: with it locked, 0 and the entity stays unverified |
 | §5 (Sol r2 R3) | what is left after a record step is counted from the library under its lock: two verified revisions of one contact's profile both write, one stays unverified, and the step reports it |
 | §5 (Sol r2 N1) | the DPNS `domain` parser returns the document's `label` and `records.identity` (not `normalizedLabel` or `$ownerId`); a missing or malformed field reads as nothing |
+| §5 (Opus-high M1) | a database at the `trust_digest` migration with wallets is latched, an empty or fresh one is not (migration test); Opus's Probe B: data from a pre-E0-10b build reads unverified after the upgrade and the re-fetch walks it |
+| §4 (Opus-high M2) | Opus's Probe A: a hidden contested name with no record leaves its identity verified; the re-fetch still walks it |
+| §5 (Opus-high N1) | SPV progress reaches the provider through the session hub: the masternode phase alone does not mark sync, headers and masternodes done do, and the re-fetch task wakes |
+| §5 (Opus-high N2) | the walk covers exactly the sent, incoming and both established requests the library holds |
 | networks | a testnet session's record is invisible to a mainnet session on the same data root, and after a reopen |
 | lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

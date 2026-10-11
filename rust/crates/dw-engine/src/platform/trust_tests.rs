@@ -772,6 +772,43 @@ async fn masternode_sync_wakes_the_refetch_once_and_stays() {
     assert!(r.trust.masternodes_synced());
 }
 
+/// Opus-high N1: SPV progress reaches the provider through the session hub.
+/// The masternode phase alone is not enough (headers can be stale); once
+/// both are done, the hub notes it and the re-fetch task wakes.
+#[tokio::test]
+async fn spv_progress_marks_masternode_sync_through_the_hub() {
+    use dash_spv::EventHandler;
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+
+    let r = rig(TrustMode::Enforcing);
+    let hub = crate::events::SessionHub::new(DashNetwork::Regtest, Arc::new(Notices::default()));
+    assert!(hub.trust.set(Arc::clone(&r.trust)).is_ok());
+    let mut synced = r.trust.subscribe_synced();
+    let mut p = SyncProgress::default();
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(1000);
+    headers.update_tip_height(500);
+    headers.set_state(SyncState::Syncing);
+    p.update_headers(headers.clone());
+    let mut masternodes = MasternodesProgress::default();
+    masternodes.update_target_height(1000);
+    masternodes.update_current_height(1000);
+    masternodes.set_state(SyncState::WaitForEvents);
+    p.update_masternodes(masternodes);
+    hub.on_progress(&p);
+    assert!(!r.trust.masternodes_synced(), "headers are still syncing");
+    assert!(!synced.has_changed().unwrap());
+    headers.update_tip_height(1000);
+    headers.set_state(SyncState::Synced);
+    p.update_headers(headers);
+    hub.on_progress(&p);
+    assert!(r.trust.masternodes_synced());
+    tokio::time::timeout(Duration::from_secs(5), synced.wait_for(|s| *s))
+        .await
+        .expect("the re-fetch task is woken")
+        .unwrap();
+}
+
 /// One re-fetch of `h` through `fetch`, recording it if it verified (the
 /// task's steps, design §5).
 async fn refetch(r: &Rig, h: Held, fetch: FakeRefetch) -> bool {

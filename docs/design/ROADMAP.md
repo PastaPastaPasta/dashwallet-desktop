@@ -290,7 +290,7 @@ Service and Revoke, the Unban parts of IOS-081/082) are marked "node/CLI, out of
 | H-06 | Performance: a large wallet with 500 contacts; a 10k-row history; cold restore with DashPay; contacts query < 100 ms at 1k contacts | DP3-02 | M | Y | The U5 budgets still hold. |
 | H-07 | Mainnet canary (T4): a non-contested name, a contact round trip **with an iOS user**, payments both ways, one faucet invitation claim | DP5-02, **B3** | M | Y | Interoperability confirmed. |
 | H-08 | `agentic-qa` full pass with evidence | H-04 | L | N | Report published; no open blocker or critical defect. |
-| H-09 | Trust release gate: the layered provider on by default; the DP3-04 gate; mismatch handling | E0-10b, DP3-04 | M | Y | A forged quorum key makes every DashPay read and money-moving write refuse (or, in the degraded mode, a mismatch refuses). |
+| H-09 | Trust release gate: the layered provider on by default; the DP3-04 gate; mismatch handling | E0-10b, DP3-04 | M | Y | A forged quorum key makes every DashPay read and money-moving write refuse (or, in the degraded mode, a mismatch refuses). A test pins the Enforcing-mode re-check (E0-10b Opus-high N3): a trusted source that marks masternode sync inside `quorum_key` makes that lookup wait and fail closed instead of serving the trusted key. |
 | H-10 | DAPI healthy-node pinning (3–5 nodes, ban on proof failure) | E0-05 | M | Y | Fewer reconnects in a sync burst (measured). |
 
 ## 3. Waves

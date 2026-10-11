@@ -1437,8 +1437,10 @@ The shapes are in §3. What they mean, where the name does not say:
   records written before the digest existed verify nothing. A record says that this content verified, not that it is
   current. An identity's balance is not covered. Absence fails closed: data the library keeps in memory after
   a refused store, or that reached the store by any path, is unverified until a record exists. An `IdentitySummary`
-  is unverified if its identity, its shown profile or any of its names is. Before the latch is set nothing is
-  unverified. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
+  is unverified if its identity, its shown profile or any name in its `names` is (a hidden contested or pending name
+  does not count). Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
+  keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
+  `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
   `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
   `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
@@ -1722,4 +1724,5 @@ renames or reshapes them takes the next version bump:
     (encoding `v2`; `v1` records verify nothing), so another spelling of the same normalized label, or the label
     shown for another identity, is unverified. Records are per network (each network's app.sqlite). The re-fetch also
     verifies contacts' cached profiles and the contact labels the read model reports (`Provenance::show_label`); a
-    contact's identity has no record class.
+    contact's identity has no record class. An `IdentitySummary`'s flag covers the names it shows, and an
+    installation holding wallets from before E0-10b starts latched (migration `trust_digest`).

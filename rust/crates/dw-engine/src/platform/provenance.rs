@@ -10,7 +10,10 @@
 //! fallback's current state: data fetched through it stays unverified after
 //! SPV syncs, until a verified re-fetch records it. Before the latch (no
 //! fallback ever used here) every fetch was proof-verified against the
-//! provider in use, and nothing is unverified. The latch is durable before
+//! provider in use, and nothing is unverified. Builds before E0-10b served
+//! the trusted service's keys without setting it, so dw-appdb migration
+//! `trust_digest` sets it for an installation that already holds wallets:
+//! their data starts unverified and is re-fetched. The latch is durable before
 //! the fallback serves anything (DEC-135, DEC-139, DEC-143):
 //! [`Provenance::fallback_in_use`] commits it and checkpoints the WAL (so it
 //! survives power loss), and the caller refuses the fallback when either
