@@ -6,14 +6,15 @@
 //! counts and the best ChainLock from `node_info`. The console is
 //! `api::console`.
 
-use dw_engine::platform::{DashPayStartup, PlatformCadence, StartupStatus, SyncLoop};
+use dw_engine::platform::{DashPayStartup, PlatformCadence};
 use dw_engine::{
     ChainLockInfo, EngineWarning, MasternodeCount, NodeInfo, PeerInfo, PlatformStatus,
-    RescanFrom, RescanProgress, SpvState, SyncLoopStatus, WarningCode,
+    RescanFrom, RescanProgress, SpvState, WarningCode,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::dto::platform::{StartupStatus, SyncLoopStatus};
 use crate::dto::{NetworkInfo, SyncStatus, mirror_enum};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -276,32 +277,11 @@ pub enum SpvStateName {
 mirror_enum!(SpvState => SpvStateName { Stopped, Starting, Running });
 
 /// The outcome of a wallet's DashPay bring-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum StartupStatusName {
-    NotRun,
-    Starting,
-    Ready,
-    NoIdentity,
-    PartialNoIdentity,
-    DiscoveryFailed,
-    PartialAccountsPending,
-    SeedBindingUnverified,
-    IdentityScanIncomplete,
-    /// The bring-up ran with a locked vault; it runs again at the first unlock.
-    IdentityUnsettled,
-}
-
-mirror_enum!(StartupStatus => StartupStatusName {
-    NotRun, Starting, Ready, NoIdentity, PartialNoIdentity, DiscoveryFailed,
-    PartialAccountsPending, SeedBindingUnverified, IdentityScanIncomplete, IdentityUnsettled
-});
-
 /// One wallet's last DashPay bring-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DashPayStartupInfo {
-    pub startup: StartupStatusName,
+    pub startup: StartupStatus,
     /// The wallet has no keys, so DashPay is read-only for it.
     pub read_only: bool,
     /// Base58 id of the identity the bring-up knew, if any.
@@ -330,45 +310,6 @@ impl From<DashPayStartup> for DashPayStartupInfo {
             contact_accounts_pending,
             identity_scan_incomplete,
             finished_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum SyncLoopName {
-    IdentitySync,
-    DashPaySync,
-    DpnsSync,
-    PlatformAddressSync,
-}
-
-mirror_enum!(SyncLoop => SyncLoopName { IdentitySync, DashPaySync, DpnsSync, PlatformAddressSync });
-
-/// One Platform sync loop.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformLoop {
-    pub sync_loop: SyncLoopName,
-    pub running: bool,
-    /// UNIX seconds.
-    pub last_run_at: Option<u64>,
-    pub next_run_at: Option<u64>,
-}
-
-impl From<SyncLoopStatus> for PlatformLoop {
-    fn from(l: SyncLoopStatus) -> Self {
-        let SyncLoopStatus {
-            sync_loop,
-            running,
-            last_run_at,
-            next_run_at,
-        } = l;
-        PlatformLoop {
-            sync_loop: sync_loop.into(),
-            running,
-            last_run_at,
-            next_run_at,
         }
     }
 }
@@ -505,7 +446,7 @@ commands! {
 
     /// Edits a wallet's birth height. Lower than its filter checkpoint: a
     /// rescan of the wallet from `height` is scheduled. Above the known
-    /// tip: `sync.height_out_of_range`.
+    /// tip: `height_out_of_range`.
     #[facade("NetworkSession::set_birth_height")]
     fn set_birth_height(state, wallet_id: String, height: u32) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -557,7 +498,7 @@ commands! {
 
     /// The Platform sync loops this session runs.
     #[facade("NetworkSession::platform_loops")]
-    fn platform_loops(state) -> Vec<PlatformLoop> {
+    fn platform_loops(state) -> Vec<SyncLoopStatus> {
         let loops = state.session().await?.platform_loops()?;
         Ok(loops.into_iter().map(Into::into).collect())
     }
@@ -607,8 +548,8 @@ mod tests {
 
     #[test]
     fn a_loop_and_a_startup_status_name_themselves_in_camel_case() {
-        let l = PlatformLoop::from(SyncLoopStatus {
-            sync_loop: SyncLoop::DashPaySync,
+        let l = SyncLoopStatus::from(dw_engine::SyncLoopStatus {
+            sync_loop: dw_engine::platform::SyncLoop::DashPaySync,
             running: true,
             last_run_at: Some(5),
             next_run_at: None,
@@ -617,7 +558,7 @@ mod tests {
         assert_eq!(json["syncLoop"], "dashPaySync");
         assert_eq!(json["lastRunAt"], 5);
         let s = DashPayStartupInfo::from(DashPayStartup {
-            startup: StartupStatus::PartialAccountsPending,
+            startup: dw_engine::platform::StartupStatus::PartialAccountsPending,
             read_only: false,
             identity: Some("id".into()),
             contact_accounts_pending: 2,

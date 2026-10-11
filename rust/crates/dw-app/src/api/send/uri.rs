@@ -5,6 +5,7 @@
 //! `parse_payment_uri` returns it as data (`UriParse::Rejected`) and the
 //! renderer picks its copy by the reason.
 
+use dw_units::MAX_MONEY;
 use dw_uri::core::{SendCoinsRecipient, UriRejection, format_bitcoin_uri, handle_uri};
 use dw_uri::keyio::{self, AddressKind, Destination, DestinationError};
 use serde::{Deserialize, Serialize};
@@ -12,9 +13,6 @@ use ts_rs::TS;
 
 use crate::dto::parse_network;
 use crate::error::{AppError, UriCode};
-
-/// Dash Core `MAX_MONEY`: 21 million DASH in duffs.
-pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
 /// Why a string is not a Dash Core address on the network (Core's
 /// `DecodeDestination` error cases).
@@ -143,7 +141,9 @@ pub fn parse_payment_uri(network: &str, text: &str) -> Result<UriParse, AppError
         }
     };
     // dash-qt accepts a negative amount and fails later, at send.
-    let Some(amount) = u64::try_from(r.amount).ok().filter(|a| *a <= MAX_MONEY) else {
+    let Some(amount) = u64::try_from(r.amount)
+        .ok()
+        .filter(|_| r.amount <= MAX_MONEY) else {
         return rejected(UriRejected::InvalidAmount);
     };
     Ok(UriParse::Accepted {
@@ -165,13 +165,11 @@ pub fn build_payment_uri(
     message: Option<String>,
 ) -> Result<String, AppError> {
     let amount = amount.unwrap_or(0);
-    if amount > MAX_MONEY {
+    let Some(amount) = i64::try_from(amount).ok().filter(|a| *a <= MAX_MONEY) else {
         return Err(AppError::invalid_argument(format!(
             "amount {amount} is above the maximum supply"
         )));
-    }
-    let amount = i64::try_from(amount)
-        .map_err(|_| AppError::invalid_argument("amount does not fit"))?;
+    };
     Ok(format_bitcoin_uri(&SendCoinsRecipient {
         address,
         label: label.unwrap_or_default(),
@@ -269,9 +267,10 @@ mod tests {
 
     #[test]
     fn amounts_above_the_supply_cannot_be_built() {
-        assert!(build_payment_uri(ADDR.into(), Some(MAX_MONEY), None, None).is_ok());
+        let max = MAX_MONEY.unsigned_abs();
+        assert!(build_payment_uri(ADDR.into(), Some(max), None, None).is_ok());
         assert_eq!(
-            build_payment_uri(ADDR.into(), Some(MAX_MONEY + 1), None, None)
+            build_payment_uri(ADDR.into(), Some(max + 1), None, None)
                 .unwrap_err()
                 .code_str(),
             "invalid_argument"

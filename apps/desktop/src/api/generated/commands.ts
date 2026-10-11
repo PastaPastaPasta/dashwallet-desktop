@@ -39,7 +39,6 @@ import type { ContactSummaryInfo } from "./ContactSummaryInfo";
 import type { ContestStatus } from "./ContestStatus";
 import type { CoreExportFormatName } from "./CoreExportFormatName";
 import type { CoreExportReport } from "./CoreExportReport";
-import type { CoreImportOptions } from "./CoreImportOptions";
 import type { CoreImportReport } from "./CoreImportReport";
 import type { CoreMnemonicCheck } from "./CoreMnemonicCheck";
 import type { CostTable } from "./CostTable";
@@ -93,7 +92,6 @@ import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
 import type { PeerSummary } from "./PeerSummary";
-import type { PlatformLoop } from "./PlatformLoop";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
@@ -115,6 +113,7 @@ import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { SessionSettings } from "./SessionSettings";
 import type { SpvStateName } from "./SpvStateName";
+import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
 import type { TimedHistoryRows } from "./TimedHistoryRows";
@@ -698,7 +697,7 @@ export function resetChainData(): Promise<null> {
 /**
  * Edits a wallet's birth height. Lower than its filter checkpoint: a
  * rescan of the wallet from `height` is scheduled. Above the known
- * tip: `sync.height_out_of_range`.
+ * tip: `height_out_of_range`.
  */
 export function setBirthHeight(walletId: string, height: number): Promise<null> {
   return invoke<null>("set_birth_height", { walletId, height });
@@ -755,8 +754,8 @@ export function dashpaySyncSoon(): Promise<null> {
 /**
  * The Platform sync loops this session runs.
  */
-export function platformLoops(): Promise<Array<PlatformLoop>> {
-  return invoke<Array<PlatformLoop>>("platform_loops");
+export function platformLoops(): Promise<Array<SyncLoopStatus>> {
+  return invoke<Array<SyncLoopStatus>>("platform_loops");
 }
 
 /**
@@ -922,7 +921,7 @@ export function inspectWalletFile(path: string): Promise<WalletFileInfo> {
  * its header, carries the labels into the address book and reports the
  * loose keys left out.
  */
-export function importDumpWallet(path: string, options: CoreImportOptions): Promise<CoreImportReport> {
+export function importDumpWallet(path: string, options: ImportOptions): Promise<CoreImportReport> {
   return invoke<CoreImportReport>("import_dump_wallet", { path, options });
 }
 
@@ -931,7 +930,7 @@ export function importDumpWallet(path: string, options: CoreImportOptions): Prom
  * Berkeley DB is `not_implemented`). `walletPassphrase` opens an
  * encrypted file.
  */
-export function importWalletDat(path: string, walletPassphrase: string | null, options: CoreImportOptions): Promise<CoreImportReport> {
+export function importWalletDat(path: string, walletPassphrase: string | null, options: ImportOptions): Promise<CoreImportReport> {
   return invoke<CoreImportReport>("import_wallet_dat", { path, walletPassphrase, options });
 }
 
@@ -939,7 +938,7 @@ export function importWalletDat(path: string, walletPassphrase: string | null, o
  * Imports a wallet from an HD seed, xprv or `listdescriptors true`
  * JSON.
  */
-export function importKeyMaterial(material: KeyMaterialInput, options: CoreImportOptions): Promise<CoreImportReport> {
+export function importKeyMaterial(material: KeyMaterialInput, options: ImportOptions): Promise<CoreImportReport> {
   return invoke<CoreImportReport>("import_key_material", { material, options });
 }
 
@@ -1904,9 +1903,9 @@ export type CommandArgs = {
   set_backup_policy: { keep: number };
   read_backup_header: { path: string };
   inspect_wallet_file: { path: string };
-  import_dump_wallet: { path: string; options: CoreImportOptions };
-  import_wallet_dat: { path: string; walletPassphrase: string | null; options: CoreImportOptions };
-  import_key_material: { material: KeyMaterialInput; options: CoreImportOptions };
+  import_dump_wallet: { path: string; options: ImportOptions };
+  import_wallet_dat: { path: string; walletPassphrase: string | null; options: ImportOptions };
+  import_key_material: { material: KeyMaterialInput; options: ImportOptions };
   core_mnemonic_compatibility: { walletId: string };
   export_for_core: { walletId: string; format: CoreExportFormatName; destPath: string; grantId: string };
   new_tx_draft: { walletId: string };
@@ -2099,7 +2098,7 @@ export type CommandResults = {
   spv_state: SpvStateName;
   dashpay_startup: DashPayStartupInfo;
   dashpay_sync_soon: null;
-  platform_loops: Array<PlatformLoop>;
+  platform_loops: Array<SyncLoopStatus>;
   set_platform_cadence: null;
   platform_status: PlatformReachability;
   history_page: HistoryRows;

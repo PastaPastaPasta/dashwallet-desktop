@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::mirror_enum;
+use crate::dto::platform::{StartupStatus, SyncLoopStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -16,28 +17,6 @@ pub enum NoIdentityReason {
 }
 
 mirror_enum!(engine::NoIdentityReason => NoIdentityReason { WatchOnly, WaitingForSync });
-
-/// The bring-up outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum StartupStatus {
-    NotRun,
-    Starting,
-    Ready,
-    NoIdentity,
-    PartialNoIdentity,
-    DiscoveryFailed,
-    PartialAccountsPending,
-    SeedBindingUnverified,
-    IdentityScanIncomplete,
-    /// The bring-up ran with a locked vault; it runs again at the first unlock.
-    IdentityUnsettled,
-}
-
-mirror_enum!(engine::StartupStatus => StartupStatus {
-    NotRun, Starting, Ready, NoIdentity, PartialNoIdentity, DiscoveryFailed,
-    PartialAccountsPending, SeedBindingUnverified, IdentityScanIncomplete, IdentityUnsettled
-});
 
 /// The banner state shared by the Home card, the identity chip and the
 /// Contacts empty state.
@@ -90,20 +69,6 @@ impl From<engine::DashPayStatus> for DashPayStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[allow(clippy::enum_variant_names, reason = "mirrors the engine's variants")]
-pub enum SyncLoop {
-    IdentitySync,
-    DashPaySync,
-    DpnsSync,
-    PlatformAddressSync,
-}
-
-mirror_enum!(engine::SyncLoop => SyncLoop {
-    IdentitySync, DashPaySync, DpnsSync, PlatformAddressSync
-});
-
 /// Where Platform proofs get their quorum keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -147,32 +112,6 @@ impl From<engine::SyncPassReport> for SyncPassReport {
             new_contacts,
             new_payments,
             failure_code,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncLoopStatus {
-    pub sync_loop: SyncLoop,
-    pub running: bool,
-    pub last_run_at: Option<u64>,
-    pub next_run_at: Option<u64>,
-}
-
-impl From<engine::SyncLoopStatus> for SyncLoopStatus {
-    fn from(s: engine::SyncLoopStatus) -> Self {
-        let engine::SyncLoopStatus {
-            sync_loop,
-            running,
-            last_run_at,
-            next_run_at,
-        } = s;
-        SyncLoopStatus {
-            sync_loop: sync_loop.into(),
-            running,
-            last_run_at,
-            next_run_at,
         }
     }
 }

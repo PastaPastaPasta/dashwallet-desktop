@@ -4,8 +4,7 @@ use dw_engine::platform as engine;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::dto::mirror_enum;
-use crate::dto::platform::UsernameRuleName;
+use crate::dto::platform::{UserRelation, UsernameRuleName};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -195,22 +194,6 @@ impl From<engine::ContestStatus> for ContestStatus {
         }
     }
 }
-
-/// How a user relates to the wallet's identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum UserRelation {
-    Stranger,
-    Contact,
-    PendingOutgoing,
-    PendingIncoming,
-    Ignored,
-    IsSelf,
-}
-
-mirror_enum!(engine::Relation => UserRelation {
-    Stranger, Contact, PendingOutgoing, PendingIncoming, Ignored, IsSelf
-});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

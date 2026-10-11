@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use dw_engine::backup::BackupHeader;
 use dw_engine::{
     BackupInfo, BackupPolicy, CoreExportFormat, CoreMnemonicCompatibility, ExportReport,
-    ExportWarning, ImportOptions, ImportReport, KeyMaterial, WalletFileKind,
+    ExportWarning, ImportReport, KeyMaterial, WalletFileKind,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use zeroize::Zeroizing;
 
+use super::wallets::ImportOptions;
 use crate::dto::{NetworkInfo, mirror_enum};
 use crate::error::AppError;
 use crate::ipc::commands;
@@ -196,38 +197,6 @@ impl From<WalletFileKind> for WalletFileInfo {
             },
             WalletFileKind::Psbt => WalletFileInfo::Psbt,
             WalletFileKind::Unknown => WalletFileInfo::Unknown,
-        }
-    }
-}
-
-/// Options of an import from Dash Core.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", default)]
-pub struct CoreImportOptions {
-    /// First block to scan; `0` is genesis. `null`: the importer's default
-    /// (genesis for a Core wallet, since it may have funds anywhere).
-    pub birth_height: Option<u32>,
-    /// Derive the seed with Dash Core's BIP39 rules.
-    pub core_compat: bool,
-    /// Display name, 1 to 64 characters; `null`: "Wallet N".
-    pub name: Option<String>,
-    /// Address lookahead (gap limit), 1..=1000; `null`: the default.
-    pub lookahead: Option<u32>,
-}
-
-impl From<CoreImportOptions> for ImportOptions {
-    fn from(o: CoreImportOptions) -> Self {
-        let CoreImportOptions {
-            birth_height,
-            core_compat,
-            name,
-            lookahead,
-        } = o;
-        ImportOptions {
-            birth_height,
-            core_compat,
-            name,
-            lookahead,
         }
     }
 }
@@ -491,7 +460,7 @@ commands! {
     fn import_dump_wallet(
         state,
         path: String,
-        options: CoreImportOptions,
+        options: ImportOptions,
     ) -> CoreImportReport {
         let session = state.session().await?;
         Ok(session
@@ -508,7 +477,7 @@ commands! {
         state,
         path: String,
         wallet_passphrase: Option<String>,
-        options: CoreImportOptions,
+        options: ImportOptions,
     ) -> CoreImportReport {
         let passphrase = secret_bytes(wallet_passphrase);
         let session = state.session().await?;
@@ -524,7 +493,7 @@ commands! {
     fn import_key_material(
         state,
         material: KeyMaterialInput,
-        options: CoreImportOptions,
+        options: ImportOptions,
     ) -> CoreImportReport {
         let material = material.into_engine()?;
         let session = state.session().await?;
@@ -594,12 +563,15 @@ mod tests {
 
     #[test]
     fn import_options_default_when_left_out() {
-        let o: CoreImportOptions = serde_json::from_str("{}").unwrap();
-        assert_eq!(ImportOptions::from(o), ImportOptions::default());
-        let o: CoreImportOptions =
+        let o: ImportOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            dw_engine::ImportOptions::from(o),
+            dw_engine::ImportOptions::default()
+        );
+        let o: ImportOptions =
             serde_json::from_str(r#"{"birthHeight":0,"coreCompat":true,"lookahead":1000}"#)
                 .unwrap();
-        let o = ImportOptions::from(o);
+        let o = dw_engine::ImportOptions::from(o);
         assert_eq!(o.birth_height, Some(0));
         assert!(o.core_compat);
         assert_eq!(o.lookahead, Some(1000));
