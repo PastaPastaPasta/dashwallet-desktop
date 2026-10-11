@@ -47,6 +47,7 @@ class App:
         self.proc = subprocess.Popen([gate.binary, *args], env=environment, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.PIPE, text=True, bufsize=1)
         self.pid = self.proc.pid
+        self._root = None
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -99,6 +100,12 @@ class App:
         with open(f"/proc/{self.pid}/stat") as fh:
             fields = fh.read().rsplit(")", 1)[1].split()
         return (int(fields[11]) + int(fields[12])) / CLK_TCK
+
+    def root(self):
+        """The app's AT-SPI root, looked up again if the cached one stopped answering."""
+        if self._root is None or role(self._root) != "application":
+            self._root = app_frame(self.pid, timeout=30)
+        return self._root
 
     def alive(self):
         return self.proc.poll() is None
@@ -379,7 +386,7 @@ def phase_pss(gate, idle=30):
         transactions = None
         frame = app_frame(app.pid)
         if frame is not None and sidebar_select(frame, "Transactions") and app.wait("transactions-paint", 60):
-            load_more(frame, 200)
+            load_more(app, 200)
             time.sleep(idle)
             transactions = app.memory()
         samples.append({"overview": overview, "transactions": transactions, "idleCpuPercent": idle_cpu_pct})
@@ -390,21 +397,31 @@ def phase_pss(gate, idle=30):
                json.dumps(samples))
 
 
-def transaction_rows(app):
-    """Names of the Transactions list's rows (accessibleRowNames: "type, address, amount, date")."""
-    rows = find_all(app, lambda n, i: i["role"] in ("list item", "table row") and i["name"].count(", ") >= 3)
-    return [info["name"] for _n, info in rows]
+def transaction_rows(app, timeout=0, more_than=0):
+    """Names of the Transactions list's rows (accessibleRowNames: "type, address, amount, date"),
+    waiting up to `timeout` s for more than `more_than` of them: right after the page changes, the
+    app's main thread is busy drawing and AT-SPI calls time out."""
+    deadline = time.monotonic() + timeout
+    while True:
+        rows = [info["name"] for _n, info in find_all(
+            app.root(), lambda n, i: i["role"] in ("list item", "table row") and i["name"].count(", ") >= 3)]
+        if len(rows) > more_than or time.monotonic() >= deadline:
+            return rows
+        time.sleep(3)
 
 
 def load_more(app, wanted):
+    """Presses Load more until the list has `wanted` rows."""
+    rows = len(transaction_rows(app, timeout=180))
     for _ in range(10):
-        if len(transaction_rows(app)) >= wanted:
+        print(f"== Transactions: {rows} rows", flush=True)
+        if rows >= wanted:
             return True
-        button = node_named(app, BUTTONS, "Load more", timeout=5)
-        if not do_action(button):
+        if not do_action(node_named(app.root(), BUTTONS, "Load more", timeout=60)):
+            print("== Load more: no button or its action failed", flush=True)
             return False
-        time.sleep(2)
-    return len(transaction_rows(app)) >= wanted
+        rows = len(transaction_rows(app, timeout=180, more_than=rows))
+    return rows >= wanted
 
 
 def phase_u1(gate):
@@ -416,8 +433,8 @@ def phase_u1(gate):
     nodes = dump(gate, frame, "u1-overview") if overview else []
     texts = [i["name"] for _n, i, _d in nodes if i["name"]] + [i.get("text", "") for _n, i, _d in nodes]
     selected = sidebar_select(frame, "Transactions") and app.wait("transactions-paint", 60)
-    loaded = selected and load_more(frame, 200)
-    rows = transaction_rows(frame)[:200] if loaded else []
+    loaded = selected and load_more(app, 200)
+    rows = transaction_rows(app)[:200] if loaded else []
     with open(os.path.join(gate.out, "u1-app-rows.txt"), "w") as fh:
         fh.write("\n".join(rows) + "\n")
     app.stop()
