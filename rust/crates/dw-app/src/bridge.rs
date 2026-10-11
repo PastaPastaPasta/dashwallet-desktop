@@ -11,7 +11,7 @@ use crate::dto::EngineSignal;
 pub const SIGNAL_EVENT: &str = "engine://signal";
 
 /// Maps an engine event to the signal the renderer acts on. Events the gate
-/// screens do not use (CoinJoin, wallet load) map to the nearest signal so a
+/// screens do not use (CoinJoin, wallet load, DashPay, leases) map to the nearest signal so a
 /// later screen never misses a change.
 pub fn signal_of(event: &EngineEvent) -> EngineSignal {
     let net = |n: &dw_engine::DashNetwork| n.dir_name();
@@ -50,7 +50,17 @@ pub fn signal_of(event: &EngineEvent) -> EngineSignal {
             network: net(network),
             wallet_id: wallet_id.to_string(),
         },
-        EngineEvent::VaultLockState { network, .. } => EngineSignal::LockState {
+        // DashPay data shows in history labels and contact payments.
+        EngineEvent::Platform {
+            network, wallet_id, ..
+        } => EngineSignal::History {
+            network: net(network),
+            wallet_id: wallet_id.to_string(),
+        },
+        EngineEvent::VaultLockState { network, .. }
+        | EngineEvent::LeaseChanged { network, .. }
+        | EngineEvent::LockProgress { network, .. }
+        | EngineEvent::DispatchResolved { network, .. } => EngineSignal::LockState {
             network: net(network),
         },
         EngineEvent::Notice { code, detail, .. } => EngineSignal::Notice {

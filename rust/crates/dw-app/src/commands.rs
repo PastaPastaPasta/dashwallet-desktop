@@ -111,8 +111,9 @@ pub async fn open_network(state: State<'_, AppState>) -> Result<LockStatus, AppE
         None => {
             let opts = SessionOptions {
                 dapi_addresses: state.launch.dapi_addresses.clone(),
-                quorum_url: None,
                 spv_peers: state.launch.spv_peers.clone(),
+                no_platform: state.launch.no_platform,
+                ..SessionOptions::default()
             };
             let s = engine
                 .open_network(state.launch.network.clone(), opts)
@@ -159,7 +160,8 @@ pub async fn unlock(
 
 #[tauri::command]
 pub async fn lock(state: State<'_, AppState>) -> Result<LockStatus, AppError> {
-    Ok(state.session().await?.lock_vault()?.into())
+    // The full lock (E0-04 §8.1): revokes leases and returns after their drain.
+    Ok(state.session().await?.lock_vault().await?.status.into())
 }
 
 #[tauri::command]

@@ -28,6 +28,9 @@ pub struct LaunchOptions {
     pub sync: bool,
     pub spv_peers: Vec<String>,
     pub dapi_addresses: Vec<String>,
+    /// The chain has no Platform (a plain dashd regtest): no DashPay bring-up
+    /// or Platform sync when SPV starts (as `dwcli --no-platform`).
+    pub no_platform: bool,
     /// Force an appearance instead of following the system.
     pub theme: Option<ThemeName>,
 }
@@ -43,6 +46,7 @@ impl Default for LaunchOptions {
             sync: false,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
+            no_platform: false,
             theme: None,
         }
     }
@@ -55,6 +59,7 @@ usage: dash-wallet [options]
   --sync                 start SPV after opening the network
   --spv-peer <ip:port>   connect SPV to this peer only (repeatable)
   --dapi <url>           DAPI endpoint (repeatable)
+  --no-platform          the chain has no Platform (a plain dashd regtest)
   --fixture              use the built-in sample wallet; no engine
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
   --selftest-pause <ms>  pause on each self-test screen (for screenshots)
@@ -98,6 +103,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
             "--sync" => opts.sync = true,
             "--spv-peer" => opts.spv_peers.push(value("--spv-peer")?),
             "--dapi" => opts.dapi_addresses.push(value("--dapi")?),
+            "--no-platform" => opts.no_platform = true,
             "--fixture" => opts.fixture = true,
             "--selftest" => opts.selftest = Some(PathBuf::from(value("--selftest")?)),
             "--selftest-pause" => {
@@ -148,6 +154,7 @@ mod tests {
             "127.0.0.1:19899",
             "--dapi",
             "https://127.0.0.1:2443",
+            "--no-platform",
             "--fixture",
             "--selftest",
             "/tmp/boxes.json",
@@ -163,7 +170,7 @@ mod tests {
                 name: "paloma".into()
             }
         );
-        assert!(o.sync && o.fixture);
+        assert!(o.sync && o.fixture && o.no_platform);
         assert_eq!(o.spv_peers, ["127.0.0.1:19899"]);
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
