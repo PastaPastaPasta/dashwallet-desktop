@@ -2,7 +2,7 @@
 //! §2a.3, §2a.4 item 7, §16.5–§16.7), against a fake evidence source.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,8 +40,6 @@ struct FakeTracked {
     rows: Mutex<HashMap<WalletId, Vec<TrackedRow>>>,
     drafts: Mutex<HashMap<WalletId, Vec<DraftKey>>>,
     locked: Mutex<HashSet<[u8; 32]>>,
-    /// [`TrackedLocks::recovery_complete`]: DP1-05's scan finished.
-    complete: AtomicBool,
 }
 
 impl FakeTracked {
@@ -80,10 +78,6 @@ impl TrackedLocks for FakeTracked {
 
     async fn chain_locked(&self, _: WalletId, txid: &[u8; 32]) -> bool {
         self.locked.lock().unwrap().contains(txid)
-    }
-
-    async fn recovery_complete(&self, _: WalletId) -> bool {
-        self.complete.load(Ordering::SeqCst)
     }
 }
 
@@ -143,11 +137,26 @@ async fn setup() -> (
     (t, rec, j, src)
 }
 
-/// DP1-05's scan of W finished ([`TrackedLocks::recovery_complete`]):
-/// Repair may resolve a step with no known lock (review R1-01).
-async fn recovery_complete(t: &Arc<LeaseTable>, src: &FakeTracked) {
-    src.complete.store(true, Ordering::SeqCst);
-    assert!(t.refresh_funding(W).await);
+/// What a self-spend taking `lock`'s first input records of it (§2a.6).
+fn conflict(lock: &TrackedRow) -> dw_appdb::dispatch::SelfSpendConflict {
+    use dashcore::hashes::Hash as _;
+    dw_appdb::dispatch::SelfSpendConflict {
+        lock: lock.txid.to_byte_array(),
+        input: dw_appdb::dispatch::StoredOutPoint {
+            txid: lock.inputs[0].txid.to_byte_array(),
+            vout: lock.inputs[0].vout,
+        },
+    }
+}
+
+/// A call of `step` that signed `lock` (§2a.6) and ended `MaybeSent`.
+async fn signed_maybe_sent(t: &LeaseTable, l: &Lease, step: &str, index: u32, lock: &TrackedRow) {
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(step, index))
+        .await
+        .unwrap();
+    sign_lock(t, &p, W, lock);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
 }
 
 /// A kill now: the next process loads the file as it is (§6.5), with the
@@ -414,13 +423,11 @@ async fn dispatch_resolved_fires_on_moves_to_sent_and_not_sent_only() {
     );
 
     // Repair's self-spend, ChainLocked later.
-    maybe_sent(&l, TOPUP, 9).await;
+    let lock = row(3, 9, R::Built);
+    signed_maybe_sent(&t, &l, TOPUP, 9, &lock).await;
     let id = ArtifactId::of_step(&W, TOPUP);
-    // Recorded on a complete recovery (no signed lock): its record names
-    // none, so only that recovery lets it count (review P2b r3 R3-01).
-    src.complete.store(true, Ordering::SeqCst);
     assert!(
-        j.insert_self_spend(&W.0, TOPUP, &id.0, &[0xee; 32], &[])
+        j.insert_self_spend(&W.0, TOPUP, &id.0, &[0xee; 32], &[conflict(&lock)])
             .unwrap()
     );
     let (t, rec) = reload(&j, &src).await;
@@ -688,7 +695,7 @@ async fn a_possibly_sent_funding_step_refuses_a_second_funding_call() {
 ///
 /// So no T2 is built. Only Repair's self-spend, once ChainLocked, resolves
 /// it (`NotSent`), and then only under a new step; with no lock of the
-/// step known, Repair waits for DP1-05's scan to complete (review R1-01).
+/// step known, Repair refuses it (reviews R1-01, P2b r4 R4-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     let (t, _, j, src) = setup().await;
@@ -722,7 +729,7 @@ async fn the_withheld_t1_power_loss_trace_builds_no_t2() {
     assert_eq!(
         t2.record_self_spend(W, REG, [1; 32], &[]).await,
         Err(StuckFundingRefusal::NoKnownLock),
-        "the scan is not shown complete"
+        "no lock of the step is known"
     );
 }
 
@@ -776,13 +783,11 @@ async fn an_unsent_or_never_started_funding_allows_funding_again() {
 
     // Repair's self-spend resolves an orphan.
     const ORPHAN: &str = "registration/3/funding";
-    maybe_sent(&l, ORPHAN, 3).await;
+    let lock = row(4, 3, R::Built);
+    signed_maybe_sent(&t, &l, ORPHAN, 3, &lock).await;
     let id = ArtifactId::of_step(&W, ORPHAN);
-    // Recorded on a complete recovery (no signed lock): its record names
-    // none, so only that recovery lets it count (review P2b r3 R3-01).
-    src.complete.store(true, Ordering::SeqCst);
     assert!(
-        j.insert_self_spend(&W.0, ORPHAN, &id.0, &[0xaa; 32], &[])
+        j.insert_self_spend(&W.0, ORPHAN, &id.0, &[0xaa; 32], &[conflict(&lock)])
             .unwrap()
     );
     let (t2, rec2) = reload(&j, &src).await;
@@ -1058,13 +1063,11 @@ async fn a_wallet_awaits_a_self_spend_lock_until_its_snapshot_sees_it() {
     let (t, _, j, src) = setup().await;
     assert!(!t.awaits_self_spend_lock(W));
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 9).await;
+    let lock = row(3, 9, R::Built);
+    signed_maybe_sent(&t, &l, TOPUP, 9, &lock).await;
     let id = ArtifactId::of_step(&W, TOPUP);
-    // Recorded on a complete recovery (no signed lock): its record names
-    // none, so only that recovery lets it count (review P2b r3 R3-01).
-    src.complete.store(true, Ordering::SeqCst);
     assert!(
-        j.insert_self_spend(&W.0, TOPUP, &id.0, &[0xee; 32], &[])
+        j.insert_self_spend(&W.0, TOPUP, &id.0, &[0xee; 32], &[conflict(&lock)])
             .unwrap()
     );
     let (t, rec) = reload(&j, &src).await;
@@ -1213,7 +1216,8 @@ fn an_untrusted_registration_row_is_re_keyed_by_the_identity_it_created() {
 /// index 0. For a step at another index, that row is unattributed: the
 /// step keeps reading `MaybeSent` (a ChainLocked self-spend proves nothing
 /// over it) and Repair refuses. A step at index 0 still matches it by key,
-/// and a row re-keyed by its identity reads for that identity's step.
+/// and a row re-keyed by its identity reads for that identity's step. Each
+/// step's call signed a lock whose row is lost (`own3`, `own0`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     use StuckFundingRefusal as F;
@@ -1221,15 +1225,19 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     const AT0: &str = "registration/4/funding";
     let (t, rec, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, AT3, 3).await;
-    maybe_sent(&l, AT0, 0).await;
+    let (own3, own0) = (row(5, 3, R::Built), row(6, 0, R::Built));
+    signed_maybe_sent(&t, &l, AT3, 3, &own3).await;
+    signed_maybe_sent(&t, &l, AT0, 0, &own0).await;
     // A self-spend of each step, recorded before any row came back.
-    recovery_complete(&t, &src).await;
-    t.record_self_spend(W, AT3, [0xa3; 32], &[]).await.unwrap();
-    t.record_self_spend(W, AT0, [0xa0; 32], &[]).await.unwrap();
+    t.record_self_spend(W, AT3, [0xa3; 32], &own3.inputs)
+        .await
+        .unwrap();
+    t.record_self_spend(W, AT0, [0xa0; 32], &own0.inputs)
+        .await
+        .unwrap();
 
-    // T1 of the step at index 3 went out, lost its row and was re-added
-    // from the chain at index 0.
+    // A lock that went out, lost its row and was re-added from the chain
+    // at index 0: it may be any registration's.
     let lost = row(1, 0, R::RecoveredFromChain);
     assert!(!lost.trusted);
     src.set_rows(W, vec![lost.clone()]);
@@ -1253,13 +1261,11 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     src.set_rows(W, vec![row(1, 0, R::Broadcast)]);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
-    // At index 0 it matches by key. The ChainLocked self-spend carries no
-    // conflict evidence (no lock was signed) and was recorded before the
-    // row came back, so it need not have spent the row's inputs: the row
-    // will be sent (review P2b r3 R3-01).
+    // At index 0 it matches by key; it is not the lock that step's call
+    // signed, which the ChainLocked self-spend shows dead.
     src.locked.lock().unwrap().insert([0xa0; 32]);
     t.refresh_funding(W).await;
-    assert_eq!(t.funding_status(W, AT0), Some(WillBeSent));
+    assert_eq!(t.funding_status(W, AT0), Some(NotSent));
     assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
 
     // The same row, re-keyed by the identity at index 3 it created: the
@@ -1275,15 +1281,23 @@ async fn an_unattributed_row_blocks_the_self_spends_not_sent_and_repair() {
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, AT3), Some(Sent));
     assert_eq!(t.funding_status(W, AT0), Some(NotSent));
-    let at3: Vec<_> = rec
-        .resolved()
-        .into_iter()
-        .filter(|(s, _)| s == AT3)
-        .collect();
+    let of = |step: &str| -> Vec<_> {
+        rec.resolved()
+            .into_iter()
+            .filter(|(s, _)| s == step)
+            .map(|(_, r)| r)
+            .collect()
+    };
     assert_eq!(
-        at3,
-        vec![(AT3.to_owned(), DispatchResolution::Sent)],
+        of(AT3),
+        vec![DispatchResolution::Sent],
         "the step at index 3 never read NotSent"
+    );
+    // The index-0 row's `Sent` was never journaled (untrusted, not AT0's
+    // signed lock), so it gives way to the self-spend's evidence.
+    assert_eq!(
+        of(AT0),
+        vec![DispatchResolution::Sent, DispatchResolution::NotSent]
     );
 }
 
@@ -1294,9 +1308,11 @@ async fn a_built_row_at_index_0_is_attributed() {
     const AT3: &str = "registration/3/funding";
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, AT3, 3).await;
-    recovery_complete(&t, &src).await;
-    t.record_self_spend(W, AT3, [0xa3; 32], &[]).await.unwrap();
+    let own = row(5, 3, R::Built);
+    signed_maybe_sent(&t, &l, AT3, 3, &own).await;
+    t.record_self_spend(W, AT3, [0xa3; 32], &own.inputs)
+        .await
+        .unwrap();
     src.set_rows(W, vec![row(1, 0, R::Built)]);
     src.locked.lock().unwrap().insert([0xa3; 32]);
     t.refresh_funding(W).await;
@@ -1308,9 +1324,11 @@ async fn a_built_row_at_index_0_is_attributed() {
 async fn an_unattributed_row_of_another_funding_type_does_not_block() {
     let (t, _, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, REG, 7).await;
-    recovery_complete(&t, &src).await;
-    t.record_self_spend(W, REG, [0xa7; 32], &[]).await.unwrap();
+    let own = row(5, 7, R::Built);
+    signed_maybe_sent(&t, &l, REG, 7, &own).await;
+    t.record_self_spend(W, REG, [0xa7; 32], &own.inputs)
+        .await
+        .unwrap();
     let invitation = TrackedRow {
         key: FundingKey {
             funding_type: AssetLockFundingType::IdentityInvitation,
@@ -1469,7 +1487,17 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
     use dw_appdb::dispatch::{Resolution, StepEvent};
     let (t, rec, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 9).await;
+    // With no lock of the step known, Repair refuses it, whatever a scan of
+    // the chain finds (reviews R1-01, P2b r4 R4-01).
+    const BLIND: &str = "topup/k/funding";
+    maybe_sent(&l, BLIND, 11).await;
+    assert_eq!(
+        t.record_self_spend(W, BLIND, [0xed; 32], &[]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+
+    let lock = row(3, 9, R::Built);
+    signed_maybe_sent(&t, &l, TOPUP, 9, &lock).await;
     let id = ArtifactId::of_step(&W, TOPUP);
     let marker = j
         .log()
@@ -1477,15 +1505,7 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
         .find(|r| r.artifact == id.0)
         .map(|r| r.seq)
         .unwrap();
-
-    // With no lock of the step known, only a complete recovery lets Repair
-    // resolve it (review R1-01).
-    assert_eq!(
-        t.record_self_spend(W, TOPUP, [0xee; 32], &[]).await,
-        Err(StuckFundingRefusal::NoKnownLock)
-    );
-    recovery_complete(&t, &src).await;
-    t.record_self_spend(W, TOPUP, [0xee; 32], &[])
+    t.record_self_spend(W, TOPUP, [0xee; 32], &lock.inputs)
         .await
         .unwrap();
     assert_eq!(spent(&t.call_step(W, TOPUP)), vec![[0xee; 32]]);
@@ -1513,7 +1533,7 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
 
     // A second self-spend (the first one rejected and abandoned, so its
     // coins are the second's too: `repair.rs`) is appended as well.
-    t.record_self_spend(W, TOPUP, [0xef; 32], &[])
+    t.record_self_spend(W, TOPUP, [0xef; 32], &lock.inputs)
         .await
         .unwrap();
     assert_eq!(j.load_calls().self_spends.len(), 2);
@@ -1536,7 +1556,8 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
     assert_eq!(rec2.resolved().len(), 1);
     // Resolved, so nothing is stuck any more.
     assert_eq!(
-        t2.record_self_spend(W, TOPUP, [0xf0; 32], &[]).await,
+        t2.record_self_spend(W, TOPUP, [0xf0; 32], &lock.inputs)
+            .await,
         Err(StuckFundingRefusal::NotStuck(Some(NotSent)))
     );
 }
@@ -1630,35 +1651,32 @@ async fn repair_refuses_a_step_that_is_not_stuck() {
     src.set_rows(W, Vec::new());
     t.refresh_funding(W).await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, ORPHAN, 11).await;
-    // No lock of it is known and the wallet's recovery is not complete.
-    assert_eq!(
-        t.record_self_spend(W, ORPHAN, [1; 32], &[]).await,
-        Err(F::NoKnownLock)
-    );
-    recovery_complete(&t, &src).await;
+    let lock = row(3, 11, R::Built);
+    signed_maybe_sent(&t, &l, ORPHAN, 11, &lock).await;
     j.fail_self_spend.store(true, Ordering::SeqCst);
     assert_eq!(
-        t.record_self_spend(W, ORPHAN, [1; 32], &[]).await,
+        t.record_self_spend(W, ORPHAN, [1; 32], &lock.inputs).await,
         Err(F::JournalUnavailable)
     );
     assert!(t.call_step(W, ORPHAN).self_spends.is_empty());
     assert!(j.load_calls().self_spends.is_empty());
     j.fail_self_spend.store(false, Ordering::SeqCst);
-    t.record_self_spend(W, ORPHAN, [1; 32], &[]).await.unwrap();
+    t.record_self_spend(W, ORPHAN, [1; 32], &lock.inputs)
+        .await
+        .unwrap();
 
     // Rows never read this session.
     let (t2, _) = table();
     let _j2 = with_journal(&t2);
     t2.install_tracked(src.clone());
     assert_eq!(
-        t2.record_self_spend(W, ORPHAN, [1; 32], &[]).await,
+        t2.record_self_spend(W, ORPHAN, [1; 32], &lock.inputs).await,
         Err(F::RowsUnknown)
     );
     // No journal at all.
     let (t3, _) = table();
     assert_eq!(
-        t3.record_self_spend(W, ORPHAN, [1; 32], &[]).await,
+        t3.record_self_spend(W, ORPHAN, [1; 32], &lock.inputs).await,
         Err(F::JournalUnavailable)
     );
 }
@@ -1673,8 +1691,7 @@ fn sent_on_disk(j: &FakeJournal, step: &str) -> bool {
 
 /// A funding step a ChainLocked row proved gets its `Sent` row: once the
 /// row is gone (a sweep, a restore) the step still reads `Sent`, across a
-/// restart and with the wallet's recovery complete, so Repair refuses it
-/// and so does the funding gate.
+/// restart, so Repair refuses it and so does the funding gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_proved_funding_is_journaled_sent_and_outlives_its_row() {
     use StuckFundingRefusal as F;
@@ -1698,7 +1715,7 @@ async fn a_proved_funding_is_journaled_sent_and_outlives_its_row() {
     );
 
     src.set_rows(W, Vec::new());
-    recovery_complete(&t, &src).await;
+    assert!(t.refresh_funding(W).await);
     assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
     let (t2, _) = reload(&j, &src).await;
     assert_eq!(t2.funding_status(W, TOPUP), Some(Sent));
@@ -1857,8 +1874,7 @@ async fn a_sent_call_without_its_row_is_journaled_once_proved() {
 /// `Sent` in memory and its row stays owed, so the journal's close writes
 /// it, even after the row is gone. A kill before that: the reopened
 /// process derives the step from its row again and writes it; with the row
-/// gone too, it reads `MaybeSent` and Repair refuses (no lock known, the
-/// recovery incomplete).
+/// gone too, it reads `MaybeSent` and Repair refuses (no lock known).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_proved_fundings_failed_sent_write_stays_owed() {
     use StuckFundingRefusal as F;
@@ -2024,8 +2040,8 @@ async fn a_lock_reports_a_cancelled_call_whose_not_sent_row_is_owed() {
 /// index 0 is stored while this call runs and after it signed. It is not
 /// the call's lock (the call's own lock, 78, is proved before the wallet
 /// closes, but no `Sent` row of it is written). The wallet closes and
-/// reopens, and the process restarts, with 78's row lost and the recovery
-/// incomplete: the unrelated row never authorizes Repair.
+/// reopens, and the process restarts, with 78's row lost: the unrelated
+/// row never authorizes Repair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn review_r2_unrelated_reconstruction_must_not_authorize_repair() {
     const CURRENT: &str = "registration/44/funding";
@@ -2471,8 +2487,8 @@ fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
 /// journal holds a self-spend the old engine admitted on heuristic
 /// ownership, conflicting only with an unrelated lock B, while the step's
 /// own lock A paid and lost its row. Upgraded, that self-spend is legacy:
-/// ChainLocked, with no signed lock known and the recovery incomplete, it
-/// must not read the step `NotSent`.
+/// ChainLocked, it must not read the step `NotSent`, and nothing later
+/// lets it (review P2b r4 R4-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidence() {
     use dw_appdb::dispatch::{DispatchJournal, JournalOpen};
@@ -2512,7 +2528,7 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
     let src = Arc::new(FakeTracked::default());
     src.set_drafts(W, vec![DraftKey::registration(7, 0)]);
     // A was proved/paid then lost its tracked row; B remains, and the
-    // self-spend conflicting only with B is ChainLocked. Recovery is false.
+    // self-spend conflicting only with B is ChainLocked.
     src.set_rows(W, vec![row(77, 0, R::Broadcast)]);
     src.locked.lock().unwrap().insert([9; 32]);
     t.install_tracked(src.clone());
@@ -2524,21 +2540,17 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
         "legacy heuristic ownership is not proof of a conflict with A"
     );
     assert_eq!(status, Some(WillBeSent));
-    // Only the wallet's complete recovery lets it count, and only once no
-    // proof-less row of the step stands: the legacy self-spend need not
-    // have spent B's inputs.
-    recovery_complete(&t, &src).await;
-    assert_eq!(t.funding_status(W, REG), Some(WillBeSent));
+    // Nor once B's row is gone: the step's marker stands with no row.
     src.set_rows(W, Vec::new());
     assert!(t.refresh_funding(W).await);
-    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
 }
 
 /// On a fresh schema 5 journal, a ChainLocked self-spend reads the step
 /// `NotSent` only while its record names an input of every signed lock of
-/// the step (review P2b r3 R3-01): one recorded with no conflicts (as on a
-/// complete recovery) or naming another lock or input shows nothing while
-/// the recovery is incomplete; the step reads `MaybeSent`.
+/// the step (review P2b r3 R3-01): one recorded with no conflicts or
+/// naming another lock or input shows nothing; the step reads
+/// `MaybeSent`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_without_its_conflict_evidence_never_reads_not_sent() {
     use dashcore::hashes::Hash as _;
@@ -2662,9 +2674,7 @@ async fn a_self_spend_records_the_input_it_takes_of_each_signed_lock() {
 
 /// A ChainLocked self-spend's record shows the conflict only when it names
 /// an input of every signed lock of the step: one covering some of them,
-/// or none, shows nothing while the recovery is incomplete. One that counts
-/// only through the complete recovery yields to a proof-less row of the
-/// step, which it need not have spent (review P2b r3 R3-01).
+/// or none, shows nothing (reviews P2b r3 R3-01, r4 R4-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
     use dashcore::hashes::Hash as _;
@@ -2696,15 +2706,11 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
     }
     let (t, _) = reload(&j, &src).await;
     assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
-    // The recovery complete, but a proof-less row of the step stands.
     src.set_rows(W, vec![a.clone()]);
-    recovery_complete(&t, &src).await;
-    assert_eq!(t.funding_status(W, REG), Some(WillBeSent));
-    src.set_rows(W, Vec::new());
     assert!(t.refresh_funding(W).await);
-    assert_eq!(t.funding_status(W, REG), Some(NotSent));
-    // A record over both locks shows it with the recovery incomplete.
-    src.complete.store(false, Ordering::SeqCst);
+    assert_eq!(t.funding_status(W, REG), Some(WillBeSent));
+    // A record over both locks shows it.
+    src.set_rows(W, Vec::new());
     assert!(
         j.insert_self_spend(&W.0, REG, &id.0, &[0xa3; 32], &[covers(&a), covers(&b)])
             .unwrap()
@@ -2712,4 +2718,185 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
     src.locked.lock().unwrap().insert([0xa3; 32]);
     let (t, _) = reload(&j, &src).await;
     assert_eq!(t.funding_status(W, REG), Some(NotSent));
+}
+
+/// Sol r4's probe (review P2b r4 R4-01): a schema 3 journal holds a legacy
+/// self-spend S of an unrelated lock's input, while the step's own lock A,
+/// signed and held by a peer, spends another coin (`withheld`; A itself is
+/// never built here: the journal knows nothing of it) and has no row. Upgraded,
+/// the wallet's rows are read empty, as a complete scan of the chain reads
+/// them (A is not on it), before anything else: ChainLocked, S never reads
+/// the step `NotSent`, read after read, and Repair refuses it, as no lock
+/// of the step is known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withheld_lock() {
+    use dashcore::blockdata::script::{Builder, PushBytesBuf};
+    use dashcore::hashes::Hash as _;
+    use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+    use dw_appdb::dispatch::{DispatchJournal, JournalOpen, SelfSpendProvenance};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dispatch.sqlite");
+    let id = ArtifactId::of_step(&W, REG);
+    // A spends `withheld`; S spends only `unrelated`.
+    let (withheld, unrelated) = (OutPoint::new(txid(78), 0), OutPoint::new(txid(77), 0));
+    let sk = SecretKey::from_secret_bytes([23; 32]).unwrap();
+    let pk = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&sk));
+    let code = dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+    let mut s = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: unrelated,
+            ..Default::default()
+        }],
+        output: vec![dashcore::TxOut {
+            value: 10_000,
+            script_pubkey: code.clone(),
+        }],
+        special_transaction_payload: None,
+    };
+    let digest = dashcore::sighash::SighashCache::new(&s)
+        .legacy_signature_hash(0, &code, 1)
+        .unwrap()
+        .to_byte_array();
+    let mut sig = ecdsa::sign(Message::from_digest(digest), &sk)
+        .serialize_der()
+        .to_vec();
+    sig.push(1);
+    s.input[0].script_sig = Builder::new()
+        .push_slice(PushBytesBuf::try_from(sig).unwrap())
+        .push_slice(pk.inner.serialize())
+        .into_script();
+    assert!(StoredLock::of(&s).sighashes.is_some());
+    assert!(!s.input.iter().any(|i| i.previous_output == withheld));
+    let s_id = ArtifactId::from_txid(&s.txid()).0;
+    {
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("schema")
+        };
+        j.insert_funding_step(&W.0, REG, &id.0, &key(0).stored(), 2)
+            .unwrap();
+        j.insert_self_spend(&W.0, REG, &id.0, &s_id, &[], 3)
+            .unwrap();
+        drop(j);
+        // Back to schema 3's layout: no provenance, no `signed_lock`.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "ALTER TABLE self_spend DROP COLUMN conflicts;
+             ALTER TABLE self_spend DROP COLUMN provenance;
+             DROP TABLE signed_lock;
+             UPDATE meta SET v = 3 WHERE k = 'schema'",
+        )
+        .unwrap();
+    }
+    let JournalOpen::Ready(j) = DispatchJournal::open(&path, 4).unwrap() else {
+        panic!("migration")
+    };
+    let calls = j.load_calls().unwrap();
+    assert_eq!(calls.self_spends[0].provenance, SelfSpendProvenance::Legacy);
+    assert!(calls.signed_locks.is_empty());
+    let (rows, steps) = j.load().unwrap();
+    let (t, _) = table();
+    t.load_journal_with(Some(Arc::new(j)), rows, steps, calls);
+    let src = Arc::new(FakeTracked::default());
+    src.set_drafts(W, vec![DraftKey::registration(7, 0)]);
+    // The empty snapshot is established first, S already ChainLocked.
+    src.set_rows(W, Vec::new());
+    src.locked.lock().unwrap().insert(s_id);
+    t.install_tracked(src.clone());
+    for _ in 0..2 {
+        assert!(t.refresh_funding(W).await);
+        assert_eq!(
+            t.funding_status(W, REG),
+            Some(MaybeSent),
+            "chain absence and an unrelated legacy self-spend cannot prove A unsendable"
+        );
+    }
+    assert_eq!(
+        t.record_self_spend(W, REG, [0xa5; 32], &[withheld]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
+/// A legacy self-spend of a step whose call's lock is recorded (schema 4)
+/// shows nothing (review P2b r4 R4-01): the way out is a fresh Repair,
+/// recorded with the input it takes of that lock. Its row is new, beside
+/// the legacy one, and resolves the step once ChainLocked, across a
+/// restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
+    use dashcore::hashes::Hash as _;
+    use dw_appdb::dispatch::{DispatchJournal, JournalOpen, SelfSpendProvenance, StoredOutPoint};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dispatch.sqlite");
+    let id = ArtifactId::of_step(&W, REG);
+    let own = row(5, 0, R::Built);
+    {
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("schema")
+        };
+        j.insert_funding_step(&W.0, REG, &id.0, &key(0).stored(), 2)
+            .unwrap();
+        let input = StoredOutPoint {
+            txid: own.inputs[0].txid.to_byte_array(),
+            vout: own.inputs[0].vout,
+        };
+        j.insert_signed_lock(&W.0, REG, &id.0, &own.txid.to_byte_array(), &[input], 3)
+            .unwrap();
+        j.insert_self_spend(&W.0, REG, &id.0, &[0xa1; 32], &[], 4)
+            .unwrap();
+        drop(j);
+        // Back to schema 4's layout: no provenance.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "ALTER TABLE self_spend DROP COLUMN conflicts;
+             ALTER TABLE self_spend DROP COLUMN provenance;
+             UPDATE meta SET v = 4 WHERE k = 'schema'",
+        )
+        .unwrap();
+    }
+    let open = || {
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 4).unwrap() else {
+            panic!("migration")
+        };
+        let calls = j.load_calls().unwrap();
+        let (rows, steps) = j.load().unwrap();
+        let (t, _) = table();
+        t.load_journal_with(Some(Arc::new(j)), rows, steps, calls);
+        t
+    };
+    let t = open();
+    let src = Arc::new(FakeTracked::default());
+    src.set_drafts(W, vec![DraftKey::registration(7, 0)]);
+    src.locked.lock().unwrap().insert([0xa1; 32]);
+    t.install_tracked(src.clone());
+    assert!(t.refresh_funding(W).await);
+    assert_eq!(t.funding_status(W, REG), Some(MaybeSent));
+    t.record_self_spend(W, REG, [0xa2; 32], &own.inputs)
+        .await
+        .unwrap();
+    assert_eq!(
+        t.funding_status(W, REG),
+        Some(MaybeSent),
+        "not ChainLocked yet"
+    );
+    src.locked.lock().unwrap().insert([0xa2; 32]);
+    assert!(t.refresh_funding(W).await);
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    drop(t);
+    let t = open();
+    t.install_tracked(src.clone());
+    assert!(t.refresh_funding(W).await);
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    let JournalOpen::Ready(j) = DispatchJournal::open(&path, 4).unwrap() else {
+        panic!("schema")
+    };
+    let spends = j.load_calls().unwrap().self_spends;
+    assert_eq!(spends.len(), 2);
+    assert_eq!(
+        (spends[0].txid, &spends[0].provenance),
+        ([0xa1; 32], &SelfSpendProvenance::Legacy)
+    );
+    assert_eq!(spends[1].txid, [0xa2; 32]);
+    assert!(matches!(&spends[1].provenance, SelfSpendProvenance::Conflicts(c) if c.len() == 1));
 }

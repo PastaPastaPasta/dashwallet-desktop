@@ -284,13 +284,15 @@ pub struct SelfSpend {
 
 impl SelfSpend {
     /// Whether this self-spend, once ChainLocked, shows the step's lock can
-    /// no longer confirm while the wallet's recovery is not complete: its
-    /// record names at least one signed lock, and every signed lock of the
-    /// step (`signed`) with one of that lock's inputs. A legacy self-spend
-    /// never does (review P2b r3 R3-01): the step derives as if it were
-    /// absent. A lock its record names that this process no longer knows (a
-    /// signed lock whose write failed, before a restart) was the step's own
-    /// all the same.
+    /// no longer confirm: its record names at least one signed lock, and
+    /// every signed lock of the step (`signed`) with one of that lock's
+    /// inputs. A legacy self-spend, or one recorded with no signed lock,
+    /// never does, whatever a later scan finds (review P2b r3 R3-01, r4
+    /// R4-01): the step derives as if it were absent. A lock its record
+    /// names that this process no longer knows (a signed lock whose write
+    /// failed, before a restart) was the step's own all the same: at most
+    /// one call of a step signs, as no call starts under its standing
+    /// marker (`check_funding`), and that call builds one lock.
     fn shows_conflict(&self, signed: &[SignedLock]) -> bool {
         let Some(conflicts) = self.conflicts.as_deref() else {
             return false;
@@ -389,16 +391,6 @@ pub(crate) trait TrackedLocks: Send + Sync + 'static {
     /// Whether the wallet holds `txid` (display order, as the journal keeps
     /// it) ChainLocked.
     async fn chain_locked(&self, wallet: WalletId, txid: &[u8; 32]) -> bool;
-    /// Positive evidence that the wallet's tracked rows hold every asset
-    /// lock of it on the chain *now* (review R1-01): its recovery scan ran
-    /// to completeness, and no row was dropped since (a sweep's
-    /// `remove_tracked_asset_locks_for_swept` or a later restore must reset
-    /// it until the scan runs again). Read after [`Self::rows`]; it must
-    /// not report a scan that completed after the rows were read. DP1-05's
-    /// chain scan supplies it; until then, never.
-    async fn recovery_complete(&self, _wallet: WalletId) -> bool {
-        false
-    }
 }
 
 /// What the derivation knows of one wallet, read outside J.
@@ -408,8 +400,6 @@ pub(crate) struct Snapshot {
     pub(crate) drafts: Vec<DraftKey>,
     /// Repair's self-spends (display order) found ChainLocked.
     pub(crate) locked_spends: HashSet<[u8; 32]>,
-    /// [`TrackedLocks::recovery_complete`].
-    pub(crate) recovery_complete: bool,
 }
 
 /// Mode B's state in J.
@@ -480,8 +470,8 @@ pub enum FundingBlock {
 ///   unknown, which never reads `None` or `NotSent`;
 /// - `self_spend_locked`: one of Repair's self-spends answering the step's
 ///   marker is ChainLocked and shows the conflict (its record covers every
-///   signed lock of the step, or the wallet's recovery is complete:
-///   [`SelfSpend`], review P2b r3 R3-01);
+///   signed lock of the step: [`SelfSpend`], reviews P2b r3 R3-01, r4
+///   R4-01);
 /// - `unattributed`: an unattributed row that may be the step's lock
 ///   stands (module doc): the self-spend's row, a definite resolution and
 ///   "never started" then read `MaybeSent`, not `NotSent` or `None`.
@@ -494,6 +484,9 @@ pub enum FundingBlock {
 /// `Broadcast` row of the step, and only while no other spend of the
 /// wallet's coins is short of a ChainLock (`repair.rs`, which refuses
 /// otherwise), so once ChainLocked it reads `NotSent` over such a row too.
+/// A row that came after the self-spend cannot be the step's lock either:
+/// the self-spend shows the conflict with every lock the step's one
+/// signing call built ([`SelfSpend`]).
 pub(crate) fn derive_funding(
     status: CallStepStatus,
     rows: Option<&[TrackedStatus]>,
@@ -615,17 +608,13 @@ fn derive_step(
             .map(|r| r.status)
             .collect()
     });
-    // A ChainLocked self-spend counts only once it shows the conflict: by
-    // its record, or because the wallet's recovery is complete and no
-    // proof-less row of the step stands (a legacy self-spend need not have
-    // spent its inputs; review P2b r3 R3-01).
+    // A ChainLocked self-spend counts only once its record shows the
+    // conflict (reviews P2b r3 R3-01, r4 R4-01).
     let signed = i.fence.signed_locks(&wallet, step);
-    let pending = rows.as_ref().is_some_and(|r| r.iter().any(|s| s.pending()));
     let locked = snap.is_some_and(|s| {
-        info.self_spends.iter().any(|spend| {
-            s.locked_spends.contains(&spend.txid)
-                && (spend.shows_conflict(signed) || (s.recovery_complete && !pending))
-        })
+        info.self_spends
+            .iter()
+            .any(|spend| s.locked_spends.contains(&spend.txid) && spend.shows_conflict(signed))
     });
     let unattributed = snap.is_some_and(|s| {
         (locked && unattributed_row(s, step, &info).is_some())
@@ -765,17 +754,16 @@ pub enum StuckFundingRefusal {
     /// nothing. Repair waits until the row is attributed.
     #[error("tracked asset lock {0} may be this funding's: its identity is not known yet")]
     UnattributedLock(Txid),
-    /// No lock a call of the step signed is recorded ([`SignedLock`]), and
-    /// nothing shows the wallet's tracked rows complete (review R1-01, P2b
-    /// r2 R2-01): the step's lock may be on the chain already, its row lost
-    /// (a restore, a power loss) and its inputs spent, so a self-spend of
-    /// the other coins would prove nothing. A tracked row that only matches
-    /// the step's key may be another step's lock. Refused until DP1-05's
-    /// recovery scan vouches for the wallet
-    /// ([`TrackedLocks::recovery_complete`]).
-    #[error(
-        "no asset lock this funding signed is known, and the wallet's recovery is not complete"
-    )]
+    /// No lock a call of the step signed is recorded ([`SignedLock`]; a
+    /// call before schema 4, or one whose write failed, before a restart):
+    /// nothing names the inputs the self-spend must take (reviews R1-01,
+    /// P2b r2 R2-01, r4 R4-01). The step's lock may be on the chain
+    /// already, its row lost and its inputs spent, or held by a peer over
+    /// an input no scan of the chain shows (an unconfirmed parent's
+    /// output), so a self-spend of the wallet's coins would prove nothing.
+    /// A tracked row that only matches the step's key may be another
+    /// step's lock. The step stays as it reads until its lock is found.
+    #[error("no asset lock this funding signed is known")]
     NoKnownLock,
 }
 
@@ -831,8 +819,8 @@ pub(super) fn self_spend_conflicts(
 /// runs under it, no unattributed row may be its lock, and the self-spend
 /// can be shown to conflict with the step's lock: a lock a call of the
 /// step signed is recorded ([`SignedLock`]; Repair spends an input of each,
-/// [`conflict_locks`]), or the wallet's recovery is complete (review
-/// R1-01, P2b r2 R2-01, fail closed).
+/// [`conflict_locks`], and records them, [`SelfSpend`]; reviews R1-01, P2b
+/// r2 R2-01, r4 R4-01, fail closed).
 pub(super) fn stuck_funding(
     i: &Inner,
     wallet: WalletId,
@@ -863,9 +851,7 @@ pub(super) fn stuck_funding(
     {
         return Err(StuckFundingRefusal::UnattributedLock(r.txid));
     }
-    if !i.mode_b.snapshots[&wallet].recovery_complete
-        && i.fence.signed_locks(&wallet, step).is_empty()
-    {
+    if i.fence.signed_locks(&wallet, step).is_empty() {
         return Err(StuckFundingRefusal::NoKnownLock);
     }
     Ok(())
@@ -992,14 +978,12 @@ impl LeaseTable {
                 locked_spends.insert(txid);
             }
         }
-        let recovery_complete = source.recovery_complete(wallet).await;
         self.commit_read(
             wallet,
             Snapshot {
                 rows,
                 drafts,
                 locked_spends,
-                recovery_complete,
             },
             Some(epoch),
         )

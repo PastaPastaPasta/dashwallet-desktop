@@ -171,8 +171,10 @@ const MIGRATE_V3: &str = "UPDATE meta SET v = 4 WHERE k = 'schema';";
 /// entry per signed lock it was checked to spend an input of (the lock's
 /// txid, then that input: txid, vout little-endian; both txids in internal
 /// byte order, like `signed_lock`'s, while `self_spend.txid` is in display
-/// order), none when the wallet's recovery was complete instead. A legacy
-/// row keeps its txid's row: a later record of the same txid adds nothing.
+/// order). A row of `1` with none was written only by the P2b r3 build
+/// (admitted on a complete recovery); it shows nothing, like a legacy one
+/// (review P2b r4 R4-01). A legacy row keeps its txid's row: a later record
+/// of the same txid adds nothing.
 const SELF_SPEND_PROVENANCE: &str = "
 ALTER TABLE self_spend ADD COLUMN provenance INTEGER NOT NULL DEFAULT 0
   CHECK (provenance IN (0, 1));
@@ -316,7 +318,8 @@ pub enum SelfSpendProvenance {
     /// Written before schema 5: nothing shows what it conflicts with.
     Legacy,
     /// Each signed lock of the step it spends an input of, with that
-    /// input; none when the wallet's recovery was complete instead.
+    /// input. None only from the P2b r3 build, which admitted one on a
+    /// complete recovery: it shows nothing (review P2b r4 R4-01).
     Conflicts(Vec<SelfSpendConflict>),
 }
 
@@ -1838,7 +1841,7 @@ mod tests {
     }
 
     /// A self-spend's conflicts read back as written; one written with none
-    /// (the wallet's recovery complete) is not legacy.
+    /// (by the P2b r3 build) is not legacy.
     #[test]
     fn a_self_spends_conflicts_round_trip() {
         let j = journal();
