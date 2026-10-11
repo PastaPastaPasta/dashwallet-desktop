@@ -104,7 +104,9 @@ enum GateProbe {
         let main = state.main
         let model = main.selection == .transactions ? state.transactions() : nil
         let screen: String? =
-            if main.showsLockScreen {
+            if main.lockState == nil {
+                nil  // WalletRootView shows the loading message
+            } else if main.showsLockScreen {
                 "lock"
             } else if main.showsSyncOverlay {
                 "sync-overlay"
@@ -203,7 +205,7 @@ enum GateProbe {
                     let times = "renderMs=\(ms(drawn - called)) totalMs=\(ms(drawn - start)) cpuMs=\(ms(cpu() - startCPU))"
                     mark("history-render", at: drawn, "\(fields) \(times)")
                 } else {
-                    mark("history-render", "\(fields) renderMs=timeout")
+                    mark("history-render", "\(fields) renderMs=timeout cpuMs=\(ms(cpu() - startCPU))")
                 }
             }
         }
