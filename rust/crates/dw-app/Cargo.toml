@@ -1,0 +1,39 @@
+[package]
+name = "dw-app"
+description = "dashwallet-desktop Tauri 2 shell: commands and the event bridge over dw-engine, linked in-process (gate G-UI spike, DASHPAY §2.1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# `tauri build` reads this for the bundle; the binary name matches tauri.conf.json `mainBinaryName`.
+default-run = "dash-wallet"
+
+[lib]
+name = "dw_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dash-wallet"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+dw-engine = { workspace = true }
+dw-vault = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# TypeScript declarations of every record that crosses the IPC boundary
+# (apps/desktop/src/api/generated, checked by `bindings_are_current`).
+ts-rs = { version = "12", features = ["no-serde-warnings"] }
+thiserror = { workspace = true }
+# `signal`: SIGTERM/SIGINT end the app through its normal exit path.
+tokio = { workspace = true, features = ["signal"] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tauri = { version = "2.12", features = ["test"] }
+tempfile = { workspace = true }

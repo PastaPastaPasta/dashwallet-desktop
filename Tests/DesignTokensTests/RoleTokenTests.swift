@@ -76,4 +76,44 @@ struct RoleTokenTests {
         #expect(DashElevation.menuCard.radius == 20)
         #expect(DashElevation.floating.borderInDark)
     }
+
+    /// WCAG 2.1 contrast of `fg` over `bg` (both composited onto opaque `base` first).
+    private func contrast(_ fg: RGBA, _ bg: RGBA, base: RGBA = RGBA(hex: 0xFFFFFF)) -> Double {
+        func over(_ c: RGBA, _ under: RGBA) -> RGBA {
+            RGBA(red: c.red * c.alpha + under.red * (1 - c.alpha),
+                 green: c.green * c.alpha + under.green * (1 - c.alpha),
+                 blue: c.blue * c.alpha + under.blue * (1 - c.alpha))
+        }
+        func luminance(_ c: RGBA) -> Double {
+            func channel(_ v: Double) -> Double { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * channel(c.red) + 0.7152 * channel(c.green) + 0.0722 * channel(c.blue)
+        }
+        let back = over(bg, base)
+        let (a, b) = (luminance(over(fg, back)), luminance(back))
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
+    @Test("The AA variants reach 4.5:1 on the pairs UX-SPEC §2.1a lists")
+    func aaVariants() {
+        let white = RGBA(hex: 0xFFFFFF)
+        let aa = DashColor.RoleAA.self
+        let role = DashColor.Role.self
+        let heroStrip = RGBA(hex: 0xFFFFFF, alpha: DashOpacityAA.heroCard)
+        let pairs: [(String, Double)] = [
+            ("white on accent", contrast(white, aa.accent.light)),
+            ("textLink on card (light)", contrast(aa.textLink.light, role.card.light)),
+            ("textLink on accentTint (light)", contrast(aa.textLink.light, role.accentTint.light, base: role.card.light)),
+            ("textLink on accentTint (dark)", contrast(aa.textLink.dark, role.accentTint.dark, base: role.card.dark)),
+            ("hero strip subtitle",
+             contrast(RGBA(hex: 0xFFFFFF, alpha: DashOpacityAA.heroSecondaryText), heroStrip, base: aa.hero.light)),
+            ("textTertiary on canvas (light)", contrast(aa.textTertiary.light, role.canvas.light)),
+            ("textTertiary on card (dark)", contrast(aa.textTertiary.dark, role.card.dark, base: role.card.dark)),
+            ("warning on canvas (light)", contrast(aa.warning.light, role.canvas.light)),
+            ("warning on card (dark)", contrast(aa.warning.dark, role.card.dark)),
+            ("white on the network capsule", contrast(white, aa.networkCapsule.light)),
+        ]
+        for (name, ratio) in pairs {
+            #expect(ratio >= 4.5, "\(name): \(ratio)")
+        }
+    }
 }
