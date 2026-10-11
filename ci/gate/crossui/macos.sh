@@ -25,9 +25,12 @@ result "build: core $((t1 - t0)) s, swift $((t2 - t1)) s (release)"
 
 # --- U7: unsigned .app and dmg ---
 app="$GATE_WORK/Dash Wallet.app"
-rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+rm -rf "$app" && mkdir -p "$app/Contents/MacOS"
 cp "$bin_dir/dash-wallet" "$app/Contents/MacOS/dash-wallet"
-for bundle in "$bin_dir"/*.bundle; do cp -R "$bundle" "$app/Contents/Resources/"; done
+# SwiftPM's generated Bundle.module looks for the resource bundles at Bundle.main.bundleURL, the
+# .app's root, not Contents/Resources (where codesign wants them; a signed app needs Swift
+# Bundler or a custom accessor).
+for bundle in "$bin_dir"/*.bundle; do cp -R "$bundle" "$app/"; done
 cat >"$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

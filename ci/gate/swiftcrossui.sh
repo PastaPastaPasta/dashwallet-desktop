@@ -21,7 +21,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 (($# == 0)) || { echo "swiftcrossui.sh takes no arguments" >&2; exit 2; }
 
 export GATE_ROOT="$ROOT"
-export GATE_WORK="${RUNNER_TEMP:-$ROOT/.gate}/gate-work"
+temp="${RUNNER_TEMP:-$ROOT/.gate}"
+# Git Bash: a "D:\..." path would read as a remote host to tar.
+[[ "$GATE_OS" != windows ]] || temp=$(cygpath -u "$temp")
+export GATE_WORK="$temp/gate-work"
 mkdir -p "$GATE_WORK"
 
 # The runner, for the ADR's raw data.
