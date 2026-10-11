@@ -3151,4 +3151,43 @@ fn a_refused_put_whose_profile_landed_is_published() {
     assert_eq!(lib.w().profiles.len(), 1);
 }
 
+/// MN-1: "Finish transfers" leaves a lock on its way whose index is lost
+/// while a funding call runs (it may be that call's own, untapped); the
+/// row's resume after a restart takes it. Never a second row.
+#[test]
+fn finish_leaves_a_running_calls_lock_to_it() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    lib.w().skip_tap = true;
+    lib.hang_at(Call::Fund, When::After);
+    let draft = f.insert(core_row(PLAIN));
+    f.spawn(&lib, draft, Some(f.lease()));
+    eventually("the funding call is out", || {
+        lib.hung.load(Ordering::SeqCst)
+    });
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert_eq!(report.resumed, 0, "{report:?}");
+    assert!(report.still_pending >= 1, "{report:?}");
+    assert_eq!(f.rows().len(), 1, "Finish made a row for the call's lock");
+    // The process dies in the call: the row's resume takes its own lock.
+    f.kill(draft);
+    lib.w().hang = None;
+    let lock = lib.w().locks[0].outpoint;
+    f.drive(&lib, draft, Some(f.lease()), true);
+    let rows = f.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(flow::outpoint_of(&rows[0]), Some(lock));
+    assert_eq!(phase(&rows[0]), Phase::Done);
+    assert_eq!(lib.counts(), (1, 1));
+}
+
 mod rules;

@@ -305,8 +305,10 @@ decided where the rows leave room:
   funded or older. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
   registration lock no row holds whose index is unknown) stops the flow before funding, waiting at `ChainLock`.
   "Finish transfers" settles a lock: it gives the lock to the oldest such row it can fund, and that row's own run
-  takes it the same way (unless a funding call of the wallet runs); until then the row reads `MaybeSent`, so it is
-  committed and discard refuses it. An identity with no lock to prove it is never adopted; the row waits until it is discarded (`register_name` then names the identity).
+  takes it the same way; while a funding call of the wallet runs, neither gives away a lock on its way (`Built`,
+  `Broadcast`) whose index is lost, which may be that call's own, and Finish counts it in `still_pending`. Until then
+  the row reads `MaybeSent`, so it is committed and discard refuses it. An identity with no lock to prove it is never
+  adopted; the row waits until it is discarded (`register_name` then names the identity).
 - **Waits.** A running flow waits for the sync, for the network (backing off to 60 s), for its proof and for a lock
   the library untracked to be tracked again, in its own task, keeping its lease, so one grant carries it through.
   The `ChainLock` wait has no limit, in bounded waits (the library's own unbounded wait gives up after 180 s). An own

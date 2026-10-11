@@ -1460,8 +1460,8 @@ fn attach_lock(
 /// then fund a second lock. `held`: the funding hold is on, and until
 /// discovery has answered which indexes the seed uses, a fresh index may be
 /// another device's identity's, so nothing is imported. Returns the locks
-/// left pending, the ones parked for a row this build cannot read
-/// included.
+/// left pending, the ones parked for a row this build cannot read and the
+/// ones a running funding call may own included.
 pub(crate) fn import_stranded(
     db: &AppDb,
     flows: &Flows,
@@ -1482,7 +1482,18 @@ pub(crate) fn import_stranded(
         .into_iter()
         .filter(|(r, _)| !flows.get((wallet, r.id)).in_call)
         .collect();
+    // While a funding call runs, a lock on its way whose index is lost may
+    // be that call's own, which it attributes when it ends (MN-1): it waits.
+    let calling = flows.calling(wallet);
+    let mut deferred = 0;
     for lock in ev.stranded() {
+        if calling
+            && lock.known_index().is_none()
+            && matches!(lock.status, LockStatus::Built | LockStatus::Broadcast)
+        {
+            deferred += 1;
+            continue;
+        }
         let outpoint = canonical(lock.outpoint);
         let given = match lock.known_index() {
             Some(index) => note_lock_tracked(db, flows, wallet, lock.outpoint, index, now)?,
@@ -1517,7 +1528,7 @@ pub(crate) fn import_stranded(
             next = next.saturating_add(1);
         }
     }
-    Ok(ev.parked() as u32)
+    Ok(ev.parked() as u32 + deferred)
 }
 
 /// One run of one flow: steps the row until it parks, fails or is done.
