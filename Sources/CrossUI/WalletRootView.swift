@@ -71,6 +71,9 @@ public struct WalletRootView: View {
             CenteredMessage(text: main.errorMessage ?? CrossStrings.loading, busy: main.errorMessage == nil)
         } else if main.needsOnboarding, let onboarding = main.onboarding {
             OnboardingScreen(model: onboarding)
+        } else if main.lockState == nil {
+            // Fail closed: no wallet content until the vault has said whether it is locked.
+            CenteredMessage(text: main.errorMessage ?? CrossStrings.loading, busy: main.errorMessage == nil)
         } else if main.showsLockScreen {
             LockScreen(model: main.lock, network: main.network)
         } else if main.showsSyncOverlay, let status = main.home?.sync {
@@ -83,7 +86,7 @@ public struct WalletRootView: View {
     /// The sidebar and pages are shown (not onboarding, lock, overlays).
     private func showsMainWindow(_ main: MainViewModel) -> Bool {
         !state.shutdown.isVisible && !main.showsTransitionOverlay && main.wallets != nil && !main.needsOnboarding
-            && !main.showsLockScreen && !main.showsSyncOverlay
+            && main.lockState != nil && !main.showsLockScreen && !main.showsSyncOverlay
     }
 
     private func colorScheme(_ theme: AppTheme) -> ColorScheme? {
