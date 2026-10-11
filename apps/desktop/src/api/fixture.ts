@@ -159,6 +159,7 @@ function buildRows(variant: FixtureVariant): TxRow[] {
       address: address(),
       label: s.label ?? null,
       countsTowardBalance: s.status.kind !== "abandoned",
+      involvesWatchOnly: false,
     } satisfies TxRow;
   });
   return rows.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
@@ -311,7 +312,7 @@ export class FixtureBackend implements Backend {
     const fee = row.fee ?? 0;
     const value = Math.abs(row.amount);
     const change = incoming ? 0 : Math.floor(rand() * COIN);
-    return {
+    const details = {
       txid,
       rows: [row],
       status: row.status,
@@ -331,12 +332,14 @@ export class FixtureBackend implements Backend {
         },
       ],
       outputs: [
-        { vout: 0, address: row.address, amount: incoming ? value : value - fee, isMine: incoming, isChange: false },
-        ...(change > 0 ? [{ vout: 1, address: address(), amount: change, isMine: true, isChange: true }] : []),
+        { vout: 0, address: row.address, amount: incoming ? value : value - fee, isMine: incoming, isChange: false, dataHex: null },
+        ...(change > 0 ? [{ vout: 1, address: address(), amount: change, isMine: true, isChange: true, dataHex: null }] : []),
       ],
       message: null,
       label: row.label,
     };
+    // Placeholder bytes of the stated size (drawn after the rest, so the ids stay as they were).
+    return { ...details, rawHex: "00".repeat(details.sizeBytes) };
   };
 
   onEvent = async (listener: (e: AppEvent) => void) => {
