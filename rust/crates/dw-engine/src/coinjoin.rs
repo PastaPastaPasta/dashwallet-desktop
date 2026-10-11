@@ -2344,19 +2344,13 @@ impl NetworkSession {
                         result.remaining -= value;
                     }
                     Err(e) => {
-                        // This chunk and the unsent ones after it.
-                        for (unsent, _) in &signed[n..] {
-                            this.spends
-                                .release(&wallet_id, SpendOwner::Tx(unsent.txid()));
-                        }
-                        result.failure_code = Some(
-                            if e.to_string().to_lowercase().contains("no peers") {
-                                "coinjoin.no_peers"
-                            } else {
-                                "coinjoin.broadcast_rejected"
-                            }
-                            .to_string(),
-                        );
+                        result.failure_code = Some(settle_sweep_failure(
+                            &this.spends,
+                            wallet_id,
+                            &signed,
+                            n,
+                            &e,
+                        ));
                         break;
                     }
                 }
@@ -2373,6 +2367,38 @@ impl NetworkSession {
         })
         .await
     }
+}
+
+/// "Move mixed coins" stopped at chunk `n` of `signed` with `e`: releases
+/// the claims of the chunks never handed to the network and returns the
+/// sweep's failure code. Only dash-spv's rejection before the network took
+/// the bytes (`TransactionBroadcast`) leaves chunk `n` definitely unsent;
+/// any other error (`TransactionBroadcastUnconfirmed` among them) may have
+/// put it on the network, so its claim stays until the wallet sees its
+/// coins spent (`coinjoin.broadcast_unknown`), as the funding transaction's
+/// does. The chunks after `n` were never handed off.
+fn settle_sweep_failure(
+    spends: &crate::send::PendingSpends,
+    wallet_id: WalletId,
+    signed: &[(Transaction, u64)],
+    n: usize,
+    e: &platform_wallet::PlatformWalletError,
+) -> String {
+    let (unsent, code) = match e {
+        platform_wallet::PlatformWalletError::TransactionBroadcast(reason) => (
+            n,
+            if reason.to_lowercase().contains("no peers") {
+                "coinjoin.no_peers"
+            } else {
+                "coinjoin.broadcast_rejected"
+            },
+        ),
+        _ => (n + 1, "coinjoin.broadcast_unknown"),
+    };
+    for (tx, _) in &signed[unsent.min(signed.len())..] {
+        spends.release(&wallet_id, SpendOwner::Tx(tx.txid()));
+    }
+    code.to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -2625,6 +2651,81 @@ pub(crate) fn fully_mixed_candidates(view: &MixView) -> Vec<Utxo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review P2b r1 item 4: a sweep chunk whose broadcast outcome is
+    /// unknown keeps its claim; only the chunks never handed off are
+    /// released. A rejection before the network took it releases it too.
+    #[test]
+    fn a_sweep_keeps_the_claim_of_a_chunk_that_may_be_out() {
+        use platform_wallet::PlatformWalletError as E;
+        let wallet = WalletId([1; 32]);
+        let chunk = |i: u8| {
+            let tx = Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![unsigned_input(OutPoint::new(
+                    dashcore::Txid::from_byte_array([i; 32]),
+                    0,
+                ))],
+                output: Vec::new(),
+                special_transaction_payload: None,
+            };
+            (tx, 1_000)
+        };
+        let signed: Vec<(Transaction, u64)> = (1..=3).map(chunk).collect();
+        let outpoint = |n: usize| signed[n].0.input[0].previous_output;
+        let reserve = |spends: &crate::send::PendingSpends| {
+            for (tx, _) in &signed {
+                spends.reserve(
+                    wallet,
+                    SpendOwner::Tx(tx.txid()),
+                    tx.input.iter().map(|i| i.previous_output),
+                );
+            }
+        };
+
+        let spends = crate::send::PendingSpends::default();
+        reserve(&spends);
+        let code = settle_sweep_failure(
+            &spends,
+            wallet,
+            &signed,
+            1,
+            &E::TransactionBroadcastUnconfirmed("no verdict".into()),
+        );
+        assert_eq!(code, "coinjoin.broadcast_unknown");
+        assert_eq!(
+            spends.snapshot(&wallet),
+            HashSet::from([outpoint(0), outpoint(1)])
+        );
+
+        let spends = crate::send::PendingSpends::default();
+        reserve(&spends);
+        let code = settle_sweep_failure(
+            &spends,
+            wallet,
+            &signed,
+            1,
+            &E::TransactionBroadcast("rejected: bad-txns".into()),
+        );
+        assert_eq!(code, "coinjoin.broadcast_rejected");
+        assert_eq!(spends.snapshot(&wallet), HashSet::from([outpoint(0)]));
+
+        let spends = crate::send::PendingSpends::default();
+        reserve(&spends);
+        let code = settle_sweep_failure(
+            &spends,
+            wallet,
+            &signed,
+            2,
+            &E::TransactionBroadcast("No peers connected".into()),
+        );
+        assert_eq!(code, "coinjoin.no_peers");
+        assert_eq!(
+            spends.snapshot(&wallet),
+            HashSet::from([outpoint(0), outpoint(1)])
+        );
+    }
 
     #[test]
     fn test_qt_046_settings_round_trip_and_validation() {
