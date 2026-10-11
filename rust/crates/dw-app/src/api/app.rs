@@ -76,7 +76,7 @@ commands! {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
         let started = Instant::now();
-        let page = session.history_page(id, request.into_query()?).await?;
+        let page = session.history_page(id, request.into_query()).await?;
         let engine_micros = started.elapsed().as_micros() as u64;
         Ok(TimedHistoryRows {
             engine_micros,

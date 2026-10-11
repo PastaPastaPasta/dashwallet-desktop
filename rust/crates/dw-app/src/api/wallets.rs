@@ -45,14 +45,18 @@ impl From<dw_engine::CreatedWallet> for CreatedWallet {
     }
 }
 
-/// Options of `importWallet`.
+/// Options of `importWallet` and the Dash Core imports (`importDumpWallet`,
+/// `importWalletDat`, `importKeyMaterial`). The Core imports always derive
+/// with Core's rules, whatever `coreCompat` says, and default the lookahead
+/// to 1000 or the wallet's used addresses plus 100, whichever is more.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ImportOptions {
     /// Display name, 1-64 characters after trimming; `null`: "Wallet N".
     pub name: Option<String>,
-    /// First block to scan. `0` is genesis; `null`: the SPV tip, or the
-    /// latest checkpoint (right for a new phrase).
+    /// First block to scan. `0` is genesis; `null`: the importer's default,
+    /// the SPV tip or the latest checkpoint for a phrase (right for a new
+    /// one) and genesis for a Dash Core wallet, which may have funds anywhere.
     pub birth_height: Option<u32>,
     /// Derive the seed with Dash Core's BIP39 quirks (weak checksum, no
     /// NFKD, salt cut at 256 bytes; QT-104).

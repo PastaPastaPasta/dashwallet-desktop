@@ -5,42 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::mirror_enum;
-use crate::dto::platform::KeyPurposeName;
-
-/// An identity's DashPay profile as published (`IdentitySummary.profile`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct IdentityProfile {
-    pub display_name: Option<String>,
-    pub public_message: Option<String>,
-    pub avatar_url: Option<String>,
-    /// Hex SHA-256 of the image bytes, as published.
-    pub avatar_hash: Option<String>,
-    /// Hex dHash, as published.
-    pub avatar_fingerprint: Option<String>,
-    pub updated_at: Option<u64>,
-}
-
-impl From<engine::Profile> for IdentityProfile {
-    fn from(p: engine::Profile) -> Self {
-        let engine::Profile {
-            display_name,
-            public_message,
-            avatar_url,
-            avatar_hash,
-            avatar_fingerprint,
-            updated_at,
-        } = p;
-        IdentityProfile {
-            display_name,
-            public_message,
-            avatar_url,
-            avatar_hash,
-            avatar_fingerprint,
-            updated_at,
-        }
-    }
-}
+use crate::dto::platform::{DashPayProfile, KeyPurposeName};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -61,7 +26,7 @@ pub struct IdentitySummary {
     #[serde(with = "crate::dto::credits::option")]
     pub balance: Option<u64>,
     pub has_dashpay_keys: bool,
-    pub profile: Option<IdentityProfile>,
+    pub profile: Option<DashPayProfile>,
     /// Verified only through the trusted fallback.
     pub unverified: bool,
 }

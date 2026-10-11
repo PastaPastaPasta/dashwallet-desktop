@@ -2,6 +2,7 @@
 //! more than one domain share: flows, budgets, leases, the lock's report and
 //! dispatch outcomes (E0-04 §16).
 
+use dw_engine::platform as engine;
 use dw_engine::platform::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, Eligibility,
     FlowKind, FlowOutcome, FlowReport, KeyPurpose, LeaseStateView, LeaseView, LockPhase,
@@ -387,3 +388,118 @@ impl From<DispatchResolved> for DispatchSettled {
         }
     }
 }
+
+/// The bring-up outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupStatus {
+    NotRun,
+    Starting,
+    Ready,
+    NoIdentity,
+    PartialNoIdentity,
+    DiscoveryFailed,
+    PartialAccountsPending,
+    SeedBindingUnverified,
+    IdentityScanIncomplete,
+    /// The bring-up ran with a locked vault; it runs again at the first unlock.
+    IdentityUnsettled,
+}
+
+mirror_enum!(engine::StartupStatus => StartupStatus {
+    NotRun, Starting, Ready, NoIdentity, PartialNoIdentity, DiscoveryFailed,
+    PartialAccountsPending, SeedBindingUnverified, IdentityScanIncomplete, IdentityUnsettled
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::enum_variant_names, reason = "mirrors the engine's variants")]
+pub enum SyncLoop {
+    IdentitySync,
+    DashPaySync,
+    DpnsSync,
+    PlatformAddressSync,
+}
+
+mirror_enum!(engine::SyncLoop => SyncLoop {
+    IdentitySync, DashPaySync, DpnsSync, PlatformAddressSync
+});
+
+/// One Platform sync loop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncLoopStatus {
+    pub sync_loop: SyncLoop,
+    pub running: bool,
+    /// UNIX seconds.
+    pub last_run_at: Option<u64>,
+    pub next_run_at: Option<u64>,
+}
+
+impl From<engine::SyncLoopStatus> for SyncLoopStatus {
+    fn from(s: engine::SyncLoopStatus) -> Self {
+        let engine::SyncLoopStatus {
+            sync_loop,
+            running,
+            last_run_at,
+            next_run_at,
+        } = s;
+        SyncLoopStatus {
+            sync_loop: sync_loop.into(),
+            running,
+            last_run_at,
+            next_run_at,
+        }
+    }
+}
+
+/// A DashPay profile as published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DashPayProfile {
+    pub display_name: Option<String>,
+    pub public_message: Option<String>,
+    pub avatar_url: Option<String>,
+    /// Hex SHA-256 of the image bytes, as published.
+    pub avatar_hash: Option<String>,
+    /// Hex dHash, as published.
+    pub avatar_fingerprint: Option<String>,
+    pub updated_at: Option<u64>,
+}
+
+impl From<engine::Profile> for DashPayProfile {
+    fn from(p: engine::Profile) -> Self {
+        let engine::Profile {
+            display_name,
+            public_message,
+            avatar_url,
+            avatar_hash,
+            avatar_fingerprint,
+            updated_at,
+        } = p;
+        DashPayProfile {
+            display_name,
+            public_message,
+            avatar_url,
+            avatar_hash,
+            avatar_fingerprint,
+            updated_at,
+        }
+    }
+}
+
+/// How a user relates to one of the wallet's identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum UserRelation {
+    Stranger,
+    Contact,
+    PendingOutgoing,
+    PendingIncoming,
+    Ignored,
+    IsSelf,
+}
+
+mirror_enum!(engine::Relation => UserRelation {
+    Stranger, Contact, PendingOutgoing, PendingIncoming, Ignored, IsSelf
+});

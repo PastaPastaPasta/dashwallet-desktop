@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::mirror_enum;
-use crate::error::AppError;
 
 /// dash-qt `TransactionRecord::Type` (research 02 §4.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -288,19 +287,19 @@ pub struct HistoryRequest {
 
 impl HistoryRequest {
     /// The engine query. Blank text is no text filter.
-    pub fn into_query(self) -> Result<HistoryQuery, AppError> {
+    pub fn into_query(self) -> HistoryQuery {
         let HistoryRequest {
             filter,
             sort,
             cursor,
             limit,
         } = self;
-        Ok(HistoryQuery {
+        HistoryQuery {
             filter: filter.into_filter(),
             sort: sort.into(),
             cursor,
             limit,
-        })
+        }
     }
 }
 
@@ -480,7 +479,7 @@ mod tests {
             r#"{"categories":["sent"],"text":"  ","sort":"newestFirst","cursor":null,"limit":50}"#,
         )
         .unwrap();
-        let q = r.into_query().unwrap();
+        let q = r.into_query();
         assert_eq!(q.filter.categories, [TxCategory::Sent]);
         assert_eq!(q.filter.text, None, "blank text is no filter");
         assert!(q.filter.types.is_empty() && q.filter.statuses.is_empty());
@@ -514,6 +513,6 @@ mod tests {
         assert_eq!(json["watchOnly"], "no");
         assert_eq!(json["sort"], "amountAscending");
         let back: HistoryRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(back.into_query().unwrap(), query);
+        assert_eq!(back.into_query(), query);
     }
 }

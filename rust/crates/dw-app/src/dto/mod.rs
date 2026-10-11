@@ -94,6 +94,49 @@ pub mod base64 {
     }
 }
 
+/// A transaction output reference, `txid:vout`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OutPoint {
+    /// 64 lower-case hex characters, display byte order.
+    pub txid: String,
+    pub vout: u32,
+}
+
+impl OutPoint {
+    /// The engine outpoint; the txid must be 64 lower-case hex characters.
+    pub fn to_core(&self) -> Result<dashcore::OutPoint, AppError> {
+        Ok(dashcore::OutPoint::new(parse_txid(&self.txid)?, self.vout))
+    }
+
+    /// A list of outpoints as the engine takes it.
+    pub fn to_core_all(list: &[OutPoint]) -> Result<Vec<dashcore::OutPoint>, AppError> {
+        list.iter().map(OutPoint::to_core).collect()
+    }
+}
+
+impl From<dashcore::OutPoint> for OutPoint {
+    fn from(o: dashcore::OutPoint) -> Self {
+        let dashcore::OutPoint { txid, vout } = o;
+        OutPoint {
+            txid: txid.to_string(),
+            vout,
+        }
+    }
+}
+
+/// A txid as the renderer sends it: 64 lower-case hex characters, display
+/// byte order.
+pub fn parse_txid(s: &str) -> Result<dashcore::Txid, AppError> {
+    let lower_hex = s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    lower_hex
+        .then(|| s.parse::<dashcore::Txid>().ok())
+        .flatten()
+        .ok_or_else(|| AppError::invalid_argument(format!("txid {s:?} is not 64 lowercase hex")))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkKind {
@@ -406,6 +449,37 @@ impl From<SyncSnapshot> for SyncStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outpoints_round_trip_and_reject_bad_txids() {
+        let o = OutPoint {
+            txid: "0a".repeat(32),
+            vout: 7,
+        };
+        let core = o.to_core().unwrap();
+        assert_eq!(OutPoint::from(core), o);
+        for bad in ["", "zz", &"0A".repeat(32), &"0a".repeat(31), "not hex"] {
+            let o = OutPoint {
+                txid: bad.to_string(),
+                vout: 0,
+            };
+            assert_eq!(o.to_core().unwrap_err().code_str(), "invalid_argument");
+            assert_eq!(parse_txid(bad).unwrap_err().code_str(), "invalid_argument");
+        }
+        let hex = "00".repeat(31) + "01";
+        assert_eq!(parse_txid(&hex).unwrap().to_string(), hex);
+    }
+
+    #[test]
+    fn an_outpoint_crosses_as_txid_and_vout() {
+        let o = dashcore::OutPoint {
+            txid: parse_txid(&("11".repeat(32))).unwrap(),
+            vout: 3,
+        };
+        let json = serde_json::to_value(OutPoint::from(o)).unwrap();
+        assert_eq!(json["txid"], "11".repeat(32));
+        assert_eq!(json["vout"], 3);
+    }
 
     #[test]
     fn networks_parse_from_their_directory_names() {

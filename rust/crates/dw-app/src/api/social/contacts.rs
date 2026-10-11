@@ -2,8 +2,7 @@
 
 use dw_engine::platform::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
-    ContactSummary, ContactsPage, PrivateDetails, PublishState, Relation, RequestOutcome,
-    ScannedContact,
+    ContactSummary, ContactsPage, PrivateDetails, PublishState, RequestOutcome, ScannedContact,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -11,22 +10,7 @@ use ts_rs::TS;
 use super::payments::PaymentLockInfo;
 use super::profile::DashPayProfile;
 use crate::dto::mirror_enum;
-
-/// How a user relates to one of the wallet's identities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum RelationName {
-    Stranger,
-    Contact,
-    PendingOutgoing,
-    PendingIncoming,
-    Ignored,
-    IsSelf,
-}
-
-mirror_enum!(Relation => RelationName {
-    Stranger, Contact, PendingOutgoing, PendingIncoming, Ignored, IsSelf
-});
+use crate::dto::platform::UserRelation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -109,7 +93,7 @@ pub struct ContactSummaryInfo {
     pub username: Option<String>,
     pub display_name: Option<String>,
     pub alias: Option<String>,
-    pub relation: RelationName,
+    pub relation: UserRelation,
     pub hidden: bool,
     pub channel: ChannelStateName,
     /// UNIX time of the contact.
@@ -289,7 +273,7 @@ pub struct ScannedContactInfo {
     /// Set when the payload carried an auto-accept proof: an id the engine
     /// holds in memory; pass it as `scan` to `dashpaySendRequest`.
     pub scan: Option<String>,
-    pub relation: RelationName,
+    pub relation: UserRelation,
     /// Verified only through the trusted fallback.
     pub unverified: bool,
 }

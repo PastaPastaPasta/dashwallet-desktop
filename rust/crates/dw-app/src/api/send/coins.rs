@@ -7,52 +7,8 @@ use dw_engine::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::dto::OutPoint;
 use crate::dto::mirror_enum;
-use crate::error::AppError;
-
-/// A transaction output reference.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct OutPoint {
-    /// 64 lower-case hex characters, display byte order.
-    pub txid: String,
-    pub vout: u32,
-}
-
-impl OutPoint {
-    /// The engine outpoint; the txid must be 64 lower-case hex characters.
-    pub fn to_core(&self) -> Result<dashcore::OutPoint, AppError> {
-        let lower_hex = self.txid.len() == 64
-            && self
-                .txid
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        let txid = lower_hex
-            .then(|| self.txid.parse::<dashcore::Txid>().ok())
-            .flatten()
-            .ok_or_else(|| {
-                AppError::invalid_argument(format!(
-                    "txid {:?} is not 64 lowercase hex",
-                    self.txid
-                ))
-            })?;
-        Ok(dashcore::OutPoint::new(txid, self.vout))
-    }
-
-    /// A list of outpoints as the engine takes it.
-    pub fn to_core_all(list: &[OutPoint]) -> Result<Vec<dashcore::OutPoint>, AppError> {
-        list.iter().map(OutPoint::to_core).collect()
-    }
-}
-
-impl From<dashcore::OutPoint> for OutPoint {
-    fn from(o: dashcore::OutPoint) -> Self {
-        OutPoint {
-            txid: o.txid.to_string(),
-            vout: o.vout,
-        }
-    }
-}
 
 /// One row of the coin control list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -272,23 +228,6 @@ impl From<EngineSummary> for CoinSelectionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn outpoints_round_trip_and_reject_bad_txids() {
-        let o = OutPoint {
-            txid: "0a".repeat(32),
-            vout: 7,
-        };
-        let core = o.to_core().unwrap();
-        assert_eq!(OutPoint::from(core), o);
-        for bad in ["", "zz", &"0A".repeat(32), &"0a".repeat(31)] {
-            let o = OutPoint {
-                txid: bad.to_string(),
-                vout: 0,
-            };
-            assert_eq!(o.to_core().unwrap_err().code_str(), "invalid_argument");
-        }
-    }
 
     #[test]
     fn the_fee_policy_keeps_every_target() {

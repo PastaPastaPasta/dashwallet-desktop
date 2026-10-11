@@ -1,47 +1,14 @@
 //! Profiles and avatars.
 
 use dw_engine::platform::{
-    AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
-    ProfileEdit, ProfileLimits,
+    AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, ProfileEdit,
+    ProfileLimits,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::dto::platform::DashPayProfile;
 use crate::dto::mirror_enum;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct DashPayProfile {
-    pub display_name: Option<String>,
-    pub public_message: Option<String>,
-    pub avatar_url: Option<String>,
-    /// Hex SHA-256 of the image bytes, as published.
-    pub avatar_hash: Option<String>,
-    /// Hex dHash, as published.
-    pub avatar_fingerprint: Option<String>,
-    pub updated_at: Option<u64>,
-}
-
-impl From<Profile> for DashPayProfile {
-    fn from(p: Profile) -> Self {
-        let Profile {
-            display_name,
-            public_message,
-            avatar_url,
-            avatar_hash,
-            avatar_fingerprint,
-            updated_at,
-        } = p;
-        DashPayProfile {
-            display_name,
-            public_message,
-            avatar_url,
-            avatar_hash,
-            avatar_fingerprint,
-            updated_at,
-        }
-    }
-}
 
 /// Character limits from the DashPay contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

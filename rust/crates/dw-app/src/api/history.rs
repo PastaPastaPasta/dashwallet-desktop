@@ -1,9 +1,6 @@
 //! Transaction history, the detail sheet and the actions on a transaction
 //! (abandon, resend, drop, CSV export, notification rows).
 
-use std::str::FromStr;
-
-use dashcore::{OutPoint, Txid};
 use dw_engine::{TxDetailExtras, TxNotice};
 use dw_units::Unit;
 use serde::{Deserialize, Serialize};
@@ -12,8 +9,7 @@ use ts_rs::TS;
 use crate::dto::history::{
     HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxDetails, TxTypeName,
 };
-use crate::dto::mirror_enum;
-use crate::error::AppError;
+use crate::dto::{OutPoint, mirror_enum, parse_txid};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
@@ -30,24 +26,6 @@ pub enum CsvUnitName {
 }
 
 mirror_enum!(CsvUnitName => Unit { Dash, MilliDash, MicroDash, Duffs });
-
-/// A transaction output, `txid:vout`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct TxOutpoint {
-    pub txid: String,
-    pub vout: u32,
-}
-
-impl From<OutPoint> for TxOutpoint {
-    fn from(o: OutPoint) -> Self {
-        let OutPoint { txid, vout } = o;
-        TxOutpoint {
-            txid: txid.to_string(),
-            vout,
-        }
-    }
-}
 
 /// The dash-qt details-dialog fields `TxDetails` lacks, and which actions
 /// the sheet enables.
@@ -71,7 +49,7 @@ pub struct TxDetailExtrasInfo {
     pub can_abandon: bool,
     pub can_resend: bool,
     /// Dust-locked outputs of this transaction.
-    pub dust_locked_outputs: Vec<TxOutpoint>,
+    pub dust_locked_outputs: Vec<OutPoint>,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
 }
@@ -151,17 +129,12 @@ impl From<TxNotice> for TxNoticeRow {
     }
 }
 
-/// A txid as the renderer sends it: display-order hex.
-fn parse_txid(s: &str) -> Result<Txid, AppError> {
-    Txid::from_str(s).map_err(|e| AppError::invalid_argument(format!("txid {s:?}: {e}")))
-}
-
 commands! {
     #[facade("NetworkSession::history_page")]
     fn history_page(state, wallet_id: String, request: HistoryRequest) -> HistoryRows {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
-        Ok(session.history_page(id, request.into_query()?).await?.into())
+        Ok(session.history_page(id, request.into_query()).await?.into())
     }
 
     #[facade("NetworkSession::tx_detail")]
@@ -265,17 +238,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn txids_parse_as_display_hex() {
-        let hex = "00".repeat(31) + "01";
-        assert_eq!(parse_txid(&hex).unwrap().to_string(), hex);
-        assert_eq!(
-            parse_txid("not hex").unwrap_err().code_str(),
-            "invalid_argument"
-        );
-        assert!(parse_txid("abcd").is_err());
-    }
-
-    #[test]
     fn csv_units_follow_the_display_unit_order() {
         for (name, unit) in [
             (CsvUnitName::Dash, Unit::Dash),
@@ -307,16 +269,5 @@ mod tests {
         assert_eq!(json["txType"], "coinJoinMixing");
         assert_eq!(json["coinjoinInternal"], true);
         assert_eq!(json["recordIndex"], 1);
-    }
-
-    #[test]
-    fn an_outpoint_crosses_as_txid_and_vout() {
-        let o = OutPoint {
-            txid: parse_txid(&("11".repeat(32))).unwrap(),
-            vout: 3,
-        };
-        let json = serde_json::to_value(TxOutpoint::from(o)).unwrap();
-        assert_eq!(json["txid"], "11".repeat(32));
-        assert_eq!(json["vout"], 3);
     }
 }
