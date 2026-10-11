@@ -3,6 +3,7 @@
 //! `/work/scratch/dp1-02-opus/review-probes.patch`).
 
 use super::*;
+use crate::platform::DispatchState;
 
 /// The fixture's [`Fake`] with one twist the library can show but the
 /// Fake does not script.
@@ -187,6 +188,7 @@ fn tap(f: &Fixture, outpoint: OutPoint, index: u32) -> Option<i64> {
     flow::lock_tracked(
         &f.session.platform.registrations,
         &f.appdb(),
+        &f.session.leases,
         f.wallet,
         outpoint,
         Some(index),
@@ -481,6 +483,7 @@ fn a_discard_refuses_a_row_funded_after_its_first_look() {
             let moved = flow::lock_tracked(
                 &session.platform.registrations,
                 &appdb,
+                &session.leases,
                 wallet,
                 outpoint,
                 Some(1),
@@ -759,4 +762,329 @@ fn review_r6_stale_absence_must_not_settle_duplicate_profile() {
     run_once(&f, &lib, draft).unwrap();
     let row = f.row(draft);
     assert_eq!((phase(&row), row.profile_error), (Phase::Done, None));
+}
+
+/// "Finish transfers" once under a fresh grant.
+fn finish_once(f: &Fixture, lib: &Fake) -> registration::FinishReport {
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap()
+}
+
+/// A registration lock of account 0 at `index`.
+fn registration_lock(outpoint: OutPoint, index: u32, status: LockStatus) -> LockInfo {
+    LockInfo {
+        outpoint,
+        registration: true,
+        identity_index: index,
+        account: 0,
+        amount: flow::LOCK_DUFFS,
+        status,
+    }
+}
+
+/// A row whose funding call signed its lock, which the library then
+/// rejected and untracked before the tap recorded it (P2b review M-2: it
+/// may still be relayed): `broadcast_unknown`, reserved for that lock.
+/// Returns the draft and the signed lock.
+fn signed_then_rejected(f: &Fixture, lib: &Fake, row: NewRegistration) -> (i64, OutPoint) {
+    lib.w().fund_script = Some(FundScript::Rejected);
+    lib.w().skip_tap = true;
+    let draft = f.insert(row);
+    f.drive(lib, draft, Some(f.lease()), false);
+    lib.w().fund_script = None;
+    lib.w().skip_tap = false;
+    let signed = f
+        .session
+        .leases
+        .signed_lock_txids(f.wallet, &flow::funding_step(draft));
+    assert_eq!(signed.len(), 1);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::KeysPrepared, Some("platform.broadcast_unknown"))
+    );
+    (draft, OutPoint::new(signed[0], 0))
+}
+
+/// Sol r7 R7-01: a row whose signed lock is away is reserved for it.
+/// "Finish transfers" gives another lock of the seed a row of its own, not
+/// this one; when the signed lock returns (proved after all), it goes to
+/// its row, which completes with it.
+#[test]
+fn review_r7_finish_substitution_must_not_orphan_a_signed_lock() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let (draft, original) = signed_then_rejected(&f, &lib, core_row(PLAIN));
+    let foreign = OutPoint::new(Txid::from_byte_array([99; 32]), 0);
+    lib.w().locks.push(registration_lock(
+        foreign,
+        0,
+        LockStatus::RecoveredFromChain,
+    ));
+    let first = finish_once(&f, &lib);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), flow::outpoint_of(&row)),
+        (Phase::KeysPrepared, None)
+    );
+    let holders = held_by(&f, foreign);
+    assert_eq!(holders.len(), 1);
+    assert_ne!(holders, [draft], "the reserved row took another lock");
+    assert!(
+        first.still_pending >= 1,
+        "the reserved row is pending: {first:?}"
+    );
+    // The rejected lock was relayed after all: a recovery scan brings it
+    // back with a proof, its index lost.
+    lib.w().locks.push(registration_lock(
+        original,
+        0,
+        LockStatus::RecoveredFromChain,
+    ));
+    finish_once(&f, &lib);
+    assert_eq!(held_by(&f, original), [draft]);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    let last = finish_once(&f, &lib);
+    assert_eq!(last.still_pending, 0, "{last:?}");
+    assert_eq!(lib.counts(), (1, 2), "one funding, an identity per lock");
+}
+
+/// Sol r7 R7-02: the identity a row's signed lock created is that row's.
+/// Another row restored at the same index moves to a new one rather than
+/// adopt it, and the signed owner completes with its lock at its own key.
+#[test]
+fn review_r7_identity_restore_must_respect_another_rows_signed_lock() {
+    let f = fixture(false);
+    let (lib, signer, lock) = lock_record_failed(&f);
+    lib.set_status(lock, LockStatus::Consumed);
+    lib.w()
+        .identities
+        .push((0, flow::b58(&flow::identity_for(lock))));
+    let mut stale = prepared_row(0);
+    stale.label = "erin2".into();
+    let other = f.insert(stale);
+    f.drive(&lib, other, Some(f.lease()), false);
+    let row = f.row(other);
+    assert_ne!(flow::outpoint_of(&row), Some(lock), "took the signed lock");
+    assert_ne!(row.identity_index, Some(0), "kept the signed owner's index");
+    let funds = lib.counts().0;
+    f.drive(&lib, signer, Some(f.lease()), false);
+    let row = f.row(signer);
+    assert_eq!(
+        (flow::outpoint_of(&row), row.identity_index, phase(&row)),
+        (Some(lock), Some(0), Phase::Done)
+    );
+    assert_eq!(lib.counts().0, funds, "the signed owner funded again");
+    assert_eq!(held_by(&f, lock), [signer]);
+}
+
+/// Sol r7 rule 4: a row an earlier build gave another lock while its own
+/// signed lock was away (a208764's Finish). The signed lock, back and
+/// unspent, is no other row's: "Finish transfers" reports it pending every
+/// time and gives it to no row, a waiting one or a new one.
+#[test]
+fn a_signed_lock_its_row_cannot_take_stays_pending() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let (draft, original) = signed_then_rejected(&f, &lib, core_row(PLAIN));
+    let other = OutPoint::new(Txid::from_byte_array([99; 32]), 0);
+    lib.w()
+        .locks
+        .push(registration_lock(other, 0, LockStatus::Consumed));
+    let moved = f
+        .appdb()
+        .update_registration(
+            &f.wallet.to_string(),
+            draft,
+            f.row(draft).owner,
+            Phase::KeysPrepared.as_str(),
+            true,
+            &RegistrationChange {
+                phase: Some(Phase::Done.as_str().into()),
+                outpoint: Some(flow::canonical(other)),
+                failure: Some(None),
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(moved, dw_appdb::RegistrationUpdate::Applied);
+    let waiting = f.insert(prepared_row(5));
+    for status in [LockStatus::RecoveredFromChain, LockStatus::ChainLocked] {
+        lib.w().locks.retain(|l| l.outpoint != original);
+        // Index 0 is lost (any row waiting may take it); index 5 is the
+        // waiting row's.
+        for index in [0, 5] {
+            lib.w().locks.retain(|l| l.outpoint != original);
+            lib.w()
+                .locks
+                .push(registration_lock(original, index, status));
+            let report = finish_once(&f, &lib);
+            assert!(report.still_pending >= 1, "{status:?} {index}: {report:?}");
+            assert!(held_by(&f, original).is_empty(), "{status:?} {index}");
+            assert_eq!(f.rows().len(), 2, "{status:?} {index}: a new row");
+            assert_eq!(phase(&f.row(waiting)), Phase::KeysPrepared);
+        }
+    }
+}
+
+/// Sol r7: every path that gives a row a lock decides by the one rule
+/// ([`flow::Provenance::may_take`]), both ways. A lock row A's call signed
+/// is A's alone; A, its signed lock away, takes no other. Each case below
+/// is a path that took the wrong lock when it bypassed the rule.
+#[test]
+fn every_adoption_path_follows_the_one_ownership_rule() {
+    // The tap: A's signed lock, tracked again, goes to A, not to the
+    // unfailed row B at the same index.
+    let f = fixture(false);
+    let lib = f.fake();
+    let (a, signed) = signed_then_rejected(&f, &lib, core_row(PLAIN));
+    let b = f.insert(prepared_row(0));
+    lib.w()
+        .locks
+        .push(registration_lock(signed, 0, LockStatus::Built));
+    assert_eq!(tap(&f, signed, 0), Some(a), "the tap");
+    assert_eq!(held_by(&f, signed), [a]);
+    let _ = b;
+
+    // The tap and "Finish transfers": A, reserved, takes no unsigned lock
+    // at its index; Finish gives it a new row.
+    let f = fixture(false);
+    let lib = f.fake();
+    let (a, _) = signed_then_rejected(&f, &lib, core_row(PLAIN));
+    let unsigned = OutPoint::new(Txid::from_byte_array([98; 32]), 0);
+    lib.w()
+        .locks
+        .push(registration_lock(unsigned, 0, LockStatus::Built));
+    assert_eq!(tap(&f, unsigned, 0), None, "the tap");
+    let report = finish_once(&f, &lib);
+    let holders = held_by(&f, unsigned);
+    assert_eq!(holders.len(), 1, "Finish, known index");
+    assert_ne!(holders, [a], "Finish, known index");
+    assert!(report.still_pending >= 1, "{report:?}");
+    // ... nor one whose index is lost.
+    let lost = OutPoint::new(Txid::from_byte_array([97; 32]), 0);
+    lib.w()
+        .locks
+        .push(registration_lock(lost, 0, LockStatus::ChainLocked));
+    finish_once(&f, &lib);
+    assert_ne!(held_by(&f, lost), [a], "Finish, index lost");
+    assert_eq!(flow::outpoint_of(&f.row(a)), None);
+
+    // The run: A unfailed, its signed lock away and an identity at its
+    // index from an unsigned lock: A neither adopts it nor moves off the
+    // key it signed at; it reads as possibly sent.
+    let f = fixture(false);
+    let (lib, a, signed) = lock_record_failed(&f);
+    lib.w().locks.retain(|l| l.outpoint != signed);
+    let unsigned = OutPoint::new(Txid::from_byte_array([96; 32]), 0);
+    lib.w()
+        .locks
+        .push(registration_lock(unsigned, 0, LockStatus::Consumed));
+    lib.w()
+        .identities
+        .push((0, flow::b58(&flow::identity_for(unsigned))));
+    assert_eq!(
+        f.status(&lib, a).waiting,
+        Some(RegistrationWait::ChainLock),
+        "a reserved row waits for its own lock"
+    );
+    f.drive(&lib, a, Some(f.lease()), false);
+    let row = f.row(a);
+    assert_eq!(
+        (
+            flow::outpoint_of(&row),
+            row.identity_index,
+            row.error.as_deref()
+        ),
+        (None, Some(0), Some("platform.broadcast_unknown")),
+        "the run"
+    );
+    assert_eq!(lib.counts().0, 1, "the run funded again");
+
+    // The index rule: an older row that shares the index of a row reserved
+    // for its signed lock (rows restored behind reality) moves to a new
+    // one, leaving the reserved row its key.
+    let f = fixture(false);
+    let lib = f.fake();
+    let older = f.insert(prepared_row(7));
+    let (a, _) = signed_then_rejected(&f, &lib, core_row(PLAIN));
+    let index = f.row(a).identity_index;
+    let moved = f
+        .appdb()
+        .update_registration(
+            &f.wallet.to_string(),
+            older,
+            f.row(older).owner,
+            Phase::KeysPrepared.as_str(),
+            false,
+            &RegistrationChange {
+                identity_index: index,
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(moved, dw_appdb::RegistrationUpdate::Applied);
+    f.drive(&lib, older, Some(f.lease()), false);
+    assert_ne!(f.row(older).identity_index, index, "the index rule");
+    assert_eq!(f.row(a).identity_index, index);
+
+    // The funding call's outcome and the index rule (`lock_of`), the
+    // status a row reads (`funding_status`), and Finish's destined lock.
+    let f = fixture(false);
+    let a = f.row(f.insert(prepared_row(0)));
+    let b = f.row(f.insert(prepared_row(0)));
+    let mine = OutPoint::new(Txid::from_byte_array([95; 32]), 0);
+    let away = Txid::from_byte_array([94; 32]);
+    let ev = flow::Evidence::new(
+        vec![registration_lock(mine, 0, LockStatus::Built)],
+        vec![],
+        vec![a.clone(), b.clone()],
+    )
+    .signed(vec![(a.id, mine.txid)]);
+    assert_eq!(ev.lock_of(&a).map(|l| l.outpoint), Some(mine));
+    assert!(
+        ev.lock_of(&b).is_none(),
+        "lock_of: another row's signed lock"
+    );
+    let ev = flow::Evidence::new(
+        vec![registration_lock(mine, 0, LockStatus::Built)],
+        vec![],
+        vec![a.clone(), b.clone()],
+    )
+    .signed(vec![(a.id, away)]);
+    assert!(ev.lock_of(&a).is_none(), "lock_of: a reserved row");
+    assert_eq!(ev.lock_of(&b).map(|l| l.outpoint), Some(mine));
+    assert_eq!(
+        flow::funding_status(&a, &ev),
+        Some(DispatchState::MaybeSent),
+        "a reserved row reads possibly sent"
+    );
+    let lost = registration_lock(mine, 0, LockStatus::ChainLocked);
+    let ev = flow::Evidence::new(vec![lost], vec![], vec![a.clone(), b.clone()])
+        .signed(vec![(a.id, away)]);
+    assert_eq!(
+        flow::funding_status(&b, &ev),
+        Some(DispatchState::MaybeSent),
+        "the lost lock is destined to B, the oldest row free to take it"
+    );
+
+    // P2b resolved A's signed funding `NotSent` (a ChainLocked spend of its
+    // inputs): its lock will not land, and A is free again.
+    let ev = flow::Evidence::new(
+        vec![registration_lock(mine, 0, LockStatus::Built)],
+        vec![],
+        vec![a.clone()],
+    )
+    .signed(vec![(a.id, away)])
+    .resolved(vec![a.id]);
+    assert!(!ev.reserved(&a));
+    assert_eq!(ev.lock_of(&a).map(|l| l.outpoint), Some(mine));
 }

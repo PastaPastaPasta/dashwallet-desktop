@@ -1330,10 +1330,6 @@ impl LeaseTable {
     /// `signed_lock` write runs is here already: the library's store waits
     /// for that write, and the process stops if it fails (§2a.7). A
     /// rejected broadcast leaves its txid here.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02 attributes its rows by it")
-    )]
     pub(crate) fn signed_lock_txids(&self, wallet: WalletId, step: &str) -> Vec<Txid> {
         self.with_j(|i, _| {
             i.fence

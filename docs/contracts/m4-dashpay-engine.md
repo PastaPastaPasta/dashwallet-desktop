@@ -262,9 +262,15 @@ decided where the rows leave room:
   tap, which writes the outpoint to the row: §3.4 Restore rule 3), before the broadcaster sees it, the engine checks
   each input against those sighashes and journals the lock's txid and inputs as the funding step's `signed_lock`
   before the persister takes it. That record is exact provenance: durable across a restart, whatever the lock's
-  status, index or amount says, and never matched by another device's lock on the seed. After the call a tracked lock
-  that is the row's (its outpoint's, its signed lock, or an unheld lock whose known index is the row's and that no
-  other row's call signed) means committed (the row moves on to it). With none, the step's status decides: a refusal
+  status, index or amount says, and never matched by another device's lock on the seed. **One ownership rule** decides
+  every path that gives a row a lock (the run, the call's outcome, the index and identity restore, the tap and
+  "Finish transfers"), exclusive both ways: a lock in any row's `signed_lock` is that row's alone, and a row whose
+  call signed a lock is reserved for it, taking no other lock even while its own is away, until its lock returns
+  (the row takes it) or P2b resolves the step `NotSent` (its signed inputs spent by a ChainLocked conflict). Such a
+  row reads `MaybeSent`, so it counts as in progress and refuses discard, and it waits at `ChainLock`. Only a row
+  with no signed provenance takes an unsigned lock. After the call a tracked lock that is the row's (its outpoint's,
+  its signed lock, or an unheld unsigned lock whose known index is the row's) means committed (the row moves on to
+  it). With none, the step's status decides: a refusal
   before the call (the permit's, or the coin check's) funds nothing and fails with its code; a failure before the
   library released a signature is `NotSent`, and the row goes back to `KeysPrepared`, retryable, with the library's
   code. Anything after a signature is `MaybeSent`, a rejected broadcast included (the pin cannot tell a rejection
@@ -275,8 +281,8 @@ decided where the rows leave room:
   hands the lock to it (the row resumes at `FundingSent`, no second row), or "Finish transfers" settles it (below).
   The row's record of its signed lock, and the tap's, are retried; one that still fails ends the run with `storage`,
   the row unfailed at `KeysPrepared` and its index. It reads committed, so it counts as in progress, refuses discard
-  and funds nothing again; its next run, in this process or after a restart, takes the lock by its signed record. A
-  lock no funding call of the row signed, whose index is lost, is the row's only by "Finish transfers".
+  and funds nothing again; its next run, in this process or after a restart, takes the lock by its signed record. An
+  unsigned lock whose index is lost is a row's only by "Finish transfers", and only a row with no signed provenance.
 - **Settled after the identity.** Once the identity exists the flow cannot fail for good: its funds are spent. A name
   step settles only on a refusal positively identified as one a retry would meet again, from an explicit list:
   `name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, `name.unavailable_for_invite`, and for either
@@ -307,16 +313,20 @@ decided where the rows leave room:
   the next start (`PartialNoIdentity`, `DiscoveryFailed`, `IdentityScanIncomplete`) parks it at `Network`. The
   index is a field of the row, never derived from the library: a lock the library rebuilt from the chain says index
   0 whatever index funded it, so a lock's index is known only while it is live (`Built`) or when it is not 0. A flow
-  owns what is at its index only by its own lock: a lock whose known index is the row's and that no row holds, and the
-  identity derived from that lock's outpoint. An identity at the index derived from a lock another row holds, or one
-  another row holds, sends a flow that is not yet funded to a new index; so does another row at the index that is
-  funded or older. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
+  owns what is at its index only by its own lock: a lock whose known index is the row's and that no row holds or
+  signed, and the identity derived from that lock's outpoint. An identity at the index derived from a lock another
+  row holds or signed, or one another row holds, sends a flow that is not yet funded to a new index; so does another
+  row at the index that is funded, reserved for its signed lock, or older. A row reserved for its signed lock never
+  moves: its step's key is that index. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
   registration lock no row holds whose index is unknown) stops the flow before funding, waiting at `ChainLock`.
   A lock a row's funding call signed is that row's (its `signed_lock`, above), whatever its index. "Finish transfers"
-  settles any other: it gives the lock to the oldest row it can fund that waits for one, a row whose funding call
-  ended `platform.broadcast_unknown` included, which takes the lock and resumes at `FundingSent` rather than a new
-  row being made beside it. A row's own run never adopts such a lock, whatever its index and amount (it may be
-  another device's on the seed: ownership needs exact provenance). While a funding call of the wallet runs, Finish
+  gives it to that row; it gives an unsigned lock to the oldest row it can fund that waits for one and has no signed
+  provenance, a row whose funding call ended `platform.broadcast_unknown` without signing included, which takes the
+  lock and resumes at `FundingSent` rather than a new row being made beside it. A row reserved for its signed lock
+  takes none and counts in `still_pending`. A signed lock its row cannot take (a row an earlier build gave another
+  lock while its own was away) goes to no other row, new or waiting: it counts in `still_pending` while it is
+  unspent. A row's own run never adopts an unsigned lock whose index is lost, whatever its amount (it may be another
+  device's on the seed: ownership needs exact provenance). While a funding call of the wallet runs, Finish
   gives that call's row nothing, and gives away no lock on its way (`Built`, `Broadcast`) whose index is lost, which
   may be that call's own, and counts it in `still_pending`. A row Finish would give a lock reads `MaybeSent` until it
   does, so it is committed and discard refuses it. An identity
@@ -350,11 +360,13 @@ decided where the rows leave room:
   starts again). It never waits for a run. A funding call's outcome is written before the call counts as ended. The
   row is deleted only under the claim and while its phase and outpoint are the ones the decision read.
 - **`finish_asset_locks`** adopts every tracked registration lock of account 0 that is not consumed, that no row
-  holds and whose identity the wallet does not have: a lock a row's funding call signed into that row, else into the
-  `KeysPrepared` row at its index when the index is known (live or failed with nothing committed), a lock whose index
-  is unknown into the oldest `KeysPrepared` row without a lock whose amount it covers (one whose funding call ended
-  `platform.broadcast_unknown` included; not one whose funding call runs), else a new row with label `""` at a fresh index,
-  which skips the name step. A lock stays where it is while a row this build cannot read may own it (DEC-173 (2)):
+  holds and whose identity the wallet does not have, each by the one ownership rule (§2.2 Funding failures): a lock a
+  row's funding call signed into that row and no other; an unsigned lock into the `KeysPrepared` row at its index
+  when the index is known (live or failed with nothing committed), a lock whose index is unknown into the oldest
+  `KeysPrepared` row without a lock whose amount it covers (one whose funding call ended
+  `platform.broadcast_unknown` included; not one whose funding call runs), never a row reserved for its own signed
+  lock, else a new row with label `""` at a fresh index, which skips the name step. A row reserved for its signed
+  lock, and a signed lock its row cannot take, count in `still_pending`. A lock stays where it is while a row this build cannot read may own it (DEC-173 (2)):
   one with no outpoint or identity, past `Draft` as far as it reads, at the lock's index, or anywhere once the lock's
   index is unknown. Such a lock counts as that row's possible funding; one whose index is unknown also counts in
   `still_pending`. While the funding hold lasts (the indexes the seed uses are not known yet) it adopts none and counts them `still_pending`. It

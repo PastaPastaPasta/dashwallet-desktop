@@ -606,11 +606,18 @@ impl RegistrationLib for Fake {
             );
         }
         if !self.w().skip_tap {
-            let funded =
-                flow::lock_tracked(&self.flows, &self.appdb, self.wallet, outpoint, Some(index))
-                    .unwrap();
+            let session = self.session.upgrade().expect("the fixture's session");
+            let funded = flow::lock_tracked(
+                &self.flows,
+                &self.appdb,
+                &session.leases,
+                self.wallet,
+                outpoint,
+                Some(index),
+            )
+            .unwrap();
             // The tap's `on_funded`, as the session wires it.
-            if let (Some(draft), Some(session)) = (funded, self.session.upgrade()) {
+            if let Some(draft) = funded {
                 flow::backup_once(&session, self.wallet, draft);
             }
         }
@@ -1313,6 +1320,7 @@ fn an_unbacked_funding_is_maybe_sent_until_its_lock_is_tracked() {
     let moved = flow::lock_tracked(
         &f.session.platform.registrations,
         &f.appdb(),
+        &f.session.leases,
         f.wallet,
         lock,
         Some(index),
@@ -2174,8 +2182,15 @@ fn tap_evidence_cannot_land_inside_an_index_reassignment() {
     let (go, on_go) = std::sync::mpsc::channel();
     *flow::NOTE_PAUSE.lock().unwrap() = Some((lock, paused, on_go));
     let tap = {
-        let (flows, appdb, wallet) = (Arc::clone(&flows), f.appdb(), f.wallet);
-        std::thread::spawn(move || flow::lock_tracked(&flows, &appdb, wallet, lock, Some(7)))
+        let (flows, appdb, leases, wallet) = (
+            Arc::clone(&flows),
+            f.appdb(),
+            Arc::clone(&f.session.leases),
+            f.wallet,
+        );
+        std::thread::spawn(move || {
+            flow::lock_tracked(&flows, &appdb, &leases, wallet, lock, Some(7))
+        })
     };
     on_pause.recv().unwrap();
     // The claim's reassignment (`assign_index`), from its read of the row.
@@ -2435,7 +2450,15 @@ fn track_built(
             .tracked_asset_locks
             .insert(lock, built_lock(lock, coin));
         let flows = &f.session.platform.registrations;
-        flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(1)).unwrap();
+        flow::lock_tracked(
+            flows,
+            &f.appdb(),
+            &f.session.leases,
+            f.wallet,
+            lock,
+            Some(1),
+        )
+        .unwrap();
     });
 }
 
@@ -3004,7 +3027,14 @@ fn the_taps_lock_record_is_retried() {
         let lock = lib.lock_at(1, LockStatus::Built);
         let flows = &f.session.platform.registrations;
         flows.fail_tap_writes(faults);
-        let tracked = flow::lock_tracked(flows, &f.appdb(), f.wallet, lock, Some(1));
+        let tracked = flow::lock_tracked(
+            flows,
+            &f.appdb(),
+            &f.session.leases,
+            f.wallet,
+            lock,
+            Some(1),
+        );
         match recorded {
             true => {
                 assert_eq!(tracked.unwrap(), Some(draft));

@@ -896,6 +896,79 @@ pub(crate) fn failure_of(row: &RegistrationRow) -> Option<(&str, bool)> {
     }
 }
 
+/// Who owns a registration lock, by exact provenance alone
+/// ([`Provenance::ownership`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// The draft whose funding call signed the lock: P2b's `signed_lock`
+    /// record of its funding step (E0-04 §2a.6).
+    Signed(i64),
+    /// No row's funding call signed it.
+    Unclaimed,
+}
+
+/// The exact provenance of the wallet's registration locks: the locks each
+/// row's funding calls signed. It is the one ownership rule every path
+/// that gives a row a lock consults ([`Self::may_take`]: a row's own run,
+/// the funding call's outcome, the index and identity restore, the
+/// changeset tap and "Finish transfers"), and it is exclusive both ways
+/// (Sol r7): a signed lock is its signer's only, and a row that signed is
+/// reserved for its own lock until P2b resolves the funding `NotSent`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Provenance {
+    /// (draft, txid) for every lock a funding call of the draft signed.
+    signed: Vec<(i64, Txid)>,
+    /// Drafts whose signed funding P2b resolved `NotSent` (its inputs
+    /// spent by a ChainLocked conflict): their signed locks will not land.
+    resolved: Vec<i64>,
+}
+
+impl Provenance {
+    /// `rows`' signed locks and resolutions, as `leases` records them.
+    pub(crate) fn read(leases: &LeaseTable, wallet: WalletId, rows: &[RegistrationRow]) -> Self {
+        let mut prov = Self::default();
+        for row in rows {
+            let step = funding_step(row.id);
+            let signed = leases.signed_lock_txids(wallet, &step);
+            if signed.is_empty() {
+                continue;
+            }
+            prov.signed
+                .extend(signed.into_iter().map(|txid| (row.id, txid)));
+            if leases.funding_status(wallet, &step) == Some(DispatchState::NotSent) {
+                prov.resolved.push(row.id);
+            }
+        }
+        prov
+    }
+
+    /// Who owns `lock`: the draft whose funding call signed it, else no row.
+    pub(crate) fn ownership(&self, lock: OutPoint) -> Owner {
+        self.signed
+            .iter()
+            .find(|(_, txid)| *txid == lock.txid)
+            .map_or(Owner::Unclaimed, |(draft, _)| Owner::Signed(*draft))
+    }
+
+    /// `draft` is reserved for the lock(s) its funding calls signed: no
+    /// other lock may stand in for them, present or not, until P2b
+    /// resolves the funding `NotSent`.
+    pub(crate) fn reserved(&self, draft: i64) -> bool {
+        self.signed.iter().any(|(d, _)| *d == draft) && !self.resolved.contains(&draft)
+    }
+
+    /// The one adoption rule: whether `taker` (a row's draft, or `None`
+    /// for a new row) may take `lock`. A signed lock goes to its signer
+    /// only; an unclaimed one to a row that is not reserved. Each path
+    /// adds only its own eligibility (the index, the amount, Finish).
+    pub(crate) fn may_take(&self, taker: Option<i64>, lock: OutPoint) -> bool {
+        match self.ownership(lock) {
+            Owner::Signed(signer) => taker == Some(signer),
+            Owner::Unclaimed => !taker.is_some_and(|d| self.reserved(d)),
+        }
+    }
+}
+
 /// What the funding gates read: the wallet's tracked locks and
 /// identities, and the rows.
 #[derive(Debug, Clone, Default)]
@@ -903,10 +976,8 @@ pub(crate) struct Evidence {
     pub(crate) locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     rows: Vec<RegistrationRow>,
-    /// The locks each row's funding calls signed, by draft: P2b's
-    /// `signed_lock` record of the row's funding step (E0-04 §2a.6), the
-    /// only exact provenance of a lock ([`Self::with_signed`]).
-    signed: Vec<(i64, Txid)>,
+    /// Who signed which lock ([`Self::with_signed`]).
+    prov: Provenance,
 }
 
 /// Who an identity index belongs to, as [`Evidence::index_owner`] reads it.
@@ -934,31 +1005,45 @@ impl Evidence {
             locks,
             identities,
             rows,
-            signed: Vec::new(),
+            prov: Provenance::default(),
         }
     }
 
-    /// With the locks the funding calls of each row signed, as `leases`
-    /// records them (P2b's `signed_lock`).
+    /// With the rows' provenance as `leases` records it (P2b's
+    /// `signed_lock`).
     pub(crate) fn with_signed(mut self, leases: &LeaseTable, wallet: WalletId) -> Self {
-        self.signed = self
-            .rows
-            .iter()
-            .flat_map(|r| {
-                leases
-                    .signed_lock_txids(wallet, &funding_step(r.id))
-                    .into_iter()
-                    .map(move |txid| (r.id, txid))
-            })
-            .collect();
+        self.prov = Provenance::read(leases, wallet, &self.rows);
         self
     }
 
     /// With `signed` as the funding calls' signed locks, by draft (tests).
     #[cfg(test)]
     pub(crate) fn signed(mut self, signed: Vec<(i64, Txid)>) -> Self {
-        self.signed = signed;
+        self.prov = Provenance {
+            signed,
+            resolved: Vec::new(),
+        };
         self
+    }
+
+    /// With `drafts`' signed fundings resolved `NotSent` by P2b (tests).
+    #[cfg(test)]
+    pub(crate) fn resolved(mut self, drafts: Vec<i64>) -> Self {
+        self.prov.resolved = drafts;
+        self
+    }
+
+    /// [`Provenance::may_take`] for a lock no row holds: whether `taker`
+    /// (a row, or `None` for a new one) may take `lock`.
+    fn may_take(&self, taker: Option<&RegistrationRow>, lock: &LockInfo) -> bool {
+        lock.funds_registration()
+            && !self.held(lock.outpoint)
+            && self.prov.may_take(taker.map(|r| r.id), lock.outpoint)
+    }
+
+    /// `row` is reserved for its own signed lock ([`Provenance::reserved`]).
+    pub(crate) fn reserved(&self, row: &RegistrationRow) -> bool {
+        self.prov.reserved(row.id)
     }
 
     pub(crate) fn rows(&self) -> &[RegistrationRow] {
@@ -1000,57 +1085,34 @@ impl Evidence {
     /// The tracked lock behind `row`: its outpoint's, or before one reached
     /// the row, the lock its own funding call signed ([`Self::signed_lock`]),
     /// else the unheld lock funded for its index (E0-04 §2a.5's funding key,
-    /// by the index the library recorded when it built it).
+    /// by the index the library recorded when it built it) that the row may
+    /// take ([`Self::may_take`]).
     pub(crate) fn lock_of(&self, row: &RegistrationRow) -> Option<&LockInfo> {
         match outpoint_of(row) {
             Some(op) => self.locks.iter().find(|l| l.outpoint == op),
             None => self.signed_lock(row).or_else(|| {
                 let index = row.identity_index?;
-                self.locks.iter().find(|l| {
-                    l.funds_registration()
-                        && !self.held(l.outpoint)
-                        && !self.signed_for_another(l, row.id)
-                        && l.known_index() == Some(index)
-                })
+                self.locks
+                    .iter()
+                    .find(|l| l.known_index() == Some(index) && self.may_take(Some(row), l))
             }),
         }
     }
 
     /// The tracked lock `row`'s own funding call signed that no row holds:
-    /// its txid is in P2b's `signed_lock` record of the row's funding step
-    /// (E0-04 §2a.6), so it is the row's exactly, whatever its status,
-    /// index or amount, after a restart too. The only lock a row adopts
-    /// outside "Finish transfers" by anything but its index (MN-1, Sol r6
+    /// [`Owner::Signed`] by the row, so it is the row's exactly, whatever
+    /// its status, index or amount, after a restart too (MN-1, Sol r6
     /// R6-01, R6-03).
     pub(crate) fn signed_lock(&self, row: &RegistrationRow) -> Option<&LockInfo> {
         self.locks.iter().find(|l| {
-            l.funds_registration()
-                && !self.held(l.outpoint)
-                && self
-                    .signed
-                    .iter()
-                    .any(|(draft, txid)| *draft == row.id && *txid == l.outpoint.txid)
+            self.prov.ownership(l.outpoint) == Owner::Signed(row.id) && self.may_take(Some(row), l)
         })
     }
 
-    /// A funding call of a row other than `draft` signed `lock`.
-    fn signed_for_another(&self, lock: &LockInfo, draft: i64) -> bool {
-        self.signed
-            .iter()
-            .any(|(d, txid)| *d != draft && *txid == lock.outpoint.txid)
-    }
-
-    /// A funding call of a row signed `lock`.
-    fn signed_by_a_row(&self, lock: &LockInfo) -> bool {
-        self.signed
-            .iter()
-            .any(|(_, txid)| *txid == lock.outpoint.txid)
-    }
-
-    /// Registration locks no row holds or signed. A row this build cannot
-    /// read holds the lock built for its index too, so that lock is never
-    /// handed to another row (DEC-171 (3)); a lock a row's funding call
-    /// signed is that row's ([`Self::signed_lock`]).
+    /// Registration locks a new row may take ([`Self::may_take`]): no row
+    /// holds or signed them. A row this build cannot read holds the lock
+    /// built for its index too, so that lock is never handed to another row
+    /// (DEC-171 (3)).
     fn unheld(&self) -> impl Iterator<Item = &LockInfo> {
         let unread: Vec<OutPoint> = self
             .rows
@@ -1058,11 +1120,22 @@ impl Evidence {
             .filter(|r| is_unsupported(r))
             .filter_map(|r| self.lock_of(r).map(|l| l.outpoint))
             .collect();
+        self.locks
+            .iter()
+            .filter(move |l| self.may_take(None, l) && !unread.contains(&l.outpoint))
+    }
+
+    /// Signed locks their signer cannot take now (Sol r7, rule 4): a row
+    /// an earlier build gave another lock while its own was away. No other
+    /// row may take them; they stay pending until they are spent.
+    fn orphaned(&self) -> impl Iterator<Item = &LockInfo> {
+        let waiting: Vec<i64> = self.awaiting_a_lock().iter().map(|(r, _)| r.id).collect();
         self.locks.iter().filter(move |l| {
-            l.funds_registration()
+            matches!(self.prov.ownership(l.outpoint), Owner::Signed(d) if !waiting.contains(&d))
+                && l.funds_registration()
                 && !self.held(l.outpoint)
-                && !unread.contains(&l.outpoint)
-                && !self.signed_by_a_row(l)
+                && l.status != LockStatus::Consumed
+                && !self.has_identity(&b58(&identity_for(l.outpoint)))
         })
     }
 
@@ -1103,7 +1176,9 @@ impl Evidence {
     fn destined_lock(&self, row: &RegistrationRow) -> Option<&LockInfo> {
         let mut waiting = self.awaiting_a_lock();
         for lock in self.stranded().filter(|l| l.known_index().is_none()) {
-            if let Some(at) = waiting.iter().position(|(_, duffs)| *duffs <= lock.amount)
+            if let Some(at) = waiting
+                .iter()
+                .position(|(r, duffs)| *duffs <= lock.amount && self.may_take(Some(r), lock))
                 && waiting.remove(at).0.id == row.id
             {
                 return Some(lock);
@@ -1120,8 +1195,12 @@ impl Evidence {
     }
 
     /// The unfunded `row` cannot fund before "Finish transfers" or the
-    /// library attributes what is at its index (`IndexOwner::Unknown`).
+    /// library attributes what is at its index (`IndexOwner::Unknown`), or
+    /// before its own signed lock returns (it is reserved for it).
     pub(crate) fn unattributed(&self, row: &RegistrationRow) -> bool {
+        if self.reserved(row) {
+            return true;
+        }
         match row.identity_index {
             Some(index) => self.index_owner(row, index) == IndexOwner::Unknown,
             None => self.unindexed_stranded(),
@@ -1138,16 +1217,17 @@ impl Evidence {
         }
         if let Some((_, id)) = self.identities.iter().find(|(i, _)| *i == index) {
             // Restore rule 2: what the seed did at the index, adopted by its
-            // lock; an identity whose lock another row holds is that row's.
+            // lock; an identity whose lock another row holds or signed is
+            // that row's.
             if let Some(lock) = self
                 .locks
                 .iter()
                 .find(|l| l.funds_registration() && b58(&identity_for(l.outpoint)) == *id)
             {
-                return if self.held(lock.outpoint) {
-                    IndexOwner::Taken
-                } else {
+                return if self.may_take(Some(row), lock) {
                     IndexOwner::Lock(lock.outpoint)
+                } else {
+                    IndexOwner::Taken
                 };
             }
             if self
@@ -1160,13 +1240,14 @@ impl Evidence {
             return IndexOwner::Unknown;
         }
         // Rows restored behind reality may share an index: a funded one
-        // keeps it, else the oldest.
+        // keeps it (one reserved for its signed lock too), else the oldest.
         let shared = self.rows.iter().any(|r| {
             r.id != row.id
                 && r.identity_index == Some(index)
                 && (r.asset_lock_outpoint.is_some()
                     || r.identity.is_some()
                     || self.lock_of(r).is_some()
+                    || self.reserved(r)
                     || r.id < row.id)
         });
         if shared {
@@ -1232,6 +1313,12 @@ pub(crate) fn funding_status(row: &RegistrationRow, ev: &Evidence) -> Option<Dis
             },
         );
     }
+    // A funding call of the row signed a lock that is away now (rejected
+    // and untracked, not yet reconstructed): it may still land, and no
+    // other lock stands in for it (Sol r7).
+    if ev.reserved(row) {
+        return Some(DispatchState::MaybeSent);
+    }
     // The lock whose index the library lost that "Finish transfers" gives
     // this row may be its own: a funding whose record never landed (MN-1).
     if ev.destined_lock(row).is_some() {
@@ -1295,10 +1382,12 @@ fn next_index(ev: &Evidence) -> u32 {
 /// no row's by index. The outpoint goes to the `KeysPrepared` row it funds
 /// (§3.4 Restore rule 3), in a job of the wallet's actor. Returns the draft
 /// moved to `FundingSent`. (The funding call's coin fence is P2b's: its
-/// permit releases it when the library tracks the lock it signed.)
+/// permit releases it when the library tracks the lock it signed, recorded
+/// in `leases` before this runs.)
 pub(crate) fn lock_tracked(
     flows: &Arc<Flows>,
     appdb: &Arc<AppDb>,
+    leases: &Arc<LeaseTable>,
     wallet: WalletId,
     outpoint: OutPoint,
     index: Option<u32>,
@@ -1312,7 +1401,7 @@ pub(crate) fn lock_tracked(
     // funding call, which attributes it when the call ends (MN-1).
     let mut tries = 1;
     loop {
-        let (db, job_flows) = (Arc::clone(appdb), Arc::clone(flows));
+        let (db, job_flows, leases) = (Arc::clone(appdb), Arc::clone(flows), Arc::clone(leases));
         #[cfg(test)]
         let fault = flows.tap_write_fault();
         #[cfg(not(test))]
@@ -1321,7 +1410,9 @@ pub(crate) fn lock_tracked(
             true => Err(AppDbError::Corrupt("a test's fault".into())),
             false => flows
                 .act_blocking(wallet, move || {
-                    note_lock_tracked(&db, &job_flows, wallet, outpoint, index, now)
+                    let rows = db.registration_rows(&wallet.to_string())?;
+                    let prov = Provenance::read(&leases, wallet, &rows);
+                    note_lock_tracked(&db, &job_flows, &prov, wallet, outpoint, index, now)
                 })
                 .unwrap_or(Ok(None)),
         };
@@ -1342,11 +1433,15 @@ pub(crate) fn lock_tracked(
 /// The row whose funding call runs built it; else a live flow first, then
 /// one that failed with nothing committed (a retryable failure, or
 /// `broadcast_unknown`, which this lock settles), so it resumes instead of
-/// a second row. A row this build cannot read at the index may own the
-/// lock too: then no other row takes it (DEC-173 (2)).
+/// a second row. Only a row that may take the lock ([`Provenance::may_take`])
+/// is one: a lock a row's call signed goes to that row alone, and a row
+/// reserved for its own signed lock takes no other. A row this build cannot
+/// read at the index may own the lock too: then no other row takes it
+/// (DEC-173 (2)).
 fn note_lock_tracked(
     db: &AppDb,
     flows: &Flows,
+    prov: &Provenance,
     wallet: WalletId,
     outpoint: OutPoint,
     index: u32,
@@ -1370,6 +1465,7 @@ fn note_lock_tracked(
             && (r.error.is_none() || r.retryable || r.error.as_deref() == Some(broadcast_unknown()))
             && r.phase == Phase::KeysPrepared.as_str()
             && is_core_balance(r)
+            && prov.may_take(Some(r.id), outpoint)
     });
     let row = rows
         .iter()
@@ -1438,18 +1534,21 @@ fn attach_lock(
     Ok((written == RegistrationUpdate::Applied).then_some(row.id))
 }
 
-/// "Finish transfers"' import, on the actor (DEC-171 (2), DEC-173): a lock
-/// a row's own funding call signed goes to that row ([`Evidence::signed_lock`]),
-/// and every stranded lock gets a row, the `KeysPrepared` row its known
-/// index names, else a new one at an unused index. A lock whose index the
-/// library lost goes to the oldest row waiting for one it can fund (not one
-/// whose funding call runs), a row whose funding call's outcome is unknown
-/// included, not to a new row beside it: that row would then fund a second
-/// lock, or stay committed with nothing. `held`: the funding hold is on, and
-/// until discovery has answered which indexes the seed uses, a fresh index
-/// may be another device's identity's, so nothing is imported. Returns the
-/// locks left pending, the ones parked for a row this build cannot read and
-/// the ones a running funding call may own included.
+/// "Finish transfers"' import, on the actor (DEC-171 (2), DEC-173), every
+/// gift decided by [`Provenance::may_take`]: a lock a row's own funding call
+/// signed goes to that row ([`Evidence::signed_lock`]), and every stranded
+/// lock gets a row, the `KeysPrepared` row its known index names, else a
+/// new one at an unused index. A lock whose index the library lost goes to
+/// the oldest row waiting for one it can fund (not one whose funding call
+/// runs, nor one reserved for its own signed lock), a row whose funding
+/// call's outcome is unknown included, not to a new row beside it: that row
+/// would then fund a second lock, or stay committed with nothing. `held`:
+/// the funding hold is on, and until discovery has answered which indexes
+/// the seed uses, a fresh index may be another device's identity's, so
+/// nothing is imported. Returns what is left pending: the locks parked for
+/// a row this build cannot read, the ones a running funding call may own,
+/// the rows reserved for a signed lock that is away, and the signed locks
+/// their signer cannot take (Sol r7).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_stranded(
     db: &AppDb,
@@ -1464,8 +1563,9 @@ pub(crate) fn import_stranded(
     let w = wallet.to_string();
     let ev =
         Evidence::new(locks, identities, db.registration_rows(&w)?).with_signed(leases, wallet);
+    let orphaned = ev.orphaned().count() as u32;
     if held {
-        return Ok(ev.unclaimed().count() as u32);
+        return Ok(ev.unclaimed().count() as u32 + orphaned);
     }
     let mut next = next_index(&ev);
     // A lock on its way that a running funding call may own waits for that
@@ -1500,8 +1600,13 @@ pub(crate) fn import_stranded(
         }
         let outpoint = canonical(lock.outpoint);
         let given = match lock.known_index() {
-            Some(index) => note_lock_tracked(db, flows, wallet, lock.outpoint, index, now)?,
-            None => match waiting.iter().position(|(_, duffs)| *duffs <= lock.amount) {
+            Some(index) => {
+                note_lock_tracked(db, flows, &ev.prov, wallet, lock.outpoint, index, now)?
+            }
+            None => match waiting
+                .iter()
+                .position(|(r, duffs)| *duffs <= lock.amount && ev.may_take(Some(r), lock))
+            {
                 Some(at) => attach_lock(db, &w, waiting.remove(at).0, &outpoint, now)?,
                 None => None,
             },
@@ -1532,7 +1637,10 @@ pub(crate) fn import_stranded(
             next = next.saturating_add(1);
         }
     }
-    Ok(ev.parked() as u32 + deferred)
+    // A row whose signed lock is away took none of these: it waits for its
+    // own (Sol r7).
+    let reserved = waiting.iter().filter(|(r, _)| ev.reserved(r)).count() as u32;
+    Ok(ev.parked() as u32 + deferred + reserved + orphaned)
 }
 
 /// One run of one flow: steps the row until it parks, fails or is done.
@@ -2018,6 +2126,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             return self
                 .record_lock(row, lock.outpoint, Phase::FundingSent)
                 .await;
+        }
+        // Its signed lock is away (untracked after a rejection, say): the
+        // row is reserved for it, so it neither adopts another lock nor
+        // funds again until the lock returns or P2b resolves it `NotSent`
+        // (Sol r7).
+        if ev.reserved(row) {
+            return self.maybe_sent().await;
         }
         match ev.index_owner(row, index) {
             IndexOwner::Free => {}

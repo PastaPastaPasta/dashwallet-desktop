@@ -689,6 +689,17 @@ fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
         seen.lock().unwrap().push((id, draft))
     }));
     let _ = h.tap.registrations.set(Arc::default());
+    // The session's lease table, whose signed-lock records the tap gives a
+    // lock by (none here); without one the tap gives none.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let leases = super::lease::LeaseTable::new(
+        DashNetwork::Regtest,
+        Arc::new(Recorder::default()),
+        rt.handle().clone(),
+        super::lease::LeaseConfig::default(),
+        0,
+    );
+    h.tap.watch_locks(&leases);
     let entry = |op: OutPoint, funding_type: T, account_index: u32, identity_index: u32| {
         let tx = Transaction {
             version: 3,

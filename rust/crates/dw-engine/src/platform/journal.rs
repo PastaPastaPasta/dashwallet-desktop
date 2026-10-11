@@ -531,12 +531,16 @@ impl ChangesetTap {
         // Before the library broadcasts a registration's lock, its
         // outpoint goes to the flow's row (§3.4 Restore rule 3).
         let locks = std::mem::take(&mut c.registration_locks);
-        match self.registrations.get() {
-            Some(flows) => {
+        // The lease table holds the signed-lock provenance the tap gives a
+        // lock by; without it the lock is left to the funding call and
+        // "Finish transfers" (fail closed).
+        match (self.registrations.get(), self.table()) {
+            (Some(flows), Some(leases)) => {
                 for (outpoint, index) in locks {
                     let tracked = super::registration_flow::lock_tracked(
                         flows,
                         &self.appdb,
+                        &leases,
                         id,
                         outpoint,
                         index,
@@ -554,10 +558,10 @@ impl ChangesetTap {
                     }
                 }
             }
-            None if !locks.is_empty() => {
+            _ if !locks.is_empty() => {
                 tracing::warn!(wallet_id = %id, "a registration lock was tracked before the session's flows")
             }
-            None => {}
+            _ => {}
         }
         if !c.locks.is_empty()
             && let Some(table) = self.table()
