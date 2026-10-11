@@ -4,7 +4,20 @@ G_DEFINE_FINAL_TYPE(GtkCustomRootWidget, gtk_custom_root_widget, GTK_TYPE_WIDGET
 
 static void gtk_custom_root_widget_init(GtkCustomRootWidget *self) {}
 
+// dashwallet-desktop patch P13: a widget unparents its children in dispose. Without it a finalized
+// root left its child with a dangling parent pointer ("Finalizing GtkCustomRootWidget, but it still
+// has children left"), and the next display-wide restyle walked it and crashed.
+static void gtk_custom_root_widget_dispose(GObject *object) {
+    GtkCustomRootWidget *self = GTK_CUSTOM_ROOT_WIDGET(object);
+    if (self->child != NULL) {
+        gtk_widget_unparent(self->child);
+        self->child = NULL;
+    }
+    G_OBJECT_CLASS(gtk_custom_root_widget_parent_class)->dispose(object);
+}
+
 static void gtk_custom_root_widget_class_init(GtkCustomRootWidgetClass *klass) {
+    G_OBJECT_CLASS(klass)->dispose = gtk_custom_root_widget_dispose;
     GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
     widget_class->measure = gtk_custom_root_widget_measure;
     widget_class->size_allocate = gtk_custom_root_widget_allocate;
@@ -81,6 +94,9 @@ GtkWidget *gtk_custom_root_widget_new(void) {
 }
 
 void gtk_custom_root_widget_set_child(GtkCustomRootWidget *self, GtkWidget *child) {
+    if (self->child != NULL) {
+        gtk_widget_unparent(self->child);  // dashwallet-desktop patch P13
+    }
     self->child = child;
     gtk_widget_set_parent(child, GTK_WIDGET(self));
 }

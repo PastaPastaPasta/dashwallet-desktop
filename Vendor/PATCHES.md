@@ -310,3 +310,24 @@ start of the file throws (upstream trapped on the range).
 
 Test: `MetadataTrailerTests` reads a trailer after 1 MiB of bytes, returns nil for files without
 one (including files shorter than a trailer), and throws for a bad length or a missing file.
+
+### P13 — a custom root widget unparents its child when disposed (GtkBackend crash)
+
+Rationale: a live launch opened on Transactions (`--page transactions`, gate G-03 U5) died with
+SIGSEGV about 20 s in, as the engine finished opening the wallet. GTK first logs "Finalizing
+GtkCustomRootWidget, but it still has children left" twice: the two containers that
+`NavigationSplitView` wraps its sidebar and content in. The app draws the shell before the vault
+reports it is locked, then replaces it with the lock screen. The backtrace then ends in
+`gtk_widget_get_ancestor`, under `gtk_style_context_remove_provider_for_display`, from
+`Gtk.CSSProvider.deinit` while the old widgets were released. `GtkCustomRootWidget` (GtkCHelpers)
+had no `dispose`, so a finalized root left its child with a dangling parent pointer. Removing a
+widget's display-wide CSS provider restyles every widget, and the restyle walked that pointer.
+Upstream 0.10.0 has the same C helper.
+
+Change (`Sources/GtkCHelpers/gtk_custom_root_widget.c`, comment `dashwallet-desktop patch P13`):
+`dispose` unparents the child, as GTK requires of a widget with children, and `set_child`
+unparents the previous child.
+
+Test: none in the package; it would need a GTK display. Checked by the gate's crashing launch on
+agentbox (`ci/gate/crossui/linux-gate.sh --phases history`): every run died with SIGSEGV before
+the patch and none after it (`docs/research/g-03-data/`).
