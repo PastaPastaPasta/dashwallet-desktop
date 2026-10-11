@@ -29,8 +29,8 @@ struct Run {
     stderr: String,
 }
 
-/// A stdout every write to fails: `/dev/full` where there is one, else a
-/// pipe whose reader is closed (macOS and Windows have no `/dev/full`).
+/// A stdout every write to fails: `/dev/full` on Linux, else a pipe whose
+/// reader is closed (macOS and Windows have no `/dev/full`).
 fn failing_stdout() -> Stdio {
     if cfg!(target_os = "linux") {
         File::options()

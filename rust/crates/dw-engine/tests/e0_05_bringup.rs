@@ -733,6 +733,22 @@ fn a_held_key_read_does_not_hold_spv_past_the_budget() {
     assert!(after <= CREATED_HERE_BUDGET + SPV_SLACK, "{after:?}");
     assert_eq!(f.startup(&id), StartupStatus::PartialNoIdentity);
     store.release();
+    // SPV started the loops, and their first pass can still be waiting on
+    // the blackholed DAPI. A shutdown alone gives such a pass one drain
+    // (close drains once, by design), which it outlived on the macOS runner
+    // (`DpnsSync: Timeout`). Stop first, as
+    // `start_spv_returns_at_once_and_spv_starts_after_the_bring_up` does:
+    // a second drain, and stop may report a loop pass that did not end, but
+    // not the released key read.
+    let stopped = f.engine.block_on(f.session.stop_spv());
+    assert!(
+        match &stopped {
+            Ok(()) => true,
+            Err(EngineError::Sdk(m)) => !m.contains("key read"),
+            Err(_) => false,
+        },
+        "{stopped:?}"
+    );
     f.engine.block_on(f.engine.shutdown()).unwrap();
     let unclean = f.rec.notices(NoticeCode::UncleanShutdown);
     assert!(unclean.is_empty(), "{unclean:?}");
