@@ -4,10 +4,11 @@ from the release tarball, on the gate wallet. Started by linux-gate.sh inside a 
 session with AT-SPI; every launch sets DWD_GATE=1, so GateProbe writes its marks to stderr.
 
 Phases (--phases, comma separated; all by default):
-  start    U5 cold start: launch to first paint (demo, and the live wallet's lock screen), and
-           unlock to Overview, --runs times each
+  start    U5 cold start: launch to the demo's Overview (the criterion) and its first frame, and to
+           the live wallet's lock screen; unlock to Overview; --runs times each
   history  U5 history_page(200) + render of the 200 rows, and the FFI call alone (limit 1)
-  pss      U5 PSS after idling on Overview, and on Transactions with 200 rows
+  pss      U5 idle PSS: the demo's Overview (the UI without the engine), and the live wallet's
+           Overview and Transactions with 200 rows
   u1       U1 the hero balance and the first 200 rows against dwcli on the same datadir
   screens  U3 the four screens in light and dark; U4 the AT-SPI naming walk of each
   keys     U4 keyboard only: unlock, Tab through Overview, Transactions, a row's details, Load more
@@ -26,7 +27,9 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../linux/crossui"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../probes/crossui-linux/scripts"))
+import pyatspi  # noqa: E402
 from atspi_smoke import children, find_all, find_app, name, role, safe, wait_for, walk  # noqa: E402
+from gi.repository import GLib  # noqa: E402
 
 # Roles a user operates; each needs an accessible name (U4).
 INTERACTIVE = {"push button", "button", "toggle button", "check box", "radio button", "text", "password text", "entry",
@@ -357,7 +360,8 @@ def phase_history(gate):
             if fields.get("renderMs") != "timeout":
                 renders.append(float(fields["totalMs"]))
             ffi200.append(float(fields["ffiMs"]))
-            cpu200.append(float(fields["cpuMs"]))
+            if "cpuMs" in fields:
+                cpu200.append(float(fields["cpuMs"]))
         for fields in app.all("history-ffi"):
             ffi1.append(float(fields["ffiMs"]))
             cpu1.append(float(fields["cpuMs"]))
@@ -599,9 +603,52 @@ def xdotool(*args):
     return subprocess.run(["xdotool", *args], capture_output=True, text=True, timeout=30)
 
 
+class FocusTracker:
+    """Follows the app's keyboard focus through AT-SPI focus events. Walking the tree for the
+    focused state after every key takes seconds per press on the loaded box (minutes per Tab
+    cycle); `focused` uses the tracker while one is open."""
+
+    current = None
+
+    def __init__(self, pid):
+        self.pid, self.node, self.focus = pid, None, None
+        pyatspi.Registry.registerEventListener(self._event, "object:state-changed:focused")
+        FocusTracker.current = self
+
+    def _event(self, event):
+        if event.detail1 and safe(lambda: event.source.get_process_id()) == self.pid:
+            self.node = event.source
+
+    def get(self, settle=0.3):
+        """The focus as (role, name) after delivering the events that arrive within `settle` s.
+        The name is read now, not in the event: a list item can be named after it takes focus."""
+        context, deadline = GLib.MainContext.default(), time.monotonic() + settle
+        while time.monotonic() < deadline:
+            while context.pending():
+                context.iteration(False)
+            time.sleep(0.02)
+        self.focus = (role(self.node), name(self.node)) if self.node is not None else None
+        return self.focus
+
+    def close(self):
+        pyatspi.Registry.deregisterEventListener(self._event, "object:state-changed:focused")
+        FocusTracker.current = None
+
+
 def focused(frame):
+    """The focused element as (role, name): from the open FocusTracker once it has seen an event,
+    otherwise from a walk of the tree."""
+    tracker = FocusTracker.current
+    if tracker is not None and tracker.get() is not None:
+        return tracker.focus
     hits = find_all(frame, lambda n, i: "focused" in i["states"])
     return (hits[-1][1]["role"], hits[-1][1]["name"]) if hits else None
+
+
+def paints_since(app, since):
+    """GateProbe's screen marks (`*-paint`) written at or after the monotonic time `since`."""
+    with app.cond:
+        return [m[0] for m in app.marks if m[0].endswith("-paint") and m[1] >= since]
 
 
 def tab_to(frame, predicate, limit):
@@ -635,6 +682,14 @@ def phase_keys(gate):
     """U4 keyboard only: X key events (xdotool) drive the app; AT-SPI only observes."""
     app = gate.launch(gate.live_args(), tag="keys")
     frame = app_frame(app.pid)
+    tracker = FocusTracker(app.pid)
+    try:
+        keyboard_steps(gate, app, frame)
+    finally:
+        tracker.close()
+
+
+def keyboard_steps(gate, app, frame):
     steps = {}
     if frame is None or not app.wait("lock-paint", 120):
         gate.check("U4", "keyboard: lock screen up", False)
@@ -672,14 +727,19 @@ def phase_keys(gate):
     if unlocked:
         time.sleep(1)
         nodes = dump(gate, frame, "keys-overview")
+        cycle_start = time.monotonic()
         steps["overviewTabs"] = tab_cycle(frame)
         steps["overviewInteractive"] = [(i["role"], i["name"]) for _n, i in interactive(nodes)]
+        # The sidebar's rows are Tab stops, and focusing one selects it: Tab can change the page.
+        steps["pagesDuringOverviewTabs"] = paints_since(app, cycle_start)
+        gate.check("U4", "keyboard: Tab through the sidebar keeps the page (focus does not select a row)",
+                   not steps["pagesDuringOverviewTabs"], str(steps["pagesDuringOverviewTabs"]))
         missed = [c for c in steps["overviewInteractive"] if c not in steps["overviewTabs"]]
         gate.check("U4", f"keyboard: Tab reaches every Overview control ({len(steps['overviewTabs'])} stops)",
                    not missed, str(missed[:10]))
-        # Sidebar: focus it, then Down to Transactions.
-        moved = False
-        for _ in range(40):
+        # Sidebar: focus it, then Down to Transactions (unless Tab already went there).
+        moved = (steps["pagesDuringOverviewTabs"] or [None])[-1] == "transactions-paint"
+        for _ in range(0 if moved else 40):
             now = focused(frame)
             if now and now[0] == "list item" and now[1] in ("Overview", "Transactions", "Send", "Receive"):
                 for _ in range(6):
