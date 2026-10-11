@@ -39,6 +39,9 @@ swift build -c release --product dash-wallet
 t2=$(date +%s)
 bin_dir=$(swift build -c release --show-bin-path)
 result "build: core $((t1 - t0)) s, swift $((t2 - t1)) s (release)"
+# The main thread's stack reserve from the PE header (Package.swift links /STACK:8388608).
+stack=$(python -c 'import struct, sys; d = open(sys.argv[1], "rb").read(); pe = struct.unpack_from("<I", d, 0x3C)[0]; print(struct.unpack_from("<Q", d, pe + 24 + 72)[0])' "$(win "$bin_dir/dash-wallet.exe")")
+result "stack reserve: $stack bytes"
 
 # --- U2/U7: the archive: the exe, SwiftPM's resource bundles, any DLLs the build put next to it,
 # and the Swift runtime's DLLs (the toolchain's runtime directory, found through swiftCore.dll).
