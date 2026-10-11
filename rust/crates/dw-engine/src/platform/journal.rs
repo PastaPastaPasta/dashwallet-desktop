@@ -380,9 +380,11 @@ impl ChangesetTap {
     /// lock only after. The check (a sighash and a signature verified per
     /// input) runs only while a funding call of `id` runs or after one
     /// that released a signature ended: no other lock can carry a call's
-    /// signature.
+    /// signature. An asset-lock changeset with no lock transaction (a
+    /// removal) is checked too (review P2b r7): a running call's released
+    /// signatures must be covered by then.
     pub(crate) fn note_signed(&self, id: WalletId, c: &Classified) {
-        if !c.lock_txs.is_empty()
+        if !c.locks.is_empty()
             && let Some(table) = self.table()
             && table.funding_signatures_out(id)
         {

@@ -2583,6 +2583,23 @@ impl MixingWallet for EngineMixingWallet {
         inputs: &[(usize, ScriptBuf)],
     ) -> Result<Vec<TxIn>, WalletError> {
         let s = self.session()?;
+        // An input of an asset lock a funding call signed, its step
+        // unresolved, is not signed (review P2b r7 O-2): read under the
+        // coin fence, which a funding call keeps until its lock is
+        // recorded, and kept through the signing.
+        let _fence = s
+            .coin_fence(self.wallet_id)
+            .await
+            .map_err(|e| WalletError(e.to_string()))?;
+        let held = s.leases.unresolved_lock_inputs(self.wallet_id);
+        if let Some(o) = (inputs.iter())
+            .map(|(i, _)| tx.input[*i].previous_output)
+            .find(|o| held.contains(o))
+        {
+            return Err(WalletError(format!(
+                "input {o} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
+            )));
+        }
         let signer = s
             .vault
             .mixing_signer(&self.wallet_id.0)
@@ -2622,6 +2639,24 @@ impl MixingWallet for EngineMixingWallet {
 }
 
 impl NetworkSession {
+    /// A mixing session's final-input signing of `wallet_id`'s `inputs` of
+    /// `tx` (tests).
+    #[cfg(test)]
+    pub(crate) async fn sign_mixing_inputs(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        tx: &Transaction,
+        inputs: &[(usize, ScriptBuf)],
+    ) -> Result<Vec<TxIn>, WalletError> {
+        let adapter = EngineMixingWallet {
+            session: Arc::downgrade(self),
+            wallet_id,
+            owner: SpendOwner::mixing_session(),
+            reserved: Mutex::new(Vec::new()),
+        };
+        adapter.sign_inputs(tx, inputs).await
+    }
+
     /// Signs a CoinJoin-page payment (QT-051): `inputs` (fully mixed coins
     /// of the CoinJoin account, in random order) to `outputs`, no change,
     /// `SIGHASH_ALL`, with a signer the caller's `Spend` grant issued.

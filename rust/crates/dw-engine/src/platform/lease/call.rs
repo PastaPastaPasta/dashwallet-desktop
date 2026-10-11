@@ -302,6 +302,13 @@ impl SignatureCount {
         self.locked.store(true, Ordering::SeqCst);
     }
 
+    /// Whether the call released a signature and no lock it signed was
+    /// recorded (review P2b r7): nothing covers its signatures but its
+    /// release row.
+    pub(crate) fn uncovered(&self) -> bool {
+        self.released() > 0 && !self.recorded.load(Ordering::SeqCst)
+    }
+
     /// A lock the call signed was recorded as its step's (§2a.6, O-1).
     pub(crate) fn note_recorded(&self) {
         self.recorded.store(true, Ordering::SeqCst);

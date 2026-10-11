@@ -475,7 +475,9 @@ impl NetworkSession {
     /// (accepted; never sent: `NoPeers` / `BroadcastRejected`; no verdict:
     /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
     /// funding call of any wallet signed whose step is unresolved is
-    /// refused (`Invalid`, [`held_lock_input`]).
+    /// refused (`Invalid`, [`held_lock_input`]), read right before the send
+    /// under the coin fence of each wallet owning an input, held through the
+    /// send (up to dash-spv's acceptance wait).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
         mut psbt: PartiallySignedTransaction,
@@ -495,16 +497,43 @@ impl NetworkSession {
             if rate > dw_psbt::MAX_BROADCAST_FEE_PER_KB {
                 return Err(PsbtFailure::FeeRateTooHigh { duffs_per_kb: rate }.into());
             }
-            held_lock_input(&tx, &this.leases.unresolved_lock_inputs_of_any())?;
             let manager = this.manager()?;
-            if !manager.spv().is_started() {
+            let started = manager.spv().is_started();
+            let broadcaster = SpvBroadcaster::new(manager.spv_arc());
+            if started {
+                // A loaded PSBT may be sent right after SPV starts: give
+                // dash-spv a bounded time to connect. Without peers the
+                // broadcast below reports `NoPeers` (nothing sent).
+                broadcaster.wait_until_ready(BROADCAST_READY_WAIT).await;
+            }
+            this.coin_fences.broadcast_pause_point().await;
+            // Held inputs are read under the coin fence of each wallet that
+            // owns an input, kept through the send (review P2b r7): a
+            // funding call keeps its wallet's fence until its lock is
+            // recorded, so one that took an input of this transaction during
+            // the wait is seen here. Taken in wallet order (`coins.rs`).
+            let network = this.network.core_network();
+            let mut wallets = manager.list_wallet_ids_blocking();
+            wallets.sort_unstable();
+            let mut fences = Vec::new();
+            for id in wallets.into_iter().map(WalletId) {
+                let Ok(w) = this.wallet(&id).await else {
+                    continue;
+                };
+                let owns = {
+                    let state = w.state().await;
+                    !ownership(&state.core_wallet, &psbt, network)
+                        .paths
+                        .is_empty()
+                };
+                if owns {
+                    fences.push(this.coin_fences.acquire(id).await);
+                }
+            }
+            held_lock_input(&tx, &this.leases.unresolved_lock_inputs_of_any())?;
+            if !started {
                 return Err(PsbtFailure::NoPeers.into());
             }
-            let broadcaster = SpvBroadcaster::new(manager.spv_arc());
-            // A loaded PSBT may be sent right after SPV starts: give dash-spv
-            // a bounded time to connect. Without peers the broadcast below
-            // reports `NoPeers` (nothing sent).
-            broadcaster.wait_until_ready(BROADCAST_READY_WAIT).await;
             match broadcaster.broadcast(&tx).await {
                 Ok(txid) => Ok(txid),
                 Err(BroadcastError::MaybeSent { reason }) => {

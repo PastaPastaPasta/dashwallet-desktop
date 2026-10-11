@@ -52,7 +52,12 @@
 //! event handlers and the catch-up's resume pass read no coins through it.
 //! CoinJoin sessions (denominations of the CoinJoin account, unattended)
 //! read their coins under a fence they release at once and reserve their
-//! inputs outside it.
+//! inputs outside it; their final-input signing takes the fence again to
+//! read the funding holds, through the signing (review P2b r7).
+//!
+//! `broadcast_psbt` alone takes more than one fence: those of the wallets
+//! owning an input, in ascending wallet id, held through its send. Every
+//! other holder takes one and waits for no other, so no cycle forms.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -259,6 +264,10 @@ pub(crate) struct CoinFences {
     /// fence held.
     #[cfg(test)]
     pub(crate) pause_prepare: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next PSBT broadcast after its peer wait, before it
+    /// takes the coin fences.
+    #[cfg(test)]
+    pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
 }
 
 /// A one-shot pause point for tests.
@@ -304,19 +313,24 @@ impl CoinFences {
     /// Tests: the pause point of a prepare that holds its fence.
     pub(crate) async fn prepare_pause_point(&self) {
         #[cfg(test)]
-        {
-            let pause = self
-                .pause_prepare
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-            if let Some(pause) = pause {
-                pause
-                    .reached
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                pause.release.notified().await;
-            }
-        }
+        pause_at(&self.pause_prepare).await;
+    }
+
+    /// Tests: the pause point of a PSBT broadcast past its peer wait.
+    pub(crate) async fn broadcast_pause_point(&self) {
+        #[cfg(test)]
+        pause_at(&self.pause_broadcast).await;
+    }
+}
+
+#[cfg(test)]
+async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
+    let pause = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(pause) = pause {
+        pause
+            .reached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pause.release.notified().await;
     }
 }
 

@@ -3564,7 +3564,9 @@ impl LeaseTable {
     /// A failing append is retried ([`SIGNED_WRITE_ATTEMPTS`]). One that
     /// keeps failing, a marker gone, a journal not ready, a lock carrying
     /// only some of a call's signatures, a call that signed anything besides
-    /// the lock (a second lock, review P2b r6 R6-02), a lock of a call that
+    /// the lock (a second lock, review P2b r6 R6-02), an asset-lock
+    /// changeset with no lock while a running call's released signatures
+    /// have no recorded lock (review P2b r7), a lock of a call that
     /// already ended reaching the store unrecorded, or a `Built` lock whose
     /// signatures cannot be read
     /// stored while a call that released one runs stops the process
@@ -3574,6 +3576,27 @@ impl LeaseTable {
     /// library's store call, which waits for it.
     pub(crate) fn record_signed_locks(&self, wallet: WalletId, locks: &[StoredLock]) {
         if locks.is_empty() {
+            // An asset-lock changeset with no lock (review P2b r7): a
+            // running call that released a signature no recorded lock of it
+            // covers may have signed a lock the library sends unstored, a
+            // second one among them (R6-02). It stops here too; its release
+            // row keeps its step `MaybeSent`.
+            let uncovered = self.with_j(|i, _| {
+                let mut uncovered = false;
+                for f in i.calls.values().filter_map(|r| r.funding.as_ref()) {
+                    if f.wallet == wallet && f.signatures.uncovered() {
+                        f.signatures.note_recorded();
+                        uncovered = true;
+                    }
+                }
+                uncovered
+            });
+            if uncovered {
+                fail_closed(
+                    wallet,
+                    "a funding call's signatures reached a store with no lock",
+                );
+            }
             return;
         }
         let backend = self.journal.get();
