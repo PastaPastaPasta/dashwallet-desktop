@@ -30,6 +30,15 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    // Raises the window above the others without the foreground rules (the runner's console
+    // otherwise covers a window the app opened in the background): topmost, then not topmost.
+    public static void Raise(IntPtr h) {
+        const uint NoMoveSizeActivate = 0x0002 | 0x0001 | 0x0010;
+        ShowWindow(h, 9);
+        SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, NoMoveSizeActivate);
+        SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, NoMoveSizeActivate);
+    }
 }
 '@
 # Not $shots: PowerShell names are case-insensitive, and a function's $Shots parameter would hide it.
@@ -45,6 +54,9 @@ function Shot($Process, [string] $File) {
     $h = $Process.MainWindowHandle
     $r = New-Object Win+RECT
     if ($h -ne [IntPtr]::Zero -and [Win]::GetWindowRect($h, [ref]$r) -and ($r.Right - $r.Left) -gt 50) {
+        # The capture copies the screen: the window must be on top.
+        [Win]::Raise($h)
+        Start-Sleep -Milliseconds 300
         $x = $r.Left; $y = $r.Top; $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
     } else {
         $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
