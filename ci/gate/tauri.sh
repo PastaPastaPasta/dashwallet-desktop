@@ -125,15 +125,17 @@ shot() { # PID FILE
 
 # --selftest with a capture of each screen while it pauses (macOS).
 selftest_with_shots() { # REPORT LOG ARGS...
-  local report=$1 log=$2 seen=0 count screen pid deadline=$(($(date +%s) + 900))
+  local report=$1 log=$2 seen=0 lines count screen pid deadline=$(($(date +%s) + 900))
   shift 2
   "$APP" "$@" "${SIZE[@]}" --selftest "$report" --selftest-pause "$PAUSE_MS" >"$log" 2>&1 &
   pid=$!
   # macOS ships bash 3.2: no mapfile, and empty arrays trip `set -u`, so read the log line by line.
+  # Complete lines only (`lines`): a line read while the app writes it would give a cut-off name.
   while kill -0 "$pid" 2>/dev/null && (($(date +%s) < deadline)); do
-    count=$(grep -c 'selftest-screen [a-zA-Z/]' "$log" || true)
+    lines=$(($(wc -l <"$log")))
+    count=$(head -n "$lines" "$log" | grep -c 'selftest-screen [a-zA-Z/]' || true)
     while ((seen < count)); do
-      screen=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | sed -n "$((seen + 1))p" | awk '{print $2}')
+      screen=$(head -n "$lines" "$log" | grep -o 'selftest-screen [a-zA-Z/]*' | sed -n "$((seen + 1))p" | awk '{print $2}')
       sleep 0.8
       shot "$pid" "$OUT/shots/${screen//\//-}.png" || true
       seen=$((seen + 1))

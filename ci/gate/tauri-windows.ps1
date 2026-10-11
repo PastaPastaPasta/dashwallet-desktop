@@ -139,8 +139,14 @@ function Selftest-WithShots([string[]] $Arguments, [string] $Report, [string] $N
     $deadline = (Get-Date).AddSeconds(900)
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
         if ($WithShots) {
-            $screens = @(Select-String -Path $log -Pattern 'selftest-screen ([A-Za-z/]+)' -AllMatches -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
+            # Complete lines only: a line read while the app writes it would give a cut-off name.
+            # The app holds the log open for writing: open it shared, or the read fails.
+            $text = $(try {
+                $r = New-Object System.IO.StreamReader([System.IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'))
+                try { $r.ReadToEnd() } finally { $r.Dispose() }
+            } catch { '' })
+            $text = $text.Substring(0, $text.LastIndexOf("`n") + 1)
+            $screens = @([regex]::Matches($text, 'selftest-screen ([A-Za-z/]+)') | ForEach-Object { $_.Groups[1].Value })
             while ($seen -lt $screens.Count) {
                 Start-Sleep -Milliseconds 800
                 Shot $p (Join-Path $shotDir ("windows-" + ($screens[$seen] -replace '/', '-') + '.png'))

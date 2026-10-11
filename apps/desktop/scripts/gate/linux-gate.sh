@@ -125,7 +125,8 @@ log=selftest-fixture.log
 pid=$!
 seen=0
 while kill -0 $pid 2>/dev/null; do
-  mapfile -t screens < <(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | awk '{print $2}')
+  # Complete lines only: a line read while the app writes it would give a cut-off name.
+  mapfile -t screens < <(head -n "$(wc -l <"$log")" "$log" | grep -o 'selftest-screen [a-zA-Z/]*' | awk '{print $2}')
   while ((seen < ${#screens[@]})); do
     sleep 0.4
     window_shot "${screens[$seen]//\//-}"

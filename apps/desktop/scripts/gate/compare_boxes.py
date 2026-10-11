@@ -68,11 +68,13 @@ def main():
             continue
         over = []
         runs_over = []
-        worst = 0.0
+        worst = worst_containers = 0.0
         for key in sorted(common):
             a, b = base[key], d[key]
             delta = max(abs(a[k] - b[k]) for k in ("x", "y", "w", "h"))
             worst = max(worst, delta)
+            if key[1].split("#")[0] not in text_runs:
+                worst_containers = max(worst_containers, delta)
             if delta > args.tolerance:
                 entry = {"screen": key[0], "id": key[1], "delta": round(delta, 2), base_name: a, name: b}
                 if key[1].split("#")[0] in text_runs:
@@ -87,6 +89,7 @@ def main():
         ok_all &= containers_ok and not runs_over
         summary["engines"][name] = {
             "maxDelta": round(worst, 2),
+            "maxContainerDelta": round(worst_containers, 2),
             "overTolerance": len(over),
             "onlyHere": sorted(f"{k[0]}:{k[1]}" for k in extra)[:10],
             "missingHere": sorted(f"{k[0]}:{k[1]}" for k in missing)[:10],
